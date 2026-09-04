@@ -15,7 +15,8 @@ type Capability = {
   prefixes: string[];
   contract_files: ContractFiles;
   architecture_module: string;
-  workstream_dir: string;
+  /** Legacy migration metadata; new capability config never writes it. */
+  workstream_dir?: string;
   lsp_profile: string;
   verification_hints: string[];
 };
@@ -64,12 +65,12 @@ function usage(): never {
       "  --agents <path>                  AGENTS.md path (default: <prefix>/AGENTS.md)",
       "  --claude <path>                  CLAUDE.md path (default: <prefix>/CLAUDE.md)",
       "  --architecture-module <path>     Architecture module path",
-      "  --workstream-dir <path>          Workstream directory path",
+      "  --workstream-dir <path>          RETIRED: repo-local Workstreams are no longer writable",
       "  --lsp-profile <profile>          LSP/tooling profile (default: typescript-lsp)",
       "  --verification-hint <command>    Repeatable local verification hint",
       "  --create-prefix                  Create the prefix directory when missing",
       "  --create-architecture-module     Create a minimal architecture module when missing",
-      "  --create-workstream              Create a durable workstream ledger",
+      "  --create-workstream              RETIRED: use Controller Home Requirement/Plan/Work",
       "  --no-sync-contracts              Only update the registry",
       "  --dry-run                        Print planned changes without writing",
       "  --format text|json               Output format (default: text)",
@@ -238,7 +239,6 @@ function buildCapability(args: Args, repo: string): Capability {
       args.architectureModule || `docs/architecture/modules/${domain}/${name}.md`,
       repo
     ),
-    workstream_dir: normalizeRepoPath(args.workstreamDir || `tasks/workstreams/${domain}/${name}`, repo),
     lsp_profile: args.lspProfile,
     verification_hints:
       args.verificationHints.length > 0 ? args.verificationHints : ["record local commands here before implementation"],
@@ -304,7 +304,7 @@ function syncContracts(repo: string, capability: Capability): void {
     architecture_domain: capability.domain,
     architecture_capability: capability.name,
     architecture_module: capability.architecture_module,
-    workstream_dir: capability.workstream_dir,
+    ...(capability.workstream_dir ? { workstream_dir: capability.workstream_dir } : {}),
     contract_agents: capability.contract_files.agents,
     contract_claude: capability.contract_files.claude,
     lsp_profile: capability.lsp_profile,
@@ -341,12 +341,11 @@ function createArchitectureModule(repo: string, capability: Capability): void {
   );
 }
 
-function createWorkstream(repo: string, capability: Capability): void {
-  runChecked(repo, "bash", ["scripts/workstream-sync.sh", "ensure", "--block", capability.prefixes[0]]);
-}
-
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
+  if (args.workstreamDir || args.createWorkstream) {
+    throw new Error("LEGACY_WORKSTREAM_WRITES_RETIRED: repo-local tasks/workstreams are migration-only; use Forge Controller Home Requirement/Plan/Work");
+  }
   const repo = repoRoot(args.repo);
   const requestedCapability = buildCapability(args, repo);
   const prefixPath = resolve(repo, requestedCapability.prefixes[0]);
@@ -366,14 +365,12 @@ function main(): void {
 
   if (args.syncContracts) actions.push(`sync-contracts:${capability.contract_files.agents},${capability.contract_files.claude}`);
   if (args.createArchitectureModule) actions.push(`create-architecture-module:${capability.architecture_module}`);
-  if (args.createWorkstream) actions.push(`create-workstream:${capability.workstream_dir}`);
   actions.push("validate:capability-registry");
 
   if (!args.dryRun) {
     if (status === "added") writeRegistry(repo, registry);
     if (args.syncContracts) syncContracts(repo, capability);
     if (args.createArchitectureModule) createArchitectureModule(repo, capability);
-    if (args.createWorkstream) createWorkstream(repo, capability);
     validateRegistry(repo);
   }
 

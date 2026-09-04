@@ -439,8 +439,6 @@ semantic_diagram_source="$architecture_module"
 if [[ "$latest_snapshot" != "(none yet)" ]]; then
   semantic_diagram_source="$latest_snapshot"
 fi
-active_workstreams="$(format_active_workstreams "$workstream_dir")"
-
 block_tmp="$(mktemp)"
 cat > "$block_tmp" <<EOF_BLOCK
 <!-- BEGIN ARCHITECTURE CONTRACT -->
@@ -467,16 +465,7 @@ cat > "$block_tmp" <<EOF_BLOCK
 - Semantic diagram source: \`${semantic_diagram_source}\`
 - Latest human diagram: \`${latest_human_diagram}\`
 - Pending architecture request: \`${request_file:-unknown}\`
-
-## Active Workstreams
-
-${active_workstreams}
-
-## Current Session Projection
-
-- Durable progress lives under \`${workstream_dir}\`.
-- \`tasks/current.md\` is the tracked derived status snapshot; it is not a live lock or task source.
-- \`tasks/todos.md\` is the deferred-goal ledger; current execution slices stay in the active plan's \`## Task Breakdown\`.
+- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->
 EOF_BLOCK
 

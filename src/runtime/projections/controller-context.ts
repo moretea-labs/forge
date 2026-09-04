@@ -136,6 +136,12 @@ const performanceSnapshot: ControllerContextPerformanceSnapshot = {
 };
 
 function contextInvalidationPath(repoRoot: string): string {
+  // `.ai/harness/controller` is a Runtime Storage compatibility link backed by
+  // Controller Home. Keep the legacy path readable below only for migration.
+  return join(repoRoot, '.ai', 'harness', 'controller', 'context-invalidation.json');
+}
+
+function legacyContextInvalidationPath(repoRoot: string): string {
   return join(repoRoot, '.ai', 'harness', 'controller-context-invalidation.json');
 }
 
@@ -161,13 +167,13 @@ export function markControllerContextProjectionDirty(
 export function readControllerContextProjectionInvalidation(
   repoRoot: string,
 ): ControllerContextProjectionInvalidation | undefined {
-  try {
-    const marker = readJsonFile<ControllerContextProjectionInvalidation>(contextInvalidationPath(repoRoot));
-    if (marker.schemaVersion !== 1 || !marker.markedAt || !marker.nonce) return undefined;
-    return marker;
-  } catch {
-    return undefined;
+  for (const path of [contextInvalidationPath(repoRoot), legacyContextInvalidationPath(repoRoot)]) {
+    try {
+      const marker = readJsonFile<ControllerContextProjectionInvalidation>(path);
+      if (marker.schemaVersion === 1 && marker.markedAt && marker.nonce) return marker;
+    } catch { /* try the migration fallback */ }
   }
+  return undefined;
 }
 
 export function recordControllerContextRead(input: {

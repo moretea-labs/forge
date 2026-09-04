@@ -39,12 +39,12 @@ describe("workflow contract manifest", () => {
   test("source repository keeps the workflow contract authoritative in packaged assets", () => {
     const contractPath = join(ROOT, "assets/workflow-contract.v1.json");
     const contract = loadWorkflowContract(contractPath);
-    expect(contract.version).toBe("1.4.0");
+    expect(contract.version).toBe("1.5.0");
     expect(contract.contractId).toBeTruthy();
     const trackedContract = spawnSync("git", ["-C", ROOT, "ls-files", "--", ".ai/harness/workflow-contract.json"], { encoding: "utf8" });
     expect(trackedContract.status).toBe(0);
     expect(trackedContract.stdout.trim()).toBe("");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/harness/workflow-contract.json");
+    expect(contract.artifacts.requiredFiles).toContain("forge.config.json");
   });
 
   test("central hook assets are complete without a tracked self-host runtime copy", () => {
@@ -58,112 +58,49 @@ describe("workflow contract manifest", () => {
     expect(trackedHooks.stdout.trim()).toBe("");
   });
 
-  test("helper inventory should come from the workflow contract", () => {
+  test("workflow contract v1.5 keeps package helpers as compatibility inventory while repo authority stays authored/declarative", () => {
     const contract = loadWorkflowContract(join(ROOT, "assets/workflow-contract.v1.json"));
+    expect(contract.version).toBe("1.5.0");
     expect(contract.helpers.runtimeDirectory).toBe("package:assets/templates/helpers");
-    expect(contract.helpers.compatibilityDirectory).toBe("scripts");
-    expect(contract.helpers.scripts).toContain("contract-worktree.sh");
-    expect(contract.helpers.scripts).toContain("contract-run.ts");
-    expect(contract.helpers.scripts).toContain("ship-worktrees.sh");
-    expect(contract.helpers.scripts).toContain("capture-plan.sh");
-    expect(contract.helpers.scripts).toContain("switch-plan.sh");
-    expect(contract.helpers.scripts).not.toContain("context-budget.ts");
-    expect(contract.helpers.scripts).toContain("capability-resolver.ts");
-    expect(contract.helpers.scripts).toContain("architecture-event.ts");
-    expect(contract.helpers.scripts).toContain("capability-config.ts");
-    expect(contract.helpers.scripts).toContain("architecture-queue.sh");
-    expect(contract.helpers.scripts).toContain("context-contract-sync.sh");
-    expect(contract.helpers.scripts).toContain("workstream-sync.sh");
-    expect(contract.helpers.scripts).toContain("refresh-current-status.sh");
-    expect(contract.helpers.scripts).toContain("prepare-codex-handoff.sh");
-    expect(contract.helpers.scripts).toContain("codex-handoff-resume.sh");
-    expect(contract.helpers.scripts).toContain("select-agent-context-blocks.sh");
-    expect(contract.helpers.scripts).toContain("check-brain-manifest.sh");
-    expect(contract.helpers.scripts).toContain("sync-brain-docs.sh");
-    expect(contract.helpers.scripts).toContain("check-deploy-sql-order.sh");
-    expect(contract.helpers.scripts).toContain("check-architecture-sync.sh");
-    expect(contract.externalTooling?.waza?.primaryHost).toBe("codex");
-    expect(contract.externalTooling?.waza?.managedSkills).toContain("think");
-    expect(contract.externalTooling?.codexAutomationProfile?.requiredSkills).toEqual(["health", "check", "mermaid"]);
-    expect(contract.externalTooling?.codexAutomationProfile?.routes.architectureDiagram).toBe("mermaid");
-    expect(contract.externalTooling?.codexAutomationProfile?.vendoringPolicy).toBe("do-not-vendor-skill-body");
-    expect(contract.externalTooling?.diagramDesign?.skillName).toBe("mermaid");
-    expect(contract.externalTooling?.diagramDesign?.vendoringPolicy).toBe("do-not-vendor");
-    expect(contract.documentation?.referenceConfigs?.source).toBe("user-level-runtime-docs");
-    expect(contract.documentation?.referenceConfigs?.repoStubDirectory).toBe("docs/reference-configs");
-    expect(contract.documentation?.referenceConfigs?.packageDirectory).toBe("assets/reference-configs");
-    expect(contract.documentation?.referenceConfigs?.resolverCommand).toBe("forge docs path <doc-id>");
-    expect(contract.documentation?.referenceConfigs?.stubMarker).toBe("<!-- forge: reference-config-stub v1 -->");
-    expect(contract.agenticDevelopment?.routing.complexEngineeringPlan).toBe("gstack:plan-eng-review");
-    expect(contract.agenticDevelopment?.routing.bugOrRegression).toBe("waza:hunt");
-    expect(contract.agenticDevelopment?.dueDiligence.levels).toContain("P2_DATA_FLOW_TRACE");
-    expect(contract.documents.currentStatus).toBe("tasks/current.md");
+    expect(contract.helpers.runtimeSource).toBe("package");
+    expect(contract.artifacts.runtimeManifest).toBe("forge.config.json");
+    expect(contract.artifacts.requiredDirectories).toEqual([
+      "docs",
+      "docs/reference-configs",
+      "docs/researches",
+      "tasks",
+    ]);
+    expect(contract.artifacts.requiredFiles).toEqual([
+      "forge.config.json",
+      "docs/spec.md",
+      "tasks/todos.md",
+      "tasks/lessons.md",
+    ]);
+    expect(contract.documents.currentStatus).toBeUndefined();
+    expect(contract.adoptionTemplates?.files?.currentStatus).toBeUndefined();
     expect(contract.adoptionTemplates?.files?.spec.document).toBe("spec");
     expect(contract.adoptionTemplates?.files?.spec.lines.join("\n")).toContain("{{repoName}}");
-    expect(contract.adoptionTemplates?.files?.currentStatus.document).toBe("currentStatus");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/harness/workflow-contract.json");
-    expect(contract.artifacts.requiredFiles).not.toContain(".codex/hooks.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/harness/brain-manifest.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/context/capabilities.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/context/capability-source-map.json");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/capability-resolver.ts");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/architecture-event.ts");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/capability-config.ts");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/contract-worktree.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/contract-run.ts");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/ship-worktrees.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/capture-plan.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/refresh-current-status.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/sync-brain-docs.sh");
-    expect(contract.artifacts.requiredFiles).toContain("tasks/current.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/architecture/index.md");
-    expect(contract.artifacts.requiredFiles).toContain(".claude/templates/implementation-notes.template.md");
-    expect(contract.artifacts.requiredFiles).not.toContain(".claude/settings.json");
-    expect(contract.artifacts.requiredFiles).not.toContain(".codex/hooks.json");
-    expect(contract.artifacts.requiredDirectories).not.toContain(".codex");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/notes");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/workstreams");
-    expect(contract.artifacts.requiredDirectories).toContain("docs/architecture/domains");
-    expect(contract.artifacts.requiredDirectories).toContain("docs/architecture/modules");
-    expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/worktrees");
-    expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/planning");
-    expect(contract.artifacts.requiredDirectories).not.toContain(".ai/harness/scripts");
-    expect(contract.artifacts.requiredDirectories).toContain("scripts");
-    expect(contract.artifacts.requiredDirectories).toContain("deploy/scripts");
-    expect(contract.artifacts.requiredDirectories).toContain("deploy/submissions");
-    expect(contract.artifacts.requiredDirectories).toContain("deploy/sql");
-    expect(contract.artifacts.requiredFiles).toContain("deploy/README.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/agentic-development-flow.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
-    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/session/resume.md");
-    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/context-budget/latest.json");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/session/resume.md");
-    expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/context-budget/latest.json");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/capability-context/");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/planning/");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/checks/latest.json");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/architecture/events.jsonl");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/active-plan");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/active-worktree");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/worktrees/");
-    expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/workstreams/events.jsonl");
-    expect(contract.migrations.upgrade?.strategyVersion).toBe(1);
-    expect(contract.migrations.upgrade?.actionClasses).toContain("reconfigure");
-    expect(contract.migrations.upgrade?.actionClasses).not.toContain("archive");
+    for (const retired of [
+      "tasks/current.md",
+      ".ai/harness/workflow-contract.json",
+      ".ai/harness/brain-manifest.json",
+      ".ai/context/capabilities.json",
+      "scripts/refresh-current-status.sh",
+    ]) expect(contract.artifacts.requiredFiles).not.toContain(retired);
+    for (const legacyRuntime of [
+      ".ai/harness/",
+      ".forge/plugins/",
+      ".forge/browser/",
+      ".forge/interactions/",
+      "_ops/",
+      ".repo-harness/",
+      ".codegraph/",
+    ]) expect(contract.artifacts.legacyRuntimePaths).toContain(legacyRuntime);
+    expect(contract.migrations.upgrade?.actionClasses).toEqual(["preserve", "reconfigure", "remove"]);
     expect(contract.migrations.upgrade?.safety.unknownFiles).toBe("preserve");
     expect(contract.migrations.upgrade?.safety.removeOnlyOwnership).toBe("known_generated");
-    expect(contract.migrations.upgrade?.actions.some((action) => action.action === "remove" && action.ownership === "known_generated")).toBe(true);
-    const retiredDrift = contract.migrations.upgrade?.actions.find((action) => action.id === "legacy-architecture-drift-helper");
-    expect(retiredDrift?.action).toBe("remove");
-    expect(retiredDrift?.ownership).toBe("known_generated");
-    expect(retiredDrift?.paths).toContain("assets/templates/helpers/architecture-drift.sh");
-    const legacyRootHelpers = contract.migrations.upgrade?.actions.find((action) => action.id === "legacy-root-helper-runtime");
-    expect(legacyRootHelpers?.action).toBe("remove");
-    expect(legacyRootHelpers?.ownership).toBe("known_generated");
-    expect(legacyRootHelpers?.cleanupMode).toBe("generated_helper");
-    expect(legacyRootHelpers?.paths).toContain("scripts/architecture-drift.sh");
-    expect(legacyRootHelpers?.paths).toContain("scripts/check-task-workflow.sh");
-    expect(legacyRootHelpers?.paths).toContain("scripts/heartbeat-triage.sh");
+    expect(contract.documentation?.referenceConfigs?.resolverCommand).toBe("forge docs path <doc-id>");
+    expect(contract.agenticDevelopment?.dueDiligence.levels).toContain("P2_DATA_FLOW_TRACE");
   });
 
   test("upstream skill root resolver prefers the canonical env var without retired alias surfaces", () => {
@@ -295,6 +232,8 @@ describe("state inspection and legacy doc migration", () => {
       mkdirSync(join(repo, ".ai", "harness"), { recursive: true });
       mkdirSync(join(repo, ".claude", "hooks"), { recursive: true });
       const staleContract = JSON.parse(readFileSync(join(ROOT, "assets/workflow-contract.v1.json"), "utf-8"));
+      staleContract.version = "1.4.0";
+      staleContract.artifacts.runtimeManifest = ".ai/harness/workflow-contract.json";
       delete staleContract.migrations.upgrade;
       writeFileSync(join(repo, ".ai", "harness", "workflow-contract.json"), JSON.stringify(staleContract, null, 2) + "\n");
       writeFileSync(join(repo, ".ai", "harness", "policy.json"), JSON.stringify({ version: 1 }, null, 2));

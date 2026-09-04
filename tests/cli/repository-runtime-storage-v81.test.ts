@@ -12,7 +12,7 @@ import {
 import { join } from 'path';
 import { callMultiRepositoryTool, createMcpToolContext } from '../../src/cli/mcp/server';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
-import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
+import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { repositoryFixture } from './repository-v81-fixture';
 
 function writeRun(root: string, runId: string, status: string, marker: string): void {
@@ -39,6 +39,46 @@ function writeLocalJob(root: string, jobId: string, status: string, marker: stri
 }
 
 describe('v8.1 repository runtime storage isolation', () => {
+  test('migrates EditSession storage through the same Controller Home binding used by the full runtime migration', () => {
+    const fixture = repositoryFixture();
+    try {
+      const editSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'edit-sessions');
+      mkdirSync(join(editSource, 'EDIT-legacy'), { recursive: true });
+      writeFileSync(join(editSource, 'EDIT-legacy', 'session.json'), '{"schemaVersion":3,"sessionId":"EDIT-legacy"}\n', 'utf-8');
+
+      const binding = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
+      const editTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'edit-sessions');
+      expect(binding.status).toBe('migrated');
+      expect(lstatSync(editSource).isSymbolicLink()).toBe(true);
+      expect(realpathSync(editSource)).toBe(realpathSync(editTarget));
+      expect(readFileSync(join(editTarget, 'EDIT-legacy', 'session.json'), 'utf-8')).toContain('EDIT-legacy');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('backs compatibility check/session/planning/security/transfer paths with Controller Home', () => {
+    const fixture = repositoryFixture();
+    try {
+      for (const name of ['checks', 'session', 'planning', 'security', 'transfers']) {
+        const source = join(fixture.repoA.canonicalRoot, '.ai', 'harness', name);
+        mkdirSync(source, { recursive: true });
+        writeFileSync(join(source, 'marker.txt'), `${name}\n`, 'utf-8');
+      }
+      const storage = ensureRepositoryRuntimeStorage(fixture.repoA, fixture.controllerHome);
+      const controllerRoot = repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId);
+      for (const name of ['checks', 'session', 'planning', 'security', 'transfers']) {
+        const source = join(fixture.repoA.canonicalRoot, '.ai', 'harness', name);
+        const target = join(controllerRoot, name);
+        expect(lstatSync(source).isSymbolicLink()).toBe(true);
+        expect(realpathSync(source)).toBe(realpathSync(target));
+        expect(readFileSync(join(target, 'marker.txt'), 'utf-8')).toContain(name);
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('migrates Browser provider and interaction runtime state out of the repository tree', () => {
     const fixture = repositoryFixture();
     try {

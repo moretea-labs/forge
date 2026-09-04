@@ -14,9 +14,12 @@ if [[ -z "${HOOK_REPO_ROOT:-}" ]]; then
   export HOOK_REPO_ROOT
 fi
 
-if [[ -f "${HOOK_REPO_ROOT:-$(pwd)}/.ai/hooks/lib/workflow-state.sh" ]]; then
+HOOK_BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+if [[ -f "$HOOK_BUNDLE_DIR/lib/workflow-state.sh" ]]; then
+  # Source workflow helpers from the same selected hook bundle. A central hook
+  # must never fall back to a stale repo-local lib and silently change authority.
   # shellcheck source=/dev/null
-  . "${HOOK_REPO_ROOT:-$(pwd)}/.ai/hooks/lib/workflow-state.sh"
+  . "$HOOK_BUNDLE_DIR/lib/workflow-state.sh"
 fi
 
 hook_read_stdin_once() {
@@ -544,6 +547,10 @@ hook_get_run_id() {
 hook_failure_log_file() {
   if declare -F workflow_failure_log_file >/dev/null 2>&1; then
     workflow_failure_log_file
+    return 0
+  fi
+  if [[ -n "${FORGE_HOOK_STATE_ROOT:-}" && "${FORGE_HOOK_STATE_ROOT}" == /* ]]; then
+    printf '%s/failures/latest.jsonl' "${FORGE_HOOK_STATE_ROOT%/}"
     return 0
   fi
   printf '.ai/harness/failures/latest.jsonl'

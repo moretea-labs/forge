@@ -72,6 +72,20 @@ export function mintEngineeringAdmissionEvidence(input: {
     time: text(decisionsInput.time, 'ENGINEERING_DESIGN_TIME_REQUIRED'),
     performance: text(decisionsInput.performance, 'ENGINEERING_DESIGN_PERFORMANCE_REQUIRED'),
     compatibility: text(decisionsInput.compatibility, 'ENGINEERING_DESIGN_COMPATIBILITY_REQUIRED'),
+    semanticScopeIdentity: text(decisionsInput.semantic_scope_identity, 'ENGINEERING_DESIGN_SEMANTIC_SCOPE_IDENTITY_REQUIRED'),
+    authorizationTrust: text(decisionsInput.authorization_trust, 'ENGINEERING_DESIGN_AUTHORIZATION_TRUST_REQUIRED'),
+    resourceFencing: text(decisionsInput.resource_fencing, 'ENGINEERING_DESIGN_RESOURCE_FENCING_REQUIRED'),
+    deploymentTopology: text(decisionsInput.deployment_topology, 'ENGINEERING_DESIGN_DEPLOYMENT_TOPOLOGY_REQUIRED'),
+    schemaEvolutionDurability: text(decisionsInput.schema_evolution_durability, 'ENGINEERING_DESIGN_SCHEMA_EVOLUTION_DURABILITY_REQUIRED'),
+    idempotencyReplay: text(decisionsInput.idempotency_replay, 'ENGINEERING_DESIGN_IDEMPOTENCY_REPLAY_REQUIRED'),
+    retentionGc: text(decisionsInput.retention_gc, 'ENGINEERING_DESIGN_RETENTION_GC_REQUIRED'),
+    observabilityEvidence: text(decisionsInput.observability_evidence, 'ENGINEERING_DESIGN_OBSERVABILITY_EVIDENCE_REQUIRED'),
+    recoveryFailureDomain: text(decisionsInput.recovery_failure_domain, 'ENGINEERING_DESIGN_RECOVERY_FAILURE_DOMAIN_REQUIRED'),
+    capacityBackpressure: text(decisionsInput.capacity_backpressure, 'ENGINEERING_DESIGN_CAPACITY_BACKPRESSURE_REQUIRED'),
+    releaseUpgradeRollback: text(decisionsInput.release_upgrade_rollback, 'ENGINEERING_DESIGN_RELEASE_UPGRADE_ROLLBACK_REQUIRED'),
+    securityPrivacy: text(decisionsInput.security_privacy, 'ENGINEERING_DESIGN_SECURITY_PRIVACY_REQUIRED'),
+    portability: text(decisionsInput.portability, 'ENGINEERING_DESIGN_PORTABILITY_REQUIRED'),
+    migrationRetirement: text(decisionsInput.migration_retirement, 'ENGINEERING_DESIGN_MIGRATION_RETIREMENT_REQUIRED'),
   };
   const budgetInput = object(design.complexity_budget, 'ENGINEERING_COMPLEXITY_BUDGET_REQUIRED');
   const complexityBudget = {

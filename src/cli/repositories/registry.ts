@@ -1,6 +1,5 @@
 import { spawnSync } from 'child_process';
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -38,7 +37,7 @@ import type {
 
 const REGISTRY_FILE = 'repositories.json';
 const FOCUS_FILE = 'focus.json';
-const LOCAL_CONFIG = '.ai/harness/repository.json';
+const LEGACY_LOCAL_CONFIG = '.ai/harness/repository.json';
 const LEGACY_GITHUB_PLUGIN_CONFIG = '.forge/plugins/github.json';
 
 interface RegisterRepositoryInput {
@@ -218,6 +217,25 @@ function repositoryByGitCommonDirectory(records: RepositoryRecord[], root: strin
   return linkedWorktreeFallback ?? historicalCheckoutFallback;
 }
 
+/**
+ * Resolve an already-registered repository from one concrete checkout root
+ * without mutating Repository Registry state. Exact canonical/active-checkout
+ * matches stay filesystem-only; Git common-directory probing is a bounded
+ * compatibility fallback for linked worktrees that predate checkout tracking.
+ */
+export function findRegisteredRepositoryByCheckoutRoot(
+  root: string,
+  controllerHome?: string,
+): RepositoryRecord | undefined {
+  const candidateRoot = resolve(root);
+  const records = listRepositories(controllerHome).filter((record) => record.enabled !== false && !record.removedAt);
+  const exact = records.find((record) => (
+    comparablePath(record.canonicalRoot) === comparablePath(candidateRoot)
+    || activeCheckouts(record).some((checkout) => comparablePath(checkout.canonicalRoot) === comparablePath(candidateRoot))
+  ));
+  return exact ?? repositoryByGitCommonDirectory(records, candidateRoot);
+}
+
 function managedCheckoutMatchesRepository(record: RepositoryRecord, checkout: RepositoryCheckout): boolean {
   return repositoryCheckoutRootMatches(record, checkout.canonicalRoot);
 }
@@ -354,7 +372,7 @@ function resolveGitRoot(inputPath: string): string {
 }
 
 function readLocalIdentity(canonicalRoot: string): { repoId?: string } {
-  const path = join(canonicalRoot, LOCAL_CONFIG);
+  const path = join(canonicalRoot, LEGACY_LOCAL_CONFIG);
   if (!existsSync(path)) return {};
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { repoId?: unknown };
@@ -393,28 +411,6 @@ function readLegacyGitHubPluginConfig(canonicalRoot: string): Partial<Repository
   } catch (_error) {
     return undefined;
   }
-}
-
-function ensureHarnessRuntimeIgnored(canonicalRoot: string): void {
-  const gitExclude = git(canonicalRoot, ['rev-parse', '--git-path', 'info/exclude']);
-  if (!gitExclude) return;
-  const path = resolve(canonicalRoot, gitExclude);
-  const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
-  if (existing.split(/\r?\n/).some((line) => line.trim() === '.ai/harness/')) return;
-  mkdirSync(dirname(path), { recursive: true });
-  const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-  appendFileSync(path, `${prefix}# forge runtime metadata (controller-owned, never source)\n.ai/harness/\n`, 'utf-8');
-}
-
-function writeLocalIdentity(record: RepositoryRecord): void {
-  ensureHarnessRuntimeIgnored(record.canonicalRoot);
-  const path = join(record.canonicalRoot, LOCAL_CONFIG);
-  atomicJson(path, {
-    schemaVersion: 1,
-    repoId: record.repoId,
-    checkoutId: record.activeCheckoutId,
-    stateStorageStrategy: record.stateStorageStrategy,
-  });
 }
 
 function repositoryType(root: string, remoteUrl: string | undefined): RepositoryType {
@@ -645,13 +641,6 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
     registry.repositories[index] = next;
     saveRepositoryRegistry(registry, home);
     ensureRepositoryControllerLayout(home, next.repoId);
-    ensureHarnessRuntimeIgnored(canonicalRoot);
-    atomicJson(join(canonicalRoot, LOCAL_CONFIG), {
-      schemaVersion: 1,
-      repoId: next.repoId,
-      checkoutId,
-      stateStorageStrategy: next.stateStorageStrategy,
-    });
     return selectRepositoryCheckout(next, checkoutId);
   }
 
@@ -675,7 +664,7 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
     createdAt: existing?.createdAt ?? timestamp,
     updatedAt: timestamp,
     lastSeenAt: timestamp,
-    configurationPath: join(canonicalRoot, LOCAL_CONFIG),
+    configurationPath: registryPath(home),
     stateStorageStrategy: input.stateStorageStrategy ?? existing?.stateStorageStrategy ?? 'hybrid',
     disabledAt: enabled ? undefined : existing?.disabledAt,
     removedAt: enabled ? undefined : existing?.removedAt,
@@ -687,7 +676,6 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   ];
   saveRepositoryRegistry(registry, home);
   ensureRepositoryControllerLayout(home, repoId);
-  writeLocalIdentity(record);
   return record;
 }
 
@@ -771,13 +759,6 @@ export function addRepositoryCheckout(input: AddRepositoryCheckoutInput): Reposi
   };
   registry.repositories[index] = next;
   saveRepositoryRegistry(registry, home);
-  ensureHarnessRuntimeIgnored(canonicalRoot);
-  atomicJson(join(canonicalRoot, LOCAL_CONFIG), {
-    schemaVersion: 1,
-    repoId: next.repoId,
-    checkoutId,
-    stateStorageStrategy: next.stateStorageStrategy,
-  });
   return next;
 }
 
@@ -868,7 +849,6 @@ export function updateRepository(repoId: string, patch: UpdateRepositoryInput, c
   };
   registry.repositories[index] = next;
   saveRepositoryRegistry(registry, controllerHome);
-  writeLocalIdentity(next);
   return next;
 }
 
@@ -993,13 +973,12 @@ export function refreshRepository(repoId: string, controllerHome?: string): Repo
     repositoryType: repositoryType(canonicalRoot, rawRemote),
     updatedAt: timestamp,
     lastSeenAt: timestamp,
-    configurationPath: join(canonicalRoot, LOCAL_CONFIG),
+    configurationPath: registryPath(home),
   };
   registry.repositories[index] = refreshed;
   registry.repositories = retireCanonicalDuplicates(registry.repositories, canonicalRoot, repoId, timestamp);
   saveRepositoryRegistry(registry, home);
   ensureRepositoryControllerLayout(home, repoId);
-  writeLocalIdentity(refreshed);
   return refreshed;
 }
 

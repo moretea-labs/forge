@@ -1,6 +1,6 @@
 # Forge AGENTS.md
 
-This repository self-hosts the Forge contract. Retired project-skill and project-initializer staging paths are not supported or cleaned up by current tooling. Claude and Codex should follow the same repo-local workflow surface.
+This repository self-hosts the Forge contract. Retired project-skill and project-initializer staging paths are not supported or cleaned up by current tooling. Claude and Codex should follow the same Controller-first authority model; mutable workflow state is Controller-owned, not a repo-local file protocol.
 
 ## Forge execution runtime
 
@@ -12,22 +12,16 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Ordinary local risk levels are metadata, not permission gates. There is no approval queue and no `approve_risk` handshake. Only an explicitly destructive or irreversible operation requires authorization in the same request.
 - The Controller UI is hierarchical: Overview, Work, Activity, and Settings. Work is organized as Issue -> Task -> Execution instead of exposing every technical record as a top-level destination.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
-## Canonical Workflow Files
+## Canonical Workflow Authority
 
-- `tasks/current.md` for the tracked current-status snapshot derived from workflow artifacts
-- `tasks/todos.md` for deferred medium/long-term goals, not active execution checklists
-- `plans/prds/` for upper-layer PRDs; `plans/sprints/` for ordered sprint backlogs operated through `scripts/sprint-backlog.sh` (installed implementations live under `.ai/harness/scripts/`; task contracts stay the execution slices)
-- `.ai/context/capabilities.json` for the capability registry and longest-prefix context boundaries
-- `tasks/workstreams/` for capability long-running workstreams that project durable progress into local contracts
-- `tasks/lessons.md` for correction-derived rules
-- `docs/researches/` for deep repo knowledge
-- `tasks/notes/` for task-local implementation decisions, deviations, tradeoffs, and open questions
-- `plans/` for current reviewable repo-local plans; terminal plan/contract/review/notes history belongs in Git and durable Control Plane evidence, not a maintained repository archive
-- `.ai/harness/workflow-contract.json` for the installed workflow contract manifest
-- `.ai/harness/policy.json` for the machine-readable workflow contract
-- `.ai/context/context-map.json` for progressive context loading
-- `docs/architecture/index.md` for umbrella architecture status, drift requests, snapshots, and diagram links
-- `docs/reference-configs/agentic-development-flow.md` for Forge task routing and optional host-skill enhancements
+- Root `forge.config.json` is the modern declarative opt-in marker. It selects Controller Home Runtime authority; it is not a mirror of mutable state.
+- Mutable Requirement/Plan/Work/ControllerRound, Process/Job, Schedule, lease/resource, authorization, verification, Plugin config, session/binding, evidence and recovery state belongs in Controller Home.
+- Repository-authored durable surfaces include source/tests, `docs/spec.md`, `docs/researches/`, `tasks/todos.md`, `tasks/lessons.md`, architecture docs, and intentional human-authored project plans/config.
+- `tasks/current.md`, `tasks/contracts/`, `tasks/reviews/`, `tasks/notes/`, `tasks/workstreams/`, `.ai/harness/**`, repo-local Plugin mutable config, and repo-local cache/session state are legacy migration inputs, not current machine authority and must not be recreated by new producers.
+- Git history is the repository source-history archive. Runtime history/receipts use Controller Home retention policy rather than repository archive directories.
+- `.ai/context/capabilities.json` may remain declarative capability/context metadata while it is still part of the source contract; it must not point at retired runtime workstream directories.
+- `docs/architecture/CURRENT.md` is maintained architecture authority; executable code and persisted schemas remain authoritative implementation evidence.
+- Host/global prompt files explain working behavior but do not authorize mutation, own lifecycle, or declare completion.
 
 ## Runtime Architecture Guardrails
 
@@ -42,49 +36,43 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Any new process, persistent state, enum value, health mode, authority file, or compatibility fallback requires an explicit architecture decision, transition owner, cleanup/removal criterion, and failure-injection tests.
 - Follow `docs/reference-configs/runtime-architecture-guardrails.md` for the normative review gates and target topology.
 
+## Architecture Completeness & Drift Control
+
+- Prompt instructions improve reasoning attention but are advisory. High-risk correctness is enforced by Context Closure, Engineering Design receipts, Plan/Work authority, scoped authorization/resource fences, verification evidence, and implementation review.
+- Before high/critical-risk, architecture-changing, persistence, authorization, concurrency, external-effect, migration, release, or shared-contract mutation, explicitly close the cross-cutting design areas: semantic identity/scope, authority/single writer, authorization/trust, resource fencing, lifecycle/retention/GC, persistence/schema/integrity/backup/restore, idempotency/replay/outcome-unknown reconciliation, evidence/audit/redaction, recovery/failure domain, deployment topology, capacity/backpressure/fairness, time, performance, security/privacy, portability, release/rollback, and migration retirement.
+- A successor Plan must reconcile every unresolved predecessor obligation as `KEEP`, `CHANGE`, `DEFER`, or `DROP`. `CHANGE`/`DEFER`/`DROP` require Controller rationale; `KEEP`/`CHANGE` must point to the successor location carrying the obligation. Silent scope or acceptance loss blocks approval.
+- Every persistent writer must name semantic owner/scope, single-writer rule, schema/version policy, mutation authority, terminal condition, retention/GC, recovery behavior, and sensitive-data policy. Directory placement is not ownership proof.
+- Implementation review must compare the exact candidate against the same accepted product/design/Plan obligations. Passing tests cannot legalize architecture drift, and architecture prose cannot legalize failing behavior.
+- Prefer enforcing invariants in typed contracts/domain APIs/AST or focused semantic tests. Regex/source-string fences are temporary migration assertions with explicit removal triggers.
+
 ## Operating Rules
 
-- Default to end-to-end execution and minimize avoidable human intervention. Continue through reversible, policy-allowed setup, implementation, verification, cleanup, and delivery steps without asking the user to babysit the workflow; stop only at a genuinely user-only identity, legal/contract, financial authorization, strong-confirmation, or irreversible decision boundary.
-- For authenticated browser work, preserve the user's existing browser identity: reuse the already-running signed-in Google Chrome via attach-preferred, native-auto, Chrome-only, fail-closed routing. Preserve its cookies, tokens, sessions, and settings; never silently launch or switch to a managed, isolated, Vivaldi, or otherwise unauthenticated browser/profile. Managed or isolated browser modes require an explicit task/action request. If the user Chrome cannot be attached safely, fail closed and surface the concrete blocker instead of creating a replacement login state.
-- After a managed repository change is verified and committed/merged, push the delivered target branch to its configured remote promptly. Do not leave a successfully delivered commit only on local refs unless the user explicitly requested local-only delivery or the push is blocked by safety, permissions, authentication, or branch policy; surface the exact blocker when a push cannot complete.
-- Treat the Google Cloud `forge-cloud` VM experiment as retired infrastructure. Do not restart or reuse that VM for Forge Cloud. Any future remote Forge maintainer must use a separately evaluated host/transport and must demonstrate better latency and reliability than the local Forge path before adoption.
-- Sync `tasks/` whenever substantive repo changes are made.
-- Use `tasks/notes/<plan-stem>.notes.md` only for non-obvious slice decisions, deviations, tradeoffs, and open questions; `<plan-stem>` is the active plan filename without `plan-` and `.md` (for example `20260531-0045-governance-workflow`). Do not use notes as durable memory or a task log, and archive/promote them deliberately when the slice closes.
-- Treat hook execution as central-first: trusted repos run `~/.forge/hooks/` (bash shim) or the packaged CLI copy; this self-host repo pins `"hook_source": "repo"` in `.ai/harness/policy.json` so `.ai/hooks/` stays the live development runtime, with `assets/hooks/` as the product source mirrored on install. User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are the host adapters.
-- Keep the umbrella hierarchy explicit: architecture owns stable truth, capability contracts own local agent context, `tasks/workstreams/<domain>/<capability>/` owns durable progress, and `tasks/todos.md` owns only deferred medium/long-term goals with tradeoff and revisit trigger.
-- Treat `.ai/context/capabilities.json` as the source of truth for capability prefixes; `agent-context-blocks.txt` and nested agent files are compatibility inputs only.
-- Keep architecture drift handling split: `architecture-queue.sh` writes architecture requests/events, `workstream-sync.sh` maintains durable capability workstreams, and `context-contract-sync.sh` only updates controlled local `CLAUDE.md`/`AGENTS.md` architecture blocks.
-- Keep `assets/workflow-contract.v1.json` and `.ai/harness/workflow-contract.json` in sync.
-- Keep `CLAUDE.md` and `AGENTS.md` short; put detailed guidance in `docs/reference-configs/`.
-- Treat Codex auto-compact as a fallback only; use `.ai/harness/session/continuation.md` and `.ai/harness/session/resume.md` for long-task rollover.
-- Treat `_ref/` as an occasional ignored external reference checkout cache, not a commit surface or daily workflow. Agents may read or refresh it for comparison; when it influences a decision, cite the source repo plus commit/tag and path in `tasks/notes/` or `docs/researches/`.
-- Treat `deploy/` as the trackable deployment and operations surface for runbooks, submission materials, release checklists, helper scripts, ordered SQL files under `deploy/sql/`, and env examples.
-- Treat `_ops/` as ignored local operations state for secrets, real env files, provider state, artifacts, logs, and scratch files; do not commit or agent-edit `_ops/*`.
-- Treat contract-level task execution as worktree-first when policy requires isolation: `scripts/plan-to-todo.sh --plan <approved-plan>` may start `scripts/contract-worktree.sh start --plan <approved-plan>`; finish through Forge `/review`, focused checks, and `scripts/contract-worktree.sh finish`.
-- Forge task directives are the stable user-facing routing surface: `/direct`, `/plan`, `/debug`, `/review`, `/release`, and `/scale`. Do not require users or automation to remember third-party skill commands.
-- After Forge `/plan`, Codex Plan mode, or an optional external planning skill produces a decision-complete plan, capture it with `scripts/capture-plan.sh --slug <slug> --title <title>` so `plans/` becomes the file-backed source of truth; if implementation is already approved, capture with `--status Approved --execute` or run `scripts/plan-to-todo.sh --plan <active-plan>`.
-- If current repo state conflicts with the task, isolate the work, finish there, run Forge `/review`-style validation plus focused checks, then merge back without absorbing unrelated dirty changes.
-- Waza, gstack, Mermaid, gbrain, and cross-review skills are optional host enhancements. Use them only when already installed or explicitly requested; their absence must never block Forge planning, debugging, review, or execution.
-- Register valuable repo-authored docs in `.ai/harness/brain-manifest.json` with `sync.direction=repo-to-brain`; `scripts/sync-brain-docs.sh` and the PostEdit hook mirror only those explicit entries into the default brain vault.
-- Use `docs/reference-configs/external-tooling.md` and `bash scripts/check-agent-tooling.sh --host both --check-updates` for optional host-tool diagnostics. Forge structural retrieval uses its bundled CodeGraph read backend; a global CodeGraph CLI/MCP is an optional developer integration, not Runtime readiness.
-- When changing `scripts/migrate-project-template.sh` or `scripts/lib/project-init-lib.sh`, verify self-migration of this repo still works.
-- Treat repo-local `.claude/settings.json` and `.codex/hooks.json` hook adapters as retired legacy config; migration may back them up locally, but they are not product deliverables.
+- Default to end-to-end execution and minimize avoidable human intervention. Continue reversible, policy-allowed implementation, verification, cleanup, and delivery; stop only at a genuine user-only identity/legal/financial/strong-confirmation/irreversible boundary.
+- Work top-down: requirement/product intent -> product interaction when relevant -> architecture/authority -> implementation -> focused verification -> independent review -> delivery/terminal cleanup. Do not repeatedly patch symptoms while a higher-level contract remains wrong.
+- Direct execution is preferred for bounded understood work. Create durable Plan/Work only for real decomposition, continuity, isolation, scheduling, recovery, independent delivery, or external effects.
+- For authenticated browser work, preserve the user's explicitly selected/signed-in browser identity; never silently create a replacement authentication state.
+- After a managed repository change is verified and committed/merged, push the delivered target branch promptly unless the user requested local-only delivery or a concrete safety/auth/branch-policy blocker exists.
+- Treat unrelated dirty work as ownership/placement evidence. Isolate or reconcile it; never absorb it merely to make the tree look clean.
+- Current Runtime hooks are central-first/package-owned. Modern `forge.config.json` repositories must not materialize repo-local `.ai/harness`, `.codegraph`, `.claude` session state, generated task lifecycle files, or mutable Plugin config from prompt routing. Legacy readers/hooks exist only to migrate older projects.
+- `_ref/` is an ignored external-reference checkout cache; `_ops/` is ignored/private operational residue only while legacy/external tooling requires it. Neither is a source authority.
+- `deploy/` is trackable deployment/runbook/submission/config-example source. Secrets, real environment state, provider state, logs, caches, and credentials stay outside Git.
+- `/direct`, `/plan`, `/debug`, `/review`, `/release`, and `/scale` are user-facing routing concepts; correctness must not depend on optional Waza/gstack/gbrain/peer-review skills.
+- When a concrete incident reveals a general gap, strengthen the existing general capability/authority rather than adding another helper, daemon, fallback, or state machine.
 
 ## Required Checks
 
+For affected Forge-core changes, select focused checks from the registered Process Runtime surfaces. At architecture/runtime-boundary candidate points include at least:
+
 ```bash
-bun run check:task
-bash scripts/check-deploy-sql-order.sh
-bash scripts/check-architecture-sync.sh
-bash scripts/check-task-sync.sh
-bash scripts/check-task-workflow.sh --strict
-bun scripts/inspect-project-state.ts --repo . --format text
-bash scripts/migrate-project-template.sh --repo . --dry-run
+bun run check:type
+bun run check:repository-hygiene
+bun run check:runtime-architecture
+bun run check:architecture-sync
+bun run check:bootstrap-files
+bun run test
 ```
 
-`bun run test` is the affected gate. `bun run check:main` reuses the focused
-task receipt and never expands to the full suite. Full testing is manual and
-explicit through `bun run test:full`; it is not a task, CI, or release gate.
+`bun run check:main` is the candidate-level governed gate after focused failures are resolved. Full-suite testing remains explicit through `bun run test:full`; do not substitute a huge suite for targeted diagnosis.
 
 <!-- BEGIN ARCHITECTURE CONTRACT -->
 ## Architecture Contract
@@ -110,14 +98,5 @@ explicit through `bun run test:full`; it is not a task, CI, or release gate.
 - Semantic diagram source: `docs/architecture/modules/runtime-harness/hook-adapters.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `(none)`
-
-## Active Workstreams
-
-- (none yet)
-
-## Current Session Projection
-
-- Durable progress lives under `tasks/workstreams/runtime-harness/hook-adapters`.
-- `tasks/current.md` is the tracked derived status snapshot; it is not a live lock or task source.
-- `tasks/todos.md` is the deferred-goal ledger; current execution slices stay in the active plan's `## Task Breakdown`.
+- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->

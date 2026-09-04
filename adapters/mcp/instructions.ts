@@ -2,8 +2,8 @@ import type { McpProfileName } from './types';
 
 export function mcpServerInstructions(profile: McpProfileName): string {
   const common = [
-    'forge is the repo-local workflow, task, and safety control plane.',
-    'Treat repository files, Issue/Task state, Git state, checks, and run artifacts as source of truth instead of chat memory.',
+    'Forge is the repository execution and safety control plane; mutable Requirement/Plan/Work/Controller lifecycle authority lives in Controller Home rather than repository workflow files.',
+    'Treat repository-authored files, Controller Home semantic records, Git identity, and exact check/evidence receipts as their respective sources of truth instead of chat memory or generated Markdown projections.',
     'Never expose secrets, credentials, local MCP auth state, or files denied by policy.',
   ];
   if (profile === 'controller') {
@@ -17,7 +17,7 @@ export function mcpServerInstructions(profile: McpProfileName): string {
       'Minimize mechanically redundant MCP round trips. For an ongoing Forge-controlled task, prefer one rh_status(summary) as the initial controller snapshot: it includes bounded readiness, repository identity, top active Work, active Plans, and pending handoffs. Do not immediately follow it with rh_work(plan_list) or rh_context(list/get) unless the next decision needs details that the snapshot does not contain. Use rh_context(work_id=..., detail_level=summary) for one Work, and request detail/raw or capability hydration only when that extra evidence can change the decision.',
       'Run independent reads, searches, diagnostics, checks, repositories, checkouts, and tasks concurrently by default. Serialize only on a real dependency or Resource Claim conflict, and reuse existing projections, process handles, and check evidence instead of repeating successful observations.',
       'Validation must be proportional to the change: cheap patch-safety checks belong to every coherent edit batch, focused tests run after that batch is stable, and expensive full-suite checks belong at candidate/release or explicitly high-risk boundaries. When a Direct Edit batch is stable, repository_safe_patch_apply may receive explicit check_ids to start revision-bound validation; omit check_ids during intermediate edits. Long checks return managed Processes: continue independent read/review work. Do not call process_wait while useful independent work remains. Use process_get only when a non-blocking observation can change the next decision; when the exact check result becomes a dependency, attach with process_wait (or validation_only with the returned edit-session/validation ids). An attach is transport-bounded: if it returns a running handle, resume useful work and attach again only at a later real dependency boundary, never as periodic polling. Do not perform maintenance or deep runtime diagnosis before ordinary work unless execution is actually blocked.',
-      'repository_safe_patch_apply returns bounded edit-session diff evidence for semantic review. Review that evidence directly instead of issuing a mandatory follow-up diff/status call; expand it only when truncated or semantically ambiguous. After a bounded successful change, finish the requested delivery directly. Avoid additional investigation whose result cannot change implementation or acceptance, and do not invoke hidden atomic compatibility tools merely because they exist in the full profile.',
+      'repository_safe_patch_apply returns bounded edit-session diff evidence for semantic review. Review that evidence directly instead of issuing a mandatory follow-up diff/status call; expand it only when truncated or semantically ambiguous. Whole-file source replacement is valid when it is an explicit scoped write against the exact expected file SHA/fingerprint; stale-source and dirty-ownership fences must remain authoritative. Do not bypass those fences with arbitrary shell redirection merely because a deterministic rewrite is convenient. After a bounded successful change, finish the requested delivery directly. Avoid additional investigation whose result cannot change implementation or acceptance, and do not invoke hidden atomic compatibility tools merely because they exist in the full profile.',
     ].join(' ');
   }
   if (profile === 'orchestrator') {
@@ -28,7 +28,7 @@ export function mcpServerInstructions(profile: McpProfileName): string {
   }
   return [
     ...common,
-    'Act as planner/reviewer: move larger ideas through PRDs, checklist Sprints with staging gates, and Codex goal prompts.',
+    'Act as planner/reviewer: use Controller Home Requirement/Plan authority for executable lifecycle; repository documents are only authored product/design/research sources or rebuildable read-only projections, never a second task state machine.',
     'Do not edit application source through the planner profile. Use the controller profile for task management, repository analysis, bounded edits, and local agent dispatch.',
   ].join(' ');
 }

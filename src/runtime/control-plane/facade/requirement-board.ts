@@ -1,5 +1,6 @@
 import {
   REQUIREMENT_STATES,
+  isLegacyMachineRequirementWait,
   listRequirements,
   type Requirement,
   type RequirementState,
@@ -54,6 +55,10 @@ function boundedText(value: unknown, maxLength: number): string {
 function explicitUserDecision(requirement: Requirement): string | undefined {
   if (requirement.state !== 'waiting_for_user') return undefined;
   const decision = boundedText(requirement.attentionSummary, 1_000);
+  // Compatibility repair: older V2 Work completion projected a machine receipt
+  // as if the whole Requirement needed user acceptance. That message is not a
+  // user decision authority and must not hide still-active Plan slices.
+  if (isLegacyMachineRequirementWait(requirement)) return undefined;
   return decision || undefined;
 }
 

@@ -9,9 +9,10 @@ forge_use_local_controller_home "$ROOT"
 
 REPO_ROOT="$ROOT"
 LOCAL_CLI="$ROOT/scripts/forge-local.sh"
-CONFIG_FILE_DEFAULT="$ROOT/_ops/secrets/controller-ngrok-rotation.env"
-STATE_DIR_DEFAULT="$ROOT/_ops/state"
-LOG_DIR_DEFAULT="$ROOT/_ops/logs"
+NGROK_ROTATION_ROOT="$FORGE_CONTROLLER_HOME/system/ngrok-rotation"
+CONFIG_FILE_DEFAULT="$NGROK_ROTATION_ROOT/secrets/controller-ngrok-rotation.env"
+STATE_DIR_DEFAULT="$NGROK_ROTATION_ROOT/state"
+LOG_DIR_DEFAULT="$NGROK_ROTATION_ROOT/logs"
 
 CONFIG_FILE="${FORGE_NGROK_ROTATION_CONFIG:-$CONFIG_FILE_DEFAULT}"
 STATE_DIR="${FORGE_NGROK_ROTATION_STATE_DIR:-$STATE_DIR_DEFAULT}"
@@ -40,7 +41,7 @@ Usage: scripts/controller-ngrok-rotation.sh <start|stop|status|logs|run> [option
 
 Options:
   --repo <path>     Repository root (default: repo root containing this script)
-  --config <path>   Rotation config file (default: _ops/secrets/controller-ngrok-rotation.env)
+  --config <path>   Rotation config file (default: Controller Home system/ngrok-rotation/secrets/controller-ngrok-rotation.env)
   --tail <lines>    Approximate number of log lines for `logs` (default: 200)
 EOF
 }

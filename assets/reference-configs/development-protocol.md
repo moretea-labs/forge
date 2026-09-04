@@ -1,21 +1,17 @@
 # Development Protocol Reference
 
-> Partially externalized: full pattern lives in default brain.
+## Authority model
 
-## Default Brain
+Forge is Controller-first. Repository files hold authored product/architecture/source/test/declarative content; mutable execution lifecycle state belongs to Controller Home. Optional host skills and prompts may improve reasoning but cannot authorize mutation or declare completion.
 
-- File vault: `brain/forge/patterns/pattern-agentic-development-protocol.md`
-- gbrain slug: `patterns/pattern-agentic-development-protocol`
+## Default flow
 
-## Repo Role
+1. Read the requirement and current source/context evidence.
+2. Establish product/architecture direction before low-level patching.
+3. For high-risk/cross-cutting work, satisfy the Engineering Design completeness contract.
+4. Use direct execution for bounded work; use durable Plan/Work only for real continuity/decomposition/recovery/external-effect needs.
+5. Implement one coherent slice, then run focused checks and exact implementation review.
+6. Reconcile blockers and terminal cleanup before delivery.
+7. If replanning, account for every unresolved predecessor obligation explicitly; never silently lose scope.
 
-The executable source of truth is still repo-local:
-
-- Active execution: `plans/plan-*.md` `## Task Breakdown` plus `tasks/contracts/`
-- Deferred goals: `tasks/todos.md`
-- Plans: `plans/`
-- Contracts: `tasks/contracts/`
-- Reviews: `tasks/reviews/`
-- Hook ownership and parity: `docs/reference-configs/hook-operations.md`
-
-Use the external pattern for broader feature, bug, and response-shaping guidance.
+Human durable repo surfaces include `docs/spec.md`, `docs/researches/`, `tasks/todos.md`, and `tasks/lessons.md`. Legacy task-contract/review/current/workstream files are migration evidence, not the modern workflow source of truth.

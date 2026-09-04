@@ -48,7 +48,7 @@ describe("Bootstrap Script Contracts", () => {
     expect(metadata).toContain("default_prompt:");
   });
 
-  test("repo root should include routing docs and use the central hook implementation", () => {
+  test("repo root should describe Controller Home authority and keep hook implementation central", () => {
     expect(existsSync(join(ROOT, "CLAUDE.md"))).toBe(true);
     expect(existsSync(join(ROOT, "AGENTS.md"))).toBe(true);
     expect(existsSync(join(ROOT, ".claude/settings.json"))).toBe(false);
@@ -59,14 +59,15 @@ describe("Bootstrap Script Contracts", () => {
     const claude = read("CLAUDE.md");
     const agents = read("AGENTS.md");
 
-    expect(claude).toContain("tasks/todos.md");
-    expect(claude).toContain(".ai/hooks/");
-    expect(claude).toContain("agentic-development-flow.md");
-    expect(claude).toContain("external-tooling.md");
-    expect(claude).toContain("gstack");
-    expect(agents).toContain("tasks/todos.md");
-    expect(agents).toContain("check-task-workflow.sh --strict");
-    expect(agents).toContain("check-agent-tooling.sh --host both --check-updates");
+    for (const content of [claude, agents]) {
+      expect(content).toContain("Controller Home");
+      expect(content).toContain("tasks/todos.md");
+      expect(content).toContain("legacy migration inputs");
+      expect(content).not.toContain("Durable progress lives under");
+      expect(content).not.toContain("tracked derived status snapshot");
+    }
+    expect(agents).toContain("bun run check:bootstrap-files");
+    expect(agents).toContain("bun run check:repository-hygiene");
   });
 
   test("portable test runner keeps the ordinary lane bounded", () => {
@@ -145,7 +146,7 @@ describe("Bootstrap Script Contracts", () => {
     expect(pkg.scripts["smoke:tarball-install"]).toBe("bash scripts/check-tarball-install-smoke.sh");
   });
 
-  test("create-project-dirs should create tasks primary files", () => {
+  test("create-project-dirs should scaffold only the v1.5 repository-authored workflow surface", () => {
     const content = read("scripts/create-project-dirs.sh");
     const sharedLib = read("scripts/lib/project-init-lib.sh");
     const contract = JSON.parse(read("assets/workflow-contract.v1.json"));
@@ -154,140 +155,55 @@ describe("Bootstrap Script Contracts", () => {
     expect(content).toContain("cat > tasks/todos.md");
     expect(content).toContain("cat > tasks/lessons.md");
     expect(content).toContain("cat > docs/researches/README.md");
-    expect(content).not.toContain("docs/TODO.md");
-    expect(sharedLib).toContain("new-plan.sh");
-    expect(sharedLib).toContain("capture-plan.sh");
-    expect(sharedLib).toContain("plan-to-todo.sh");
-    expect(sharedLib).toContain("contract-worktree.sh");
-    expect(sharedLib).toContain("archive-workflow.sh");
-    expect(sharedLib).toContain("verify-contract.sh");
-    expect(sharedLib).toContain("summarize-failures.sh");
-    expect(sharedLib).toContain("check:context-files");
-    expect(sharedLib).toContain("check:deploy-sql");
-    expect(sharedLib).toContain("check:brain-manifest");
-    expect(sharedLib).toContain("sync:brain-docs");
-    expect(sharedLib).toContain("spawn_decision");
-    expect(sharedLib).toContain("fallback_runner");
-    expect(sharedLib).toContain("if spawning is not worthwhile");
-    expect(sharedLib).toContain("pi_print_external_tooling_report");
-    expect(sharedLib).toContain("check-task-sync.sh");
-    expect(content).toContain("mkdir -p .ai/context");
-    expect(content).toContain(".ai/harness/policy.json");
-    expect(content).toContain(".ai/context/context-map.json");
-    expect(contract.helpers.scripts).toContain("capture-plan.sh");
-    expect(contract.helpers.scripts).toContain("refresh-current-status.sh");
-    expect(contract.helpers.scripts).not.toContain("context-budget.ts");
-    expect(contract.helpers.scripts).toContain("architecture-queue.sh");
-    expect(contract.helpers.scripts).toContain("context-contract-sync.sh");
-    expect(contract.helpers.scripts).toContain("workstream-sync.sh");
-    expect(contract.helpers.scripts).toContain("contract-worktree.sh");
-    expect(contract.helpers.scripts).toContain("contract-run.ts");
-    expect(contract.helpers.scripts).toContain("ship-worktrees.sh");
-    expect(contract.externalTooling.codexAutomationProfile.requiredSkills).toEqual(["health", "check", "mermaid"]);
-    expect(contract.externalTooling.codexAutomationProfile.vendoringPolicy).toBe("do-not-vendor-skill-body");
-    expect(contract.externalTooling.diagramDesign.vendoringPolicy).toBe("do-not-vendor");
-    expect(contract.documentation.referenceConfigs.source).toBe("user-level-runtime-docs");
-    expect(contract.documentation.referenceConfigs.repoStubDirectory).toBe("docs/reference-configs");
-    expect(contract.documentation.referenceConfigs.packageDirectory).toBe("assets/reference-configs");
-    expect(contract.documentation.referenceConfigs.resolverCommand).toBe("forge docs path <doc-id>");
-    expect(contract.documentation.referenceConfigs.stubMarker).toBe("<!-- forge: reference-config-stub v1 -->");
-    expect(contract.helpers.scripts).toContain("prepare-codex-handoff.sh");
-    expect(contract.helpers.scripts).toContain("codex-handoff-resume.sh");
-    expect(contract.helpers.scripts).toContain("check-agent-tooling.sh");
-    expect(contract.helpers.scripts).toContain("check-architecture-sync.sh");
-    expect(contract.helpers.scripts).toContain("check-brain-manifest.sh");
-    expect(contract.helpers.scripts).toContain("sync-brain-docs.sh");
-    expect(contract.helpers.scripts).toContain("check-deploy-sql-order.sh");
-    expect(contract.helpers.scripts).toContain("check-context-files.sh");
-    expect(contract.helpers.scripts).toContain("select-agent-context-blocks.sh");
-    expect(contract.helpers.scripts).toContain("architecture-event.ts");
-    expect(contract.helpers.scripts).toContain("capability-config.ts");
-    expect(sharedLib).toContain("ensure-task-workflow.sh");
-    expect(sharedLib).toContain("check-task-workflow.sh");
-    expect(sharedLib).not.toContain("skill-factory-create.sh");
-    expect(sharedLib).not.toContain("skill-factory-check.sh");
-    expect(sharedLib).toContain("pi_install_workflow_contract");
-    expect(sharedLib).toContain("check:task-sync");
-    expect(sharedLib).toContain("check:architecture-sync");
-    expect(sharedLib).toContain("check:task-workflow");
-    expect(sharedLib).toContain("contract.template.md");
-    expect(sharedLib).toContain("implementation-notes.template.md");
-    expect(content).toContain("pi_install_reference_configs");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/document-generation.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
-    expect(contract.artifacts.requiredFiles).toContain(".claude/templates/implementation-notes.template.md");
+    expect(content).toContain("cat > docs/spec.md");
     expect(content).toContain("install_workflow_contract");
-    expect(content).toContain("pi_install_hook_assets");
-    expect(content).toContain('pi_install_hook_adapters "$PWD" "$ASSETS_HOOKS_DIR" "apply"');
-    expect(content).toContain("pi_print_codex_hook_trust_notice");
-    expect(sharedLib).toContain('local hooks_dir="$target_dir/.ai/hooks"');
-    expect(content).not.toContain("mkdir -p .codex");
-    expect(sharedLib).toContain("pi_retire_project_hook_adapter");
-    expect(sharedLib).toContain(".claude/settings.json");
-    expect(sharedLib).toContain(".codex/hooks.json");
-    expect(contract.helpers.scripts).toContain("switch-plan.sh");
-    expect(contract.helpers.scripts).toContain("capability-resolver.ts");
-    expect(contract.helpers.scripts).toContain("architecture-event.ts");
-    expect(contract.helpers.scripts).toContain("capability-config.ts");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/contract-worktree.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/contract-run.ts");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/ship-worktrees.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/capture-plan.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/refresh-current-status.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/sync-brain-docs.sh");
-    expect(contract.artifacts.requiredFiles).toContain("tasks/current.md");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/capability-config.ts");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/harness/workflow-contract.json");
-    expect(contract.artifacts.requiredFiles).not.toContain(".codex/hooks.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/harness/brain-manifest.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/context/capabilities.json");
-    expect(contract.artifacts.requiredFiles).toContain(".ai/context/capability-source-map.json");
-    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/session/resume.md");
-    expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/context-budget/latest.json");
-    expect(read("assets/templates/review.template.md")).toContain("## Semantic Impact Review");
-    expect(sharedLib).toContain("## Semantic Impact Review");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/session/resume.md");
-    expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/context-budget/latest.json");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/capability-context/");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/planning/");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/active-plan");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/active-worktree");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/agentic-development-flow.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/architecture/index.md");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/architecture/events.jsonl");
-    expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/workstreams/events.jsonl");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/external-tooling.md");
-    expect(contract.migrations.upgrade.strategyVersion).toBe(1);
-    expect(contract.migrations.upgrade.safety.removeOnlyOwnership).toBe("known_generated");
-    const retiredDrift = contract.migrations.upgrade.actions.find(
-      (action: { id?: string; paths?: string[] }) => action.id === "legacy-architecture-drift-helper"
-    );
-    expect(retiredDrift?.paths).toContain("assets/templates/helpers/architecture-drift.sh");
-    const legacyRootHelpers = contract.migrations.upgrade.actions.find(
-      (action: { id?: string; cleanupMode?: string; paths?: string[] }) => action.id === "legacy-root-helper-runtime"
-    );
-    expect(legacyRootHelpers?.cleanupMode).toBe("generated_helper");
-    expect(legacyRootHelpers?.paths).toContain("scripts/architecture-drift.sh");
-    expect(legacyRootHelpers?.paths).toContain("scripts/check-task-workflow.sh");
-    expect(legacyRootHelpers?.paths).toContain("scripts/heartbeat-triage.sh");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/notes");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/workstreams");
-    expect(contract.agenticDevelopment.routing.productDiscovery).toBe("gstack:office-hours");
-    expect(sharedLib).not.toContain(".skill-factory-state.json");
-    expect(sharedLib).not.toContain(".memory-context.json");
-    expect(sharedLib).not.toContain(".memory-snapshot.json");
-    expect(content).not.toContain("install_skill_factory_files");
-    expect(content).toContain("create_contract_directories");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/contracts");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/reviews");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/notes");
-    expect(content).toContain("# Deferred Goal Ledger");
-    expect(content).not.toContain("PROJECT_SETTINGS_EOF");
-    expect(content).not.toContain("\"$TOOL_INPUT\"");
-    expect(content).not.toContain("\"$PROMPT\"");
+    expect(content).toContain("pi_install_reference_configs");
+    expect(content).not.toContain("install_workflow_helpers");
+    expect(content).not.toContain("pi_install_templates");
+    expect(content).not.toContain("docs/TODO.md");
+
+    expect(contract.version).toBe("1.5.0");
+    expect(contract.artifacts.runtimeManifest).toBe("forge.config.json");
+    expect(contract.artifacts.requiredDirectories).toEqual([
+      "docs",
+      "docs/reference-configs",
+      "docs/researches",
+      "tasks",
+    ]);
+    expect(contract.artifacts.requiredFiles).toEqual([
+      "forge.config.json",
+      "docs/spec.md",
+      "tasks/todos.md",
+      "tasks/lessons.md",
+    ]);
+    for (const retired of [
+      "tasks/current.md",
+      ".ai/harness/workflow-contract.json",
+      "scripts/capture-plan.sh",
+      "scripts/contract-run.ts",
+    ]) {
+      expect(contract.artifacts.requiredFiles).not.toContain(retired);
+    }
+    for (const retired of ["tasks/contracts", "tasks/reviews", "tasks/notes", "tasks/workstreams", ".ai/harness"]) {
+      expect(contract.artifacts.requiredDirectories).not.toContain(retired);
+    }
+    for (const legacyRuntimePath of [".ai/harness/", ".forge/plugins/", ".forge/browser/", ".codegraph/"]) {
+      expect(contract.artifacts.legacyRuntimePaths).toContain(legacyRuntimePath);
+    }
+    expect(contract.documents.currentStatus).toBeUndefined();
+    expect(contract.documents.implementationNotesDirectory).toBeUndefined();
+
+    expect(sharedLib).toContain("Controller Home");
+    expect(sharedLib).toContain('"check:task": "forge run check-task-workflow --strict"');
+    expect(sharedLib).toContain('rm -rf "$hooks_dir/lib"');
+    expect(sharedLib).not.toContain('cp "$hook_lib" "$hooks_dir/lib/$lib_name"');
+    expect(sharedLib).not.toContain('"path": "tasks/workstreams/**/*.md"');
+    expect(sharedLib).toContain(".codegraph\n.codegraph/");
+    expect(sharedLib).toContain(".forge/browser");
+    expect(sharedLib).toContain(".forge/plugins");
   });
 
-  test("init-project should scaffold tasks primary workflow", () => {
+  test("init-project should use the package runtime without recreating repo-local lifecycle machinery", () => {
     const content = read("scripts/init-project.sh");
     const sharedLib = read("scripts/lib/project-init-lib.sh");
     const contract = JSON.parse(read("assets/workflow-contract.v1.json"));
@@ -296,86 +212,40 @@ describe("Bootstrap Script Contracts", () => {
     expect(content).toContain("cat > tasks/todos.md");
     expect(content).toContain("cat > tasks/lessons.md");
     expect(content).toContain("docs/researches/README.md");
-    expect(content).not.toContain("docs/TODO.md");
-    expect(content).toContain("pi_install_helpers");
-    expect(content).toContain("pi_install_templates");
     expect(content).toContain("install_workflow_contract");
-    expect(sharedLib).toContain("contract.template.md");
-    expect(sharedLib).toContain("implementation-notes.template.md");
-    expect(sharedLib).toContain("verify-contract.sh");
-    expect(sharedLib).toContain("summarize-failures.sh");
-    expect(sharedLib).toContain("check:context-files");
-    expect(sharedLib).toContain("check:deploy-sql");
-    expect(sharedLib).toContain("pi_print_external_tooling_report");
-    expect(sharedLib).toContain("check-task-sync.sh");
-    expect(sharedLib).toContain("ensure-task-workflow.sh");
-    expect(sharedLib).toContain("capture-plan.sh");
-    expect(sharedLib).toContain("check-task-workflow.sh");
-    expect(content).toContain(".ai/context");
-    expect(content).toContain(".ai/harness/policy.json");
-    expect(content).toContain(".ai/context/context-map.json");
-    expect(contract.helpers.scripts).toContain("capture-plan.sh");
-    expect(contract.helpers.scripts).toContain("refresh-current-status.sh");
-    expect(contract.helpers.scripts).not.toContain("context-budget.ts");
-    expect(contract.helpers.scripts).toContain("prepare-codex-handoff.sh");
-    expect(contract.helpers.scripts).toContain("codex-handoff-resume.sh");
-    expect(contract.helpers.scripts).toContain("check-agent-tooling.sh");
-    expect(contract.helpers.scripts).toContain("check-architecture-sync.sh");
-    expect(contract.helpers.scripts).toContain("check-deploy-sql-order.sh");
-    expect(contract.helpers.scripts).toContain("check-context-files.sh");
-    expect(contract.helpers.scripts).toContain("select-agent-context-blocks.sh");
-    expect(contract.helpers.scripts).toContain("architecture-event.ts");
-    expect(contract.helpers.scripts).toContain("capability-config.ts");
-    expect(contract.helpers.scripts).toContain("workstream-sync.sh");
-    expect(contract.helpers.scripts).toContain("contract-worktree.sh");
-    expect(contract.helpers.scripts).toContain("contract-run.ts");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/agentic-development-flow.md");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/capture-plan.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/contract-run.ts");
-    expect(contract.artifacts.requiredFiles).toContain(".claude/templates/implementation-notes.template.md");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/notes");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/workstreams");
-    expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/worktrees");
-    expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/planning");
-    expect(contract.agenticDevelopment.routing.postImplementationReview).toBe("waza:check");
-    expect(contract.externalTooling.codexAutomationProfile.routes.architectureDiagram).toBe("mermaid");
-    expect(content).not.toContain("pi_install_skill_factory");
-    expect(sharedLib).not.toContain("skill-factory-create.sh");
-    expect(sharedLib).not.toContain("skill-factory-check.sh");
-    expect(sharedLib).toContain("pi_workflow_contract_query_lines");
-    expect(sharedLib).toContain("check:task-sync");
-    expect(sharedLib).toContain("check:architecture-sync");
-    expect(sharedLib).toContain("check:task-workflow");
     expect(content).toContain("pi_install_reference_configs");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/document-generation.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
-    expect(content).toContain('pi_install_hook_adapters "$PWD" "$ASSETS_HOOKS_DIR" "apply"');
-    expect(content).toContain("pi_print_codex_hook_trust_notice");
-    expect(content).toContain("pi_install_hook_assets");
-    expect(sharedLib).toContain("pi_retire_project_hook_adapter");
-    expect(sharedLib).toContain("pi_repo_pins_hook_source");
-    expect(sharedLib).toContain("pi_write_hook_runtime_readme");
-    expect(sharedLib).toContain("pi_install_hook_assets");
-    expect(sharedLib).toContain(".claude/settings.json");
-    expect(sharedLib).toContain(".codex/hooks.json");
-    expect(sharedLib).toContain('local hooks_dir="$target_dir/.ai/hooks"');
-    expect(content).not.toContain("mkdir -p .codex");
-    expect(sharedLib).not.toContain(".skill-factory-state.json");
-    expect(sharedLib).not.toContain(".memory-context.json");
-    expect(sharedLib).not.toContain(".memory-snapshot.json");
-    expect(content).toContain("create_contract_directories");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/contracts");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/reviews");
-    expect(contract.artifacts.requiredDirectories).toContain("tasks/notes");
-    expect(content).toContain("# Deferred Goal Ledger");
-    expect(content).not.toContain(".*/");
     expect(content).toContain("ensure_runtime_gitignore_block");
     expect(content).toContain("install_hook_settings_template");
-    expect(content).not.toContain("\"$TOOL_INPUT\"");
-    expect(content).not.toContain("\"$PROMPT\"");
-    expect(content).toContain("pi_install_reference_configs");
-    expect(content).not.toContain("cp \"$ASSETS_REF_DIR\"/*.md docs/reference-configs/");
-    expect(content).toContain("pi_print_external_tooling_report");
+    expect(content).toContain("Controller Home");
+    expect(content).toContain("Use Forge /plan only when real decomposition is needed");
+    expect(content).not.toContain("pi_install_helpers");
+    expect(content).not.toContain("pi_install_templates");
+    expect(content).not.toContain("mkdir -p .claude/templates");
+    expect(content).not.toContain("capture-plan.sh --slug");
+    expect(content).not.toContain("plan-to-todo.sh --plan");
+    expect(content).not.toContain("docs/TODO.md");
+
+    for (const exactIgnore of ['".codegraph"', '".forge/browser"', '".forge/plugins"']) {
+      expect(content).toContain(exactIgnore);
+    }
+    expect(sharedLib).toContain('"check:task": "forge run check-task-workflow --strict"');
+    expect(sharedLib).toContain('pkg.scripts["check:task"] = "forge run check-task-workflow --strict";');
+    expect(sharedLib).toContain("Controller Home");
+    expect(sharedLib).not.toContain('"path": "tasks/workstreams/**/*.md"');
+
+    expect(contract.artifacts.runtimeManifest).toBe("forge.config.json");
+    expect(contract.artifacts.requiredFiles).toEqual([
+      "forge.config.json",
+      "docs/spec.md",
+      "tasks/todos.md",
+      "tasks/lessons.md",
+    ]);
+    expect(contract.artifacts.requiredDirectories).toEqual([
+      "docs",
+      "docs/reference-configs",
+      "docs/researches",
+      "tasks",
+    ]);
   });
 
   test("prompt-guard should monitor tasks-first files", () => {

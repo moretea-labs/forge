@@ -18,7 +18,8 @@ import { FORGE_VERSION } from '../../version';
 
 export const CLI_VERSION = FORGE_VERSION;
 
-const OPT_IN_MARKER = '.ai/harness/workflow-contract.json';
+const OPT_IN_MARKER = 'forge.config.json';
+const LEGACY_OPT_IN_MARKER = '.ai/harness/workflow-contract.json';
 
 export interface StatusReport {
   cli: { version: string };

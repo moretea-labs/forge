@@ -22,6 +22,7 @@
 import { performance } from 'perf_hooks';
 import { resolve } from 'path';
 import { executeIosAgentDeviceAction } from '../src/runtime/plugins/ios-agent-device';
+import { resolveControllerHome } from '../src/cli/repositories/controller-home';
 
 type EvidenceTier = 'exact_wait' | 'scoped_snapshot' | 'full_snapshot' | 'unknown';
 export type BenchmarkProfile = 'fresh_session' | 'reused_session';
@@ -302,7 +303,7 @@ function usage(): string {
     '  --profile <fresh|warm|both> Profiles to measure, default both',
     '  --runs <3..20>              Measured runs per profile after one warmup, default 3',
     '  --timeout-ms <ms>           Absolute timeout per action, default 60000',
-    '  --controller-home <path>    Defaults to FORGE_CONTROLLER_HOME or _ops/controller-home',
+    '  --controller-home <path>    Defaults to FORGE_CONTROLLER_HOME/XDG state or ~/.forge/controller',
     '  --repo-root <path>          Defaults to current working directory',
     '  --relaunch                  Relaunch JD for each fresh run and the warm-profile setup open',
     '  --json                      Emit machine-readable JSON',
@@ -428,11 +429,7 @@ export async function runBenchmark(): Promise<Record<string, unknown>> {
   const timeoutMs = integerOption('timeout-ms', 60_000, 1_000, 600_000);
   const snapshotDepth = integerOption('snapshot-depth', 8, 1, 20);
   const repoRoot = resolve(option('repo-root') ?? process.cwd());
-  const controllerHome = resolve(
-    option('controller-home')
-      ?? process.env.FORGE_CONTROLLER_HOME
-      ?? resolve(repoRoot, '_ops/controller-home'),
-  );
+  const controllerHome = resolveControllerHome(option('controller-home'));
   const baseArgs: Record<string, unknown> = { device, query, snapshot_depth: snapshotDepth };
   for (const [flag, key] of [
     ['search-selector', 'search_selector'],

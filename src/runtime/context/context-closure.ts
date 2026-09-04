@@ -15,7 +15,7 @@ const MAX_CLOSURE_PATHS = 48;
 const MAX_RECENT_CHANGES = 6;
 const MAX_ISSUED_CONTEXT_CLOSURES = 256;
 const issuedContextClosures = new Map<string, { sourceRevision: string; fullDigest: string }>();
-const MATERIAL_SEMANTIC_INTENT = /\b(architecture|ownership|protocol|cross[- ]?file|refactor|interface|contract|persistence|concurrency|lifecycle|writer|transaction)\b/i;
+const MATERIAL_SEMANTIC_INTENT = /\b(architecture|ownership|authority|authorization|permission|trust|identity|scope|protocol|cross[- ]?file|refactor|interface|contract|persistence|schema|migration|backup|restore|corruption|concurrency|resource|lease|fenc(?:e|ing)|lifecycle|retention|gc|replay|idempoten(?:cy|t)|receipt|evidence|audit|recovery|failure[- ]?domain|topology|instance|capacity|backpressure|fairness|starvation|security|privacy|secret|portability|release|rollback|writer|transaction|performance)\b/i;
 
 type ContextPackLike = {
   schemaVersion: number;

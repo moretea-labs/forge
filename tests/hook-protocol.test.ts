@@ -2,6 +2,7 @@ import { describe, test, expect, setDefaultTimeout } from "bun:test";
 import {
   cpSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -258,6 +259,28 @@ describe("Claude Code hook protocol compliance", () => {
       expect(res.status).toBe(0);
       expect(res.stdout).toContain("[PlanStatusGuard] Advisory");
       expect(res.stderr).toBe("");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("prompt-guard: forge.config modern mode is advisory and creates no repo-local workflow/cache state", () => {
+    const cwd = tmpWorkspace("hook-proto-controller-home");
+    try {
+      initGitRepo(cwd);
+      installHooks(cwd);
+      writeFileSync(join(cwd, "forge.config.json"), JSON.stringify({ schemaVersion: 1, forge: { enabled: true }, runtimeState: "controller-home" }));
+
+      const res = runHook("prompt-guard.sh", cwd, {
+        stdin: JSON.stringify({ user_message: "plan the architecture and then implement it" }),
+      });
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[ArchitectureCompleteness]");
+      expect(existsSync(join(cwd, ".ai/harness"))).toBe(false);
+      expect(existsSync(join(cwd, ".codegraph"))).toBe(false);
+      expect(existsSync(join(cwd, ".claude"))).toBe(false);
+      expect(existsSync(join(cwd, "plans"))).toBe(false);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

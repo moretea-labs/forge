@@ -412,7 +412,7 @@ function checkHookScriptDrift(cwd: string): DoctorCheckResult {
       id,
       describe,
       status: 'na',
-      detail: 'repo is not opted in (.ai/harness/workflow-contract.json missing)',
+      detail: 'repo is not opted in (forge.config.json missing; legacy .ai/harness marker also absent)',
     };
   }
 

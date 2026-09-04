@@ -69,6 +69,14 @@ const RUNTIME_STORAGE_SPECS: RuntimeStorageSpec[] = [
   { name: 'mcp', sourceName: 'mcp', controllerName: 'mcp' },
   { name: 'local-bridge', sourceName: 'local-bridge', controllerName: 'local-bridge' },
   { name: 'ephemeral-issues', sourceName: 'ephemeral-issues', controllerName: 'ephemeral-issues' },
+  // Legacy callers may still use these repository-relative paths, but the
+  // physical state is Controller Home-owned. Keep them as compatibility links
+  // until the corresponding adapters consume Controller paths directly.
+  { name: 'checks', sourceName: 'checks', controllerName: 'checks' },
+  { name: 'session', sourceName: 'session', controllerName: 'session' },
+  { name: 'planning', sourceName: 'planning', controllerName: 'planning' },
+  { name: 'security', sourceName: 'security', controllerName: 'security' },
+  { name: 'transfers', sourceName: 'transfers', controllerName: 'transfers' },
   { name: 'browser-provider', sourceName: 'browser', controllerName: 'browser', sourceRoot: 'forge' },
   { name: 'interaction-sessions', sourceName: 'interactions', controllerName: 'interactions', sourceRoot: 'forge' },
 ];
@@ -381,6 +389,19 @@ function bindRuntimeDirectory(
   writeOwnerMarker(controllerPath, repoId, spec.name);
   createDirectoryLink(controllerPath, repositoryPath);
   return { name: spec.name, repositoryPath, controllerPath, status: 'migrated' };
+}
+
+export function ensureRepositoryRuntimeStorageBinding(
+  repository: RepositoryRecord,
+  name: string,
+  controllerHome?: string,
+): RuntimeStorageBinding {
+  const spec = RUNTIME_STORAGE_SPECS.find((entry) => entry.name === name);
+  if (!spec) throw new Error(`RUNTIME_STORAGE_BINDING_UNKNOWN: ${name}`);
+  const controllerRoot = ensureRepositoryControllerLayout(controllerHome ?? '', repository.repoId);
+  const harnessRoot = join(repository.canonicalRoot, '.ai', 'harness');
+  mkdirSync(harnessRoot, { recursive: true });
+  return bindRuntimeDirectory(repository.canonicalRoot, harnessRoot, controllerRoot, repository.repoId, spec);
 }
 
 export function ensureRepositoryRuntimeStorage(

@@ -10,17 +10,15 @@ Keep this file focused on the local contract for this primary functional block.
 - Name: `contract-assets`
 - Primary prefix: `assets/workflow-contract.v1.json`
 - Architecture module: `docs/architecture/modules/workflow-engine/contract-assets.md`
-- Workstream: `tasks/workstreams/workflow-engine/contract-assets`
 
 ## Positioning
 
-Owns the workflow-engine-contract-assets capability boundary declared in .ai/context/capabilities.json.
+Owns packaged workflow/compatibility contract assets. Mutable execution lifecycle is Controller Home authority; assets must not reintroduce repo-local machine workflow state.
 
 ## Source Map
 
 - Primary prefix: `assets/workflow-contract.v1.json` (entrypoint)
 - Architecture module: `docs/architecture/modules/workflow-engine/contract-assets.md` (design-source)
-- Workstream: `tasks/workstreams/workflow-engine/contract-assets` (durable-progress)
 
 ## Refresh Hints
 
@@ -52,17 +50,5 @@ Owns the workflow-engine-contract-assets capability boundary declared in .ai/con
 - Semantic diagram source: `docs/architecture/modules/workflow-engine/contract-assets.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `(none)`
-
-## Active Workstreams
-
-- `tasks/workstreams/workflow-engine/contract-assets/cleanup-script-policy.md`
-  - status: completed
-  - current_slice: todo-01
-  - source_plan: (none)
-
-## Current Session Projection
-
-- Durable progress lives under `tasks/workstreams/workflow-engine/contract-assets`.
-- `tasks/current.md` is a tracked derived status snapshot, not a live lock or task source.
-- `tasks/todos.md` is the deferred-goal ledger; current execution slices stay in the active plan's `## Task Breakdown`.
+- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->

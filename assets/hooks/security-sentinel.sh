@@ -6,7 +6,8 @@ set -euo pipefail
 # SessionStart context reminder if forge security scan finds anything.
 
 REPO_ROOT="${HOOK_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-SECURITY_DIR="$REPO_ROOT/.ai/harness/security"
+HOOK_STATE_ROOT="${FORGE_HOOK_STATE_ROOT:-$REPO_ROOT/.ai/harness}"
+SECURITY_DIR="${HOOK_STATE_ROOT%/}/security"
 STATE_FILE="$SECURITY_DIR/state.sha256"
 LATEST_FILE="$SECURITY_DIR/latest.json"
 

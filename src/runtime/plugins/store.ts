@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readlinkSync, readdirSync, rmSync, symlinkSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -290,12 +290,54 @@ function cachedManifestForRepository(
   ) ?? readPluginManifestCache(pluginManifestItemCache, itemCacheKey(controllerHome, repoId, pluginId, false));
 }
 
+export function ensureRepositoryPluginConfigCompatibilityLink(
+  controllerHome: string,
+  repository: Pick<RepositoryRecord, 'repoId' | 'canonicalRoot'>,
+): string {
+  const targetRoot = join(repositoryControllerRoot(controllerHome, repository.repoId), 'plugins', 'config');
+  const compatibilityParent = join(repository.canonicalRoot, '.forge');
+  const compatibilityRoot = join(compatibilityParent, 'plugins');
+  const legacyHarnessRoot = join(repository.canonicalRoot, '.repo-harness', 'plugins');
+  mkdirSync(targetRoot, { recursive: true });
+
+  if (existsSync(legacyHarnessRoot)) {
+    const stat = lstatSync(legacyHarnessRoot);
+    if (!stat.isDirectory()) throw new Error(`PLUGIN_CONFIG_LEGACY_HARNESS_PATH_INVALID: ${legacyHarnessRoot}`);
+    cpSync(legacyHarnessRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
+    rmSync(legacyHarnessRoot, { recursive: true, force: true });
+  }
+
+  if (existsSync(compatibilityRoot)) {
+    const stat = lstatSync(compatibilityRoot);
+    if (stat.isSymbolicLink()) {
+      const linked = readlinkSync(compatibilityRoot);
+      const resolved = join(compatibilityParent, linked);
+      if (resolved !== targetRoot && linked !== targetRoot) {
+        throw new Error(`PLUGIN_CONFIG_COMPATIBILITY_LINK_MISMATCH: ${compatibilityRoot} -> ${linked}`);
+      }
+      return targetRoot;
+    }
+    if (!stat.isDirectory()) throw new Error(`PLUGIN_CONFIG_COMPATIBILITY_PATH_INVALID: ${compatibilityRoot}`);
+    // Controller Home is the authority when both sides already contain a file.
+    // Copy only missing legacy entries, then retire the physical repo directory.
+    cpSync(compatibilityRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
+    rmSync(compatibilityRoot, { recursive: true, force: true });
+  }
+
+  mkdirSync(compatibilityParent, { recursive: true });
+  if (!existsSync(compatibilityRoot)) {
+    symlinkSync(targetRoot, compatibilityRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  return targetRoot;
+}
+
 function computeManifest(
   controllerHome: string,
   repository: RepositoryRecord,
   pluginId: string,
   resolvedAdapter?: AssistantPluginAdapter,
 ): AssistantPluginManifest {
+  ensureRepositoryPluginConfigCompatibilityLink(controllerHome, repository);
   const adapter = resolvedAdapter ?? resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   const previous = readStoredManifest(controllerHome, repository.repoId, pluginId);

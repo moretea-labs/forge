@@ -10,7 +10,7 @@ Keep this file focused on the local contract for this primary functional block.
 - Route deep implementation detail into nearby docs instead of inflating root agent context files.
 - Treat `.ai/context/context-map.json` as the index of discoverable context files.
 - Do not keep pushing context files deeper by default; add lower-level files only for a separately owned functional block with its own commands and invariants.
-- Prefer repo-local workflow artifacts over tool-specific chat memory.
+- Prefer authored repository context for durable source knowledge and Controller Home for mutable workflow state; tool-specific chat memory is never authority.
 
 <!-- BEGIN CAPABILITY CONTEXT -->
 ## Capability Context
@@ -20,7 +20,6 @@ Keep this file focused on the local contract for this primary functional block.
 - Name: `hook-adapters`
 - Primary prefix: `assets/hooks`
 - Architecture module: `docs/architecture/modules/runtime-harness/hook-adapters.md`
-- Workstream: `tasks/workstreams/runtime-harness/hook-adapters`
 
 ## Positioning
 
@@ -30,12 +29,11 @@ Owns the runtime-harness-hook-adapters capability boundary declared in .ai/conte
 
 - Primary prefix: `assets/hooks` (entrypoint)
 - Architecture module: `docs/architecture/modules/runtime-harness/hook-adapters.md` (design-source)
-- Workstream: `tasks/workstreams/runtime-harness/hook-adapters` (durable-progress)
 
 ## Refresh Hints
 
 - `bun test tests/hook-runtime.test.ts tests/hook-contracts.test.ts tests/workflow-contract.test.ts`
-- `bash scripts/check-task-workflow.sh --strict`
+- `forge run check-task-workflow --strict`
 <!-- END CAPABILITY CONTEXT -->
 
 <!-- BEGIN ARCHITECTURE CONTRACT -->
@@ -62,14 +60,5 @@ Owns the runtime-harness-hook-adapters capability boundary declared in .ai/conte
 - Semantic diagram source: `docs/architecture/modules/runtime-harness/hook-adapters.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `(none)`
-
-## Active Workstreams
-
-- (none yet)
-
-## Current Session Projection
-
-- Durable progress lives under `tasks/workstreams/runtime-harness/hook-adapters`.
-- `tasks/current.md` is the tracked derived status snapshot; it is not a live lock or task source.
-- `tasks/todos.md` is the deferred-goal ledger; current execution slices stay in the active plan's `## Task Breakdown`.
+- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->

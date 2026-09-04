@@ -284,6 +284,7 @@ export function ensureRepositoryControllerLayout(controllerHome: string, repoId:
     'indexes',
     'edit-sessions',
     'controller',
+    'hook-state',
     'local-bridge',
     'ephemeral-issues',
     'work-handles',

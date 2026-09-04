@@ -63,6 +63,11 @@ function bounded(values: readonly string[] | undefined, limit: number, maxLength
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
 }
 
+export function isLegacyMachineRequirementWait(requirement: Pick<Requirement, 'state' | 'attentionSummary'>): boolean {
+  return requirement.state === 'waiting_for_user'
+    && /^Work .+ delivered machine-valid evidence \(.+\); ChatGPT\/user semantic acceptance is still required\.$/.test(requirement.attentionSummary ?? '');
+}
+
 function readWithin(database: SqliteDatabase, requirementId: string): ControlPlaneRecord<Requirement> | undefined {
   return readControlPlaneRecordWithinTransaction(database, NAMESPACE, SCOPE, requirementId);
 }
@@ -179,10 +184,11 @@ export interface RequirementCompletionInput {
 }
 
 /**
- * Project machine-complete Work delivery into a Requirement without asserting
- * semantic acceptance. The Requirement waits for an explicit ChatGPT/user
- * decision; a previously audited `done` Requirement is never reopened by
- * historical execution evidence.
+ * Project machine-complete Work delivery evidence into a Requirement without
+ * asserting Requirement-level semantic acceptance. A Work is only one Plan-step
+ * execution fact; it must not move the whole Requirement to waiting_for_user
+ * while sibling/current Plan slices still exist. Requirement acceptance is a
+ * separate lifecycle decision after current Plan/Work authority converges.
  *
  * The legacy function name is retained for compatibility with completion
  * callers. Its authority is evidence projection only, not semantic completion.
@@ -212,20 +218,24 @@ export function completeRequirementFromWork(
   if (receipt.delivery.kind === 'superseded' || receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('REQUIREMENT_WORK_DELIVERY_NOT_PROVEN');
   if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('REQUIREMENT_WORK_CLEANUP_NOT_PROVEN');
 
-  if (current.value.state === 'waiting_for_user' && current.value.auditRefs.includes(receipt.receiptId)) return current.value;
+  if (current.value.auditRefs.includes(receipt.receiptId)) return current.value;
   return updateRequirement(options, {
     requirementId,
     action: 'requirement_delivery_evidence_recorded',
     mutate: (latest) => {
-      // Preserve a concurrent explicit semantic completion; stale execution
-      // evidence is never allowed to move a terminal Requirement backwards.
+      // Preserve concurrent terminal or genuinely user-blocked semantic state.
+      // Older V2 builds generated waiting_for_user from a single Work receipt;
+      // recognize that exact compatibility message and repair it back to active.
       if (latest.state === 'done') return latest;
       if (latest.state === 'cancelled') throw new Error('REQUIREMENT_CANCELLED');
+      const legacyMachineWait = latest.state === 'waiting_for_user'
+        && /^Work .+ delivered machine-valid evidence \(.+\); ChatGPT\/user semantic acceptance is still required\.$/.test(latest.attentionSummary ?? '');
+      const preserveSemanticWait = latest.state === 'waiting_for_user' && !legacyMachineWait;
       return {
         ...latest,
-        state: 'waiting_for_user',
-        needsAttention: false,
-        attentionSummary: `Work ${work.workId} delivered machine-valid evidence (${receipt.receiptId}); ChatGPT/user semantic acceptance is still required.`,
+        state: preserveSemanticWait ? 'waiting_for_user' : 'active',
+        needsAttention: preserveSemanticWait ? latest.needsAttention : false,
+        attentionSummary: preserveSemanticWait ? latest.attentionSummary : undefined,
         auditRefs: Array.from(new Set([...latest.auditRefs, receipt.receiptId])).slice(-50),
       };
     },

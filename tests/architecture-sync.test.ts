@@ -80,7 +80,6 @@ function tmpRepo(fn: (cwd: string) => void): void {
                 claude: "apps/web/CLAUDE.md",
               },
               architecture_module: "docs/architecture/modules/apps-web/web.md",
-              workstream_dir: "tasks/workstreams/apps-web/web",
               lsp_profile: "typescript-lsp",
               verification_hints: ["web checks"],
             },
@@ -150,8 +149,27 @@ describe("architecture sync gate", () => {
       const parsed = JSON.parse(res.stdout);
       expect(parsed).toHaveLength(2);
       expect(parsed[0].capability_id).toBe("apps-web");
+      expect(parsed[0].workstream_dir).toBeUndefined();
       expect(parsed[1].capability_id).toBe("root");
+      expect(parsed[1].workstream_dir).toBeUndefined();
     });
+  });
+
+  test("capability config rejects retired repo-local Workstream creation", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "capability-config-retired-workstream-"));
+    try {
+      mkdirSync(join(cwd, "src"), { recursive: true });
+      const res = spawnSync(
+        process.execPath,
+        [join(ROOT, "assets/templates/helpers/capability-config.ts"), "add", "--prefix", "src", "--create-workstream"],
+        { cwd, encoding: "utf-8" },
+      );
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).toContain("LEGACY_WORKSTREAM_WRITES_RETIRED");
+      expect(existsSync(join(cwd, "tasks/workstreams"))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("capability resolver emits compact unique ids for bulk gate consumers", () => {

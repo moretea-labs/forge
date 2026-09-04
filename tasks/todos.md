@@ -1,11 +1,10 @@
 # Deferred Goal Ledger
 
 > **Status**: Backlog
-> **Updated**: 2026-08-30
-> **Scope**: Goals intentionally deferred outside the active Forge Cloud Windows source-optimization handoff
+> **Updated**: 2026-09-04
+> **Scope**: Human-maintained deferred goals only. Active Requirement/Plan/Work state lives in Forge Controller Home.
 
-The active post-1.7.1 source checklist is tracked in `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`.
-Do not duplicate that execution checklist here.
+This file is durable project knowledge, not an execution queue or Runtime projection.
 
 ## Deferred Goals
 

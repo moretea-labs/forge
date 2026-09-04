@@ -17,6 +17,8 @@ import { listActiveLeases } from '../resources/leases/store';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
 import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
+import { retireTerminalPlanBoundWorkAuthorities } from './facade/plan-contract-store';
+import { reconcileOwnerlessWorkAuthorities } from './execution/work-authority-reconciler';
 
 function numericSetting(value: string | undefined, fallback: number, minimum: number): number {
   const parsed = Number(value);
@@ -142,6 +144,8 @@ export interface RuntimeCleanupOptions {
   stagingReleaseRetentionGraceMs?: number;
   /** Minimum age before a proven-redundant terminal Work preservation bundle can be reclaimed. */
   cleanupArtifactRetentionGraceMs?: number;
+  /** Grace period before a non-Plan Work with no exact durable owner loses execution authority. */
+  ownerlessWorkAuthorityGraceMs?: number;
   inspectProcess?: (pid: number) => RuntimeProcessSnapshot;
 }
 
@@ -155,6 +159,10 @@ export interface RuntimeCleanupReport {
   removedTemporaryPaths: string[];
   removedCleanupArtifactPaths: string[];
   removedReleasePaths: string[];
+  /** Historical non-terminal Work whose owning Plan was already terminal. Records remain for retention/audit. */
+  retiredPlanBoundWorkAuthorities: string[];
+  /** Work retired only after exact per-Work liveness proved no durable continuation owner remains. */
+  retiredOwnerlessWorkAuthorities: string[];
   skippedActiveWorktrees: string[];
   inspectedPaths: number;
   budgetExhausted: boolean;
@@ -710,7 +718,9 @@ function shouldPersistCleanupAudit(report: RuntimeCleanupReport): boolean {
     || report.migratedDependencyPaths.length
     || report.removedTemporaryPaths.length
     || report.removedCleanupArtifactPaths.length
-    || report.removedReleasePaths.length,
+    || report.removedReleasePaths.length
+    || report.retiredPlanBoundWorkAuthorities.length
+    || report.retiredOwnerlessWorkAuthorities.length,
   );
   if (hadMutations || report.errors.length) return true;
   // Startup/manual may record defensive skips (live PID protected, budget).
@@ -738,6 +748,26 @@ export function cleanupControllerRuntimeState(
   const tempBudget = createScanBudget(maxEntries);
   const errors: string[] = [];
   const skippedByReason: Record<string, number> = {};
+  const retiredPlanBoundWorkAuthorities: string[] = [];
+  const retiredOwnerlessWorkAuthorities: string[] = [];
+  try {
+    for (const repository of listRepositories(home, { includeRemoved: true })) {
+      const retired = retireTerminalPlanBoundWorkAuthorities({ controllerHome: home, repoId: repository.repoId });
+      retiredPlanBoundWorkAuthorities.push(...retired.map((workId) => `${repository.repoId}:${workId}`));
+      const ownerless = reconcileOwnerlessWorkAuthorities({
+        controllerHome: home,
+        repoId: repository.repoId,
+        nowMs,
+        graceMs: options.ownerlessWorkAuthorityGraceMs,
+      });
+      retiredOwnerlessWorkAuthorities.push(...ownerless.workIds.map((workId) => `${repository.repoId}:${workId}`));
+      Object.entries(ownerless.skippedByReason).forEach(([key, value]) => {
+        skippedByReason[`ownerless_work_${key}`] = (skippedByReason[`ownerless_work_${key}`] ?? 0) + value;
+      });
+    }
+  } catch (error) {
+    errors.push(errorText('Work authority reconciliation', error));
+  }
   const pidFiles = cleanupDaemonPidFile(home, nowIso, options, errors, removalBudget);
   const references = collectReferencedWorktrees(home, referenceBudget, errors, nowMs);
   let worktrees: ReturnType<typeof cleanupOrphanWorktrees> | undefined;
@@ -806,6 +836,8 @@ export function cleanupControllerRuntimeState(
     removedTemporaryPaths,
     removedCleanupArtifactPaths,
     removedReleasePaths,
+    retiredPlanBoundWorkAuthorities: retiredPlanBoundWorkAuthorities.sort(),
+    retiredOwnerlessWorkAuthorities: retiredOwnerlessWorkAuthorities.sort(),
     skippedActiveWorktrees: worktrees.skippedActive.sort(),
     inspectedPaths,
     budgetExhausted,
@@ -813,9 +845,9 @@ export function cleanupControllerRuntimeState(
     logPath: runtimeCleanupLogPath(home),
     cycle: {
       scanned: inspectedPaths,
-      eligible: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.eligible + releaseRetention.eligible,
-      attempted: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.attempted + releaseRetention.attempted + errors.length,
-      removed: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedCleanupArtifactPaths.length + removedReleasePaths.length,
+      eligible: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.eligible + releaseRetention.eligible,
+      attempted: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.attempted + releaseRetention.attempted + errors.length,
+      removed: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedCleanupArtifactPaths.length + removedReleasePaths.length,
       retained: pidFiles.skipped.length + worktrees.skippedActive.length + artifactRetention.retained + releaseRetention.retained,
       skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - dependencyCleanup.migrated.length - removedTemporaryPaths.length - removedCleanupArtifactPaths.length - removedReleasePaths.length - errors.length),
       failed: errors.length,

@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 
 forge_default_controller_home() {
-  local repo_root="${1:?repo root is required}"
-  printf '%s\n' "$repo_root/_ops/controller-home"
+  if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+    printf '%s\n' "$XDG_STATE_HOME/forge/controller"
+  else
+    printf '%s\n' "${HOME:?HOME is required}/.forge/controller"
+  fi
 }
 
 forge_use_local_controller_home() {
   local repo_root="${1:?repo root is required}"
   if [[ -z "${FORGE_CONTROLLER_HOME:-}" ]]; then
     export FORGE_CONTROLLER_HOME
-    FORGE_CONTROLLER_HOME="$(forge_default_controller_home "$repo_root")"
+    FORGE_CONTROLLER_HOME="$(forge_default_controller_home)"
   fi
   mkdir -p "$FORGE_CONTROLLER_HOME"
 }

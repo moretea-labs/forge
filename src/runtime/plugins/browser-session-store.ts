@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, rmSync } from 'fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from 'fs';
 import { basename, join } from 'path';
 import { writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError } from './errors';
@@ -10,6 +10,28 @@ import {
 const BROWSER_STATE_ROOT = '.forge/browser';
 
 import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
+
+/** Move legacy provider files out of the repository and keep the old path as a compatibility link only. */
+export function ensureBrowserStateCompatibilityLink(controllerHome: string, repoId: string, repoRoot: string): string {
+  const targetRoot = join(controllerHome, 'repositories', repoId, 'browser');
+  const compatibilityParent = join(repoRoot, '.forge');
+  const compatibilityRoot = join(compatibilityParent, 'browser');
+  mkdirSync(targetRoot, { recursive: true });
+  if (existsSync(compatibilityRoot)) {
+    const stat = lstatSync(compatibilityRoot);
+    if (stat.isSymbolicLink()) {
+      const linked = readlinkSync(compatibilityRoot);
+      if (linked !== targetRoot) throw new Error(`BROWSER_STATE_COMPATIBILITY_LINK_MISMATCH: ${compatibilityRoot} -> ${linked}`);
+      return targetRoot;
+    }
+    if (!stat.isDirectory()) throw new Error(`BROWSER_STATE_COMPATIBILITY_PATH_INVALID: ${compatibilityRoot}`);
+    cpSync(compatibilityRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
+    rmSync(compatibilityRoot, { recursive: true, force: true });
+  }
+  mkdirSync(compatibilityParent, { recursive: true });
+  if (!existsSync(compatibilityRoot)) symlinkSync(targetRoot, compatibilityRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  return targetRoot;
+}
 
 /**
  * Browser session semantics are durable SQLite authority. Provider working state
@@ -23,7 +45,7 @@ export function browserStateDir(
 ): string {
   const authority = currentRuntimeBrowserSessionAuthorityContext();
   return authority
-    ? join(authority.controllerHome, 'repositories', authority.repoId, 'browser', name)
+    ? join(ensureBrowserStateCompatibilityLink(authority.controllerHome, authority.repoId, repoRoot), name)
     : join(repoRoot, BROWSER_STATE_ROOT, name);
 }
 

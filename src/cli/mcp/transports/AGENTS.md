@@ -26,14 +26,5 @@ Keep this file focused on the local contract for this primary functional block.
 - Semantic diagram source: `docs/architecture/modules/controller-runtime/transport-lifecycle.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `none`
-
-## Active Workstreams
-
-- (none yet)
-
-## Current Session Projection
-
-- Durable progress lives under `tasks/workstreams/controller-runtime/transport-lifecycle`.
-- `tasks/current.md` is the tracked derived status snapshot; it is not a live lock or task source.
-- `tasks/todos.md` is the deferred-goal ledger; current execution slices stay in the active plan's `## Task Breakdown`.
+- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->

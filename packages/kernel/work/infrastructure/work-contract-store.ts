@@ -1002,6 +1002,60 @@ export function rebindPlanBoundWorkContract(
   return validateWorkSemanticTransition(canonicalCurrent, next);
 }
 
+/**
+ * Retire technical Work authority when its owning Plan is no longer current.
+ *
+ * This is authority retirement, not history deletion. The cancelled Work and
+ * its evidence stay durable for audit/recovery/retention, while status and
+ * dispatch become terminal immediately so schedulers, concurrency admission,
+ * and UI current-state projections cannot keep executing an obsolete Plan.
+ */
+export function retirePlanBoundWorkContract(
+  current: WorkContract,
+  input: {
+    predecessorPlanId: string;
+    successorPlanId?: string;
+    recordedAt: string;
+    reason: string;
+  },
+): WorkContract {
+  const canonicalCurrent = normalizeWorkContractStore({ schemaVersion: 2, updatedAt: current.updatedAt, contracts: [current] }).contracts[0]!;
+  if (isTerminalWorkContractStatus(canonicalCurrent.status)) return canonicalCurrent;
+  if (canonicalCurrent.planId !== input.predecessorPlanId) {
+    throw new Error(`WORK_PLAN_RETIRE_SOURCE_MISMATCH: ${canonicalCurrent.workId}:expected=${input.predecessorPlanId}:actual=${canonicalCurrent.planId ?? 'none'}`);
+  }
+  if (canonicalCurrent.completionReceipt || canonicalCurrent.completionOutcome) {
+    throw new Error(`WORK_PLAN_RETIRE_COMPLETION_CONFLICT: ${canonicalCurrent.workId}`);
+  }
+  const reason = input.reason.trim().slice(0, 1_000);
+  if (!reason) throw new Error('WORK_PLAN_RETIRE_REASON_REQUIRED');
+  const successor = input.successorPlanId?.trim();
+  const summary = successor
+    ? `Plan authority retired ${canonicalCurrent.planId} -> ${successor}: ${reason}`
+    : `Plan authority retired ${canonicalCurrent.planId}: ${reason}`;
+  const evidenceRefs = [{
+    title: 'Plan-bound Work authority retired',
+    summary,
+    detailLevel: 'summary' as const,
+  }, ...canonicalCurrent.evidenceRefs].slice(0, canonicalCurrent.evidencePolicy.maxEvidenceRefs);
+  const next = validateWorkSemantics({
+    ...canonicalCurrent,
+    status: 'cancelled',
+    phase: 'cleanup',
+    phaseEvidence: transitionPhaseEvidence(canonicalCurrent, 'cleanup', {
+      status: 'cancelled',
+      summary,
+      evidenceRefs,
+      recordedAt: input.recordedAt,
+    }),
+    dispatchState: 'terminal',
+    evidenceRefs,
+    suggestedNextActions: [],
+    updatedAt: input.recordedAt,
+  });
+  return validateWorkSemanticTransition(canonicalCurrent, next);
+}
+
 export function updateWorkContract(
   options: WorkContractStoreOptions,
   workId: string,

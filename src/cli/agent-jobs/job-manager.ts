@@ -36,7 +36,7 @@ import {
 } from "../controller/runtime-config";
 import { normalizeRemoteUrl, stableCheckoutId, stableRemoteRepoId } from "../repositories/identity";
 import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
-import { listRepositories } from "../repositories/registry";
+import { listRepositories, repositoryCheckoutRootMatches } from "../repositories/registry";
 import { managedWorktreePath } from "../repositories/worktree-storage";
 import {
   ensureControllerEpoch,
@@ -172,6 +172,15 @@ function atomicCreateJson(path: string, value: unknown): boolean {
 }
 
 function tryReadRepositoryIdentity(repoRoot: string): { repoId: string; checkoutId: string } {
+  const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
+  const registered = listRepositories(controllerHome, { includeRemoved: true })
+    .find((record) => repositoryCheckoutRootMatches(record, repoRoot));
+  if (registered) {
+    return { repoId: registered.repoId, checkoutId: stableCheckoutId(registered.repoId, repoRoot) };
+  }
+
+  // Import-only compatibility for repositories that have not yet been registered
+  // into the Controller Home registry. New writes never recreate this file.
   const path = join(repoRoot, ".ai/harness/repository.json");
   let repoId = "";
   try {

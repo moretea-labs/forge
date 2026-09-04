@@ -70,44 +70,62 @@ workflow_repo_relative_path() {
   esac
 }
 
+workflow_machine_state_path() {
+  local value="$1"
+  local default_value="$2"
+  local relative_path
+
+  value="$(workflow_repo_relative_path "$value" "$default_value" '.ai/harness/')"
+  if [[ -n "${FORGE_HOOK_STATE_ROOT:-}" && "${FORGE_HOOK_STATE_ROOT}" == /* ]]; then
+    relative_path="${value#.ai/harness/}"
+    printf '%s/%s' "${FORGE_HOOK_STATE_ROOT%/}" "$relative_path"
+    return 0
+  fi
+  printf '%s' "$value"
+}
+
 workflow_context_map_file() {
   workflow_repo_relative_path "$(workflow_policy_get '.context.map_file' '.ai/context/context-map.json')" '.ai/context/context-map.json' '.ai/context/'
 }
 
 workflow_failure_log_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.harness.failure_log_file' '.ai/harness/failures/latest.jsonl')" '.ai/harness/failures/latest.jsonl' '.ai/harness/'
+  workflow_machine_state_path "$(workflow_policy_get '.harness.failure_log_file' '.ai/harness/failures/latest.jsonl')" '.ai/harness/failures/latest.jsonl'
 }
 
 workflow_events_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.harness.events_file' '.ai/harness/events.jsonl')" '.ai/harness/events.jsonl' '.ai/harness/'
+  workflow_machine_state_path "$(workflow_policy_get '.harness.events_file' '.ai/harness/events.jsonl')" '.ai/harness/events.jsonl'
 }
 
 workflow_trace_file() {
+  if [[ -n "${FORGE_HOOK_STATE_ROOT:-}" && "${FORGE_HOOK_STATE_ROOT}" == /* ]]; then
+    printf '%s/trace.jsonl' "${FORGE_HOOK_STATE_ROOT%/}"
+    return 0
+  fi
   printf '%s' ".claude/.trace.jsonl"
 }
 
 workflow_runs_dir() {
-  workflow_repo_relative_path "$(workflow_policy_get '.harness.runs_dir' '.ai/harness/runs')" '.ai/harness/runs' '.ai/harness/'
+  workflow_machine_state_path "$(workflow_policy_get '.harness.runs_dir' '.ai/harness/runs')" '.ai/harness/runs'
 }
 
 workflow_resume_packet_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.session.resume_file' '.ai/harness/session/resume.md')" '.ai/harness/session/resume.md' '.ai/harness/'
+  workflow_machine_state_path "$(workflow_policy_get '.session.resume_file' '.ai/harness/session/resume.md')" '.ai/harness/session/resume.md'
 }
 
 workflow_pending_orchestration_file() {
+  # Legacy read/migration surface only. Modern controller-home repositories do
+  # not create a second file-backed Plan/pending authority from hooks.
   workflow_repo_relative_path "$(workflow_policy_get '.planning.pending_orchestration_file' '.ai/harness/planning/pending.json')" '.ai/harness/planning/pending.json' '.ai/harness/'
 }
 
 workflow_ensure_harness_surface() {
+  # Hooks initialize only rebuildable machine diagnostics. Authored task/context
+  # directories and semantic Plan state remain repository/Controller concerns.
   mkdir -p \
-    "tasks/notes" \
-    "$(dirname "$(workflow_context_map_file)")" \
-    "$(dirname "$(workflow_policy_file)")" \
     "$(dirname "$(workflow_checks_file)")" \
     "$(dirname "$(workflow_session_continuation_file)")" \
     "$(dirname "$(workflow_resume_packet_file)")" \
     "$(dirname "$(workflow_failure_log_file)")" \
-    "$(dirname "$(workflow_pending_orchestration_file)")" \
     "$(workflow_runs_dir)"
 
   [[ -f "$(workflow_checks_file)" ]] || printf "{}\n" > "$(workflow_checks_file)"
@@ -1094,11 +1112,11 @@ workflow_active_notes() {
 }
 
 workflow_checks_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.harness.checks_file' '.ai/harness/checks/latest.json')" '.ai/harness/checks/latest.json' '.ai/harness/'
+  workflow_machine_state_path "$(workflow_policy_get '.harness.checks_file' '.ai/harness/checks/latest.json')" '.ai/harness/checks/latest.json'
 }
 
 workflow_session_continuation_file() {
-  workflow_repo_relative_path "$(workflow_policy_get '.session.continuation_file' '.ai/harness/session/continuation.md')" '.ai/harness/session/continuation.md' '.ai/harness/'
+  workflow_machine_state_path "$(workflow_policy_get '.session.continuation_file' '.ai/harness/session/continuation.md')" '.ai/harness/session/continuation.md'
 }
 
 # mkdir-based mutual exclusion (macOS ships no flock). Spins ~2s, breaks locks

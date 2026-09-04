@@ -3,6 +3,7 @@ import {
   getWorkContract as readWorkContract,
   recordWorkCompletionReceipt as persistWorkCompletionReceipt,
   rebindPlanBoundWorkContract as buildPlanBoundWorkRebind,
+  retirePlanBoundWorkContract as buildPlanBoundWorkRetirement,
 } from '../infrastructure/work-contract-store';
 import type { WorkContract } from '../domain/types';
 import type { WorkContractStoreOptions } from '../ports/work-contract-store';
@@ -116,4 +117,12 @@ export function rebindPlanBoundWorkContract(
   input: Parameters<typeof buildPlanBoundWorkRebind>[1],
 ): WorkContract {
   return buildPlanBoundWorkRebind(current, input);
+}
+
+/** Build a validated terminal authority-retirement transition for a Work whose Plan is no longer current. */
+export function retirePlanBoundWorkContract(
+  current: WorkContract,
+  input: Parameters<typeof buildPlanBoundWorkRetirement>[1],
+): WorkContract {
+  return buildPlanBoundWorkRetirement(current, input);
 }

@@ -249,6 +249,10 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/cli/hook-runtime.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
     "tests/cli/repository-command-entry.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
@@ -349,6 +353,10 @@
       "module": "ios",
       "resource": "temp-isolated"
     },
+    "tests/runtime/browser-state-controller-home-boundary.test.ts": {
+      "module": "browser",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/browser-runtime-contract.test.ts": {
       "module": "browser",
       "resource": "pure"
@@ -396,6 +404,10 @@
     "tests/runtime/check-scheduling.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
+    },
+    "tests/runtime/codegraph-controller-home-cache.test.ts": {
+      "module": "repository",
+      "resource": "temp-isolated"
     },
     "tests/runtime/codegraph-context-provider.test.ts": {
       "module": "controller",
@@ -565,8 +577,16 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/plan-obligation-continuity.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/plan-contract-store.test.ts": {
       "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/plugin-config-controller-home-boundary.test.ts": {
+      "module": "controller",
       "resource": "controller-home-isolated"
     },
     "tests/runtime/plugin-execution-origin.test.ts": {
@@ -627,6 +647,10 @@
     },
     "tests/runtime/rh-work-terminalization-authority.test.ts": {
       "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/work-authority-reconciler.test.ts": {
+      "module": "workflow",
       "resource": "controller-home-isolated"
     },
     "tests/runtime/work-process-evidence.test.ts": {

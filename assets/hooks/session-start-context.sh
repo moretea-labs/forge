@@ -9,9 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/lib/workflow-state.sh"
 
-# Cold-path housekeeping: both event logs grow unbounded otherwise.
+# Cold-path housekeeping: machine event logs grow unbounded otherwise. Both
+# paths resolve below Controller Home hook-state for modern forge-hook runs.
 workflow_rotate_events_file "$(workflow_events_file)" 2>/dev/null || true
-workflow_rotate_events_file ".ai/harness/architecture/events.jsonl" 2>/dev/null || true
+workflow_rotate_events_file "$(workflow_machine_state_path '.ai/harness/architecture/events.jsonl' '.ai/harness/architecture/events.jsonl')" 2>/dev/null || true
 
 resume_file="$(workflow_resume_packet_file)"
 
@@ -209,11 +210,11 @@ render_tooling_update_context_once() {
 tooling_update_advisory_context() {
   local target state_dir report_file marker_file lock_dir tmp_report
 
-  [[ -f ".ai/harness/workflow-contract.json" ]] || return 1
+  [[ -f "forge.config.json" || -f ".ai/harness/workflow-contract.json" ]] || return 1
   [[ "${FORGE_TOOLING_ADVISORY:-1}" != "0" ]] || return 1
 
   target="$(tooling_update_target)"
-  state_dir=".ai/harness/security"
+  state_dir="$(workflow_machine_state_path '.ai/harness/security' '.ai/harness/security')"
   report_file="$state_dir/tooling-update-advisory-${target}.json"
   marker_file="$state_dir/tooling-update-advisory-${target}.rendered"
   lock_dir="$state_dir/tooling-update-advisory-${target}.lock"
@@ -269,7 +270,8 @@ continuation_section_has_signal() {
 }
 
 capability_context_pending() {
-  local queue_file=".ai/harness/capability-context/requests.jsonl"
+  local queue_file
+  queue_file="$(workflow_machine_state_path '.ai/harness/capability-context/requests.jsonl' '.ai/harness/capability-context/requests.jsonl')"
   local pending_lines=""
   local pending_count="0"
 

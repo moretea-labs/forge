@@ -1,23 +1,18 @@
 ## Quality & Safety
 
 ### Verification Gate
-- Never mark work done without verification output.
-- Run impact-based checks: typecheck, tests, lint/build.
-- Run `bash .ai/harness/scripts/check-task-workflow.sh --strict` before claiming the workflow is clean.
-- Run `bash .ai/harness/scripts/verify-contract.sh --contract <active-plan-contract> --strict` before any done/completed response when the active plan has a contract.
-- Require the matching `tasks/reviews/<plan-stem>.review.md` to recommend pass before claiming completion.
-- Require the matching `tasks/notes/<plan-stem>.notes.md` to capture material implementation decisions before review.
+- Never mark work done without current verification evidence for the exact candidate.
+- Run impact-based type/tests/lint/build checks through Forge Process Runtime.
+- High-risk or architecture-changing work requires the current Engineering Design contract and independent implementation review evidence.
+- If a Plan is involved, verify its declared acceptance criteria and predecessor-obligation continuity; do not infer semantic acceptance from passing commands alone.
 
 ### Safety Rules
-- Do not silently expand scope beyond approved plan.
-- If unexpected repo changes appear, stop and ask.
-- Prefer modifying existing files over unnecessary file creation.
+- Do not silently expand scope beyond the user/Work/Plan authority.
+- Preserve single-writer, authorization, resource fencing, replay/idempotency, and lifecycle cleanup boundaries.
+- Unexpected unrelated dirty work is placement/ownership evidence: isolate or reconcile it rather than absorbing it.
+- Prefer strengthening an existing general capability over adding incident-specific helpers or parallel lifecycle owners.
 
 ### Final Response Contract
-1. What changed — list modified files with one-line summary each
-2. Verification evidence — paste tool output: test results, build logs, or `git diff --stat`
-3. Which workflow artifacts were updated — list `tasks/*.md`, `docs/spec.md`, or `.ai/harness/*` files and what changed in each
-4. Known risks/gaps — bullet list with severity tag: `[HIGH]`, `[MEDIUM]`, `[LOW]`
-5. Optional next steps — actionable items the next session or user should address
-
----
+1. What changed
+2. Verification actually run
+3. Residual blockers/risks

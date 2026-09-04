@@ -668,6 +668,7 @@ describe("init command", () => {
         hostAdapters: false,
         externalSkills: false,
         verify: false,
+        codegraph: true,
         env: {
           ...process.env,
           HOME: home,

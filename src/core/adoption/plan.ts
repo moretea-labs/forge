@@ -8,7 +8,6 @@ import { summarizeOperations } from "./summary";
 import { managedBlockNeedsUpdate } from "../../effects/managed-block";
 import { workflowContractInstallOperation } from "./workflow-contract-plan";
 import { adoptionTemplateFile } from "./manifest-templates";
-import { helperWrapperGitignoreContent, helperWrapperOperations } from "./helper-wrapper-plan";
 import { withRollbackMetadata } from "./rollback";
 
 export interface PlanAdoptionOptions {
@@ -18,32 +17,13 @@ export interface PlanAdoptionOptions {
 }
 
 const MINIMAL_DIRS = [
-  "plans",
-  "tasks",
-  "tasks/issues",
-  "tasks/contracts",
-  "tasks/reviews",
-  "tasks/notes",
   "docs",
-  ".ai/harness/checks",
-  ".ai/harness/session",
-  ".ai/harness/controller/packets",
-  ".ai/harness/projections",
-  ".ai/harness/transfers",
+  "tasks",
 ] as const;
 
 const STANDARD_EXTRA_DIRS = [
-  "plans/prds",
-  "plans/sprints",
-  "tasks/workstreams",
   "docs/reference-configs",
-  ".ai/context",
-  ".ai/harness/failures",
-  ".ai/harness/architecture",
-  ".ai/harness/runs",
-  ".ai/harness/worktrees",
-  ".ai/harness/jobs",
-  ".ai/harness/edit-sessions",
+  "docs/researches",
 ] as const;
 
 function directoryPaths(mode: AdoptionMode): readonly string[] {
@@ -63,7 +43,6 @@ function writeIfMissingOperations(repoRoot: string): AdoptionOperation[] {
   const files = [
     adoptionTemplateFile(repoRoot, "spec"),
     adoptionTemplateFile(repoRoot, "deferredGoalLedger"),
-    adoptionTemplateFile(repoRoot, "currentStatus"),
     adoptionTemplateFile(repoRoot, "lessonsLog"),
   ] as const;
 
@@ -122,11 +101,10 @@ export function planAdoption(opts: PlanAdoptionOptions): AdoptionPlan {
     })),
     ...writeIfMissingOperations(repoRoot),
     ...workflowContractOperations(repoRoot),
-    ...helperWrapperOperations(repoRoot, mode),
   ];
 
   const gitignorePath = resolve(repoRoot, ".gitignore");
-  const gitignoreExtraContent = helperWrapperGitignoreContent(repoRoot, mode);
+  const gitignoreExtraContent = "";
   const plannedGitignoreOperation = gitignoreManagedBlockOperation("planned", gitignoreExtraContent);
   const gitignoreOperation = gitignoreManagedBlockOperation(
     managedBlockNeedsUpdate(existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf-8") : "", plannedGitignoreOperation)

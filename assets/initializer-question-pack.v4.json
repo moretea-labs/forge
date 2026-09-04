@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "version": "initializer-question-pack.v4",
-  "goal": "Infer strong harness defaults first, then confirm only the decisions that materially change the generated repo-local workflow.",
+  "goal": "Infer strong harness defaults first, then confirm only decisions that materially change authored repository structure or Controller-owned workflow behavior.",
   "decisionPoints": [
     {
       "id": "project_identity",
@@ -185,7 +185,7 @@
     "evaluationProfile": "browser-qa",
     "handoffProfile": "artifact-aware",
     "recoveryProfile": "hybrid",
-    "stateProfile": "file-backed",
+    "stateProfile": "controller-home",
     "contextProfile": "stable-root-progressive-subdir",
     "documentationProfile": "minimal-agentic",
     "aiNativeProfile": "none",
@@ -211,7 +211,7 @@
   "orchestrationProfiles": {
     "shared-long-running-harness": {
       "label": "Shared long-running harness",
-      "description": "Default planner -> generator -> evaluator loop with repo-local artifacts and strict execution gates."
+      "description": "Default Controller-guided planning -> implementation -> verification loop with durable Runtime authority in Controller Home and authored repository evidence only."
     },
     "lightweight-collaboration": {
       "label": "Lightweight collaboration",
@@ -253,13 +253,17 @@
     }
   },
   "stateProfiles": {
-    "file-backed": {
-      "label": "File-backed",
-      "description": "Persist execution, verification, and handoff state to repo-local artifacts."
+    "controller-home": {
+      "label": "Controller Home",
+      "description": "Persist mutable execution, verification, authorization, handoff, and lifecycle state under the Forge Controller Home; keep the repository limited to authored/declarative content."
     },
     "context-light": {
       "label": "Context-light",
-      "description": "Use the same workflow surface with fewer persisted state assumptions for lightweight repos."
+      "description": "Use Controller Home only when durable continuity is required; keep bounded direct work ephemeral."
+    },
+    "file-backed": {
+      "label": "Legacy file-backed (migration only)",
+      "description": "Compatibility input for older adopted repositories. Do not select for new projects or create new repo-local Runtime state."
     }
   },
   "contextProfiles": {

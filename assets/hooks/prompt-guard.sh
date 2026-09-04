@@ -1,7 +1,8 @@
 #!/bin/bash
 # Prompt Guard Hook — UserPromptSubmit
-# Shell layer: filesystem authority (plan/contract/worktree state), capture
-# side effects, and host-safe rendering. All prompt-text intent classification
+# Shell layer: compatibility reads for legacy plan/contract/worktree state plus
+# host-safe rendering. Modern controller-home repositories never create or use
+# repo-local Plan/Work files as authority. All prompt-text intent classification
 # lives in the TypeScript engine behind `prompt-guard-decide`, which receives
 # {"prompt": ...} on stdin plus PROMPT_GUARD_*_STATE env vars and returns a
 # single-line verdict JSON (action + intent facts + derived strings).
@@ -392,6 +393,15 @@ pg_fact() {
   [[ "${!var:-0}" == "1" ]]
 }
 
+modern_controller_home_runtime() {
+  [[ -f "forge.config.json" ]] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    [[ "$(jq -r '.runtimeState // empty' forge.config.json 2>/dev/null || true)" == "controller-home" ]]
+    return
+  fi
+  grep -Eq '"runtimeState"[[:space:]]*:[[:space:]]*"controller-home"' forge.config.json 2>/dev/null
+}
+
 # --- Side effects and hints (driven by engine facts) ---
 
 emit_pending_orchestration_discussion() {
@@ -603,38 +613,26 @@ run_codegraph_init_command() {
   return "$status"
 }
 
-ensure_codegraph_index_for_route() {
-  local output status
-
-  [[ -f ".codegraph/codegraph.db" ]] && return 0
-
-  output="$(run_codegraph_init_command 2>&1)"
-  status=$?
-
-  if [[ "$status" -eq 0 && -f ".codegraph/codegraph.db" ]]; then
-    echo "[CodegraphRoute] Initialized missing CodeGraph index before routing hint."
-  elif [[ "$status" -ne 127 ]]; then
-    echo "[CodegraphRoute] CodeGraph index init skipped or failed; run codegraph init -i . if structural tools are unavailable."
+emit_codegraph_route_hint() {
+  if pg_fact CODEGRAPH_ROUTE || pg_fact NONTRIVIAL_CODE_TASK; then
+    echo "[CodegraphRoute] Structural code-navigation intent detected. Prefer Forge rh_context/semantic navigation or an already-configured structural provider; do not initialize repo-local .codegraph state from a prompt hook."
   fi
 }
 
-emit_codegraph_route_hint() {
-  local session_key session_file=".claude/.session-id"
+modern_controller_home_workflow() {
+  [[ -f "forge.config.json" ]]
+}
 
-  mkdir -p .claude
-  session_key="$(session_state_resolve_key "$session_file" "${1:-}")"
-
-  if session_state_codegraph_used "$session_key" || session_state_codegraph_nudged "$session_key"; then
-    return 0
+emit_modern_controller_home_guidance() {
+  if pg_fact THINK_PLAN_START || pg_fact PLAN_START; then
+    echo "[ForgeRoute] Planning intent detected. Keep repo files for authored product/architecture content only; use Forge Plan/Work authority when durable execution state is needed."
+    echo "[ArchitectureCompleteness] For high-risk or architecture-changing work, Context Closure + Engineering Design receipts are correctness gates; prompt guidance is advisory only."
   fi
-
-  if pg_fact CODEGRAPH_ROUTE; then
-    ensure_codegraph_index_for_route || true
-    echo "[CodegraphRoute] Structural code-navigation intent detected. Prefer CodeGraph context/search/callers/impact before grep/read when available."
-    session_state_mark_codegraph_nudged "$session_key" || true
-  elif pg_fact NONTRIVIAL_CODE_TASK; then
-    echo "[CodegraphRoute] Structural code-navigation intent detected. Prefer CodeGraph context/search/callers/impact before grep/read when available."
-    session_state_mark_codegraph_nudged "$session_key" || true
+  if pg_fact IMPLEMENT; then
+    echo "[ArchitectureCompleteness] Implementation intent detected. Preserve the approved authority/lifecycle/authorization/resource/replay/retention contract; Forge admission and implementation review own enforcement."
+  fi
+  if pg_fact DONE; then
+    echo "[Review] Completion intent detected. Use current Forge verification/review evidence; do not materialize repo-local task/check/session closeout state."
   fi
 }
 
@@ -834,6 +832,18 @@ PROMPT_INTENT_TEXT="$(prompt_intent_text)"
 prompt_guard_refresh_state
 prompt_guard_engine_call
 
+# Kernel V2 cutover: forge.config.json selects the Controller Home workflow.
+# Prompt hooks are advisory only in this mode and MUST NOT materialize repo-local
+# Plan/Work/check/session/cache state. Legacy .ai/harness projects continue below
+# only so they can be migrated without breaking their existing workflow.
+if modern_controller_home_workflow; then
+  emit_agentic_packaging_hint
+  emit_forge_route_hint
+  emit_codegraph_route_hint
+  emit_modern_controller_home_guidance
+  exit 0
+fi
+
 if [[ "$PG_ENGINE_STATE" != "ok" ]]; then
   if [[ "$PG_ENGINE_STATE" == "legacy" ]]; then
     echo "[PromptGuard] Advisory: the installed forge CLI predates the prompt-verdict protocol; prompt intent gates are degraded to advisory for this prompt."
@@ -857,6 +867,22 @@ done_intent=0
 pg_fact DONE && done_intent=1
 plan_start_intent=0
 pg_fact PLAN_START && plan_start_intent=1
+
+if modern_controller_home_runtime; then
+  if [ "$plan_start_intent" -eq 1 ]; then
+    echo "[PlanStartGate] Planning intent detected. Durable decomposition belongs to Forge Controller Plan/Work; no repo-local Draft plan or pending marker will be created."
+  fi
+  if [ "$implement_intent" -eq 1 ] && [ "$PG_ACTION" = "spec_block" ]; then
+    echo "[SpecGuard] Advisory: docs/spec.md is missing. Create or update authored product truth before implementation when the change needs a durable specification."
+  fi
+  if [ "$done_intent" -eq 1 ]; then
+    echo "[PlanStatusGuard] Controller Home owns completion authority; legacy active-plan/task-contract files are ignored for modern repositories."
+  fi
+  if [ "$implement_intent" -eq 0 ]; then
+    emit_workflow_file_guards
+  fi
+  exit 0
+fi
 
 plan_research_ready=1
 if [ "$plan_start_intent" -eq 1 ]; then

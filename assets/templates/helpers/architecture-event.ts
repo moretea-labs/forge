@@ -367,8 +367,8 @@ function renderRequiredFollowUp(event: ArchitectureEvent): string {
     "- When a visual explains the boundary better than prose, add or update a Mermaid fenced block in the relevant architecture module or snapshot Markdown first; that Markdown is the semantic source for LLM readers.",
     "- When a human-readable rendering is useful, generate a matching `$mermaid` architecture HTML file under `docs/architecture/diagrams/` and link it back to the Markdown semantic source.",
     "- Treat `mermaid` as an external installed skill dependency at `~/.codex/skills/mermaid`; do not copy, vendor, or inline its templates into this repo.",
-    `- If this starts or advances durable execution, run \`scripts/workstream-sync.sh ensure --block "${functionalBlock}" --request "${requestFile}"\`.`,
-    "- After the snapshot or diagram is produced, run `scripts/context-contract-sync.sh sync-latest` so the local architecture contract block links to the latest artifacts.",
+    "- Durable Requirement/Plan/Work progress belongs to Forge Controller Home; do not create repo-local workstream/session projections for this architecture event.",
+    "- After the snapshot or diagram is produced, run `scripts/context-contract-sync.sh sync-latest` so the local architecture contract block links only to authored architecture artifacts.",
   ].join("\n");
 }
 
@@ -407,7 +407,6 @@ function renderRequestCard(event: ArchitectureEvent, events: ArchitectureEvent[]
     `> **Architecture Domain**: \`${event.architecture_domain}\``,
     `> **Architecture Capability**: \`${event.architecture_capability}\``,
     `> **Architecture Module**: \`${event.architecture_module}\``,
-    `> **Workstream Directory**: \`${event.workstream_dir}\``,
     `> **Contract Files**: \`${event.contract_agents || "none"}\`, \`${event.contract_claude || "none"}\``,
     `> **Contract Sync Required**: ${Boolean(event.contract_sync_required)}`,
     `> **Spawn Recommended**: ${events.some((entry) => Boolean(entry.spawn_recommended))}`,
@@ -607,26 +606,6 @@ function metadataValue(file: string, label: string): string {
   return "";
 }
 
-function activeWorkstreams(workstreamDir: string): string {
-  if (!existsSync(workstreamDir)) return "- (none yet)";
-  const files = readdirMarkdown(workstreamDir).slice(0, 5);
-  if (files.length === 0) return "- (none yet)";
-
-  return files
-    .flatMap((file) => {
-      const status = metadataValue(file, "Status") || "unknown";
-      const currentSlice = metadataValue(file, "Current Slice") || "unknown";
-      const sourcePlan = metadataValue(file, "Source Plan") || "unknown";
-      return [
-        `- \`${file}\``,
-        `  - status: ${status}`,
-        `  - current_slice: ${currentSlice}`,
-        `  - source_plan: ${sourcePlan}`,
-      ];
-    })
-    .join("\n");
-}
-
 function readdirMarkdown(dir: string): string[] {
   try {
     return readdirSync(dir, { withFileTypes: true })
@@ -670,7 +649,6 @@ function renderContractBlock(args: Args): string {
   const architectureDomain = requireOption(args, "architectureDomain");
   const architectureCapability = requireOption(args, "architectureCapability");
   const architectureModule = requireOption(args, "architectureModule");
-  const workstreamDir = requireOption(args, "workstreamDir");
   const blockSlug = safeToken(functionalBlock);
   const latestSnapshot = findLatestMatchingFile("docs/architecture/snapshots", blockSlug, ".md");
   const latestHumanDiagram = findLatestMatchingFile("docs/architecture/diagrams", blockSlug, ".html");
@@ -707,16 +685,7 @@ function renderContractBlock(args: Args): string {
     `- Semantic diagram source: \`${semanticDiagramSource}\``,
     `- Latest human diagram: \`${latestHumanDiagram}\``,
     `- Pending architecture request: \`${requestFile}\``,
-    "",
-    "## Active Workstreams",
-    "",
-    activeWorkstreams(workstreamDir),
-    "",
-    "## Current Session Projection",
-    "",
-    `- Durable progress lives under \`${workstreamDir}\`.`,
-    "- `tasks/current.md` is the tracked derived status snapshot; it is not a live lock or task source.",
-    "- `tasks/todos.md` is the deferred-goal ledger; current execution slices stay in the active plan's `## Task Breakdown`.",
+    "- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.",
     "<!-- END ARCHITECTURE CONTRACT -->",
     "",
   ].join("\n");

@@ -7,7 +7,7 @@
 Start with the shortest truth path:
 
 1. `~/.claude/settings.json` and `~/.codex/hooks.json` wire host events into `forge-hook` (bash-shim installs use `bash ~/.forge/hook-shim.sh <hook>.sh`), with `forge hook` as the compatibility fallback.
-2. The dispatcher checks whether the current repo is opted in through `.ai/harness/workflow-contract.json` (and, for the bash shim, that its primary root is trusted in `~/.forge/trusted-repos`).
+2. The dispatcher checks whether the current repo is opted in through `forge.config.json` (legacy `.ai/harness/workflow-contract.json` remains migration-only) (and, for the bash shim, that its primary root is trusted in `~/.forge/trusted-repos`).
 3. The route registry selects the ordered hook scripts for that event and route.
 4. Hook scripts resolve **central-first**: env `FORGE_HOOK_SOURCE` (`repo` | `central` | absolute dir) → repo policy pin `"hook_source": "repo"` in `.ai/harness/policy.json` → the central copy → vendored `<repo>/.ai/hooks` fallback. The central copy is `~/.forge/hooks/` (installed by `scripts/forge.sh install`, stamped with `.version`) on the bash chain, and the packaged `assets/hooks/` inside the globally installed CLI on the `forge-hook` chain.
 

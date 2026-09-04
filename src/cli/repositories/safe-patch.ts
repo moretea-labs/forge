@@ -12,6 +12,7 @@ import {
 } from '../editing/edit-session';
 import { getMcpPolicy } from '../mcp/policy';
 import type { RepositoryRecord } from './types';
+import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
 
 export interface SafePatchFingerprint {
   path: string;
@@ -348,6 +349,10 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   recoverStaleSession?: unknown;
   binding?: EditSessionBinding;
 }): SafePatchApplyResult {
+  const editStorage = ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions');
+  if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
+    throw new Error(`SAFE_PATCH_EDIT_SESSION_STORAGE_NOT_READY: ${editStorage.message ?? editStorage.status}`);
+  }
   const operations = normalizedSafePatchOperations(input.operations);
   if (operations.length === 0) throw new Error('SAFE_PATCH_OPERATIONS_REQUIRED: provide at least one operation');
   const size = chunkSize(input.chunkSize);

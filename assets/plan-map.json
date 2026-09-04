@@ -34,7 +34,7 @@
         "evaluation": "browser-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -60,7 +60,7 @@
         "evaluation": "browser-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -86,7 +86,7 @@
         "evaluation": "browser-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -112,7 +112,7 @@
         "evaluation": "command-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -138,7 +138,7 @@
         "evaluation": "browser-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -163,7 +163,7 @@
         "evaluation": "browser-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -190,7 +190,7 @@
         "evaluation": "command-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "pyright-lsp",
       "defaultTemplateVariables": {
@@ -215,7 +215,7 @@
         "evaluation": "command-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "gopls-lsp",
       "defaultTemplateVariables": {
@@ -240,7 +240,7 @@
         "evaluation": "browser-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {
@@ -265,7 +265,7 @@
         "evaluation": "command-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "rust-analyzer-lsp",
       "defaultTemplateVariables": {
@@ -290,7 +290,7 @@
         "evaluation": "command-qa",
         "handoff": "artifact-aware",
         "recovery": "hybrid",
-        "state": "file-backed"
+        "state": "controller-home"
       },
       "defaultLsp": "typescript-lsp",
       "defaultTemplateVariables": {

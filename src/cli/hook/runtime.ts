@@ -1,10 +1,14 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawnSync, type StdioOptions } from 'child_process';
+import { repositoryControllerRoot, resolveControllerHome } from '../repositories/controller-home';
+import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import { getRoute, type HookEvent, type RouteId } from './route-registry';
 
-const OPT_IN_MARKER = '.ai/harness/workflow-contract.json';
+const OPT_IN_MARKER = 'forge.config.json';
+const LEGACY_OPT_IN_MARKER = '.ai/harness/workflow-contract.json';
 const POLICY_FILE = '.ai/harness/policy.json';
 const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -83,7 +87,7 @@ export function resolveRepoRoot(cwd: string): string | null {
 }
 
 export function isOptIn(repoRoot: string): boolean {
-  return fs.existsSync(path.join(repoRoot, OPT_IN_MARKER));
+  return fs.existsSync(path.join(repoRoot, OPT_IN_MARKER)) || fs.existsSync(path.join(repoRoot, LEGACY_OPT_IN_MARKER));
 }
 
 /**
@@ -106,6 +110,36 @@ export type HookSource = 'env' | 'repo-pin' | 'packaged' | 'repo-fallback';
 export interface ResolvedHooksDir {
   dir: string;
   source: HookSource;
+}
+
+export interface ResolvedHookStateRoot {
+  root: string;
+  source: 'env' | 'controller-home' | 'ephemeral';
+  repoId?: string;
+}
+
+export function resolveHookStateRoot(
+  repoRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedHookStateRoot {
+  const explicit = env.FORGE_HOOK_STATE_ROOT?.trim();
+  if (explicit && path.isAbsolute(explicit)) {
+    fs.mkdirSync(explicit, { recursive: true });
+    return { root: explicit, source: 'env' };
+  }
+
+  const controllerHome = resolveControllerHome(env.FORGE_CONTROLLER_HOME);
+  const repository = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
+  if (repository) {
+    const root = path.join(repositoryControllerRoot(controllerHome, repository.repoId), 'hook-state');
+    fs.mkdirSync(root, { recursive: true });
+    return { root, source: 'controller-home', repoId: repository.repoId };
+  }
+
+  return {
+    root: fs.mkdtempSync(path.join(os.tmpdir(), 'forge-hook-state-')),
+    source: 'ephemeral',
+  };
 }
 
 function repoPinsHookSource(repoRoot: string): boolean {
@@ -173,6 +207,7 @@ export function runHook(opts: RunHookOptions): RunHookResult {
     return { exitCode: 2, reason: 'unknown-route', repoRoot, scriptsRun, skippedScripts };
   }
 
+  const hookState = resolveHookStateRoot(repoRoot);
   const resolved: ResolvedHooksDir = opts.hooksDir
     ? { dir: opts.hooksDir, source: 'env' }
     : resolveHooksDir(repoRoot);
@@ -202,6 +237,7 @@ export function runHook(opts: RunHookOptions): RunHookResult {
     ? ['inherit', 'pipe', 'inherit']
     : (opts.stdio ?? 'inherit');
 
+  try {
   for (const script of route.scripts) {
     const scriptPath = path.join(hooksDir, script);
     if (!fs.existsSync(scriptPath)) {
@@ -230,7 +266,12 @@ export function runHook(opts: RunHookOptions): RunHookResult {
     const child = spawnSync('bash', [scriptPath, ...(opts.args ?? [])], {
       cwd: repoRoot,
       stdio,
-      env: { ...process.env, HOOK_REPO_ROOT: repoRoot },
+      env: {
+        ...process.env,
+        HOOK_REPO_ROOT: repoRoot,
+        FORGE_HOOK_STATE_ROOT: hookState.root,
+        FORGE_REPO_ID: hookState.repoId ?? '',
+      },
     });
 
     if (child.error) {
@@ -300,4 +341,9 @@ export function runHook(opts: RunHookOptions): RunHookResult {
   }
 
   return { exitCode: 0, reason: 'ok', repoRoot, scriptsRun, skippedScripts };
+  } finally {
+    if (hookState.source === 'ephemeral') {
+      fs.rmSync(hookState.root, { recursive: true, force: true });
+    }
+  }
 }

@@ -382,9 +382,11 @@ export function runInit(opts: InitCommandOptions = {}): InitCommandResult {
   const syncSkill = opts.syncSkill !== false;
   const hostAdapters = opts.hostAdapters !== false;
   const externalSkills = opts.externalSkills === true;
-  const codegraph = opts.codegraph !== false;
   const configureCgMcp = opts.configureCodegraphMcp === true;
   const syncCodegraph = opts.syncCodegraph === true;
+  // CodeGraph is an optional rebuildable tool cache. Ordinary adoption leaves it
+  // disabled; any explicit CodeGraph operation opts in and uses the Controller Home-backed compatibility link.
+  const codegraph = opts.codegraph === true || configureCgMcp || syncCodegraph;
   const brainMode = opts.brainMode ?? "skip";
   const target = opts.target ?? "both";
   const steps: InitStep[] = [];

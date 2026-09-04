@@ -13,7 +13,6 @@
         "claude": "src/cli/mcp/transports/CLAUDE.md"
       },
       "architecture_module": "docs/architecture/modules/controller-runtime/transport-lifecycle.md",
-      "workstream_dir": "tasks/workstreams/controller-runtime/transport-lifecycle",
       "lsp_profile": "typescript-lsp",
       "verification_hints": [
         "bun test tests/unit/fix-mcp-session-lifecycle.test.ts tests/cli/mcp-http.test.ts"
@@ -31,7 +30,6 @@
         "claude": "src/runtime/supervisor/CLAUDE.md"
       },
       "architecture_module": "docs/architecture/modules/controller-runtime/stable-supervisor.md",
-      "workstream_dir": "tasks/workstreams/controller-runtime/stable-supervisor",
       "lsp_profile": "typescript-lsp",
       "verification_hints": [
         "bun test tests/runtime/stable-supervisor-hardening.test.ts tests/runtime/stable-supervisor-integration.test.ts"

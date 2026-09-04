@@ -76,6 +76,7 @@ export type WorkflowContract = {
     requiredDirectories: string[];
     requiredFiles: string[];
     runtimeFiles?: string[];
+    legacyRuntimePaths?: string[];
   };
   documents: {
     spec: string;

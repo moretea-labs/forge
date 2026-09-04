@@ -111,6 +111,10 @@ autoresearch/
 _ref/
 _ops/
 .repo-harness/
+.codegraph
+.forge/browser
+.forge/interactions
+.forge/plugins
 .forge/mcp.local.json
 .forge/mcp.tokens.json
 .forge/chatgpt-browser.local.json

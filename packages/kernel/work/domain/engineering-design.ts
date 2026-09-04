@@ -2,9 +2,32 @@ import { createHash } from 'crypto';
 
 export const ENGINEERING_MUTATION_CLASSES = ['readonly', 'isolated_write', 'integration_write', 'external_effect'] as const;
 export type EngineeringMutationClass = (typeof ENGINEERING_MUTATION_CLASSES)[number];
-export const ENGINEERING_DECISION_AREAS = [
+export const ENGINEERING_DECISION_AREAS_V1 = [
   'ownership', 'singleWriter', 'transaction', 'lifecycle', 'concurrency', 'persistence',
   'failure', 'projectionCache', 'time', 'performance', 'compatibility',
+] as const;
+
+/**
+ * Cross-cutting architecture completeness contract. These axes are intentionally
+ * domain-neutral so high-risk designs cannot pass merely because one module-local
+ * happy path looks coherent. Historical v1 receipts remain readable below.
+ */
+export const ENGINEERING_DECISION_AREAS = [
+  ...ENGINEERING_DECISION_AREAS_V1,
+  'semanticScopeIdentity',
+  'authorizationTrust',
+  'resourceFencing',
+  'deploymentTopology',
+  'schemaEvolutionDurability',
+  'idempotencyReplay',
+  'retentionGc',
+  'observabilityEvidence',
+  'recoveryFailureDomain',
+  'capacityBackpressure',
+  'releaseUpgradeRollback',
+  'securityPrivacy',
+  'portability',
+  'migrationRetirement',
 ] as const;
 export type EngineeringDecisionArea = (typeof ENGINEERING_DECISION_AREAS)[number];
 export type EngineeringCritiqueDecision = 'approved' | 'changes_required' | 'blocked';
@@ -109,7 +132,7 @@ function normalizeComplexityBudget(value: EngineeringComplexityBudget): Engineer
 }
 
 export interface DesignDecisionContractReceipt {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   receiptId: string;
   sourceRevision: string;
   contextClosureReceiptId: string;
@@ -121,11 +144,17 @@ export interface DesignDecisionContractReceipt {
   supersedesReceiptId?: string;
   recordedAt: string;
 }
-export interface DesignDecisionContractDraft extends Omit<DesignDecisionContractReceipt, 'schemaVersion' | 'receiptId'> {}
-function normalizeDesignDecision(input: DesignDecisionContractDraft): DesignDecisionContractDraft {
+export interface DesignDecisionContractDraft extends Omit<DesignDecisionContractReceipt, 'schemaVersion' | 'receiptId'> {
+  decisions: Record<EngineeringDecisionArea, string>;
+}
+type NormalizedDesignDecision = Omit<DesignDecisionContractDraft, 'decisions'> & { decisions: Record<string, string> };
+function normalizeDesignDecision(
+  input: DesignDecisionContractDraft | DesignDecisionContractReceipt,
+  areas: readonly EngineeringDecisionArea[] = ENGINEERING_DECISION_AREAS,
+): NormalizedDesignDecision {
   if (!ENGINEERING_MUTATION_CLASSES.includes(input.mutationClass)) throw new Error('ENGINEERING_MUTATION_CLASS_INVALID');
-  const decisions = {} as Record<EngineeringDecisionArea, string>;
-  for (const area of ENGINEERING_DECISION_AREAS) decisions[area] = text(input.decisions?.[area], `DESIGN_DECISION_${area.toUpperCase()}_REQUIRED`);
+  const decisions: Record<string, string> = {};
+  for (const area of areas) decisions[area] = text((input.decisions as Record<string, unknown> | undefined)?.[area], `DESIGN_DECISION_${area.toUpperCase()}_REQUIRED`);
   const supersedesReceiptId = input.supersedesReceiptId?.trim() || undefined;
   return {
     sourceRevision: text(input.sourceRevision, 'DESIGN_DECISION_SOURCE_REQUIRED'),
@@ -143,11 +172,17 @@ export function buildDesignDecisionContractReceipt(input: DesignDecisionContract
   const normalized = normalizeDesignDecision(input);
   const id = receiptId('design_decision', normalized);
   if (normalized.supersedesReceiptId === id) throw new Error('DESIGN_DECISION_CANNOT_SUPERSEDE_SELF');
-  return { schemaVersion: 1, receiptId: id, ...normalized };
+  return { schemaVersion: 2, receiptId: id, ...normalized } as DesignDecisionContractReceipt;
 }
 export function validateDesignDecisionContractReceipt(value: DesignDecisionContractReceipt): DesignDecisionContractReceipt {
-  if (value.schemaVersion !== 1) throw new Error('DESIGN_DECISION_SCHEMA_INVALID');
-  const expected = buildDesignDecisionContractReceipt(value);
+  if (value.schemaVersion === 1) {
+    const normalized = normalizeDesignDecision(value, ENGINEERING_DECISION_AREAS_V1);
+    const expectedId = receiptId('design_decision', normalized);
+    if (value.receiptId !== expectedId) throw new Error('DESIGN_DECISION_RECEIPT_ID_INVALID');
+    return value;
+  }
+  if (value.schemaVersion !== 2) throw new Error('DESIGN_DECISION_SCHEMA_INVALID');
+  const expected = buildDesignDecisionContractReceipt(value as DesignDecisionContractDraft);
   if (value.receiptId !== expected.receiptId) throw new Error('DESIGN_DECISION_RECEIPT_ID_INVALID');
   return expected;
 }

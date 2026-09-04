@@ -47,18 +47,10 @@ install_hook_settings_template() {
 ensure_runtime_gitignore_block() {
     local file_path="$1"
     local extra_entries=""
-    local helper_entries=""
     if pi_should_enable_factor_factory "$(pi_plan_type "$STACK")"; then
         extra_entries="$(pi_factor_factory_gitignore_entries)"
     fi
-    helper_entries="$(pi_helper_wrapper_gitignore_entries "$ASSETS_WORKFLOW_CONTRACT")"
-    if [[ -n "$helper_entries" ]]; then
-        if [[ -n "$extra_entries" ]]; then
-            extra_entries="${extra_entries}"$'\n'"${helper_entries}"
-        else
-            extra_entries="$helper_entries"
-        fi
-    fi
+    # Package helpers are runtime/package capabilities, not generated repo files.
     pi_ensure_gitignore_block "$file_path" "" "$extra_entries" "apply"
 }
 
@@ -206,28 +198,13 @@ create_structure() {
     if pi_should_generate_full_docs; then
         mkdir -p docs/architecture
     fi
-    mkdir -p tasks/contracts
-    mkdir -p tasks/reviews
-    mkdir -p tasks/notes
     mkdir -p .ai/context
-    mkdir -p .ai/harness/checks
-    mkdir -p .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers
-    mkdir -p .ai/harness/failures
-    mkdir -p .ai/harness/runs
-    mkdir -p .claude/templates
     mkdir -p deploy/env
     mkdir -p deploy/scripts
     mkdir -p deploy/submissions
     mkdir -p deploy/runbooks
     mkdir -p deploy/release-checklists
     mkdir -p deploy/sql
-    mkdir -p _ops/env
-    mkdir -p _ops/secrets
-    mkdir -p _ops/artifacts
-    mkdir -p _ops/logs
-    mkdir -p _ops/state
-    mkdir -p _ops/scratch
-    mkdir -p artifacts
     create_contract_directories
 
     # Create documentation files
@@ -262,25 +239,6 @@ Do not duplicate that execution checklist here. Record only work intentionally d
 | (none) | No deferred medium/long-term goal recorded yet. | Keep the first sprint bounded. | Add a row when a real follow-up is postponed. |
 EOF
 
-    cat > tasks/current.md << EOF
-# Current Status Snapshot
-
-<!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: bootstrap -->
-<!-- stale_after: 24h -->
-
-> **Status**: Idle
-> **Updated At**: bootstrap
-> **Source Branch**: main
-> **Source Commit**: bootstrap
-> **Target Branch**: main
-> **Stale After**: 24h
-> **Reason**: bootstrap
-> **Derived From**: active-plan, workstreams, handoff, checks, git status
-
-This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
-EOF
-
     cat > tasks/lessons.md << EOF
 # Lessons Learned (Self-Improvement Loop)
 
@@ -295,8 +253,6 @@ EOF
 - Where to apply next time:
 EOF
 
-    pi_install_templates "$PWD" "$ASSETS_TEMPLATES_DIR" "apply"
-
     mkdir -p docs/researches
     cat > docs/researches/README.md << EOF
 # Research Reports
@@ -304,36 +260,21 @@ EOF
 Durable research reports live in this directory as topic-scoped Markdown files.
 
 Use \`YYYYMMDD-topic.md\` names when chronology matters, or \`<topic>.md\` for
-stable subject reports. Keep task-local implementation decisions in
-\`tasks/notes/\`, and keep repeated correction-derived rules in \`tasks/lessons.md\`.
+stable subject reports. Keep durable product/architecture decisions in authored
+documentation; mutable Requirement/Plan/Work execution state stays in Controller Home.
 EOF
 
-    local helper_names
-    helper_names="$(pi_workflow_contract_query_lines "$ASSETS_WORKFLOW_CONTRACT" "helpers.scripts" | xargs)"
-    pi_install_helpers "$PWD" "$ASSETS_TEMPLATES_DIR/helpers" "apply" "$helper_names"
     install_workflow_contract
     if pi_should_enable_factor_factory "$(pi_plan_type "$STACK")"; then
         pi_install_factor_factory "$PWD" "$ASSETS_FACTOR_FACTORY_DIR" "$SCRIPT_DIR" "apply"
     fi
     ensure_task_sync_package_script
-    # Canonical harness state surface:
-    # - .ai/context/context-map.json
-    # - .ai/harness/policy.json
-    # - .ai/harness/brain-manifest.json
-    # - .ai/harness/checks/latest.json
-    # - .ai/harness/events.jsonl
-    # - .ai/harness/architecture/events.jsonl
-    # - .ai/harness/session/continuation.md
-    # - .ai/harness/session/resume.md
-    # - .ai/harness/failures/latest.jsonl
-    # - .ai/harness/security/.gitkeep
-    # - .ai/harness/worktrees/.gitkeep
-    # - .ai/harness/runs/.gitkeep
-    pi_ensure_harness_state_surface "$PWD" "apply"
+    # Mutable Forge Runtime state is intentionally not scaffolded into the repository.
+    # Repository registration binds Runtime state to Controller Home.
 
     install_hook_settings_template
-
-    install_hook_assets
+    pi_install_root_context_files "$PWD" "apply"
+    pi_install_directory_context_files "$PWD" "apply"
 
     if [ -d "$ASSETS_REF_DIR" ]; then
         pi_install_reference_configs "$PWD" "$ASSETS_REF_DIR" "apply"
@@ -352,10 +293,13 @@ EOF
     ensure_gitignore_entry .gitignore ""
     ensure_gitignore_entry .gitignore "# External references"
     ensure_gitignore_entry .gitignore "_ref/"
+    ensure_gitignore_entry .gitignore ".codegraph"
     ensure_gitignore_entry .gitignore ".codegraph/"
     ensure_gitignore_entry .gitignore ""
     ensure_gitignore_entry .gitignore "# Local operations state"
     ensure_gitignore_entry .gitignore "_ops/"
+    ensure_gitignore_entry .gitignore ".forge/browser"
+    ensure_gitignore_entry .gitignore ".forge/plugins"
     ensure_gitignore_entry .gitignore ""
     ensure_gitignore_entry .gitignore "# Environment"
     ensure_gitignore_entry .gitignore ".env"
@@ -491,8 +435,8 @@ main() {
     echo "  1. cd $PROJECT_NAME"
     echo "  2. Copy .env.example to .env and configure"
     echo "  3. Run: $PKG_MANAGER run dev"
-    echo "  4. Use Codex Plan mode or Forge /plan, then capture it with: bash scripts/capture-plan.sh --slug first-feature --title \"First Feature\""
-    echo "  5. After approval, run: bash scripts/plan-to-todo.sh --plan <active-plan>"
+    echo "  4. Use Forge /plan only when real decomposition is needed; mutable Plan/Work state stays in Controller Home"
+    echo "  5. Keep only authored product, architecture, research, and deferred-goal documents in Git"
     echo ""
     pi_print_external_tooling_report "$PWD" "apply" "$SCRIPT_DIR/check-agent-tooling.sh"
     echo ""

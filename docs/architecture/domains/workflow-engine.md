@@ -18,7 +18,7 @@ verify without a live service.
 ## Stable Rules
 
 - `assets/workflow-contract.v1.json` is the canonical contract asset.
-- `.ai/harness/workflow-contract.json` is the installed runtime copy.
+- `forge.config.json` (legacy `.ai/harness/workflow-contract.json` remains migration-only) is the installed runtime copy.
 - Migration deletes only manifest-owned `known_generated` surfaces.
 - User-authored legacy docs are preserved or archived before template refresh.
 - `_ref/`, `_ops/`, secrets, local env, and custom hooks are not product migration surfaces.

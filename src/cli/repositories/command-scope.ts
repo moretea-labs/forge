@@ -262,6 +262,18 @@ function operationForToken(words: string[], index: number, external: string, cwd
   return 'external_write';
 }
 
+function gitIndexOnlyRepositoryOperand(words: string[], index: number, candidateToken: string, cwd: string, root: string): boolean {
+  const executable = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (executable !== 'git') return false;
+  const subcommand = words[1];
+  const indexOnly = subcommand === 'update-index'
+    || (subcommand === 'rm' && words.includes('--cached'))
+    || (subcommand === 'restore' && words.includes('--staged') && !words.includes('--worktree'));
+  if (!indexOnly || index < 2) return false;
+  const lexical = candidateToken.startsWith('/') ? resolve(candidateToken) : resolve(cwd, candidateToken);
+  return pathInside(root, lexical);
+}
+
 export function assertCommandPathOperandsStayInRepository(
   command: string | CanonicalRepositoryCommand,
   cwd: string,
@@ -288,6 +300,10 @@ export function assertCommandPathOperandsStayInRepository(
       const absoluteInput = candidateToken.startsWith('/');
       if (!absoluteInput && !/[./\\*?]/.test(candidateToken) && !existsSync(join(cwd, candidateToken))) continue;
       const candidate = absoluteInput ? resolve(candidateToken) : resolve(cwd, candidateToken);
+      // Git index-only operations address the repository entry itself and do not
+      // dereference its symlink target. Fence them lexically to the repository;
+      // all filesystem-affecting operations still use realpath below.
+      if (gitIndexOnlyRepositoryOperand(words, index, candidateToken, cwd, root)) continue;
       const existing = nearestExistingPath(candidate);
       if (!existing) continue;
       const resolved = realpathSync(existing);

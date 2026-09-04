@@ -22,7 +22,7 @@
 #   c. central bundle: ${FORGE_HOME}/hooks (installed by `install`)
 #   d. fallback: <repo>/.ai/hooks (vendored copy, pre-bundle installs)
 #
-# Opt-in marker: .ai/harness/workflow-contract.json (any non-opt-in repo is no-op)
+# Opt-in marker: forge.config.json; legacy .ai/harness/workflow-contract.json is read-only migration fallback
 # Trust file:    ${FORGE_HOME:-~/.forge}/trusted-repos — one primary
 #                repo root per line. Linked worktrees inherit trust from their
 #                primary repo so contract worktrees keep working. Manage with
@@ -41,7 +41,7 @@ TRUST_FILE="$FORGE_HOME/trusted-repos"
 CENTRAL_HOOKS_DIR="$FORGE_HOME/hooks"
 
 repo=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-[ -f "$repo/.ai/harness/workflow-contract.json" ] || exit 0
+[ -f "$repo/forge.config.json" ] || [ -f "$repo/.ai/harness/workflow-contract.json" ] || exit 0
 
 # Safety: defer to project-level if it still exists (prevents double-fire on
 # non-migrated repos). After `forge migrate <repo>` removes the project

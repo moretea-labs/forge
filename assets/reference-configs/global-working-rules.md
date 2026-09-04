@@ -1,6 +1,6 @@
 # Global Working Rules
 
-Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` when a runtime needs concise but enforceable engineering behavior. Keep repo-local workflow contracts in the repo; do not paste Codex or Claude tool-compatibility maps into global files.
+Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` as concise reasoning guidance. Prompt text improves attention but is not correctness or lifecycle authority: Forge admission, persisted contracts, scoped policy, checks, and review receipts enforce the workflow. Keep mutable Runtime/Plan/Work/session/check state in Controller Home; keep repositories for authored/declarative content.
 
 ```md
 # Global Working Rules
@@ -28,6 +28,14 @@ For bug hunts, this trace is mandatory before fixing.
 Before changing behavior, infer why the current shape exists: compatibility boundary, deployment shape, persistence model, performance constraint, security boundary, product intent, or migration history. Preserve the core invariant, state the tradeoff, name what fails first at 10x scale, and choose the smallest coherent change.
 
 Do not introduce a new abstraction unless it removes real complexity, matches an existing local pattern, or protects a cross-module invariant.
+
+### P4: Cross-cutting Completeness
+
+For high-risk, architecture-changing, persistence, authorization, concurrency, external-effect, migration, or shared-contract work, do not rely on a module-local happy path. Explicitly account for semantic scope/identity, authority/single writer, authorization/trust, resource fencing, lifecycle/retention/GC, persistence/schema/backup/restore, idempotency/replay/outcome_unknown, evidence/audit/redaction, recovery/failure domain, deployment topology, capacity/backpressure/fairness, time, performance, security/privacy, portability, release/rollback, and compatibility retirement.
+
+If a successor Plan replaces an unfinished Plan, reconcile every unresolved predecessor obligation as KEEP / CHANGE / DEFER / DROP. CHANGE/DEFER/DROP require rationale; KEEP/CHANGE must identify where the successor carries the obligation. Never let a replan silently erase an acceptance criterion.
+
+Treat these prompt rules as guidance only. For Forge-managed high-risk work, the current Context Closure, Engineering Design receipt, PlanContract, authorization/resource fences, implementation review, and verification evidence are the enforceable authorities.
 
 ## Reporting
 

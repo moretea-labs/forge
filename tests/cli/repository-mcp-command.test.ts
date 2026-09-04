@@ -770,7 +770,8 @@ describe("repository MCP command tools", () => {
       expect(persisted.localRoot).toBe(realpathSync(repoRoot));
       expect(persisted.activeCheckoutId).toBe(canonical.activeCheckoutId);
       expect(persisted.displayName).toBe("canonical-name");
-      expect(persisted.configurationPath).toBe(join(realpathSync(repoRoot), ".ai/harness/repository.json"));
+      expect(persisted.configurationPath).toBe(join(controllerHome, "repositories.json"));
+      expect(existsSync(join(realpathSync(repoRoot), ".ai/harness/repository.json"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot, worktreeRoot]);
       rmSync(workspace, { recursive: true, force: true });

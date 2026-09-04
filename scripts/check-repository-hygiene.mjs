@@ -9,32 +9,65 @@ const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' 
   .split('\n').map((line) => line.trim()).filter(Boolean);
 const failures = [];
 
-for (const prefix of ['evals/', 'references/', 'recovery/']) {
+for (const prefix of ['evals/', 'references/', 'recovery/', 'tasks/issues/', 'tasks/contracts/', 'tasks/reviews/', 'tasks/notes/', 'tasks/workstreams/']) {
   const hits = tracked.filter((path) => path.startsWith(prefix));
   if (hits.length) failures.push(`retired tracked root ${prefix}: ${hits.slice(0, 5).join(', ')}`);
 }
-for (const exact of ['scripts/run-skill-evals.ts']) {
+for (const exact of ['scripts/run-skill-evals.ts', 'tasks/current.md']) {
   if (tracked.includes(exact)) failures.push(`retired tracked file: ${exact}`);
 }
 
 const sourcePollution = [
   '.ai/harness/local-jobs-archive',
   '.ai/harness/jobs-archive',
-  '.ai/harness/checks/gates',
   '.forge/tools',
   '.forge/tmp',
   '.forge/assistant',
+  '_ops',
+  '.repo-harness',
 ];
 for (const relativePath of sourcePollution) {
   if (existsSync(join(ROOT, relativePath))) failures.push(`runtime/cache data must not live in source tree: ${relativePath}`);
 }
-for (const relativePath of ['.forge/browser', '.forge/interactions']) {
+for (const relativePath of [
+  '.forge/browser',
+  '.forge/interactions',
+  '.forge/plugins',
+  '.codegraph',
+  '.ai/harness/checks',
+  '.ai/harness/session',
+  '.ai/harness/planning',
+  '.ai/harness/security',
+  '.ai/harness/transfers',
+  '.ai/harness/edit-sessions',
+]) {
   const path = join(ROOT, relativePath);
   if (!existsSync(path)) continue;
   try {
-    if (!lstatSync(path).isSymbolicLink()) failures.push(`provider runtime data must be Controller-Home-backed (symlink or absent): ${relativePath}`);
+    if (!lstatSync(path).isSymbolicLink()) failures.push(`runtime data must be Controller-Home-backed (symlink or absent): ${relativePath}`);
   } catch {
     failures.push(`cannot inspect runtime path: ${relativePath}`);
+  }
+}
+
+
+const producerSources = [
+  'src/core/adoption/plan.ts',
+  'scripts/create-project-dirs.sh',
+  'scripts/init-project.sh',
+  'scripts/lib/project-init-lib.sh',
+];
+const forbiddenProducerFragments = [
+  'tasks/current.md',
+  'tasks/issues',
+  'tasks/workstreams',
+  'mkdir -p _ops',
+  'mkdir -p .ai/harness/checks',
+];
+for (const relativePath of producerSources) {
+  const content = readFileSync(join(ROOT, relativePath), 'utf8');
+  for (const fragment of forbiddenProducerFragments) {
+    if (content.includes(fragment)) failures.push(`project bootstrap/adoption must not produce machine lifecycle surface (${fragment}): ${relativePath}`);
   }
 }
 

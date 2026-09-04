@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
+  assertCommandPathOperandsStayInRepository,
   assertRepositoryCommandInputAllowed,
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
@@ -42,6 +46,28 @@ describe('repository command stable macOS host identity', () => {
   test('does not reject ordinary repository text searches that mention TCC tools', () => {
     expect(assertRepositoryCommandStableHostIdentity(['rg', '-n', 'osascript|screencapture', 'src']).kind).toBe('argv');
     expect(assertRepositoryCommandStableHostIdentity('rg -n "osascript|screencapture" src').kind).toBe('shell');
+  });
+
+  test('allows Git index-only removal of a repository symlink without weakening filesystem symlink fences', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-command-scope-root-'));
+    const outside = mkdtempSync(join(tmpdir(), 'forge-command-scope-outside-'));
+    try {
+      writeFileSync(join(outside, 'value.txt'), 'outside\n');
+      symlinkSync(outside, join(root, 'runtime-link'), 'dir');
+      const canonicalRoot = realpathSync(root);
+      expect(() => assertCommandPathOperandsStayInRepository(
+        assertRepositoryCommandInputAllowed(['git', 'update-index', '--force-remove', '--', 'runtime-link']), canonicalRoot, canonicalRoot,
+      )).not.toThrow();
+      expect(() => assertCommandPathOperandsStayInRepository(
+        assertRepositoryCommandInputAllowed(['git', 'rm', '--cached', '--', 'runtime-link']), canonicalRoot, canonicalRoot,
+      )).not.toThrow();
+      expect(() => assertCommandPathOperandsStayInRepository(
+        assertRepositoryCommandInputAllowed(['cat', 'runtime-link/value.txt']), canonicalRoot, canonicalRoot,
+      )).toThrow(/COMMAND_SCOPE_DENIED: command operand escapes repository root/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test('treats nested shells and inline interpreters as ordinary repository command shapes', () => {

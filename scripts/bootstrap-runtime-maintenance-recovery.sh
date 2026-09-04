@@ -5,7 +5,10 @@ REPO_ROOT="${1:-$PWD}"
 REPO_ID="${FORGE_REPO_ID:-}"
 MIN_AGE_MINUTES="${FORGE_RECOVERY_MIN_AGE_MINUTES:-0}"
 CANCEL_PENDING="${FORGE_RECOVERY_CANCEL_PENDING_APPROVALS:-false}"
-CONTROLLER_HOME="${FORGE_CONTROLLER_HOME:-$REPO_ROOT/_ops/controller-home}"
+CONTROLLER_HOME="${FORGE_CONTROLLER_HOME:-${XDG_STATE_HOME:-${HOME:?HOME is required}/.local/state}/forge/controller}"
+if [[ -z "${FORGE_CONTROLLER_HOME:-}" && -z "${XDG_STATE_HOME:-}" ]]; then
+  CONTROLLER_HOME="${HOME:?HOME is required}/.forge/controller"
+fi
 
 cd "$REPO_ROOT"
 

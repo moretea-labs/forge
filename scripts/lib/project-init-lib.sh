@@ -15,10 +15,15 @@ coverage/
 
 # External references
 _ref/
+.codegraph
 .codegraph/
 
 # Local operations state
 _ops/
+.repo-harness/
+.forge/browser
+.forge/interactions
+.forge/plugins
 
 # Environment
 .env
@@ -408,7 +413,7 @@ EOF_TEMPLATE_IMPLEMENTATION_NOTES
 )
 PI_CONTEXT_PROFILE_DEFAULT="stable-root-progressive-subdir"
 PI_RECOVERY_PROFILE_DEFAULT="hybrid"
-PI_STATE_PROFILE_DEFAULT="file-backed"
+PI_STATE_PROFILE_DEFAULT="controller-home"
 PI_ORCHESTRATION_PROFILE_DEFAULT="shared-long-running-harness"
 PI_EVALUATION_PROFILE_DEFAULT="browser-qa"
 PI_HANDOFF_PROFILE_DEFAULT="artifact-aware"
@@ -565,9 +570,8 @@ user-level and central-first:
 `~/.codex/hooks.json` / `~/.claude/settings.json` -> `forge-hook` ->
 packaged hooks from the installed forge runtime.
 
-The files under `.ai/hooks/lib/` are kept only for repo workflow helper scripts
-that source shared shell utilities. Full hook runtime scripts are not vendored
-here by default because stale copies can be mistaken for the active hook path.
+No hook runtime or shared hook libraries are vendored here by default because
+stale copies can be mistaken for the active hook path. Only this README remains.
 
 Set `"hook_source": "repo"` in `.ai/harness/policy.json` only for self-hosted
 hook development or an explicitly reviewed repo-local hook override.
@@ -595,6 +599,7 @@ pi_prune_repo_local_hook_runtime() {
       -o -name 'codex.hooks.template.json' \
       -o -name '.version' \) \
     -delete
+  rm -rf "$hooks_dir/lib"
 }
 
 pi_install_hook_assets() {
@@ -639,26 +644,6 @@ pi_install_hook_assets() {
   fi
 
   pi_prune_repo_local_hook_runtime "$hooks_dir" "$mode"
-
-  if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] mkdir -p \"$hooks_dir/lib\""
-  else
-    mkdir -p "$hooks_dir/lib"
-  fi
-
-  if [[ -d "$hooks_assets_dir/lib" ]]; then
-    while IFS= read -r hook_lib; do
-      local lib_name
-      lib_name="$(basename "$hook_lib")"
-      if [[ "$mode" != "apply" ]]; then
-        echo "[dry-run] cp \"$hook_lib\" \"$hooks_dir/lib/$lib_name\""
-        continue
-      fi
-      cp "$hook_lib" "$hooks_dir/lib/$lib_name"
-      chmod +x "$hooks_dir/lib/$lib_name" 2>/dev/null || true
-    done < <(find "$hooks_assets_dir/lib" -maxdepth 1 -type f -name '*.sh' | sort)
-  fi
-
   pi_write_hook_runtime_readme "$hooks_dir" "$mode"
 }
 
@@ -964,15 +949,20 @@ pi_install_workflow_contract() {
   local target_dir="$1"
   local contract_asset="$2"
   local mode="${3:-apply}"
-  local output_path="$target_dir/.ai/harness/workflow-contract.json"
+  local output_path="$target_dir/forge.config.json"
 
   if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] install workflow contract into $output_path"
+    echo "[dry-run] install declarative Forge project marker into $output_path"
     return 0
   fi
 
-  mkdir -p "$(dirname "$output_path")"
-  cp "$contract_asset" "$output_path"
+  cat > "$output_path" <<'EOF_FORGE_PROJECT_CONFIG'
+{
+  "schemaVersion": 1,
+  "forge": { "enabled": true },
+  "runtimeState": "controller-home"
+}
+EOF_FORGE_PROJECT_CONFIG
 }
 
 pi_install_templates() {
@@ -1066,7 +1056,7 @@ pi_install_helpers() {
   fi
 
   mkdir -p "$scripts_dir"
-  mkdir -p "$runtime_dir"
+  if pi_repo_pins_helper_source "$target_dir"; then mkdir -p "$runtime_dir"; fi
 
   if [[ -d "$helpers_dir" ]]; then
     for helper_name in $helper_names; do
@@ -1490,10 +1480,11 @@ $PI_REFERENCE_CONFIG_STUB_MARKER
 > **Version**: $version
 > **Source Command**: \`forge docs path $doc_id\`
 
-This repo keeps workflow facts and runtime artifacts locally under \`.ai/\`.
-The full generic runtime guide is supplied by the installed forge
-package/user-level runtime so each repository does not need to refresh a full
-copy of shared documentation.
+This repo keeps authored project documentation and declarative configuration in Git.
+Mutable Requirement/Plan/Work, verification/evidence, session, plugin, and cache state
+belongs to Forge Controller Home. The full generic runtime guide is supplied by the
+installed forge package/user-level runtime so each repository does not need to refresh
+a full copy of shared documentation.
 
 Use:
 
@@ -1710,7 +1701,6 @@ pi_write_capability_registry() {
         "claude": "$rel_dir/CLAUDE.md"
       },
       "architecture_module": "docs/architecture/modules/$domain/$name.md",
-      "workstream_dir": "tasks/workstreams/$domain/$name",
       "lsp_profile": "$(pi_lsp_profile)",
       "verification_hints": ["record local commands here before implementation"]
     }
@@ -1774,12 +1764,6 @@ JS_EOF
       "priority": "low",
       "char_budget": 900,
       "purpose": "deep-doc"
-    },
-    {
-      "path": "tasks/workstreams/**/*.md",
-      "priority": "high",
-      "char_budget": 1200,
-      "purpose": "capability-workstream"
     }
 EOF_CONTEXT_ENTRY
     return 0
@@ -1820,431 +1804,8 @@ EOF_CONTEXT_ENTRY
       "priority": "low",
       "char_budget": 900,
       "purpose": "deep-doc"
-    },
-    {
-      "path": "tasks/workstreams/**/*.md",
-      "priority": "high",
-      "char_budget": 1200,
-      "purpose": "capability-workstream"
     }
 EOF_CONTEXT_ENTRY
-}
-
-pi_write_harness_policy() {
-  local target_dir="$1"
-  local mode="${2:-apply}"
-  local output_file="$target_dir/.ai/harness/policy.json"
-  local default_file
-  local merged_file
-
-  if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] write $output_file"
-    return 0
-  fi
-
-  mkdir -p "$(dirname "$output_file")"
-  default_file="$(mktemp)"
-  merged_file="$(mktemp)"
-  cat > "$default_file" <<EOF_POLICY
-{
-  "version": 1,
-  "active_plan": {
-    "marker_file": ".ai/harness/active-plan",
-    "legacy_marker_file": ".claude/.active-plan",
-    "directory": "plans",
-    "glob": "plan-*.md",
-    "active_worktree_marker_file": ".ai/harness/active-worktree",
-    "source_of_truth": "per-worktree explicit marker with active-worktree owner; legacy Claude marker fallback only"
-  },
-  "tasks": {
-    "todo_file": "tasks/todos.md",
-    "current_status_file": "tasks/current.md",
-    "lessons_file": "tasks/lessons.md",
-    "research_dir": "docs/researches",
-    "workstreams_dir": "tasks/workstreams",
-    "contracts_dir": "tasks/contracts",
-    "reviews_dir": "tasks/reviews",
-    "notes_dir": "tasks/notes"
-  },
-  "prds": {
-    "dir": "plans/prds",
-    "template_file": ".claude/templates/prd.template.md",
-    "statuses": ["Draft", "Approved", "Superseded"],
-    "rule": "PRDs live in plans/prds as the upper planning layer. They decompose docs/spec.md intent into product direction, acceptance scenarios, module behavior, data model, performance targets, and developer handoff. Sprints reference PRDs through Source PRD and decompose them into ordered execution backlogs."
-  },
-  "sprints": {
-    "dir": "plans/sprints",
-    "active_marker_file": ".ai/harness/sprint/active-sprint",
-    "template_file": ".claude/templates/sprint.template.md",
-    "helper_script": "scripts/sprint-backlog.sh",
-    "statuses": ["Draft", "Approved", "Executing", "Done", "Archived"],
-    "rule": "PRDs live in plans/prds as the upper planning layer. Sprints live in plans/sprints as long-task execution backlogs; each sprint row is expanded with Waza \$think into a detailed plans/plan-*.md before the plan -> contract -> worktree flow; tasks/todos.md stays the deferred-goal ledger"
-  },
-  "reference_material": {
-    "dir": "_ref",
-    "mode": "external-ignored",
-    "commit_policy": "never commit _ref contents",
-    "rule": "use _ref as an occasional ignored external reference checkout cache for upstream/source comparison only; refresh from external sources instead of editing as product code; when it influences a decision, cite the source repo plus commit/tag and path in tasks/notes/ or docs/researches/"
-  },
-  "operations": {
-    "dir": "deploy",
-    "private_dir": "_ops",
-    "tracked": ["deploy/README.md", "deploy/scripts/", "deploy/submissions/", "deploy/runbooks/", "deploy/release-checklists/", "deploy/sql/", "deploy/*.md", "deploy/env/.env.example"],
-    "ignored": ["_ops/"],
-    "rule": "commit deployment runbooks, submission materials, release checklists, helper scripts, ordered SQL files, and env examples under deploy/; keep deploy SQL in deploy/sql/ with 4-digit ascending prefixes; keep keys, tokens, real env values, provider state, artifacts, logs, and scratch files in ignored _ops/ only"
-  },
-  "context": {
-    "profile": "$(pi_context_profile)",
-    "map_file": ".ai/context/context-map.json",
-    "capability_registry_file": ".ai/context/capabilities.json",
-    "capability_resolver": "scripts/capability-resolver.ts",
-    "capability_config": "scripts/capability-config.ts",
-    "capability_match_rule": "longest-prefix; same-length ambiguity fails",
-    "functional_block_selector": {
-      "script": "scripts/select-agent-context-blocks.sh",
-      "config_file": ".ai/context/agent-context-blocks.txt",
-      "env": "FORGE_CONTEXT_BLOCKS",
-      "rule": "compatibility selector; capability registry is the source of truth"
-    }
-  },
-  "harness": {
-    "policy_file": ".ai/harness/policy.json",
-    "checks_file": ".ai/harness/checks/latest.json",
-    "failure_log_file": ".ai/harness/failures/latest.jsonl",
-    "events_file": ".ai/harness/events.jsonl",
-    "architecture_events_file": ".ai/harness/architecture/events.jsonl",
-    "runs_dir": ".ai/harness/runs",
-    "helper_runtime_dir": ".ai/harness/scripts",
-    "helper_compat_dir": "scripts",
-    "helper_source": "package",
-    "helper_package_dir": "assets/templates/helpers"
-  },
-  "architecture": {
-    "index_file": "docs/architecture/index.md",
-    "requests_dir": "docs/architecture/requests",
-    "snapshots_dir": "docs/architecture/snapshots",
-    "diagrams_dir": "docs/architecture/diagrams",
-    "domains_dir": "docs/architecture/domains",
-    "modules_dir": "docs/architecture/modules",
-    "diagram_skill": "mermaid",
-    "diagram_skill_source": "~/.codex/skills/mermaid",
-    "vendoring_policy": "do-not-vendor-diagram-skill-assets",
-    "freshness_gate": "advisory",
-    "gate_min_severity": "medium",
-    "pending_card_scope": "capability",
-    "pending_block_begin": "<!-- BEGIN ARCHITECTURE PENDING REQUESTS -->",
-    "pending_block_end": "<!-- END ARCHITECTURE PENDING REQUESTS -->",
-    "queue_script": ".ai/harness/scripts/architecture-queue.sh",
-    "contract_block_begin": "<!-- BEGIN ARCHITECTURE CONTRACT -->",
-    "contract_block_end": "<!-- END ARCHITECTURE CONTRACT -->",
-    "rule": "hooks record architecture queue cards and sync controlled local context blocks; agents author semantic snapshots and diagrams"
-  },
-  "workstreams": {
-    "dir": "tasks/workstreams",
-    "scope": "capability",
-    "projection": "local-contract-active-pointer-and-current-slice",
-    "todo_projection": "tasks/todos.md",
-    "rule": "durable multi-session progress lives under tasks/workstreams/<domain>/<capability>; current plan execution lives in the plan Task Breakdown; tasks/todos.md records deferred goals only"
-  },
-  "information_lifecycle": {
-    "notes": {
-      "dir": "tasks/notes",
-      "purpose": "task-local implementation decisions, deviations, tradeoffs, and open questions",
-      "promotion": "archive on workflow close; promote only repeated or durable findings"
-    },
-    "evidence": {
-      "latest": ".ai/harness/checks/latest.json",
-      "snapshots_dir": ".ai/harness/runs",
-      "purpose": "raw verification records used to audit notes, reviews, and future promotion"
-    },
-    "assets": {
-      "sources": [".ai/harness/policy.json", ".ai/harness/workflow-contract.json", ".ai/hooks/", "scripts/", "docs/reference-configs/"],
-      "promotion_rule": "only promote patterns after verified reuse across tasks or fixtures"
-    },
-    "memory": {
-      "sources": ["docs/researches/", "tasks/lessons.md", "gbrain"],
-      "rule": "memory is advisory; current repo state and evidence override summaries"
-    },
-    "external_knowledge": {
-      "default_brain_path": "brain/<project>/*",
-      "project_path": "brain/<project>/*",
-      "manifest_file": ".ai/harness/brain-manifest.json",
-      "drift_check": "scripts/check-brain-manifest.sh",
-      "sync_script": "scripts/sync-brain-docs.sh",
-      "hook_trigger": "PostToolUse Edit|Write for manifest entries with sync.direction=repo-to-brain",
-      "rule": "external knowledge stores long-lived explanations, runbooks, and patterns only; repo-local contracts, hooks, scripts, checks, and evidence remain authoritative",
-      "sync_rule": "only explicitly opted-in repo-to-brain manifest entries may be written to the default brain vault; pointer-only externalized stubs remain check-only"
-    }
-  },
-  "session": {
-    "continuation_file": ".ai/harness/session/continuation.md",
-    "resume_file": ".ai/harness/session/resume.md",
-    "global_resume_dir": "~/.codex/handoffs",
-    "auto_start_new_session": false,
-    "authority": "rebuildable-host-session-cache-only"
-  },
-  "plan_capture": {
-    "script": "scripts/capture-plan.sh",
-    "sources": ["host-plan-mode", "forge-plan", "forge-sprint"],
-    "rule": "Forge /plan or host planning mode may capture decision-complete source plans into plans/plan-*.md; migrated lifecycle execution remains owned by Runtime Plan/Work state"
-  },
-  "planning": {
-    "pending_orchestration_file": ".ai/harness/planning/pending.json",
-    "source_of_truth": "transient host planning bridge only; captured plans are source artifacts, while migrated Runtime Plan/Work lifecycle state is authoritative in the Canonical Runtime"
-  },
-  "guards": {
-    "edit_plan_gate": "advice",
-    "edit_plan_gate_modes": ["enforce", "advice", "off"],
-    "rule": "pre-edit-guard advises when implementation lacks an active plan; execution remains available unless a real safety boundary blocks it"
-  },
-  "sidecar_research": {
-    "default": true,
-    "output_dir": "docs/researches",
-    "preferred_runners": ["subagent", "codex exec --json", "main-thread trace"],
-    "spawn_decision": "main agent decides from task breadth, context impact, raw-log volume, and callable runner availability; do not ask the user for spawn confirmation",
-    "fallback_runner": "main-thread trace",
-    "main_thread_policy": "if spawning is not worthwhile or no sidecar runner is callable, perform bounded research in the main thread; consume conclusions and evidence paths, not raw logs"
-  },
-  "documentation": {
-    "profile": "$(pi_documentation_profile)",
-    "reference_source": "user-level-runtime-docs",
-    "reference_stub_marker": "$PI_REFERENCE_CONFIG_STUB_MARKER",
-    "reference_resolver": "forge docs path <doc-id>",
-    "required": ["docs/spec.md", "docs/architecture/index.md"],
-    "on_demand": ["docs/brief.md", "docs/tech-stack.md", "docs/decisions.md", "docs/architecture.md", "docs/packages.md"],
-    "reference_configs": [$(pi_policy_reference_config_names | pi_json_string_array_from_lines)],
-    "rule": "create optional docs only when the agent has concrete repo evidence or the user asks; docs/reference-configs contains repo-local pointer stubs while full generic runtime docs live in the user-level/package forge install"
-  },
-  "lsp_profiles": {
-    "default": "$(pi_lsp_profile)",
-    "selection": "functional-block-first",
-    "rule": "use block-level LSP/tooling hints before broad repo assumptions"
-  },
-  "worktree_strategy": {
-    "auto_on_conflict": true,
-    "auto_for_contract_tasks": true,
-    "branch_prefix": "codex/",
-    "base_branch": "main",
-    "worktree_dir_template": "../{{repo}}-wt-{{slug}}",
-    "start_script": "scripts/contract-worktree.sh start --plan <plan-file>",
-    "finish_script": "scripts/contract-worktree.sh finish",
-    "cleanup_script": "scripts/contract-worktree.sh cleanup --slug <slug>",
-    "conflict_signals": [
-      "dirty_worktree_overlaps_task_files",
-      "current_branch_not_suitable_for_task",
-      "existing_changes_unrelated_but_would_block_review",
-      "task_requires_clean_validation_surface"
-    ],
-    "validation_route": "forge:/review",
-    "merge_back": {
-      "target": "main",
-      "requires_clean_check": true,
-      "preserve_unrelated_changes": true
-    }
-  },
-  "upgrade": {
-    "strategy_version": 1,
-    "supported_legacy_versions": ["pre-tasks-first", "tasks-first-without-contract-manifest", "current-v1"],
-    "action_classes": {
-      "preserve": "keep user-authored legacy workflow documents, hooks, ignored reference material, private operations state, secrets, and local env files unchanged until explicitly triaged",
-      "reconfigure": "merge managed config defaults without overwriting explicit repo overrides",
-      "remove": "delete only workflow-contract actions marked ownership=known_generated"
-    },
-    "cleanup": {
-      "source": ".ai/harness/workflow-contract.json#migrations.upgrade.actions",
-      "remove_only_ownership": "known_generated",
-      "unknown_files": "preserve",
-      "custom_hooks": "preserve",
-      "ignored_reference_material": "preserve",
-      "local_operations_state": "preserve",
-      "local_secrets": "preserve"
-    },
-    "reporting": {
-      "inspector_field": "upgrade_plan",
-      "dry_run_required": true
-    }
-  },
-  "profiles": {
-    "orchestration": "$(pi_orchestration_profile)",
-    "evaluation": "$(pi_evaluation_profile)",
-    "handoff": "$(pi_handoff_profile)",
-    "recovery": "$(pi_recovery_profile)",
-    "state": "$(pi_state_profile)"
-  },
-  "external_tooling": {
-    "routing": {
-      "primary": "forge",
-      "optional_complex_helper": "gstack",
-      "optional_daily_helper": "waza",
-      "optional_knowledge_helper": "gbrain"
-    },
-    "hosts": $(pi_external_tooling_hosts_json),
-    "mode": "optional-enhancements",
-    "detection": "init-migrate",
-    "readiness_report": "forge run check-agent-tooling --host codex",
-    "waza": {
-      "source_repo": "tw93/Waza",
-      "source_url": "https://github.com/tw93/Waza.git",
-      "managed_skills": ["think", "hunt", "check", "health"],
-      "primary_host": "codex",
-      "codex_primary_path": "~/.codex/skills",
-      "staging_cache_path": "~/.agents/skills",
-      "sync_mode": "stage-upstream-then-copy-to-codex",
-      "host_drift_policy": "report-per-host-version-staging-and-upstream-drift"
-    },
-    "codex_automation_profile": {
-      "required_skills": [],
-      "optional_skills": ["health", "check", "mermaid"],
-      "mode": "optional-codex-runtime-reference",
-      "source": "~/.codex/skills",
-      "routes": {
-        "workflow_health_optional": "waza:health",
-        "review_helper_optional": "waza:check",
-        "architecture_diagram_optional": "mermaid"
-      },
-      "vendoring_policy": "do-not-vendor-skill-body"
-    },
-    "diagram_design": {
-      "skill_name": "mermaid",
-      "primary_host": "codex",
-      "codex_primary_path": "~/.codex/skills/mermaid",
-      "sync_mode": "external-installed-skill",
-      "vendoring_policy": "do-not-vendor"
-    },
-    "gbrain": {
-      "mcp": "$(pi_external_tooling_gbrain_mcp)"
-    },
-    "codegraph": {
-      "package": "@colbymchenry/codegraph",
-      "primary_host": "both",
-      "install_mode": "target-aware-mcp",
-      "codex_config_path": "~/.codex/config.toml",
-      "claude_config_path": "~/.claude.json",
-      "index_dir": ".codegraph",
-      "readiness": "forge-bundled-backend; host-mcp-optional",
-      "hook_policy": "do-not-block-hooks",
-      "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
-      "project_init_command": "codegraph init -i .",
-      "sync_command": "codegraph sync .",
-      "vendoring_policy": "do-not-add-package-dependency"
-    }
-  },
-  "agentic_development": {
-    "routing": {
-      "direct": "forge:/direct",
-      "plan": "forge:/plan",
-      "debug": "forge:/debug",
-      "review": "forge:/review",
-      "release": "forge:/release",
-      "scale": "forge:/scale"
-    },
-    "due_diligence": {
-      "levels": ["P1_GLOBAL_ARCHITECTURE", "P2_DATA_FLOW_TRACE", "P3_DESIGN_DECISION"],
-      "explicit_report_required_for": ["architecture", "debug", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
-    }
-  },
-  "enforcement": {
-    "worktree_guard": "warn-by-default",
-    "verification_gate": "contract-and-review",
-    "completion_requires_checks": true
-  }
-}
-EOF_POLICY
-
-  if [[ -f "$output_file" ]]; then
-    if ! pi_merge_json_defaults "$default_file" "$output_file" "$merged_file"; then
-      cp "$default_file" "$merged_file"
-    fi
-  elif ! pi_merge_json_defaults "$default_file" "$default_file" "$merged_file"; then
-    cp "$default_file" "$merged_file"
-  else
-    :
-  fi
-
-  mv "$merged_file" "$output_file"
-  rm -f "$default_file"
-}
-
-pi_write_brain_manifest() {
-  local target_dir="$1"
-  local mode="${2:-apply}"
-  local output_file="$target_dir/.ai/harness/brain-manifest.json"
-  local project_name
-
-  if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] write $output_file if missing"
-    return 0
-  fi
-
-  if [[ -f "$output_file" ]]; then
-    return 0
-  fi
-
-  project_name="$(basename "$target_dir")"
-  mkdir -p "$(dirname "$output_file")"
-  cat > "$output_file" <<EOF_BRAIN_MANIFEST
-{
-  "version": 1,
-  "project": "${project_name}",
-  "mode": "repo-contract-external-knowledge",
-  "default_brain_path": "brain/<project>/*",
-  "rules": [
-    "repo-local contracts, hooks, scripts, checks, and evidence remain authoritative",
-    "default brain stores long-lived explanations, runbooks, decisions, references, and patterns",
-    "hook runtime may sync explicitly opted-in repo-to-brain entries only; it must not query gbrain, MCP, or unregistered default brain paths"
-  ],
-  "entries": []
-}
-EOF_BRAIN_MANIFEST
-}
-
-pi_write_context_map() {
-  local target_dir="$1"
-  local mode="${2:-apply}"
-  local output_file="$target_dir/.ai/context/context-map.json"
-  local discoverable_entries
-
-  discoverable_entries="$(pi_context_map_discoverable_entries "$target_dir")"
-
-  if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] write $output_file"
-    return 0
-  fi
-
-  mkdir -p "$(dirname "$output_file")"
-  cat > "$output_file" <<EOF_CONTEXT
-{
-  "version": 1,
-  "profile": "$(pi_context_profile)",
-  "functional_block_selector": {
-      "script": "scripts/select-agent-context-blocks.sh",
-    "config_file": ".ai/context/agent-context-blocks.txt",
-    "env": "FORGE_CONTEXT_BLOCKS",
-    "rule": "compatibility selector; capability registry is the source of truth"
-  },
-  "lsp_profiles": {
-    "default": "$(pi_lsp_profile)",
-    "selection": "functional-block-first"
-  },
-  "root_context_files": [
-    "CLAUDE.md",
-    "AGENTS.md",
-    "docs/spec.md",
-    "tasks/current.md",
-    "tasks/todos.md",
-    "tasks/lessons.md",
-    ".ai/context/capabilities.json",
-    ".ai/harness/policy.json"
-  ],
-  "discoverable_contexts": [
-${discoverable_entries}
-  ],
-  "budgets": {
-    "root_total_chars": 12000,
-    "per_discoverable_file_chars": 1200
-  }
-}
-EOF_CONTEXT
 }
 
 pi_root_context_content() {
@@ -2256,14 +1817,14 @@ This is the root routing contract for Claude Code and Codex.
 ## Root Workflow Contract
 
 - Keep sibling `CLAUDE.md` and `AGENTS.md` files aligned. Claude Code consumes `CLAUDE.md`; Codex consumes `AGENTS.md`.
-- Treat `docs/spec.md` as stable product truth, `tasks/current.md` as a derived status snapshot, and `tasks/todos.md` as the deferred-goal ledger; current execution stays in the active plan's `## Task Breakdown`.
-- Treat `docs/researches/`, `tasks/lessons.md`, and `.ai/harness/policy.json` as durable workflow context.
-- Use `.ai/context/context-map.json` and `.ai/context/capabilities.json` to discover functional-block contracts.
+- Treat `docs/spec.md`, `docs/researches/`, `tasks/todos.md`, `tasks/lessons.md`, and intentional architecture/project documents as repository-authored truth.
+- Mutable Requirement/Plan/Work/Controller, verification/evidence, session/lease, plugin state, and generated Runtime projections live in Forge Controller Home, not repo-local lifecycle files.
+- `.ai/context/context-map.json` and `.ai/context/capabilities.json`, when present, are declarative context metadata only; they are not execution authority.
 - Do not infer local `CLAUDE.md` or `AGENTS.md` files from broad physical layouts such as `apps/*`, `packages/*`, or `services/*`.
 - Put capability-specific ownership, entrypoints, and verification commands in explicitly selected functional-block contracts.
-- Keep root context concise; route deep implementation detail into plans, task notes, research, workstreams, or architecture docs.
-- Treat `_ref/` as ignored external reference material and `_ops/` as ignored local operations state.
-- Prefer repo-local workflow artifacts over tool-specific chat memory.
+- Keep root context concise; route durable human-authored detail into product, architecture, research, or intentional project documents.
+- Treat `_ref/` as ignored external reference material and `_ops/` as ignored local operations residue.
+- Use Controller Home for mutable workflow state instead of recreating repo-local task/workstream/session projections.
 EOF_ROOT_CONTEXT
 }
 
@@ -2326,7 +1887,7 @@ Keep this file focused on the local contract for this primary functional block.
 - Route deep implementation detail into nearby docs instead of inflating root agent context files.
 - Treat `.ai/context/context-map.json` as the index of discoverable context files.
 - Do not keep pushing context files deeper by default; add lower-level files only for a separately owned functional block with its own commands and invariants.
-- Prefer repo-local workflow artifacts over tool-specific chat memory.
+- Keep mutable workflow state in Controller Home; repository context files describe authored code and capability boundaries only.
 EOF_DIRECTORY_AGENTS
 )
 
@@ -2366,121 +1927,19 @@ pi_ensure_harness_state_surface() {
   local mode="${2:-apply}"
 
   if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] ensure harness policy/context/events/runs/worktrees/local-jobs/controller/triage/planning in $target_dir"
+    echo "[dry-run] ensure authored Forge knowledge surface in $target_dir; Runtime state remains in Controller Home"
     return 0
   fi
 
-  mkdir -p \
-    "$target_dir/tasks/notes" \
-    "$target_dir/tasks/workstreams" \
-    "$target_dir/.ai/context" \
-    "$target_dir/.ai/harness/checks" \
-    "$target_dir/.ai/harness/session" \
-    "$target_dir/.ai/harness/controller/packets" \
-    "$target_dir/.ai/harness/projections" \
-    "$target_dir/.ai/harness/transfers" \
-    "$target_dir/.ai/harness/scripts" \
-    "$target_dir/.ai/harness/failures" \
-    "$target_dir/.ai/harness/security" \
-    "$target_dir/.ai/harness/planning" \
-    "$target_dir/.ai/harness/architecture" \
-    "$target_dir/.ai/harness/worktrees" \
-    "$target_dir/.ai/harness/controller" \
-    "$target_dir/.ai/harness/local-jobs" \
-    "$target_dir/docs/researches" \
-    "$target_dir/docs/architecture/domains" \
-    "$target_dir/docs/architecture/modules" \
-    "$target_dir/docs/architecture/requests" \
-    "$target_dir/docs/architecture/snapshots" \
-    "$target_dir/docs/architecture/diagrams" \
-    "$target_dir/.ai/harness/runs"
-
-  [[ -f "$target_dir/.ai/harness/checks/latest.json" ]] || printf "{}\n" > "$target_dir/.ai/harness/checks/latest.json"
-  [[ -f "$target_dir/.ai/harness/session/continuation.md" ]] || printf "# Forge Session Continuation Snapshot\n\n> **Reason**: bootstrap\n" > "$target_dir/.ai/harness/session/continuation.md"
-  [[ -f "$target_dir/.ai/harness/session/resume.md" ]] || printf "# Codex Resume Packet\n\n> **Reason**: bootstrap\n" > "$target_dir/.ai/harness/session/resume.md"
-  [[ -f "$target_dir/.ai/context/capability-source-map.json" ]] || printf '{\n  "version": 1,\n  "capabilities": {}\n}\n' > "$target_dir/.ai/context/capability-source-map.json"
-  [[ -f "$target_dir/.ai/harness/events.jsonl" ]] || : > "$target_dir/.ai/harness/events.jsonl"
-  [[ -f "$target_dir/.ai/harness/architecture/events.jsonl" ]] || : > "$target_dir/.ai/harness/architecture/events.jsonl"
-  [[ -f "$target_dir/.ai/harness/architecture/.gitkeep" ]] || : > "$target_dir/.ai/harness/architecture/.gitkeep"
-  [[ -f "$target_dir/.ai/harness/failures/latest.jsonl" ]] || : > "$target_dir/.ai/harness/failures/latest.jsonl"
-  [[ -f "$target_dir/.ai/harness/security/.gitkeep" ]] || : > "$target_dir/.ai/harness/security/.gitkeep"
-  [[ -f "$target_dir/.ai/harness/scripts/.gitkeep" ]] || : > "$target_dir/.ai/harness/scripts/.gitkeep"
-  [[ -f "$target_dir/.ai/harness/planning/.gitkeep" ]] || : > "$target_dir/.ai/harness/planning/.gitkeep"
-  [[ -f "$target_dir/.ai/harness/worktrees/.gitkeep" ]] || : > "$target_dir/.ai/harness/worktrees/.gitkeep"
-  [[ -f "$target_dir/.ai/harness/runs/.gitkeep" ]] || : > "$target_dir/.ai/harness/runs/.gitkeep"
-  [[ -f "$target_dir/tasks/workstreams/.gitkeep" ]] || : > "$target_dir/tasks/workstreams/.gitkeep"
+  mkdir -p "$target_dir/tasks" "$target_dir/docs/researches"
   if [[ ! -f "$target_dir/docs/researches/README.md" ]]; then
     cat > "$target_dir/docs/researches/README.md" <<'RESEARCH_README_EOF'
 # Research Reports
 
-Durable research reports live in this directory as topic-scoped Markdown files.
-
-Use `YYYYMMDD-topic.md` names when chronology matters, or `<topic>.md` for
-stable subject reports. Keep task-local implementation decisions in
-`tasks/notes/`, and keep repeated correction-derived rules in `tasks/lessons.md`.
+Durable, human-reviewable research conclusions live here. Machine execution state,
+receipts, sessions, caches, and generated reports belong to Forge Controller Home.
 RESEARCH_README_EOF
   fi
-  if [[ ! -f "$target_dir/tasks/current.md" ]]; then
-    cat > "$target_dir/tasks/current.md" <<'CURRENT_STATUS_EOF'
-# Current Status Snapshot
-
-<!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: bootstrap -->
-<!-- stale_after: 24h -->
-
-> **Status**: Idle
-> **Updated At**: bootstrap
-> **Source Branch**: main
-> **Source Commit**: bootstrap
-> **Target Branch**: main
-> **Stale After**: 24h
-> **Reason**: bootstrap
-> **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
-
-This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
-CURRENT_STATUS_EOF
-  fi
-  [[ -f "$target_dir/docs/architecture/domains/.gitkeep" ]] || : > "$target_dir/docs/architecture/domains/.gitkeep"
-  [[ -f "$target_dir/docs/architecture/modules/.gitkeep" ]] || : > "$target_dir/docs/architecture/modules/.gitkeep"
-  [[ -f "$target_dir/docs/architecture/requests/.gitkeep" ]] || : > "$target_dir/docs/architecture/requests/.gitkeep"
-  [[ -f "$target_dir/docs/architecture/snapshots/.gitkeep" ]] || : > "$target_dir/docs/architecture/snapshots/.gitkeep"
-  [[ -f "$target_dir/docs/architecture/diagrams/.gitkeep" ]] || : > "$target_dir/docs/architecture/diagrams/.gitkeep"
-  if [[ ! -f "$target_dir/docs/architecture/index.md" ]]; then
-    cat > "$target_dir/docs/architecture/index.md" <<'ARCHITECTURE_INDEX_EOF'
-# Architecture Index
-
-> Umbrella architecture ledger for current boundaries, drift requests, snapshots, and diagrams.
-
-## Current Snapshot
-
-- Latest snapshot: (none yet)
-- Semantic diagram source: (none yet)
-- Latest human diagram: (none yet)
-
-## Architecture Drift Flow
-
-- `.ai/harness/scripts/architecture-queue.sh` records architecture-sensitive edits as requests.
-- `.ai/harness/scripts/architecture-queue.sh resolve --file <request>` removes handled requests, clears stale context pointers, and reindexes the live queue; Git history is the archive.
-- `.ai/harness/scripts/context-contract-sync.sh` keeps only the controlled architecture block in functional-block `AGENTS.md` and `CLAUDE.md` files aligned.
-- `.ai/harness/scripts/workstream-sync.sh` keeps durable multi-session progress under `tasks/workstreams/<domain>/<capability>/` and projects only pointers into local contracts.
-- Semantic architecture diagrams live as Mermaid fenced blocks in the relevant module or snapshot Markdown.
-- Human-readable architecture diagrams are optional `mermaid` HTML files in `docs/architecture/diagrams/` and should link back to the Markdown semantic source.
-
-## Pending Requests
-
-<!-- BEGIN ARCHITECTURE PENDING REQUESTS -->
-- (none)
-<!-- END ARCHITECTURE PENDING REQUESTS -->
-
-ARCHITECTURE_INDEX_EOF
-  fi
-
-  pi_write_capability_registry "$target_dir" "$mode"
-  pi_write_harness_policy "$target_dir" "$mode"
-  pi_write_brain_manifest "$target_dir" "$mode"
-  pi_write_context_map "$target_dir" "$mode"
-  pi_install_root_context_files "$target_dir" "$mode"
-  pi_install_directory_context_files "$target_dir" "$mode"
 }
 
 pi_resolve_js_runtime() {
@@ -2640,7 +2099,7 @@ pi_ensure_task_sync() {
     "check:context-files": "forge run check-context-files",
     "check:deploy-sql": "forge run check-deploy-sql-order",
     "check:architecture-sync": "forge run check-architecture-sync",
-    "check:task": "bash scripts/check-task-workflow.sh --strict",
+    "check:task": "forge run check-task-workflow --strict",
     "check:task-sync": "forge run check-task-sync",
     "check:task-workflow": "forge run check-task-workflow --strict",
     "sync:brain-docs": "forge run sync-brain-docs --all"
@@ -2666,7 +2125,7 @@ pkg.scripts["check:brain-manifest"] = "forge run check-brain-manifest";
 pkg.scripts["check:context-files"] = "forge run check-context-files";
 pkg.scripts["check:deploy-sql"] = "forge run check-deploy-sql-order";
 pkg.scripts["check:architecture-sync"] = "forge run check-architecture-sync";
-pkg.scripts["check:task"] = "bash scripts/check-task-workflow.sh --strict";
+pkg.scripts["check:task"] = "forge run check-task-workflow --strict";
 pkg.scripts["check:task-sync"] = "forge run check-task-sync";
 pkg.scripts["check:task-workflow"] = "forge run check-task-workflow --strict";
 pkg.scripts["sync:brain-docs"] = "forge run sync-brain-docs --all";

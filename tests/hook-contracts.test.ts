@@ -10,11 +10,15 @@ function read(relPath: string): string {
 
 describe("Hook contracts", () => {
   test("shared hook input parser should exist", () => {
+    const input = read("assets/hooks/hook-input.sh");
     expect(existsSync(join(ROOT, "assets/hooks/hook-input.sh"))).toBe(true);
     expect(existsSync(join(ROOT, "assets/hooks/lib/workflow-state.sh"))).toBe(true);
     expect(existsSync(join(ROOT, "assets/hooks/lib/session-state.sh"))).toBe(true);
     expect(existsSync(join(ROOT, "assets/hooks/lib/memory-state.sh"))).toBe(false);
     expect(existsSync(join(ROOT, "assets/hooks/lib/skill-factory.sh"))).toBe(false);
+    expect(input).toContain("HOOK_BUNDLE_DIR");
+    expect(input).toContain('$HOOK_BUNDLE_DIR/lib/workflow-state.sh');
+    expect(input).not.toContain('/.ai/hooks/lib/workflow-state.sh');
   });
 
   test("shared hook dispatcher should exist", () => {
@@ -128,6 +132,9 @@ describe("Hook contracts", () => {
     // table; classification lives in the TypeScript engine.
     expect(script).not.toContain("is_implement_intent");
     expect(script).not.toContain("prompt_guard_decide_fallback");
+    expect(script).toContain("modern_controller_home_runtime");
+    expect(script).toContain("Forge Controller Plan/Work");
+    expect(read("assets/hooks/lib/workflow-state.sh")).toContain("workflow_machine_state_path");
   });
 
   test("prompt intent classifier owns Chinese bug/feature keywords with Unicode semantics", () => {
@@ -168,7 +175,7 @@ describe("Hook contracts", () => {
     const script = read("assets/hooks/security-sentinel.sh");
     expect(script).toContain("security scan --json");
     expect(script).toContain("state.sha256");
-    expect(script).toContain(".ai/harness/security");
+    expect(script).toContain("FORGE_HOOK_STATE_ROOT");
     expect(script).toContain("[SecurityConfig]");
     expect(script).not.toContain("--strict");
   });
@@ -216,17 +223,21 @@ describe("Hook contracts", () => {
     expect(drift).toContain("docs/architecture/requests");
     expect(drift).toContain("architecture-event.ts");
     expect(drift).toContain(".ai/harness/architecture/events.jsonl");
-    expect(eventHelper).toContain("workstream-sync.sh");
+    expect(eventHelper).not.toContain("scripts/workstream-sync.sh ensure");
+    expect(eventHelper).toContain("Controller Home");
     expect(drift).not.toContain("BEGIN ARCHITECTURE CONTRACT");
     expect(sync).toContain("architecture-event.ts");
     expect(sync).toContain("BEGIN ARCHITECTURE CONTRACT");
-    expect(sync).toContain("Active Workstreams");
+    expect(sync).not.toContain("## Active Workstreams");
+    expect(sync).not.toContain("## Current Session Projection");
+    expect(sync).toContain("Runtime progress authority");
     expect(sync).toContain("discoverable_contexts");
     expect(sync).toContain("Semantic diagram source");
     expect(sync).toContain("Latest human diagram");
     expect(sync).toContain("docs/architecture/diagrams");
     expect(eventHelper).toContain("Mermaid fenced block");
     expect(eventHelper).toContain("Markdown semantic source");
+    // Legacy helper remains readable for migration, but modern producers must not invoke it.
     expect(workstream).toContain("tasks/workstreams");
     expect(workstream).toContain("context-contract-sync.sh");
   });

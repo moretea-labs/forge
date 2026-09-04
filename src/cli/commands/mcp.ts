@@ -165,7 +165,7 @@ export function buildMcpCommand(): Command {
     .command('serve')
     .description('Start the forge MCP server')
     .option('--repo <path>', 'Repository root to expose through the selected MCP profile')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
+    .option('--controller-home <path>', 'Controller state root; defaults to FORGE_CONTROLLER_HOME/XDG state or ~/.forge/controller')
     .option('--transport <transport>', 'Transport: stdio|http', 'stdio')
     .option('--host <host>', 'HTTP bind host', '127.0.0.1')
     .option('--port <port>', 'HTTP bind port', '8765')
@@ -295,7 +295,7 @@ export function buildMcpCommand(): Command {
     .command('get')
     .description('Read the access mode for one registered repository')
     .option('--repo <path>', 'Repository root used to resolve controllerHome', '.')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
+    .option('--controller-home <path>', 'Controller state root; defaults to FORGE_CONTROLLER_HOME/XDG state or ~/.forge/controller')
     .option('--repo-id <id>', 'Stable registered repository id')
     .action((rawOpts: McpAccessOptions) => {
       void runMcpAction(() => runRepositoryAccessCommand('repository_access_get', rawOpts));
@@ -305,7 +305,7 @@ export function buildMcpCommand(): Command {
     .command('set')
     .description('Set Request or Full Access for one repository or every enabled repository')
     .option('--repo <path>', 'Repository root used to resolve controllerHome', '.')
-    .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
+    .option('--controller-home <path>', 'Controller state root; defaults to FORGE_CONTROLLER_HOME/XDG state or ~/.forge/controller')
     .option('--repo-id <id>', 'Stable registered repository id; cannot be combined with --all-repositories')
     .option('--all-repositories', 'Apply to every enabled registered repository')
     .requiredOption('--mode <mode>', 'Access mode: request|full_access')

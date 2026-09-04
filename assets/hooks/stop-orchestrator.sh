@@ -12,10 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/workflow-state.sh"
 
 plan_completeness_state_file() {
-  workflow_repo_relative_path \
+  workflow_machine_state_path \
     "$(workflow_policy_get '.planning.completeness_state_file' '.ai/harness/planning/plan-completeness.json')" \
-    '.ai/harness/planning/plan-completeness.json' \
-    '.ai/harness/'
+    '.ai/harness/planning/plan-completeness.json'
 }
 
 plan_completeness_signature() {
@@ -154,6 +153,17 @@ should_run_plan_completeness_gate() {
 }
 
 refresh_handoff
+
+# Modern V2 delegates semantic Plan/Work completion to Controller Home. Keep the
+# rebuildable session continuation above, but never revive repo-local pending
+# orchestration or PlanCompleteness as a second completion authority.
+if [[ -f "forge.config.json" ]]; then
+  if command -v jq >/dev/null 2>&1; then
+    [[ "$(jq -r '.runtimeState // empty' forge.config.json 2>/dev/null || true)" != "controller-home" ]] || exit 0
+  elif grep -Eq '"runtimeState"[[:space:]]*:[[:space:]]*"controller-home"' forge.config.json 2>/dev/null; then
+    exit 0
+  fi
+fi
 
 stop_hook_active="$(hook_json_get '.stop_hook_active' 'false')"
 last_assistant_message="$(hook_json_get '.last_assistant_message' '')"

@@ -15,7 +15,8 @@ type Capability = {
   prefixes: string[];
   contract_files: ContractFiles;
   architecture_module: string;
-  workstream_dir: string;
+  /** Legacy migration metadata only. Modern capability authority uses Controller Home Work. */
+  workstream_dir?: string;
   lsp_profile: string;
   verification_hints: string[];
 };
@@ -152,7 +153,6 @@ function defaultCapabilityForPrefix(prefix: string): Capability {
       claude: `${prefix}/CLAUDE.md`,
     },
     architecture_module: `docs/architecture/modules/${domain}/${name}.md`,
-    workstream_dir: `tasks/workstreams/${domain}/${name}`,
     lsp_profile: "typescript-lsp",
     verification_hints: ["record local commands here before implementation"],
   };
@@ -221,7 +221,6 @@ function validateCapability(capability: Capability, repo: string): string[] {
     ["domain", capability.domain],
     ["name", capability.name],
     ["architecture_module", capability.architecture_module],
-    ["workstream_dir", capability.workstream_dir],
     ["lsp_profile", capability.lsp_profile],
   ];
 
@@ -261,14 +260,20 @@ function validateCapability(capability: Capability, repo: string): string[] {
     }
   }
 
-  for (const [field, value] of [
-    ["architecture_module", capability.architecture_module],
-    ["workstream_dir", capability.workstream_dir],
-  ] as const) {
-    try {
-      normalizeRepoPath(value, repo);
-    } catch (error) {
-      errors.push(`${capability.id}: invalid ${field}: ${(error as Error).message}`);
+  try {
+    normalizeRepoPath(capability.architecture_module, repo);
+  } catch (error) {
+    errors.push(`${capability.id}: invalid architecture_module: ${(error as Error).message}`);
+  }
+  if (capability.workstream_dir !== undefined) {
+    if (typeof capability.workstream_dir !== "string" || capability.workstream_dir.trim() === "") {
+      errors.push(`${capability.id}: legacy workstream_dir must be a non-empty repository path when present`);
+    } else {
+      try {
+        normalizeRepoPath(capability.workstream_dir, repo);
+      } catch (error) {
+        errors.push(`${capability.id}: invalid legacy workstream_dir: ${(error as Error).message}`);
+      }
     }
   }
 
@@ -313,9 +318,15 @@ function validateRegistry(registry: CapabilityRegistry, repo: string): string[] 
 
     try {
       architectureModules.add(normalizeRepoPath(capability.architecture_module, repo));
-      workstreamDirs.add(normalizeRepoPath(capability.workstream_dir, repo));
     } catch {
       // Field-specific validation already recorded the concrete error.
+    }
+    if (capability.workstream_dir) {
+      try {
+        workstreamDirs.add(normalizeRepoPath(capability.workstream_dir, repo));
+      } catch {
+        // Legacy field-specific validation already recorded the concrete error.
+      }
     }
   }
 
@@ -339,7 +350,9 @@ function validateRegistry(registry: CapabilityRegistry, repo: string): string[] 
   }
 
   const workstreamsRoot = resolve(repo, "tasks/workstreams");
-  if (existsSync(workstreamsRoot)) {
+  // Only legacy registries that still declare workstream ownership participate
+  // in orphan validation. Modern registries do not synthesize this retired surface.
+  if (workstreamDirs.size > 0 && existsSync(workstreamsRoot)) {
     const stack = [workstreamsRoot];
     while (stack.length > 0) {
       const current = stack.pop()!;
@@ -384,7 +397,6 @@ function findMatch(registry: CapabilityRegistry, repo: string, inputPath: string
       architecture_domain: "root",
       architecture_capability: "_root",
       architecture_module: "docs/architecture/index.md",
-      workstream_dir: "tasks/workstreams/root/_root",
     };
   }
 
@@ -410,7 +422,7 @@ function findMatch(registry: CapabilityRegistry, repo: string, inputPath: string
     architecture_domain: winner.capability.domain,
     architecture_capability: winner.capability.name,
     architecture_module: winner.capability.architecture_module,
-    workstream_dir: winner.capability.workstream_dir,
+    ...(winner.capability.workstream_dir ? { workstream_dir: winner.capability.workstream_dir } : {}),
     contract_agents: winner.capability.contract_files.agents,
     contract_claude: winner.capability.contract_files.claude,
     lsp_profile: winner.capability.lsp_profile,

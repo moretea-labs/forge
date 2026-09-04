@@ -153,7 +153,7 @@ const FALLBACK_TEMPLATE_VARIABLES: Record<string, string> = {
   EVALUATION_PROFILE: "browser-qa",
   HANDOFF_PROFILE: "artifact-aware",
   RECOVERY_PROFILE: "hybrid",
-  STATE_PROFILE: "file-backed",
+  STATE_PROFILE: "controller-home",
   CONTEXT_PROFILE: "stable-root-progressive-subdir",
   AI_NATIVE_PROFILE: "none",
   AI_NATIVE_PROFILE_LABEL: "None",
