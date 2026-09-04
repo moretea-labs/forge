@@ -1,6 +1,7 @@
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginBuildContext,
   AssistantPluginCapability,
   AssistantPluginManifest,
   AssistantPluginPermissionScope,
@@ -10,7 +11,6 @@ import {
   type GoogleTasksPluginConfig,
   googleApiRequest,
   googlePermission,
-  googleTasksPluginConfigPath,
   loadGoogleTasksPluginConfig,
   pluginStateFromGoogleAuth,
   resolveGoogleAuth,
@@ -454,9 +454,9 @@ function tasksProvider(config: GoogleTasksPluginConfig, repoRoot?: string): Task
   return config.provider === 'mock' ? mockTasksProvider() : liveTasksProvider(config, repoRoot);
 }
 
-export function buildGoogleTasksPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
+export function buildGoogleTasksPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
-  const config = loadGoogleTasksPluginConfig(root);
+  const config = loadGoogleTasksPluginConfig(root, context);
   const auth = resolveGoogleAuth('tasks', config, { repoRoot: root });
   const state = pluginStateFromGoogleAuth(config, auth);
   return {
@@ -470,7 +470,7 @@ export function buildGoogleTasksPluginManifest(previousRevision = 0, previousUpd
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: [`repo-local:${googleTasksPluginConfigPath()}`, 'env:FORGE_*_ACCESS_TOKEN'],
+      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/google-tasks.json', 'env:FORGE_*_ACCESS_TOKEN'],
     },
     enabled: config.enabled,
     lifecycle: {
@@ -490,11 +490,11 @@ export function buildGoogleTasksPluginManifest(previousRevision = 0, previousUpd
 }
 
 export async function executeGoogleTasksPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const current = loadGoogleTasksPluginConfig(input.repoRoot);
+  const current = loadGoogleTasksPluginConfig(input.repoRoot, input);
   switch (input.actionId) {
     case 'configure': {
       const args = input.args;
-      const config = saveGoogleTasksPluginConfig(input.repoRoot, {
+      const config = saveGoogleTasksPluginConfig(input, {
         enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
         provider: args.provider === 'google-workspace' ? 'google-workspace' : args.provider === 'mock' ? 'mock' : current.provider,
         accountEmail: args.clear_account_email === true ? undefined : stringValue(args.account_email) ?? current.accountEmail,

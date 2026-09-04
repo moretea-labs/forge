@@ -1,6 +1,4 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
 import type {
   AssistantPluginHealth,
   AssistantPluginLifecycleState,
@@ -9,6 +7,7 @@ import type {
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { bootstrapManagedRuntimeEnv } from '../shared/managed-env';
 import { readStoredGoogleRefreshToken } from '../safe-tooling/google-credential-store';
+import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 
 export type GoogleProviderKind = 'mock' | 'google-workspace';
 export type GoogleService = 'gmail' | 'calendar' | 'tasks';
@@ -59,7 +58,6 @@ export interface GoogleApiRequestOptions {
   timeoutMs?: number;
 }
 
-const CONFIG_ROOT = '.forge/plugins';
 const REFRESH_REQUIRED_ACCESS_TOKEN = '__forge_refresh_required__';
 
 interface CachedGoogleCredential {
@@ -144,10 +142,6 @@ export function installGoogleAccessToken(service: GoogleService, accessToken: st
   });
 }
 
-function repoPluginConfigPath(repoRoot: string, pluginId: string): string {
-  return join(repoRoot, CONFIG_ROOT, `${pluginId}.json`);
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -219,75 +213,66 @@ export function normalizeGoogleTasksPluginConfig(raw: Partial<GoogleTasksPluginC
 
 function loadPluginConfig<T extends GooglePluginConfig>(
   repoRoot: string,
+  context: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'> | undefined,
   pluginId: string,
   normalize: (raw: Partial<T>) => T,
   defaults: () => T,
 ): T {
-  const path = repoPluginConfigPath(repoRoot, pluginId);
-  if (!existsSync(path)) return defaults();
-  try {
-    return normalize(JSON.parse(readFileSync(path, 'utf-8')) as Partial<T>);
-  } catch {
-    return defaults();
-  }
+  if (!context) return defaults();
+  const persisted = readRepositoryPluginConfig<Partial<T>>({ ...context, repoRoot }, pluginId);
+  return persisted ? normalize(persisted) : defaults();
 }
 
 function writePluginConfig<T extends GooglePluginConfig>(
-  repoRoot: string,
+  context: RepositoryPluginConfigContext,
   pluginId: string,
   config: T,
 ): T {
-  const path = repoPluginConfigPath(repoRoot, pluginId);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
-  return config;
+  return writeRepositoryPluginConfig(context, pluginId, config);
 }
 
-export function gmailPluginConfigPath(): string {
-  return `${CONFIG_ROOT}/gmail.json`;
+export function loadGmailPluginConfig(
+  repoRoot: string,
+  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+): GmailPluginConfig {
+  return loadPluginConfig(repoRoot, context, 'gmail', normalizeGmailPluginConfig, defaultGmailPluginConfig);
 }
 
-export function googleCalendarPluginConfigPath(): string {
-  return `${CONFIG_ROOT}/google-calendar.json`;
+export function loadGoogleCalendarPluginConfig(
+  repoRoot: string,
+  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+): GoogleCalendarPluginConfig {
+  return loadPluginConfig(repoRoot, context, 'google-calendar', normalizeGoogleCalendarPluginConfig, defaultGoogleCalendarPluginConfig);
 }
 
-export function googleTasksPluginConfigPath(): string {
-  return `${CONFIG_ROOT}/google-tasks.json`;
-}
-
-export function loadGmailPluginConfig(repoRoot: string): GmailPluginConfig {
-  return loadPluginConfig(repoRoot, 'gmail', normalizeGmailPluginConfig, defaultGmailPluginConfig);
-}
-
-export function loadGoogleCalendarPluginConfig(repoRoot: string): GoogleCalendarPluginConfig {
-  return loadPluginConfig(repoRoot, 'google-calendar', normalizeGoogleCalendarPluginConfig, defaultGoogleCalendarPluginConfig);
-}
-
-export function loadGoogleTasksPluginConfig(repoRoot: string): GoogleTasksPluginConfig {
-  return loadPluginConfig(repoRoot, 'google-tasks', normalizeGoogleTasksPluginConfig, defaultGoogleTasksPluginConfig);
+export function loadGoogleTasksPluginConfig(
+  repoRoot: string,
+  context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>,
+): GoogleTasksPluginConfig {
+  return loadPluginConfig(repoRoot, context, 'google-tasks', normalizeGoogleTasksPluginConfig, defaultGoogleTasksPluginConfig);
 }
 
 export type GooglePluginConfigPatch<T extends GooglePluginConfig> = Partial<Omit<T, 'schemaVersion'>>;
 
-export function saveGmailPluginConfig(repoRoot: string, patch: GooglePluginConfigPatch<GmailPluginConfig>): GmailPluginConfig {
-  const current = loadGmailPluginConfig(repoRoot);
-  return writePluginConfig(repoRoot, 'gmail', normalizeGmailPluginConfig({ ...current, ...patch }));
+export function saveGmailPluginConfig(context: RepositoryPluginConfigContext, patch: GooglePluginConfigPatch<GmailPluginConfig>): GmailPluginConfig {
+  const current = loadGmailPluginConfig(context.repoRoot, context);
+  return writePluginConfig(context, 'gmail', normalizeGmailPluginConfig({ ...current, ...patch }));
 }
 
 export function saveGoogleCalendarPluginConfig(
-  repoRoot: string,
+  context: RepositoryPluginConfigContext,
   patch: GooglePluginConfigPatch<GoogleCalendarPluginConfig>,
 ): GoogleCalendarPluginConfig {
-  const current = loadGoogleCalendarPluginConfig(repoRoot);
-  return writePluginConfig(repoRoot, 'google-calendar', normalizeGoogleCalendarPluginConfig({ ...current, ...patch }));
+  const current = loadGoogleCalendarPluginConfig(context.repoRoot, context);
+  return writePluginConfig(context, 'google-calendar', normalizeGoogleCalendarPluginConfig({ ...current, ...patch }));
 }
 
 export function saveGoogleTasksPluginConfig(
-  repoRoot: string,
+  context: RepositoryPluginConfigContext,
   patch: GooglePluginConfigPatch<GoogleTasksPluginConfig>,
 ): GoogleTasksPluginConfig {
-  const current = loadGoogleTasksPluginConfig(repoRoot);
-  return writePluginConfig(repoRoot, 'google-tasks', normalizeGoogleTasksPluginConfig({ ...current, ...patch }));
+  const current = loadGoogleTasksPluginConfig(context.repoRoot, context);
+  return writePluginConfig(context, 'google-tasks', normalizeGoogleTasksPluginConfig({ ...current, ...patch }));
 }
 
 function tokenEnvNames(service: GoogleService): string[] {

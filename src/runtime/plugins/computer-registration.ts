@@ -121,7 +121,7 @@ function buildComputerManifest(
   repoRoot?: string,
   context?: AssistantPluginBuildContext,
 ): AssistantPluginManifest {
-  const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot);
+  const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context);
   const desktop = desktopProviderManifest(context);
   const desktopSupported = process.platform === 'darwin';
   const browserReady = browser.enabled && browser.health.ready;

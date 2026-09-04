@@ -1,6 +1,7 @@
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginBuildContext,
   AssistantPluginCapability,
   AssistantPluginManifest,
   AssistantPluginPermissionScope,
@@ -9,7 +10,6 @@ import { AssistantPluginError } from './errors';
 import {
   type GoogleCalendarPluginConfig,
   googleApiRequest,
-  googleCalendarPluginConfigPath,
   googlePermission,
   loadGoogleCalendarPluginConfig,
   pluginStateFromGoogleAuth,
@@ -391,9 +391,9 @@ function calendarProvider(config: GoogleCalendarPluginConfig, repoRoot?: string)
   return config.provider === 'mock' ? mockCalendarProvider() : liveCalendarProvider(config, repoRoot);
 }
 
-export function buildGoogleCalendarPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
+export function buildGoogleCalendarPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
-  const config = loadGoogleCalendarPluginConfig(root);
+  const config = loadGoogleCalendarPluginConfig(root, context);
   const auth = resolveGoogleAuth('calendar', config, { repoRoot: root });
   const state = pluginStateFromGoogleAuth(config, auth);
   return {
@@ -407,7 +407,7 @@ export function buildGoogleCalendarPluginManifest(previousRevision = 0, previous
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: [`repo-local:${googleCalendarPluginConfigPath()}`, 'env:FORGE_*_ACCESS_TOKEN'],
+      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/google-calendar.json', 'env:FORGE_*_ACCESS_TOKEN'],
     },
     enabled: config.enabled,
     lifecycle: {
@@ -427,11 +427,11 @@ export function buildGoogleCalendarPluginManifest(previousRevision = 0, previous
 }
 
 export async function executeGoogleCalendarPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const current = loadGoogleCalendarPluginConfig(input.repoRoot);
+  const current = loadGoogleCalendarPluginConfig(input.repoRoot, input);
   switch (input.actionId) {
     case 'configure': {
       const args = input.args;
-      const config = saveGoogleCalendarPluginConfig(input.repoRoot, {
+      const config = saveGoogleCalendarPluginConfig(input, {
         enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
         provider: args.provider === 'google-workspace' ? 'google-workspace' : args.provider === 'mock' ? 'mock' : current.provider,
         accountEmail: args.clear_account_email === true ? undefined : stringValue(args.account_email) ?? current.accountEmail,

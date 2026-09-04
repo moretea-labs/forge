@@ -5,10 +5,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'pat
 import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginAuthorizationContext,
+  AssistantPluginBuildContext,
   AssistantPluginHealth,
   AssistantPluginManifest,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 import {
   browserActions,
   browserCapabilities,
@@ -93,7 +95,6 @@ import type {
 } from '../../../packages/protocols/browser/index';
 
 const BROWSER_PLUGIN_ID = 'browser';
-const CONFIG_ROOT = '.forge/plugins';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TEXT_CHARS = 20_000;
 const DEFAULT_POST_ACTION_WAIT_MS = 750;
@@ -385,10 +386,6 @@ function stringList(value: unknown): string[] | undefined {
   return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
 }
 
-function configPath(repoRoot: string): string {
-  return join(repoRoot, CONFIG_ROOT, 'browser.json');
-}
-
 function defaultProfileDir(repoRoot: string): string {
   return join(browserStateDir(repoRoot, 'profiles'), 'default');
 }
@@ -480,8 +477,10 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
-function loadConfig(repoRoot: string): BrowserPluginConfig {
-  const persisted = readJson<PersistedBrowserPluginConfig>(configPath(repoRoot));
+function loadConfig(repoRoot: string, context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>): BrowserPluginConfig {
+  const persisted = context
+    ? readRepositoryPluginConfig<PersistedBrowserPluginConfig>({ ...context, repoRoot }, BROWSER_PLUGIN_ID)
+    : undefined;
   if (!persisted) return normalizeConfig({});
   return normalizeConfig(migrateLegacyRepositoryConfig(persisted));
 }
@@ -492,7 +491,7 @@ async function resolveBrowserPluginAuthorizationContextInternal(
   const action = browserActions().find((entry) => entry.actionId === input.actionId);
   if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
 
-  const persistedConfig = loadConfig(input.repoRoot);
+  const persistedConfig = loadConfig(input.repoRoot, input);
   const sessionId = stringValue(input.args.session_id);
   const authorizationBrowserMode = parseBrowserModeInput(input.args.browser_mode) ?? persistedConfig.browserMode;
   if (!sessionId || authorizationBrowserMode === 'isolated') return undefined;
@@ -547,15 +546,9 @@ export async function resolveBrowserPluginAuthorizationContext(
   );
 }
 
-export function readBrowserPluginConfiguration(repoRoot: string): { enabled: boolean } {
-  const config = loadConfig(repoRoot);
-  return { enabled: config.enabled };
-}
-
-function saveConfig(repoRoot: string, patch: Partial<BrowserPluginConfig>): BrowserPluginConfig {
-  const next = normalizeConfig({ ...loadConfig(repoRoot), ...patch });
-  writeJson(configPath(repoRoot), next);
-  return next;
+function saveConfig(input: Pick<AssistantPluginActionExecutionInput, 'controllerHome' | 'repoId' | 'repoRoot'>, patch: Partial<BrowserPluginConfig>): BrowserPluginConfig {
+  const next = normalizeConfig({ ...loadConfig(input.repoRoot, input), ...patch });
+  return writeRepositoryPluginConfig(input, BROWSER_PLUGIN_ID, next);
 }
 
 function parsedAbsoluteUrl(value: unknown): { raw: string; parsed: URL } {
@@ -3227,9 +3220,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   };
 }
 
-export function buildBrowserPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
+export function buildBrowserPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
-  const config = loadConfig(root);
+  const config = loadConfig(root, context);
   const state = health(config, root);
   return {
     schemaVersion: 1,
@@ -3242,7 +3235,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['repo-local:.forge/plugins/browser.json', 'controller-home:sqlite/browser_session', 'repo-local:.forge/browser/{screenshots,downloads,diagnostics}'],
+      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/browser.json', 'controller-home:sqlite/browser_session', 'controller-home:repository browser artifacts'],
     },
     enabled: config.enabled,
     lifecycle: {
@@ -3282,7 +3275,7 @@ async function executeBrowserPluginActionInternal(
   input: AssistantPluginActionExecutionInput,
   runtimeAlreadyRouted = false,
 ): Promise<Record<string, unknown>> {
-  const persisted = loadConfig(input.repoRoot);
+  const persisted = loadConfig(input.repoRoot, input);
   const actionSessionId = input.actionId === 'configure' ? undefined : stringValue(input.args.session_id);
   const actionSession = actionSessionId ? findBrowserSession(input.repoRoot, actionSessionId) : undefined;
   const current = input.actionId === 'configure' ? persisted : effectiveBrowserActionConfig(persisted, input.args, actionSession);
@@ -3364,7 +3357,7 @@ async function executeBrowserPluginActionInternal(
         const nextCdpAttachFallback = parseCdpAttachFallbackInput(args.cdp_attach_fallback) ?? current.cdpAttachFallback;
         const nextNativeAttachMode = parseNativeAttachModeInput(args.native_attach_mode) ?? current.nativeAttachMode;
         const nextNativeBrowserCandidates = parseNativeBrowserCandidatesInput(args.native_browser_candidates) ?? current.nativeBrowserCandidates;
-        const config = saveConfig(input.repoRoot, {
+        const config = saveConfig(input, {
           enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
           browserMode: nextBrowserMode,
           profileMode: nextProfileMode,

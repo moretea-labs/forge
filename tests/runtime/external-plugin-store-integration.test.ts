@@ -9,6 +9,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
+import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { buildPluginManagementManifest } from '../../src/runtime/plugins/plugin-management-adapter';
@@ -792,7 +793,7 @@ describe('Resend first-party plugin', () => {
       from_email: 'forge@updates.example.com',
       from_name: 'Forge',
     });
-    const configText = readFileSync(join(repoRoot, '.forge/plugins/resend.json'), 'utf8');
+    const configText = readFileSync(repositoryPluginConfigPath({ controllerHome: join(repoRoot, '.controller'), repoId: 'repo_test' }, 'resend'), 'utf8');
     expect(configText).toContain('updates.example.com');
     expect(configText).not.toContain('apiKey');
     expect(configText).not.toContain('password');

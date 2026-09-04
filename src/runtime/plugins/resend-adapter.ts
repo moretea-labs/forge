@@ -3,12 +3,14 @@ import { dirname, join } from 'path';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginBuildContext,
   AssistantPluginCapability,
   AssistantPluginHealth,
   AssistantPluginManifest,
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 import {
   getResendOAuthAccessToken,
   prepareResendOAuthLogin,
@@ -19,7 +21,6 @@ import {
 } from '../safe-tooling/resend-oauth';
 
 const RESEND_PLUGIN_ID = 'resend';
-const CONFIG_ROOT = '.forge/plugins';
 const API_BASE_URL = 'https://api.resend.com';
 const RESEND_USER_AGENT = 'Forge-Resend-Plugin/1.0.0';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -73,10 +74,6 @@ function boundedTimeout(value: unknown, fallback = DEFAULT_TIMEOUT_MS): number {
     : fallback;
 }
 
-function configPath(repoRoot: string): string {
-  return join(repoRoot, CONFIG_ROOT, 'resend.json');
-}
-
 function normalizeConfig(raw: Partial<ResendPluginConfig>): ResendPluginConfig {
   return {
     schemaVersion: 1,
@@ -89,22 +86,16 @@ function normalizeConfig(raw: Partial<ResendPluginConfig>): ResendPluginConfig {
   };
 }
 
-function loadConfig(repoRoot: string): ResendPluginConfig {
-  const path = configPath(repoRoot);
-  if (!existsSync(path)) return normalizeConfig({});
-  try {
-    return normalizeConfig(JSON.parse(readFileSync(path, 'utf8')) as Partial<ResendPluginConfig>);
-  } catch {
-    return normalizeConfig({});
-  }
+function loadConfig(repoRoot: string, context?: Pick<RepositoryPluginConfigContext, 'controllerHome' | 'repoId'>): ResendPluginConfig {
+  const persisted = context
+    ? readRepositoryPluginConfig<Partial<ResendPluginConfig>>({ ...context, repoRoot }, RESEND_PLUGIN_ID)
+    : undefined;
+  return normalizeConfig(persisted ?? {});
 }
 
-function saveConfig(repoRoot: string, patch: Partial<ResendPluginConfig>): ResendPluginConfig {
-  const next = normalizeConfig({ ...loadConfig(repoRoot), ...patch });
-  const path = configPath(repoRoot);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-  return next;
+function saveConfig(input: Pick<AssistantPluginActionExecutionInput, 'controllerHome' | 'repoId' | 'repoRoot'>, patch: Partial<ResendPluginConfig>): ResendPluginConfig {
+  const next = normalizeConfig({ ...loadConfig(input.repoRoot, input), ...patch });
+  return writeRepositoryPluginConfig(input, RESEND_PLUGIN_ID, next);
 }
 
 function apiKey(): { value?: string; source?: string } {
@@ -382,14 +373,14 @@ function domainRows(payload: Record<string, unknown>): Array<Record<string, unkn
   return Array.isArray(payload.data) ? payload.data.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object') : [];
 }
 
-export function buildResendPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
+export function buildResendPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
-  const config = loadConfig(root);
+  const config = loadConfig(root, context);
   const auth = resolveAuth(config);
   return {
     schemaVersion: 1, manifestVersion: 1, revision: Math.max(1, previousRevision || 1),
     pluginId: RESEND_PLUGIN_ID, provider: 'resend', displayName: 'Resend Email Plugin', pluginVersion: '1.0.0',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['repo-local:.forge/plugins/resend.json', 'macos-keychain:forge.resend-oauth|forge.resend-smtp', 'env:FORGE_RESEND_API_KEY|RESEND_API_KEY'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/resend.json', 'macos-keychain:forge.resend-oauth|forge.resend-smtp', 'env:FORGE_RESEND_API_KEY|RESEND_API_KEY'] },
     enabled: config.enabled,
     lifecycle: {
       state: !config.enabled ? 'disabled' : auth.ready ? 'enabled' : 'error',
@@ -401,11 +392,11 @@ export function buildResendPluginManifest(previousRevision = 0, previousUpdatedA
 }
 
 export async function executeResendPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const current = loadConfig(input.repoRoot);
+  const current = loadConfig(input.repoRoot, input);
   switch (input.actionId) {
     case 'configure': {
       const args = input.args;
-      const config = saveConfig(input.repoRoot, {
+      const config = saveConfig(input, {
         enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
         provider: args.provider === 'resend-api' ? 'resend-api' : args.provider === 'mock' ? 'mock' : current.provider,
         sendingDomain: args.clear_sending_domain === true ? undefined : stringValue(args.sending_domain) ?? current.sendingDomain,

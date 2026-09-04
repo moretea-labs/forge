@@ -1,6 +1,7 @@
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginBuildContext,
   AssistantPluginCapability,
   AssistantPluginManifest,
   AssistantPluginPermissionScope,
@@ -9,7 +10,6 @@ import { AssistantPluginError } from './errors';
 import {
   type GmailPluginConfig,
   encodeBase64Url,
-  gmailPluginConfigPath,
   googleApiRequest,
   googlePermission,
   loadGmailPluginConfig,
@@ -665,9 +665,9 @@ function gmailProvider(config: GmailPluginConfig, repoRoot?: string): GmailProvi
   return config.provider === 'mock' ? mockGmailProvider() : liveGmailProvider(config, repoRoot);
 }
 
-export function buildGmailPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
+export function buildGmailPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
-  const config = loadGmailPluginConfig(root);
+  const config = loadGmailPluginConfig(root, context);
   const auth = resolveGoogleAuth('gmail', config, { repoRoot: root });
   const state = pluginStateFromGoogleAuth(config, auth);
   return {
@@ -681,7 +681,7 @@ export function buildGmailPluginManifest(previousRevision = 0, previousUpdatedAt
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: [`repo-local:${gmailPluginConfigPath()}`, 'env:FORGE_*_ACCESS_TOKEN'],
+      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/gmail.json', 'env:FORGE_*_ACCESS_TOKEN'],
     },
     enabled: config.enabled,
     lifecycle: {
@@ -701,11 +701,11 @@ export function buildGmailPluginManifest(previousRevision = 0, previousUpdatedAt
 }
 
 export async function executeGmailPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const current = loadGmailPluginConfig(input.repoRoot);
+  const current = loadGmailPluginConfig(input.repoRoot, input);
   switch (input.actionId) {
     case 'configure': {
       const args = input.args;
-      const config = saveGmailPluginConfig(input.repoRoot, {
+      const config = saveGmailPluginConfig(input, {
         enabled: typeof args.enabled === 'boolean' ? args.enabled : current.enabled,
         provider: args.provider === 'google-workspace' ? 'google-workspace' : args.provider === 'mock' ? 'mock' : current.provider,
         accountEmail: args.clear_account_email === true ? undefined : stringValue(args.account_email) ?? current.accountEmail,
