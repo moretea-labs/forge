@@ -140,10 +140,10 @@ describe("Bootstrap Script Contracts", () => {
     expect(releaseGate.indexOf("bun run check:release")).toBeGreaterThan(
       releaseGate.indexOf('npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}"')
     );
-    expect(readinessGate).toContain('bash scripts/check-tarball-install-smoke.sh "$TARBALL_PATH"');
+    expect(readinessGate).toContain('node scripts/run-bounded-command.mjs --timeout-ms 180000 -- bash scripts/check-tarball-install-smoke.sh "$TARBALL_PATH"');
     expect((readinessGate.match(/npm pack/g) ?? []).length).toBe(2);
     expect(pkg.scripts["check:release-published"]).toBe("bash scripts/check-release-published.sh");
-    expect(pkg.scripts["smoke:tarball-install"]).toBe("bash scripts/check-tarball-install-smoke.sh");
+    expect(pkg.scripts["smoke:tarball-install"]).toBe("node scripts/run-bounded-command.mjs --timeout-ms 180000 -- bash scripts/check-tarball-install-smoke.sh");
   });
 
   test("create-project-dirs should scaffold only the v1.5 repository-authored workflow surface", () => {

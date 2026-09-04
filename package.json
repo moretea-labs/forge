@@ -133,7 +133,7 @@
     "check:public-export": "bun scripts/public-release.ts",
     "package:source-zip": "bash scripts/package-source-archive.sh",
     "check:release-published": "bash scripts/check-release-published.sh",
-    "smoke:tarball-install": "bash scripts/check-tarball-install-smoke.sh",
+    "smoke:tarball-install": "node scripts/run-bounded-command.mjs --timeout-ms 180000 -- bash scripts/check-tarball-install-smoke.sh",
     "check:release-version": "node scripts/check-release-version.mjs",
     "release:dry-run": "node scripts/check-release-version.mjs && bun run check:release",
     "release:rc": "bash scripts/publish-release-tarball.sh next",
@@ -157,7 +157,7 @@
     "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
     "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts",
     "prepack": "node scripts/sync-generated-authority.mjs --check",
-    "check:portable-package": "node --test tests/node/*.test.mjs && bash scripts/check-tarball-install-smoke.sh"
+    "check:portable-package": "node --test tests/node/*.test.mjs && npm run smoke:tarball-install"
   },
   "devDependencies": {
     "@colbymchenry/codegraph": "1.0.1",

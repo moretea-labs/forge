@@ -33,5 +33,5 @@ npm pack --pack-destination "$ARTIFACT_DIR" >/dev/null
 printf '%s\n' "$TARBALL_PATH" >"$ARTIFACT_DIR/latest-tarball.txt"
 
 echo "[release-readiness] smoke the same tarball"
-bash scripts/check-tarball-install-smoke.sh "$TARBALL_PATH"
+node scripts/run-bounded-command.mjs --timeout-ms 180000 -- bash scripts/check-tarball-install-smoke.sh "$TARBALL_PATH"
 echo "[release-readiness] OK: $TARBALL_PATH"
