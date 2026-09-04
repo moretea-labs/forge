@@ -26,8 +26,10 @@ describe('xiaohongshu publish recipe', () => {
     expect(listFirstPartyPluginAdapters().map((adapter) => adapter.pluginId)).toContain('xiaohongshu');
     expect(manifest.health.ready).toBe(true);
     const actions = Object.fromEntries(manifest.actions.map((action) => [action.actionId, action]));
-    expect(Object.keys(actions)).toEqual(['get_publish_recipe', 'classify_publish_state', 'publish_note']);
+    expect(Object.keys(actions)).toEqual(['get_publish_recipe', 'check_live_contract', 'classify_publish_state', 'publish_note']);
     expect(actions.get_publish_recipe.readOnly).toBe(true);
+    expect(actions.check_live_contract.readOnly).toBe(true);
+    expect(actions.check_live_contract.risk).toBe('readonly');
     expect(actions.publish_note.risk).toBe('remote_write');
     expect(actions.publish_note.confirmation).toBe('authorization');
   });
@@ -78,17 +80,113 @@ describe('xiaohongshu publish recipe', () => {
     expect(classifyXiaohongshuPublishState({ phase: 'profile_verify', url: profileUrl, text: '还没刷新出来', expectedTitle: '一个可以直接收藏的工具帖' })).toBe('VERIFY_PENDING');
   });
 
+
+  test('live contract smoke reports hidden versus slow-attaching anchors without upload or publish', async () => {
+    const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
+    let fileProbeCount = 0;
+    let tick = 0;
+    setXiaohongshuPluginHooksForTest({
+      nowMs: () => (tick += 5),
+      executeBrowserAction: async (input) => {
+        calls.push({ actionId: input.actionId, args: input.args as Record<string, any> });
+        if (input.actionId === 'navigate') return { url: 'https://creator.xiaohongshu.com/publish/publish?source=official' };
+        if (input.actionId === 'query_all') return { matches: [{ text: '创作服务平台' }] };
+        if (input.actionId === 'click_text') return { url: 'https://creator.xiaohongshu.com/publish/publish?source=official' };
+        if (input.actionId === 'wait_for_selector') return { selector: input.args.selector, state: 'attached' };
+        if (input.actionId === 'verify_state') {
+          const selector = String(input.args.selector);
+          let exists = true;
+          let visible = true;
+          if (selector === 'input[type=file]') {
+            fileProbeCount += 1;
+            exists = fileProbeCount > 1;
+            visible = false;
+          }
+          if (selector === 'xhs-publish-btn') visible = false;
+          return {
+            checks: [
+              { criterion: 'selector_exists', observed: exists },
+              { criterion: 'selector_visible', observed: visible },
+            ],
+          };
+        }
+        return {};
+      },
+    });
+
+    const result = await executeXiaohongshuPluginAction({
+      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'check_live_contract', requestId: 'xhs-contract',
+      args: { session_id: baseArgs.session_id, mode: 'image_note' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(result.status).toBe('compatible');
+    expect(result.sideEffects).toEqual({ uploaded: false, submitted: false, published: false });
+    expect(result.receiptPatterns).toEqual(['published=true', '/publish/success', '/publish/editsuccess']);
+    const anchors = result.anchors as Array<Record<string, any>>;
+    expect(anchors.find((anchor) => anchor.id === 'image.file_input')).toMatchObject({ compatible: true, status: 'slow_attached_hidden', exists: true, visible: false });
+    expect(anchors.find((anchor) => anchor.id === 'publish.host')).toMatchObject({ compatible: true, status: 'hidden', exists: true, visible: false });
+    expect(anchors.every((anchor) => typeof anchor.durationMs === 'number' && anchor.durationMs >= 0)).toBe(true);
+    expect(calls.some((call) => call.actionId === 'attach_local_file')).toBe(false);
+    expect(calls.some((call) => call.actionId === 'dispatch_event')).toBe(false);
+    expect(calls.some((call) => call.actionId === 'fill')).toBe(false);
+  });
+
+  test('publish preflight aggregates incompatible anchors and fails before upload or semantic submit', async () => {
+    const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
+    setXiaohongshuPluginHooksForTest({
+      executeBrowserAction: async (input) => {
+        calls.push({ actionId: input.actionId, args: input.args as Record<string, any> });
+        if (input.actionId === 'navigate') return { url: 'https://creator.xiaohongshu.com/publish/publish?source=official' };
+        if (input.actionId === 'query_all') return { matches: [{ text: '创作服务平台' }] };
+        if (input.actionId === 'click_text') return {};
+        if (input.actionId === 'verify_state') {
+          const selector = String(input.args.selector);
+          const exists = selector === '[contenteditable="true"][role="textbox"]';
+          return { checks: [
+            { criterion: 'selector_exists', observed: exists },
+            { criterion: 'selector_visible', observed: exists },
+          ] };
+        }
+        if (input.actionId === 'wait_for_selector') throw new Error('Timeout waiting for selector');
+        return {};
+      },
+    });
+
+    const result = await executeXiaohongshuPluginAction({
+      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-preflight-drift',
+      args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(result.status).toBe('page_schema_changed');
+    expect(result.checkpoint).toBe('preflight.live_contract');
+    const contract = result.contractSmoke as Record<string, any>;
+    expect(contract.incompatibleAnchors).toEqual(expect.arrayContaining(['image.file_input', 'image.title', 'publish.host']));
+    expect(contract.incompatibleAnchors).not.toContain('image.body');
+    expect(calls.some((call) => call.actionId === 'attach_local_file')).toBe(false);
+    expect(calls.some((call) => call.actionId === 'dispatch_event')).toBe(false);
+  });
+
   test('publish_note executes the fixed image recipe and succeeds after Creator receipt plus note-manager title verification', async () => {
     const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
     let currentUrl = '';
     let textRead = 0;
     setXiaohongshuPluginHooksForTest({
       now: () => '2026-08-17T04:00:00.000Z',
+      nowMs: (() => { let tick = 0; return () => (tick += 3); })(),
       executeBrowserAction: async (input) => {
         calls.push({ actionId: input.actionId, args: input.args as Record<string, any> });
         if (input.actionId === 'navigate') {
           currentUrl = String(input.args.url);
           return { url: currentUrl };
+        }
+        if (input.actionId === 'query_all') return { url: currentUrl, matches: [{ text: '创作服务平台' }] };
+        if (input.actionId === 'verify_state') {
+          const selector = String(input.args.selector);
+          const visible = selector !== 'input[type=file]' && selector !== 'xhs-publish-btn';
+          return { url: currentUrl, checks: [
+            { criterion: 'selector_exists', observed: true },
+            { criterion: 'selector_visible', observed: visible },
+          ] };
         }
         if (input.actionId === 'wait_for_selector') return { url: currentUrl, selector: input.args.selector, state: input.args.state };
         if (input.actionId === 'dispatch_event') {
@@ -116,6 +214,7 @@ describe('xiaohongshu publish recipe', () => {
     expect(calls.find((call) => call.actionId === 'attach_local_file')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
     expect(calls.find((call) => call.actionId === 'dispatch_event')?.args).toMatchObject({ selector: 'xhs-publish-btn', event: 'publish' });
     expect(calls.at(-1)?.actionId).toBe('get_text');
+    expect((result.receipts as Array<Record<string, any>>).every((receipt) => typeof receipt.durationMs === 'number' && receipt.durationMs > 0)).toBe(true);
   });
 
   test('publish_note stops at auth-required and generated-image handoff without publishing', async () => {
@@ -132,7 +231,7 @@ describe('xiaohongshu publish recipe', () => {
       args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(auth.status).toBe('auth_required');
-    expect(auth.checkpoint).toBe('preflight.navigate_creator');
+    expect(auth.checkpoint).toBe('preflight.live_contract');
     expect(authCalls).toEqual(['navigate']);
 
     authCalls.length = 0;

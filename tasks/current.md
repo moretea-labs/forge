@@ -48,6 +48,11 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 
 ## Git Status
 
+- Summary: 2 changed/untracked path(s)
+
+```
+ M docs/forge-ios-development-assistant.md
+?? docs/architecture/decisions/20260904-ios-device-migration-baseline.md
 - Summary: 7 changed/untracked path(s)
 
 ```

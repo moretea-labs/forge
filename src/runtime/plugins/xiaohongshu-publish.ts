@@ -10,7 +10,8 @@ import { AssistantPluginError } from './errors';
 import { executeBrowserPluginAction } from './browser-adapter';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 7;
+const RECIPE_VERSION = 8;
+const LIVE_CONTRACT_WAIT_MS = 5_000;
 const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
 const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
 const CREATOR_NOTE_MANAGER_URL = 'https://creator.xiaohongshu.com/new/note-manager';
@@ -25,6 +26,7 @@ const ARTICLE_TITLE_SELECTOR = 'textarea:nth-of-type(1)';
 const ARTICLE_BODY_SELECTOR = '[contenteditable="true"]';
 const PUBLISH_SELECTOR = 'xhs-publish-btn';
 const PUBLISH_EVENT = 'publish';
+const CREATOR_SUCCESS_URL_MARKERS = ['published=true', '/publish/success', '/publish/editsuccess'] as const;
 
 const LOGIN_URL_MARKERS = ['/login', 'passport.xiaohongshu.com', 'login.xiaohongshu.com'];
 const LOGIN_TEXT_MARKERS = ['手机号登录', '扫码登录', '验证码登录'];
@@ -37,10 +39,23 @@ type RecipeStep = {
   args: Record<string, unknown>;
   expectation?: string;
 };
+type RecipeReceipt = { stepId: string; actionId: string; durationMs: number; url?: string };
+type LiveContractAnchorStatus = 'ready' | 'hidden' | 'slow_attached' | 'slow_attached_hidden' | 'missing' | 'blocked' | 'error';
+type LiveContractAnchor = {
+  id: string;
+  selector?: string;
+  compatible: boolean;
+  status: LiveContractAnchorStatus;
+  durationMs: number;
+  exists?: boolean;
+  visible?: boolean;
+  message?: string;
+};
 
 interface XiaohongshuHooks {
   executeBrowserAction?: typeof executeBrowserPluginAction;
   now?: () => string;
+  nowMs?: () => number;
 }
 
 let hooks: XiaohongshuHooks = {};
@@ -55,6 +70,14 @@ export function resetXiaohongshuPluginHooksForTest(): void {
 
 function now(): string {
   return hooks.now?.() ?? new Date().toISOString();
+}
+
+function nowMs(): number {
+  return hooks.nowMs?.() ?? Date.now();
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, nowMs() - startedAt);
 }
 
 function browserExecutor(): typeof executeBrowserPluginAction {
@@ -112,9 +135,7 @@ export function classifyXiaohongshuPublishState(input: {
   if (isXiaohongshuAuthRequired(input.url, input.text)) return 'AUTH_REQUIRED';
   if (input.phase === 'creator_receipt') {
     const normalizedUrl = input.url.toLowerCase();
-    return normalizedUrl.includes('published=true')
-      || normalizedUrl.includes('/publish/success')
-      || normalizedUrl.includes('/publish/editsuccess')
+    return CREATOR_SUCCESS_URL_MARKERS.some((marker) => normalizedUrl.includes(marker))
       ? 'PUBLISHED_RECEIPT'
       : 'VERIFY_PENDING';
   }
@@ -276,8 +297,190 @@ function schemaDriftMessage(message: string): boolean {
   return /not found|does not allow multiple|Timeout waiting for selector|visible exact text not found|file input/i.test(message);
 }
 
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(recordValue).filter((entry): entry is Record<string, unknown> => Boolean(entry)) : [];
+}
+
+function verificationBoolean(result: Record<string, unknown>, criterion: string): boolean | undefined {
+  const check = recordArray(result.checks).find((entry) => entry.criterion === criterion);
+  return check ? check.observed === true : undefined;
+}
+
+async function runXiaohongshuLiveContractSmoke(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+  const sessionId = requiredString(input.args.session_id, 'session_id');
+  const requestedMode = input.args.mode === undefined ? 'image_note' : publishMode(input.args.mode);
+  const mode = normalizedMode(requestedMode);
+  const execute = browserExecutor();
+  const anchors: LiveContractAnchor[] = [];
+  const startedAt = nowMs();
+  const creatorUrl = mode === 'long_text' ? CREATOR_ARTICLE_URL : CREATOR_BASE_URL;
+
+  const call = async (actionId: string, args: Record<string, unknown>, suffix: string) => execute({
+    ...input,
+    pluginId: 'browser',
+    actionId,
+    requestId: `${input.requestId}:xhs-contract:${RECIPE_VERSION}:${suffix}`,
+    args,
+  });
+
+  const addError = (id: string, started: number, error: unknown, selector?: string): void => {
+    anchors.push({
+      id, selector, compatible: false, status: 'error', durationMs: elapsedMs(started),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  const probeSelector = async (id: string, selector: string, expectedHidden = false): Promise<LiveContractAnchor> => {
+    const probeStarted = nowMs();
+    const verify = async () => call('verify_state', {
+      session_id: sessionId,
+      selector,
+      require_visible: true,
+      max_chars: 256,
+    }, `${id}:verify`);
+    try {
+      let observation = await verify();
+      let exists = verificationBoolean(observation, 'selector_exists') === true;
+      let visible = verificationBoolean(observation, 'selector_visible') === true;
+      let slow = false;
+      if (!exists) {
+        try {
+          await call('wait_for_selector', {
+            session_id: sessionId,
+            selector,
+            state: 'attached',
+            timeout_ms: LIVE_CONTRACT_WAIT_MS,
+          }, `${id}:wait`);
+          slow = true;
+          observation = await verify();
+          exists = verificationBoolean(observation, 'selector_exists') === true;
+          visible = verificationBoolean(observation, 'selector_visible') === true;
+        } catch {
+          return { id, selector, compatible: false, status: 'missing', durationMs: elapsedMs(probeStarted), exists: false, visible: false };
+        }
+      }
+      const compatible = exists && (!expectedHidden || !visible);
+      const status: LiveContractAnchorStatus = !exists
+        ? 'missing'
+        : slow && !visible
+          ? 'slow_attached_hidden'
+          : slow
+            ? 'slow_attached'
+            : !visible
+              ? 'hidden'
+              : 'ready';
+      return {
+        id, selector, compatible, status, durationMs: elapsedMs(probeStarted), exists, visible,
+        ...(expectedHidden && visible ? { message: 'Expected the file input to remain attached but hidden.' } : {}),
+      };
+    } catch (error) {
+      return {
+        id, selector, compatible: false, status: 'error', durationMs: elapsedMs(probeStarted),
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+
+  const navigationStarted = nowMs();
+  let navigation: Record<string, unknown>;
+  try {
+    navigation = await call('navigate', {
+      session_id: sessionId,
+      url: creatorUrl,
+      wait_until: 'domcontentloaded',
+      timeout_ms: 60_000,
+    }, 'navigate');
+    anchors.push({ id: 'creator.navigation', compatible: true, status: 'ready', durationMs: elapsedMs(navigationStarted) });
+  } catch (error) {
+    addError('creator.navigation', navigationStarted, error);
+    return {
+      status: 'incompatible', recipeVersion: RECIPE_VERSION, mode, sessionId, creatorUrl,
+      anchors, incompatibleAnchors: anchors.filter((anchor) => !anchor.compatible).map((anchor) => anchor.id),
+      receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS], sideEffects: { uploaded: false, submitted: false, published: false },
+      durationMs: elapsedMs(startedAt),
+    };
+  }
+
+  const observedUrl = resultUrl(navigation) || creatorUrl;
+  if (isXiaohongshuAuthRequired(observedUrl, '')) {
+    anchors.push({ id: 'creator.auth', compatible: false, status: 'blocked', durationMs: 0, message: 'Creator redirected to an authentication surface.' });
+    return {
+      status: 'auth_required', recipeVersion: RECIPE_VERSION, mode, sessionId, creatorUrl: observedUrl,
+      anchors, incompatibleAnchors: ['creator.auth'], receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS],
+      sideEffects: { uploaded: false, submitted: false, published: false }, durationMs: elapsedMs(startedAt),
+    };
+  }
+
+  const authStarted = nowMs();
+  try {
+    const auth = await call('query_all', {
+      session_id: sessionId,
+      selector: 'button,[role="button"],a',
+      limit: 80,
+    }, 'auth');
+    const authText = recordArray(auth.matches).map((entry) => stringValue(entry.text) ?? '').join('\n');
+    const authRequired = isXiaohongshuAuthRequired(observedUrl, authText);
+    anchors.push({
+      id: 'creator.auth', compatible: !authRequired, status: authRequired ? 'blocked' : 'ready',
+      durationMs: elapsedMs(authStarted), ...(authRequired ? { message: 'Creator authentication markers are present.' } : {}),
+    });
+    if (authRequired) {
+      return {
+        status: 'auth_required', recipeVersion: RECIPE_VERSION, mode, sessionId, creatorUrl: observedUrl,
+        anchors, incompatibleAnchors: ['creator.auth'], receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS],
+        sideEffects: { uploaded: false, submitted: false, published: false }, durationMs: elapsedMs(startedAt),
+      };
+    }
+  } catch (error) {
+    addError('creator.auth', authStarted, error);
+  }
+
+  const surfaceStarted = nowMs();
+  try {
+    await call('click_text', {
+      session_id: sessionId,
+      text: mode === 'image_note' ? IMAGE_TAB_TEXT : ARTICLE_NEW_TEXT,
+      post_action_wait_ms: mode === 'image_note' ? 250 : 400,
+    }, 'surface');
+    anchors.push({ id: mode === 'image_note' ? 'image.surface' : 'article.surface', compatible: true, status: 'ready', durationMs: elapsedMs(surfaceStarted) });
+  } catch (error) {
+    addError(mode === 'image_note' ? 'image.surface' : 'article.surface', surfaceStarted, error);
+  }
+
+  if (mode === 'image_note') {
+    anchors.push(await probeSelector('image.file_input', IMAGE_FILE_SELECTOR, true));
+    anchors.push(await probeSelector('image.title', IMAGE_TITLE_SELECTOR));
+    anchors.push(await probeSelector('image.body', IMAGE_BODY_SELECTOR));
+  } else {
+    anchors.push(await probeSelector('article.title', ARTICLE_TITLE_SELECTOR));
+    anchors.push(await probeSelector('article.body', ARTICLE_BODY_SELECTOR));
+  }
+  anchors.push(await probeSelector('publish.host', PUBLISH_SELECTOR));
+  anchors.push({ id: 'publish.receipt_patterns', compatible: true, status: 'ready', durationMs: 0 });
+
+  const incompatibleAnchors = anchors.filter((anchor) => !anchor.compatible).map((anchor) => anchor.id);
+  return {
+    status: incompatibleAnchors.length === 0 ? 'compatible' : 'incompatible',
+    recipeVersion: RECIPE_VERSION,
+    mode,
+    sessionId,
+    creatorUrl: observedUrl,
+    anchors,
+    incompatibleAnchors,
+    receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS],
+    sideEffects: { uploaded: false, submitted: false, published: false },
+    durationMs: elapsedMs(startedAt),
+  };
+}
+
 export async function executeXiaohongshuPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   if (input.actionId === 'get_publish_recipe') return buildXiaohongshuPublishRecipe(input.args);
+  if (input.actionId === 'check_live_contract') return runXiaohongshuLiveContractSmoke(input);
   if (input.actionId === 'classify_publish_state') {
     const phase = input.args.phase;
     if (phase !== 'preflight' && phase !== 'creator_receipt' && phase !== 'profile_verify') {
@@ -302,16 +505,32 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
     };
   }
 
+  const contractSmoke = await runXiaohongshuLiveContractSmoke({ ...input, actionId: 'check_live_contract' });
+  if (contractSmoke.status === 'auth_required') {
+    return {
+      status: 'auth_required', recipeVersion: RECIPE_VERSION, checkpoint: 'preflight.live_contract',
+      sessionId: parsed.sessionId, contractSmoke,
+      next: 'Complete only the necessary Xiaohongshu login/verification in the existing browser profile, then rerun publish_note with the same inputs.',
+    };
+  }
+  if (contractSmoke.status !== 'compatible') {
+    return {
+      status: 'page_schema_changed', recipeVersion: RECIPE_VERSION, checkpoint: 'preflight.live_contract', contractSmoke,
+      next: 'Review all incompatible live-contract anchors before uploading files or dispatching publish.',
+    };
+  }
+
   const recipe = buildXiaohongshuPublishRecipe(input.args);
   const steps = recipe.steps as RecipeStep[];
   const execute = browserExecutor();
-  const receipts: Array<{ stepId: string; actionId: string; url?: string }> = [];
+  const receipts: RecipeReceipt[] = [];
   let currentStep = 'preflight';
   let creatorReceipt: Record<string, unknown> | undefined;
   let profileReceipt: Record<string, unknown> | undefined;
 
   const runStep = async (step: RecipeStep, index: number): Promise<Record<string, unknown>> => {
     currentStep = step.id;
+    const startedAt = nowMs();
     const result = await execute({
       ...input,
       pluginId: 'browser',
@@ -319,7 +538,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
       requestId: `${input.requestId}:xhs:${RECIPE_VERSION}:${index}:${step.actionId}`,
       args: step.args,
     });
-    receipts.push({ stepId: step.id, actionId: step.actionId, ...(resultUrl(result) ? { url: resultUrl(result) } : {}) });
+    receipts.push({ stepId: step.id, actionId: step.actionId, durationMs: elapsedMs(startedAt), ...(resultUrl(result) ? { url: resultUrl(result) } : {}) });
     return result;
   };
 
@@ -388,6 +607,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
     return {
       status: 'published',
       recipeVersion: RECIPE_VERSION,
+      contractSmoke,
       mode: parsed.mode,
       normalizedMode: parsed.normalizedMode,
       title: parsed.title,
@@ -437,7 +657,7 @@ function capabilities(): AssistantPluginCapability[] {
     title: 'Xiaohongshu Publishing Recipe',
     description: 'Versioned Browser-backed publishing flow with auth fencing, image/long-text routing, generated-image handoff, semantic publish activation, and dual verification.',
     scopes: ['xiaohongshu.recipe', 'xiaohongshu.publish'],
-    actions: ['get_publish_recipe', 'classify_publish_state', 'publish_note'],
+    actions: ['get_publish_recipe', 'check_live_contract', 'classify_publish_state', 'publish_note'],
   }];
 }
 
@@ -462,6 +682,19 @@ function actions(): AssistantPluginActionDescriptor[] {
       actionId: 'get_publish_recipe', title: 'Resolve publish recipe', description: 'Return the current deterministic Xiaohongshu Browser action sequence without executing it.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
       scopes: ['xiaohongshu.recipe'], resourceClaims: [], argumentsSchema: recipeSchema,
+    },
+    {
+      actionId: 'check_live_contract', title: 'Check live Creator contract', description: 'Run a bounded non-publishing Creator preflight that navigates/selects the requested creation surface, reports all selector incompatibilities together, distinguishes hidden/slow-attaching/missing anchors, and never uploads content or dispatches publish.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true,
+      scopes: ['xiaohongshu.recipe'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string' },
+          mode: { type: 'string', enum: ['image_note', 'generated_image_note', 'long_text'] },
+        },
+        required: ['session_id'], additionalProperties: false,
+      },
     },
     {
       actionId: 'classify_publish_state', title: 'Classify publish state', description: 'Classify observed Xiaohongshu URL/text as ready, auth-required, published receipt, profile verified, pending, or schema drift.',
