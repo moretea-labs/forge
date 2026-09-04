@@ -12,6 +12,7 @@ import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditW
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
@@ -235,6 +236,74 @@ describe('standalone Direct Edit Work completion', () => {
     });
   });
 
+  test('projects a Plan-bound Direct Edit delivery to semantic validation without auto-accepting the Plan step', () => {
+    const fx = fixture();
+    const planId = 'plan-direct-edit-delivery';
+    const stepId = 'direct-step';
+    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const planStore = { controllerHome: fx.controllerHome, repoId: fx.repoId };
+    createPlanContract(planStore, {
+      planId,
+      repoId: fx.repoId,
+      scopeKey: 'direct-edit-plan-delivery',
+      sourceRevision,
+      goal: 'Deliver one Plan step through Direct Edit Work completion.',
+      steps: [{
+        id: stepId,
+        objective: 'Commit the reviewed direct edit.',
+        dependencies: [],
+        authoritativeFiles: ['src/example.ts'],
+        allowedPaths: ['src/**'],
+        forbiddenPaths: [],
+        checks: ['package:check:type'],
+        acceptanceCriteria: ['Machine delivery reaches semantic validation before Controller acceptance.'],
+      }],
+    });
+    approvePlanContract(planStore, planId);
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      planId,
+      planStepId: stepId,
+      planSourceRevision: sourceRevision,
+    });
+    claimPlanStepForWork(planStore, { planId, stepId, workId: fx.workId, sourceRevision });
+    expect(getPlanContract(planStore, planId)?.steps[0]).toMatchObject({ status: 'executing', workId: fx.workId });
+
+    approveCurrentDirectEditCandidate(fx);
+    let commitPlan: ReviewedDirectEditWorkCommitPlan | undefined;
+    const committed = commitSelectedPaths(fx.controllerHome, fx.repository, {
+      paths: ['src/example.ts'],
+      message: 'reviewed plan-bound direct edit',
+      beforeCommitGuard: ({ stagedPaths, currentHead }) => {
+        commitPlan = prepareReviewedDirectEditWorkCommit({
+          controllerHome: fx.controllerHome,
+          repository: fx.repository,
+          stagedPaths,
+          currentHead,
+        });
+      },
+    });
+    expect(committed.commit?.ok).toBe(true);
+    completeReviewedDirectEditWorkAfterCommit({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      plan: commitPlan!,
+      fallbackBranch: 'main',
+    });
+
+    const validating = getPlanContract(planStore, planId)!;
+    expect(validating.status).toBe('verifying');
+    expect(validating.steps[0]).toMatchObject({ status: 'validating', workId: fx.workId });
+    const accepted = acceptPlanStepEvidence(planStore, {
+      planId,
+      stepId,
+      reviewer: 'controller-test',
+      rationale: 'The reviewed Direct Edit delivery satisfies the Plan step acceptance criteria.',
+      acceptedSourceRevision: committed.commit?.after?.head ?? undefined,
+    });
+    expect(accepted.status).toBe('finalized');
+    expect(accepted.steps[0]).toMatchObject({ status: 'completed', workId: fx.workId });
+  });
+
   test('blocks a Work-bound selected-path commit before Git mutation when implementation review is missing', () => {
     const fx = fixture();
     const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
@@ -378,6 +447,37 @@ describe('standalone Direct Edit Work completion', () => {
     const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
     expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
     expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
+  });
+
+  test('keeps completed Work authoritative when downstream Plan projection is unavailable', () => {
+    const fx = fixture();
+    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      planId: 'plan-direct-edit-missing-record',
+      planStepId: 'missing-step',
+      planSourceRevision: sourceRevision,
+    });
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    acceptReviewedDirectEditWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      repoRoot: fx.repoRoot,
+      workId: fx.workId,
+      targetBranch: 'main',
+      targetRevision,
+      comparedPaths: ['src/example.ts'],
+      reviewer: 'reviewer-test',
+      rationale: 'The exact owned path tree is already integrated at the accepted target revision.',
+      cleanupOwnershipProof: 'This current-checkout Work owns no managed branch or worktree cleanup.',
+    });
+
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
+    expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
+    expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'plan step delivery projection pending'
+      && (evidence.summary ?? '').includes('plan contract not found: plan-direct-edit-missing-record'))).toBe(true);
   });
 
   test('narrowly reconciles an already-delivered effect Work only with exact validation, remote containment, and a clean source tree', () => {
