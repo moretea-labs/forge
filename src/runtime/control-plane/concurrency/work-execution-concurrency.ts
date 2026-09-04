@@ -4,6 +4,8 @@ import {
   getWorkContract,
   isTerminalWorkContractStatus,
   listWorkContracts,
+  readWorkExecutionConcurrencyCandidates,
+  workExecutionLaneMutates,
   updateWorkContract,
   type WorkExecutionConcurrencyBlocker,
   type WorkExecutionConcurrencyContract,
@@ -78,13 +80,46 @@ export interface RuntimeWorkCompatibilityDecision {
   wait?: ExecutionConcurrencyWaitProjection;
 }
 
+function invalidActiveWorkCompatibility(
+  candidate: WorkExecutionConcurrencyContract,
+  invalid: ReturnType<typeof readWorkExecutionConcurrencyCandidates>['invalid'],
+): ExecutionConcurrencyWaitProjection | undefined {
+  if (!workExecutionLaneMutates(candidate.lane)) return undefined;
+  for (const current of invalid) {
+    if (current.workId === candidate.workId) continue;
+    const currentScope = new Set(current.semanticScopeKeys);
+    const overlap = candidate.semanticScopeKeys.filter((key) => currentScope.has(key));
+    if (overlap.length === 0
+      && candidate.lane === 'isolated_write'
+      && candidate.isolation === 'isolated'
+      && current.isolation === 'isolated') continue;
+    return executionConcurrencyWaitProjection({
+      source: 'work_compatibility',
+      blockerCode: 'work_contract_invalid',
+      disposition: 'invalid',
+      blockingWorkId: current.workId,
+      semanticScopeKeys: overlap.length > 0 ? overlap : current.semanticScopeKeys,
+      resourceKeys: candidate.resourceIntents
+        .filter((intent) => intent.mode !== 'read')
+        .map((intent) => intent.resourceKey),
+      wakeTrigger: { kind: 'work_contract_change', workId: current.workId },
+    });
+  }
+  return undefined;
+}
+
 function contractForProcess(
   controllerHome: string,
   repoId: string,
   record: ManagedProcessRecord,
 ): WorkExecutionConcurrencyContract | undefined {
   if (!record.workId) return undefined;
-  const work = getWorkContract({ controllerHome, repoId }, record.workId);
+  let work;
+  try {
+    work = getWorkContract({ controllerHome, repoId }, record.workId);
+  } catch {
+    return undefined;
+  }
   if (!work) return undefined;
   return buildWorkExecutionConcurrencyContract(work, {
     lane: laneForProcess(record),
@@ -126,12 +161,14 @@ export function evaluateManagedProcessWorkCompatibility(input: {
     .map((record) => contractForProcess(input.controllerHome, input.repoId, record))
     .filter((value): value is WorkExecutionConcurrencyContract => Boolean(value));
   const worksWithActiveProcesses = new Set(activeProcessContracts.map((contract) => contract.workId));
-  const activeWorkContracts = listWorkContracts({
+  const activeSnapshot = readWorkExecutionConcurrencyCandidates({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
-    status: 'active',
     limit: 1_000,
-  })
+  });
+  const invalidWait = invalidActiveWorkCompatibility(candidate, activeSnapshot.invalid);
+  if (invalidWait) return { compatible: false, hardBlocked: true, wait: invalidWait };
+  const activeWorkContracts = activeSnapshot.contracts
     .filter((activeWork) => activeWork.workId !== input.workId && !worksWithActiveProcesses.has(activeWork.workId))
     .map((activeWork) => buildWorkExecutionConcurrencyContract(activeWork));
   const decision = evaluateWorkExecutionCompatibility(candidate, [...activeProcessContracts, ...activeWorkContracts]);

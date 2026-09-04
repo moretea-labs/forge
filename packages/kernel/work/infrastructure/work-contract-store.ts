@@ -90,6 +90,19 @@ export interface ListWorkContractOptions extends WorkContractStoreOptions {
   detailLevel?: 'summary' | 'detail' | 'raw';
 }
 
+export interface InvalidWorkExecutionConcurrencyCandidate {
+  workId: string;
+  updatedAt: string;
+  semanticScopeKeys: string[];
+  isolation: 'shared' | 'isolated';
+  error: string;
+}
+
+export interface WorkExecutionConcurrencyCandidateSnapshot {
+  contracts: WorkContract[];
+  invalid: InvalidWorkExecutionConcurrencyCandidate[];
+}
+
 export type WorktreeAvailability = 'active' | 'inactive' | 'missing' | 'unknown';
 
 export interface WorkContractReconciliationInput {
@@ -659,6 +672,74 @@ export function listWorkContracts(options: ListWorkContractOptions): WorkContrac
     })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, limit);
+}
+
+function workExecutionSemanticScopeKeys(contract: WorkContract): string[] {
+  const declared = contract.engineeringContext?.semanticScope?.keys
+    ?.map((value) => value.trim())
+    .filter(Boolean) ?? [];
+  if (declared.length > 0) return [...new Set(declared)].sort();
+  if (contract.planId?.trim() && contract.planStepId?.trim()) {
+    return [`plan-step:${contract.planId.trim()}:${contract.planStepId.trim()}`];
+  }
+  return [`work:${contract.workId}`];
+}
+
+function workExecutionIsolation(contract: WorkContract): 'shared' | 'isolated' {
+  return contract.worktreePolicy?.required === true
+    || contract.constraints?.workspaceMode === 'isolated'
+    || contract.constraints?.requireWorktree === true
+    ? 'isolated'
+    : 'shared';
+}
+
+function rawWorkMayBeCurrent(contract: WorkContract): boolean {
+  return !isTerminalWorkContractStatus(contract.status)
+    && !contract.supersededBy?.trim()
+    && contract.workKind !== 'superseded'
+    && contract.completionOutcome !== 'superseded';
+}
+
+/**
+ * Concurrency-only read model. Canonical aggregate Work reads remain strict.
+ * Each SQLite row is normalized independently so one malformed legacy sibling
+ * cannot erase otherwise valid active Work authority from Process admission.
+ * Invalid active rows are returned explicitly and conservatively by identity,
+ * scope and isolation; they are never mutated or silently accepted as Work.
+ */
+export function readWorkExecutionConcurrencyCandidates(
+  options: WorkContractStoreOptions & { limit?: number },
+): WorkExecutionConcurrencyCandidateSnapshot {
+  const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 1_000), 1_000));
+  if (!sqliteBacked(options)) {
+    return { contracts: listWorkContracts({ ...options, status: 'active', limit }), invalid: [] };
+  }
+  const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+    namespace: 'work_contract',
+    scope: options.repoId,
+    limit: 5_000,
+  });
+  const contracts: WorkContract[] = [];
+  const invalid: InvalidWorkExecutionConcurrencyCandidate[] = [];
+  for (const record of records) {
+    const raw = record.value;
+    if (!rawWorkMayBeCurrent(raw)) continue;
+    try {
+      const normalized = normalizeWorkContract(raw);
+      if (isCurrentWorkContract(normalized)) contracts.push(normalized);
+    } catch (error) {
+      invalid.push({
+        workId: raw.workId,
+        updatedAt: raw.updatedAt,
+        semanticScopeKeys: workExecutionSemanticScopeKeys(raw),
+        isolation: workExecutionIsolation(raw),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  invalid.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return { contracts: contracts.slice(0, limit), invalid };
 }
 
 const RECONCILIATION_EVIDENCE_TITLE = 'runtime reconciliation required';

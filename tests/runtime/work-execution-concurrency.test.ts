@@ -15,6 +15,7 @@ import {
   reconcileWorkExecutionConcurrencyWaits,
 } from '../../src/runtime/control-plane/concurrency/work-execution-concurrency';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord, ProcessResourceClaim } from '../../src/runtime/execution/process-runtime/types';
 import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -105,6 +106,51 @@ describe('Work execution concurrency', () => {
       [leftContract],
     );
     expect(disjointDecision).toEqual({ compatible: true, blockers: [] });
+  });
+
+  test('isolates malformed active sibling Work without weakening semantic-scope fencing', () => {
+    const home = tempHome(), repoId = 'repo-invalid-sibling';
+    const candidate = work({ controllerHome: home, repoId, workId: 'work-candidate', stepId: 'candidate-step' });
+    const malformed = work({ controllerHome: home, repoId, workId: 'work-malformed', stepId: 'other-step' });
+    const record = readControlPlaneRecord<WorkContract>(home, 'work_contract', repoId, malformed.workId)!;
+    writeControlPlaneRecord(home, {
+      namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
+      expectedRevision: record.revision, action: 'test_malformed_concurrency_sibling',
+      value: {
+        ...record.value,
+        phase: 'delivery',
+        phaseEvidence: {
+          ...record.value.phaseEvidence,
+          implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
+          verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
+          review: { ...record.value.phaseEvidence.review, state: 'pending' },
+          delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
+        },
+      },
+    });
+    expect(() => getWorkContract({ controllerHome: home, repoId }, malformed.workId))
+      .toThrow('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
+
+    const independent = evaluateManagedProcessWorkCompatibility({
+      controllerHome: home, repoId, processId: 'process-independent', workId: candidate.workId,
+      resourceClaims: [{ resourceKey: 'path:checkout-work-candidate:src/a.ts', mode: 'write', checkoutId: candidate.checkoutId! }],
+    });
+    expect(independent).toEqual({ compatible: true, hardBlocked: false });
+
+    const sameScopeRecord = readControlPlaneRecord<WorkContract>(home, 'work_contract', repoId, malformed.workId)!;
+    writeControlPlaneRecord(home, {
+      namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
+      expectedRevision: sameScopeRecord.revision, action: 'test_malformed_same_scope',
+      value: { ...sameScopeRecord.value, planStepId: 'candidate-step' },
+    });
+    const blocked = evaluateManagedProcessWorkCompatibility({
+      controllerHome: home, repoId, processId: 'process-same-scope', workId: candidate.workId,
+      resourceClaims: [{ resourceKey: 'path:checkout-work-candidate:src/a.ts', mode: 'write', checkoutId: candidate.checkoutId! }],
+    });
+    expect(blocked).toMatchObject({
+      compatible: false, hardBlocked: true,
+      wait: { blockerCode: 'work_contract_invalid', blockingWorkId: malformed.workId, disposition: 'invalid' },
+    });
   });
 
   test('keeps same-Work process overlap outside Work compatibility and keeps reviewer lanes read-only', () => {
