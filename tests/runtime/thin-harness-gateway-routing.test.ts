@@ -748,6 +748,22 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     writeFileSync(join(fx.repoRoot, 'tests', 'owned-untracked.test.ts'), 'owned\n');
     writeFileSync(join(fx.repoRoot, 'tests', 'protected-concurrent.test.ts'), 'protected\n');
 
+    const workId = 'work-verification-isolation';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      mode: 'direct_control',
+      objective: 'Verify Work-owned snapshot content without exposing protected concurrent changes.',
+      acceptanceCriteria: ['Work verification sees owned content and excludes protected concurrent content.'],
+      allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+      forbiddenPaths: ['tests/protected-concurrent.test.ts'],
+      checks: ['isolated'],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
     const run = await runPersistedCheckViaProcessRuntime({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
