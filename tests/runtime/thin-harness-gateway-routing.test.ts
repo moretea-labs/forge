@@ -1379,3 +1379,60 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 });
+
+describe('work_validate persisted semantic identity', () => {
+  test('persists the canonical semantic fingerprint and converges a terminal Process on reattach', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-work-validate-semantic-identity',
+      objective: 'Verify persisted work_validate semantic identity.',
+      acceptance_criteria: ['The validation Process is bound to the exact verification input.'],
+      allowed_paths: ['src/**'],
+      checks: ['slow'],
+      isolation: 'reuse',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+
+    const first = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-semantic-identity',
+    });
+    expect(first?.isError).not.toBe(true);
+    const firstValidation = (first?.structuredContent as {
+      validation: { checks: Array<{ process?: { processId?: string } }> };
+    }).validation;
+    const processId = firstValidation.checks[0]?.process?.processId;
+    expect(processId).toBeTruthy();
+
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 10_000 });
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, processId!)!;
+    expect(record.origin?.workVerificationSnapshot).toBe(true);
+    expect(record.origin?.requestSemanticFingerprint).toMatch(/^[a-f0-9]{64}$/);
+
+    const second = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-semantic-identity',
+    });
+    expect(second?.isError).not.toBe(true);
+    const secondValidation = (second?.structuredContent as {
+      validation: { passed: boolean; completed: boolean; checks: Array<{ status: string }> };
+    }).validation;
+    expect(secondValidation).toMatchObject({ passed: true, completed: true });
+    expect(secondValidation.checks[0]?.status).toBe('passed');
+  });
+});

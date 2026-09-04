@@ -213,6 +213,19 @@ export function selectDefaultWorkValidationChecks(
   });
 }
 
+export function workValidationCheckSemanticIdentity(input: {
+  sourceRevision: string;
+  workspaceFingerprint: string;
+  checkId: string;
+  requestedChecks: string[];
+}): { requestSemanticFingerprint: string; verificationInputFingerprint: string } {
+  const fingerprint = verificationInputFingerprint(input);
+  return {
+    requestSemanticFingerprint: fingerprint,
+    verificationInputFingerprint: fingerprint,
+  };
+}
+
 export async function validateWork(ctx: McpExecutionContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args, {
@@ -275,6 +288,12 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   if (!allRequestedChecksReusable) markWorkValidationPending(ctx.controllerHome, current);
   const checks: Array<Record<string, unknown>> = [];
   for (const [index, checkId] of requestedChecks.entries()) {
+    const checkSemanticIdentity = workValidationCheckSemanticIdentity({
+      sourceRevision: validationHead,
+      workspaceFingerprint,
+      checkId,
+      requestedChecks,
+    });
     if (!available.has(checkId)) {
       checks.push({ checkId, ok: false, status: 'missing', summary: `Check not found: ${checkId}` });
       break;
@@ -310,6 +329,15 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       });
       break;
     }
+    if (process?.completed) {
+      const existingRecord = getProcessRecord(ctx.controllerHome, handle.repositoryId, process.processId);
+      if (existingRecord?.origin?.requestSemanticFingerprint !== checkSemanticIdentity.requestSemanticFingerprint) {
+        const { [checkId]: _staleBinding, ...remainingProcesses } = validationRun.processes;
+        validationRun = { ...validationRun, processes: remainingProcesses };
+        current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
+        process = undefined;
+      }
+    }
     if (!process) {
       const processRequestId = `${validationInvocationId}:check:${index + 1}`;
       const executed = await runPersistedCheckViaProcessRuntime({
@@ -323,6 +351,7 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
         }),
         checkId,
         requestId: processRequestId,
+        requestSemanticFingerprint: checkSemanticIdentity.requestSemanticFingerprint,
         workId: handle.workId,
         commandId: processRequestId,
         verificationBinding: { executionSessionId: session.sessionId },
@@ -360,6 +389,10 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process record is unavailable: ${process.processId}` });
       break;
     }
+    if (record.origin?.requestSemanticFingerprint !== checkSemanticIdentity.requestSemanticFingerprint) {
+      checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process semantic identity mismatch: ${process.processId}` });
+      break;
+    }
     const boundCheckExecution = validationRun.processes[checkId]?.checkExecution;
     const receipt = processCheckCompletionReceipt(record, {
       repoId: handle.repositoryId,
@@ -390,12 +423,7 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       recordedAt: receipt.finishedAt,
       sourceRevision: validationHead,
       workspaceFingerprint,
-      verificationInputFingerprint: verificationInputFingerprint({
-        sourceRevision: validationHead,
-        workspaceFingerprint,
-        checkId,
-        requestedChecks,
-      }),
+      verificationInputFingerprint: checkSemanticIdentity.verificationInputFingerprint,
       commandFingerprint: commandFingerprint(checkId, receipt.commandId),
       resultArtifactId: receipt.receiptId,
       startedAt: receipt.startedAt,
