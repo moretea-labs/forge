@@ -101,12 +101,20 @@ export async function runSchedulerControllerRoundRecovery(input: {
   for (const repository of input.repositories) {
     if (claimed >= maxRecoveries) break;
     const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
-    const records = claimStalledControllerRoundRelays(store, {
-      nowMs: input.nowMs,
-      graceMs: input.graceMs,
-      limit: maxRecoveries - claimed,
-      controllerTypes: ['chatgpt'],
-    });
+    let records: ReturnType<typeof claimStalledControllerRoundRelays>;
+    try {
+      records = claimStalledControllerRoundRelays(store, {
+        nowMs: input.nowMs,
+        graceMs: input.graceMs,
+        limit: maxRecoveries - claimed,
+        controllerTypes: ['chatgpt'],
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      failed += 1;
+      console.error(`[forge controller relay] stalled round scan failed for ${repository.repoId}:`, reason);
+      continue;
+    }
     claimed += records.length;
     for (const record of records) {
       try {

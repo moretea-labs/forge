@@ -16,6 +16,8 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
+import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
@@ -705,4 +707,159 @@ describe('autonomous continuation lifecycle', () => {
     });
     expect(getControllerRoundRelay(store, workId)?.nextRecoveryAt).toBeUndefined();
   });
+
+  test('stalled ControllerRound recovery isolates malformed Work history per repository and continues healthy repositories', async () => {
+    const root = temp('forge-autonomous-recovery-malformed-repo-isolation-');
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+
+    const malformedRepoRoot = join(root, 'malformed-repo');
+    const healthyRepoRoot = join(root, 'healthy-repo');
+    initRepo(malformedRepoRoot);
+    initRepo(healthyRepoRoot);
+    const malformedRepository = registerRepository({
+      path: malformedRepoRoot,
+      controllerHome,
+      displayName: 'autonomous-recovery-malformed-repo',
+    });
+    const healthyRepository = registerRepository({
+      path: healthyRepoRoot,
+      controllerHome,
+      displayName: 'autonomous-recovery-healthy-repo',
+    });
+
+    const malformedStore = { controllerHome, repoId: malformedRepository.repoId };
+    const malformedWorkId = 'WORK-AUTONOMOUS-RECOVERY-MALFORMED-REPO';
+    createWorkContract(malformedStore, {
+      workId: malformedWorkId,
+      repoId: malformedRepository.repoId,
+      checkoutId: malformedRepository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Retain malformed history without stalling scheduler maintenance.',
+      acceptanceCriteria: ['malformed Work remains invalid and untouched'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    const malformedRelay = beginInitialControllerRoundDispatch(malformedStore, {
+      workId: malformedWorkId,
+      identity: {
+        controllerId: 'schedule:malformed-recovery', controllerType: 'chatgpt',
+        principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-malformed-recovery',
+      },
+    });
+    const malformedDispatched = finishControllerRoundRelayDispatch(malformedStore, {
+      workId: malformedWorkId,
+      ok: true,
+      bindingId: malformedRelay.bindingId,
+    })!;
+    const malformedRecord = readControlPlaneRecord<WorkContract>(
+      controllerHome,
+      'work_contract',
+      malformedRepository.repoId,
+      malformedWorkId,
+    )!;
+    const malformedAt = malformedRecord.value.updatedAt;
+    const review = malformedRecord.value.phaseEvidence?.review;
+    writeControlPlaneRecord(controllerHome, {
+      namespace: 'work_contract',
+      scope: malformedRepository.repoId,
+      key: malformedWorkId,
+      schemaVersion: 2,
+      expectedRevision: malformedRecord.revision,
+      action: 'test_malformed_controller_round_work_phase_evidence',
+      value: {
+        ...malformedRecord.value,
+        phase: 'delivery',
+        phaseEvidence: {
+          ...malformedRecord.value.phaseEvidence,
+          implementation: { ...malformedRecord.value.phaseEvidence!.implementation, state: 'satisfied' },
+          verification: { ...malformedRecord.value.phaseEvidence!.verification, state: 'satisfied' },
+          review: {
+            ...(review ?? { source: 'legacy_inferred', summary: 'Legacy review remains pending.', evidenceRefs: [], recordedAt: malformedAt }),
+            state: 'pending',
+          },
+        },
+      },
+    });
+
+    const healthyStore = { controllerHome, repoId: healthyRepository.repoId };
+    const healthyWorkId = 'WORK-AUTONOMOUS-RECOVERY-HEALTHY-REPO';
+    createWorkContract(healthyStore, {
+      workId: healthyWorkId,
+      repoId: healthyRepository.repoId,
+      checkoutId: healthyRepository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Recover normally after another repository has malformed Work history.',
+      acceptanceCriteria: ['healthy stalled round still dispatches'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const healthyBinding = bindChatgptWorkConversation(healthyStore, {
+      workId: healthyWorkId,
+      conversationUrl: 'https://chatgpt.com/c/healthy-recovery-isolation',
+      latestBrowserSessionId: 'browser-healthy-recovery-isolation',
+    });
+    const healthyRelay = beginInitialControllerRoundDispatch(healthyStore, {
+      workId: healthyWorkId,
+      identity: {
+        controllerId: 'schedule:healthy-recovery', controllerType: 'chatgpt',
+        principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-healthy-recovery',
+      },
+      bindingId: healthyBinding.bindingId,
+    });
+    const healthyDispatched = finishControllerRoundRelayDispatch(healthyStore, {
+      workId: healthyWorkId,
+      ok: true,
+      bindingId: healthyBinding.bindingId,
+    })!;
+
+    const nowMs = Math.max(Date.parse(malformedDispatched.updatedAt), Date.parse(healthyDispatched.updatedAt)) + 61_000;
+    const observed: Array<Record<string, unknown>> = [];
+    const result = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs,
+      repositories: [malformedRepository, healthyRepository],
+      graceMs: 60_000,
+      maxRecoveries: 2,
+      authorizeWake: () => undefined,
+      dispatchPrompt: async (input: any) => {
+        observed.push(input);
+        return {
+          status: 'dispatched' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: input.browserSessionId ?? 'browser-healthy-recovery-isolation',
+          conversationUrl: input.conversationUrl,
+          resumedFromBinding: true,
+          model: 'gpt-5.6',
+          reasoning: 'high' as const,
+          tabPolicy: 'auto' as const,
+          executionPreferenceVerified: true,
+        };
+      },
+    });
+
+    expect(result).toEqual({ claimed: 1, dispatched: 1, failed: 1 });
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ repoId: healthyRepository.repoId, workId: healthyWorkId });
+    expect(getControllerRoundRelay(healthyStore, healthyWorkId)).toMatchObject({ status: 'dispatched' });
+    expect(getControllerRoundRelay(malformedStore, malformedWorkId)).toMatchObject({ status: 'dispatched' });
+    const retainedMalformed = readControlPlaneRecord<WorkContract>(
+      controllerHome,
+      'work_contract',
+      malformedRepository.repoId,
+      malformedWorkId,
+    )!;
+    expect(retainedMalformed.value.phase).toBe('delivery');
+    expect(retainedMalformed.value.phaseEvidence?.review.state).toBe('pending');
+  });
+
 });
