@@ -1,16 +1,16 @@
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-09-04T14:09:40+0800 -->
+<!-- updated_at: 2026-09-04T14:25:49+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Idle
-> **Updated At**: 2026-09-04T14:09:40+0800
+> **Updated At**: 2026-09-04T14:25:49+0800
 > **Source Branch**: kernel-v2/architecture
-> **Source Commit**: 34e82047
+> **Source Commit**: 814fbaea
 > **Target Branch**: main
 > **Stale After**: 24h
-> **Reason**: issue-158-ref-bound-desktop-pointer
+> **Reason**: issue-118-xiaohongshu-live-contract-smoke
 > **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
 
 This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
@@ -48,13 +48,11 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 
 ## Git Status
 
-- Summary: 4 changed/untracked path(s)
+- Summary: 2 changed/untracked path(s)
 
 ```
- M src/runtime/plugins/desktop-operator-external-policy.ts
- M src/runtime/plugins/desktop-operator-registration.ts
- M tests/runtime/desktop-operator-registration.test.ts
- M tests/runtime/external-plugin-adapter.test.ts
+ M src/runtime/plugins/xiaohongshu-publish.ts
+ M tests/runtime/xiaohongshu-publish.test.ts
 ```
 
 ## Source Artifacts
