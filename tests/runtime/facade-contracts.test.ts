@@ -29,6 +29,7 @@ describe('handoff and facade contracts', () => {
   test('keeps controller round disposition in the exposed rh_work schema and facade operation contract', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties).toHaveProperty('checkout_id');
     expect(properties?.operation?.enum).toContain('controller_disposition');
     expect(properties).toHaveProperty('disposition');
     expect(properties).toHaveProperty('relay_scope_id');
