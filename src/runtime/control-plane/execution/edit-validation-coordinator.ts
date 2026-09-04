@@ -4,10 +4,7 @@ import {
   recordEditSessionProcessCheckReceipts,
   type EditSession,
 } from '../../../cli/editing/edit-session';
-import {
-  controllerCheckExecutionIdentity,
-  listControllerChecks,
-} from '../../../cli/controller/check-runner';
+import { listControllerChecks } from '../../../cli/controller/check-runner';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
@@ -335,32 +332,40 @@ function receiptFor(
   if (!binding) throw new Error(`EDIT_VALIDATION_PROCESS_MISSING: ${checkId}`);
   const record = getProcessRecord(controllerHome, repository.repoId, binding.processId);
   if (!record) throw new Error(`EDIT_VALIDATION_PROCESS_RECORD_MISSING: ${binding.processId}`);
-  const currentIdentity = record.checkExecution
-    ? controllerCheckExecutionIdentity(repository.canonicalRoot, checkId, record.checkExecution.timeoutMs)
-    : undefined;
+  const session = getEditSession(repository.canonicalRoot, run.editSessionId);
+  const persistedIdentity = record.checkExecution;
   return processCheckCompletionReceipt(record, {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    workId: getEditSession(repository.canonicalRoot, run.editSessionId).workId,
+    workId: session.workId,
     editSessionId: run.editSessionId,
     editRevision: run.editRevision,
     checkId,
     processId: binding.processId,
-    ...(currentIdentity ? {
+    ...(persistedIdentity ? {
       checkExecution: {
-        cacheKey: currentIdentity.cacheKey,
-        revision: currentIdentity.revision,
-        definitionDigest: currentIdentity.definitionDigest,
-        environmentFingerprint: currentIdentity.environmentFingerprint,
-        timeoutMs: currentIdentity.timeoutMs,
+        // The Process froze this physical identity at spawn against the exact
+        // execution root, which may intentionally be a Work verification
+        // snapshot rather than the live checkout. Recomputing these fields
+        // from the live checkout creates a second identity authority and
+        // rejects valid receipts whenever the snapshot excludes concurrent
+        // non-Work changes.
+        cacheKey: persistedIdentity.cacheKey,
+        revision: persistedIdentity.revision,
+        definitionDigest: persistedIdentity.definitionDigest,
+        environmentFingerprint: persistedIdentity.environmentFingerprint,
+        timeoutMs: persistedIdentity.timeoutMs,
+        // Consumer scope remains independently derived. This keeps shared
+        // physical Process reuse fenced to the exact checkout/Work/edit
+        // binding instead of trusting the persisted scope key by tautology.
         scopeKey: processCheckSemanticScopeKey({
           checkoutId: repository.activeCheckoutId,
-          workId: getEditSession(repository.canonicalRoot, run.editSessionId).workId,
+          workId: session.workId,
           verificationBinding: {
             editSessionId: run.editSessionId,
             editRevision: run.editRevision,
           },
-        }, currentIdentity.reuseScope),
+        }, persistedIdentity.reuseScope),
       },
     } : {}),
   });

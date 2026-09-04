@@ -41,6 +41,7 @@ import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -889,6 +890,87 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(artifact.ok).toBe(false);
     expect(artifact.status).toBe(7);
     expect(artifact.stderr).toContain('expected-failure');
+  });
+
+  test('Work-bound edit validation consumes persisted snapshot Check identity instead of recomputing it from the live checkout', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'Work snapshot identity validation',
+          command: [process.execPath, '-e', 'const fs=require("fs"); process.exit(fs.readFileSync("src/lib.ts", "utf8").includes("n = 2") ? 0 : 7)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src/lib.ts'] },
+        },
+      },
+    }, null, 2));
+    git(fx.repoRoot, ['add', '.forge/checks.json']);
+    git(fx.repoRoot, ['commit', '-m', 'configure validation check']);
+
+    const workId = 'work-edit-validation-snapshot-identity';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      mode: 'direct_control',
+      objective: 'Validate an owned edit against an isolated Work snapshot.',
+      acceptanceCriteria: ['Owned edit passes the registered validation.'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: ['concurrent/**'],
+      checks: ['verify'],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const binding = {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'principal-snapshot-validation',
+    };
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'snapshot receipt identity regression',
+      allowedPaths: ['src/**'],
+      binding,
+    });
+    applyEditOperations(fx.repoRoot, getMcpPolicy('controller'), session.sessionId, [{
+      type: 'replace',
+      path: 'src/lib.ts',
+      expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
+      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+    }], { binding });
+
+    // This concurrent path is deliberately outside Work ownership. The Work
+    // verification snapshot excludes it while the live checkout retains it,
+    // so their Controller Check revisions must differ by design.
+    mkdirSync(join(fx.repoRoot, 'concurrent'), { recursive: true });
+    writeFileSync(join(fx.repoRoot, 'concurrent', 'unowned.txt'), 'concurrent owner\n');
+
+    const validationRequestId = 'snapshot-check-identity-regression';
+    const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, {
+      editSessionId: session.sessionId,
+      checkIds: ['verify'],
+      validationRequestId,
+    });
+    expect(started.completed).toBe(false);
+    expect(started.processes).toHaveLength(1);
+    const processId = started.processes[0]!.processId;
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
+    const processRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)!;
+    expect(processRecord.origin?.workVerificationSnapshot).toBe(true);
+    expect(processRecord.checkExecution).toBeTruthy();
+
+    const reconciled = await startOrJoinEditValidation(fx.controllerHome, fx.repository, {
+      editSessionId: session.sessionId,
+      checkIds: ['verify'],
+      validationRequestId,
+    });
+    expect(reconciled.error).toBeUndefined();
+    expect(reconciled.completed).toBe(true);
+    expect(reconciled.ok).toBe(true);
+    expect(reconciled.receipts?.[0]).toMatchObject({ processId, checkId: 'verify', status: 'passed' });
   });
 
   test('safe patch starts opt-in validation and joins later without replaying the edit', async () => {
