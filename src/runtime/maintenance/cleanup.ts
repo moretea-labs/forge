@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
-import { basename, dirname, join, relative, resolve } from 'path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import type { CleanupCycleSummary } from '../control-plane/runtime-cleanup';
 import { assertRuntimeMayWrite } from '../root/write-fence';
@@ -131,6 +131,22 @@ function readJson(path: string): unknown {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return undefined; }
 }
 
+function pathInside(root: string, candidate: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function relocatedRuntimeStorageRoot(repoRoot: string, name: 'local-jobs' | 'jobs'): string | undefined {
+  const repositoryPath = join(repoRoot, '.ai', 'harness', name);
+  try {
+    if (!lstatSync(repositoryPath).isSymbolicLink()) return undefined;
+    const target = realpathSync(repositoryPath);
+    return pathInside(repoRoot, target) ? undefined : target;
+  } catch {
+    return undefined;
+  }
+}
+
 function terminalStatus(status: unknown): boolean {
   return ['succeeded', 'failed', 'cancelled', 'timed_out', 'rejected'].includes(String(status));
 }
@@ -139,6 +155,7 @@ function scanTerminalLocalJobs(repoRoot: string, minAgeMinutes: number, limit: n
   const root = join(repoRoot, '.ai/harness/local-jobs');
   if (!existsSync(root)) return [];
   const at = Date.now();
+  const relocated = Boolean(relocatedRuntimeStorageRoot(repoRoot, 'local-jobs'));
   const candidates: RuntimeCleanupCandidate[] = [];
   for (const name of readdirSync(root).slice(0, limit * 3)) {
     const path = join(root, name);
@@ -147,14 +164,17 @@ function scanTerminalLocalJobs(repoRoot: string, minAgeMinutes: number, limit: n
       if (!stat.isDirectory()) continue;
       const jobJson = readJson(join(path, 'job.json')) as Record<string, unknown> | undefined;
       const ageMinutes = Math.max(0, Math.round((at - stat.mtimeMs) / 60_000));
-      const safe = ageMinutes >= minAgeMinutes && terminalStatus(jobJson?.status);
+      const safe = relocated && ageMinutes >= minAgeMinutes && terminalStatus(jobJson?.status);
       candidates.push({
         kind: 'local_job',
         path,
         id: typeof jobJson?.jobId === 'string' ? jobJson.jobId : name,
-        reason: safe ? 'Terminal local job is old enough to archive.' : 'Local job is not terminal or is too new.',
+        reason: !relocated
+          ? 'Repository-local Local Job storage must be relocated to Controller Home before cleanup.'
+          : safe ? 'Terminal Local Job is old enough to remove from Controller runtime storage.' : 'Local Job is not terminal or is too new.',
         ageMinutes,
         safe,
+        ownershipStatus: relocated ? 'explicit' : 'unknown',
       });
     } catch {
       // Ignore malformed entries.
@@ -190,6 +210,7 @@ function scanLegacyRuns(repoRoot: string, minAgeMinutes: number, limit: number):
   if (!existsSync(root)) return [];
   const processes = processCommands();
   const at = Date.now();
+  const relocated = Boolean(relocatedRuntimeStorageRoot(repoRoot, 'jobs'));
   const candidates: RuntimeCleanupCandidate[] = [];
   for (const name of readdirSync(root).filter((entry) => entry.startsWith('RUN-')).slice(0, limit * 3)) {
     const path = join(root, name);
@@ -200,17 +221,20 @@ function scanLegacyRuns(repoRoot: string, minAgeMinutes: number, limit: number):
       const occupied = processes.find((process) => process.command.includes(name) || process.command.includes(path));
       const status = String(state?.status ?? 'unknown');
       const ageMinutes = Math.max(0, Math.round((at - stat.mtimeMs) / 60_000));
-      const safe = !occupied && ageMinutes >= minAgeMinutes && status === 'waiting_for_user' && textIncludesNoOpIntegrate(state);
+      const safe = relocated && !occupied && ageMinutes >= minAgeMinutes && status === 'waiting_for_user' && textIncludesNoOpIntegrate(state);
       candidates.push({
         kind: 'legacy_run',
         path,
         id: typeof state?.runId === 'string' ? state.runId : name,
-        reason: safe
-          ? 'Legacy task run is waiting_for_user only because its worktree has no changes to integrate; it is safe to archive.'
-          : `Legacy task run is not a proven no-op waiting_for_user run. status=${status}`,
+        reason: !relocated
+          ? 'Repository-local legacy Run storage must be relocated to Controller Home before cleanup.'
+          : safe
+            ? 'Legacy no-op Run is old enough to remove from Controller runtime storage.'
+            : `Legacy task run is not a proven no-op waiting_for_user run. status=${status}`,
         ageMinutes,
         occupiedByPid: occupied?.pid,
         safe,
+        ownershipStatus: relocated ? 'explicit' : 'unknown',
       });
     } catch {
       candidates.push({
@@ -284,7 +308,7 @@ export function previewRuntimeCleanup(repoRoot: string, options: RuntimeCleanupO
     summary: summarize(candidates),
     warnings: [
       'Preview is non-destructive. Apply requires confirmCleanup=true.',
-      'Legacy run cleanup only archives directories proven to be old no-op waiting_for_user runs with no matching process.',
+      'Legacy runtime cleanup removes only relocated Controller Home records proven terminal/no-op and old enough; repository-local storage is never archived in the source tree.',
       'Historical attention cleanup is intentionally represented as acknowledgement guidance unless an explicit reconciler is added.',
     ],
     cycle: {
@@ -304,18 +328,6 @@ export function previewRuntimeCleanup(repoRoot: string, options: RuntimeCleanupO
       durationMs: 0,
     },
   };
-}
-
-function archiveLocalJob(path: string, repoRoot: string): void {
-  const archiveRoot = join(repoRoot, '.ai/harness/local-jobs-archive');
-  mkdirSync(archiveRoot, { recursive: true });
-  renameSync(path, join(archiveRoot, basename(path)));
-}
-
-function archiveLegacyRun(path: string, repoRoot: string): void {
-  const archiveRoot = join(repoRoot, '.ai/harness/jobs-archive/legacy-noop');
-  mkdirSync(archiveRoot, { recursive: true });
-  renameSync(path, join(archiveRoot, basename(path)));
 }
 
 export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOptions = {}): RuntimeCleanupApplyResult {
@@ -362,14 +374,16 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
       if (candidate.kind === 'local_job' && candidate.path) {
         const relativePath = relative(join(repoRoot, '.ai/harness/local-jobs'), candidate.path);
         if (relativePath && !relativePath.startsWith('..')) {
-          archiveLocalJob(candidate.path, repoRoot);
+          if (!relocatedRuntimeStorageRoot(repoRoot, 'local-jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+          rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }
       }
       if (candidate.kind === 'legacy_run' && candidate.path) {
         const relativePath = relative(join(repoRoot, '.ai/harness/jobs'), candidate.path);
         if (relativePath && !relativePath.startsWith('..') && basename(candidate.path).startsWith('RUN-')) {
-          archiveLegacyRun(candidate.path, repoRoot);
+          if (!relocatedRuntimeStorageRoot(repoRoot, 'jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+          rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }
       }

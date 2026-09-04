@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -13,7 +13,7 @@ import {
   runtimeCleanupLogPath,
   type RuntimeCleanupReport,
 } from '../../src/runtime/control-plane/runtime-cleanup';
-import { previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
+import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 import {
   activateConvergenceWorkAdmission,
   activateExclusiveWorkAdmission,
@@ -429,6 +429,57 @@ describe('runtime cleanup', () => {
     expect(report.removedWorktrees).toEqual([]);
     expect(report.removedTemporaryPaths).toEqual([]);
     expect(existsSync(runtimeCleanupLogPath(home))).toBe(false);
+  });
+
+  test('removes terminal legacy runtime state only after Controller Home relocation and never creates repo archives', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-cleanup-relocated-repo-'));
+    const controllerStore = mkdtempSync(join(tmpdir(), 'forge-cleanup-relocated-controller-'));
+    homes.push(repoRoot, controllerStore);
+    const harnessRoot = join(repoRoot, '.ai', 'harness');
+    const localJobsTarget = join(controllerStore, 'local-jobs');
+    mkdirSync(harnessRoot, { recursive: true });
+    mkdirSync(localJobsTarget, { recursive: true });
+    symlinkSync(localJobsTarget, join(harnessRoot, 'local-jobs'), process.platform === 'win32' ? 'junction' : 'dir');
+    const jobRoot = join(localJobsTarget, 'JOB-terminal');
+    mkdirSync(jobRoot, { recursive: true });
+    writeFileSync(join(jobRoot, 'job.json'), JSON.stringify({ jobId: 'JOB-terminal', status: 'succeeded' }));
+    age(jobRoot);
+
+    const result = applyRuntimeCleanup(repoRoot, {
+      includeTempDirs: false,
+      includeLegacyRuns: false,
+      includeHistoricalAttention: false,
+      includeTerminalLocalJobs: true,
+      minAgeMinutes: 1,
+      maxCandidates: 10,
+      maxRemovals: 10,
+      confirmCleanup: true,
+    });
+
+    expect(result.applied.some((candidate) => candidate.id === 'JOB-terminal' && candidate.applied)).toBe(true);
+    expect(existsSync(jobRoot)).toBe(false);
+    expect(existsSync(join(repoRoot, '.ai/harness/local-jobs-archive'))).toBe(false);
+  });
+
+  test('refuses to remove terminal Local Jobs while runtime storage is still physically repository-local', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-cleanup-repo-local-'));
+    homes.push(repoRoot);
+    const jobRoot = join(repoRoot, '.ai', 'harness', 'local-jobs', 'JOB-local');
+    mkdirSync(jobRoot, { recursive: true });
+    writeFileSync(join(jobRoot, 'job.json'), JSON.stringify({ jobId: 'JOB-local', status: 'succeeded' }));
+    age(jobRoot);
+
+    const preview = previewRuntimeCleanup(repoRoot, {
+      includeTempDirs: false,
+      includeLegacyRuns: false,
+      includeHistoricalAttention: false,
+      includeTerminalLocalJobs: true,
+      minAgeMinutes: 1,
+    });
+
+    expect(preview.candidates).toHaveLength(1);
+    expect(preview.candidates[0]?.safe).toBe(false);
+    expect(preview.candidates[0]?.reason).toContain('relocated to Controller Home');
   });
 
   test('bounds cleanup preview candidates and reports truncation', () => {

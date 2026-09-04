@@ -39,6 +39,34 @@ function writeLocalJob(root: string, jobId: string, status: string, marker: stri
 }
 
 describe('v8.1 repository runtime storage isolation', () => {
+  test('migrates Browser provider and interaction runtime state out of the repository tree', () => {
+    const fixture = repositoryFixture();
+    try {
+      const browserSource = join(fixture.repoA.canonicalRoot, '.forge', 'browser');
+      const interactionSource = join(fixture.repoA.canonicalRoot, '.forge', 'interactions');
+      mkdirSync(browserSource, { recursive: true });
+      mkdirSync(interactionSource, { recursive: true });
+      writeFileSync(join(browserSource, 'profile.marker'), 'browser-runtime\n', 'utf-8');
+      writeFileSync(join(interactionSource, 'session.marker'), 'interaction-runtime\n', 'utf-8');
+
+      const storage = ensureRepositoryRuntimeStorage(fixture.repoA, fixture.controllerHome);
+      const controllerRoot = repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId);
+      const browserTarget = join(controllerRoot, 'browser');
+      const interactionTarget = join(controllerRoot, 'interactions');
+
+      expect(storage.bindings.find((binding) => binding.name === 'browser-provider')?.status).toBe('migrated');
+      expect(storage.bindings.find((binding) => binding.name === 'interaction-sessions')?.status).toBe('migrated');
+      expect(lstatSync(browserSource).isSymbolicLink()).toBe(true);
+      expect(lstatSync(interactionSource).isSymbolicLink()).toBe(true);
+      expect(realpathSync(browserSource)).toBe(realpathSync(browserTarget));
+      expect(realpathSync(interactionSource)).toBe(realpathSync(interactionTarget));
+      expect(readFileSync(join(browserTarget, 'profile.marker'), 'utf-8')).toContain('browser-runtime');
+      expect(readFileSync(join(interactionTarget, 'session.marker'), 'utf-8')).toContain('interaction-runtime');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('isolates identical Run IDs for two repositories under Controller Home', () => {
     const fixture = repositoryFixture();
     try {

@@ -471,15 +471,12 @@ describe("Bootstrap Script Contracts", () => {
 
   test("hook docs and scripts should use ToolUse event names", () => {
     const skill = read("SKILL.md");
-    const plugins = read("references/plugins-core.md");
     const setup = read("scripts/setup-plugins.sh");
     const legacyPre = `PreTool${"Call"}`;
     const legacyPost = `PostTool${"Call"}`;
 
     expect(skill).not.toContain(legacyPre);
     expect(skill).not.toContain(legacyPost);
-    expect(plugins).not.toContain(legacyPre);
-    expect(plugins).not.toContain(legacyPost);
     expect(setup).not.toContain(legacyPre);
     expect(setup).not.toContain(legacyPost);
   });

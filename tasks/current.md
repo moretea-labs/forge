@@ -1,16 +1,16 @@
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-09-04T14:09:40+0800 -->
+<!-- updated_at: 2026-09-04T14:36:06+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Idle
-> **Updated At**: 2026-09-04T14:09:40+0800
+> **Updated At**: 2026-09-04T14:36:06+0800
 > **Source Branch**: kernel-v2/architecture
-> **Source Commit**: 34e82047
+> **Source Commit**: 18490210
 > **Target Branch**: main
 > **Stale After**: 24h
-> **Reason**: issue-158-ref-bound-desktop-pointer
+> **Reason**: manual
 > **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
 
 This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
@@ -44,17 +44,20 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 
 ## Checks
 
-- status=(none), source=(none), file=.ai/harness/checks/latest.json
+- status=(none), source=(none), exit_code=(none), file=.ai/harness/checks/latest.json
 
 ## Git Status
 
-- Summary: 4 changed/untracked path(s)
+- Summary: 7 changed/untracked path(s)
 
 ```
- M src/runtime/plugins/desktop-operator-external-policy.ts
- M src/runtime/plugins/desktop-operator-registration.ts
- M tests/runtime/desktop-operator-registration.test.ts
- M tests/runtime/external-plugin-adapter.test.ts
+ M adapters/browser/session-authority.ts
+ M docs/operations/controller-browser-plugin.md
+ D examples/agent-architecture.md
+ D examples/b2b-config.md
+ M src/runtime/control-plane/generated-cache-retention.ts
+ M tests/runtime/browser-session-authority.test.ts
+ M tests/runtime/generated-cache-retention.test.ts
 ```
 
 ## Source Artifacts

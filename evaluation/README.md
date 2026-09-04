@@ -113,3 +113,8 @@ pretend that `forge docs list` is an autonomous code-writing executor.
   longitudinal comparisons.
 - Add explicit remote-snapshot support only with a content-addressed clone and
   a no-network-after-clone policy.
+
+## Legacy benchmark retirement
+
+The retired root `evals/` prompt/skill benchmark and `scripts/run-skill-evals.ts` are not part of Kernel V2.
+Kernel behavior evaluation belongs in this directory and in the bounded `scripts/benchmark-*.ts` runners. Historical benchmark reports remain available from Git history rather than as a second live evaluation authority.

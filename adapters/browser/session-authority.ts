@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { readdirSync, readFileSync } from 'fs';
+import { readdirSync, readFileSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
 import {
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
@@ -88,6 +88,27 @@ function legacySessions(repoRoot: string): BrowserSessionAuthoritySession[] {
   return names.filter((name) => name.endsWith('.json')).sort().map((name) => parseLegacySession(join(root, name)));
 }
 
+/**
+ * The Controller store is the durable authority. Once its one-time import
+ * marker exists, repository-local JSON cannot contribute any new state and is
+ * safe to retire. Keep this best-effort so an otherwise successful browser
+ * action is never blocked by a transient filesystem cleanup failure.
+ */
+function removeImportedLegacySessionFiles(repoRoot: string): void {
+  const root = join(repoRoot, '.forge', 'browser', 'sessions');
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+    return;
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    try { rmSync(join(root, name), { force: true }); } catch { /* retry on a later maintenance/access pass */ }
+  }
+}
+
 function mergeEntry<T extends BrowserSessionAuthoritySession>(
   existing: BrowserSessionAuthorityEntry<T> | undefined,
   repoId: string,
@@ -119,9 +140,12 @@ export function ensureLegacyBrowserSessionsImported(
   repoRoot: string,
 ): number {
   const markerKey = importMarkerKey(repoRoot);
-  if (persistence.read<LegacyImportMarker>(controllerHome, IMPORT_NAMESPACE, repoId, markerKey)) return 0;
+  if (persistence.read<LegacyImportMarker>(controllerHome, IMPORT_NAMESPACE, repoId, markerKey)) {
+    removeImportedLegacySessionFiles(repoRoot);
+    return 0;
+  }
   const sessions = legacySessions(repoRoot);
-  return persistence.transaction(controllerHome, (transaction) => {
+  const imported = persistence.transaction(controllerHome, (transaction) => {
     const marker = transaction.read<LegacyImportMarker>(IMPORT_NAMESPACE, repoId, markerKey);
     if (marker) return 0;
     let imported = 0;
@@ -159,6 +183,8 @@ export function ensureLegacyBrowserSessionsImported(
     });
     return imported;
   });
+  removeImportedLegacySessionFiles(repoRoot);
+  return imported;
 }
 
 function authorityEntries(

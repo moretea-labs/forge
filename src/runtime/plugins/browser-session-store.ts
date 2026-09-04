@@ -12,16 +12,19 @@ const BROWSER_STATE_ROOT = '.forge/browser';
 import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
 
 /**
- * Repository-local browser paths remain compatibility storage only. During
- * Runtime/plugin execution, BrowserSessionAuthority (SQLite) is the sole writer;
- * the JSON files are read/written only when no Controller authority context is
- * present (for legacy migration/tests/standalone helpers).
+ * Browser session semantics are durable SQLite authority. Provider working state
+ * (profiles, screenshots, downloads, diagnostics) is repository-scoped but lives
+ * under Controller Home when an authority context exists. The repo-local path is
+ * legacy compatibility storage only for migration/tests/standalone helpers.
  */
 export function browserStateDir(
   repoRoot: string,
   name: 'sessions' | 'screenshots' | 'profiles' | 'downloads' | 'diagnostics',
 ): string {
-  return join(repoRoot, BROWSER_STATE_ROOT, name);
+  const authority = currentRuntimeBrowserSessionAuthorityContext();
+  return authority
+    ? join(authority.controllerHome, 'repositories', authority.repoId, 'browser', name)
+    : join(repoRoot, BROWSER_STATE_ROOT, name);
 }
 
 function sessionPath(repoRoot: string, sessionId: string): string {

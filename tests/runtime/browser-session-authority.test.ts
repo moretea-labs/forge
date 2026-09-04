@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -90,10 +90,12 @@ describe('browser session controller authority', () => {
 
     expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-a', repoA)).toBe(1);
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['legacy-one']);
+    expect(existsSync(join(legacyRoot, 'one.json'))).toBe(false);
 
     writeFileSync(join(legacyRoot, 'two.json'), JSON.stringify(session('legacy-two', '2026-08-24T02:00:00.000Z')));
     expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-a', repoA)).toBe(0);
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['legacy-one']);
+    expect(existsSync(join(legacyRoot, 'two.json'))).toBe(false);
   });
 
   test('deduplicates one native tab globally while keeping managed sessions repository-bound', () => {

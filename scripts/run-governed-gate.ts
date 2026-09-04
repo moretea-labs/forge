@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join, resolve } from 'path';
 import { runBoundedChild } from '../src/runtime/shared/bounded-child-supervisor';
 import { testContentDigest, workspaceMutationDigest } from '../src/testing/test-governance';
+import { resolveControllerHome } from '../src/cli/repositories/controller-home';
 
 export type Gate = 'task' | 'main' | 'release';
 interface CommandStep { label: string; command: string; args: string[]; timeoutMs: number }
@@ -11,12 +12,14 @@ interface GateStep { label: string; gate: Gate }
 type Step = CommandStep | GateStep;
 
 const ROOT = resolve(import.meta.dir, '..');
-const RECEIPT_ROOT = join(ROOT, '.ai/harness/checks/gates');
+const REPOSITORY_CACHE_KEY = createHash('sha256').update(ROOT).digest('hex').slice(0, 24);
+const RECEIPT_ROOT = join(resolveControllerHome(), 'cache', 'governed-gates', REPOSITORY_CACHE_KEY);
 
 export function stepsFor(gate: Gate): Step[] {
   if (gate === 'task') return [
     { label: 'typecheck', command: 'bun', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
     { label: 'static architecture', command: 'bun', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
+    { label: 'repository hygiene', command: 'node', args: ['scripts/check-repository-hygiene.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'generated authority', command: 'node', args: ['scripts/sync-generated-authority.mjs', '--check'], timeoutMs: 2 * 60_000 },
     { label: 'source duplication', command: 'node', args: ['scripts/check-source-duplication.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'controller UI bundle', command: 'bun', args: ['run', 'check:controller-ui'], timeoutMs: 5 * 60_000 },

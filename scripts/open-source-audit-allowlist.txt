@@ -30,7 +30,6 @@ tests/runtime/result-store-redaction.test.ts
 # Prefer scrubbing over expanding this list for new files.
 docs/architecture/global-hook-runtime.md
 deploy/release-checklists/**
-evals/benchmark.md
 plans/**
 tasks/**
 examples/agent-architecture.md

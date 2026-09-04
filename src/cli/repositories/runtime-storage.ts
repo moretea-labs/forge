@@ -49,6 +49,7 @@ interface RuntimeStorageSpec {
   name: string;
   sourceName: string;
   controllerName: string;
+  sourceRoot?: 'harness' | 'forge';
   preserveNonEmpty?: boolean;
   detectActiveRuns?: boolean;
   detectActiveLocalJobs?: boolean;
@@ -68,6 +69,8 @@ const RUNTIME_STORAGE_SPECS: RuntimeStorageSpec[] = [
   { name: 'mcp', sourceName: 'mcp', controllerName: 'mcp' },
   { name: 'local-bridge', sourceName: 'local-bridge', controllerName: 'local-bridge' },
   { name: 'ephemeral-issues', sourceName: 'ephemeral-issues', controllerName: 'ephemeral-issues' },
+  { name: 'browser-provider', sourceName: 'browser', controllerName: 'browser', sourceRoot: 'forge' },
+  { name: 'interaction-sessions', sourceName: 'interactions', controllerName: 'interactions', sourceRoot: 'forge' },
 ];
 
 function directoryEntries(path: string): string[] {
@@ -257,12 +260,14 @@ function legacyRuntimeBlocker(repositoryPath: string, spec: RuntimeStorageSpec):
 }
 
 function bindRuntimeDirectory(
+  repositoryRoot: string,
   harnessRoot: string,
   controllerRoot: string,
   repoId: string,
   spec: RuntimeStorageSpec,
 ): RuntimeStorageBinding {
-  const repositoryPath = join(harnessRoot, spec.sourceName);
+  const sourceRoot = spec.sourceRoot === 'forge' ? join(repositoryRoot, '.forge') : harnessRoot;
+  const repositoryPath = join(sourceRoot, spec.sourceName);
   const controllerPath = join(controllerRoot, spec.controllerName);
   mkdirSync(controllerPath, { recursive: true });
   writeOwnerMarker(controllerPath, repoId, spec.name);
@@ -386,7 +391,7 @@ export function ensureRepositoryRuntimeStorage(
   const harnessRoot = join(repository.canonicalRoot, '.ai', 'harness');
   mkdirSync(harnessRoot, { recursive: true });
 
-  const bindings = RUNTIME_STORAGE_SPECS.map((spec) => bindRuntimeDirectory(harnessRoot, controllerRoot, repository.repoId, spec));
+  const bindings = RUNTIME_STORAGE_SPECS.map((spec) => bindRuntimeDirectory(repository.canonicalRoot, harnessRoot, controllerRoot, repository.repoId, spec));
   const warnings = bindings
     .filter((binding) => binding.status === 'legacy-active' || binding.status === 'conflict')
     .map((binding) => `${binding.name}: ${binding.message ?? binding.status}`);

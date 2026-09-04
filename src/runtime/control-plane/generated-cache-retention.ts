@@ -10,6 +10,8 @@ import { homedir } from 'os';
 import { basename, join, relative, resolve, sep } from 'path';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
+const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
+const DEFAULT_BROWSER_SCREENSHOT_GRACE_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_SCAN_BUDGET = 1_000;
 const DEFAULT_REMOVAL_BUDGET = 8;
 
@@ -40,7 +42,13 @@ export interface XCTestDeviceCleanupReport {
 
 interface Candidate {
   path: string;
-  kind: 'forge_ios_derived_data' | 'harness_derived_data' | 'repo_harness_derived_data' | 'tmp_derived_data';
+  kind:
+    | 'forge_ios_derived_data'
+    | 'harness_derived_data'
+    | 'repo_harness_derived_data'
+    | 'tmp_derived_data'
+    | 'forge_browser_upload'
+    | 'forge_browser_screenshot';
 }
 
 function increment(counts: Record<string, number>, reason: string): void {
@@ -71,9 +79,14 @@ function collectProcessCommands(): string[] {
 }
 
 function commandReferencesPath(commands: readonly string[], repoRoot: string, path: string): boolean {
-  const absolute = canonical(path);
-  const rel = relative(resolve(repoRoot), absolute).replace(/\\/g, '/');
-  return commands.some((command) => command.includes(absolute) || (rel && command.includes(rel)));
+  const rawAbsolute = resolve(path);
+  const canonicalAbsolute = canonical(path);
+  const rawRelative = relative(resolve(repoRoot), rawAbsolute).replace(/\\/g, '/');
+  const canonicalRelative = relative(canonical(repoRoot), canonicalAbsolute).replace(/\\/g, '/');
+  return commands.some((command) => command.includes(rawAbsolute)
+    || command.includes(canonicalAbsolute)
+    || (rawRelative && command.includes(rawRelative))
+    || (canonicalRelative && command.includes(canonicalRelative)));
 }
 
 function containsTrackedFiles(repoRoot: string, path: string): boolean {
@@ -102,6 +115,19 @@ function directChildDirectories(root: string, predicate: (name: string) => boole
     budget.remaining -= 1;
     const name = String(entry.name);
     if (entry.isDirectory() && predicate(name)) found.push(join(root, name));
+  }
+  return found;
+}
+
+function directChildFiles(root: string, budget: { remaining: number }): string[] {
+  if (!existsSync(root) || budget.remaining <= 0) return [];
+  const found: string[] = [];
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return found; }
+  for (const entry of entries) {
+    if (budget.remaining <= 0) break;
+    budget.remaining -= 1;
+    if (entry.isFile()) found.push(join(root, entry.name));
   }
   return found;
 }
@@ -135,6 +161,15 @@ function discoverCandidates(repoRoot: string, maxEntries: number): { candidates:
   const initial = budget.remaining;
   const candidates: Candidate[] = [];
 
+  // Browser artifacts are direct children of small, explicitly owned roots.
+  // Scan them before recursively walking potentially high-cardinality cache
+  // trees so cache history cannot starve their retention policy.
+  for (const path of directChildFiles(join(root, '.forge', 'browser', 'uploads'), budget)) {
+    candidates.push({ path, kind: 'forge_browser_upload' });
+  }
+  for (const path of directChildFiles(join(root, '.forge', 'browser', 'screenshots'), budget)) {
+    candidates.push({ path, kind: 'forge_browser_screenshot' });
+  }
   for (const path of directChildDirectories(join(root, '.forge', 'ios', 'DerivedData'), () => true, budget)) {
     candidates.push({ path, kind: 'forge_ios_derived_data' });
   }
@@ -147,7 +182,6 @@ function discoverCandidates(repoRoot: string, maxEntries: number): { candidates:
   for (const path of nestedDerivedDataDirectories(join(root, '.tmp'), 6, budget)) {
     candidates.push({ path, kind: 'tmp_derived_data' });
   }
-
   return {
     candidates: candidates.filter((candidate, index, values) => values.findIndex((item) => resolve(item.path) === resolve(candidate.path)) === index),
     inspected: initial - budget.remaining,
@@ -155,17 +189,36 @@ function discoverCandidates(repoRoot: string, maxEntries: number): { candidates:
   };
 }
 
+function retentionGraceMs(candidate: Candidate, explicitGraceMs: number | undefined): number {
+  if (explicitGraceMs !== undefined) return Math.max(60_000, Math.floor(explicitGraceMs));
+  if (candidate.kind === 'forge_browser_upload') return DEFAULT_BROWSER_UPLOAD_GRACE_MS;
+  if (candidate.kind === 'forge_browser_screenshot') return DEFAULT_BROWSER_SCREENSHOT_GRACE_MS;
+  return DEFAULT_GENERATED_CACHE_GRACE_MS;
+}
+
+function candidateOwnedRoot(repoRoot: string, candidate: Candidate): string {
+  switch (candidate.kind) {
+    case 'forge_ios_derived_data': return join(repoRoot, '.forge', 'ios', 'DerivedData');
+    case 'harness_derived_data': return join(repoRoot, '.ai', 'harness');
+    case 'repo_harness_derived_data': return join(repoRoot, '.repo-harness');
+    case 'tmp_derived_data': return join(repoRoot, '.tmp');
+    case 'forge_browser_upload': return join(repoRoot, '.forge', 'browser', 'uploads');
+    case 'forge_browser_screenshot': return join(repoRoot, '.forge', 'browser', 'screenshots');
+  }
+}
+
 /**
- * Reclaim only rebuildable Xcode DerivedData under Forge/repo-harness-owned
- * namespaces. Result bundles, logs, edit-session metadata, and all tracked files
- * are deliberately outside this cleanup surface.
+ * Reclaim only rebuildable DerivedData and bounded browser artifacts under
+ * Forge-owned namespaces. Browser uploads are temporary staging (24 hours);
+ * screenshots remain review evidence for seven days. Result bundles, logs,
+ * profiles, downloads, edit-session metadata, and all tracked files remain
+ * deliberately outside this cleanup surface.
  */
 export function cleanupGeneratedRepositoryCaches(
   repoRoot: string,
   options: GeneratedCacheRetentionOptions = {},
 ): GeneratedCacheRetentionReport {
   const nowMs = options.nowMs ?? Date.now();
-  const graceMs = Math.max(60_000, Math.floor(options.graceMs ?? DEFAULT_GENERATED_CACHE_GRACE_MS));
   const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
   let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
   const commands = options.processCommands ?? collectProcessCommands();
@@ -181,21 +234,16 @@ export function cleanupGeneratedRepositoryCaches(
   };
 
   for (const candidate of discovered.candidates) {
-    const ownedRoot = candidate.kind === 'forge_ios_derived_data'
-      ? join(repoRoot, '.forge', 'ios', 'DerivedData')
-      : candidate.kind === 'harness_derived_data'
-        ? join(repoRoot, '.ai', 'harness')
-        : candidate.kind === 'repo_harness_derived_data'
-          ? join(repoRoot, '.repo-harness')
-          : join(repoRoot, '.tmp');
+    const ownedRoot = candidateOwnedRoot(repoRoot, candidate);
+    const fileCandidate = candidate.kind === 'forge_browser_upload' || candidate.kind === 'forge_browser_screenshot';
     try {
       const stat = lstatSync(candidate.path);
-      if (!stat.isDirectory() || stat.isSymbolicLink() || !pathInside(ownedRoot, candidate.path)) {
+      if ((fileCandidate ? !stat.isFile() : !stat.isDirectory()) || stat.isSymbolicLink() || !pathInside(ownedRoot, candidate.path)) {
         increment(report.skippedByReason, 'ownership_unproven');
         report.retainedPaths.push(relative(repoRoot, candidate.path));
         continue;
       }
-      if (nowMs - stat.mtimeMs < graceMs) {
+      if (nowMs - stat.mtimeMs < retentionGraceMs(candidate, options.graceMs)) {
         increment(report.skippedByReason, 'retention_grace');
         continue;
       }

@@ -424,5 +424,4 @@ bun scripts/migrate-workflow-docs.ts --repo . --dry-run
 
 - Keep this file short; detailed policy belongs in `docs/reference-configs/`
 - Keep stack-specific detail in assets and references, not in this skill body
-- If the router changes, update `evals/evals.json`
 - If the contract changes, update templates, migration, checks, and tests together

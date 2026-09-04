@@ -28,9 +28,11 @@ Interactions that can mutate remote state still require `confirm_authorization=t
 - the provider is local browser automation: configured loopback CDP, macOS Apple Events for an already-running Chrome/Vivaldi tab, or a Playwright persistent context
 - the default profile mode is `repo_local`, with profile data under `.forge/browser/profiles/`
 - `profileMode=custom` is explicit-only and uses the configured Chromium-family profile path directly when launching a managed context
-- saved sessions live under `.forge/browser/sessions/`
+- controller-home BrowserSession state is authoritative; legacy `.forge/browser/sessions/*.json` files are imported once and then removed
 - screenshots live under `.forge/browser/screenshots/`
 - downloads live under `.forge/browser/downloads/`
+
+Runtime maintenance bounds repository-local browser artifacts: upload staging is retained for 24 hours and screenshots for seven days. Profiles, downloads, diagnostics, and user-created review artifacts are not included in this automatic cleanup.
 
 The browser mode is explicit:
 
