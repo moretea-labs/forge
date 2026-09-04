@@ -84,9 +84,37 @@ function refReachableFromTarget(repositoryRoot: string, ref: string, targetBranc
   return undefined;
 }
 
-function branchIntegrated(repositoryRoot: string, branch: string, targetBranch: string): boolean | undefined {
-  const reachable = refReachableFromTarget(repositoryRoot, branch, targetBranch);
-  if (reachable !== false) return reachable;
+const EXACT_COMMIT_REVISION = /^[0-9a-f]{40}$/i;
+
+function reachableCommitSet(repositoryRoot: string, targetBranch: string): ReadonlySet<string> | undefined {
+  const output = git(repositoryRoot, ['rev-list', targetBranch]);
+  if (output === undefined) return undefined;
+  return new Set(output.split('\n').map((revision) => revision.trim()).filter(Boolean));
+}
+
+function exactCommitReachableFromTarget(
+  repositoryRoot: string,
+  ref: string,
+  targetBranch: string,
+  reachableCommits: ReadonlySet<string> | undefined,
+): boolean | undefined {
+  if (reachableCommits && EXACT_COMMIT_REVISION.test(ref)) return reachableCommits.has(ref);
+  return refReachableFromTarget(repositoryRoot, ref, targetBranch);
+}
+
+function branchIntegrated(
+  repositoryRoot: string,
+  branch: string,
+  targetBranch: string,
+  reachableCommits?: ReadonlySet<string>,
+  branchHead?: string,
+): boolean | undefined {
+  if (reachableCommits && branchHead && EXACT_COMMIT_REVISION.test(branchHead)) {
+    if (reachableCommits.has(branchHead)) return true;
+  } else {
+    const reachable = refReachableFromTarget(repositoryRoot, branch, targetBranch);
+    if (reachable !== false) return reachable;
+  }
 
   // Rebase/cherry-pick delivery can preserve every patch while changing ancestry.
   // Treat the branch as integrated only when Git proves it has no unique patches.
@@ -124,6 +152,13 @@ export function collectWorkLifecycleAttention(
   const handlesByWork = new Map(handles.map((handle) => [handle.workContractId ?? handle.workId, handle]));
   const findings: WorkLifecycleAttention[] = [];
   const targetBranch = repository.defaultBranch || 'main';
+  const targetReachability = new Map<string, ReadonlySet<string> | undefined>();
+  const reachableFrom = (branch: string): ReadonlySet<string> | undefined => {
+    if (!targetReachability.has(branch)) {
+      targetReachability.set(branch, reachableCommitSet(repository.canonicalRoot, branch));
+    }
+    return targetReachability.get(branch);
+  };
 
   for (const contract of contracts) {
     const handle = handlesByWork.get(contract.workId);
@@ -161,7 +196,12 @@ export function collectWorkLifecycleAttention(
     if (contract.status === 'completed' && contract.completionReceipt?.source === 'controller_work') {
       const receiptTargetRevision = contract.completionReceipt.targetRevision?.trim();
       const receiptTargetBranch = contract.completionReceipt.targetBranch?.trim() || targetBranch;
-      if (!receiptTargetRevision || refReachableFromTarget(repository.canonicalRoot, receiptTargetRevision, receiptTargetBranch) !== true) {
+      if (!receiptTargetRevision || exactCommitReachableFromTarget(
+        repository.canonicalRoot,
+        receiptTargetRevision,
+        receiptTargetBranch,
+        reachableFrom(receiptTargetBranch),
+      ) !== true) {
         findings.push(attention(
           'completion_receipt_target_not_integrated',
           contract.workId,
@@ -238,13 +278,17 @@ export function collectWorkLifecycleAttention(
     ));
   }
 
-  const branches = git(repository.canonicalRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/work', 'refs/heads/codex'])
+  const branches = git(repository.canonicalRoot, ['for-each-ref', '--format=%(refname:short)%09%(objectname)', 'refs/heads/work', 'refs/heads/codex'])
     ?.split('\n')
-    .map((branch) => branch.trim())
-    .filter(Boolean) ?? [];
-  for (const branch of branches) {
+    .map((line) => {
+      const [branch, head] = line.split('\t');
+      return { branch: branch?.trim() ?? '', head: head?.trim() };
+    })
+    .filter((entry) => Boolean(entry.branch)) ?? [];
+  const targetReachableCommits = reachableFrom(targetBranch);
+  for (const { branch, head } of branches) {
     if (activeBranches.has(branch) || retainedBranches.has(branch)) continue;
-    if (branchIntegrated(repository.canonicalRoot, branch, targetBranch) !== false) continue;
+    if (branchIntegrated(repository.canonicalRoot, branch, targetBranch, targetReachableCommits, head) !== false) continue;
     findings.push(attention(
       'work_branch_not_integrated',
       branch,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -12,6 +12,7 @@ import {
   projectionBlocksReadiness,
   projectionObservation,
   readRepositoryProjectionSnapshot,
+  rebuildRepositoryProjection,
   reconcileProjectionWithTaskLedger,
   type RepositoryRuntimeProjectionSnapshot,
 } from '../../src/runtime/projections/materialized-view';
@@ -24,6 +25,7 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
@@ -31,6 +33,7 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
+import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
@@ -264,6 +267,7 @@ describe('runtime observability', () => {
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
         expect.objectContaining({ status: 'work_branch_not_integrated' }),
       ]));
+      rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
       expect(projection.currentAttention).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
@@ -281,6 +285,91 @@ describe('runtime observability', () => {
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
       rmSync(worktreeRoot, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps materialized lifecycle attention on projection hot reads without invoking Git', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-hot-projection-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-hot-projection-repo-'));
+    const fakeBin = mkdtempSync(join(tmpdir(), 'forge-hot-projection-bin-'));
+    const marker = join(fakeBin, 'git-invoked.marker');
+    const originalPath = process.env.PATH;
+    const originalMarker = process.env.FORGE_TEST_GIT_MARKER;
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const lifecycleAttention = {
+        jobId: 'lifecycle:test:materialized',
+        status: 'terminal_work_cleanup_unsettled',
+        message: 'materialized lifecycle fixture',
+      };
+      writeJsonAtomic(
+        join(repositoryControllerRoot(controllerHome, repository.repoId), 'projections', 'runtime.json'),
+        {
+          schemaVersion: 1,
+          repoId: repository.repoId,
+          generatedAt: new Date().toISOString(),
+          revision: 1,
+          releaseFrozen: false,
+          activeJobs: [],
+          queueDepth: 0,
+          runningWorkers: 0,
+          activeLeases: 0,
+          currentAttention: [lifecycleAttention],
+          attention: [lifecycleAttention],
+        },
+      );
+      const fakeGit = join(fakeBin, 'git');
+      writeFileSync(fakeGit, `#!/usr/bin/env bash\nset -eu\nprintf 'git\\n' >> "$FORGE_TEST_GIT_MARKER"\nsleep 0.1\nexit 0\n`, 'utf8');
+      chmodSync(fakeGit, 0o755);
+      process.env.FORGE_TEST_GIT_MARKER = marker;
+      process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
+
+      const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
+      expect(projection.currentAttention).toContainEqual(lifecycleAttention);
+      expect(projection.attention).toContainEqual(lifecycleAttention);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalMarker === undefined) delete process.env.FORGE_TEST_GIT_MARKER;
+      else process.env.FORGE_TEST_GIT_MARKER = originalMarker;
+      rmSync(fakeBin, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('scheduler Git sampling yields the event loop while bounded Git subprocesses run', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-async-git-sample-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-async-git-sample-repo-'));
+    const fakeBin = mkdtempSync(join(tmpdir(), 'forge-async-git-sample-bin-'));
+    const marker = join(fakeBin, 'git-invoked.marker');
+    const originalPath = process.env.PATH;
+    const originalMarker = process.env.FORGE_TEST_GIT_MARKER;
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const fakeGit = join(fakeBin, 'git');
+      writeFileSync(fakeGit, `#!/usr/bin/env bash\nset -eu\nprintf 'git\\n' >> "$FORGE_TEST_GIT_MARKER"\nsleep 0.12\ncmd="\${3:-}"\ncase "$cmd" in\n  status) printf '## main\\n' ;;\n  branch) printf 'main\\n' ;;\n  rev-parse)\n    if [[ "\${4:-}" == '--verify' ]]; then printf '0123456789012345678901234567890123456789\\n'; else printf 'origin/main\\n'; fi ;;\nesac\nexit 0\n`, 'utf8');
+      chmodSync(fakeGit, 0o755);
+      process.env.FORGE_TEST_GIT_MARKER = marker;
+      process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
+
+      let timerFired = false;
+      const timer = setTimeout(() => { timerFired = true; }, 20);
+      const result = await sampleRepositoryGitStatusForRepositories(controllerHome, [repository]);
+      clearTimeout(timer);
+      expect(result.sampled).toBe(1);
+      expect(result.failed).toEqual([]);
+      expect(timerFired).toBe(true);
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalMarker === undefined) delete process.env.FORGE_TEST_GIT_MARKER;
+      else process.env.FORGE_TEST_GIT_MARKER = originalMarker;
+      rmSync(fakeBin, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     }
