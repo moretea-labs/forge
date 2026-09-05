@@ -39,16 +39,7 @@ import { createHash } from 'crypto';
 import { existsSync, realpathSync } from 'fs';
 import { basename, resolve } from 'path';
 import { assertWorkControllerOwnership, compactHandle, contractFor, gitChangedPaths, gitCommit, gitHead, gitMergeBase, gitRevision, identityFor, reconcileTerminalCleanup, releasePreparedWorkOwnership, requireSession, selectWorkFinalizationTarget, terminalCleanupOutcome, workForSession, workReturnCheckoutId } from './work-execution-support';
-
-function gitIsAncestor(root: string, ancestor: string, descendant: string): boolean {
-  const result = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', ancestor, descendant], {
-    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
-  });
-  if (result.error || (result.status !== 0 && result.status !== 1)) {
-    throw new Error(`WORK_TARGET_ADVANCE_ANCESTRY_UNAVAILABLE: ${ancestor} -> ${descendant}`);
-  }
-  return result.status === 0;
-}
+import { gitIsAncestor } from './direct-canonical-work-reconciliation';
 
 export interface WorkTargetAdvanceInspection {
   relation: 'candidate_contains_target' | 'target_contains_candidate' | 'diverged_clean' | 'diverged_conflict';

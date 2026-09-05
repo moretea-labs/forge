@@ -2,11 +2,12 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { controllerSessionPrincipalId, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
-import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
 
 export interface RepositoryWorkHandleControllerIdentity {
   sessionId: string;
@@ -120,6 +121,79 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   return writeWorkHandle(input.controllerHome, { ...existing, sourceCheckoutId: placement.registeredRepository.activeCheckoutId, managedWorktree: true });
 }
 
+function alignRepositoryMutationBase(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  contract: NonNullable<ReturnType<typeof getWorkContract>>;
+  handle: WorkHandleState;
+  freshlyMaterialized: boolean;
+}): WorkHandleState {
+  if (input.handle.managedWorktree || input.handle.state !== 'prepared') return input.handle;
+  if (input.contract.phase !== 'implementation') {
+    throw new Error(`WORK_DIRECT_PRE_MUTATION_PHASE_INVALID: ${input.workId}:${input.contract.phase}`);
+  }
+  if (!input.contract.checkoutId) throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_REQUIRED: ${input.workId}`);
+
+  const placement = resolveRepositoryWorkHandlePlacement({
+    controllerHome: input.controllerHome,
+    repositoryId: input.repository.repoId,
+    checkoutId: input.contract.checkoutId,
+    worktreeRef: input.contract.worktreeRef,
+  });
+  // A managed checkout has its own source lineage and does not participate in
+  // shared-canonical target-base alignment.
+  if (placement.managedWorktree) return input.handle;
+
+  const targetBranch = input.handle.deliveryTargetBranch ?? placement.branch;
+  const inspection = inspectDirectCanonicalPreMutationReconciliation({
+    handle: input.handle,
+    root: placement.checkout.canonicalRoot,
+    targetBranch,
+    status: placement.status,
+    freshlyMaterialized: input.freshlyMaterialized,
+  });
+  if (inspection.reason === 'no_target_advance') return input.handle;
+  if (!inspection.alignable || !inspection.targetHead) {
+    throw new Error(`WORK_DIRECT_PRE_MUTATION_RECONCILIATION_BLOCKED: ${inspection.reason}`);
+  }
+
+  const aligned = transitionWorkHandle(input.controllerHome, input.handle, input.handle.state, {
+    deliveryBaseCommit: inspection.targetHead,
+    expectedHead: inspection.targetHead,
+    failureReason: undefined,
+  });
+  appendWorkEvidence(
+    { controllerHome: input.controllerHome, repoId: input.repository.repoId },
+    input.workId,
+    {
+      title: 'direct canonical pre-mutation target base aligned',
+      summary: `Before the first Work-owned repository mutation, canonical target ${targetBranch} advanced linearly ${inspection.previousDeliveryBase} -> ${inspection.targetHead} while the shared checkout remained clean. Forge advanced only deliveryBaseCommit/expectedHead; the Work remains prepared until the mutation surface proves that repository mutation actually started.`,
+      detailLevel: 'summary',
+    },
+  );
+  return aligned;
+}
+
+export function markRepositoryMutationStarted(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  expectedDeliveryBase?: string;
+}): WorkHandleState | undefined {
+  const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
+  if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
+  const boundWorkId = handle.workContractId ?? handle.workId;
+  if (boundWorkId !== input.workId) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_IDENTITY_MISMATCH: expected ${boundWorkId}, found ${input.workId}`);
+  }
+  const deliveryBase = handle.deliveryBaseCommit ?? handle.baseCommit;
+  if (input.expectedDeliveryBase && deliveryBase !== input.expectedDeliveryBase) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_BASE_CHANGED: expected ${input.expectedDeliveryBase}, found ${deliveryBase ?? 'none'}`);
+  }
+  return transitionWorkHandle(input.controllerHome, handle, 'editing');
+}
+
 /**
  * Upgrades an effect-only Work before the first governed repository mutation
  * and materializes the existing repository delivery authority. The durable
@@ -162,13 +236,22 @@ export function ensureRepositoryMutationWorkHandle(input: {
     throw new Error(`WORK_REPOSITORY_MUTATION_KIND_INVALID: ${input.workId}:${contract.workKind}`);
   }
 
-  const handle = ensureRepositoryWorkHandle({
+  const existingHandle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
+  let handle = ensureRepositoryWorkHandle({
     controllerHome: input.controllerHome,
     repository: input.repository,
     workId: input.workId,
     identity: { sessionId: owner.sessionId, principalId },
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
+  handle = alignRepositoryMutationBase({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.workId,
+    contract,
+    handle,
+    freshlyMaterialized: !existingHandle,
+  });
   return { handle, ...(promotedFrom ? { promotedFrom } : {}) };
 }
 

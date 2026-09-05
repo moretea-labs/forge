@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
@@ -121,6 +122,12 @@ function createReadyWork(controllerHome: string, repoId: string, workId: string)
     requestedBy: 'chatgpt',
     status: 'ready',
   });
+}
+
+async function repositoryStructured(result: ReturnType<typeof callRepositoryTool>): Promise<Record<string, any>> {
+  const response = await result;
+  expect(response).toBeTruthy();
+  return JSON.parse(response?.content[0]?.text ?? '{}');
 }
 
 function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record<string, any> {
@@ -303,6 +310,255 @@ describe('rh_work terminalization authority', () => {
       repositoryId: fx.repository.repoId,
       workId: directWorkId,
     })?.managedWorktree).toBe(false);
+  }, 15_000);
+
+  test('first Direct canonical safe patch aligns target-only advancement before Work bytes change', async () => {
+    const fx = fixture();
+    const workId = 'work-direct-pre-mutation-safe-patch';
+    const caller = {
+      principalId: 'principal-direct-pre-mutation-safe-patch',
+      sessionId: 'transport-direct-pre-mutation-safe-patch',
+      controllerInstanceId: 'runtime-direct-pre-mutation-safe-patch',
+    };
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const baseRevision = repositoryGitStatus(fx.repository).head!;
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Align a Direct canonical Work before its first safe-patch mutation.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const prepared = ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller })!;
+    expect(prepared.state).toBe('prepared');
+    expect(prepared.deliveryBaseCommit).toBe(baseRevision);
+
+    writeFileSync(join(fx.repoRoot, 'target-only.txt'), 'target-only\n');
+    execFileSync('git', ['add', 'target-only.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target-only advance'], { cwd: fx.repoRoot });
+    const targetRevision = repositoryGitStatus(fx.repository).head!;
+    expect(targetRevision).not.toBe(baseRevision);
+
+    const patched = await repositoryStructured(callRepositoryTool(
+      fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        repo_id: fx.repository.repoId,
+        work_id: workId,
+        purpose: 'first Work-owned patch after target advancement',
+        operations: [{
+          type: 'replace',
+          path: 'src/index.ts',
+          replacements: [{ old_text: 'export const ready = true;', new_text: 'export const ready = false;' }],
+        }],
+      },
+      caller,
+    ));
+    expect(patched.error).toBeUndefined();
+    expect(repositoryGitStatus(fx.repository).unstaged).toContain('src/index.ts');
+
+    const aligned = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(aligned.state).toBe('editing');
+    expect(aligned.deliveryBaseCommit).toBe(targetRevision);
+    expect(aligned.expectedHead).toBe(targetRevision);
+
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'work-owned change'], { cwd: fx.repoRoot });
+    const workRevision = repositoryGitStatus(fx.repository).head!;
+    const changedPaths = execFileSync('git', ['diff', '--name-only', `${aligned.deliveryBaseCommit}..${workRevision}`], { cwd: fx.repoRoot, encoding: 'utf-8' })
+      .split(/\r?\n/).map((path) => path.trim()).filter(Boolean);
+    expect(changedPaths).toEqual(['src/index.ts']);
+
+    const secondPatch = await repositoryStructured(callRepositoryTool(
+      fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        repo_id: fx.repository.repoId,
+        work_id: workId,
+        purpose: 'second Work mutation must not absorb the Work-owned commit as target history',
+        operations: [{
+          type: 'replace',
+          path: 'src/index.ts',
+          replacements: [{ old_text: 'export const ready = false;', new_text: 'export const ready = true;' }],
+        }],
+      },
+      caller,
+    ));
+    expect(secondPatch.error).toBeUndefined();
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.deliveryBaseCommit).toBe(targetRevision);
+  }, 15_000);
+
+  test('Work-attributed repository command crosses the same Direct canonical pre-mutation boundary', async () => {
+    const fx = fixture();
+    const workId = 'work-direct-pre-mutation-command';
+    const caller = {
+      principalId: 'principal-direct-pre-mutation-command',
+      sessionId: 'transport-direct-pre-mutation-command',
+      controllerInstanceId: 'runtime-direct-pre-mutation-command',
+    };
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const baseRevision = repositoryGitStatus(fx.repository).head!;
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Align a Direct canonical Work before its first repository command mutation.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller });
+
+    writeFileSync(join(fx.repoRoot, 'target-command-only.txt'), 'target-only\n');
+    execFileSync('git', ['add', 'target-command-only.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target command advance'], { cwd: fx.repoRoot });
+    const targetRevision = repositoryGitStatus(fx.repository).head!;
+
+    const rejected = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: workId,
+      command: ['git', 'commit', '--allow-empty', '-m', 'must be rejected before mutation admission'],
+      request_id: 'direct-pre-mutation-command-rejected',
+    }, caller));
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.path).toBe('git_commit_requires_explicit_path_scope');
+    const afterRejected = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(afterRejected.state).toBe('prepared');
+    expect(afterRejected.deliveryBaseCommit).toBe(baseRevision);
+    expect(afterRejected.expectedHead).toBe(baseRevision);
+
+    const command = ['touch', 'src/command-owned.ts'];
+    const preview = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_preview', {
+      repo_id: fx.repository.repoId,
+      command,
+    }, caller));
+    expect(typeof preview.approvalToken).toBe('string');
+    const executed = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: workId,
+      command,
+      approval_token: preview.approvalToken,
+      request_id: 'direct-pre-mutation-command-process',
+    }, caller));
+    expect(executed.accepted).toBe(true);
+    expect(existsSync(join(fx.repoRoot, 'src', 'command-owned.ts'))).toBe(true);
+
+    const aligned = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(aligned.state).toBe('editing');
+    expect(aligned.deliveryBaseCommit).toBe(targetRevision);
+    expect(aligned.expectedHead).toBe(targetRevision);
+  }, 15_000);
+
+  test('Direct canonical pre-mutation reconciliation fails closed on dirty or rewritten target history', async () => {
+    const makeWork = (suffix: string) => {
+      const fx = fixture();
+      const workId = `work-direct-pre-mutation-${suffix}`;
+      const caller = {
+        principalId: `principal-direct-pre-mutation-${suffix}`,
+        sessionId: `transport-direct-pre-mutation-${suffix}`,
+        controllerInstanceId: `runtime-direct-pre-mutation-${suffix}`,
+      };
+      const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+      const baseRevision = repositoryGitStatus(fx.repository).head!;
+      createWorkContract(store, {
+        workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, baseRevision,
+        mode: 'goal_workloop', objective: 'Fail closed before ambiguous Direct canonical mutation.', acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true }, allowedPaths: ['src/**'], forbiddenPaths: [], checks: [],
+        requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'implementation',
+      });
+      claimControllerSession(store, {
+        workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+      ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller });
+      return { fx, workId, caller, baseRevision };
+    };
+
+    const dirty = makeWork('dirty');
+    writeFileSync(join(dirty.fx.repoRoot, 'target-dirty.txt'), 'target\n');
+    execFileSync('git', ['add', 'target-dirty.txt'], { cwd: dirty.fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target dirty advance'], { cwd: dirty.fx.repoRoot });
+    writeFileSync(join(dirty.fx.repoRoot, 'unowned-dirty.txt'), 'ambiguous\n');
+    const dirtyResult = await repositoryStructured(callRepositoryTool(
+      dirty.fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        repo_id: dirty.fx.repository.repoId,
+        work_id: dirty.workId,
+        purpose: 'must fail before ambiguous dirty mutation',
+        operations: [{ type: 'create', path: 'src/blocked.ts', content: 'export {};\n' }],
+      },
+      dirty.caller,
+    ));
+    expect(JSON.stringify(dirtyResult)).toContain('WORK_DIRECT_PRE_MUTATION_RECONCILIATION_BLOCKED: workspace_dirty');
+    expect(readWorkHandle(dirty.fx.controllerHome, dirty.fx.repository.repoId, dirty.workId)?.state).toBe('prepared');
+    expect(existsSync(join(dirty.fx.repoRoot, 'src', 'blocked.ts'))).toBe(false);
+
+    const rewritten = makeWork('rewritten');
+    writeFileSync(join(rewritten.fx.repoRoot, 'first-target.txt'), 'first\n');
+    execFileSync('git', ['add', 'first-target.txt'], { cwd: rewritten.fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'first target'], { cwd: rewritten.fx.repoRoot });
+    execFileSync('git', ['reset', '--hard', rewritten.baseRevision], { cwd: rewritten.fx.repoRoot });
+    writeFileSync(join(rewritten.fx.repoRoot, 'rewritten-target.txt'), 'rewritten\n');
+    execFileSync('git', ['add', 'rewritten-target.txt'], { cwd: rewritten.fx.repoRoot });
+    const rewrittenTree = execFileSync('git', ['write-tree'], { cwd: rewritten.fx.repoRoot, encoding: 'utf-8' }).trim();
+    const unrelatedRoot = execFileSync('git', ['commit-tree', rewrittenTree, '-m', 'rewritten target root'], { cwd: rewritten.fx.repoRoot, encoding: 'utf-8' }).trim();
+    execFileSync('git', ['reset', '--hard', unrelatedRoot], { cwd: rewritten.fx.repoRoot });
+    const rewrittenResult = await repositoryStructured(callRepositoryTool(
+      rewritten.fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        repo_id: rewritten.fx.repository.repoId,
+        work_id: rewritten.workId,
+        purpose: 'must fail before rewritten target mutation',
+        operations: [{ type: 'create', path: 'src/blocked-rewrite.ts', content: 'export {};\n' }],
+      },
+      rewritten.caller,
+    ));
+    expect(JSON.stringify(rewrittenResult)).toContain('WORK_DIRECT_PRE_MUTATION_RECONCILIATION_BLOCKED: target_history_rewritten');
+    expect(readWorkHandle(rewritten.fx.controllerHome, rewritten.fx.repository.repoId, rewritten.workId)?.state).toBe('prepared');
+    expect(existsSync(join(rewritten.fx.repoRoot, 'src', 'blocked-rewrite.ts'))).toBe(false);
   }, 15_000);
 
   test('continue reconstructs the same running Work before preserving the repository implementation gate', async () => {
