@@ -6,8 +6,8 @@ benchmarks prompt/skill behavior rather than repository-change scenarios.
 
 ## Hermetic paired candidate runner
 
-`lib/candidate-runner.ts` executes both candidates through the same external
-`public_cli` adapter. Candidate artifacts are content-addressed as a complete file or directory tree, verified, and required to contain the artifact entry explicitly bound to the public command. Each trial executes a private materialized copy, so transitive candidate code and candidate-side mutation cannot drift behind a stable identity; the evaluator never imports candidate `src/runtime`,
+`lib/candidate-runner.ts` executes both candidates through the same declared external
+public surface (`public_cli` or `public_mcp`). Candidate artifacts are content-addressed as a complete file or directory tree, verified, and required to contain the artifact entry explicitly bound to the public command. Each trial executes a private materialized copy, so transitive candidate code and candidate-side mutation cannot drift behind a stable identity; the evaluator never imports candidate `src/runtime`,
 `src/cli`, or `packages/kernel` modules.
 
 Every measured trial gets a fresh no-local Git clone plus independent HOME,
@@ -48,6 +48,36 @@ The final V2 vs 1.7.2 comparison follows three hard rules:
 2. shared-capability A/B and V2-only capability expansion are reported
    separately;
 3. correctness/reliability gates outrank latency or throughput improvements.
+
+### Frozen formal A/B authority
+
+`frozen-cross-version-authority.json` is the Stage S5 freeze authority for the
+future formal v1.7.2-vs-V2 comparison. `lib/calibration.ts` recomputes and
+fail-closes that manifest against the candidate-neutral evaluator implementation
+(and its MCP SDK dependency), the 24-scenario shared corpus, the formal metric
+and failure taxonomy, trial policy, exact v1.7.2 baseline artifact, A/A
+calibration evidence, and the environment policy. The calibration authority code
+itself is part of the evaluator implementation digest.
+
+The durable pre-freeze v1.7.2 A/A run (`proc_mtnxmzmd_fbe1cf2d`) is evidence for arm
+symmetry and harness noise on the exact frozen shared-corpus digest only. It used the same immutable artifact on both
+arms, passed all 24 shared scenarios / 48 trials with no correctness or
+reliability failures, and its scenario-blocked latency interval crosses zero.
+It is explicitly **not** a formal v1.7.2-vs-V2 sample and its observed latency
+spread is not a regression tolerance.
+
+The frozen formal trial policy is three repetitions per scenario and cache mode,
+one declared warmup, both cold and warm modes, deterministic seeded-randomized
+arm order, a 60-second candidate timeout, and 95% scenario-blocked confidence.
+Each formal run must record a fresh environment identity with `node`, `bun`,
+`git`, and `mcpSdk` toolchain versions, and both candidate arms must use the same
+environment fingerprint. S6 must call the frozen-authority and environment
+assertions before a result may be treated as formal cross-version evidence.
+
+No formal V2 trial may start until Kernel V2 has an immutable release-candidate
+artifact. Changing the evaluator, corpus, protocol, baseline identity, A/A
+calibration authority, or environment policy after this freeze requires a new
+freeze identity; an old result cannot be relabeled as the same A/B experiment.
 
 ## Architecture
 

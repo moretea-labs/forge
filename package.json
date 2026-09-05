@@ -91,7 +91,7 @@
     "benchmark:quality-harness": "bun scripts/benchmark-quality-harness.ts",
     "benchmark:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:quality-harness": "bun scripts/benchmark-quality-harness.ts",
-    "check:evaluation-framework": "bun test ./tests/evaluation-framework.test.ts && bun test ./evaluation/protocol.test.ts && bun test ./evaluation/candidate-runner.test.ts",
+    "check:evaluation-framework": "bun test ./tests/evaluation-framework.test.ts && bun test ./evaluation/protocol.test.ts && bun test ./evaluation/candidate-runner.test.ts && bun test ./evaluation/calibration.test.ts",
     "check:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:typescript-navigation": "bun scripts/benchmark-typescript-navigation.ts",
     "check:semantic-navigation-providers": "bun test tests/runtime/semantic-navigation-provider.test.ts",
