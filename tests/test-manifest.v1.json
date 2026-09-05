@@ -409,12 +409,20 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/check-result-retention.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/check-scheduling.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
     },
     "tests/runtime/codegraph-controller-home-cache.test.ts": {
       "module": "repository",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/codegraph-cache-retention.test.ts": {
+      "module": "process-runtime",
       "resource": "temp-isolated"
     },
     "tests/runtime/codegraph-context-provider.test.ts": {
