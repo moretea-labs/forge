@@ -37,6 +37,8 @@ import { resumeScheduledControllerContinuation } from '../../packages/kernel/sch
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 
 const roots: string[] = [];
@@ -2296,12 +2298,18 @@ describe('rh_work terminalization authority', () => {
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
     const planId = 'plan-terminal-explicit-successor';
+    const requirementId = 'REQ-terminal-explicit-successor';
     const predecessorWorkId = 'work-terminal-explicit-predecessor';
     const principalId = 'principal-terminal-explicit-successor';
     const sessionId = 'transport-terminal-explicit-successor';
     const controllerInstanceId = 'runtime-terminal-explicit-successor';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Terminal explicit successor compatibility',
+      outcomeStatement: 'Continue a completed Plan step through the exact frozen ControllerRound carrier without reclaiming terminal Work ownership.',
+    });
     createPlanContract(store, {
-      planId, repoId: fx.repository.repoId, scopeKey: 'terminal-explicit-successor', sourceRevision: targetRevision,
+      planId, repoId: fx.repository.repoId, requirementId, scopeKey: 'terminal-explicit-successor', sourceRevision: targetRevision,
       goal: 'continue the unique next Plan step only after explicit Controller technical admission',
       steps: [
         {
@@ -2316,7 +2324,7 @@ describe('rh_work terminalization authority', () => {
     });
     approvePlanContract(store, planId);
     createWorkContract(store, {
-      workId: predecessorWorkId, repoId: fx.repository.repoId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      workId: predecessorWorkId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
       objective: 'finish stage A', acceptanceCriteria: ['stage A delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
       planId, planStepId: 'stage-a', planSourceRevision: targetRevision, baseRevision: targetRevision,
@@ -2387,11 +2395,25 @@ describe('rh_work terminalization authority', () => {
     expect(missingKind.summary).toContain('TERMINAL_SUCCESSOR_WORK_KIND_REQUIRED');
     expect(getPlanContract(store, planId)?.steps[1]?.workId).toBeUndefined();
 
+    const frozenSuccessorCarrier = buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: {
+        work_kind: 'completed_no_change',
+        controller_authority_id: opened.authorityId,
+        relay_scope_id: opened.relayScopeId,
+      },
+    });
     const started = structured(await callRuntimeTool(caller, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'start', objective: 'Continue the explicitly selected stage B.', plan_id: planId, plan_step_id: 'stage-b',
-      related_work_id: predecessorWorkId, work_relation: 'continue', work_kind: 'completed_no_change',
-      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
-      scope_clear: true, requires_recovery: true,
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      capability_id: frozenSuccessorCarrier,
+      requirement_id: requirementId,
+      plan_id: planId,
+      plan_step_id: 'stage-b',
+      related_work_id: predecessorWorkId,
+      work_relation: 'continue',
+      scope_clear: true,
+      requires_recovery: true,
     }));
     expect(started.status).toBe('ok');
     expect(started.data.ownershipClaimed).toBe(false);
