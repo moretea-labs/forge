@@ -8,6 +8,7 @@ import {
   controlPlaneDatabasePath,
   inspectControlPlaneDatabase,
   listControlPlaneRecords,
+  maintainControlPlaneDatabase,
   readControlPlaneRecord,
   restoreControlPlaneDatabase,
   writeControlPlaneRecord,
@@ -77,6 +78,74 @@ describe('final SQLite control-plane cutover', () => {
         writer.exec('ROLLBACK');
         writer.close();
       }
+    });
+  });
+
+  test('SQLite maintenance checkpoints WAL and vacuums only already-reclaimable free pages', () => {
+    withHome((controllerHome) => {
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'probe', scope: 'controller', key: 'SQLITE-MAINTENANCE', schemaVersion: 1,
+        value: { state: 'preserve' }, expectedRevision: null,
+      });
+      const path = controlPlaneDatabasePath(controllerHome);
+      const fixture = new Database(path);
+      fixture.exec('CREATE TABLE maintenance_fixture (id INTEGER PRIMARY KEY, payload BLOB NOT NULL);');
+      const insert = fixture.query('INSERT INTO maintenance_fixture(payload) VALUES (?)');
+      for (let index = 0; index < 128; index += 1) insert.run(Buffer.alloc(8 * 1024, index % 255));
+      fixture.exec('DELETE FROM maintenance_fixture;');
+      const freeBefore = Number(Object.values(fixture.query('PRAGMA freelist_count').get() as Record<string, unknown>)[0]);
+      fixture.close();
+      expect(freeBefore).toBeGreaterThan(0);
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        minimumReclaimableBytes: 1,
+        minimumReclaimableRatio: 0,
+      });
+      expect(report).toMatchObject({ checkpointed: true, vacuumEligible: true, vacuumAttempted: true, vacuumed: true });
+      expect(report.freePageCountBefore).toBeGreaterThan(0);
+      expect(report.freePageCountAfter).toBe(0);
+      expect(report.reclaimedBytes).toBeGreaterThan(0);
+      expect(readControlPlaneRecord(controllerHome, 'probe', 'controller', 'SQLITE-MAINTENANCE')).toMatchObject({
+        revision: 1, value: { state: 'preserve' },
+      });
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
+  test('SQLite maintenance fails closed instead of waiting on a live writer for VACUUM', () => {
+    withHome((controllerHome) => {
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'probe', scope: 'controller', key: 'SQLITE-BUSY', schemaVersion: 1,
+        value: { state: 'preserve' }, expectedRevision: null,
+      });
+      const path = controlPlaneDatabasePath(controllerHome);
+      const fixture = new Database(path);
+      fixture.exec('CREATE TABLE maintenance_busy_fixture (id INTEGER PRIMARY KEY, payload BLOB NOT NULL);');
+      const insert = fixture.query('INSERT INTO maintenance_busy_fixture(payload) VALUES (?)');
+      for (let index = 0; index < 64; index += 1) insert.run(Buffer.alloc(8 * 1024, index % 255));
+      fixture.exec('DELETE FROM maintenance_busy_fixture;');
+      fixture.close();
+
+      const writer = new Database(path);
+      writer.exec('PRAGMA journal_mode = WAL; BEGIN IMMEDIATE;');
+      try {
+        const startedAt = performance.now();
+        const report = maintainControlPlaneDatabase(controllerHome, {
+          minimumReclaimableBytes: 1,
+          minimumReclaimableRatio: 0,
+        });
+        expect(performance.now() - startedAt).toBeLessThan(500);
+        expect(report.vacuumEligible).toBe(true);
+        expect(report.vacuumAttempted).toBe(true);
+        expect(report.vacuumed).toBe(false);
+        expect(report.skippedReason).toBe('database_busy');
+      } finally {
+        writer.exec('ROLLBACK');
+        writer.close();
+      }
+      expect(readControlPlaneRecord(controllerHome, 'probe', 'controller', 'SQLITE-BUSY')).toMatchObject({
+        revision: 1, value: { state: 'preserve' },
+      });
     });
   });
 
