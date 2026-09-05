@@ -69,6 +69,24 @@ describe('CodeGraph Controller Home cache boundary', () => {
     expect(report.skippedByReason.locator_target_unproven).toBe(1);
   });
 
+  test('honors a zero locator removal budget and leaves a dead exact locator for a later maintenance cycle', () => {
+    const controllerHome = root('forge-codegraph-locator-budget-home-');
+    const repoRoot = root('forge-codegraph-locator-budget-repo-');
+    const target = codegraphRepositoryCacheRoot(controllerHome, repoRoot);
+    mkdirSync(target, { recursive: true });
+    const stale = join(repoRoot, '.codegraph-forge-99999999-deadbeef');
+    symlinkSync(target, stale, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const report = cleanupStaleCodegraphLocators(repoRoot, controllerHome, 10, 0);
+
+    expect(lstatSync(stale).isSymbolicLink()).toBe(true);
+    expect(report.eligible).toBe(1);
+    expect(report.attempted).toBe(0);
+    expect(report.removed).toEqual([]);
+    expect(report.budgetExhausted).toBe(true);
+    expect(report.skippedByReason.cleanup_budget_exhausted).toBe(1);
+  });
+
   test('retires the old permanent Forge compatibility symlink during explicit migration', () => {
     const controllerHome = root('forge-codegraph-legacy-link-home-');
     const repoRoot = root('forge-codegraph-legacy-link-repo-');
