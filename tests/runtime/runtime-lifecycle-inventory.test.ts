@@ -38,13 +38,12 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
     expect(summary.pendingIds).toEqual(expect.arrayContaining([
       'requirement',
       'computer_interaction_target',
-      'repository_controller_home_namespace',
     ]));
   });
 
   test('keeps already-bounded Process, transport, Context and Operational Memory classes explicit', () => {
     const bounded = new Set(RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'existing_bounded').map((entry) => entry.id));
-    for (const id of ['process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','verification_snapshot','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','codegraph_cache','controller_session_lease','browser_disposable_artifact']) {
+    for (const id of ['process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','verification_snapshot','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','codegraph_cache','controller_session_lease','browser_disposable_artifact','repository_controller_home_namespace']) {
       expect(bounded.has(id)).toBe(true);
     }
   });

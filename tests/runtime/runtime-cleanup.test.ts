@@ -23,7 +23,8 @@ import {
 import { markRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository, removeRepository } from '../../src/cli/repositories/registry';
+import { cleanupRetiredRepositoryNamespaces } from '../../src/runtime/control-plane/repository-namespace-retention';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupStaleWorkVerificationSnapshots } from '../../src/runtime/control-plane/execution/work-verification-snapshot';
@@ -155,6 +156,108 @@ describe('runtime cleanup', () => {
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.bytes).toBeGreaterThan(0);
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.unknownByteCount).toBe(0);
     expect(report.cycle.skippedByReason.scheduler_active_occurrence_unindexed).toBeGreaterThanOrEqual(1);
+  });
+
+  test('retires only explicit disposable Controller Home children for a removed repository and preserves semantic/audit history', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-namespace-retention-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'namespace retention\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-retention' });
+    const namespace = repositoryControllerRoot(home, repository.repoId);
+    mkdirSync(join(namespace, 'indexes'), { recursive: true });
+    writeFileSync(join(namespace, 'indexes', 'stale.bin'), 'rebuildable');
+    mkdirSync(join(namespace, 'audit'), { recursive: true });
+    writeFileSync(join(namespace, 'audit', 'keep.jsonl'), '{\"history\":true}\n');
+    mkdirSync(join(namespace, 'controller'), { recursive: true });
+    writeFileSync(join(namespace, 'controller', 'keep.json'), '{}');
+    mkdirSync(join(namespace, 'jobs'), { recursive: true });
+    writeFileSync(join(namespace, 'jobs', 'keep.json'), '{}');
+    removeRepository(repository.repoId, home);
+
+    const report = cleanupControllerRuntimeState(home, {
+      reason: 'manual',
+      nowMs: Date.now() + 2 * 60_000,
+      repositoryNamespaceRetentionMs: 60_000,
+      maxEntries: 500,
+      maxRemovals: 50,
+    });
+
+    expect(existsSync(join(namespace, 'indexes'))).toBe(false);
+    expect(existsSync(join(namespace, 'audit', 'keep.jsonl'))).toBe(true);
+    expect(existsSync(join(namespace, 'controller', 'keep.json'))).toBe(true);
+    expect(existsSync(join(namespace, 'jobs', 'keep.json'))).toBe(true);
+    expect(report.removedRepositoryNamespacePaths).toContain(`repositories/${repository.repoId}/indexes`);
+    expect(report.lifecycleMetrics.reclaimedByClass.repository_controller_home_namespace.count).toBeGreaterThan(0);
+  });
+
+  test('repository namespace retirement fails closed while a Work remains active', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-namespace-active-work-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'active work protection\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-active-work' });
+    createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
+      workId: 'WORK-NAMESPACE-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
+      mode: 'goal_workloop', objective: 'protect namespace while Work is active',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'system', status: 'ready',
+    });
+    const namespace = repositoryControllerRoot(home, repository.repoId);
+    mkdirSync(join(namespace, 'indexes'), { recursive: true });
+    writeFileSync(join(namespace, 'indexes', 'active.bin'), 'keep');
+    removeRepository(repository.repoId, home);
+
+    const report = cleanupRetiredRepositoryNamespaces(home, {
+      nowMs: Date.now() + 2 * 60_000, graceMs: 60_000, maxEntries: 100, maxRemovals: 20,
+    });
+
+    expect(existsSync(join(namespace, 'indexes', 'active.bin'))).toBe(true);
+    expect(report.removedPaths).toEqual([]);
+    expect(report.skippedByReason.active_work).toBeGreaterThanOrEqual(1);
+  });
+
+  test('repository namespace retirement honors a zero removal budget', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-namespace-zero-budget-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'zero budget\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-zero-budget' });
+    const namespace = repositoryControllerRoot(home, repository.repoId);
+    mkdirSync(join(namespace, 'indexes'), { recursive: true });
+    writeFileSync(join(namespace, 'indexes', 'stale.bin'), 'keep');
+    removeRepository(repository.repoId, home);
+
+    const report = cleanupRetiredRepositoryNamespaces(home, {
+      nowMs: Date.now() + 2 * 60_000, graceMs: 60_000, maxEntries: 100, maxRemovals: 0,
+    });
+
+    expect(existsSync(join(namespace, 'indexes', 'stale.bin'))).toBe(true);
+    expect(report.removedPaths).toEqual([]);
+    expect(report.budgetExhausted).toBe(true);
+    expect(report.skippedByReason.cleanup_budget_exhausted).toBeGreaterThanOrEqual(1);
   });
 
   test('central cleanup protects active checkout CodeGraph caches and reclaims retired rebuildable cache', () => {
