@@ -28,6 +28,7 @@ import {
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
+import { cleanupRuntimeQuarantine, quarantineRuntimePath, type RuntimeQuarantineRetentionReport } from './quarantine-retention';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
 
 export type RuntimeMaintenanceActionId =
@@ -141,6 +142,7 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   /** Existing bounded terminal-process retention, run only during explicit full maintenance. */
   processGc?: ProcessGcResult;
   verificationSnapshotGc?: WorkVerificationSnapshotRetentionReport;
+  quarantineGc?: RuntimeQuarantineRetentionReport;
   projection?: unknown;
 }
 
@@ -1171,11 +1173,6 @@ export function previewAutomaticRuntimeMaintenance(
   };
 }
 
-function quarantinePath(repoRoot: string, id: string): string {
-  const stamp = now().replace(/[:.]/g, '-');
-  return join(repoRoot, '.ai', 'harness', 'local-jobs-quarantine', `${stamp}-${safeId(id)}`);
-}
-
 function terminalizeLocalJob(candidate: RuntimeMaintenanceCandidate, status: 'orphaned' | 'cancelled' = 'orphaned'): string {
   if (!candidate.path) throw new Error('LOCAL_JOB_PATH_MISSING');
   const jobPath = join(candidate.path, 'job.json');
@@ -1193,14 +1190,11 @@ function terminalizeLocalJob(candidate: RuntimeMaintenanceCandidate, status: 'or
   return status;
 }
 
-function quarantineLocalJob(repoRoot: string, candidate: RuntimeMaintenanceCandidate): string {
+function quarantineLocalJob(controllerHome: string, repoId: string, repoRoot: string, candidate: RuntimeMaintenanceCandidate): string {
   if (!candidate.path) throw new Error('LOCAL_JOB_PATH_MISSING');
   const root = localJobsRoot(repoRoot);
   if (!isWithin(root, candidate.path)) throw new Error('LOCAL_JOB_PATH_OUTSIDE_ROOT');
-  const destination = quarantinePath(repoRoot, candidate.id);
-  mkdirSync(dirname(destination), { recursive: true });
-  renameSync(candidate.path, destination);
-  return destination;
+  return quarantineRuntimePath(controllerHome, repoId, candidate.path, candidate.id);
 }
 
 function rebuildActiveIndex(repoRoot: string): void {
@@ -1265,7 +1259,7 @@ export function applyRuntimeMaintenance(
         return { ...candidate, applied: true, result: terminalizeLocalJob(candidate, 'cancelled') };
       }
       if (candidate.kind === 'unreadable_local_job' || candidate.kind === 'missing_job_metadata') {
-        return { ...candidate, applied: true, result: quarantineLocalJob(repository.canonicalRoot, candidate) };
+        return { ...candidate, applied: true, result: quarantineLocalJob(controllerHome, repository.repoId, repository.canonicalRoot, candidate) };
       }
       if (candidate.kind === 'stale_runtime_temp_entry') {
         if (!candidate.path) throw new Error('RUNTIME_TEMP_PATH_MISSING');
@@ -1314,6 +1308,12 @@ export function applyRuntimeMaintenance(
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
     })
     : undefined;
+  const quarantineGc = options.actionId === 'full_maintenance_pass'
+    ? cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
+      maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
+      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+    })
+    : undefined;
 
   if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
     rebuildActiveIndex(repository.canonicalRoot);
@@ -1332,6 +1332,7 @@ export function applyRuntimeMaintenance(
     runtimeStorageRepairApply,
     processGc,
     verificationSnapshotGc,
+    quarantineGc,
     projection,
   };
 }
