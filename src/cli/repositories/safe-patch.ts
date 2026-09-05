@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import {
+  adoptEditSessionSuccessorHead,
   applyEditOperations,
   beginEditSession,
   getEditSession,
@@ -386,7 +387,28 @@ export function applySafePatch(repository: RepositoryRecord, input: {
       session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, preflight.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!sessionId && input.recoverStaleSession !== false && message.includes('EDIT_SESSION_FINGERPRINT_STALE')) {
+      if (sessionId && input.recoverStaleSession !== false && message.includes('EDIT_SESSION_BASE_REVISION_CHANGED')) {
+        const previousSessionId = session.sessionId;
+        try {
+          session = adoptEditSessionSuccessorHead(repository.canonicalRoot, session.sessionId, { binding: input.binding });
+          expectedRevision = session.currentRevision;
+          recoveredSession = { reason: 'Existing Work-bound edit session adopted a proven non-overlapping successor HEAD.', previousSessionId, newSessionId: session.sessionId };
+          const retry = preflightChunk(repository, group, chunkIndex, refresh);
+          if (retry.failures.length === 0) {
+            session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
+          } else {
+            failures.push(...retry.failures);
+            failedChunk = chunkIndex;
+            if (!continueOnError) break;
+            continue;
+          }
+        } catch (adoptionError) {
+          failures.push(...patchErrorFailures(adoptionError, chunkIndex));
+          failedChunk = chunkIndex;
+          if (!continueOnError) break;
+          continue;
+        }
+      } else if (!sessionId && input.recoverStaleSession !== false && message.includes('EDIT_SESSION_FINGERPRINT_STALE')) {
         const previousSessionId = session.sessionId;
         session = beginEditSession(repository.canonicalRoot, { purpose: `${String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch'} (recovered)`, allowedPaths, binding: input.binding });
         expectedRevision = session.currentRevision;

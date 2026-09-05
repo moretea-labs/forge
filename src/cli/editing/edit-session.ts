@@ -617,6 +617,111 @@ function assertCurrentHashes(repoRoot: string, session: EditSession): void {
   if (path) throw new Error(`edited file changed outside the session after revision ${latestOperations(session).get(path)?.revision ?? session.currentRevision}: ${path}`);
 }
 
+function committedChangedPathsBetween(repoRoot: string, baseRevision: string, targetRevision: string): string[] {
+  const ancestor = runProcess('git', ['merge-base', '--is-ancestor', baseRevision, targetRevision], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 64 * 1024,
+  });
+  if (!ancestor.ok) throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_NOT_DESCENDANT');
+  const diff = runProcess('git', ['diff', '--name-status', '-z', '--find-renames', baseRevision, targetRevision, '--'], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
+  if (!diff.ok) throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_DIFF_FAILED: ${diff.error || diff.stderr}`);
+  const tokens = diff.stdout.split('\0').filter(Boolean);
+  const paths = new Set<string>();
+  for (let index = 0; index < tokens.length;) {
+    const status = tokens[index++] ?? '';
+    const first = tokens[index++];
+    if (!first) break;
+    paths.add(first);
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const second = tokens[index++];
+      if (second) paths.add(second);
+    }
+  }
+  return [...paths].sort((left, right) => left.localeCompare(right));
+}
+
+export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: string, input: {
+  binding?: EditSessionBinding;
+  reviewer?: string;
+  note?: string;
+} = {}): EditSession {
+  let session = getEditSession(repoRoot, sessionId);
+  if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0) {
+    throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
+  }
+  assertEditSessionDurableBinding(session, input.binding, { requireBoundIdentity: true });
+  if (!session.workId || !session.repoId || !session.checkoutId || !session.principalId) {
+    throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_WORK_BINDING_REQUIRED');
+  }
+  const previousBaseRevision = session.baseRevision?.trim();
+  const successorRevision = gitRevision(repoRoot)?.trim();
+  if (!previousBaseRevision || !successorRevision) throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_REVISION_REQUIRED');
+  if (previousBaseRevision === successorRevision) return bindSessionControllerInstance(repoRoot, session, input.binding);
+
+  const committedPaths = committedChangedPathsBetween(repoRoot, previousBaseRevision, successorRevision);
+  const tracked = new Set(sessionTrackedPaths(session));
+  const overlaps = committedPaths.filter((path) => tracked.has(path));
+  if (overlaps.length > 0) {
+    throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_PATH_OVERLAP: ${overlaps.join(',')}`);
+  }
+  const mismatches = currentHashMismatches(repoRoot, session);
+  if (mismatches.length > 0) {
+    throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: ${mismatches.join(',')}`);
+  }
+
+  session = bindSessionControllerInstance(repoRoot, session, input.binding);
+  const revision = session.currentRevision + 1;
+  const revisionPatch = '';
+  const absoluteRevisionPatch = revisionPatchPath(repoRoot, session.sessionId, revision);
+  mkdirSync(dirname(absoluteRevisionPatch), { recursive: true });
+  writeFileSync(absoluteRevisionPatch, revisionPatch, 'utf-8');
+  const at = now();
+  session.revisions.push({
+    revision,
+    operations: [],
+    changedFiles: 0,
+    changedLines: 0,
+    patchPath: relative(repoRoot, absoluteRevisionPatch).replace(/\\/g, '/'),
+    patchSha256: hash(revisionPatch),
+    createdAt: at,
+  });
+  session.currentRevision = revision;
+  session.baseRevision = successorRevision;
+  session.status = 'dirty';
+  session.verifiedAt = undefined;
+  session.checkResults = [];
+  session.reviewer = undefined;
+  session.reviewNote = undefined;
+  session.assurance = calculateAssurance(session, at);
+  session.requestedChecks = session.assurance.requiredChecks;
+  session.workspaceFingerprint = workspaceFingerprint(repoRoot);
+  session.updatedAt = at;
+  writeSession(repoRoot, session);
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'edit',
+    action: 'edit_session_successor_head_adopted',
+    summary: `${session.purpose}: adopted non-overlapping successor HEAD`,
+    actor: input.reviewer?.trim() || undefined,
+    issueId: session.issueId,
+    taskId: session.taskId,
+    editSessionId: session.sessionId,
+    details: {
+      workId: session.workId,
+      previousBaseRevision,
+      successorRevision,
+      committedPaths,
+      revision,
+      note: input.note?.trim() || undefined,
+    },
+  });
+  return session;
+}
+
 function markEditSessionSuperseded(repoRoot: string, session: EditSession, paths: string[], input: {
   reviewer?: string;
   note?: string;
