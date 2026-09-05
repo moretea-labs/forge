@@ -15,6 +15,7 @@ import {
 } from './semantic-admission';
 import {
   listControlPlaneRecords,
+  listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -371,17 +372,16 @@ function writePlanSupersessionWithWorkRetirement(
     return successor;
   }
 
-  const workRecords = listControlPlaneRecords<WorkContract>(options.controllerHome, {
-    namespace: 'work_contract', scope: options.repoId, limit: 5_000,
-  }).filter((record) => record.value.planId === predecessor.planId);
   let writtenSuccessor = successor;
 
   withControlPlaneTransaction(options.controllerHome, (database) => {
     let successorNext = successor;
     const workWrites: Array<{ value: WorkContract; revision: number; action: string }> = [];
-    for (const candidate of workRecords) {
-      const current = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, candidate.key);
-      if (!current || current.value.planId !== predecessor.planId || isTerminalWorkContractStatus(current.value.status)) continue;
+    const workRecords = listControlPlaneRecordsWithinTransaction<WorkContract>(database, {
+      namespace: 'work_contract', scope: options.repoId, limit: 5_000,
+    }).filter((record) => record.value.planId === predecessor.planId);
+    for (const current of workRecords) {
+      if (isTerminalWorkContractStatus(current.value.status)) continue;
       const predecessorStep = predecessor.steps.find((step) => workMatchesPlanStep(current.value, predecessor, step));
       const successorIndex = predecessorStep ? successorNext.steps.findIndex((step) => step.id === predecessorStep.id) : -1;
       const successorStep = successorIndex >= 0 ? successorNext.steps[successorIndex] : undefined;

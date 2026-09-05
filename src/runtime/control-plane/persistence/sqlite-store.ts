@@ -460,29 +460,36 @@ export class ControlPlaneConflictError extends Error {
   }
 }
 
+export function listControlPlaneRecordsWithinTransaction<T>(
+  database: SqliteDatabase,
+  input: { namespace: string; scope?: string; limit?: number },
+): ControlPlaneRecord<T>[] {
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 5000));
+  const rows = input.scope === undefined
+    ? database.prepare(`
+        SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+        FROM control_plane_records
+        WHERE namespace = ?
+        ORDER BY updated_at ASC, record_key ASC
+        LIMIT ?
+      `).all(input.namespace, limit)
+    : database.prepare(`
+        SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+        FROM control_plane_records
+        WHERE namespace = ? AND scope = ?
+        ORDER BY updated_at ASC, record_key ASC
+        LIMIT ?
+      `).all(input.namespace, input.scope, limit);
+  return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
+}
+
 export function listControlPlaneRecords<T>(
   controllerHome: string,
   input: { namespace: string; scope?: string; limit?: number },
 ): ControlPlaneRecord<T>[] {
   const database = openDatabaseForRead(controllerHome);
   try {
-    const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 5000));
-    const rows = input.scope === undefined
-      ? database.prepare(`
-          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
-          FROM control_plane_records
-          WHERE namespace = ?
-          ORDER BY updated_at ASC, record_key ASC
-          LIMIT ?
-        `).all(input.namespace, limit)
-      : database.prepare(`
-          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
-          FROM control_plane_records
-          WHERE namespace = ? AND scope = ?
-          ORDER BY updated_at ASC, record_key ASC
-          LIMIT ?
-        `).all(input.namespace, input.scope, limit);
-    return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
+    return listControlPlaneRecordsWithinTransaction<T>(database, input);
   } finally {
     database.close();
   }

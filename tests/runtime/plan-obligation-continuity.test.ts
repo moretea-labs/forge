@@ -259,6 +259,16 @@ describe('Plan obligation continuity', () => {
       expect(admitted).toMatchObject({ status: 'draft', supersedes: [executing.planId] });
       expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
       expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId });
+      const lateWorkId = !changed ? `WORK-LATE-${changed}` : undefined;
+      if (lateWorkId) {
+        createWorkContract(options, {
+          workId: lateWorkId, repoId: 'repo-a', requirementId: 'REQ-A', planId: executing.planId, planStepId: step.id, planSourceRevision: executing.sourceRevision,
+          baseRevision: executing.sourceRevision, mode: 'goal_workloop', workKind: 'repository_change', objective: step.objective,
+          acceptanceCriteria: step.acceptanceCriteria, allowedPaths: step.allowedPaths, forbiddenPaths: step.forbiddenPaths, checks: step.checks,
+          constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+        });
+        expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'running', planId: executing.planId });
+      }
       const approved = approvePlanContract(options, admitted.planId);
       expect(getPlanContract(options, executing.planId)?.status).toBe('superseded');
       if (changed) {
@@ -269,6 +279,7 @@ describe('Plan obligation continuity', () => {
         expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: admitted.planId, planStepId: step.id, planSourceRevision: 'revision-c' });
       }
       expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).filter((work) => work.workId === workId)).toHaveLength(1);
+      if (lateWorkId) expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'cancelled', phase: 'cleanup', planId: executing.planId });
     }
   });
 
