@@ -1,5 +1,5 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { cleanupGeneratedRepositoryCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
@@ -55,6 +55,14 @@ export async function runSchedulerPeriodicCleanup(input: {
     }
   } catch (error) {
     console.error(`[forge cleanup] generated-cache retention failed for ${repo.repoId}:`, error);
+  }
+  try {
+    const browserArtifacts = cleanupControllerHomeBrowserArtifacts(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
+    if (browserArtifacts.errors.length > 0 || Object.values(browserArtifacts.classes).some((item) => item.overCapacity)) {
+      console.error(`[forge cleanup] Browser artifact retention reported bounded blockers for ${repo.repoId}`);
+    }
+  } catch (error) {
+    console.error(`[forge cleanup] Browser artifact retention failed for ${repo.repoId}:`, error);
   }
   const result = input.processGc({ controllerHome: input.controllerHome, repoId: repo.repoId });
   if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
