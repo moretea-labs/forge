@@ -25,6 +25,11 @@ import { repositoryControllerRoot } from '../../src/cli/repositories/controller-
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
+import { cleanupStaleWorkVerificationSnapshots } from '../../src/runtime/control-plane/execution/work-verification-snapshot';
+import { cleanupTerminalEditSessionRecords } from '../../src/cli/editing/edit-session';
+import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
+import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
+import { createWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
 
@@ -65,6 +70,170 @@ afterEach(() => {
 });
 
 describe('runtime cleanup', () => {
+  test('verification snapshot retention protects active Work and reclaims only stale bounded evidence', () => {
+    const home = controllerHome();
+    const root = join(repositoryControllerRoot(home, 'repo-snapshots'), 'verification-snapshots');
+    const active = join(root, 'snapshot-active-a');
+    const stale = join(root, 'snapshot-stale-b');
+    const fresh = join(root, 'snapshot-fresh-c');
+    for (const path of [active, stale, fresh]) mkdirSync(join(path, '.ai/harness/controller'), { recursive: true });
+    writeFileSync(join(active, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-active' }));
+    writeFileSync(join(stale, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-stale' }));
+    writeFileSync(join(fresh, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-fresh' }));
+    writeFileSync(join(stale, 'payload.bin'), 'reclaim-me');
+    age(active); age(stale);
+
+    const report = cleanupStaleWorkVerificationSnapshots(home, 'repo-snapshots', { protectedWorkIds: ['work-active'], maxEntries: 10, maxRemovals: 10 });
+
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.protected).toBe(1);
+    expect(report.skippedByReason.active_work).toBe(1);
+    expect(report.removedPaths).toEqual(['snapshot-stale-b']);
+    expect(report.reclaimedBytes).toBeGreaterThanOrEqual(Buffer.byteLength('reclaim-me'));
+    expect(report.policyVersion).toBe('runtime-lifecycle-retention-v1');
+  });
+
+  test('scheduler history retention physically bounds unindexed terminal occurrence evidence and protects active state', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-scheduler-retention-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'scheduler retention\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'scheduler-retention' });
+    const schedule = createSchedule(home, {
+      requestId: 'scheduler-retention-request', repoId: repository.repoId, name: 'scheduler retention', enabled: true,
+      trigger: { type: 'manual' },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: {} }, stopConditions: [],
+    });
+    const now = new Date().toISOString();
+    saveOccurrence(home, {
+      schemaVersion: 1, revision: 0, occurrenceId: 'OCC-ACTIVE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
+      windowKey: 'active', status: 'running', decision: 'execute', createdAt: now, updatedAt: now,
+    });
+
+    const schedules = join(repositoryControllerRoot(home, repository.repoId), 'schedules');
+    const occurrenceRoot = join(schedules, 'occurrences');
+    const decisionRoot = join(schedules, 'decisions');
+    mkdirSync(occurrenceRoot, { recursive: true });
+    mkdirSync(decisionRoot, { recursive: true });
+    const staleOccurrence = join(occurrenceRoot, 'OCC-STALE.json');
+    const unindexedActive = join(occurrenceRoot, 'OCC-UNINDEXED-ACTIVE.json');
+    const staleDecision = join(decisionRoot, 'DEC-STALE.json');
+    writeFileSync(staleOccurrence, JSON.stringify({
+      schemaVersion: 1, revision: 1, occurrenceId: 'OCC-STALE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
+      windowKey: 'stale', status: 'succeeded', decision: 'execute', createdAt: now, updatedAt: now,
+    }));
+    writeFileSync(unindexedActive, JSON.stringify({
+      schemaVersion: 1, revision: 1, occurrenceId: 'OCC-UNINDEXED-ACTIVE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
+      windowKey: 'active-unindexed', status: 'running', decision: 'execute', createdAt: now, updatedAt: now,
+    }));
+    writeFileSync(staleDecision, JSON.stringify({
+      schemaVersion: 1, revision: 1, decisionId: 'DEC-STALE', occurrenceId: 'OCC-STALE', scheduleId: schedule.scheduleId,
+      repoId: repository.repoId, requestId: `${schedule.requestId}:stale`, decision: 'execute', createdAt: now,
+    }));
+
+    const report = cleanupControllerRuntimeState(home, { reason: 'manual', maxEntries: 200, maxRemovals: 20 });
+
+    expect(existsSync(join(occurrenceRoot, 'OCC-ACTIVE.json'))).toBe(true);
+    expect(existsSync(unindexedActive)).toBe(true);
+    expect(existsSync(staleOccurrence)).toBe(false);
+    expect(existsSync(staleDecision)).toBe(false);
+    expect(report.removedScheduleOccurrencePaths).toContain(`repositories/${repository.repoId}/schedules/occurrences/OCC-STALE.json`);
+    expect(report.removedScheduleDecisionPaths).toContain(`repositories/${repository.repoId}/schedules/decisions/DEC-STALE.json`);
+    expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.count).toBe(2);
+    expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.bytes).toBeGreaterThan(0);
+    expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.unknownByteCount).toBe(0);
+    expect(report.cycle.skippedByReason.scheduler_active_occurrence_unindexed).toBeGreaterThanOrEqual(1);
+  });
+
+  test('edit-session retention keeps active authority and bounds terminal Controller Home artifacts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-edit-session-retention-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'edit session retention\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'edit-session-retention' });
+    createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
+      workId: 'WORK-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
+      mode: 'goal_workloop', objective: 'protect terminal edit-session evidence while Work remains active',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'system', status: 'ready',
+    });
+    const storage = ensureRepositoryRuntimeStorage(repository, home);
+    expect(storage.readyForExecution).toBe(true);
+    const editRoot = join(repositoryRoot, '.ai', 'harness', 'edit-sessions');
+    const nowMs = Date.now();
+    const old = new Date(nowMs - 8 * 24 * 60 * 60_000).toISOString();
+    const writeSession = (sessionId: string, status: string, workId?: string) => {
+      const dir = join(editRoot, sessionId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'session.json'), JSON.stringify({ schemaVersion: 3, sessionId, purpose: sessionId, status, workId, createdAt: old, updatedAt: old }));
+      writeFileSync(join(dir, 'changes.patch'), `${sessionId}\n`);
+      return dir;
+    };
+    const stale = writeSession('EDIT-1000-stale', 'finalized');
+    const protectedByWork = writeSession('EDIT-1001-protected', 'finalized', 'WORK-ACTIVE');
+    const open = writeSession('EDIT-1002-open', 'open');
+
+    const direct = cleanupTerminalEditSessionRecords(repositoryRoot, {
+      nowMs, retentionMs: 24 * 60 * 60_000, maxRetained: 200, maxEntries: 100, maxRemovals: 10,
+      protectedWorkIds: ['WORK-ACTIVE'],
+    });
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(protectedByWork)).toBe(true);
+    expect(existsSync(open)).toBe(true);
+    expect(direct.skippedByReason.active_work).toBe(1);
+    expect(direct.skippedByReason.active_session).toBe(1);
+
+    const central = writeSession('EDIT-1003-central', 'superseded');
+    const report = cleanupControllerRuntimeState(home, {
+      reason: 'manual', nowMs, maxEntries: 200, maxRemovals: 20,
+      editSessionRetentionMs: 24 * 60 * 60_000, editSessionMaxRetained: 200,
+    });
+    expect(existsSync(central)).toBe(false);
+    expect(existsSync(protectedByWork)).toBe(true);
+    expect(existsSync(open)).toBe(true);
+    expect(report.removedEditSessionPaths).toContain(`repositories/${repository.repoId}/edit-sessions/EDIT-1003-central`);
+    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.count).toBe(1);
+    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.bytes).toBeGreaterThan(0);
+    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.unknownByteCount).toBe(0);
+  });
+
+  test('emits versioned lifecycle reclaim metrics by resource class without changing cleanup authority', () => {
+    const home = controllerHome();
+    mkdirSync(join(home, 'daemon'), { recursive: true });
+    const stale = join(home, 'daemon', 'lifecycle-metric.tmp');
+    writeFileSync(stale, 'measured-retention-bytes\n', 'utf8');
+    age(stale);
+
+    const report = cleanupControllerRuntimeState(home, { reason: 'manual', maxEntries: 100, maxRemovals: 10 });
+
+    expect(report.policyVersion).toBe('runtime-lifecycle-retention-v1');
+    expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.count).toBeGreaterThanOrEqual(1);
+    expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.bytes).toBeGreaterThanOrEqual(Buffer.byteLength('measured-retention-bytes\n'));
+    expect(report.lifecycleMetrics.reclaimedByClass.runtime_temp.unknownByteCount).toBe(0);
+    expect(report.lifecycleMetrics.reclaimedCount).toBeGreaterThanOrEqual(1);
+    expect(report.lifecycleMetrics.reclaimedBytes).toBeGreaterThanOrEqual(Buffer.byteLength('measured-retention-bytes\n'));
+    expect(existsSync(stale)).toBe(false);
+  });
+
   test('protects the current Controller PID even when command identity differs', () => {
     const home = controllerHome();
     writeDaemonState(home, 41_001);

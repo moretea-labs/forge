@@ -20,8 +20,10 @@ import { spawnSync } from 'child_process';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { globMatches, normalizeMcpRelativePath } from '../../../cli/mcp/paths';
 import { sanitizeFileComponent } from '../../shared/json-files';
+import { measureReclaimablePath, RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION } from '../lifecycle-retention-metrics';
 
-const STALE_SNAPSHOT_MS = 6 * 60 * 60_000;
+export const WORK_VERIFICATION_SNAPSHOT_RETENTION_MS = 6 * 60 * 60_000;
+export const UNMARKED_WORK_VERIFICATION_SNAPSHOT_RETENTION_MS = 24 * 60 * 60_000;
 const SNAPSHOT_MARKER = '.ai/harness/controller/work-verification-snapshot.json';
 
 export interface WorkVerificationSnapshotScope {
@@ -68,20 +70,115 @@ function matchesAny(patterns: readonly string[], path: string): boolean {
   return patterns.some((pattern) => globMatches(pattern, path));
 }
 
+export interface WorkVerificationSnapshotRetentionOptions {
+  nowMs?: number;
+  protectedWorkIds?: readonly string[];
+  maxEntries?: number;
+  maxRemovals?: number;
+}
+
+export interface WorkVerificationSnapshotRetentionReport {
+  policyVersion: typeof RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION;
+  inspected: number;
+  eligible: number;
+  attempted: number;
+  removedPaths: string[];
+  reclaimedBytes: number;
+  unknownReclaimedByteCount: number;
+  retained: number;
+  protected: number;
+  skippedByReason: Record<string, number>;
+  errors: string[];
+  truncated: boolean;
+  budgetExhausted: boolean;
+}
+
+type SnapshotOwner = { state: 'marked'; workId: string } | { state: 'missing' } | { state: 'invalid' };
+
+function snapshotOwner(path: string): SnapshotOwner {
+  const marker = join(path, SNAPSHOT_MARKER);
+  if (!existsSync(marker)) return { state: 'missing' };
+  try {
+    const parsed = JSON.parse(readFileSync(marker, 'utf8')) as { workId?: unknown };
+    return typeof parsed.workId === 'string' && parsed.workId.trim()
+      ? { state: 'marked', workId: parsed.workId.trim() }
+      : { state: 'invalid' };
+  } catch {
+    return { state: 'invalid' };
+  }
+}
+
+/**
+ * Reclaim stale verification snapshots without becoming a Work authority.
+ * Active Work ids are caller-supplied from the canonical Work store. Missing
+ * markers receive a longer grace because a snapshot is unmarked while it is
+ * still being materialized; malformed markers fail closed for recovery review.
+ */
+export function cleanupStaleWorkVerificationSnapshots(
+  controllerHome: string,
+  repoId: string,
+  options: WorkVerificationSnapshotRetentionOptions = {},
+): WorkVerificationSnapshotRetentionReport {
+  const root = join(repositoryControllerRoot(controllerHome, repoId), 'verification-snapshots');
+  const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? 512));
+  const maxRemovals = Math.max(1, Math.floor(options.maxRemovals ?? 50));
+  const nowMs = options.nowMs ?? Date.now();
+  const protectedWorkIds = new Set(options.protectedWorkIds ?? []);
+  const report: WorkVerificationSnapshotRetentionReport = {
+    policyVersion: RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION,
+    inspected: 0, eligible: 0, attempted: 0, removedPaths: [], reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0, retained: 0, protected: 0, skippedByReason: {},
+    errors: [], truncated: false, budgetExhausted: false,
+  };
+  const skip = (reason: string): void => { report.skippedByReason[reason] = (report.skippedByReason[reason] ?? 0) + 1; };
+  if (!existsSync(root)) return report;
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch (error) {
+    report.errors.push(`verification snapshot root: ${error instanceof Error ? error.message : String(error)}`);
+    return report;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('snapshot-')) continue;
+    if (report.inspected >= maxEntries) { report.truncated = true; skip('scan_budget_exhausted'); break; }
+    report.inspected += 1;
+    const path = join(root, entry.name);
+    let ageMs: number;
+    try { ageMs = Math.max(0, nowMs - statSync(path).mtimeMs); } catch (error) {
+      report.errors.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    const owner = snapshotOwner(path);
+    if (owner.state === 'invalid') { report.retained += 1; skip('invalid_marker'); continue; }
+    if (owner.state === 'marked' && protectedWorkIds.has(owner.workId)) {
+      report.retained += 1; report.protected += 1; skip('active_work'); continue;
+    }
+    const retentionMs = owner.state === 'missing'
+      ? UNMARKED_WORK_VERIFICATION_SNAPSHOT_RETENTION_MS
+      : WORK_VERIFICATION_SNAPSHOT_RETENTION_MS;
+    if (ageMs <= retentionMs) { report.retained += 1; skip('ttl_not_expired'); continue; }
+    report.eligible += 1;
+    if (report.attempted >= maxRemovals) { report.retained += 1; report.budgetExhausted = true; skip('cleanup_budget_exhausted'); continue; }
+    report.attempted += 1;
+    const measurement = measureReclaimablePath(path);
+    try {
+      rmSync(path, { recursive: true, force: true });
+      report.removedPaths.push(entry.name);
+      if (measurement.complete) report.reclaimedBytes += measurement.bytes;
+      else report.unknownReclaimedByteCount += 1;
+    } catch (error) {
+      report.errors.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  report.removedPaths.sort();
+  report.errors.sort();
+  return report;
+}
+
 function snapshotRoot(controllerHome: string, repoId: string, workId: string): string {
   const root = join(repositoryControllerRoot(controllerHome, repoId), 'verification-snapshots');
   mkdirSync(root, { recursive: true });
-  const now = Date.now();
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith('snapshot-')) continue;
-    const path = join(root, entry.name);
-    try {
-      if (now - statSync(path).mtimeMs > STALE_SNAPSHOT_MS) rmSync(path, { recursive: true, force: true });
-    } catch {
-      // Best-effort stale cleanup; a fresh snapshot must not fail because an old
-      // directory disappeared concurrently.
-    }
-  }
+  // Retention is centralized in Runtime maintenance. Snapshot creation must not
+  // opportunistically delete another Work's verification evidence.
   return mkdtempSync(join(root, `snapshot-${sanitizeFileComponent(workId).slice(0, 48)}-`));
 }
 

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { join, relative, resolve } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { measureReclaimablePath } from './lifecycle-retention-metrics';
 import { getRepository } from '../../cli/repositories/registry';
 import {
   listWorkHandles,
@@ -43,6 +44,8 @@ export interface CleanupArtifactRetentionReport {
   eligible: number;
   attempted: number;
   removedPaths: string[];
+  reclaimedBytes: number;
+  unknownReclaimedByteCount: number;
   retained: number;
   skipped: number;
   budgetExhausted: boolean;
@@ -218,6 +221,8 @@ export function cleanupWorkPreservationArtifacts(
     eligible: 0,
     attempted: 0,
     removedPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
     retained: 0,
     skipped: 0,
     budgetExhausted: false,
@@ -296,7 +301,10 @@ export function cleanupWorkPreservationArtifacts(
           updatedAt: nowIso,
         };
         handle = writeWorkHandle(controllerHome, { ...handle, cleanupReceipt: eligibleReceipt, updatedAt: nowIso });
+        const measurement = existsSync(bundlePath) ? measureReclaimablePath(bundlePath) : { bytes: 0, entries: 0, complete: true };
         if (existsSync(bundlePath)) rmSync(bundlePath, { force: true });
+        if (measurement.complete) report.reclaimedBytes += measurement.bytes;
+        else report.unknownReclaimedByteCount += 1;
         const currentReceipt = handle.cleanupReceipt!;
         const removedReceipt: WorkCleanupReceipt = {
           ...currentReceipt,

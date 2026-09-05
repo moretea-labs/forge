@@ -236,6 +236,8 @@ function assertDurableEditSessionStorageBound(repoRoot: string, repoId: string |
 
 export const MAX_EDIT_PATCH_BATCH_OPERATIONS = 500;
 export const PREFERRED_EDIT_PATCH_BATCH_OPERATIONS = 100;
+export const EDIT_SESSION_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60_000;
+export const EDIT_SESSION_TERMINAL_MAX_RETAINED = 200;
 
 function hash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -1259,6 +1261,135 @@ export function listEditSessions(repoRoot: string, limit = 100): EditSessionSumm
       }
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+
+export interface EditSessionRetentionResult {
+  removedSessionIds: string[];
+  reclaimedBytes: number;
+  unknownReclaimedByteCount: number;
+  inspected: number;
+  eligible: number;
+  attempted: number;
+  retained: number;
+  budgetExhausted: boolean;
+  skippedByReason: Record<string, number>;
+  errors: string[];
+}
+
+function editSessionDirectoryBytes(path: string): { bytes: number; complete: boolean } {
+  let bytes = 0;
+  try {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const entryPath = join(path, entry.name);
+      if (entry.isDirectory()) {
+        const nested = editSessionDirectoryBytes(entryPath);
+        bytes += nested.bytes;
+        if (!nested.complete) return { bytes, complete: false };
+      } else if (entry.isFile()) {
+        bytes += statSync(entryPath).size;
+      }
+    }
+    return { bytes, complete: true };
+  } catch {
+    return { bytes, complete: false };
+  }
+}
+
+/**
+ * Physically reclaim terminal EditSession artifacts after their Work no longer
+ * owns live review/delivery authority. The repository-relative path may be the
+ * runtime-storage compatibility link; deletion therefore follows the existing
+ * Controller Home binding instead of creating a second persistence root.
+ */
+export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
+  nowMs?: number;
+  retentionMs?: number;
+  maxRetained?: number;
+  maxEntries?: number;
+  maxRemovals?: number;
+  sequence?: number;
+  protectedWorkIds?: Iterable<string>;
+} = {}): EditSessionRetentionResult {
+  const root = join(repoRoot, SESSION_ROOT);
+  const result: EditSessionRetentionResult = {
+    removedSessionIds: [], reclaimedBytes: 0, unknownReclaimedByteCount: 0,
+    inspected: 0, eligible: 0, attempted: 0, retained: 0, budgetExhausted: false,
+    skippedByReason: {}, errors: [],
+  };
+  if (!existsSync(root)) return result;
+  const nowMs = input.nowMs ?? Date.now();
+  const retentionMs = Math.max(60_000, Math.trunc(input.retentionMs ?? EDIT_SESSION_TERMINAL_RETENTION_MS));
+  const maxRetained = Math.max(0, Math.trunc(input.maxRetained ?? EDIT_SESSION_TERMINAL_MAX_RETAINED));
+  const maxEntries = Math.max(1, Math.trunc(input.maxEntries ?? 2_000));
+  const maxRemovals = Math.max(0, Math.trunc(input.maxRemovals ?? 50));
+  const protectedWorkIds = new Set(Array.from(input.protectedWorkIds ?? [], (value) => String(value).trim()).filter(Boolean));
+  const skip = (reason: string) => {
+    result.retained += 1;
+    result.skippedByReason[reason] = (result.skippedByReason[reason] ?? 0) + 1;
+  };
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, 'session.json')))
+      .sort((left, right) => right.name.localeCompare(left.name));
+  } catch (error) {
+    result.errors.push(`edit_session_root_unreadable:${error instanceof Error ? error.message : String(error)}`);
+    return result;
+  }
+  if (entries.length === 0) return result;
+  const rank = new Map(entries.map((entry, index) => [entry.name, index]));
+  const start = (Math.max(0, Math.trunc(input.sequence ?? 0)) * maxEntries) % entries.length;
+  const window = [...entries.slice(start), ...entries.slice(0, start)].slice(0, Math.min(maxEntries, entries.length));
+  if (entries.length > window.length) result.budgetExhausted = true;
+  for (const entry of window) {
+    result.inspected += 1;
+    let session: EditSession;
+    try { session = getEditSession(repoRoot, entry.name); }
+    catch (error) {
+      result.errors.push(`edit_session_unreadable:${entry.name}:${error instanceof Error ? error.message : String(error)}`);
+      skip('session_unreadable');
+      continue;
+    }
+    if (!['finalized', 'superseded', 'rolled_back'].includes(session.status)) {
+      skip('active_session');
+      continue;
+    }
+    if (session.workId && protectedWorkIds.has(session.workId)) {
+      skip('active_work');
+      continue;
+    }
+    const updatedMs = Date.parse(session.updatedAt);
+    if (!Number.isFinite(updatedMs)) {
+      skip('terminal_timestamp_unknown');
+      continue;
+    }
+    const beyondAge = nowMs - updatedMs >= retentionMs;
+    const beyondCount = (rank.get(entry.name) ?? 0) >= maxRetained;
+    if (!beyondAge && !beyondCount) {
+      skip('within_retention');
+      continue;
+    }
+    result.eligible += 1;
+    if (result.attempted >= maxRemovals) {
+      result.budgetExhausted = true;
+      skip('cleanup_budget_exhausted');
+      continue;
+    }
+    result.attempted += 1;
+    const path = sessionDir(repoRoot, session.sessionId);
+    const measurement = editSessionDirectoryBytes(path);
+    if (measurement.complete) result.reclaimedBytes += measurement.bytes;
+    else result.unknownReclaimedByteCount += 1;
+    try {
+      rmSync(path, { recursive: true, force: true });
+      result.removedSessionIds.push(session.sessionId);
+    } catch (error) {
+      result.errors.push(`edit_session_remove_failed:${session.sessionId}:${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  result.removedSessionIds.sort();
+  return result;
 }
 
 export function getEditSessionDiff(repoRoot: string, sessionId: string): {

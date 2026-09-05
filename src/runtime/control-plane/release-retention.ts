@@ -7,6 +7,7 @@ import {
   rmSync,
 } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
+import { measureReclaimablePath } from './lifecycle-retention-metrics';
 
 const DEFAULT_RELEASE_RETENTION_GRACE_MS = 30 * 60_000;
 const DEFAULT_STAGING_RETENTION_GRACE_MS = 6 * 60 * 60_000;
@@ -23,6 +24,11 @@ export interface ReleaseRetentionReport {
   eligible: number;
   attempted: number;
   removedPaths: string[];
+  removedBackupPaths: string[];
+  reclaimedBytes: number;
+  reclaimedBackupBytes: number;
+  unknownReclaimedByteCount: number;
+  unknownReclaimedBackupByteCount: number;
   retained: number;
   skipped: number;
   skippedByReason: Record<string, number>;
@@ -267,6 +273,7 @@ function removeCandidate(
   path: string,
   recursive: boolean,
   state: MutableRetentionState,
+  lifecycleClass: 'release_artifact' | 'recovery_backup' = 'release_artifact',
 ): void {
   state.eligible += 1;
   if (state.remainingRemovals <= 0) {
@@ -278,9 +285,19 @@ function removeCandidate(
 
   state.remainingRemovals -= 1;
   state.attempted += 1;
+  const measurement = measureReclaimablePath(path);
   try {
     rmSync(path, { recursive, force: true });
-    state.removedPaths.push(relativeHomePath(controllerHome, path));
+    const relativePath = relativeHomePath(controllerHome, path);
+    state.removedPaths.push(relativePath);
+    if (lifecycleClass === 'recovery_backup') state.removedBackupPaths.push(relativePath);
+    if (measurement.complete) {
+      state.reclaimedBytes += measurement.bytes;
+      if (lifecycleClass === 'recovery_backup') state.reclaimedBackupBytes += measurement.bytes;
+    } else {
+      state.unknownReclaimedByteCount += 1;
+      if (lifecycleClass === 'recovery_backup') state.unknownReclaimedBackupByteCount += 1;
+    }
   } catch (error) {
     state.errors.push(errorText(`release retention ${relativeHomePath(controllerHome, path)}`, error));
   }
@@ -411,7 +428,7 @@ function scanRuntimeReleases(
       continue;
     }
 
-    removeCandidate(controllerHome, path, false, state);
+    removeCandidate(controllerHome, path, false, state, 'recovery_backup');
   }
 }
 
@@ -504,6 +521,11 @@ export function cleanupControllerReleaseHistory(
     eligible: 0,
     attempted: 0,
     removedPaths: [],
+    removedBackupPaths: [],
+    reclaimedBytes: 0,
+    reclaimedBackupBytes: 0,
+    unknownReclaimedByteCount: 0,
+    unknownReclaimedBackupByteCount: 0,
     retained: 0,
     skipped: 0,
     skippedByReason: {},
