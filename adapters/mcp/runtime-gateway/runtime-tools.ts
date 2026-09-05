@@ -15,6 +15,7 @@ import { legacyIosPluginInvocation } from './legacy-ios-tool-adapter';
 import { repositoryScopedToolArgs } from '../multi-repository';
 import { resolveMcpPath } from '../paths';
 import { freshGitIdentity } from '../../../src/cli/repository/inspector';
+import { runProcess } from '../../../src/effects/process-runner';
 import { reconcileReadinessProjectionSource } from '../readiness-projection';
 import { listRepositories, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
@@ -662,6 +663,18 @@ async function callStandaloneRecoveryTool(
 }
 
 export const RH_WORK_VERIFY_LEASE_WAIT_MS = DEFAULT_WORK_CHECK_LEASE_WAIT_MS;
+
+function repositoryRevisionContains(repoRoot: string, ancestorRevision: string, descendantRevision: string): boolean {
+  const ancestor = ancestorRevision.trim();
+  const descendant = descendantRevision.trim();
+  if (!/^[a-f0-9]{40}$/i.test(ancestor) || !/^[a-f0-9]{40}$/i.test(descendant)) return false;
+  if (ancestor === descendant) return true;
+  return runProcess('git', ['merge-base', '--is-ancestor', ancestor, descendant], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 32_000,
+  }).ok;
+}
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   // Compact text channel by default (no pretty-print bloat).
@@ -2971,7 +2984,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (!allowedFacadeOperations('rh_status').includes(operation)) {
           return invalidFacadeOperation('rh_status', operation);
         }
-        const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+        const store = {
+          controllerHome: ctx.controllerHome,
+          repoId: repository.repoId,
+          revisionContains: (ancestorRevision: string, descendantRevision: string) =>
+            repositoryRevisionContains(repository.canonicalRoot, ancestorRevision, descendantRevision),
+        };
         if (operation === 'repair') {
           return await runFacadeRepair(ctx, repository, args);
         }

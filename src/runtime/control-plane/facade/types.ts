@@ -258,6 +258,21 @@ export interface PlanObligationDisposition {
   rationale?: string;
 }
 
+/**
+ * Immutable provenance for one predecessor delivery that may be reused by a
+ * successor Plan after approval. The Work itself remains historical and bound
+ * to the predecessor Plan; this record never transfers execution authority.
+ */
+export interface PlanStepDeliveryCarry {
+  predecessorPlanId: string;
+  predecessorStepId: string;
+  successorStepId: string;
+  workId: string;
+  completionReceiptId: string;
+  deliveredSourceRevision: string;
+  recordedAt: string;
+}
+
 export interface PlanContract {
   schemaVersion: 1;
   planId: string;
@@ -283,6 +298,8 @@ export interface PlanContract {
   supersessionReason?: string;
   /** Explicit reconciliation of unresolved predecessor obligations. */
   obligationDispositions?: PlanObligationDisposition[];
+  /** Trusted, bounded delivery provenance derived only during canonical successor admission. */
+  deliveryCarries?: PlanStepDeliveryCarry[];
   createdAt: string;
   updatedAt: string;
 }
