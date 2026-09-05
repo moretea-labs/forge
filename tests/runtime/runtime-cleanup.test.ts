@@ -32,6 +32,7 @@ import { cleanupTerminalEditSessionRecords } from '../../src/cli/editing/edit-se
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
 import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime/execution/jobs/store';
+import { writeExecutionArtifact } from '../../src/runtime/evidence/artifact-store';
 import { createWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
@@ -921,6 +922,8 @@ describe('runtime cleanup', () => {
     writeFileSync(join(root, 'records', `${activeId}.json`), JSON.stringify({ ...base, jobId: activeId, requestId: 'active-request', type: 'reconciliation', status: 'running' }));
     writeFileSync(join(root, 'receipts', `${terminalId}.json`), '{}');
     writeFileSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`), '{}\n');
+    const terminalArtifact = writeExecutionArtifact(home, { ...base, jobId: terminalId, type: 'reconciliation', status: 'succeeded', finishedAt: old } as any, 'job-result', { target: true });
+    const activeArtifact = writeExecutionArtifact(home, { ...base, jobId: activeId, requestId: 'active-request', type: 'reconciliation', status: 'running' } as any, 'job-result', { active: true });
 
     const report = cleanupRetiredExecutionJobs(home, repoId, { retentionMs: 60_000, maxTerminalRecords: 500, maxRemovals: 32 });
     expect(report.removed).toBe(1);
@@ -928,6 +931,10 @@ describe('runtime cleanup', () => {
     expect(existsSync(join(root, 'records', `${terminalId}.json`))).toBe(false);
     expect(existsSync(join(root, 'receipts', `${terminalId}.json`))).toBe(false);
     expect(existsSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`))).toBe(false);
+    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'records', `${terminalArtifact.artifactId}.json`))).toBe(false);
+    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'data', `${terminalArtifact.artifactId}.json`))).toBe(false);
+    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'records', `${activeArtifact.artifactId}.json`))).toBe(true);
+    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'data', `${activeArtifact.artifactId}.json`))).toBe(true);
     expect(existsSync(join(root, 'records', `${activeId}.json`))).toBe(true);
   });
 

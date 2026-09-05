@@ -4,7 +4,7 @@ import { join } from 'path';
 import { ensureControllerHome, ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../cli/repositories/locks';
 import { appendJobEvent } from '../../evidence/event-ledger';
-import { writeExecutionArtifact } from '../../evidence/artifact-store';
+import { cleanupExecutionArtifactsForJob, writeExecutionArtifact } from '../../evidence/artifact-store';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
@@ -875,6 +875,9 @@ export function cleanupRetiredExecutionJobs(
       removeFile(candidate.path);
       removeFile(join(executionJobRoot(controllerHome, repoId), 'receipts', `${sanitizeFileComponent(current.jobId)}.json`));
       removeFile(join(repositoryControllerRoot(controllerHome, repoId), 'events', 'jobs', `${sanitizeFileComponent(current.jobId)}.jsonl`));
+      const artifactCleanup = cleanupExecutionArtifactsForJob(controllerHome, repoId, current.jobId);
+      blockers.push(...artifactCleanup.blockers.map((blocker) => `artifact:${current.jobId}:${blocker}`));
+      if (artifactCleanup.scanTruncated) blockers.push(`artifact_scan_truncated:${current.jobId}`);
       if (current.requestId) removeFile(requestPath(controllerHome, current.requestId));
       withControllerLock(controllerHome, { scope: 'global', resource: 'execution-index' }, `retired-job-index:${current.jobId}`, () => {
         const active = readActiveIndex(controllerHome);
