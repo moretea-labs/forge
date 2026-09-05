@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, relative, resolve } from 'path';
 import { runProcess, type ProcessRunResult } from '../../effects/process-runner';
 import {
   installLaunchAgent,
@@ -725,6 +725,24 @@ export function inspectPrimaryPublicTunnelLaunchdContract(
   return inspectLaunchdRestartContract(service, true);
 }
 
+function pathInside(parent: string, candidate: string): boolean {
+  const rel = relative(resolve(parent), resolve(candidate));
+  return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/') && !rel.startsWith('\\'));
+}
+
+function assertDurablePrimaryRuntimeSourceRoot(controllerHome: string, sourceRoot: string, env: NodeJS.ProcessEnv = process.env): void {
+  const root = resolve(sourceRoot);
+  const normalizedSegments = root.replace(/\\/g, '/').split('/').filter(Boolean);
+  const explicitWorktreeHome = env.FORGE_WORKTREE_HOME?.trim();
+  const underExplicitWorktreeHome = explicitWorktreeHome ? pathInside(explicitWorktreeHome, root) : false;
+  if (normalizedSegments.includes('managed-worktrees') || underExplicitWorktreeHome) {
+    throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED: ${root}`);
+  }
+  if (pathInside(resolve(controllerHome, 'managed-worktrees'), root)) {
+    throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED: ${root}`);
+  }
+}
+
 export async function installStandaloneRecovery(input: {
   controllerHome: string;
   repoRoot: string;
@@ -740,6 +758,8 @@ export async function installStandaloneRecovery(input: {
 }, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot ?? input.repoRoot);
+  const primaryRuntimeSourceRoot = resolve(input.repoRoot);
+  if (!input.stageOnly) assertDurablePrimaryRuntimeSourceRoot(controllerHome, primaryRuntimeSourceRoot);
   if (input.recoveryTunnelService?.platform === 'launchd') {
     const tunnelContract = inspectRecoveryTunnelLaunchdContract(input.recoveryTunnelService);
     if (!tunnelContract.plistInstalled) {
@@ -767,17 +787,19 @@ export async function installStandaloneRecovery(input: {
       throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false');
     }
   }
+  const staged = stageRecoveryRelease({ controllerHome, sourceRoot }, dependencies);
+  if (input.stageOnly) {
+    return { controllerHome, staged, config: loadRecoveryConfig(controllerHome) };
+  }
   const config = initializeStandaloneRecovery(controllerHome, input.port ?? 8787, {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
     ...(input.recoveryTunnelService ? { recoveryTunnelService: input.recoveryTunnelService } : {}),
     ...(input.primaryPublicTunnelService ? { primaryPublicTunnelService: input.primaryPublicTunnelService } : {}),
     ...(input.primaryRuntimeService ? { primaryRuntimeService: input.primaryRuntimeService } : {}),
-    primaryRuntimeSourceRoot: resolve(input.repoRoot),
+    primaryRuntimeSourceRoot,
     ...(input.primaryConnectorService ? { primaryConnectorService: input.primaryConnectorService } : {}),
   });
-  const staged = stageRecoveryRelease({ controllerHome, sourceRoot }, dependencies);
-  if (input.stageOnly) return { controllerHome, staged, config };
   const activated = await activateRecoveryRelease({ controllerHome, config, candidate: staged.release }, dependencies);
   return { controllerHome, staged, activated, config };
 }

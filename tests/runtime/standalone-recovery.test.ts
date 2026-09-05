@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
@@ -80,7 +81,7 @@ import {
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
-import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 
 const roots: string[] = [];
@@ -113,6 +114,87 @@ afterEach(async () => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+test('standalone Recovery stage-only build never rewrites installed durable source authority', async () => {
+  const home = controllerHome();
+  const durableSource = join(home, 'durable-source');
+  committedRecoverySource(durableSource);
+  const stageSource = join(home, 'managed-worktrees', 'repo_test', 'work-stage-only');
+  const stageCommit = committedRecoverySource(stageSource);
+  createRecoveryConfig(home, { primaryRuntimeSourceRoot: durableSource });
+  const before = readFileSync(recoveryConfigPath(home), 'utf8');
+
+  const result = await installStandaloneRecovery({
+    controllerHome: home,
+    repoRoot: stageSource,
+    sourceRoot: stageSource,
+    stageOnly: true,
+  }, recoveryInstallerStubs());
+
+  expect(result.activated).toBeUndefined();
+  expect(result.staged.release.sourceCommit).toBe(stageCommit);
+  expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
+  expect(readFileSync(recoveryConfigPath(home), 'utf8')).toBe(before);
+});
+
+test('standalone Recovery non-stage install rejects managed-worktree durable source before config mutation', async () => {
+  const home = controllerHome();
+  const durableSource = join(home, 'durable-source');
+  committedRecoverySource(durableSource);
+  const managedSource = join(home, 'managed-worktrees', 'repo_test', 'work-install');
+  createRecoveryConfig(home, { primaryRuntimeSourceRoot: durableSource });
+  const before = readFileSync(recoveryConfigPath(home), 'utf8');
+
+  await expect(installStandaloneRecovery({
+    controllerHome: home,
+    repoRoot: managedSource,
+    sourceRoot: managedSource,
+  }, recoveryInstallerStubs())).rejects.toThrow('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
+
+  expect(loadRecoveryConfig(home).primaryRuntimeSourceRoot).toBe(resolve(durableSource));
+  expect(readFileSync(recoveryConfigPath(home), 'utf8')).toBe(before);
+});
+
+test('standalone Recovery non-stage install persists a durable canonical source and activates the staged release', async () => {
+  const home = controllerHome();
+  const durableSource = join(home, 'canonical-source');
+  const sourceCommit = committedRecoverySource(durableSource);
+  const handoffResult = {
+    bootstrapAttempts: 1,
+    bootoutClean: true,
+    pidWaitClean: true,
+    portWaitClean: true,
+    plistInstalled: true,
+    serviceRegistered: true,
+    diagnostics: { bootstrapResults: [], serviceProbeResults: [true], pidAliveChecks: [true], portChecks: [true] },
+  };
+  const result = await installStandaloneRecovery({
+    controllerHome: home,
+    repoRoot: durableSource,
+    sourceRoot: durableSource,
+  }, {
+    ...recoveryInstallerStubs(),
+    platform: 'darwin',
+    uid: () => 501,
+    installAgent: (sourcePath) => ({ path: sourcePath }),
+    handoff: async () => handoffResult,
+    currentPid: () => undefined,
+    verify: async ({ expectedRelease }) => ({
+      ok: true,
+      expectedReleaseRevision: expectedRelease.releaseRevision,
+      failures: [],
+      gatewayPid: 4101,
+      watchdogPid: 4102,
+      healthStatus: 200,
+    }),
+  });
+
+  expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
+  expect(loadRecoveryConfig(home).primaryRuntimeSourceRoot).toBe(resolve(durableSource));
+  expect(result.staged.release.sourceCommit).toBe(sourceCommit);
+  expect(result.activated?.release.sourceCommit).toBe(sourceCommit);
+  expect(result.activated?.verification.ok).toBe(true);
+});
+
 test('Recovery command PATH includes the standard user binary directory outside interactive shells', () => {
   expect(recoveryCommandPath('/usr/bin:/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin:/bin');
   expect(recoveryCommandPath('/home/forge-user/.local/bin:/usr/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin');
@@ -124,6 +206,27 @@ function controllerHome(): string {
   roots.push(home);
   inspectControlPlaneDatabase(home);
   return home;
+}
+
+function committedRecoverySource(root: string): string {
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'README.md'), 'recovery source\n');
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', 'README.md'], { cwd: root });
+  execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source'], { cwd: root });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+}
+
+function recoveryInstallerStubs() {
+  return {
+    now: () => 1_788_650_000_000,
+    uuid: () => '12345678-1234-1234-1234-123456789abc',
+    compileBinary: ({ outputPath }: { sourceRoot: string; outputPath: string }) => {
+      writeFileSync(outputPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+      return { ok: true, status: 0, signal: null, timedOut: false, command: ['stub-compile'], stdout: 'compiled\n', stderr: '', error: '' };
+    },
+    runCanary: () => ({ ok: true, status: 0, signal: null, timedOut: false, command: ['stub-canary'], stdout: 'canary ok\n', stderr: '', error: '' }),
+  };
 }
 
 function repoLocalControllerHome(): string {
