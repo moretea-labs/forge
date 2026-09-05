@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
+import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
@@ -178,6 +178,35 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.observeCount).toBe(2);
     expect(fixture.sessions.size).toBe(1);
     expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+  });
+
+  test('bounds tombstones without reclaiming active Computer targets', async () => {
+    const fixture = await providerFixture();
+    const activeTargetId = await openTarget(fixture);
+    const staleTargetId = await openTarget(fixture);
+    const freshTargetId = await openTarget(fixture);
+    await targetAuthority.withLease(fixture.controllerHome, staleTargetId, async (lease) => { lease.tombstone(); });
+    await targetAuthority.withLease(fixture.controllerHome, freshTargetId, async (lease) => { lease.tombstone(); });
+
+    const nowMs = Date.now();
+    const first = await cleanupRuntimeComputerInteractionTargets(fixture.controllerHome, {
+      nowMs, ttlMs: 60_000, maxTombstones: 256, maxRemovals: 32,
+    });
+    expect(first.activeProtected).toBe(1);
+    expect(first.removed).toBe(0);
+    expect(targetAuthority.get(fixture.controllerHome, activeTargetId)?.targetId).toBe(activeTargetId);
+
+    const second = await cleanupRuntimeComputerInteractionTargets(fixture.controllerHome, {
+      nowMs: nowMs + 61_000, ttlMs: 60_000, maxTombstones: 1, maxRemovals: 32,
+    });
+    expect(second.removed).toBe(2);
+    expect(second.overCapacity).toBe(false);
+    expect(targetAuthority.get(fixture.controllerHome, activeTargetId)?.targetId).toBe(activeTargetId);
+
+    const third = await cleanupRuntimeComputerInteractionTargets(fixture.controllerHome, {
+      nowMs: nowMs + 62_000, ttlMs: 60_000, maxTombstones: 1, maxRemovals: 32,
+    });
+    expect(third.removed).toBe(0);
   });
 
   test('never replays a non-idempotent semantic mutation after provider dispatch becomes unknown', async () => {
