@@ -14,12 +14,14 @@ import { cleanupTerminalEditSessionRecords } from '../../cli/editing/edit-sessio
 import { listRepositories } from '../../cli/repositories/registry';
 import { managedPathInside, managedWorktreeStorageRoot } from '../../cli/repositories/worktree-storage';
 import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execution/managed-workspace';
+import { cleanupStaleCodegraphLocators } from '../context/codegraph-cache-boundary';
 import { listActiveLeases } from '../resources/leases/store';
 import { cleanupScheduleOccurrenceHistory } from '../../../packages/kernel/scheduler/api/index';
 import { isTerminalWorkContractStatus, readWorkContractStore } from '../../../packages/kernel/work/api/index';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
 import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
+import { cleanupCodegraphCaches } from './codegraph-cache-retention';
 import { retireTerminalPlanBoundWorkAuthorities } from './facade/plan-contract-store';
 import { reconcileOwnerlessWorkAuthorities } from './execution/work-authority-reconciler';
 import {
@@ -157,6 +159,8 @@ export interface RuntimeCleanupOptions {
   editSessionMaxRetained?: number;
   /** Grace period before a non-Plan Work with no exact durable owner loses execution authority. */
   ownerlessWorkAuthorityGraceMs?: number;
+  /** Minimum age before an unprotected Forge-owned CodeGraph cache can be rebuilt on demand and reclaimed. */
+  codegraphCacheRetentionMs?: number;
   inspectProcess?: (pid: number) => RuntimeProcessSnapshot;
 }
 
@@ -194,6 +198,8 @@ export interface RuntimeCleanupReport {
   removedScheduleOccurrencePaths: string[];
   removedScheduleDecisionPaths: string[];
   removedEditSessionPaths: string[];
+  removedCodegraphLocatorPaths: string[];
+  removedCodegraphCachePaths: string[];
   /** Historical non-terminal Work whose owning Plan was already terminal. Records remain for retention/audit. */
   retiredPlanBoundWorkAuthorities: string[];
   /** Work retired only after exact per-Work liveness proved no durable continuation owner remains. */
@@ -250,8 +256,8 @@ function addReclaimMeasurement(metrics: MutableReclaimMetrics, path: string): vo
   else metrics.unknownReclaimedByteCount += 1;
 }
 
-type RemovalPhase = 'worktrees' | 'temporary' | 'artifacts' | 'scheduler' | 'edit_sessions' | 'releases';
-const REMOVAL_PHASES: readonly RemovalPhase[] = ['worktrees', 'temporary', 'artifacts', 'scheduler', 'edit_sessions', 'releases'];
+type RemovalPhase = 'worktrees' | 'temporary' | 'artifacts' | 'scheduler' | 'edit_sessions' | 'caches' | 'releases';
+const REMOVAL_PHASES: readonly RemovalPhase[] = ['worktrees', 'temporary', 'artifacts', 'scheduler', 'edit_sessions', 'caches', 'releases'];
 
 export function cleanupRemovalPhaseOrder(reason: RuntimeCleanupReport['reason'], sequence = 0): RemovalPhase[] {
   if (reason !== 'periodic') return [...REMOVAL_PHASES];
@@ -781,6 +787,8 @@ function shouldPersistCleanupAudit(report: RuntimeCleanupReport): boolean {
     || report.removedTemporaryPaths.length
     || report.removedCleanupArtifactPaths.length
     || report.removedReleasePaths.length
+    || report.removedCodegraphLocatorPaths.length
+    || report.removedCodegraphCachePaths.length
     || report.retiredPlanBoundWorkAuthorities.length
     || report.retiredOwnerlessWorkAuthorities.length,
   );
@@ -839,6 +847,10 @@ export function cleanupControllerRuntimeState(
   let temporaryCleanup: ReturnType<typeof cleanupTemporaryStatePaths> | undefined;
   let artifactRetention: ReturnType<typeof cleanupWorkPreservationArtifacts> | undefined;
   let releaseRetention: ReturnType<typeof cleanupControllerReleaseHistory> | undefined;
+  let codegraphRetention: ReturnType<typeof cleanupCodegraphCaches> | undefined;
+  const removedCodegraphLocatorPaths: string[] = [];
+  let codegraphLocatorInspected = 0;
+  let codegraphLocatorRetained = 0;
   const schedulerHistory = {
     removedOccurrencePaths: [] as string[],
     removedDecisionPaths: [] as string[],
@@ -968,6 +980,65 @@ export function cleanupControllerRuntimeState(
       errors.push(...editSessionHistory.errors.map((error) => `edit-session-history ${error}`));
       continue;
     }
+    if (phase === 'caches') {
+      const registered = listRepositories(home, { includeRemoved: true });
+      const repositoryRoots = new Set<string>();
+      for (const repository of registered) {
+        repositoryRoots.add(resolve(repository.canonicalRoot));
+        repositoryRoots.add(resolve(repository.localRoot));
+        for (const checkout of repository.checkouts) {
+          repositoryRoots.add(resolve(checkout.canonicalRoot));
+          repositoryRoots.add(resolve(checkout.localRoot));
+        }
+      }
+      const protectedRepositoryRoots = new Set<string>();
+      let locatorScanRemaining = maxEntries;
+      for (const repositoryRoot of [...repositoryRoots].sort()) {
+        if (!existsSync(repositoryRoot)) continue;
+        if (locatorScanRemaining <= 0) {
+          protectedRepositoryRoots.add(repositoryRoot);
+          skippedByReason.codegraph_locator_scan_budget_exhausted = (skippedByReason.codegraph_locator_scan_budget_exhausted ?? 0) + 1;
+          continue;
+        }
+        const locatorReport = cleanupStaleCodegraphLocators(
+          repositoryRoot,
+          home,
+          locatorScanRemaining,
+          removalBudget.remaining,
+        );
+        locatorScanRemaining = Math.max(0, locatorScanRemaining - locatorReport.inspected);
+        removalBudget.remaining = Math.max(0, removalBudget.remaining - locatorReport.attempted);
+        if (locatorReport.budgetExhausted && removalBudget.remaining <= 0) removalBudget.exhausted = true;
+        codegraphLocatorInspected += locatorReport.inspected;
+        codegraphLocatorRetained += Math.max(0, locatorReport.inspected - locatorReport.removed.length);
+        removedCodegraphLocatorPaths.push(...locatorReport.removed.map((name) => join(repositoryRoot, name)));
+        Object.entries(locatorReport.skippedByReason).forEach(([key, value]) => {
+          skippedByReason[`codegraph_locator_${key}`] = (skippedByReason[`codegraph_locator_${key}`] ?? 0) + value;
+        });
+        const protectionUncertain = locatorReport.budgetExhausted
+          || locatorReport.errors.length > 0
+          || (locatorReport.skippedByReason.locator_identity_unproven ?? 0) > 0;
+        if (locatorReport.active.length > 0 || protectionUncertain) protectedRepositoryRoots.add(repositoryRoot);
+        if (locatorReport.budgetExhausted) {
+          skippedByReason.codegraph_locator_scan_budget_exhausted = (skippedByReason.codegraph_locator_scan_budget_exhausted ?? 0) + 1;
+        }
+        errors.push(...locatorReport.errors.map((error) => `codegraph-locator ${repositoryRoot}: ${error}`));
+      }
+      codegraphRetention = cleanupCodegraphCaches(home, {
+        nowMs,
+        retentionMs: options.codegraphCacheRetentionMs,
+        maxEntries,
+        maxRemovals: removalBudget.remaining,
+        protectedRepositoryRoots: [...protectedRepositoryRoots],
+      });
+      removalBudget.remaining = Math.max(0, removalBudget.remaining - codegraphRetention.attempted);
+      if (codegraphRetention.budgetExhausted) removalBudget.exhausted = true;
+      Object.entries(codegraphRetention.skippedByReason).forEach(([key, value]) => {
+        skippedByReason[`codegraph_cache_${key}`] = (skippedByReason[`codegraph_cache_${key}`] ?? 0) + value;
+      });
+      errors.push(...codegraphRetention.errors.map((error) => `codegraph-cache ${error}`));
+      continue;
+    }
     releaseRetention = cleanupControllerReleaseHistory(home, {
       nowMs,
       graceMs: options.releaseRetentionGraceMs,
@@ -981,7 +1052,7 @@ export function cleanupControllerRuntimeState(
     });
     errors.push(...releaseRetention.errors);
   }
-  if (!worktrees || !dependencyCleanup || !temporaryCleanup || !artifactRetention || !releaseRetention) {
+  if (!worktrees || !dependencyCleanup || !temporaryCleanup || !artifactRetention || !codegraphRetention || !releaseRetention) {
     throw new Error('RUNTIME_CLEANUP_PHASE_INCOMPLETE');
   }
   const removedTemporaryPaths = temporaryCleanup.removed.sort();
@@ -990,7 +1061,9 @@ export function cleanupControllerRuntimeState(
   const removedScheduleOccurrencePaths = schedulerHistory.removedOccurrencePaths.sort();
   const removedScheduleDecisionPaths = schedulerHistory.removedDecisionPaths.sort();
   const removedEditSessionPaths = editSessionHistory.removedPaths.sort();
-  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + schedulerBudget.inspected + editSessionBudget.inspected + artifactRetention.inspected + releaseRetention.inspected;
+  removedCodegraphLocatorPaths.sort();
+  const removedCodegraphCachePaths = codegraphRetention.removedPaths.sort();
+  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + schedulerBudget.inspected + editSessionBudget.inspected + artifactRetention.inspected + codegraphLocatorInspected + codegraphRetention.inspected + releaseRetention.inspected;
   const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || dependencyBudget.exhausted || tempBudget.exhausted || schedulerBudget.exhausted || editSessionBudget.exhausted || removalBudget.exhausted;
   if (pidFiles.skipped.length > 0 && removalBudget.exhausted) skippedByReason.cleanup_budget_exhausted = (skippedByReason.cleanup_budget_exhausted ?? 0) + pidFiles.skipped.length;
   if (pidFiles.skipped.length > 0 && !removalBudget.exhausted) skippedByReason.active_owner = (skippedByReason.active_owner ?? 0) + pidFiles.skipped.length;
@@ -1001,9 +1074,9 @@ export function cleanupControllerRuntimeState(
       unknownByteCount: worktrees.reclaim.unknownReclaimedByteCount,
     },
     runtime_temp: {
-      count: pidFiles.removed.length + removedTemporaryPaths.length,
+      count: pidFiles.removed.length + removedTemporaryPaths.length + removedCodegraphLocatorPaths.length,
       bytes: pidFiles.reclaim.reclaimedBytes + temporaryCleanup.reclaim.reclaimedBytes,
-      unknownByteCount: pidFiles.reclaim.unknownReclaimedByteCount + temporaryCleanup.reclaim.unknownReclaimedByteCount,
+      unknownByteCount: pidFiles.reclaim.unknownReclaimedByteCount + temporaryCleanup.reclaim.unknownReclaimedByteCount + removedCodegraphLocatorPaths.length,
     },
     work: {
       count: removedCleanupArtifactPaths.length,
@@ -1029,6 +1102,11 @@ export function cleanupControllerRuntimeState(
       count: removedEditSessionPaths.length,
       bytes: editSessionHistory.reclaimedBytes,
       unknownByteCount: editSessionHistory.unknownReclaimedByteCount,
+    },
+    codegraph_cache: {
+      count: removedCodegraphCachePaths.length,
+      bytes: codegraphRetention.reclaimedBytes,
+      unknownByteCount: codegraphRetention.unknownReclaimedByteCount,
     },
   };
   const protectedByReason = Object.fromEntries(
@@ -1066,6 +1144,8 @@ export function cleanupControllerRuntimeState(
     removedScheduleOccurrencePaths,
     removedScheduleDecisionPaths,
     removedEditSessionPaths,
+    removedCodegraphLocatorPaths,
+    removedCodegraphCachePaths,
     retiredPlanBoundWorkAuthorities: retiredPlanBoundWorkAuthorities.sort(),
     retiredOwnerlessWorkAuthorities: retiredOwnerlessWorkAuthorities.sort(),
     skippedActiveWorktrees: worktrees.skippedActive.sort(),
@@ -1076,11 +1156,11 @@ export function cleanupControllerRuntimeState(
     lifecycleMetrics,
     cycle: {
       scanned: inspectedPaths,
-      eligible: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.eligible + schedulerHistory.eligible + editSessionHistory.eligible + releaseRetention.eligible,
-      attempted: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.attempted + schedulerHistory.attempted + editSessionHistory.attempted + releaseRetention.attempted + errors.length,
-      removed: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedCleanupArtifactPaths.length + removedScheduleOccurrencePaths.length + removedScheduleDecisionPaths.length + removedEditSessionPaths.length + removedReleasePaths.length,
-      retained: pidFiles.skipped.length + worktrees.skippedActive.length + artifactRetention.retained + schedulerHistory.retained + editSessionHistory.retained + releaseRetention.retained,
-      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - dependencyCleanup.migrated.length - removedTemporaryPaths.length - removedCleanupArtifactPaths.length - removedScheduleOccurrencePaths.length - removedScheduleDecisionPaths.length - removedEditSessionPaths.length - removedReleasePaths.length - errors.length),
+      eligible: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.eligible + schedulerHistory.eligible + editSessionHistory.eligible + removedCodegraphLocatorPaths.length + codegraphRetention.eligible + releaseRetention.eligible,
+      attempted: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.attempted + schedulerHistory.attempted + editSessionHistory.attempted + removedCodegraphLocatorPaths.length + codegraphRetention.attempted + releaseRetention.attempted + errors.length,
+      removed: retiredPlanBoundWorkAuthorities.length + retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedCleanupArtifactPaths.length + removedScheduleOccurrencePaths.length + removedScheduleDecisionPaths.length + removedEditSessionPaths.length + removedCodegraphLocatorPaths.length + removedCodegraphCachePaths.length + removedReleasePaths.length,
+      retained: pidFiles.skipped.length + worktrees.skippedActive.length + artifactRetention.retained + schedulerHistory.retained + editSessionHistory.retained + codegraphLocatorRetained + codegraphRetention.retained + releaseRetention.retained,
+      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - dependencyCleanup.migrated.length - removedTemporaryPaths.length - removedCleanupArtifactPaths.length - removedScheduleOccurrencePaths.length - removedScheduleDecisionPaths.length - removedEditSessionPaths.length - removedCodegraphLocatorPaths.length - removedCodegraphCachePaths.length - removedReleasePaths.length - errors.length),
       failed: errors.length,
       truncated: budgetExhausted,
       budgetExhausted,

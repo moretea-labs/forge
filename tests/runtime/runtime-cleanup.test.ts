@@ -15,6 +15,7 @@ import {
   type RuntimeCleanupReport,
 } from '../../src/runtime/control-plane/runtime-cleanup';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
+import { codegraphRepositoryCacheRoot, createCodegraphCacheLocator } from '../../src/runtime/context/codegraph-cache-boundary';
 import {
   activateConvergenceWorkAdmission,
   activateExclusiveWorkAdmission,
@@ -154,6 +155,56 @@ describe('runtime cleanup', () => {
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.bytes).toBeGreaterThan(0);
     expect(report.lifecycleMetrics.reclaimedByClass.scheduler_occurrence_history.unknownByteCount).toBe(0);
     expect(report.cycle.skippedByReason.scheduler_active_occurrence_unindexed).toBeGreaterThanOrEqual(1);
+  });
+
+  test('central cleanup protects active checkout CodeGraph caches and reclaims retired rebuildable cache', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-codegraph-retention-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'codegraph retention\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'codegraph-retention' });
+    const active = codegraphRepositoryCacheRoot(home, repository.canonicalRoot);
+    const retiredRoot = join(root, 'retired-worktree');
+    const retired = codegraphRepositoryCacheRoot(home, retiredRoot);
+    for (const path of [active, retired]) {
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, 'index.bin'), 'cache');
+      age(path);
+    }
+
+    const liveLocator = createCodegraphCacheLocator(repository.canonicalRoot, home, { createTarget: false });
+    expect(liveLocator).not.toBeNull();
+    const deadLocator = join(repositoryRoot, '.codegraph-forge-99999999-deadbeef');
+    symlinkSync(active, deadLocator, process.platform === 'win32' ? 'junction' : 'dir');
+    try {
+      const report = cleanupControllerRuntimeState(home, {
+        reason: 'manual',
+        nowMs: Date.now(),
+        maxEntries: 200,
+        maxRemovals: 20,
+        codegraphCacheRetentionMs: 60_000,
+      });
+
+      expect(existsSync(active)).toBe(true);
+      expect(existsSync(retired)).toBe(false);
+      expect(existsSync(deadLocator)).toBe(false);
+      expect(existsSync(liveLocator!.path)).toBe(true);
+      expect(report.removedCodegraphLocatorPaths).toContain(join(realpathSync(repositoryRoot), '.codegraph-forge-99999999-deadbeef'));
+      expect(report.removedCodegraphCachePaths).toContain(`tool-cache/codegraph/${retired.split('/').pop()}`);
+      expect(report.lifecycleMetrics.reclaimedByClass.codegraph_cache.count).toBe(1);
+      expect(report.lifecycleMetrics.reclaimedByClass.codegraph_cache.bytes).toBeGreaterThan(0);
+      expect(report.cycle.skippedByReason.codegraph_cache_active_locator).toBeGreaterThanOrEqual(1);
+    } finally {
+      liveLocator?.release();
+    }
   });
 
   test('edit-session retention keeps active authority and bounds terminal Controller Home artifacts', () => {
