@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
@@ -152,16 +152,39 @@ function runtimeServiceConfig(home: string): void {
   }, null, 2)}\n`);
 }
 
+function writeReleaseExecutionSurface(releaseRoot: string): {
+  processRunnerArtifactIdentity: string;
+  checkRunnerArtifactIdentity: string;
+} {
+  const processRunner = '#!/bin/sh\nif [ -f fail-process-runner ]; then exit 71; fi\nexit 0\n';
+  const checkRunner = '#!/bin/sh\nif [ -f fail-check-runner ]; then exit 73; fi\nexit 0\n';
+  const processRunnerPath = join(releaseRoot, 'process-runner.js');
+  const checkRunnerPath = join(releaseRoot, 'forge-check-runner');
+  writeFileSync(processRunnerPath, processRunner);
+  writeFileSync(checkRunnerPath, checkRunner);
+  chmodSync(processRunnerPath, 0o700);
+  chmodSync(checkRunnerPath, 0o700);
+  return {
+    processRunnerArtifactIdentity: `sha256:${createHash('sha256').update(processRunner).digest('hex')}`,
+    checkRunnerArtifactIdentity: `sha256:${createHash('sha256').update(checkRunner).digest('hex')}`,
+  };
+}
+
 function manifest(home: string, releaseId: string, artifactIdentity: string, workerProtocolVersion = 1): string {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
   const path = join(releaseRoot, 'manifest.json');
   mkdirSync(releaseRoot, { recursive: true });
   writeFileSync(join(releaseRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  const executionSurface = writeReleaseExecutionSurface(releaseRoot);
   writeFileSync(path, `${JSON.stringify({
     schemaVersion: 1,
     releaseId,
     artifactIdentity,
     entrypoint: 'forge-runtime',
+    processRunnerEntrypoint: 'process-runner.js',
+    processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
+    checkRunnerEntrypoint: 'forge-check-runner',
+    checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: resolve(home),
@@ -179,11 +202,16 @@ function verifiedManifest(home: string, releaseId: string, runtimeMarker = relea
   const binaryPath = join(releaseRoot, 'forge-runtime');
   writeFileSync(binaryPath, `#!/bin/sh\n# ${runtimeMarker}\nexit 0\n`, { mode: 0o700 });
   const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(binaryPath)).digest('hex')}`;
+  const executionSurface = writeReleaseExecutionSurface(releaseRoot);
   writeFileSync(path, `${JSON.stringify({
     schemaVersion: 1,
     releaseId,
     artifactIdentity,
     entrypoint: 'forge-runtime',
+    processRunnerEntrypoint: 'process-runner.js',
+    processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
+    checkRunnerEntrypoint: 'forge-check-runner',
+    checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome: resolve(home),
@@ -1748,6 +1776,24 @@ describe('standalone recovery on canonical Runtime', () => {
     })).toMatchObject({ action: 'restart_primary_connector' });
   });
 
+  test('does not attest an active release whose immutable Check Runner canary fails', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-execution-invalid', 'artifact-execution-invalid');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    writeFileSync(join(dirname(activeManifest), 'fail-check-runner'), 'fail\n');
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-execution-invalid', 'artifact-execution-invalid');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+
+    const verified = await verifyStableRuntime(config);
+    expect(verified.ok).toBe(false);
+    expect(verified.probes.runtime_execution_surface).toMatchObject({ ok: false });
+    expect(verified.probes.runtime_execution_surface.detail).toContain('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: check_runner');
+    await expect(attestKnownGood(config)).rejects.toThrow('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
+  });
+
   test('restores only the attested previous whole-Runtime release while Runtime is stopped', async () => {
     const home = controllerHome();
     const first = manifest(home, 'release-a', 'artifact-a');
@@ -1768,6 +1814,30 @@ describe('standalone recovery on canonical Runtime', () => {
       revision: 3,
       active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
       previous: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
+    });
+  });
+
+  test('refuses rollback when the independently attested previous release later fails its execution canary', async () => {
+    const home = controllerHome();
+    const first = manifest(home, 'release-canary-a', 'artifact-canary-a');
+    const second = manifest(home, 'release-canary-b', 'artifact-canary-b', 2);
+    ensureActiveRuntimeRelease(home, first);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const ownership = startObservedRuntime(home, runtime.endpoint, 'release-canary-a', 'artifact-canary-a');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    await attestKnownGood(config);
+    removeOwnership(ownership);
+
+    publishRuntimeRelease(home, second, 'publish-release-canary-b');
+    writeFileSync(join(dirname(first), 'fail-check-runner'), 'fail\n');
+    const rolled = await rollbackPrevious(config, 'execution canary regression');
+    expect(rolled.ok).toBe(false);
+    expect(rolled.detail).toContain('previous whole-Runtime release failed Process Runtime execution verification');
+    expect(rolled.detail).toContain('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: check_runner');
+    expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+      active: { releaseId: 'release-canary-b' },
+      previous: { releaseId: 'release-canary-a' },
     });
   });
 
@@ -2676,12 +2746,17 @@ describe('standalone recovery on canonical Runtime', () => {
       mkdirSync(candidateRoot, { recursive: true });
       writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
       const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(join(candidateRoot, 'forge-runtime'))).digest('hex')}`;
+      const executionSurface = writeReleaseExecutionSurface(candidateRoot);
       const candidateManifestPath = join(candidateRoot, 'manifest.json');
       writeFileSync(candidateManifestPath, `${JSON.stringify({
         schemaVersion: 1,
         releaseId: candidateReleaseId,
         artifactIdentity,
         entrypoint: 'forge-runtime',
+        processRunnerEntrypoint: 'process-runner.js',
+        processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
+        checkRunnerEntrypoint: 'forge-check-runner',
+        checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
         arguments: [],
         configurationSchemaVersion: 1,
         controllerHome: resolve(home),
@@ -2753,12 +2828,17 @@ describe('standalone recovery on canonical Runtime', () => {
     const candidateRoot = join(home, 'runtime', 'releases', candidateReleaseId);
     mkdirSync(candidateRoot, { recursive: true });
     writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const executionSurface = writeReleaseExecutionSurface(candidateRoot);
     const candidateManifestPath = join(candidateRoot, 'manifest.json');
     writeFileSync(candidateManifestPath, `${JSON.stringify({
       schemaVersion: 1,
       releaseId: candidateReleaseId,
       artifactIdentity: 'sha256:deadbeef',
       entrypoint: 'forge-runtime',
+      processRunnerEntrypoint: 'process-runner.js',
+      processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
+      checkRunnerEntrypoint: 'forge-check-runner',
+      checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
       controllerHome: resolve(home),
@@ -2783,12 +2863,17 @@ describe('standalone recovery on canonical Runtime', () => {
       mkdirSync(candidateRoot, { recursive: true });
       writeFileSync(join(candidateRoot, 'forge-runtime'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
       const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(join(candidateRoot, 'forge-runtime'))).digest('hex')}`;
+      const executionSurface = writeReleaseExecutionSurface(candidateRoot);
       const candidateManifestPath = join(candidateRoot, 'manifest.json');
       writeFileSync(candidateManifestPath, `${JSON.stringify({
         schemaVersion: 1,
         releaseId: candidateReleaseId,
         artifactIdentity,
         entrypoint: 'forge-runtime',
+        processRunnerEntrypoint: 'process-runner.js',
+        processRunnerArtifactIdentity: executionSurface.processRunnerArtifactIdentity,
+        checkRunnerEntrypoint: 'forge-check-runner',
+        checkRunnerArtifactIdentity: executionSurface.checkRunnerArtifactIdentity,
         arguments: [],
         configurationSchemaVersion: 1,
         controllerHome: resolve(home),

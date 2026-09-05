@@ -8,6 +8,7 @@ import {
   snapshotControllerCheck,
 } from '../../../cli/controller/check-runner';
 import { writePersistedCheckResultReceipt } from './check-result';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from './canary';
 
 interface ParsedArgs {
   repo: string;
@@ -48,6 +49,10 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Promise<number> {
+  if (argv.includes(PROCESS_RUNTIME_RELEASE_CANARY_ARG)) {
+    process.stdout.write('forge check-runner release canary\n');
+    return 0;
+  }
   const args = parseArgs(argv);
   const root = resolve(args.repo);
   try {

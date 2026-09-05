@@ -4,8 +4,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
+import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
+import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 
 const roots: string[] = [];
@@ -83,6 +84,68 @@ function sha256Text(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function executionSurfaceFixture(input: {
+  controllerHome: string;
+  releaseId: string;
+  processExit?: number;
+  checkExit?: number;
+}): string {
+  const releaseRoot = join(input.controllerHome, 'runtime', 'releases', input.releaseId);
+  mkdirSync(releaseRoot, { recursive: true });
+  const runtime = '#!/bin/sh\nexit 0\n';
+  const processRunner = `#!/bin/sh\nexit ${input.processExit ?? 0}\n`;
+  const checkRunner = `#!/bin/sh\nexit ${input.checkExit ?? 0}\n`;
+  for (const [name, content] of [
+    ['forge-runtime', runtime],
+    ['process-runner.js', processRunner],
+    ['forge-check-runner', checkRunner],
+  ] as const) {
+    writeFileSync(join(releaseRoot, name), content);
+    chmodSync(join(releaseRoot, name), 0o700);
+  }
+  const manifest = {
+    schemaVersion: 1,
+    releaseId: input.releaseId,
+    artifactIdentity: `sha256:${sha256Text(runtime)}`,
+    entrypoint: 'forge-runtime',
+    processRunnerEntrypoint: 'process-runner.js',
+    processRunnerArtifactIdentity: `sha256:${sha256Text(processRunner)}`,
+    checkRunnerEntrypoint: 'forge-check-runner',
+    checkRunnerArtifactIdentity: `sha256:${sha256Text(checkRunner)}`,
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome: input.controllerHome,
+    databaseSchemaCompatibility: { minimum: 1, maximum: 9999 },
+    workerProtocolVersion: 1,
+    createdAt: '2026-09-05T00:00:00.000Z',
+  };
+  const manifestPath = join(releaseRoot, 'manifest.json');
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifestPath;
+}
+
+describe('immutable Runtime Process Runtime execution surface', () => {
+  test('executes both manifest-attested Process Runtime canaries', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-execution-surface-'));
+    roots.push(controllerHome);
+    const manifestPath = executionSurfaceFixture({ controllerHome, releaseId: 'canary-ok' });
+    const surface = assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome);
+    expect(surface.entries.map((entry) => entry.name)).toEqual(['process_runner', 'check_runner']);
+    expect(await runPersistedCheckSidecar(['--forge-release-canary-child'])).toBe(0);
+  });
+
+  test.each([
+    ['process_runner', 17, 0],
+    ['check_runner', 0, 19],
+  ] as const)('rejects a release whose %s no-op canary fails', (name, processExit, checkExit) => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-execution-surface-fail-'));
+    roots.push(controllerHome);
+    const manifestPath = executionSurfaceFixture({ controllerHome, releaseId: `canary-fail-${name}`, processExit, checkExit });
+    expect(() => assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome))
+      .toThrow(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${name}`);
+  });
+});
+
 describe('compiled runtime UI assets', () => {
   test('reads controller UI assets co-located with a Bun compiled executable', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-ui-compiled-'));
@@ -136,7 +199,7 @@ describe('persistent Gateway release retention', () => {
     expect(report.skippedByReason.release_authority).toBe(3);
   });
 
-  test('pins standalone recovery known-good Runtime releases beyond active and previous', () => {
+  test('does not let historical Recovery known-good evidence pin a Runtime release beyond active and previous', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-known-good-retention-'));
     roots.push(home);
     const active = retentionRelease(home, 'active-release');
@@ -155,8 +218,9 @@ describe('persistent Gateway release retention', () => {
     const report = cleanupControllerReleaseHistory(home, { nowMs: Date.now() + 1_000, graceMs: 0, stagingGraceMs: 0, maxRemovals: 20 });
     expect(existsSync(active)).toBe(true);
     expect(existsSync(previous)).toBe(true);
-    expect(existsSync(knownGood)).toBe(true);
+    expect(existsSync(knownGood)).toBe(false);
     expect(existsSync(stale)).toBe(false);
+    expect(report.removedPaths).toContain('runtime/releases/known-good-release');
     expect(report.removedPaths).toContain('runtime/releases/stale-release');
   });
 
@@ -185,6 +249,7 @@ describe('runtime release materialization', () => {
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const canaries: string[] = [];
     const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: (request) => {
       expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
       const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
@@ -211,7 +276,8 @@ describe('runtime release materialization', () => {
         sourceCommit,
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
-    } });
+    }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
+    expect(canaries).toEqual(['process_runner', 'check_runner']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
   });

@@ -5,7 +5,8 @@ import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
-import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
+import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest, type RuntimeReleaseExecutionSurface } from './release-manifest';
+import { processRuntimeReleaseCanaryCommands, type ProcessRuntimeReleaseCanaryCommand } from '../execution/process-runtime/canary';
 import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
 /**
@@ -84,6 +85,7 @@ export interface CandidateRuntimeReleaseStagerDependencies {
     controllerHome: string;
     expectedHead: string;
   }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 function gitText(root: string, args: string[]): string {
@@ -237,6 +239,31 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
   return receipt;
 }
 
+export interface RuntimeReleaseExecutionCanaryDependencies {
+  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+}
+
+/** Execute the exact immutable Process/Check Runner artifacts in bounded no-op mode. */
+export function assertRuntimeReleaseExecutionCanaries(
+  manifestPath: string,
+  controllerHome: string,
+  dependencies: RuntimeReleaseExecutionCanaryDependencies = {},
+): RuntimeReleaseExecutionSurface {
+  const surface = assertRuntimeReleaseExecutionSurface(manifestPath, controllerHome);
+  const runExecutionEntryCanary = dependencies.runExecutionEntryCanary ?? ((request: ProcessRuntimeReleaseCanaryCommand) => runProcess(
+    request.executable,
+    request.args,
+    { cwd: surface.releaseRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 },
+  ));
+  for (const canary of processRuntimeReleaseCanaryCommands(surface.releaseRoot)) {
+    const result = runExecutionEntryCanary(canary);
+    if (!result.ok) {
+      throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${result.stderr || result.stdout || result.error || 'unknown failure'}`.slice(0, 2_000));
+    }
+  }
+  return surface;
+}
+
 /**
  * Run the release materializer from the candidate source tree itself. The
  * long-lived caller deliberately consumes only a stable, minimal receipt; it
@@ -356,6 +383,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     sourceCommit: receipt.sourceCommit,
   };
   assertRuntimeReleaseFiles(staged, dependencies);
+  assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome, dependencies);
   return staged;
 }
 

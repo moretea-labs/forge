@@ -25,7 +25,7 @@ import {
   writePackageRuntimeSystemdUserService,
 } from '../root/package-runtime-service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
-import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type StagedRuntimeRelease } from '../root/release-materialize';
+import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
@@ -268,7 +268,7 @@ export interface VerifyResult {
   probes: Record<string, { ok: boolean; detail: string; status?: number; value?: unknown }>;
 }
 
-export interface VerifyStableRuntimeOptions {
+export interface VerifyStableRuntimeOptions extends RuntimeReleaseExecutionCanaryDependencies {
   probeMcpProtocol?: boolean;
 }
 
@@ -1177,6 +1177,24 @@ async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport
   };
 }
 
+function probeRuntimeExecutionSurface(
+  config: RecoveryConfig,
+  release: ReleaseEvidence | undefined,
+  dependencies: RuntimeReleaseExecutionCanaryDependencies = {},
+): VerifyResult['probes'][string] {
+  if (!release) return { ok: false, detail: 'active immutable Runtime release is unavailable' };
+  try {
+    const surface = assertRuntimeReleaseExecutionCanaries(release.path, config.controllerHome, dependencies);
+    return {
+      ok: true,
+      detail: 'Process Runtime release entries are manifest-attested, executable, and canary-ready',
+      value: { entries: surface.entries.map((entry) => ({ name: entry.name, artifactIdentity: entry.artifactIdentity })) },
+    };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function verifyStableRuntime(
   config: RecoveryConfig,
   transport = createRecoveryHttpTransport(config.controllerHome),
@@ -1199,6 +1217,7 @@ export async function verifyStableRuntime(
   probes.active_gateway = endpoint
     ? await probe(transport, runtimeHealthEndpoint(endpoint))
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
+  probes.runtime_execution_surface = probeRuntimeExecutionSurface(config, active, options);
   if (config.publicMcpUrl) {
     probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
     const connectorReadinessEndpoint = config.primaryConnectorService?.localMcpUrl?.trim() || config.publicMcpUrl;
@@ -1348,6 +1367,19 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
     return {
       ok: false,
       detail: 'rollback refused: no attested previous whole-Runtime release with a bound SQLite backup is available',
+      verify: before,
+    };
+  }
+  const targetExecution = probeRuntimeExecutionSurface(config, target);
+  if (!targetExecution.ok) {
+    audit(config, 'rollback_refused', {
+      reason: 'attested previous release failed Process Runtime execution canary',
+      targetRevision: target.revision,
+      detail: targetExecution.detail,
+    });
+    return {
+      ok: false,
+      detail: `rollback refused: previous whole-Runtime release failed Process Runtime execution verification: ${targetExecution.detail}`,
       verify: before,
     };
   }
@@ -2729,6 +2761,7 @@ function validateRuntimeReleaseCandidate(
   if (identity !== manifest.artifactIdentity) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_ARTIFACT_MISMATCH: expected ${manifest.artifactIdentity} observed ${identity}`);
   }
+  assertRuntimeReleaseExecutionCanaries(resolvedManifestPath, config.controllerHome);
   return { manifest, releaseRoot, manifestPath: resolvedManifestPath };
 }
 

@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, realpathSync } from 'fs';
-import { resolve } from 'path';
+import { createHash } from 'crypto';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import type { RuntimeReleaseManifest } from './types';
 
@@ -270,4 +271,59 @@ export function loadRuntimeReleaseManifest(
     ...(typeof value.cleanWorkspace === 'boolean' ? { cleanWorkspace: value.cleanWorkspace } : {}),
     createdAt,
   };
+}
+
+export interface RuntimeReleaseExecutionSurface {
+  manifest: RuntimeReleaseManifest;
+  releaseRoot: string;
+  entries: Array<{
+    name: 'process_runner' | 'check_runner';
+    path: string;
+    artifactIdentity: string;
+  }>;
+}
+
+/**
+ * Validate the manifest-owned minimum Process Runtime execution surface.
+ * This is physical artifact evidence only. Release publication, activation,
+ * known-good and rollback authority remain owned by their existing lifecycle.
+ */
+export function assertRuntimeReleaseExecutionSurface(
+  manifestPath: string,
+  expectedControllerHome: string,
+): RuntimeReleaseExecutionSurface {
+  const resolvedManifestPath = resolve(manifestPath);
+  const manifest = loadRuntimeReleaseManifest(resolvedManifestPath, expectedControllerHome);
+  if (!manifest.processRunnerEntrypoint || !manifest.processRunnerArtifactIdentity
+    || !manifest.checkRunnerEntrypoint || !manifest.checkRunnerArtifactIdentity) {
+    throw new Error('RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE: process-runner.js and forge-check-runner are required');
+  }
+  const releaseRoot = dirname(resolvedManifestPath);
+  const entries: RuntimeReleaseExecutionSurface['entries'] = [
+    {
+      name: 'process_runner',
+      path: join(releaseRoot, manifest.processRunnerEntrypoint),
+      artifactIdentity: manifest.processRunnerArtifactIdentity,
+    },
+    {
+      name: 'check_runner',
+      path: join(releaseRoot, manifest.checkRunnerEntrypoint),
+      artifactIdentity: manifest.checkRunnerArtifactIdentity,
+    },
+  ];
+  for (const entry of entries) {
+    if (!existsSync(entry.path)) throw new Error(`RUNTIME_RELEASE_EXECUTION_ENTRY_MISSING: ${entry.name}: ${entry.path}`);
+    const status = lstatSync(entry.path);
+    if (status.isSymbolicLink() || !status.isFile()) {
+      throw new Error(`RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_REGULAR: ${entry.name}: ${entry.path}`);
+    }
+    if ((status.mode & 0o111) === 0) {
+      throw new Error(`RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_EXECUTABLE: ${entry.name}: ${entry.path}`);
+    }
+    const observed = `sha256:${createHash('sha256').update(readFileSync(entry.path)).digest('hex')}`;
+    if (observed !== entry.artifactIdentity) {
+      throw new Error(`RUNTIME_RELEASE_EXECUTION_ENTRY_IDENTITY_MISMATCH: ${entry.name}: expected ${entry.artifactIdentity} observed ${observed}`);
+    }
+  }
+  return { manifest, releaseRoot, entries };
 }
