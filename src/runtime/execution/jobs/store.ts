@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, opendirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { ensureControllerHome, ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../cli/repositories/locks';
@@ -788,4 +788,120 @@ export function removeExecutionJobFromActiveIndex(controllerHome: string, job: E
 
 export function removeRequestIndex(controllerHome: string, requestId: string): void {
   removeFile(requestPath(controllerHome, requestId));
+}
+
+export interface RetiredExecutionJobCleanupReport {
+  policyVersion: 'retired-execution-job-retention-v1';
+  inspected: number;
+  terminal: number;
+  protectedActive: number;
+  eligible: number;
+  removed: number;
+  retained: number;
+  scanTruncated: boolean;
+  budgetExhausted: boolean;
+  blockers: string[];
+}
+
+const DEFAULT_RETIRED_JOB_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const DEFAULT_MAX_RETAINED_TERMINAL_JOBS = 500;
+const DEFAULT_RETIRED_JOB_SCAN = 5_000;
+const DEFAULT_RETIRED_JOB_REMOVALS = 32;
+
+/**
+ * Bounded compatibility cleanup for the retired ExecutionJob authority. New
+ * execution is Work + Process, so this only reclaims proven-terminal legacy
+ * bundles and never participates in execution admission or effect recovery.
+ */
+export function cleanupRetiredExecutionJobs(
+  controllerHome: string,
+  repoId: string,
+  options: { nowMs?: number; retentionMs?: number; maxTerminalRecords?: number; maxScan?: number; maxRemovals?: number } = {},
+): RetiredExecutionJobCleanupReport {
+  assertRuntimeMayWriteOrThrow('cleanup', controllerHome);
+  if (!executionJobCreationRetired()) throw new Error('EXECUTION_JOB_RETENTION_REQUIRES_RETIRED_CREATION');
+  const nowMs = Number.isFinite(options.nowMs) ? Number(options.nowMs) : Date.now();
+  const retentionMs = Math.max(60_000, Math.trunc(options.retentionMs ?? DEFAULT_RETIRED_JOB_RETENTION_MS));
+  const maxTerminalRecords = Math.max(0, Math.min(Math.trunc(options.maxTerminalRecords ?? DEFAULT_MAX_RETAINED_TERMINAL_JOBS), 5_000));
+  const maxScan = Math.max(1, Math.min(Math.trunc(options.maxScan ?? DEFAULT_RETIRED_JOB_SCAN), 5_000));
+  const maxRemovals = Math.max(1, Math.min(Math.trunc(options.maxRemovals ?? DEFAULT_RETIRED_JOB_REMOVALS), 128));
+  const recordsRoot = join(executionJobRoot(controllerHome, repoId), 'records');
+  const scanned: Array<{ path: string; job: ExecutionJob; finishedAt: number }> = [];
+  let inspected = 0;
+  let protectedActive = 0;
+  let scanTruncated = false;
+  const blockers: string[] = [];
+
+  try {
+    const directory = opendirSync(recordsRoot);
+    try {
+      for (;;) {
+        const entry = directory.readSync();
+        if (!entry) break;
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        if (inspected >= maxScan) { scanTruncated = true; break; }
+        inspected += 1;
+        const path = join(recordsRoot, entry.name);
+        let job: ExecutionJob;
+        try { job = readJsonFile<ExecutionJob>(path); } catch { blockers.push(`invalid_record:${entry.name}`); continue; }
+        if (job.repoId !== repoId || !job.jobId || job.schemaVersion !== 1) { blockers.push(`identity_mismatch:${entry.name}`); continue; }
+        if (!TERMINAL_JOB_STATUSES.has(job.status)) { protectedActive += 1; continue; }
+        const finishedAt = Date.parse(job.finishedAt ?? job.updatedAt ?? job.createdAt);
+        scanned.push({ path, job, finishedAt: Number.isFinite(finishedAt) ? finishedAt : 0 });
+      }
+    } finally { directory.closeSync(); }
+  } catch {
+    return { policyVersion: 'retired-execution-job-retention-v1', inspected: 0, terminal: 0, protectedActive: 0, eligible: 0, removed: 0, retained: 0, scanTruncated: false, budgetExhausted: false, blockers: [] };
+  }
+
+  scanned.sort((a, b) => b.finishedAt - a.finishedAt);
+  const cutoff = nowMs - retentionMs;
+  const eligible = scanned.filter((entry, index) => index >= maxTerminalRecords || entry.finishedAt <= cutoff);
+  let removed = 0;
+  for (const candidate of eligible) {
+    if (removed >= maxRemovals) break;
+    const lockKey = { scope: 'task' as const, repoId, taskId: `execution-job-${candidate.job.jobId}` };
+    const acquired = tryAcquireControllerLock(controllerHome, lockKey, `retired-job-retention:${candidate.job.jobId}`);
+    if (!acquired.acquired) { blockers.push(`lock_contended:${candidate.job.jobId}`); continue; }
+    try {
+      let current: ExecutionJob;
+      try { current = getExecutionJob(controllerHome, repoId, candidate.job.jobId); } catch { continue; }
+      if (!TERMINAL_JOB_STATUSES.has(current.status)) { protectedActive += 1; continue; }
+      const currentFinishedAt = Date.parse(current.finishedAt ?? current.updatedAt ?? current.createdAt);
+      const expired = !Number.isFinite(currentFinishedAt) || currentFinishedAt <= cutoff;
+      const overCapacity = scanned.findIndex((entry) => entry.job.jobId === current.jobId) >= maxTerminalRecords;
+      if (!expired && !overCapacity) continue;
+
+      removeFile(candidate.path);
+      removeFile(join(executionJobRoot(controllerHome, repoId), 'receipts', `${sanitizeFileComponent(current.jobId)}.json`));
+      removeFile(join(repositoryControllerRoot(controllerHome, repoId), 'events', 'jobs', `${sanitizeFileComponent(current.jobId)}.jsonl`));
+      if (current.requestId) removeFile(requestPath(controllerHome, current.requestId));
+      withControllerLock(controllerHome, { scope: 'global', resource: 'execution-index' }, `retired-job-index:${current.jobId}`, () => {
+        const active = readActiveIndex(controllerHome);
+        active.jobs = active.jobs.filter((entry) => entry.jobId !== current.jobId);
+        writeActiveIndex(controllerHome, active);
+        const recent = readRecentIndex(controllerHome);
+        recent.jobs = recent.jobs.filter((entry) => entry.jobId !== current.jobId);
+        writeRecentIndex(controllerHome, recent);
+      }, 10_000);
+      removed += 1;
+    } catch (error) {
+      blockers.push(error instanceof Error ? error.message : String(error));
+    } finally {
+      releaseControllerLock(controllerHome, lockKey, acquired.lock.lockId);
+    }
+  }
+
+  return {
+    policyVersion: 'retired-execution-job-retention-v1',
+    inspected,
+    terminal: scanned.length,
+    protectedActive,
+    eligible: eligible.length,
+    removed,
+    retained: Math.max(0, scanned.length - removed),
+    scanTruncated,
+    budgetExhausted: eligible.length > removed && removed >= maxRemovals,
+    blockers: blockers.slice(0, 16),
+  };
 }
