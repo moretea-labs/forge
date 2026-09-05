@@ -463,10 +463,19 @@ export function routeWorkStart(
         now: nowIso(ctx),
       })
     : undefined;
+  // A terminal continuation is not a new semantic request. Its durable predecessor
+  // and Plan lineage already define the goal scope, while the successor Plan step
+  // becomes the Work objective later in startGoalWorkloop. Do not force the external
+  // Controller to duplicate semantic text merely to satisfy generic route selection.
+  // This fallback is routing context only and never becomes successor Work authority.
+  const routeObjective = input.objective.trim()
+    || (input.workRelation === 'continue' && relatedLifecycleSource?.status === 'completed'
+      ? relatedLifecycleSource.objective.trim()
+      : '');
   const effectiveModeInput: ExecutionModeSelectionInput = {
     ...input.modeInput,
     contextRouteHints: input.modeInput.contextRouteHints ?? resolvedContext?.routeHints,
-    objective: input.objective,
+    objective: routeObjective,
     knownPaths: input.allowedPaths,
     workspacePlacement: placementConstraint.workspaceMode,
     directMainProhibited: placementConstraint.directMainProhibited,

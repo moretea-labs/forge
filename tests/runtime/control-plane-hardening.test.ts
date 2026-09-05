@@ -858,7 +858,9 @@ describe('scheduled external Controller wake', () => {
     const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
 
     expect(scheduledPrompt).toContain(`只允许 claim 并推进 origin Work ${workId}。`);
-    expect(scheduledPrompt).toContain(`controller.round:controller_claim:${opened.authorityId}:${opened.relayScopeId}`);
+    expect(scheduledPrompt).toContain(`controller_authority_id=${opened.authorityId}`);
+    expect(scheduledPrompt).toContain(`relay_scope_id=${opened.relayScopeId}`);
+    expect(scheduledPrompt).toContain(`controller.round:<operation>:${opened.authorityId}:${opened.relayScopeId}`);
     expect(scheduledPrompt).toContain('这是新的 ChatGPT controller round。');
     expect(scheduledPrompt).not.toContain('This is a new ChatGPT controller round.');
     expect(scheduledPrompt).toContain('不得选择、启动、delegate、resume sibling Work');
@@ -1512,6 +1514,11 @@ describe('scheduled external Controller wake', () => {
       'repair',
       'controller.disposition:continue_immediately:goal:work-compat',
     )).toEqual({ disposition: 'continue_immediately', relayScopeId: 'goal:work-compat' });
+    const authorityId = 'cra_0123456789abcdef0123456789abcdef';
+    expect(parseControllerDispositionCompatibilityCapability(
+      'repair',
+      `controller.disposition:continue_immediately:${authorityId}:goal:work-compat`,
+    )).toEqual({ disposition: 'continue_immediately', authorityId, relayScopeId: 'goal:work-compat' });
     expect(parseControllerDispositionCompatibilityCapability('continue', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
     expect(parseControllerDispositionCompatibilityCapability('repair', 'schedule.delete:SCH-1')).toBeUndefined();
     expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:invalid:goal:work-compat')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
@@ -1532,6 +1539,10 @@ describe('scheduled external Controller wake', () => {
       'repair',
       `controller.round:verify:${authorityId}:goal:work-compat`,
     )).toEqual({ operation: 'verify', authorityId, relayScopeId: 'goal:work-compat' });
+    expect(parseControllerRoundCompatibilityCapability(
+      'repair',
+      `controller.round:plan_accept_step:${authorityId}:goal:work-compat`,
+    )).toEqual({ operation: 'plan_accept_step', authorityId, relayScopeId: 'goal:work-compat' });
     expect(parseControllerRoundCompatibilityCapability('continue', `controller.round:continue:${authorityId}:goal:work-compat`)).toBeUndefined();
     expect(parseControllerRoundCompatibilityCapability('repair', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
     expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:delegate:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);

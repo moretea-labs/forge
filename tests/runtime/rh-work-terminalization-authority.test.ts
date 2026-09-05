@@ -13,7 +13,7 @@ import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recor
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
@@ -32,7 +32,7 @@ import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-work
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding } from '../../packages/kernel/controller/api/index';
+import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession } from '../../packages/kernel/controller/api/index';
 import { resumeScheduledControllerContinuation } from '../../packages/kernel/scheduler/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
@@ -2291,18 +2291,18 @@ describe('rh_work terminalization authority', () => {
   }, 15_000);
 
 
-  test('plan_accept_step automatically admits one successor Work for an exact claimed terminal round', async () => {
+  test('terminal Plan continuation keeps semantic acceptance separate from explicit successor admission and round handoff', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
-    const planId = 'plan-terminal-auto-successor';
-    const predecessorWorkId = 'work-terminal-auto-predecessor';
-    const principalId = 'principal-terminal-auto-successor';
-    const sessionId = 'transport-terminal-auto-successor';
-    const controllerInstanceId = 'runtime-terminal-auto-successor';
+    const planId = 'plan-terminal-explicit-successor';
+    const predecessorWorkId = 'work-terminal-explicit-predecessor';
+    const principalId = 'principal-terminal-explicit-successor';
+    const sessionId = 'transport-terminal-explicit-successor';
+    const controllerInstanceId = 'runtime-terminal-explicit-successor';
     createPlanContract(store, {
-      planId, repoId: fx.repository.repoId, scopeKey: 'terminal-auto-successor', sourceRevision: targetRevision,
-      goal: 'automatically continue the unique next Plan step after semantic acceptance',
+      planId, repoId: fx.repository.repoId, scopeKey: 'terminal-explicit-successor', sourceRevision: targetRevision,
+      goal: 'continue the unique next Plan step only after explicit Controller technical admission',
       steps: [
         {
           id: 'stage-a', objective: 'finish stage A', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:main'],
@@ -2324,7 +2324,7 @@ describe('rh_work terminalization authority', () => {
     claimPlanStepForWork(store, { planId, stepId: 'stage-a', workId: predecessorWorkId, sourceRevision: targetRevision });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId: predecessorWorkId,
-      identity: { controllerId: 'schedule:terminal-auto-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-auto-successor' },
+      identity: { controllerId: 'schedule:terminal-explicit-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-explicit-successor' },
     });
     finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
     const owner = claimControllerSession(store, {
@@ -2336,52 +2336,82 @@ describe('rh_work terminalization authority', () => {
     transitionWorkContractPhase(store, predecessorWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Stage A no-change delivery verified.' });
     requestWorkImplementationReview(store, predecessorWorkId, 'Stage A requires review before terminal semantic handoff.');
     recordWorkImplementationReview(store, predecessorWorkId, {
-      schemaVersion: 1, reviewId: 'REV-terminal-auto-predecessor', workId: predecessorWorkId, reviewerPrincipalId: principalId, reviewerControllerSessionId: sessionId,
+      schemaVersion: 1, reviewId: 'REV-terminal-explicit-predecessor', workId: predecessorWorkId, reviewerPrincipalId: principalId, reviewerControllerSessionId: sessionId,
       decision: 'approved', rationale: 'Reviewed stage A before semantic acceptance.', findings: [], sourceRevision: targetRevision,
-      workspaceFingerprint: 'terminal-auto-content', verificationWorkspaceFingerprint: 'terminal-auto-verification', changedPaths: [],
+      workspaceFingerprint: 'terminal-explicit-content', verificationWorkspaceFingerprint: 'terminal-explicit-verification', changedPaths: [],
       changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'stage A delivered', verificationEvidence: [], architectureEvidence: [], recordedAt,
     });
     const completed = recordWorkCompletionReceipt(store, predecessorWorkId, {
-      schemaVersion: 1, receiptId: 'receipt-terminal-auto-predecessor', source: 'controller_work', issueId: 'stage-a', taskId: predecessorWorkId,
+      schemaVersion: 1, receiptId: 'receipt-terminal-explicit-predecessor', source: 'controller_work', issueId: 'stage-a', taskId: predecessorWorkId,
       workId: predecessorWorkId, targetBranch: 'main', targetRevision, changedPaths: [],
       delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
       cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
     }, 'completed_no_change', 'completed_no_change');
     completePlanStepForWork(store, { planId, stepId: 'stage-a', work: completed });
     expect(getPlanContract(store, planId)).toMatchObject({ status: 'verifying', steps: [{ id: 'stage-a', status: 'validating' }, { id: 'stage-b', status: 'pending' }] });
-    expect(getControllerSession(store, predecessorWorkId)?.sessionId).toBe(sessionId);
+
+    // Physical Work ownership may already be gone. The retained identity is only a
+    // future mechanical release witness; it never makes the terminal Work claimable.
+    expect(releaseObservedControllerSession(store, { workId: predecessorWorkId, actor: 'test-terminal-explicit-release', owner }).allowed).toBe(true);
+    expect(getControllerSession(store, predecessorWorkId)).toBeUndefined();
 
     const caller = ctx(
       fx.controllerHome, fx.repository, principalId,
       `${sessionId}-rotated`, `${controllerInstanceId}-rotated`,
     );
     const accepted = structured(await callRuntimeTool(caller, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'plan_accept_step', plan_id: planId, plan_step_id: 'stage-a',
-      acceptance_rationale: 'Stage A delivery is semantically accepted; continue the unique approved successor.',
-      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      capability_id: `controller.round:plan_accept_step:${opened.authorityId}:${opened.relayScopeId}`,
+      plan_id: planId,
+      plan_step_id: 'stage-a',
+      acceptance_rationale: 'Stage A delivery is semantically accepted; technical successor admission remains explicit.',
     }));
     expect(accepted.status).toBe('ok');
     expect(accepted.data.semanticAcceptanceRecorded).toBe(true);
-    expect(accepted.data.autonomousContinuation?.relay).toMatchObject({ status: 'pending_release', originWorkId: predecessorWorkId });
-    const successorWorkId = String(accepted.data.autonomousContinuation?.successorWorkId ?? '');
+    expect(accepted.data.autonomousContinuation).toBeUndefined();
+    expect(getPlanContract(store, planId)).toMatchObject({
+      status: 'executing',
+      steps: [{ id: 'stage-a', status: 'completed' }, { id: 'stage-b', status: 'ready' }],
+    });
+    expect(getPlanContract(store, planId)?.steps[1]?.workId).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'claimed', originWorkId: predecessorWorkId });
+
+    const missingKind = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'start', plan_id: planId, plan_step_id: 'stage-b',
+      related_work_id: predecessorWorkId, work_relation: 'continue',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+      scope_clear: true, requires_recovery: true,
+    }));
+    expect(missingKind.status).toBe('blocked');
+    expect(missingKind.summary).toContain('TERMINAL_SUCCESSOR_WORK_KIND_REQUIRED');
+    expect(getPlanContract(store, planId)?.steps[1]?.workId).toBeUndefined();
+
+    const started = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'start', objective: 'Continue the explicitly selected stage B.', plan_id: planId, plan_step_id: 'stage-b',
+      related_work_id: predecessorWorkId, work_relation: 'continue', work_kind: 'completed_no_change',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+      scope_clear: true, requires_recovery: true,
+    }));
+    expect(started.status).toBe('ok');
+    expect(started.data.ownershipClaimed).toBe(false);
+    const successorWorkId = String(started.data.successorWorkId ?? started.data.work?.workId ?? '');
     expect(successorWorkId).toMatch(/^work-/);
     expect(successorWorkId).not.toBe(predecessorWorkId);
     expect(getWorkContract(store, successorWorkId)).toMatchObject({
-      status: 'running', predecessorWorkId, planId, planStepId: 'stage-b', planSourceRevision: targetRevision,
+      status: 'running', workKind: 'completed_no_change', predecessorWorkId, planId, planStepId: 'stage-b', planSourceRevision: targetRevision,
     });
-    expect(getPlanContract(store, planId)).toMatchObject({
-      status: 'executing',
-      steps: [{ id: 'stage-a', status: 'completed' }, { id: 'stage-b', status: 'executing', workId: successorWorkId }],
-    });
-    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'pending_release', successorWorkId });
     expect(getControllerSession(store, successorWorkId)).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'claimed', successorWorkId });
 
-    const repeated = structured(await callRuntimeTool(caller, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'plan_accept_step', plan_id: planId, plan_step_id: 'stage-a',
-      acceptance_rationale: 'Idempotent replay after semantic acceptance.',
+    const repeatedStart = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'start', objective: 'Continue the explicitly selected stage B.', plan_id: planId, plan_step_id: 'stage-b',
+      related_work_id: predecessorWorkId, work_relation: 'continue', work_kind: 'completed_no_change',
       controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+      scope_clear: true, requires_recovery: true,
     }));
-    expect(repeated.status).toBe('ok');
+    expect(repeatedStart.status).toBe('ok');
+    expect(String(repeatedStart.data.successorWorkId ?? repeatedStart.data.work?.workId ?? '')).toBe(successorWorkId);
     expect(getPlanContract(store, planId)?.steps[1]).toMatchObject({ status: 'executing', workId: successorWorkId });
 
     const terminalClaim = structured(await callRuntimeTool(caller, 'rh_work', {
@@ -2390,7 +2420,35 @@ describe('rh_work terminalization authority', () => {
     }));
     expect(terminalClaim.status).toBe('blocked');
     expect(terminalClaim.summary).toContain('WORK_CONTROLLER_CLAIM_TERMINAL');
-  }, 20_000);
+
+    const wrongDisposition = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'repair',
+      capability_id: `controller.disposition:continue_immediately:cra_${'f'.repeat(32)}:${opened.relayScopeId}`,
+      work_id: predecessorWorkId,
+    }));
+    expect(wrongDisposition.status).toBe('blocked');
+    expect(wrongDisposition.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
+
+    const continued = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'repair',
+      capability_id: `controller.disposition:continue_immediately:${opened.authorityId}:${opened.relayScopeId}`,
+      work_id: predecessorWorkId,
+      reason: 'Explicit successor admission is complete; close the predecessor round mechanically.',
+    }));
+    expect(continued.status).toBe('ok');
+    expect(continued.data.relay).toMatchObject({ status: 'pending_release', successorWorkId });
+
+    // Reload the persisted release witness rather than trusting the caller's stale
+    // in-memory owner object. It is evidence of the released epoch, never ownership.
+    const retainedReleaseWitness = getRetainedControllerSession(store, predecessorWorkId);
+    expect(retainedReleaseWitness).toMatchObject({ controllerId: principalId, principalId, claimGeneration: owner.claimGeneration });
+    const handedOff = beginControllerRoundRelayAfterRelease(store, { workId: predecessorWorkId, releasedSession: retainedReleaseWitness! });
+    expect(handedOff).toMatchObject({ status: 'dispatching', originWorkId: successorWorkId, predecessorWorkId });
+    expect(handedOff?.authorityId).not.toBe(opened.authorityId);
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'handed_off', successorWorkId });
+    expect(getControllerRoundRelay(store, successorWorkId)).toMatchObject({ status: 'dispatching', originWorkId: successorWorkId, predecessorWorkId });
+
+  }, 25_000);
 
   test('plan_accept_step fails closed when multiple successor Plan steps are ready', async () => {
     const fx = fixture();
@@ -2453,10 +2511,8 @@ describe('rh_work terminalization authority', () => {
     }));
     expect(accepted.status).toBe('ok');
     expect(accepted.data.semanticAcceptanceRecorded).toBe(true);
-    expect(accepted.data.autonomousContinuation).toMatchObject({
-      admissionDecision: 'resolution_required', resolutionRequired: true,
-      successorAdmission: { status: 'ok', data: { resolutionRequired: true } },
-    });
+    expect(accepted.data.autonomousContinuation).toBeUndefined();
+    expect(accepted.data.successorAdmissionRequired).toBe(true);
     expect(getPlanContract(store, planId)).toMatchObject({
       status: 'executing',
       steps: [
@@ -2469,7 +2525,38 @@ describe('rh_work terminalization authority', () => {
     expect(getPlanContract(store, planId)?.steps[2]?.workId).toBeUndefined();
     expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'claimed', originWorkId: predecessorWorkId });
     expect(getControllerSession(store, predecessorWorkId)).toBeTruthy();
-  }, 20_000);
+
+    const unresolvedStart = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'start', objective: 'Continue the Plan without guessing which ready successor owns execution.', plan_id: planId,
+      related_work_id: predecessorWorkId, work_relation: 'continue', work_kind: 'completed_no_change',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+      scope_clear: true, requires_recovery: true,
+    }));
+    expect(unresolvedStart.status).toBe('ok');
+    expect(unresolvedStart.data).toMatchObject({
+      admissionDecision: 'resolution_required', resolutionRequired: true,
+      candidatePlanSteps: [{ id: 'stage-b' }, { id: 'stage-c' }],
+      workContractCreated: false,
+    });
+    expect(getPlanContract(store, planId)?.steps[1]?.workId).toBeUndefined();
+    expect(getPlanContract(store, planId)?.steps[2]?.workId).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'claimed' });
+    expect(getControllerRoundRelay(store, predecessorWorkId)?.successorWorkId).toBeUndefined();
+
+    const selectedStart = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'start', plan_id: planId, plan_step_id: 'stage-b',
+      related_work_id: predecessorWorkId, work_relation: 'continue', work_kind: 'completed_no_change',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+      scope_clear: true, requires_recovery: true,
+    }));
+    expect(selectedStart.status).toBe('ok');
+    const selectedWorkId = String(selectedStart.data.successorWorkId ?? selectedStart.data.work?.workId ?? '');
+    expect(selectedWorkId).toMatch(/^work-/);
+    expect(getPlanContract(store, planId)?.steps[1]).toMatchObject({ status: 'executing', workId: selectedWorkId });
+    expect(getPlanContract(store, planId)?.steps[2]).toMatchObject({ status: 'ready' });
+    expect(getPlanContract(store, planId)?.steps[2]?.workId).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'claimed', successorWorkId: selectedWorkId });
+  }, 25_000);
 
   test('local_effect continue re-derives exact Work-bound repository Process evidence without substituting for checks', async () => {
     const fx = fixture();

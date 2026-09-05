@@ -231,6 +231,7 @@ import {
   controllerSessionAuthorityMatches,
   controllerSessionPrincipalId,
   getControllerSession,
+  getRetainedControllerSession,
   mintControllerSessionAuthority,
   releaseControllerSessionWithAuthority,
   releaseObservedControllerSession,
@@ -4006,6 +4007,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           frozenControllerRoundOperation = parseControllerRoundCompatibilityCapability(requestedOperation, args.capability_id);
           frozenPlanObligationDispositions = parsePlanObligationCompatibilityCapability(requestedOperation, args.capability_id);
           frozenSemanticOperation = parseFrozenSemanticCompatibilityCapability(requestedOperation, args.capability_id);
+          if (frozenControllerDisposition
+            && (args.relay_scope_id !== undefined || (frozenControllerDisposition.authorityId && args.controller_authority_id !== undefined))) {
+            throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_CONFLICT');
+          }
           if (frozenPlanObligationDispositions && Array.isArray(args.obligation_dispositions)) {
             throw new Error('PLAN_OBLIGATION_COMPATIBILITY_CONFLICT');
           }
@@ -4027,6 +4032,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           args.relay_scope_id = frozenControllerRoundOperation.relayScopeId;
           args.controller_authority_id = frozenControllerRoundOperation.authorityId;
         }
+        if (frozenControllerDisposition) {
+          args.relay_scope_id = frozenControllerDisposition.relayScopeId;
+          if (frozenControllerDisposition.authorityId) args.controller_authority_id = frozenControllerDisposition.authorityId;
+        }
         if (frozenPlanObligationDispositions) {
           args.obligation_dispositions = frozenPlanObligationDispositions;
         }
@@ -4037,10 +4046,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           args.obligation_dispositions = frozenSemanticOperation.args.obligation_dispositions;
         }
         if (frozenSemanticOperation?.operation === 'start') {
-          // Older rh_work schemas cannot express work_kind. Compatibility may
-          // fill only that closed technical evidence shape; objective, Requirement,
-          // Plan binding, route policy, admission and lifecycle remain canonical.
-          args.work_kind = frozenSemanticOperation.args.work_kind;
+          // Older rh_work schemas may lack the technical fields required to admit a
+          // terminal Plan successor. The bounded envelope fills only those closed
+          // fields; objective, Requirement/Plan binding, route policy, engineering
+          // verification, ControllerRound authority and lifecycle remain canonical.
+          Object.assign(args, frozenSemanticOperation.args);
         }
         if (frozenImplementationReview) {
           const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
@@ -4303,7 +4313,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               && Boolean(currentRelay?.successorWorkId);
             const terminalRoundClosure = terminalGoalComplete || terminalSuccessorContinuation;
             const currentOwner = getControllerSession(store, workId);
-            if (!currentOwner && !terminalGoalComplete) {
+            if (!currentOwner && terminalRoundClosure) {
+              // Live ownership remains the compatibility fence for ordinary rounds.
+              // Once a terminal predecessor lease is gone, only the exact opaque
+              // ControllerRound capability may authorize the semantic close.
+              assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            }
+            if (!currentOwner && !terminalRoundClosure) {
               if (work.status === 'failed' || work.status === 'cancelled' || work.status === 'completed') {
                 throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
               }
@@ -4417,6 +4433,23 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const observedOwner = getControllerSession(store, workId);
             const work = getWorkContract(store, workId);
             const terminalWork = work ? ['completed', 'failed', 'cancelled'].includes(work.status) : false;
+            const pendingTerminalRelay = !observedOwner && work?.status === 'completed'
+              ? getControllerRoundRelay(store, workId)
+              : undefined;
+            const retainedReleaseWitness = pendingTerminalRelay?.status === 'pending_release'
+              ? getRetainedControllerSession(store, workId)
+              : undefined;
+            if (retainedReleaseWitness && pendingTerminalRelay) {
+              const retainedPrincipal = controllerSessionPrincipalId(retainedReleaseWitness);
+              if (retainedReleaseWitness.controllerId !== identity.controllerId
+                || retainedReleaseWitness.controllerType !== identity.controllerType
+                || retainedPrincipal !== identity.principalId
+                || retainedReleaseWitness.claimGeneration !== pendingTerminalRelay.claimGeneration
+                || pendingTerminalRelay.controllerId !== identity.controllerId
+                || pendingTerminalRelay.principalId !== identity.principalId) {
+                throw new Error(`CONTROLLER_RELAY_RELEASE_FENCE_MISMATCH: ${workId}`);
+              }
+            }
             const owner = observedOwner
               ? terminalWork
                 ? (() => {
@@ -4471,9 +4504,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
             }
             const relayStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-            const relay = owner ? beginControllerRoundRelayAfterRelease(
+            const releasedSession = owner ?? retainedReleaseWitness;
+            const relay = releasedSession ? beginControllerRoundRelayAfterRelease(
               relayStore,
-              { workId, releasedSession: owner },
+              { workId, releasedSession },
             ) : undefined;
             const abandonedRelay = owner && !relay
               ? reconcileControllerRoundAfterAbandonedRelease(relayStore, { workId, releasedSession: owner })
@@ -4984,17 +5018,21 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
               const claimedRelay = predecessorWorkId ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
               const currentOwner = predecessorWorkId ? getControllerSession(store, predecessorWorkId) : undefined;
-              const autonomousRoundEligible = Boolean(
+              const claimedTerminalRound = Boolean(
                 predecessorWork
                 && predecessorWork.status === 'completed'
                 && claimedRelay?.status === 'claimed'
-                && currentOwner
-                && currentOwner.controllerId === identity.controllerId
-                && currentOwner.controllerType === identity.controllerType
-                && controllerSessionPrincipalId(currentOwner) === identity.principalId
               );
-              if (autonomousRoundEligible && predecessorWorkId) {
+              if (claimedTerminalRound && predecessorWorkId) {
+                // Semantic acceptance may occur after MCP/Runtime replacement or
+                // physical Work-lease release, but a still-open terminal round is
+                // fenced by its exact opaque capability. Never reclaim the Work.
                 assertFacadeControllerRoundAuthority(ctx, store, predecessorWorkId, args);
+                if (currentOwner) {
+                  if (currentOwner.controllerType !== identity.controllerType) throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${predecessorWorkId}`);
+                  if (currentOwner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${predecessorWorkId}`);
+                  if (controllerSessionPrincipalId(currentOwner) !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${predecessorWorkId}`);
+                }
               }
               const plan = acceptPlanStepEvidence(store, {
                 planId,
@@ -5003,99 +5041,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 rationale,
                 acceptedSourceRevision: workloopCtx.sourceRevision,
               });
-
-              let autonomousContinuation: Record<string, unknown> | undefined;
-              if (autonomousRoundEligible && predecessorWorkId && predecessorWork) {
-                const successorArgs: Record<string, unknown> = {
-                  objective: `Continue ${plan.planId} after semantic acceptance of ${stepId}.`,
-                  related_work_id: predecessorWorkId,
-                  work_relation: 'continue',
-                  ...(plan.requirementId ? { requirement_id: plan.requirementId } : {}),
-                  requested_by: 'chatgpt',
-                  requires_recovery: true,
-                  scope_clear: true,
-                };
-                const successorFacade = await withPrimaryWorkAdmissionLockAsync(store, () => runGoalWorkloop(
-                  { ...workloopCtx, semanticAdmissionLocked: true },
-                  'start',
-                  successorArgs,
-                ));
-                const successorData = successorFacade.data && typeof successorFacade.data === 'object'
-                  ? successorFacade.data as Record<string, unknown>
-                  : {};
-                const successorWorkId = contextText(contextRecord(successorData.work).workId, 200);
-                if (successorFacade.status === 'ok' && successorWorkId) {
-                  try {
-                    if (successorData.workContractCreated === true) {
-                      materializeFacadeWorkPlacement(ctx, repository, successorWorkId, successorArgs);
-                    }
-                    const handle = ensureFacadeWorkHandle(ctx, repository, successorWorkId, successorArgs);
-                    const boundRelay = bindControllerRoundSuccessorWork(store, {
-                      workId: predecessorWorkId,
-                      successorWorkId,
-                      identity,
-                      controllerAuthorityId: claimedRelay?.authorityId,
-                    });
-                    const pendingRelay = submitControllerRoundDisposition(store, {
-                      workId: predecessorWorkId,
-                      identity,
-                      disposition: 'continue_immediately',
-                      relayScopeId: boundRelay.relayScopeId,
-                      requirementId: plan.requirementId,
-                      reason: `Plan step ${stepId} was semantically accepted; GoalWorkloop admitted successor ${successorWorkId}.`,
-                      bindingId: chatgptControllerRoundBinding(store, predecessorWorkId)?.bindingId,
-                    });
-                    autonomousContinuation = {
-                      successorWorkId,
-                      successorWork: getWorkContract(store, successorWorkId) ? summarizeWorkContract(getWorkContract(store, successorWorkId)!) : successorData.work,
-                      workContractCreated: successorData.workContractCreated === true,
-                      admissionDecision: successorData.admissionDecision,
-                      executionHandle: handle ? { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state } : undefined,
-                      relay: pendingRelay,
-                    };
-                  } catch (error) {
-                    const blocked = buildFacadeResult({
-                      status: 'blocked',
-                      summary: `PLAN_STEP_ACCEPTED_SUCCESSOR_HANDOFF_FAILED: ${error instanceof Error ? error.message : String(error)}`,
-                      data: {
-                        plan: summarizePlanContract(plan),
-                        semanticAcceptanceRecorded: true,
-                        reviewer: identity.principalId,
-                        predecessorWorkId,
-                        successorAdmission: successorFacade,
-                      },
-                    });
-                    return result(blocked as unknown as Record<string, unknown>, true);
-                  }
-                } else {
-                  autonomousContinuation = {
-                    successorAdmission: successorFacade,
-                    admissionDecision: successorData.admissionDecision,
-                    resolutionRequired: successorData.resolutionRequired === true,
-                    requirementAcceptanceRequired: successorData.requirementAcceptanceRequired === true,
-                    goalComplete: successorData.goalComplete === true,
-                  };
-                }
-              }
-
-              const pendingRelay = autonomousContinuation && typeof autonomousContinuation.relay === 'object'
-                ? autonomousContinuation.relay as ControllerRoundRelayRecord
-                : undefined;
               const facade = buildFacadeResult({
-                summary: pendingRelay?.status === 'pending_release'
-                  ? `Plan step ${stepId} semantically accepted; successor Work ${autonomousContinuation?.successorWorkId} is admitted and the next ControllerRound will dispatch after the current controller releases its completed predecessor Work.`
-                  : `Plan step ${stepId} semantically accepted by the current Controller.`,
+                summary: `Plan step ${stepId} semantically accepted by the current Controller. Successor execution remains an explicit Controller start.`,
                 data: {
                   plan: summarizePlanContract(plan),
                   semanticAcceptanceRecorded: true,
                   reviewer: identity.principalId,
-                  ...(autonomousContinuation ? { autonomousContinuation } : {}),
+                  ...(predecessorWorkId ? { predecessorWorkId } : {}),
+                  successorAdmissionRequired: plan.status !== 'finalized',
                 },
-                suggestedNextActions: pendingRelay?.status === 'pending_release' && predecessorWorkId
-                  ? [{ label: 'Release completed predecessor round', tool: 'rh_work', operation: 'controller_release', payload: { work_id: predecessorWorkId }, risk: 'workspace_write', confidence: 'high' }]
-                  : plan.status === 'finalized'
-                    ? []
-                    : [{ label: 'Continue the next approved Plan step', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
+                suggestedNextActions: plan.status === 'finalized'
+                  ? []
+                  : [{ label: 'Read the next approved Plan step', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
               });
               return result(facade as unknown as Record<string, unknown>);
             }
@@ -5635,6 +5592,45 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
         }
 
+        let terminalSuccessorAdmission: {
+          predecessorWorkId: string;
+          relay: ControllerRoundRelayRecord;
+          identity: ReturnType<typeof authenticatedFacadeControllerIdentity>;
+        } | undefined;
+        if (operation === 'start' && String(args.work_relation ?? '').trim() === 'continue') {
+          const predecessorWorkId = String(args.related_work_id ?? '').trim();
+          const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
+          if (predecessorWork?.status === 'completed' && predecessorWork.planId) {
+            const relay = getControllerRoundRelay(store, predecessorWorkId);
+            if (!relay || !['claimed', 'pending_release'].includes(relay.status)) {
+              const facade = buildFacadeResult({ status: 'blocked', summary: `TERMINAL_SUCCESSOR_CONTROLLER_ROUND_REQUIRED: ${predecessorWorkId}:${relay?.status ?? 'missing'}`, data: { operation, executionStarted: false, predecessorWorkId } });
+              return result(facade as unknown as Record<string, unknown>, true);
+            }
+            const workKind = typeof args.work_kind === 'string' ? args.work_kind.trim() : '';
+            if (!workKind) {
+              const facade = buildFacadeResult({ status: 'blocked', summary: `TERMINAL_SUCCESSOR_WORK_KIND_REQUIRED: ${predecessorWorkId}`, data: { operation, executionStarted: false, predecessorWorkId } });
+              return result(facade as unknown as Record<string, unknown>, true);
+            }
+            const explicitAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
+            const explicitRelayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
+            if (!explicitAuthorityId || !explicitRelayScopeId) {
+              const facade = buildFacadeResult({ status: 'blocked', summary: `TERMINAL_SUCCESSOR_CONTROLLER_ROUND_AUTHORITY_REQUIRED: ${predecessorWorkId}`, data: { operation, executionStarted: false, predecessorWorkId } });
+              return result(facade as unknown as Record<string, unknown>, true);
+            }
+            try {
+              assertFacadeControllerRoundAuthority(ctx, store, predecessorWorkId, args);
+              const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
+              if (relay.controllerId !== identity.controllerId || relay.principalId !== identity.principalId || relay.controllerType !== identity.controllerType) {
+                throw new Error(`TERMINAL_SUCCESSOR_CONTROLLER_ROUND_IDENTITY_MISMATCH: ${predecessorWorkId}`);
+              }
+              terminalSuccessorAdmission = { predecessorWorkId, relay, identity };
+            } catch (error) {
+              const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Terminal successor ControllerRound authority validation failed.', data: { operation, executionStarted: false, predecessorWorkId } });
+              return result(facade as unknown as Record<string, unknown>, true);
+            }
+          }
+        }
+
         const semanticAdmissionRequired = operation === 'start' && Boolean(
           (typeof args.plan_id === 'string' && args.plan_id.trim())
           || (typeof args.plan_step_id === 'string' && args.plan_step_id.trim())
@@ -5694,10 +5690,33 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             }
             const handle = ensureFacadeWorkHandle(ctx, repository, facadeWorkId, args);
             if (handle) facadeData.executionHandle = { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state };
-            if (facadeData.workContractCreated === true) {
+            if (facadeData.workContractCreated === true && !terminalSuccessorAdmission) {
               const owner = claimNewFacadeWork(ctx, repository, facadeWorkId, args);
               facadeData.controllerSession = owner;
               facadeData.ownershipClaimed = true;
+            }
+            if (terminalSuccessorAdmission) {
+              const currentRelay = getControllerRoundRelay(store, terminalSuccessorAdmission.predecessorWorkId);
+              let boundRelay: ControllerRoundRelayRecord;
+              if (currentRelay?.status === 'pending_release') {
+                // Idempotent retry after the Controller already submitted its
+                // disposition. Never create/rebind another successor.
+                if (currentRelay.successorWorkId !== facadeWorkId) {
+                  throw new Error(`CONTROLLER_RELAY_SUCCESSOR_ALREADY_BOUND: ${terminalSuccessorAdmission.predecessorWorkId}:${currentRelay.successorWorkId ?? 'none'}`);
+                }
+                boundRelay = currentRelay;
+              } else {
+                boundRelay = bindControllerRoundSuccessorWork(store, {
+                  workId: terminalSuccessorAdmission.predecessorWorkId,
+                  successorWorkId: facadeWorkId,
+                  identity: terminalSuccessorAdmission.identity,
+                  controllerAuthorityId: terminalSuccessorAdmission.relay.authorityId,
+                });
+              }
+              facadeData.predecessorWorkId = terminalSuccessorAdmission.predecessorWorkId;
+              facadeData.successorWorkId = facadeWorkId;
+              facadeData.terminalSuccessorRelay = boundRelay;
+              facadeData.ownershipClaimed = false;
             }
           } catch (error) {
             const blocked = buildFacadeResult({ status: 'blocked', summary: `WORK_HANDLE_MATERIALIZATION_FAILED: ${error instanceof Error ? error.message : String(error)}`, data: { ...facadeData, workId: facadeWorkId, executionStarted: false, canonicalWorkRetained: true } });

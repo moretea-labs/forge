@@ -11,7 +11,7 @@ import { createWorkContract, getWorkContract } from '../../src/runtime/control-p
 import { claimPlanStepForWork, getPlanContract, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
-import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
+import { buildFrozenSemanticCompatibilityCapability, parseFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 
 const roots: string[] = [];
 
@@ -325,6 +325,31 @@ describe('rh_work Requirement bootstrap', () => {
       requirementId,
       status: 'running',
     });
+
+
+    const authorityId = `cra_${'a'.repeat(32)}`;
+    const terminalCarrier = buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: {
+        work_kind: 'completed_no_change',
+        engineering_preconditions: { context_closure: { receipt_id: 'compat-context-receipt' } },
+        controller_authority_id: authorityId,
+        relay_scope_id: `requirement:${requirementId}`,
+      },
+    });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', terminalCarrier)).toEqual({
+      operation: 'start',
+      args: {
+        work_kind: 'completed_no_change',
+        engineering_preconditions: { context_closure: { receipt_id: 'compat-context-receipt' } },
+        controller_authority_id: authorityId,
+        relay_scope_id: `requirement:${requirementId}`,
+      },
+    });
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: { work_kind: 'completed_no_change', controller_authority_id: authorityId } as any,
+    })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID: controller_authority_id and relay_scope_id must be paired');
 
     const conflict = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,

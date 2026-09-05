@@ -52,6 +52,9 @@ export type FrozenWorkStartKind = (typeof FROZEN_WORK_START_KINDS)[number];
 
 export interface FrozenWorkStartCompatibilityArgs {
   work_kind: FrozenWorkStartKind;
+  engineering_preconditions?: Record<string, unknown>;
+  controller_authority_id?: string;
+  relay_scope_id?: string;
 }
 
 export interface FrozenWorkStartCompatibilityEnvelope {
@@ -150,7 +153,21 @@ function normalizePlanCreateArgs(value: unknown): FrozenPlanCreateCompatibilityA
   };
 }
 
-const WORK_START_KEYS = new Set(['work_kind']);
+// Retirement boundary: remove the start envelope only after the oldest supported
+// frozen rh_work schema exposes work_kind, engineering_preconditions,
+// controller_authority_id and relay_scope_id together. Until then this remains a
+// bounded transport carrier only; canonical GoalWorkloop/ControllerRound handlers
+// still own validation, admission and mutation.
+const WORK_START_KEYS = new Set(['work_kind', 'engineering_preconditions', 'controller_authority_id', 'relay_scope_id']);
+
+function boundedObject(value: unknown, field: string): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${field} must be an object`);
+  let encoded: string;
+  try { encoded = JSON.stringify(value); } catch { return fail(`${field} must be JSON serializable`); }
+  if (Buffer.byteLength(encoded, 'utf8') > MAX_FROZEN_SEMANTIC_DECODED_BYTES) fail(`${field} exceeds transport bound`);
+  return JSON.parse(encoded) as Record<string, unknown>;
+}
 
 function normalizeWorkStartArgs(value: unknown): FrozenWorkStartCompatibilityArgs {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('start args must be an object');
@@ -158,8 +175,23 @@ function normalizeWorkStartArgs(value: unknown): FrozenWorkStartCompatibilityArg
   assertExactKeys(args, WORK_START_KEYS, 'start args');
   const workKind = boundedString(args.work_kind, 'work_kind');
   if (!FROZEN_WORK_START_KINDS.includes(workKind as FrozenWorkStartKind)) fail('work_kind is invalid');
-  return { work_kind: workKind as FrozenWorkStartKind };
+  const engineeringPreconditions = boundedObject(args.engineering_preconditions, 'engineering_preconditions');
+  const authorityId = args.controller_authority_id === undefined
+    ? undefined
+    : boundedString(args.controller_authority_id, 'controller_authority_id').trim();
+  const relayScopeId = args.relay_scope_id === undefined
+    ? undefined
+    : boundedString(args.relay_scope_id, 'relay_scope_id').trim();
+  if ((authorityId === undefined) !== (relayScopeId === undefined)) fail('controller_authority_id and relay_scope_id must be paired');
+  if (authorityId !== undefined && !/^cra_[0-9a-f]{32}$/i.test(authorityId)) fail('controller_authority_id is invalid');
+  if (relayScopeId !== undefined && !relayScopeId) fail('relay_scope_id is invalid');
+  return {
+    work_kind: workKind as FrozenWorkStartKind,
+    ...(engineeringPreconditions !== undefined ? { engineering_preconditions: engineeringPreconditions } : {}),
+    ...(authorityId !== undefined ? { controller_authority_id: authorityId, relay_scope_id: relayScopeId! } : {}),
+  };
 }
+
 
 function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): FrozenSemanticCompatibilityEnvelope['args'] {
   if (input.operation === 'requirement_create') return normalizeRequirementCreateArgs(input.args);

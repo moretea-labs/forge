@@ -276,7 +276,7 @@ describe('autonomous continuation lifecycle', () => {
       },
     ));
     expect(wrong.status).toBe('blocked');
-    expect(wrong.summary).toMatch(/WORK_CONTROLLER_OWNER_MISMATCH|WORK_CONTROLLER_PRINCIPAL_MISMATCH|CONTROLLER_RELAY_CLAIM_/);
+    expect(wrong.summary).toMatch(/WORK_CONTROLLER_OWNER_MISMATCH|WORK_CONTROLLER_PRINCIPAL_MISMATCH|CONTROLLER_RELAY_CLAIM_|WORK_CONTROLLER_RELAY_SCOPE_MISMATCH/);
 
     const rotatedContext = mcpContext(controllerHome, repository, {
       principalId: 'chatgpt-principal',

@@ -7,6 +7,7 @@ const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
 const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
 export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
+  'plan_accept_step',
   'continue',
   'verify',
   'review',
@@ -19,7 +20,7 @@ export type ControllerRoundCompatibilityOperation = (typeof CONTROLLER_ROUND_COM
 export function parseControllerDispositionCompatibilityCapability(
   operation: string,
   capabilityId: unknown,
-): { disposition: ControllerRoundDisposition; relayScopeId: string } | undefined {
+): { disposition: ControllerRoundDisposition; relayScopeId: string; authorityId?: string } | undefined {
   if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
   const normalized = capabilityId.trim();
   if (!normalized.startsWith(CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX)) return undefined;
@@ -27,11 +28,20 @@ export function parseControllerDispositionCompatibilityCapability(
   const separator = payload.indexOf(':');
   if (separator <= 0) throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
   const disposition = payload.slice(0, separator) as ControllerRoundDisposition;
-  const relayScopeId = payload.slice(separator + 1).trim();
+  const remainder = payload.slice(separator + 1).trim();
+  let authorityId: string | undefined;
+  let relayScopeId = remainder;
+  if (remainder.startsWith('cra_')) {
+    const authoritySeparator = remainder.indexOf(':');
+    if (authoritySeparator <= 0) throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
+    authorityId = remainder.slice(0, authoritySeparator).trim();
+    relayScopeId = remainder.slice(authoritySeparator + 1).trim();
+    if (!/^cra_[0-9a-f]{32}$/i.test(authorityId)) throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
+  }
   if (!CONTROLLER_ROUND_DISPOSITIONS.includes(disposition) || !relayScopeId) {
     throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
   }
-  return { disposition, relayScopeId };
+  return { disposition, relayScopeId, ...(authorityId ? { authorityId } : {}) };
 }
 
 export function parseControllerRoundCompatibilityCapability(
