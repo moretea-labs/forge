@@ -27,6 +27,7 @@ import {
   type RuntimeStorageRepairPreview,
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
+import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
 
 export type RuntimeMaintenanceActionId =
@@ -139,6 +140,7 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   runtimeStorageRepairApply?: RuntimeStorageRepairApplyResult;
   /** Existing bounded terminal-process retention, run only during explicit full maintenance. */
   processGc?: ProcessGcResult;
+  verificationSnapshotGc?: WorkVerificationSnapshotRetentionReport;
   projection?: unknown;
 }
 
@@ -1301,6 +1303,17 @@ export function applyRuntimeMaintenance(
   const processGc = options.actionId === 'full_maintenance_pass'
     ? gcTerminalProcesses({ controllerHome, repoId: repository.repoId })
     : undefined;
+  const currentWork = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
+  const protectedWorkIds = currentWork
+    .filter((contract) => !isTerminalWorkContractStatus(contract.status))
+    .map((contract) => contract.workId);
+  const verificationSnapshotGc = options.actionId === 'full_maintenance_pass'
+    ? cleanupStaleWorkVerificationSnapshots(controllerHome, repository.repoId, {
+      protectedWorkIds,
+      maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
+      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+    })
+    : undefined;
 
   if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
     rebuildActiveIndex(repository.canonicalRoot);
@@ -1318,6 +1331,7 @@ export function applyRuntimeMaintenance(
     applied,
     runtimeStorageRepairApply,
     processGc,
+    verificationSnapshotGc,
     projection,
   };
 }

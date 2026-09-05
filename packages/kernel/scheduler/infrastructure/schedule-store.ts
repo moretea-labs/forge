@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readdirSync, rmSync } from 'fs';
+import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
@@ -64,6 +64,8 @@ function requestPath(controllerHome: string, repoId: string, requestId: string):
   return join(schedulesRoot(controllerHome, repoId), 'indexes', 'requests', `${createHash('sha256').update(requestId).digest('hex')}.json`);
 }
 
+export const SCHEDULE_OCCURRENCE_RECENT_LIMIT = 5_000;
+
 const EXTERNAL_CONTROLLER_WAKE_MAX_FAILURES = 3;
 const EXTERNAL_CONTROLLER_WAKE_DAILY_BUDGET_MINUTES = 60;
 const EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES = 10;
@@ -120,8 +122,8 @@ function upsertOccurrenceIndexUnlocked(controllerHome: string, occurrence: Sched
   index.updatedAt = new Date().toISOString();
   index.active.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   index.recent.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  index.active = index.active.slice(-5000);
-  index.recent = index.recent.slice(0, 5000);
+  index.active = index.active.slice(-SCHEDULE_OCCURRENCE_RECENT_LIMIT);
+  index.recent = index.recent.slice(0, SCHEDULE_OCCURRENCE_RECENT_LIMIT);
   writeJsonAtomic(occurrenceIndexPath(controllerHome, occurrence.repoId), index);
 }
 
@@ -458,6 +460,182 @@ export function listOccurrences(controllerHome: string, repoId: string, schedule
     }
     return legacy;
   } catch { return []; }
+}
+
+
+export interface ScheduleHistoryCleanupResult {
+  removedOccurrencePaths: string[];
+  removedDecisionPaths: string[];
+  reclaimedBytes: number;
+  unknownReclaimedByteCount: number;
+  inspected: number;
+  eligible: number;
+  attempted: number;
+  retained: number;
+  budgetExhausted: boolean;
+  skippedByReason: Record<string, number>;
+  errors: string[];
+}
+
+function retainedOccurrenceIds(index: OccurrenceIndex): Set<string> {
+  return new Set([...index.active, ...index.recent].map((entry) => entry.occurrenceId));
+}
+
+function activeOccurrenceStatus(status: ScheduleOccurrence['status']): boolean {
+  return status === 'created' || status === 'queued' || status === 'running';
+}
+
+/**
+ * Reclaim Scheduler history that has already fallen outside the bounded recent
+ * index. Runtime maintenance decides when cleanup runs; Scheduler storage owns
+ * the mutation and re-checks the same per-schedule task lock used by
+ * saveOccurrence so a concurrent occurrence can never be deleted from a stale
+ * directory scan.
+ */
+export function cleanupScheduleOccurrenceHistory(
+  controllerHome: string,
+  repoId: string,
+  input: { maxEntries?: number; maxRemovals?: number } = {},
+): ScheduleHistoryCleanupResult {
+  const maxEntries = Math.max(1, Math.trunc(input.maxEntries ?? 2_000));
+  const maxRemovals = Math.max(0, Math.trunc(input.maxRemovals ?? 50));
+  const result: ScheduleHistoryCleanupResult = {
+    removedOccurrencePaths: [],
+    removedDecisionPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
+    inspected: 0,
+    eligible: 0,
+    attempted: 0,
+    retained: 0,
+    budgetExhausted: false,
+    skippedByReason: {},
+    errors: [],
+  };
+  const skip = (reason: string) => {
+    result.retained += 1;
+    result.skippedByReason[reason] = (result.skippedByReason[reason] ?? 0) + 1;
+  };
+  const recordRemoval = (path: string, kind: 'occurrence' | 'decision') => {
+    try { result.reclaimedBytes += statSync(path).size; }
+    catch { result.unknownReclaimedByteCount += 1; }
+    rmSync(path, { force: true });
+    const relativePath = kind === 'occurrence'
+      ? `occurrences/${path.split('/').pop()}`
+      : `decisions/${path.split('/').pop()}`;
+    if (kind === 'occurrence') result.removedOccurrencePaths.push(relativePath);
+    else result.removedDecisionPaths.push(relativePath);
+  };
+  const canInspect = () => {
+    if (result.inspected >= maxEntries) {
+      result.budgetExhausted = true;
+      return false;
+    }
+    result.inspected += 1;
+    return true;
+  };
+  const canRemove = () => {
+    if (result.attempted >= maxRemovals) {
+      result.budgetExhausted = true;
+      return false;
+    }
+    result.attempted += 1;
+    return true;
+  };
+
+  const occurrenceRoot = join(schedulesRoot(controllerHome, repoId), 'occurrences');
+  let occurrenceNames: string[] = [];
+  try { occurrenceNames = readdirSync(occurrenceRoot).filter((name) => name.endsWith('.json')).sort(); }
+  catch { occurrenceNames = []; }
+  for (const name of occurrenceNames) {
+    if (!canInspect()) break;
+    const occurrenceId = name.slice(0, -'.json'.length);
+    if (retainedOccurrenceIds(readOccurrenceIndex(controllerHome, repoId)).has(occurrenceId)) {
+      skip('indexed_occurrence');
+      continue;
+    }
+    const path = join(occurrenceRoot, name);
+    let occurrence: ScheduleOccurrence;
+    try { occurrence = readJsonFile<ScheduleOccurrence>(path); }
+    catch (error) {
+      result.errors.push(`occurrence_unreadable:${name}:${error instanceof Error ? error.message : String(error)}`);
+      skip('occurrence_unreadable');
+      continue;
+    }
+    if (activeOccurrenceStatus(occurrence.status)) {
+      skip('active_occurrence_unindexed');
+      continue;
+    }
+    if (!canRemove()) break;
+    try {
+      withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${occurrence.scheduleId}` }, `cleanup-schedule-occurrence:${occurrence.occurrenceId}`, () => {
+        if (retainedOccurrenceIds(readOccurrenceIndex(controllerHome, repoId)).has(occurrence.occurrenceId)) {
+          skip('indexed_occurrence_recheck');
+          return;
+        }
+        const current = getOccurrence(controllerHome, repoId, occurrence.occurrenceId);
+        if (!current) return;
+        if (activeOccurrenceStatus(current.status)) {
+          skip('active_occurrence_recheck');
+          return;
+        }
+        result.eligible += 1;
+        recordRemoval(path, 'occurrence');
+      }, 10_000);
+    } catch (error) {
+      result.errors.push(`occurrence_cleanup_blocked:${name}:${error instanceof Error ? error.message : String(error)}`);
+      skip('schedule_lock_or_cleanup_error');
+    }
+  }
+
+  const decisionRoot = join(schedulesRoot(controllerHome, repoId), 'decisions');
+  let decisionNames: string[] = [];
+  try { decisionNames = readdirSync(decisionRoot).filter((name) => name.endsWith('.json')).sort(); }
+  catch { decisionNames = []; }
+  for (const name of decisionNames) {
+    if (!canInspect()) break;
+    const path = join(decisionRoot, name);
+    let decision: ScheduleDecision;
+    try { decision = readJsonFile<ScheduleDecision>(path); }
+    catch (error) {
+      result.errors.push(`decision_unreadable:${name}:${error instanceof Error ? error.message : String(error)}`);
+      skip('decision_unreadable');
+      continue;
+    }
+    if (retainedOccurrenceIds(readOccurrenceIndex(controllerHome, repoId)).has(decision.occurrenceId)) {
+      skip('indexed_decision_occurrence');
+      continue;
+    }
+    // Keep the decision paired with its occurrence until the occurrence itself
+    // is safely reclaimed. A failed/blocked occurrence cleanup therefore never
+    // leaves a partial history deletion.
+    if (getOccurrence(controllerHome, repoId, decision.occurrenceId)) {
+      skip('decision_occurrence_still_present');
+      continue;
+    }
+    if (!canRemove()) break;
+    try {
+      withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${decision.scheduleId}` }, `cleanup-schedule-decision:${decision.decisionId}`, () => {
+        if (retainedOccurrenceIds(readOccurrenceIndex(controllerHome, repoId)).has(decision.occurrenceId)) {
+          skip('indexed_decision_recheck');
+          return;
+        }
+        if (getOccurrence(controllerHome, repoId, decision.occurrenceId)) {
+          skip('decision_occurrence_reappeared');
+          return;
+        }
+        if (!existsSync(path)) return;
+        result.eligible += 1;
+        recordRemoval(path, 'decision');
+      }, 10_000);
+    } catch (error) {
+      result.errors.push(`decision_cleanup_blocked:${name}:${error instanceof Error ? error.message : String(error)}`);
+      skip('schedule_lock_or_cleanup_error');
+    }
+  }
+  result.removedOccurrencePaths.sort();
+  result.removedDecisionPaths.sort();
+  return result;
 }
 
 

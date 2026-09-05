@@ -180,7 +180,7 @@ function scanTerminalLocalJobs(repoRoot: string, minAgeMinutes: number, limit: n
       // Ignore malformed entries.
     }
   }
-  return candidates.filter((candidate) => candidate.safe).slice(0, limit);
+  return candidates.slice(0, limit);
 }
 
 function textIncludesNoOpIntegrate(value: unknown): boolean {

@@ -2,6 +2,7 @@
 export {
   applyScheduleDedupe,
   buildScheduleDedupeReport,
+  cleanupScheduleOccurrenceHistory,
   createSchedule,
   deleteSchedule,
   getOccurrence,
@@ -15,6 +16,7 @@ export {
   saveSchedule,
   saveScheduleDecision,
   updateSchedule,
+  type ScheduleHistoryCleanupResult,
   type ScheduleDedupeApplyResult,
   type ScheduleDedupeReport,
   type ScheduleDuplicateGroup,
