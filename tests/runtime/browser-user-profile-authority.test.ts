@@ -18,7 +18,12 @@ function writeJson(path: string, value: unknown): void {
 }
 
 function browserDetails(root: string): Record<string, unknown> {
-  const manifest = buildBrowserPluginManifest(1, '2026-08-30T00:00:00.000Z', root);
+  const manifest = buildBrowserPluginManifest(1, '2026-08-30T00:00:00.000Z', root, {
+    controllerHome: join(root, 'controller-home'),
+    repoId: 'repo-browser-user-authority',
+    repoRoot: root,
+    controllerScoped: false,
+  });
   return (manifest.health.details ?? {}) as Record<string, unknown>;
 }
 
