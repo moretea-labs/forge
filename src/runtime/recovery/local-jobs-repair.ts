@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { quarantineRuntimePath } from './quarantine-retention';
 import { findExecutionJob } from '../execution/jobs/store';
 import { isProcessAlive } from '../shared/process-tree';
 import type { LocalBridgeJob } from '../../cli/local-bridge/types';
@@ -283,11 +284,6 @@ export function previewRuntimeStorageRepair(
   };
 }
 
-function quarantinePath(repository: RepositoryRecord, candidate: RuntimeStorageRepairCandidate): string {
-  const stamp = now().replace(/[:.]/g, '-');
-  return join(repository.canonicalRoot, '.ai', 'harness', 'quarantine', 'local-jobs', `${stamp}-${candidate.rootKind}-${basename(candidate.jobDir)}`);
-}
-
 function terminalize(candidate: RuntimeStorageRepairCandidate): string {
   const jobPath = join(candidate.jobDir, 'job.json');
   const job = readJob(jobPath);
@@ -321,14 +317,11 @@ function terminalize(candidate: RuntimeStorageRepairCandidate): string {
   return job.error;
 }
 
-function quarantine(repository: RepositoryRecord, candidate: RuntimeStorageRepairCandidate): string {
-  const target = quarantinePath(repository, candidate);
-  mkdirSync(dirname(target), { recursive: true });
+function quarantine(controllerHome: string, repository: RepositoryRecord, candidate: RuntimeStorageRepairCandidate): string {
   if (!safeContained(candidate.rootPath, candidate.jobDir)) throw new Error('candidate path escapes local-jobs root');
   const stat = lstatSync(candidate.jobDir);
   if (!stat.isDirectory() && !stat.isFile() && !stat.isSymbolicLink()) throw new Error('unsupported local job entry type');
-  renameSync(candidate.jobDir, target);
-  return target;
+  return quarantineRuntimePath(controllerHome, repository.repoId, candidate.jobDir, `${candidate.rootKind}-${basename(candidate.jobDir)}`);
 }
 
 function rebuildActiveIndex(rootPath: string): void {
@@ -372,7 +365,7 @@ export function applyRuntimeStorageRepair(
     try {
       const message = candidate.action === 'terminalize'
         ? terminalize(candidate)
-        : quarantine(repository, candidate);
+        : quarantine(controllerHome, repository, candidate);
       applied.push({ candidateId: candidate.candidateId, action: candidate.action, path: candidate.jobDir, status: 'applied', message });
     } catch (error) {
       applied.push({ candidateId: candidate.candidateId, action: candidate.action, path: candidate.jobDir, status: 'failed', message: error instanceof Error ? error.message : String(error) });
@@ -381,7 +374,7 @@ export function applyRuntimeStorageRepair(
   for (const root of preview.inspectedRoots) {
     if (root.exists) rebuildActiveIndex(root.path);
   }
-  const auditPath = join(repository.canonicalRoot, '.ai', 'harness', 'controller', 'runtime-storage-repair.jsonl');
+  const auditPath = join(repositoryControllerRoot(controllerHome, repository.repoId), 'audit', 'runtime-storage-repair.jsonl');
   appendJsonLine(auditPath, {
     schemaVersion: 1,
     at: now(),
@@ -395,6 +388,6 @@ export function applyRuntimeStorageRepair(
     generatedAt: now(),
     mutates: true,
     applied,
-    auditPath: relative(repository.canonicalRoot, auditPath),
+    auditPath: relative(controllerHome, auditPath),
   };
 }

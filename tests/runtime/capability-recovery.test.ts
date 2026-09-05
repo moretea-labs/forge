@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -13,6 +13,7 @@ import {
   buildRuntimeMaintenanceStatus,
   applyRuntimeMaintenance,
   applyStaleWorkContractMaintenanceCandidate,
+  cleanupRuntimeQuarantine,
   classifyFailure,
   detectDirtyPathConflicts,
   recoveryActionById,
@@ -550,8 +551,8 @@ describe('runtime maintenance executor', () => {
     expect(stored.error).toMatch(/runtime maintenance|Runtime storage repair/);
   });
 
-  it('quarantines unreadable Local Job entries', () => {
-    const { controllerHome, localJobs, repository } = tempRepo();
+  it('quarantines unreadable Local Job entries only in Controller Home', () => {
+    const { root, controllerHome, localJobs, repository } = tempRepo();
     mkdirSync(join(localJobs, 'JOB-broken'), { recursive: true });
     const applied = applyRuntimeMaintenance(repository, controllerHome, {
       actionId: 'quarantine_unreadable_local_jobs',
@@ -561,6 +562,51 @@ describe('runtime maintenance executor', () => {
     const legacyApplied = applied.applied.some((candidate) => candidate.applied && candidate.id === 'JOB-broken');
     const typedApplied = applied.runtimeStorageRepairApply?.applied.some((candidate) => candidate.status === 'applied' && candidate.path.includes('JOB-broken')) ?? false;
     expect(legacyApplied || typedApplied).toBe(true);
+    const quarantineRoot = join(controllerHome, 'repositories', repository.repoId, 'quarantine', 'local-jobs');
+    expect(readdirSync(quarantineRoot).some((entry) => entry.includes('JOB-broken'))).toBe(true);
+    expect(existsSync(join(root, '.ai', 'harness', 'local-jobs-quarantine'))).toBe(false);
+    expect(existsSync(join(root, '.ai', 'harness', 'quarantine', 'local-jobs'))).toBe(false);
+    const auditPath = applied.runtimeStorageRepairApply?.auditPath;
+    expect(auditPath).toMatch(/^repositories\/repo-test\/audit\/runtime-storage-repair\.jsonl$/);
+    expect(existsSync(join(controllerHome, auditPath!))).toBe(true);
+  });
+
+  it('migrates legacy quarantine without following symlinks and bounds stale retained evidence', () => {
+    const { root, controllerHome, repository } = tempRepo();
+    const legacy = join(root, '.ai', 'harness', 'local-jobs-quarantine');
+    const staleEntry = join(legacy, 'old-evidence');
+    mkdirSync(staleEntry, { recursive: true });
+    writeFileSync(join(staleEntry, 'payload.log'), 'stale diagnostic evidence\n');
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    utimesSync(staleEntry, old, old);
+
+    const outside = join(root, 'outside-quarantine-target');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'must-survive.txt'), 'user-owned\n');
+    const symlinkRoot = join(root, '.ai', 'harness', 'quarantine', 'local-jobs');
+    mkdirSync(join(root, '.ai', 'harness', 'quarantine'), { recursive: true });
+    symlinkSync(outside, symlinkRoot, 'dir');
+
+    const report = cleanupRuntimeQuarantine(controllerHome, repository.repoId, root, {
+      nowMs: Date.now(), retentionMs: 60_000, maxRetainedEntries: 10,
+      maxRetainedBytes: 1024 * 1024, maxEntries: 20, maxRemovals: 20,
+    });
+    expect(report.policyVersion).toBe('runtime-quarantine-retention-v1');
+    expect(report.migratedLegacyCount).toBe(2);
+    expect(report.removedCount).toBe(1);
+    expect(report.reclaimedBytes).toBeGreaterThan(0);
+    expect(report.errors).toEqual([]);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(symlinkRoot)).toBe(false);
+    expect(readFileSync(join(outside, 'must-survive.txt'), 'utf8')).toBe('user-owned\n');
+    const quarantineRoot = join(controllerHome, 'repositories', repository.repoId, 'quarantine', 'local-jobs');
+    expect(readdirSync(quarantineRoot).some((entry) => entry.startsWith('legacy-root-local-jobs'))).toBe(true);
+
+    const again = cleanupRuntimeQuarantine(controllerHome, repository.repoId, root, {
+      nowMs: Date.now(), retentionMs: 60_000, maxEntries: 20, maxRemovals: 20,
+    });
+    expect(again.migratedLegacyCount).toBe(0);
+    expect(again.removedCount).toBe(0);
   });
 
   it('does not bulk-cancel stale Work whose semantic lifecycle is still unresolved', () => {
