@@ -16,6 +16,8 @@ import {
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
+  cleanupBrowserSessionTombstones,
+  closeLegacyBrowserSessionImportCutover,
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
   listAllBrowserSessionsForRepository,
@@ -110,6 +112,27 @@ describe('browser session controller authority', () => {
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('managed-a', '2026-08-24T03:00:00.000Z'));
     expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions.map((entry) => entry.sessionId)).toEqual(['native-a']);
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
+  });
+
+  test('browser tombstone retention waits for legacy cutover then reclaims only expired tombstones', () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(repoA, { recursive: true });
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('active-keep', '2026-08-24T01:00:00.000Z'));
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('stale-drop', '2026-08-24T02:00:00.000Z'));
+    expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBe(true);
+
+    const blocked = cleanupBrowserSessionTombstones(controllerHome, { nowMs: Date.now() + 31 * 24 * 60 * 60_000, ttlMs: 30 * 24 * 60 * 60_000 });
+    expect(blocked.removed).toBe(0);
+    expect(blocked.blockers).toContain('legacy_import_cutover_open');
+
+    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
+    expect(cutover.closed).toBe(true);
+    const cleaned = cleanupBrowserSessionTombstones(controllerHome, {
+      nowMs: Date.now() + 31 * 24 * 60 * 60_000, ttlMs: 30 * 24 * 60 * 60_000, maxTombstones: 5000, maxRemovals: 10,
+    });
+    expect(cleaned.removed).toBe(1);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBeUndefined();
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'active-keep')?.sessionId).toBe('active-keep');
   });
 
   test('tombstones canonical native identities across aliases', () => {

@@ -31,6 +31,29 @@ export interface BrowserSessionAuthorityPage<T extends BrowserSessionAuthoritySe
   nextCursor?: string;
 }
 
+export interface BrowserSessionLegacyCutoverRepository {
+  repoId: string;
+  repoRoot: string;
+}
+
+export interface BrowserSessionLegacyCutoverReport {
+  closed: boolean;
+  alreadyClosed: boolean;
+  repositoryCount: number;
+  migratedRecordCount: number;
+}
+
+export interface BrowserSessionTombstoneCleanupReport {
+  policyVersion: 'browser-session-tombstone-retention-v1';
+  cutoverClosed: boolean;
+  inspected: number;
+  eligible: number;
+  removed: number;
+  retained: number;
+  blockers: string[];
+  budgetExhausted: boolean;
+}
+
 /** Durable Browser session persistence port. Runtime context binding is owned by composition. */
 export interface BrowserSessionAuthorityPort {
   ensureLegacyImported(context: BrowserSessionAuthorityContext, repoRoot: string): number;
@@ -39,4 +62,6 @@ export interface BrowserSessionAuthorityPort {
   list<T extends BrowserSessionAuthoritySession>(context: BrowserSessionAuthorityContext, repoRoot: string, options?: { limit?: number; cursor?: string }): BrowserSessionAuthorityPage<T>;
   listAll<T extends BrowserSessionAuthoritySession>(context: BrowserSessionAuthorityContext, repoRoot: string): T[];
   tombstone(context: BrowserSessionAuthorityContext, repoRoot: string, sessionId: string): boolean;
+  closeLegacyImportCutover(controllerHome: string, repositories: readonly BrowserSessionLegacyCutoverRepository[]): BrowserSessionLegacyCutoverReport;
+  cleanupTombstones(controllerHome: string, options?: { nowMs?: number; ttlMs?: number; maxTombstones?: number; maxRemovals?: number }): BrowserSessionTombstoneCleanupReport;
 }

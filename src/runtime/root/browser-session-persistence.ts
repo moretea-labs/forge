@@ -3,6 +3,7 @@ import type {
   BrowserSessionPersistenceTransaction,
 } from '../../../packages/plugin-runtime/browser/session-persistence';
 import {
+  deleteControlPlaneRecordWithinTransaction,
   listAllControlPlaneRecords,
   listControlPlaneRecords,
   readControlPlaneRecord,
@@ -20,6 +21,7 @@ export function createRuntimeBrowserSessionPersistence(): BrowserSessionPersiste
       const transaction: BrowserSessionPersistenceTransaction = {
         read: (namespace, scope, key) => readControlPlaneRecordWithinTransaction(database, namespace, scope, key),
         write: (input) => writeControlPlaneRecordWithinTransaction(database, input),
+        delete: (input) => deleteControlPlaneRecordWithinTransaction(database, input),
       };
       return operation(transaction);
     }),

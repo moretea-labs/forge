@@ -8,12 +8,20 @@ import {
   type BrowserSessionAuthorityPage,
   type BrowserSessionAuthorityPort,
   type BrowserSessionAuthoritySession,
+  type BrowserSessionLegacyCutoverRepository,
+  type BrowserSessionLegacyCutoverReport,
+  type BrowserSessionTombstoneCleanupReport,
 } from '../../packages/plugin-runtime/browser/session-authority';
 import type { BrowserSessionPersistencePort } from '../../packages/plugin-runtime/browser/session-persistence';
 
 const SESSION_NAMESPACE = 'browser_session';
 const SESSION_SCOPE = 'controller';
 const IMPORT_NAMESPACE = 'browser_session_legacy_import';
+const IMPORT_CUTOVER_SCOPE = 'controller';
+const IMPORT_CUTOVER_KEY = 'v2-browser-session-import-cutover';
+const DEFAULT_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60_000;
+const DEFAULT_MAX_TOMBSTONES = 5_000;
+const DEFAULT_TOMBSTONE_REMOVAL_BUDGET = 100;
 
 interface BrowserSessionAuthorityEntry<T extends BrowserSessionAuthoritySession = BrowserSessionAuthoritySession> {
   schemaVersion: 1;
@@ -32,6 +40,14 @@ interface LegacyImportMarker {
   repoRootFingerprint: string;
   importedAt: string;
   importedRecordCount: number;
+}
+
+interface LegacyImportCutoverMarker {
+  schemaVersion: 1;
+  status: 'closed';
+  closedAt: string;
+  repositoryCount: number;
+  repositorySetFingerprint: string;
 }
 
 function digest(value: string): string {
@@ -133,12 +149,20 @@ function mergeEntry<T extends BrowserSessionAuthoritySession>(
   };
 }
 
+function legacyImportCutoverClosed(persistence: BrowserSessionPersistencePort, controllerHome: string): boolean {
+  return Boolean(persistence.read<LegacyImportCutoverMarker>(controllerHome, IMPORT_NAMESPACE, IMPORT_CUTOVER_SCOPE, IMPORT_CUTOVER_KEY)?.value.status === 'closed');
+}
+
 export function ensureLegacyBrowserSessionsImported(
   persistence: BrowserSessionPersistencePort,
   controllerHome: string,
   repoId: string,
   repoRoot: string,
 ): number {
+  if (legacyImportCutoverClosed(persistence, controllerHome)) {
+    removeImportedLegacySessionFiles(repoRoot);
+    return 0;
+  }
   const markerKey = importMarkerKey(repoRoot);
   if (persistence.read<LegacyImportMarker>(controllerHome, IMPORT_NAMESPACE, repoId, markerKey)) {
     removeImportedLegacySessionFiles(repoRoot);
@@ -330,6 +354,115 @@ export function tombstoneBrowserSession(
   });
 }
 
+export function closeLegacyBrowserSessionImportCutover(
+  persistence: BrowserSessionPersistencePort,
+  controllerHome: string,
+  repositories: readonly BrowserSessionLegacyCutoverRepository[],
+): BrowserSessionLegacyCutoverReport {
+  const existing = persistence.read<LegacyImportCutoverMarker>(controllerHome, IMPORT_NAMESPACE, IMPORT_CUTOVER_SCOPE, IMPORT_CUTOVER_KEY);
+  if (existing?.value.status === 'closed') {
+    for (const repository of repositories) removeImportedLegacySessionFiles(repository.repoRoot);
+    return { closed: true, alreadyClosed: true, repositoryCount: existing.value.repositoryCount, migratedRecordCount: 0 };
+  }
+  let migratedRecordCount = 0;
+  const normalizedRepositories = [...repositories]
+    .map((repository) => ({ repoId: repository.repoId, repoRoot: resolve(repository.repoRoot) }))
+    .sort((left, right) => left.repoId.localeCompare(right.repoId) || left.repoRoot.localeCompare(right.repoRoot));
+  for (const repository of normalizedRepositories) {
+    migratedRecordCount += ensureLegacyBrowserSessionsImported(persistence, controllerHome, repository.repoId, repository.repoRoot);
+  }
+  const repositorySetFingerprint = digest(normalizedRepositories.map((repository) => `${repository.repoId}:${repository.repoRoot}`).join('\n'));
+  persistence.transaction(controllerHome, (transaction) => {
+    const current = transaction.read<LegacyImportCutoverMarker>(IMPORT_NAMESPACE, IMPORT_CUTOVER_SCOPE, IMPORT_CUTOVER_KEY);
+    if (current?.value.status === 'closed') return;
+    transaction.write({
+      namespace: IMPORT_NAMESPACE,
+      scope: IMPORT_CUTOVER_SCOPE,
+      key: IMPORT_CUTOVER_KEY,
+      schemaVersion: 1,
+      value: {
+        schemaVersion: 1,
+        status: 'closed',
+        closedAt: new Date().toISOString(),
+        repositoryCount: normalizedRepositories.length,
+        repositorySetFingerprint,
+      } satisfies LegacyImportCutoverMarker,
+      expectedRevision: current?.revision ?? null,
+      action: 'legacy_import_cutover_closed',
+    });
+  });
+  return { closed: true, alreadyClosed: false, repositoryCount: normalizedRepositories.length, migratedRecordCount };
+}
+
+export function cleanupBrowserSessionTombstones(
+  persistence: BrowserSessionPersistencePort,
+  controllerHome: string,
+  options: { nowMs?: number; ttlMs?: number; maxTombstones?: number; maxRemovals?: number } = {},
+): BrowserSessionTombstoneCleanupReport {
+  const cutoverClosed = legacyImportCutoverClosed(persistence, controllerHome);
+  const report: BrowserSessionTombstoneCleanupReport = {
+    policyVersion: 'browser-session-tombstone-retention-v1',
+    cutoverClosed,
+    inspected: 0,
+    eligible: 0,
+    removed: 0,
+    retained: 0,
+    blockers: [],
+    budgetExhausted: false,
+  };
+  if (!cutoverClosed) {
+    report.blockers.push('legacy_import_cutover_open');
+    return report;
+  }
+  const nowMs = options.nowMs ?? Date.now();
+  const ttlMs = Math.max(60_000, Math.floor(options.ttlMs ?? DEFAULT_TOMBSTONE_TTL_MS));
+  const maxTombstones = Math.max(1, Math.floor(options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES));
+  let remainingRemovals = Math.max(0, Math.floor(options.maxRemovals ?? DEFAULT_TOMBSTONE_REMOVAL_BUDGET));
+  const tombstones = persistence.listAll<BrowserSessionAuthorityEntry>(controllerHome, { namespace: SESSION_NAMESPACE, scope: SESSION_SCOPE })
+    .filter((record) => record.value.status === 'tombstoned')
+    .map((record) => ({ ...record, tombstonedAtMs: Date.parse(record.value.tombstonedAt ?? '') }))
+    .sort((left, right) => {
+      const leftAt = Number.isFinite(left.tombstonedAtMs) ? left.tombstonedAtMs : Number.POSITIVE_INFINITY;
+      const rightAt = Number.isFinite(right.tombstonedAtMs) ? right.tombstonedAtMs : Number.POSITIVE_INFINITY;
+      return leftAt - rightAt || left.key.localeCompare(right.key);
+    });
+  report.inspected = tombstones.length;
+  let projectedCount = tombstones.length;
+  for (const record of tombstones) {
+    if (!Number.isFinite(record.tombstonedAtMs)) {
+      report.blockers.push(`invalid_tombstone_time:${record.key}`);
+      continue;
+    }
+    const ttlExpired = nowMs - record.tombstonedAtMs >= ttlMs;
+    const countPressure = projectedCount > maxTombstones;
+    if (!ttlExpired && !countPressure) continue;
+    report.eligible += 1;
+    if (remainingRemovals <= 0) {
+      report.budgetExhausted = true;
+      continue;
+    }
+    const removed = persistence.transaction(controllerHome, (transaction) => {
+      const current = transaction.read<BrowserSessionAuthorityEntry>(SESSION_NAMESPACE, SESSION_SCOPE, record.key);
+      if (!current || current.revision !== record.revision || current.value.status !== 'tombstoned') return false;
+      return transaction.delete({
+        namespace: SESSION_NAMESPACE,
+        scope: SESSION_SCOPE,
+        key: record.key,
+        expectedRevision: current.revision,
+        action: 'tombstone_retention_gc',
+      });
+    });
+    if (removed) {
+      remainingRemovals -= 1;
+      projectedCount -= 1;
+      report.removed += 1;
+    }
+  }
+  report.retained = projectedCount;
+  if (projectedCount > maxTombstones) report.blockers.push('tombstone_capacity_above_limit');
+  return report;
+}
+
 export function createBrowserSessionAuthority(
   persistence: BrowserSessionPersistencePort,
 ): BrowserSessionAuthorityPort {
@@ -340,5 +473,7 @@ export function createBrowserSessionAuthority(
     list: (context, repoRoot, options) => listBrowserSessions(persistence, context.controllerHome, context.repoId, repoRoot, options),
     listAll: (context, repoRoot) => listAllBrowserSessionsForRepository(persistence, context.controllerHome, context.repoId, repoRoot),
     tombstone: (context, repoRoot, sessionId) => tombstoneBrowserSession(persistence, context.controllerHome, context.repoId, repoRoot, sessionId),
+    closeLegacyImportCutover: (controllerHome, repositories) => closeLegacyBrowserSessionImportCutover(persistence, controllerHome, repositories),
+    cleanupTombstones: (controllerHome, options) => cleanupBrowserSessionTombstones(persistence, controllerHome, options),
   };
 }
