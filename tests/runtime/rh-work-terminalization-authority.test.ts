@@ -10,7 +10,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { implementationReviewChangedPathDigest, workRequiresImplementationReview } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
@@ -3603,6 +3603,74 @@ describe('rh_work terminalization authority', () => {
       status: 'completed', completionOutcome: 'completed_no_change', completionReceipt: { targetBranch: 'main', sourceRevision: base, changedPaths: [] },
     });
     expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
+
+  test('no-change physical finalization preserves source-free local_effect WorkKind and skips code review', async () => {
+    const fx = fixture();
+    const workId = 'work-local-effect-no-change-kind';
+    const evidenceId = 'PLG-local-effect-no-change-kind';
+    const caller = { principalId: 'principal-local-effect-no-change', sessionId: 'transport-local-effect-no-change', controllerInstanceId: 'runtime-local-effect-no-change' };
+    const branch = 'work/local-effect-no-change-kind';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: workId, title: 'Local Effect No Change Kind', branchName: branch });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Complete a source-free local effect without inventing repository implementation review.',
+      acceptanceCriteria: ['Local effect evidence terminalizes without changing WorkKind.'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'local_effect', status: 'running', phase: 'implementation', worktreeRef: workspace.root,
+      evidenceRefs: [{ evidenceId, title: 'typed local effect', summary: 'Durable local effect receipt.', detailLevel: 'summary' }],
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, sessionId: caller.sessionId, principalId: caller.principalId, repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!, worktreePath: workspace.root!, branch, sourceCheckoutId: repository.activeCheckoutId, workContractId: workId,
+      baseCommit: base, deliveryBaseCommit: base, expectedHead: base, permissionSnapshotVersion: 1, state: 'prepared', managedWorktree: true,
+      createdAt: now, updatedAt: now,
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId, operation: 'continue', work_id: workId,
+        acceptance_evidence: [{
+          criterion: 'Local effect evidence terminalizes without changing WorkKind.',
+          evidence_ids: [evidenceId],
+          rationale: 'The exact durable local-effect receipt is attributed to this Work.',
+        }],
+      },
+    ));
+    if (reviewed.status !== 'ok') throw new Error(`LOCAL_EFFECT_REVIEW_DIAGNOSTIC:${JSON.stringify(reviewed)}`);
+
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, sessionId: caller.sessionId, principalId: caller.principalId, repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!, worktreePath: workspace.root!, branch, sourceCheckoutId: repository.activeCheckoutId, workContractId: workId,
+      baseCommit: base, deliveryBaseCommit: base, expectedHead: base, permissionSnapshotVersion: 1, state: 'merged', managedWorktree: true,
+      validatedInputFingerprint: 'retained-local-effect-no-change-validation', createdAt: now, updatedAt: new Date().toISOString(),
+      finalization: { validation: 'done', commit: 'skipped', merge: 'skipped', branchCleanup: 'pending', worktreeCleanup: 'done' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    execFileSync('git', ['worktree', 'remove', '--force', workspace.root!], { cwd: fx.repoRoot });
+    setRepositoryCheckoutLifecycle({ controllerHome: fx.controllerHome, repoId: repository.repoId, checkoutId: workspace.checkoutId!, lifecycle: 'removed', reason: 'simulate local-effect cleanup before semantic completion' });
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: true, target_branch: 'main' },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed', workKind: 'local_effect', completionOutcome: 'completed_local', phaseEvidence: { review: { state: 'skipped' } },
+    });
+    expect(workRequiresImplementationReview('local_effect', [])).toBe(false);
+    expect(workRequiresImplementationReview('repository_change', [])).toBe(true);
   }, 20_000);
 
   test('finalize recovers a reviewed changed Work after physical cleanup removed its checkout before completion receipt persistence', async () => {

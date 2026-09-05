@@ -1324,7 +1324,7 @@ function completeFinalizedWorkContract(input: {
       input.contract.workId,
       receipt,
       input.outcome,
-      input.outcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
+      input.outcome === 'completed_changed' ? 'repository_change' : input.contract.workKind,
     ),
   );
   if (!fencedCompletion.allowed) {
