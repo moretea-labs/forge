@@ -332,6 +332,29 @@ describe('runtime release materialization', () => {
     } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: processRunnerEntrypoint');
   });
 
+  test('rejects a compiled candidate whose manifest omits standalone Process Runner execution authority', () => {
+    const { root, controllerHome } = sourceFixture();
+    const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: () => {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+        platform: 'linux',
+        compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
+        bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
+        bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
+        materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+      });
+      const manifest = JSON.parse(readFileSync(candidate.manifestPath, 'utf8')) as Record<string, unknown>;
+      delete manifest.executionMode;
+      const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+      writeFileSync(candidate.manifestPath, manifestText);
+      return { ok: true, stdout: JSON.stringify({
+        schemaVersion: 1, releasePath: candidate.releasePath, manifestPath: candidate.manifestPath,
+        releaseId: candidate.releaseId, artifactIdentity: candidate.artifactIdentity,
+        manifestSha256: sha256Text(manifestText), sourceCommit,
+      }) };
+    } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: executionMode');
+  });
+
   test.each([
     ['outside release root', 'RUNTIME_RELEASE_CANDIDATE_PATH_OUTSIDE_RELEASE_ROOT', false],
     ['different source HEAD', 'RUNTIME_RELEASE_CANDIDATE_SOURCE_MISMATCH', true],

@@ -51,6 +51,7 @@ function optionalRuntimeComponent<
 }
 
 export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
+  'executionMode',
   'diagnosticEntrypoint', 'diagnosticArtifactIdentity',
   'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
