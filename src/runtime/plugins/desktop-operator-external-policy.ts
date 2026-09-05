@@ -516,57 +516,64 @@ export async function executeDesktopOperatorPolicyAction(
       throw providerError('DESKTOP_POINTER_WINDOW_MISMATCH', `Desktop ref ${sourceRef} does not belong to requested source window ${requestedWindowId}.`, true);
     }
     const reboundSelector = desktopStableSelector(sourceRoot);
-    if (!reboundSelector) {
-      throw providerError('DESKTOP_POINTER_REBIND_UNAVAILABLE', `Desktop ref ${sourceRef} has no stable identifier or role/title identity for safe foreground rebinding.`);
-    }
+    let clickInteractionId = sourceInteractionId;
+    let clickFrame = sourceElementFrame;
+    let point = sourceCenter;
+    let activationVerified = false;
 
-    const activation = await openVerifiedDesktopSession(
-      `${input.requestId}:activate`,
-      { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
-      input.timeoutMs,
-      input.signal,
-      context,
-    );
-    const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
-    if (!activationInteractionId) {
-      throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
-    }
+    if (reboundSelector) {
+      const activation = await openVerifiedDesktopSession(
+        `${input.requestId}:activate`,
+        { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
+        input.timeoutMs,
+        input.signal,
+        context,
+      );
+      const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
+      if (!activationInteractionId) {
+        throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
+      }
 
-    const freshObservation = await context.callProvider(
-      `${input.requestId}:fresh-observe`,
-      'desktop_observe',
-      {
-        interaction_id: activationInteractionId,
-        root_selector: reboundSelector,
-        max_depth: 1,
-        max_nodes: 4,
-        include_values: false,
-        include_actions: false,
-        include_windows: true,
-      },
-      input.timeoutMs,
-      input.signal,
-    );
-    const freshRoot = desktopObservedRoot(freshObservation);
-    const freshElementFrame = desktopFrame(freshRoot?.frame);
-    if (!freshRoot || !freshElementFrame || freshRoot.enabled === false) {
-      throw providerError('DESKTOP_POINTER_TARGET_STALE', 'The previously observed desktop element no longer resolves to an enabled element with bounded geometry after activation.', true);
-    }
-    const freshWindow = desktopWindowById(freshObservation, requestedWindowId);
-    const freshWindowFrame = desktopFrame(freshWindow?.frame);
-    if (!freshWindow || freshWindow.onScreen === false || !freshWindowFrame) {
-      throw providerError('DESKTOP_POINTER_WINDOW_STALE', `Desktop window ${requestedWindowId} is no longer on-screen with valid geometry after activation.`, true);
-    }
-    const point = desktopFrameCenter(freshElementFrame);
-    if (!frameContainsPoint(freshWindowFrame, point.x, point.y)) {
-      throw providerError('DESKTOP_POINTER_WINDOW_MISMATCH', `Rebound desktop element ${sourceRef} is no longer inside desktop window ${requestedWindowId}.`, true);
+      const freshObservation = await context.callProvider(
+        `${input.requestId}:fresh-observe`,
+        'desktop_observe',
+        {
+          interaction_id: activationInteractionId,
+          root_selector: reboundSelector,
+          max_depth: 1,
+          max_nodes: 4,
+          include_values: false,
+          include_actions: false,
+          include_windows: true,
+        },
+        input.timeoutMs,
+        input.signal,
+      );
+      const freshRoot = desktopObservedRoot(freshObservation);
+      const freshElementFrame = desktopFrame(freshRoot?.frame);
+      if (!freshRoot || !freshElementFrame || freshRoot.enabled === false) {
+        throw providerError('DESKTOP_POINTER_TARGET_STALE', 'The previously observed desktop element no longer resolves to an enabled element with bounded geometry after activation.', true);
+      }
+      const freshWindow = desktopWindowById(freshObservation, requestedWindowId);
+      const freshWindowFrame = desktopFrame(freshWindow?.frame);
+      if (!freshWindow || freshWindow.onScreen === false || !freshWindowFrame) {
+        throw providerError('DESKTOP_POINTER_WINDOW_STALE', `Desktop window ${requestedWindowId} is no longer on-screen with valid geometry after activation.`, true);
+      }
+      const freshPoint = desktopFrameCenter(freshElementFrame);
+      if (!frameContainsPoint(freshWindowFrame, freshPoint.x, freshPoint.y)) {
+        throw providerError('DESKTOP_POINTER_WINDOW_MISMATCH', `Rebound desktop element ${sourceRef} is no longer inside desktop window ${requestedWindowId}.`, true);
+      }
+      clickInteractionId = activationInteractionId;
+      clickFrame = freshElementFrame;
+      point = freshPoint;
+      activationVerified = true;
     }
 
     const screenshot = await context.callProvider(
       `${input.requestId}:screenshot`,
       'desktop_screenshot',
       {
-        interaction_id: activationInteractionId,
+        interaction_id: clickInteractionId,
         scope: 'window',
         window_id: requestedWindowId,
         ...(typeof input.args.label === 'string' && input.args.label.trim() ? { label: input.args.label.trim() } : {}),
@@ -584,7 +591,7 @@ export async function executeDesktopOperatorPolicyAction(
       `${input.requestId}:click`,
       'desktop_pointer_click',
       {
-        interaction_id: activationInteractionId,
+        interaction_id: clickInteractionId,
         window_id: requestedWindowId,
         visual_revision: visualRevision,
         x: point.x,
@@ -596,13 +603,13 @@ export async function executeDesktopOperatorPolicyAction(
     return {
       handled: true,
       result: {
-        interactionId: activationInteractionId,
-        activationVerified: true,
+        interactionId: clickInteractionId,
+        activationVerified,
         sourceRef,
-        reboundSelector,
+        ...(reboundSelector ? { reboundSelector } : { foregroundSourceSession: true }),
         windowId: requestedWindowId,
         visualRevision,
-        frame: freshElementFrame,
+        frame: clickFrame,
         screenshot,
         click,
       },
