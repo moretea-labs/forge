@@ -545,7 +545,8 @@ describe("Local Execution Bridge", () => {
       outcome: "passed",
       source: "human_review",
     });
-    expect(existsSync(join(root, ".ai/harness/checks/controller/latest-focused.json"))).toBe(true);
+    expect(verifiedTask?.verification?.checkResults?.some((entry: { id?: string; ok?: boolean }) => entry.id === 'focused' && entry.ok)).toBe(true);
+    expect(existsSync(join(root, '.ai', 'harness', 'checks'))).toBe(false);
     const accepted = await fetch(new URL(`/api/issues/${issue.id}/tasks/T1/accept`, handle.url), {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },

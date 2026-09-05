@@ -81,7 +81,7 @@ describe('Process check completion receipts', () => {
     expect(first.ok).toBe(true);
     expect(first.receiptId).toBe(second.receiptId);
     expect(first.resultDigest).toBe(second.resultDigest);
-    expect(first.artifactPath).toBe('.ai/harness/checks/controller/latest-ios-workspace-verify.json');
+    expect(first.artifactPath).toBe('controller-home://checks/controller/latest-ios-workspace-verify.json');
     expect(processCheckArtifactPath('ios:workspace:verify')).toBe(first.artifactPath);
   });
 

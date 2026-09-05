@@ -1,4 +1,5 @@
 import { resolve } from 'path';
+import { resolveRepoPreferredControllerHome } from '../../src/cli/repositories/controller-home';
 import { getMcpPolicy, parseMcpProfile } from './policy';
 import type { McpToolContext } from './tool-mapping/tools';
 import type { McpServerOptions } from './multi-repository';
@@ -7,6 +8,7 @@ export function createLegacyMcpToolContext(opts: McpServerOptions): McpToolConte
   const repoRoot = resolve(opts.repo?.trim() || '.');
   return {
     repoRoot,
+    runtimeControllerHome: resolveRepoPreferredControllerHome(repoRoot, opts.controllerHome),
     policy: getMcpPolicy(parseMcpProfile(opts.profile ?? 'planner'), { repoRoot }),
     enableChatgptBrowser: opts.enableChatgptBrowser === true,
     sessionId: opts.sessionId,

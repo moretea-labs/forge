@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from 'path';
+import { ensureControllerHome } from '../src/cli/repositories/controller-home';
+import { findRegisteredRepositoryByCheckoutRoot, registerRepository } from '../src/cli/repositories/registry';
 import {
   collectChangedPaths,
   loadTestManifest,
@@ -69,7 +71,13 @@ export async function main(args: string[]): Promise<number> {
     for (const file of selection.files) console.log(file);
     return 0;
   }
-  return runTestSelection(ROOT, manifest, selection, { useCache: options.useCache });
+  const controllerHome = ensureControllerHome();
+  const repository = findRegisteredRepositoryByCheckoutRoot(ROOT, controllerHome)
+    ?? registerRepository({ path: ROOT, controllerHome });
+  return runTestSelection(ROOT, manifest, selection, {
+    useCache: options.useCache,
+    storageAuthority: { controllerHome, repoId: repository.repoId },
+  });
 }
 
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2));

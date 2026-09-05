@@ -13,6 +13,7 @@ import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
@@ -27,6 +28,8 @@ import { getProcessRecord, listProcessRecords } from '../../src/runtime/executio
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
+import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
+import { appendControllerWorklogEvent, listControllerWorklogEvents, resolveControllerWorklogStorage } from '../../src/cli/controller/worklog';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { MCP_SERVER_INSTRUCTIONS } from '../../src/cli/mcp/instructions';
@@ -534,7 +537,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     );
     expect(completed.ok).toBe(true);
     expect(completed.exitCode).toBe(0);
-    const artifactPath = join(fx.repoRoot, '.ai', 'harness', 'checks', 'controller', 'latest-slow.json');
+    const artifactPath = join(fx.controllerHome, 'repositories', fx.repository.repoId, 'checks', 'controller', 'latest-slow.json');
+    expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'checks'))).toBe(false);
     expect(existsSync(artifactPath)).toBe(true);
     const artifact = JSON.parse(readFileSync(artifactPath, 'utf8')) as {
       ok: boolean;
@@ -900,13 +904,41 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     );
     expect(completed.ok).toBe(false);
     expect(completed.exitCode).toBe(7);
+    const checkStorage = resolveRepositoryCheckStorage(fx.repoRoot, {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+    });
     const artifact = JSON.parse(readFileSync(
-      join(fx.repoRoot, '.ai', 'harness', 'checks', 'controller', 'latest-failing.json'),
+      join(checkStorage.physicalRoot, 'controller', 'latest-failing.json'),
       'utf8',
     )) as { ok: boolean; status: number; stderr: string };
+    expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'checks'))).toBe(false);
     expect(artifact.ok).toBe(false);
     expect(artifact.status).toBe(7);
     expect(artifact.stderr).toContain('expected-failure');
+  });
+
+  test('Controller worklog uses Controller Home authority without creating repository runtime state', () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const authority = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const event = appendControllerWorklogEvent(fx.repoRoot, {
+      category: 'edit',
+      action: 'controller_home_worklog_regression',
+      summary: 'Controller-owned runtime evidence',
+    }, authority);
+    const storage = resolveControllerWorklogStorage(fx.repoRoot, authority);
+
+    expect(storage.physicalPath).toBe(join(
+      fx.controllerHome,
+      'repositories',
+      fx.repository.repoId,
+      'controller',
+      'worklog.jsonl',
+    ));
+    expect(existsSync(storage.physicalPath)).toBe(true);
+    expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'controller', 'worklog.jsonl'))).toBe(false);
+    expect(listControllerWorklogEvents(fx.repoRoot, { limit: 1 }, authority)[0]?.id).toBe(event.id);
   });
 
   test('Work-bound edit validation consumes persisted snapshot Check identity instead of recomputing it from the live checkout', async () => {
@@ -947,6 +979,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checkoutId: fx.repository.activeCheckoutId,
       principalId: 'principal-snapshot-validation',
     };
+    const editStorage = ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
+    expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(editStorage.status);
     const session = beginEditSession(fx.repoRoot, {
       purpose: 'snapshot receipt identity regression',
       allowedPaths: ['src/**'],
@@ -1104,6 +1138,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       principalId: 'principal-validation-owner',
       routeDecisionFingerprint: 'route-validation-owner',
     };
+    const editStorage = ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
+    expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(editStorage.status);
     const session = beginEditSession(fx.repoRoot, {
       purpose: 'durable validation identity fence',
       binding,

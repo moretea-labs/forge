@@ -43,7 +43,7 @@ function artifactSlug(id: string): string {
 }
 
 export function processCheckArtifactPath(checkId: string): string {
-  return `.ai/harness/checks/controller/latest-${artifactSlug(checkId)}.json`;
+  return `controller-home://checks/controller/latest-${artifactSlug(checkId)}.json`;
 }
 
 function receiptStatus(status: ProcessRuntimeStatus): ProcessCheckReceiptStatus {

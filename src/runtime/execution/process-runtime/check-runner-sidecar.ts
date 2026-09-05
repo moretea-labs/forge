@@ -11,6 +11,8 @@ import { writePersistedCheckResultReceipt } from './check-result';
 
 interface ParsedArgs {
   repo: string;
+  controllerHome: string;
+  repoId: string;
   checkId: string;
   timeoutMs?: number;
   expectedCheckFingerprint: string;
@@ -34,6 +36,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
   return {
     repo: requiredValue(argv, '--repo'),
+    controllerHome: requiredValue(argv, '--controller-home'),
+    repoId: requiredValue(argv, '--repo-id'),
     checkId: requiredValue(argv, '--check-id'),
     timeoutMs,
     expectedCheckFingerprint: requiredValue(argv, '--expected-check-fingerprint'),
@@ -56,6 +60,7 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
     const result = await runControllerCheckAsync(root, args.checkId, {
       requestedTimeoutMs: args.timeoutMs,
       snapshot,
+      storageAuthority: { controllerHome: args.controllerHome, repoId: args.repoId },
       isolatedControllerHome: args.isolatedControllerHome,
     });
     if (args.resultReceiptPath) {

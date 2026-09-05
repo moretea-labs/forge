@@ -15,7 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { dirname, join, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { globMatches, normalizeMcpRelativePath } from '../../../cli/mcp/paths';
@@ -205,6 +205,24 @@ function isManagedWorktreeDependencyLink(sourceRoot: string, path: string): bool
   }
 }
 
+function isControllerHomeRuntimeBindingLink(
+  sourceRoot: string,
+  controllerHome: string,
+  repoId: string,
+  path: string,
+): boolean {
+  if (!path.startsWith('.ai/harness/') && !path.startsWith('.forge/')) return false;
+  const candidate = join(sourceRoot, path);
+  try {
+    if (!lstatSync(candidate).isSymbolicLink()) return false;
+    const controllerRoot = realpathSync(repositoryControllerRoot(controllerHome, repoId));
+    const target = realpathSync(candidate);
+    return target === controllerRoot || target.startsWith(`${controllerRoot}${sep}`);
+  } catch {
+    return false;
+  }
+}
+
 function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPaths: readonly string[]): void {
   let source = join(sourceRoot, 'node_modules');
   const target = join(targetRoot, 'node_modules');
@@ -248,7 +266,8 @@ export function materializeWorkVerificationSnapshot(input: {
   const sourceHead = git(input.sourceRoot, ['rev-parse', '--verify', 'HEAD']).toString('utf8').trim();
   const tracked = nulPaths(git(input.sourceRoot, ['diff', '--name-only', '-z', 'HEAD', '--']));
   const untracked = nulPaths(git(input.sourceRoot, ['ls-files', '--others', '--exclude-standard', '-z']))
-    .filter((path) => !isManagedWorktreeDependencyLink(input.sourceRoot, path));
+    .filter((path) => !isManagedWorktreeDependencyLink(input.sourceRoot, path))
+    .filter((path) => !isControllerHomeRuntimeBindingLink(input.sourceRoot, input.controllerHome, input.repoId, path));
   const dirtyPaths = [...new Set([...tracked, ...untracked])].sort();
   const includedPaths: string[] = [];
   const excludedPaths: string[] = [];

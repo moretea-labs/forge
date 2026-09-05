@@ -7,8 +7,10 @@ import {
   writeFileSync,
 } from "fs";
 import { dirname, isAbsolute, join, relative, resolve } from "path";
+import { durableControllerHome, repositoryControllerRoot } from "../repositories/controller-home";
+import { findRegisteredRepositoryByCheckoutRoot } from "../repositories/registry";
 
-const WORKLOG_PATH = ".ai/harness/controller/worklog.jsonl";
+const WORKLOG_CONTROLLER_RELATIVE_PATH = "controller/worklog.jsonl";
 
 export const WORKLOG_CATEGORIES = [
   "issue",
@@ -61,8 +63,56 @@ export interface WorklogFilter {
   limit?: number;
 }
 
-function worklogPath(repoRoot: string): string {
-  return join(repoRoot, WORKLOG_PATH);
+export interface ControllerWorklogStorageAuthority {
+  controllerHome: string;
+  repoId: string;
+}
+
+export interface ResolvedControllerWorklogStorage extends ControllerWorklogStorageAuthority {
+  repoRoot: string;
+  physicalPath: string;
+}
+
+function resolveControllerWorklogStorageIfKnown(
+  repoRoot: string,
+  explicit?: ControllerWorklogStorageAuthority,
+): ResolvedControllerWorklogStorage | undefined {
+  const root = resolve(repoRoot);
+  if (explicit) {
+    const controllerHome = durableControllerHome(explicit.controllerHome);
+    const repoId = explicit.repoId.trim();
+    if (!repoId) throw new Error("CONTROLLER_WORKLOG_REPOSITORY_ID_REQUIRED");
+    const registered = findRegisteredRepositoryByCheckoutRoot(root, controllerHome);
+    if (registered && registered.repoId !== repoId) {
+      throw new Error(`CONTROLLER_WORKLOG_REPOSITORY_ID_MISMATCH: expected ${registered.repoId}, received ${repoId}`);
+    }
+    return {
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      physicalPath: join(repositoryControllerRoot(controllerHome, repoId), WORKLOG_CONTROLLER_RELATIVE_PATH),
+    };
+  }
+
+  const controllerHome = durableControllerHome();
+  const registered = findRegisteredRepositoryByCheckoutRoot(root, controllerHome);
+  if (!registered) return undefined;
+  return {
+    controllerHome,
+    repoId: registered.repoId,
+    repoRoot: root,
+    physicalPath: join(repositoryControllerRoot(controllerHome, registered.repoId), WORKLOG_CONTROLLER_RELATIVE_PATH),
+  };
+}
+
+/** Resolve Controller-owned worklog storage without registering or initializing the repository. */
+export function resolveControllerWorklogStorage(
+  repoRoot: string,
+  explicit?: ControllerWorklogStorageAuthority,
+): ResolvedControllerWorklogStorage {
+  const storage = resolveControllerWorklogStorageIfKnown(repoRoot, explicit);
+  if (!storage) throw new Error(`CONTROLLER_WORKLOG_REPOSITORY_AUTHORITY_REQUIRED: ${resolve(repoRoot)}`);
+  return storage;
 }
 
 function eventId(): string {
@@ -75,6 +125,7 @@ export function appendControllerWorklogEvent(
     at?: string;
     actor?: string;
   },
+  authority?: ControllerWorklogStorageAuthority,
 ): ControllerWorklogEvent {
   const record: ControllerWorklogEvent = {
     schemaVersion: 1,
@@ -93,18 +144,19 @@ export function appendControllerWorklogEvent(
     statusTo: event.statusTo,
     details: event.details,
   };
-  const path = worklogPath(repoRoot);
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify(record)}\n`, "utf-8");
+  const storage = resolveControllerWorklogStorage(repoRoot, authority);
+  mkdirSync(dirname(storage.physicalPath), { recursive: true });
+  appendFileSync(storage.physicalPath, `${JSON.stringify(record)}\n`, "utf-8");
   return record;
 }
 
 export function tryAppendControllerWorklogEvent(
   repoRoot: string,
   event: Parameters<typeof appendControllerWorklogEvent>[1],
+  authority?: ControllerWorklogStorageAuthority,
 ): void {
   try {
-    appendControllerWorklogEvent(repoRoot, event);
+    appendControllerWorklogEvent(repoRoot, event, authority);
   } catch (_error) {
     // Worklog recording is evidence enrichment. It must not corrupt the source mutation.
   }
@@ -113,12 +165,13 @@ export function tryAppendControllerWorklogEvent(
 export function listControllerWorklogEvents(
   repoRoot: string,
   filter: WorklogFilter = {},
+  authority?: ControllerWorklogStorageAuthority,
 ): ControllerWorklogEvent[] {
-  const path = worklogPath(repoRoot);
-  if (!existsSync(path)) return [];
+  const storage = resolveControllerWorklogStorageIfKnown(repoRoot, authority);
+  if (!storage || !existsSync(storage.physicalPath)) return [];
   const since = filter.since ? Date.parse(filter.since) : Number.NEGATIVE_INFINITY;
   const until = filter.until ? Date.parse(filter.until) : Number.POSITIVE_INFINITY;
-  const events = readFileSync(path, "utf-8")
+  const events = readFileSync(storage.physicalPath, "utf-8")
     .split(/\r?\n/)
     .filter(Boolean)
     .flatMap((line) => {
@@ -155,13 +208,14 @@ export function exportControllerWorklog(
     format?: "markdown" | "json";
     outputPath?: string;
     filter?: WorklogFilter;
+    authority?: ControllerWorklogStorageAuthority;
   } = {},
 ): { path: string; format: "markdown" | "json"; eventCount: number } {
   const format = options.format ?? "markdown";
   const events = listControllerWorklogEvents(repoRoot, {
     ...options.filter,
     limit: options.filter?.limit ?? 5000,
-  }).slice().reverse();
+  }, options.authority).slice().reverse();
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   const defaultPath = `tasks/reports/controller-worklog-${stamp}.${format === "json" ? "json" : "md"}`;
   const outputPath = options.outputPath?.trim() || defaultPath;
@@ -196,6 +250,6 @@ export function exportControllerWorklog(
   return { path: relative(repoRoot, absolute).replace(/\\/g, "/"), format, eventCount: events.length };
 }
 
-export function controllerWorklogLocation(): string {
-  return WORKLOG_PATH;
+export function controllerWorklogLocation(repoId: string = "<repoId>"): string {
+  return `controller-home://repositories/${repoId}/controller/worklog.jsonl`;
 }

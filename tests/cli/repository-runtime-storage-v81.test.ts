@@ -13,6 +13,7 @@ import { join } from 'path';
 import { callMultiRepositoryTool, createMcpToolContext } from '../../src/cli/mcp/server';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
+import { beginEditSession } from '../../src/cli/editing/edit-session';
 import { repositoryFixture } from './repository-v81-fixture';
 
 function writeRun(root: string, runId: string, status: string, marker: string): void {
@@ -39,6 +40,32 @@ function writeLocalJob(root: string, jobId: string, status: string, marker: stri
 }
 
 describe('v8.1 repository runtime storage isolation', () => {
+  test('durable EditSession refuses to create physical repository runtime storage before binding', () => {
+    const fixture = repositoryFixture();
+    try {
+      const editSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'edit-sessions');
+      expect(() => beginEditSession(fixture.repoA.canonicalRoot, {
+        purpose: 'durable storage invariant',
+        allowedPaths: ['src/**'],
+        binding: {
+          workId: 'work-storage-invariant',
+          repoId: fixture.repoA.repoId,
+          checkoutId: fixture.repoA.activeCheckoutId,
+          principalId: 'test-principal',
+        },
+      })).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
+      expect(existsSync(editSource)).toBe(false);
+
+      const storage = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
+      const editTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'edit-sessions');
+      expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(storage.status);
+      expect(lstatSync(editSource).isSymbolicLink()).toBe(true);
+      expect(realpathSync(editSource)).toBe(realpathSync(editTarget));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('migrates EditSession storage through the same Controller Home binding used by the full runtime migration', () => {
     const fixture = repositoryFixture();
     try {

@@ -998,6 +998,7 @@ export async function startLightweightControllerCheck(
   }, { once: true });
   entry.promise = runControllerCheckAsync(input.repoRoot, input.checkId, {
     requestedTimeoutMs: input.timeoutMs,
+    storageAuthority: { controllerHome: input.controllerHome, repoId: input.repoId },
     subscriberId: processId,
     onSpawn: (pid) => {
       entry.pid = pid;

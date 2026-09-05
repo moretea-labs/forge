@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { atomicWriteFile } from '../../effects/fs-transaction';
 import { runProcess } from '../../effects/process-runner';
@@ -206,6 +206,19 @@ export type EditOperation =
   | { type: 'delete'; path: string; expectedSha256: string };
 
 const SESSION_ROOT = '.ai/harness/edit-sessions';
+
+function assertDurableEditSessionStorageBound(repoRoot: string, repoId: string | undefined): void {
+  if (!repoId?.trim()) return;
+  const root = join(repoRoot, SESSION_ROOT);
+  try {
+    if (lstatSync(root).isSymbolicLink()) return;
+  } catch (_error) {
+    // Durable EditSession state must be bound before the first write. The
+    // repository runtime-storage authority owns migration/link creation.
+  }
+  throw new Error(`EDIT_SESSION_STORAGE_NOT_BOUND: ${repoId.trim()} requires Controller Home edit-sessions binding`);
+}
+
 export const MAX_EDIT_PATCH_BATCH_OPERATIONS = 500;
 export const PREFERRED_EDIT_PATCH_BATCH_OPERATIONS = 100;
 
@@ -334,6 +347,7 @@ function revisionPatchPath(repoRoot: string, sessionId: string, revision: number
 }
 
 function writeSession(repoRoot: string, session: EditSession): void {
+  assertDurableEditSessionStorageBound(repoRoot, session.repoId);
   const path = sessionPath(repoRoot, session.sessionId);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(session, null, 2)}\n`, 'utf-8');
@@ -651,6 +665,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   note?: string;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
+  assertDurableEditSessionStorageBound(repoRoot, session.repoId);
   if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
   }
@@ -1165,6 +1180,7 @@ export function beginEditSession(repoRoot: string, input: {
 }): EditSession {
   const purpose = input.purpose.trim();
   if (!purpose) throw new Error('edit session purpose is required');
+  assertDurableEditSessionStorageBound(repoRoot, input.binding?.repoId);
   const at = now();
   const session: EditSession = {
     schemaVersion: 3,
@@ -1249,6 +1265,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   binding?: EditSessionBinding;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
+  assertDurableEditSessionStorageBound(repoRoot, session.repoId);
   if (['finalized', 'rolled_back'].includes(session.status)) throw new Error(`edit session is closed: ${session.status}`);
   if (operations.length === 0) throw new Error('at least one edit operation is required');
   const maxBatchOperations = Math.max(1, Math.trunc(options.maxBatchOperations ?? MAX_EDIT_PATCH_BATCH_OPERATIONS));
@@ -1487,7 +1504,10 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
         repoRoot,
         record.path,
         readFileSync(join(repoRoot, record.backupPath), 'utf-8'),
-        record.beforeMode === undefined ? {} : { mode: record.beforeMode },
+        {
+          backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/apply-rollback-r${revision}`,
+          ...(record.beforeMode === undefined ? {} : { mode: record.beforeMode }),
+        },
       );
     }
     const message = error instanceof Error ? error.message : String(error);
@@ -1636,7 +1656,7 @@ export async function verifyEditSessionAsync(repoRoot: string, sessionId: string
   });
 }
 
-function restoreOperation(repoRoot: string, operation: EditSessionOperationRecord): void {
+function restoreOperation(repoRoot: string, operation: EditSessionOperationRecord, backupRoot: string): void {
   const absolute = join(repoRoot, operation.path);
   if (operation.type === 'create') {
     if (existsSync(absolute)) {
@@ -1659,7 +1679,10 @@ function restoreOperation(repoRoot: string, operation: EditSessionOperationRecor
     repoRoot,
     operation.path,
     readFileSync(join(repoRoot, operation.backupPath), 'utf-8'),
-    operation.beforeMode === undefined ? {} : { mode: operation.beforeMode },
+    {
+      backupRoot,
+      ...(operation.beforeMode === undefined ? {} : { mode: operation.beforeMode }),
+    },
   );
 }
 
@@ -1669,6 +1692,7 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   allowFinalized?: boolean;
 } = {}): EditSession {
   const session = getEditSession(repoRoot, sessionId);
+  assertDurableEditSessionStorageBound(repoRoot, session.repoId);
   if ((session.status === 'open' || (session.status === 'finalized' && input.allowFinalized)) && session.operations.length === 0) {
     const at = now();
     session.status = 'rolled_back';
@@ -1700,7 +1724,11 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   try {
     for (const operation of reverted) {
       restoreAttempted = true;
-      restoreOperation(repoRoot, operation);
+      restoreOperation(
+        repoRoot,
+        operation,
+        `${SESSION_ROOT}/${session.sessionId}/atomic-backups/rollback-to-r${target}`,
+      );
     }
   } finally {
     if (restoreAttempted) invalidateRepositoryReadCaches(repoRoot);

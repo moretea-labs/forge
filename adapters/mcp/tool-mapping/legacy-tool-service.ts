@@ -151,7 +151,9 @@ import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
 import { loadMcpRuntimeState } from "../auth";
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../../src/runtime/shared/local-bridge-surface";
 import { resolveRepoPreferredControllerHome } from "../../../src/cli/repositories/controller-home";
+import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../../src/cli/repositories/runtime-storage';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { runPersistedCheckViaProcessRuntime } from '../runtime-gateway/persisted-check-process';
 import { getProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
@@ -165,6 +167,8 @@ import type { McpPolicy } from "../types";
 export interface McpToolContext {
   repoRoot: string;
   policy: McpPolicy;
+  /** Controller Home authority for legacy read-only Runtime projections. */
+  runtimeControllerHome?: string;
   enableChatgptBrowser?: boolean;
   /** Controller-issued MCP execution identity; absent on legacy non-controller calls. */
   sessionId?: string;
@@ -4221,7 +4225,7 @@ export async function callMcpTool(
           name,
           "ok",
           args,
-          `.ai/harness/edit-sessions/${integrated.session.sessionId}`,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${integrated.session.sessionId}`,
         );
         return textResult(integrated);
       }
@@ -4587,6 +4591,15 @@ export async function callMcpTool(
             requestedBy: "chatgpt",
           });
         }
+        const editRepository = resolveRepositorySelection({
+          repoId,
+          checkoutId: identity.checkoutId,
+          controllerHome,
+        });
+        const editStorage = ensureRepositoryRuntimeStorageBinding(editRepository, 'edit-sessions', controllerHome);
+        if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
+          return errorResult('EDIT_SESSION_STORAGE_NOT_READY', editStorage.message ?? editStorage.status);
+        }
         const session = beginEditSession(ctx.repoRoot, {
           purpose,
           issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
@@ -4609,7 +4622,7 @@ export async function callMcpTool(
           name,
           "ok",
           args,
-          `.ai/harness/edit-sessions/${session.sessionId}`,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
@@ -4646,7 +4659,7 @@ export async function callMcpTool(
           );
         } catch (error) {
           if (error instanceof EditSessionPatchError) {
-            audit(ctx, name, "failed", args, `.ai/harness/edit-sessions/${error.details.sessionId}`, error.message);
+            audit(ctx, name, "failed", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${error.details.sessionId}`, error.message);
             return errorResult(error.code, error.message, error.details);
           }
           throw error;
@@ -4656,7 +4669,7 @@ export async function callMcpTool(
           name,
           "ok",
           args,
-          `.ai/harness/edit-sessions/${session.sessionId}`,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
@@ -4675,7 +4688,7 @@ export async function callMcpTool(
           name,
           "ok",
           args,
-          `.ai/harness/edit-sessions/${session.sessionId}`,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
@@ -4701,7 +4714,7 @@ export async function callMcpTool(
           String(args.session_id ?? ""),
           String(args.name ?? ""),
         );
-        audit(ctx, name, "ok", args, `.ai/harness/edit-sessions/${session.sessionId}`);
+        audit(ctx, name, "ok", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`);
         return textResult(session);
       }
       case "verify_edit_session": {
@@ -4735,7 +4748,7 @@ export async function callMcpTool(
           name,
           "ok",
           args,
-          `.ai/harness/edit-sessions/${session.sessionId}`,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
@@ -4769,7 +4782,7 @@ export async function callMcpTool(
           name,
           "ok",
           args,
-          `.ai/harness/edit-sessions/${session.sessionId}`,
+          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
         );
         return textResult(session);
       }
@@ -4880,12 +4893,24 @@ export async function callMcpTool(
         return textResult({ sessionContext: handoff });
       }
       case "latest_checks": {
-        const files = workflowFileCandidates(ctx.repoRoot)
-          .filter((path) => path.startsWith(".ai/harness/checks/"))
-          .filter(
-            (path) => resolveMcpPath(ctx.repoRoot, path, ctx.policy, "read").ok,
-          )
-          .map((path) => fileSummary(path, ctx.repoRoot))
+        const controllerHome = ctx.runtimeControllerHome?.trim()
+          || resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const repoId = ctx.repoId?.trim()
+          || resolveRepositorySelection({
+            explicitPath: ctx.repoRoot,
+            controllerHome,
+            allowSoleRepository: true,
+          }).repoId;
+        const storage = resolveRepositoryCheckStorage(ctx.repoRoot, { controllerHome, repoId });
+        const relativeFiles: string[] = [];
+        listFilesUnder(storage.physicalRoot, ".", 700, relativeFiles);
+        const files = relativeFiles
+          .map((path) => path.replace(/^\.\//, ""))
+          .filter((path) => !path.startsWith("locks/"))
+          .map((path) => {
+            const summary = fileSummary(path, storage.physicalRoot);
+            return summary ? { ...summary, path: `controller-home://checks/${path}` } : null;
+          })
           .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
           .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
           .slice(0, 20);

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
+import { repositoryControllerRoot } from "../../src/cli/repositories/controller-home";
 import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
@@ -815,6 +816,40 @@ describe("repository MCP command tools", () => {
       expect(selected.repoId).not.toBe(alias.repoId);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot, aliasRoot, nextWorktreeRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("projects latest_checks from Controller Home without recreating repository-local check state", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-latest-checks-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "repo");
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-q"]);
+      const registered = registerRepository({ path: repoRoot, controllerHome, displayName: "latest-checks" });
+      const checkRoot = join(repositoryControllerRoot(controllerHome, registered.repoId), "checks");
+      const evidencePath = join(checkRoot, "controller", "latest-focused.json");
+      mkdirSync(join(checkRoot, "controller"), { recursive: true });
+      mkdirSync(join(checkRoot, "locks"), { recursive: true });
+      writeFileSync(evidencePath, JSON.stringify({ schemaVersion: 2, checkId: "focused", ok: true }));
+      writeFileSync(join(checkRoot, "locks", "heavy.lock"), "internal-lock");
+
+      const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: "controller" });
+      const response = JSON.parse((await callMcpTool({
+        ...ctx,
+        repoRoot,
+        repoId: registered.repoId,
+        runtimeControllerHome: controllerHome,
+      }, "latest_checks")).content[0]?.text ?? "{}");
+
+      expect(response.files).toHaveLength(1);
+      expect(response.files[0].path).toBe("controller-home://checks/controller/latest-focused.json");
+      expect(response.files[0].size).toBeGreaterThan(0);
+      expect(response.files.some((entry: { path: string }) => entry.path.includes("/locks/"))).toBe(false);
+      expect(existsSync(join(repoRoot, ".ai", "harness", "checks"))).toBe(false);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }
   });

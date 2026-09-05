@@ -115,6 +115,7 @@ describe('test runner infrastructure', () => {
       ...base,
       tests: { [testPath]: { module: 'runner' as const, resource: 'process-tree' as const } },
     };
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-test-runner-controller-'));
     try {
       const status = await runTestSelection(repo, manifest, {
         gate: 'infrastructure',
@@ -122,17 +123,24 @@ describe('test runner infrastructure', () => {
         modules: ['runner'],
         files: [testPath],
         reason: 'mutation fixture',
-      }, { useCache: false });
+      }, {
+        useCache: false,
+        storageAuthority: { controllerHome, repoId: 'repo-test-runner-mutation' },
+      });
       expect(status).toBe(1);
       expect(readFileSync(join(repo, 'tracked.txt'), 'utf8')).toBe('mutated\n');
+      expect(existsSync(join(repo, '.ai', 'harness', 'checks'))).toBe(false);
+      expect(existsSync(join(controllerHome, 'repositories', 'repo-test-runner-mutation', 'checks', 'tests', 'receipts'))).toBe(true);
     } finally {
       rmSync(repo, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
     }
   }, 15_000);
 
   test('retries infrastructure once but never retries a source assertion', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-'));
     const markerDir = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-markers-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-controller-'));
     mkdirSync(join(repo, 'tests'), { recursive: true });
     const infraPath = 'tests/infra-retry.test.ts';
     const sourcePath = 'tests/source-no-retry.test.ts';
@@ -161,18 +169,25 @@ describe('test runner infrastructure', () => {
     try {
       const infraStatus = await runTestSelection(repo, manifest, {
         gate: 'integration', changedPaths: [], modules: ['runner'], files: [infraPath], reason: 'retry fixture',
-      }, { useCache: false, tempConcurrency: 1 });
+      }, {
+        useCache: false, tempConcurrency: 1,
+        storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
+      });
       expect(infraStatus).toBe(0);
       expect(readFileSync(infraMarker, 'utf8')).toBe('xx');
 
       const sourceStatus = await runTestSelection(repo, manifest, {
         gate: 'integration', changedPaths: [], modules: ['runner'], files: [sourcePath], reason: 'source fixture',
-      }, { useCache: false, tempConcurrency: 1 });
+      }, {
+        useCache: false, tempConcurrency: 1,
+        storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
+      });
       expect(sourceStatus).toBe(1);
       expect(readFileSync(sourceMarker, 'utf8')).toBe('x');
     } finally {
       rmSync(repo, { recursive: true, force: true });
       rmSync(markerDir, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
     }
   }, 15_000);
 

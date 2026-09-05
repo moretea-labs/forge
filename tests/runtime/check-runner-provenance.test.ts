@@ -7,18 +7,53 @@ import { basename, dirname, join } from 'path';
 import {
   controllerCheckExecutionIdentity,
   listControllerChecks,
-  readLatestControllerCheckEvidence,
+  readLatestControllerCheckEvidence as readLatestControllerCheckEvidenceRaw,
   resolveSyncSupervisorBridgeRuntime,
-  runControllerCheck,
-  runControllerCheckAsync,
+  runControllerCheck as runControllerCheckRaw,
+  runControllerCheckAsync as runControllerCheckAsyncRaw,
   snapshotControllerCheck,
+  type AsyncControllerCheckOptions,
+  type ControllerCheckSnapshot,
 } from '../../src/cli/controller/check-runner';
+import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
 import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 
 const roots: string[] = [];
+const storageAuthorities = new Map<string, RepositoryCheckStorageAuthority>();
+
+function storageAuthority(repoRoot: string): RepositoryCheckStorageAuthority {
+  const existing = storageAuthorities.get(repoRoot);
+  if (existing) return existing;
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-check-storage-controller-'));
+  roots.push(controllerHome);
+  const authority = {
+    controllerHome,
+    repoId: `repo-check-${createHash('sha256').update(repoRoot).digest('hex').slice(0, 16)}`,
+  };
+  storageAuthorities.set(repoRoot, authority);
+  return authority;
+}
+
+function runControllerCheck(
+  repoRoot: string, id: string, requestedTimeoutMs?: number, snapshot?: ControllerCheckSnapshot,
+) {
+  return runControllerCheckRaw(repoRoot, id, requestedTimeoutMs, snapshot, storageAuthority(repoRoot));
+}
+
+function runControllerCheckAsync(repoRoot: string, id: string, options: AsyncControllerCheckOptions = {}) {
+  return runControllerCheckAsyncRaw(repoRoot, id, {
+    ...options,
+    storageAuthority: options.storageAuthority ?? storageAuthority(repoRoot),
+  });
+}
+
+function readLatestControllerCheckEvidence(repoRoot: string, id: string) {
+  return readLatestControllerCheckEvidenceRaw(repoRoot, id, storageAuthority(repoRoot));
+}
 
 afterEach(() => {
+  storageAuthorities.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -78,6 +113,60 @@ describe('controller check provenance and failure classification', () => {
     expect(current.find((entry) => entry.id === 'portable')?.command).toEqual([process.execPath, '-e', 'process.exit(7)']);
     expect(current.some((entry) => entry.id === 'current_only')).toBe(true);
     expect(current.some((entry) => entry.id === 'legacy_only')).toBe(false);
+  });
+
+  test('keeps canonical and linked-worktree check evidence in one Controller Home namespace', async () => {
+    const container = mkdtempSync(join(tmpdir(), 'forge-check-storage-shared-'));
+    roots.push(container);
+    const repoRoot = join(container, 'repository');
+    const worktreeRoot = join(container, 'worktree');
+    mkdirSync(repoRoot, { recursive: true });
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'shared-storage-fixture' }));
+    mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge/checks.json'), JSON.stringify({
+      version: 1,
+      checks: { shared_storage: { command: [process.execPath, '-e', 'process.exit(0)'] } },
+    }));
+    expect(spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'fixture'], {
+      cwd: repoRoot, stdio: 'ignore',
+    }).status).toBe(0);
+    expect(spawnSync('git', ['worktree', 'add', '-b', 'shared-storage-worktree', worktreeRoot], {
+      cwd: repoRoot, stdio: 'ignore',
+    }).status).toBe(0);
+
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: join(container, 'controller-home'),
+      repoId: 'repo-shared-check-storage',
+    };
+    expect((await runControllerCheckAsyncRaw(repoRoot, 'shared_storage', { storageAuthority: authority })).ok).toBe(true);
+    expect((await runControllerCheckAsyncRaw(worktreeRoot, 'shared_storage', { storageAuthority: authority })).ok).toBe(true);
+
+    const physicalRoot = join(authority.controllerHome, 'repositories', authority.repoId, 'checks');
+    for (const checkoutRoot of [repoRoot, worktreeRoot]) {
+      expect(existsSync(join(checkoutRoot, '.ai', 'harness', 'checks'))).toBe(false);
+    }
+    expect(existsSync(join(physicalRoot, 'controller', 'latest-shared_storage.json'))).toBe(true);
+  });
+
+  test('reading missing check evidence does not initialize repository or Controller Home storage', () => {
+    const repoRoot = fixture({ missing_evidence: { command: [process.execPath, '-e', 'process.exit(0)'] } });
+    const authority = storageAuthority(repoRoot);
+    const logicalRoot = join(repoRoot, '.ai', 'harness', 'checks');
+    const physicalRoot = join(authority.controllerHome, 'repositories', authority.repoId, 'checks');
+    expect(existsSync(logicalRoot)).toBe(false);
+    expect(existsSync(physicalRoot)).toBe(false);
+    expect(readLatestControllerCheckEvidenceRaw(repoRoot, 'missing_evidence', authority)).toBeUndefined();
+    expect(existsSync(logicalRoot)).toBe(false);
+    expect(existsSync(physicalRoot)).toBe(false);
+  });
+
+  test('refuses to adopt a physical repository-local check directory', () => {
+    const repoRoot = fixture({ conflict: { command: [process.execPath, '-e', 'process.exit(0)'] } });
+    mkdirSync(join(repoRoot, '.ai', 'harness', 'checks'), { recursive: true });
+    expect(() => runControllerCheckRaw(repoRoot, 'conflict', undefined, undefined, storageAuthority(repoRoot)))
+      .toThrow(/CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN/);
   });
 
   test('normalizes declared effects and binds them into check snapshots', () => {
@@ -219,7 +308,9 @@ describe('controller check provenance and failure classification', () => {
       validatedRevision: first.validatedRevision,
       originalExecutedAt: first.executedAt,
     });
-    expect(readdirSync(join(repoRoot, '.ai/harness/checks/controller/cached'))).toHaveLength(1);
+    const authority = storageAuthority(repoRoot);
+    expect(readdirSync(join(authority.controllerHome, 'repositories', authority.repoId, 'checks', 'controller', 'cached'))).toHaveLength(1);
+    expect(existsSync(join(repoRoot, '.ai', 'harness', 'checks'))).toBe(false);
   });
 
   test('reuses same-content history across commit identity and unrelated task documents', async () => {
@@ -246,7 +337,9 @@ describe('controller check provenance and failure classification', () => {
     writeFileSync(packagePath, originalPackage);
     expect((await runControllerCheckAsync(repoRoot, 'history')).cacheHit).toBe(true);
     expect(readFileSync(marker, 'utf8')).toBe('xx');
-    expect(existsSync(join(repoRoot, '.ai/harness/checks/controller/history'))).toBe(true);
+    const authority = storageAuthority(repoRoot);
+    expect(existsSync(join(authority.controllerHome, 'repositories', authority.repoId, 'checks', 'controller', 'history'))).toBe(true);
+    expect(existsSync(join(repoRoot, '.ai', 'harness', 'checks'))).toBe(false);
   });
 
   test('shares semantic identity across clean worktrees and invalidates dirty/config/environment changes', () => {
@@ -405,8 +498,11 @@ describe('controller check provenance and failure classification', () => {
     const previousRuntime = process.env.FORGE_BUN_EXECUTABLE;
     try {
       process.env.FORGE_BUN_EXECUTABLE = fakeRuntime;
+      const authority = storageAuthority(repoRoot);
       const code = await runPersistedCheckSidecar([
         '--repo', repoRoot,
+        '--controller-home', authority.controllerHome,
+        '--repo-id', authority.repoId,
         '--check-id', 'persisted_no_bridge',
         '--expected-check-fingerprint', fingerprint,
       ]);

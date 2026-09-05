@@ -278,6 +278,10 @@ export async function runPersistedCheckViaProcessRuntime(
   const checkArgs = [
     '--repo',
     executionRoot,
+    '--controller-home',
+    input.controllerHome,
+    '--repo-id',
+    input.repoId,
     '--check-id',
     input.checkId,
     '--timeout-ms',

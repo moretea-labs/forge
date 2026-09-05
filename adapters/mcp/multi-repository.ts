@@ -403,6 +403,7 @@ export async function callMultiRepositoryTool(
     if (rebindEntities) bindRepositoryEntities(repository);
     const scopedContext: McpToolContext = {
       repoRoot: repository.canonicalRoot,
+      runtimeControllerHome: ctx.controllerHome,
       policy: runtimePolicy(repository.canonicalRoot, {
         profile: ctx.policy.profile,
         enableChatgptBrowser: ctx.enableChatgptBrowser,

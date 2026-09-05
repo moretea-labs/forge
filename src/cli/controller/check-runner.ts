@@ -12,6 +12,12 @@ import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
 import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
+import {
+  ensureRepositoryCheckStorage,
+  resolveRepositoryCheckStorage,
+  type RepositoryCheckStorageAuthority,
+  type ResolvedRepositoryCheckStorage,
+} from '../../runtime/execution/process-runtime/check-storage';
 
 export interface ControllerCheckEffects {
   /** Repository-relative read scopes. Use [\".\"] for the whole checkout. */
@@ -89,8 +95,8 @@ interface CheckConfig {
 
 const CHECK_CONFIG = '.forge/checks.json';
 const LEGACY_TRACKED_CHECK_CONFIG = '.repo-harness/checks.json';
-const CHECK_EVIDENCE_ROOT = '.ai/harness/checks/controller';
-const HEAVY_CHECK_LOCK = '.ai/harness/controller/heavy-check.lock';
+const CHECK_EVIDENCE_SUBDIR = 'controller';
+const HEAVY_CHECK_LOCK = 'heavy-check.lock';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const SAFE_PACKAGE_SCRIPT = /^(test(?::|$)|check(?::|$)|lint(?::|$)|typecheck(?::|$)|format:check$)/;
@@ -395,12 +401,16 @@ function artifactSlug(id: string): string {
   return id.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'check';
 }
 
-function evidencePath(repoRoot: string, id: string): string {
-  return join(repoRoot, CHECK_EVIDENCE_ROOT, `latest-${artifactSlug(id)}.json`);
+function evidencePath(storage: ResolvedRepositoryCheckStorage, id: string): string {
+  return join(storage.physicalRoot, CHECK_EVIDENCE_SUBDIR, `latest-${artifactSlug(id)}.json`);
 }
 
-function historicalEvidencePath(repoRoot: string, id: string, cacheKey: string): string {
-  return join(repoRoot, CHECK_EVIDENCE_ROOT, artifactSlug(id), `${cacheKey}.json`);
+function historicalEvidencePath(storage: ResolvedRepositoryCheckStorage, id: string, cacheKey: string): string {
+  return join(storage.physicalRoot, CHECK_EVIDENCE_SUBDIR, artifactSlug(id), `${cacheKey}.json`);
+}
+
+function logicalEvidenceArtifactPath(id: string): string {
+  return `controller-home://checks/controller/latest-${artifactSlug(id)}.json`;
 }
 
 const CHECK_REVISION_EXCLUDES = [
@@ -590,7 +600,7 @@ export function controllerCheckExecutionIdentity(
 }
 
 function persistCheckEvidence(
-  repoRoot: string,
+  storage: ResolvedRepositoryCheckStorage,
   result: Omit<ControllerCheckResult, 'artifactPath'>,
   meta: {
     revision?: string;
@@ -601,7 +611,7 @@ function persistCheckEvidence(
     validatedRevision?: string;
   } = {},
 ): string {
-  const path = evidencePath(repoRoot, result.check.id);
+  const path = evidencePath(storage, result.check.id);
   mkdirSync(dirname(path), { recursive: true });
   const evidence: ControllerCheckEvidence = {
     schemaVersion: 2,
@@ -628,15 +638,22 @@ function persistCheckEvidence(
   const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
   atomicWriteFileSync(path, serialized);
   if (meta.cacheKey) {
-    const historicalPath = historicalEvidencePath(repoRoot, result.check.id, meta.cacheKey);
+    const historicalPath = historicalEvidencePath(storage, result.check.id, meta.cacheKey);
     mkdirSync(dirname(historicalPath), { recursive: true });
     atomicWriteFileSync(historicalPath, serialized);
   }
-  return relative(repoRoot, path).replace(/\\/g, '/');
+  return logicalEvidenceArtifactPath(result.check.id);
 }
 
-export function readLatestControllerCheckEvidence(repoRoot: string, id: string): ControllerCheckEvidence | undefined {
-  const path = evidencePath(repoRoot, id);
+export function readLatestControllerCheckEvidence(
+  repoRoot: string,
+  id: string,
+  storageAuthority?: RepositoryCheckStorageAuthority | ResolvedRepositoryCheckStorage,
+): ControllerCheckEvidence | undefined {
+  const storage = storageAuthority && 'physicalRoot' in storageAuthority
+    ? storageAuthority as ResolvedRepositoryCheckStorage
+    : resolveRepositoryCheckStorage(repoRoot, storageAuthority as RepositoryCheckStorageAuthority | undefined);
+  const path = evidencePath(storage, id);
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
@@ -646,8 +663,8 @@ export function readLatestControllerCheckEvidence(repoRoot: string, id: string):
   }
 }
 
-function readControllerCheckEvidenceByKey(repoRoot: string, id: string, cacheKey: string): ControllerCheckEvidence | undefined {
-  const path = historicalEvidencePath(repoRoot, id, cacheKey);
+function readControllerCheckEvidenceByKey(storage: ResolvedRepositoryCheckStorage, id: string, cacheKey: string): ControllerCheckEvidence | undefined {
+  const path = historicalEvidencePath(storage, id, cacheKey);
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
@@ -662,16 +679,23 @@ function prepareControllerCheckDependencies(repoRoot: string, check: ControllerC
   materializeManagedWorkspaceCheckDependencies(repoRoot);
 }
 
-export function runControllerCheck(repoRoot: string, id: string, requestedTimeoutMs?: number, snapshot?: ControllerCheckSnapshot): ControllerCheckResult {
+export function runControllerCheck(
+  repoRoot: string,
+  id: string,
+  requestedTimeoutMs?: number,
+  snapshot?: ControllerCheckSnapshot,
+  storageAuthority?: RepositoryCheckStorageAuthority,
+): ControllerCheckResult {
   const check = snapshot ? validateControllerCheckSnapshot(repoRoot, snapshot) : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
+  const storage = ensureRepositoryCheckStorage(repoRoot, storageAuthority);
   prepareControllerCheckDependencies(repoRoot, check);
   const identity = controllerCheckExecutionIdentity(repoRoot, id, requestedTimeoutMs, snapshot);
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
-  const cached = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
-    ?? readLatestControllerCheckEvidence(repoRoot, id);
+  const cached = readControllerCheckEvidenceByKey(storage, id, cacheKey)
+    ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
   if (cached?.cacheKey === cacheKey && cached.ok) {
     return {
       check,
@@ -682,7 +706,7 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
       stderr: cached.stderr,
       command: cached.command,
       executedAt: cached.executedAt,
-      artifactPath: relative(repoRoot, evidencePath(repoRoot, id)).replace(/\\/g, '/'),
+      artifactPath: logicalEvidenceArtifactPath(id),
       cacheHit: true,
       validatedRevision: cached.validatedRevision ?? cached.completedRevision ?? cached.revision ?? revision,
       originalExecutedAt: cached.originalExecutedAt ?? cached.executedAt,
@@ -690,7 +714,7 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
     };
   }
   const heavy = controllerCheckConcurrencyClass(id) === 'heavy';
-  const lease = heavy ? tryAcquireHeavyCheckLock(repoRoot, id) : undefined;
+  const lease = heavy ? tryAcquireHeavyCheckLock(storage, id) : undefined;
   if (heavy && !lease) throw new Error(`heavy check already running for repository: ${id}`);
   let result: ProcessRunResult;
   try {
@@ -789,7 +813,7 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
   };
   return {
     ...withoutPath,
-    artifactPath: persistCheckEvidence(repoRoot, withoutPath, {
+    artifactPath: persistCheckEvidence(storage, withoutPath, {
       revision,
       completedRevision,
       stale,
@@ -802,6 +826,7 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
 
 export interface AsyncControllerCheckOptions {
   snapshot?: ControllerCheckSnapshot;
+  storageAuthority?: RepositoryCheckStorageAuthority;
   /** Explicit isolated authority for Candidate verification child processes. */
   isolatedControllerHome?: string;
   requestedTimeoutMs?: number;
@@ -852,8 +877,8 @@ interface HeavyCheckLease {
   release(): void;
 }
 
-function tryAcquireHeavyCheckLock(repoRoot: string, checkId: string): HeavyCheckLease | undefined {
-  const path = join(repoRoot, HEAVY_CHECK_LOCK);
+function tryAcquireHeavyCheckLock(storage: ResolvedRepositoryCheckStorage, checkId: string): HeavyCheckLease | undefined {
+  const path = join(storage.lockRoot, HEAVY_CHECK_LOCK);
   mkdirSync(dirname(path), { recursive: true });
   const lockId = `${process.pid}:${Date.now()}:${checkId}`;
   const record: HeavyCheckLockRecord = {
@@ -880,7 +905,7 @@ function tryAcquireHeavyCheckLock(repoRoot: string, checkId: string): HeavyCheck
     const orphaned = !isProcessAlive(existing?.controllerPid ?? existing?.pid) && !isProcessAlive(existing?.childPid);
     if (!existing || orphaned) {
       rmSync(path, { force: true });
-      return tryAcquireHeavyCheckLock(repoRoot, checkId);
+      return tryAcquireHeavyCheckLock(storage, checkId);
     }
     return undefined;
   }
@@ -902,10 +927,10 @@ function tryAcquireHeavyCheckLock(repoRoot: string, checkId: string): HeavyCheck
   };
 }
 
-async function acquireHeavyCheckLock(repoRoot: string, checkId: string): Promise<HeavyCheckLease> {
+async function acquireHeavyCheckLock(storage: ResolvedRepositoryCheckStorage, checkId: string): Promise<HeavyCheckLease> {
   const deadline = Date.now() + MAX_TIMEOUT_MS * 2;
   while (true) {
-    const lease = tryAcquireHeavyCheckLock(repoRoot, checkId);
+    const lease = tryAcquireHeavyCheckLock(storage, checkId);
     if (lease) return lease;
     if (Date.now() >= deadline) throw new Error(`timed out waiting for repository heavy-check lock before ${checkId}`);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
@@ -942,6 +967,7 @@ async function executeControllerCheckAsync(
   repoRoot: string,
   check: ControllerCheck,
   timeoutMs: number,
+  storage: ResolvedRepositoryCheckStorage,
   onSpawn?: (pid: number) => void,
   isolatedControllerHome?: string,
 ): Promise<ControllerCheckResult> {
@@ -998,7 +1024,7 @@ async function executeControllerCheckAsync(
     originalExecutedAt: executedAt,
     failureClass: result.failureClass,
   };
-  return { ...withoutPath, artifactPath: relative(repoRoot, evidencePath(repoRoot, check.id)).replace(/\\/g, '/') };
+  return { ...withoutPath, artifactPath: logicalEvidenceArtifactPath(check.id) };
 }
 
 export function runControllerCheckAsync(
@@ -1013,7 +1039,9 @@ export function runControllerCheckAsync(
     return Promise.reject(error);
   }
   if (!check || check.id !== id) return Promise.reject(new Error(`check not found: ${id}`));
+  let storage: ResolvedRepositoryCheckStorage;
   try {
+    storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
     prepareControllerCheckDependencies(repoRoot, check);
   } catch (error) {
     return Promise.reject(error);
@@ -1022,8 +1050,8 @@ export function runControllerCheckAsync(
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
-  const cached = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
-    ?? readLatestControllerCheckEvidence(repoRoot, id);
+  const cached = readControllerCheckEvidenceByKey(storage, id, cacheKey)
+    ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
   if (cached?.cacheKey === cacheKey && cached.ok) {
     return Promise.resolve({
       check,
@@ -1034,7 +1062,7 @@ export function runControllerCheckAsync(
       stderr: cached.stderr,
       command: cached.command,
       executedAt: cached.executedAt,
-      artifactPath: relative(repoRoot, evidencePath(repoRoot, id)).replace(/\\/g, '/'),
+      artifactPath: logicalEvidenceArtifactPath(id),
       cacheHit: true,
       validatedRevision: cached.validatedRevision ?? cached.completedRevision ?? cached.revision ?? revision,
       originalExecutedAt: cached.originalExecutedAt ?? cached.executedAt,
@@ -1085,7 +1113,7 @@ export function runControllerCheckAsync(
   };
   const execute = async (lease?: HeavyCheckLease) => {
     assertExecutionStillRequested();
-    const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, (pid) => {
+    const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, storage, (pid) => {
       lease?.setChildPid(pid);
       notifySpawn(pid);
     }, options.isolatedControllerHome);
@@ -1106,7 +1134,7 @@ export function runControllerCheckAsync(
       validatedRevision: stale ? completedRevision : revision,
     };
     const { artifactPath: _artifactPath, ...withoutPath } = finalized;
-    const artifactPath = persistCheckEvidence(repoRoot, withoutPath, {
+    const artifactPath = persistCheckEvidence(storage, withoutPath, {
       revision,
       completedRevision,
       stale,
@@ -1118,15 +1146,15 @@ export function runControllerCheckAsync(
   };
   const executeHeavy = async (): Promise<ControllerCheckResult> => {
     assertExecutionStillRequested();
-    const lease = await acquireHeavyCheckLock(repoRoot, id);
+    const lease = await acquireHeavyCheckLock(storage, id);
     try {
       assertExecutionStillRequested();
       const currentRevision = currentControllerCheckRevision(repoRoot);
       if (currentRevision !== revision) {
         throw new Error(`repository revision changed while heavy check ${id} was queued; resubmit the check`);
       }
-      const refreshed = readControllerCheckEvidenceByKey(repoRoot, id, cacheKey)
-        ?? readLatestControllerCheckEvidence(repoRoot, id);
+      const refreshed = readControllerCheckEvidenceByKey(storage, id, cacheKey)
+        ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
       if (refreshed?.cacheKey === cacheKey && refreshed.ok) {
         return {
           check,
@@ -1137,7 +1165,7 @@ export function runControllerCheckAsync(
           stderr: refreshed.stderr,
           command: refreshed.command,
           executedAt: refreshed.executedAt,
-          artifactPath: relative(repoRoot, evidencePath(repoRoot, id)).replace(/\\/g, '/'),
+          artifactPath: logicalEvidenceArtifactPath(id),
           cacheHit: true,
           validatedRevision: refreshed.validatedRevision ?? refreshed.completedRevision ?? refreshed.revision ?? revision,
           originalExecutedAt: refreshed.originalExecutedAt ?? refreshed.executedAt,

@@ -12,6 +12,7 @@ import {
 import { dirname, join, relative, resolve } from 'path';
 import { runBunTestFile, TEST_FAILURE_CODES, type BunTestFileRunResult } from '../../scripts/run-bun-test-file';
 import { runBoundedChild } from '../runtime/shared/bounded-child-supervisor';
+import { ensureRepositoryCheckStorage, type RepositoryCheckStorageAuthority } from '../runtime/execution/process-runtime/check-storage';
 
 export const TEST_MODULES = [
   'core', 'controller', 'process-runtime', 'routing', 'repository',
@@ -57,8 +58,8 @@ export interface TestSelection {
 }
 
 const MANIFEST_PATH = 'tests/test-manifest.v1.json';
-const CHECKPOINT_ROOT = '.ai/harness/checks/tests/checkpoints';
-const RECEIPT_ROOT = '.ai/harness/checks/tests/receipts';
+const CHECKPOINT_SUBDIR = join('tests', 'checkpoints');
+const RECEIPT_SUBDIR = join('tests', 'receipts');
 const INFRASTRUCTURE_RESOURCES = new Set<TestResource>([
   'git-worktree', 'process-tree', 'fixed-port', 'runtime-singleton',
 ]);
@@ -377,6 +378,7 @@ async function runPool<T>(items: T[], concurrency: number, run: (item: T) => Pro
 
 export interface RunTestSelectionOptions {
   useCache?: boolean;
+  storageAuthority?: RepositoryCheckStorageAuthority;
   pureConcurrency?: number;
   tempConcurrency?: number;
 }
@@ -388,6 +390,7 @@ export async function runTestSelection(
   options: RunTestSelectionOptions = {},
 ): Promise<number> {
   const useCache = options.useCache ?? true;
+  const storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
   const baselineWorkspace = workspaceMutationDigest(repoRoot);
   const contentDigest = testContentDigest(repoRoot);
   const runnerDigest = hashFiles(repoRoot, [
@@ -425,12 +428,12 @@ export async function runTestSelection(
     const key = createHash('sha256').update(JSON.stringify({
       inputDigest, runnerDigest, testDigest, toolchain, capability, file,
     })).digest('hex');
-    const checkpointPath = join(repoRoot, CHECKPOINT_ROOT, `${key}.json`);
+    const checkpointPath = join(storage.physicalRoot, CHECKPOINT_SUBDIR, `${key}.json`);
     const cachedCheckpoint = useCache ? readPassedCheckpoint(checkpointPath, key) : undefined;
     if (cachedCheckpoint) {
       cacheHits += 1;
       serialEquivalentMs += cachedCheckpoint.durationMs;
-      const checkpointRelativePath = relative(repoRoot, checkpointPath).replace(/\\/g, '/');
+      const checkpointRelativePath = `controller-home://checks/${join(CHECKPOINT_SUBDIR, `${key}.json`).replace(/\\/g, '/')}`;
       cacheProvenance.push({
         file,
         checkpointKey: cachedCheckpoint.key,
@@ -588,7 +591,7 @@ export async function runTestSelection(
     ]),
     completedAt: new Date().toISOString(),
   };
-  atomicJson(join(repoRoot, RECEIPT_ROOT, `${contentDigest}-${selection.gate}.json`), receipt);
+  atomicJson(join(storage.physicalRoot, RECEIPT_SUBDIR, `${contentDigest}-${selection.gate}.json`), receipt);
   console.error(`[tests] ${receipt.status}: ${selection.files.length} selected, ${cacheHits} checkpoint hit(s), ${failures} failure(s), ${(serialReduction * 100).toFixed(1)}% vs serial`);
   return receipt.status === 'passed' ? 0 : 1;
 }
