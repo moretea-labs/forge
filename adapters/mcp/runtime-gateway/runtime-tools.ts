@@ -613,6 +613,7 @@ function withRuntimeResponseMeta(
     cacheHit?: boolean;
     stale?: boolean;
     refreshJobId?: string;
+    sourceObservation?: { observedAt: string; ageMs: number; maxAgeMs: number; policy: 'bounded_sample_with_mutation_invalidation' };
   } = {},
 ): Record<string, unknown> {
   const response = {
@@ -626,6 +627,7 @@ function withRuntimeResponseMeta(
       ...(options.cacheHit !== undefined ? { cacheHit: options.cacheHit } : {}),
       ...(options.stale !== undefined ? { stale: options.stale } : {}),
       ...(options.refreshJobId ? { refreshJobId: options.refreshJobId } : {}),
+      ...(options.sourceObservation ? { sourceObservation: options.sourceObservation } : {}),
       structuredPayloadBytes: 0,
     },
   };
@@ -2976,11 +2978,21 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
         if (detailLevel === 'summary') {
           const startedAt = performance.now();
+          let summaryTimingMark = startedAt;
+          const summaryPhaseTimingsMs: Record<string, number> = {};
+          const markSummaryPhase = (phase: string): void => {
+            const now = performance.now();
+            summaryPhaseTimingsMs[phase] = Number((now - summaryTimingMark).toFixed(2));
+            summaryTimingMark = now;
+          };
           const observation = observeRuntimeStatus(ctx.controllerHome);
+          markSummaryPhase('runtime');
           // Summary answers only whether this repository can work now. Reuse one
           // porcelain-v2 sample for branch/HEAD/dirty and avoid the full Git
           // status/diff-stat, access-policy, and inventory construction paths.
           const repositoryIdentity = cachedGitIdentity(repository.canonicalRoot);
+          const repositoryIdentityAgeMs = Math.max(0, Date.now() - repositoryIdentity.sampledAt);
+          markSummaryPhase('git');
           const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);
           const runtimeSource = runtimeSourceSnapshotStatus(
             runtimeGeneration?.source,
@@ -2988,6 +3000,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           );
           const sourceSnapshotStale = runtimeSource.restartRequired;
           const exposure = controllerToolSurfaceStatus(ctx);
+          markSummaryPhase('source_tool_surface');
           const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
           const ready = observation.ready && toolSurfaceReady && !sourceSnapshotStale;
           const reasonCodes = [...observation.reasonCodes];
@@ -3010,6 +3023,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }));
           const activePlanSnapshot = listPlanContracts({ ...store, status: 'active', limit: 3 }).map(summarizePlanContract);
           const pendingHandoffSnapshot = listHandoffItems({ ...store, status: 'pending', limit: 4 });
+          markSummaryPhase('controller_state');
           const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
           const facade = buildFacadeResult({
             status: ready ? 'ok' : 'blocked',
@@ -3056,7 +3070,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 branch: repositoryIdentity.branch,
                 head: repositoryIdentity.head,
                 dirty: repositoryIdentity.dirty,
-                observedAt: new Date().toISOString(),
+                observedAt: new Date(repositoryIdentity.sampledAt).toISOString(),
+                observationAgeMs: repositoryIdentityAgeMs,
+                observationMaxAgeMs: GIT_IDENTITY_SAMPLE_TTL_MS,
+                observationPolicy: 'bounded_sample_with_mutation_invalidation',
                 sourceSnapshotAgeMs: runtimeGeneration?.source.observedAt
                   ? Math.max(0, Date.now() - Date.parse(runtimeGeneration.source.observedAt))
                   : undefined,
@@ -3107,9 +3124,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             rawAvailable: false,
             detailLevel,
           });
+          markSummaryPhase('response_build');
           const payload = facade as unknown as Record<string, unknown>;
           payload.responseMeta = {
             serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+            phaseTimingsMs: summaryPhaseTimingsMs,
             structuredPayloadBytes: 0,
           };
           (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
@@ -3224,6 +3243,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         // (Xcode/simctl, etc.) must not stall Managed MCP gateways on reconnect/status.
         const manifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
+          // rh_status detail is still a read path. Missing materialized plugin
+          // projections remain unknown until explicit discovery/execution refreshes
+          // them; status must never synchronously probe provider hosts.
+          fallbackToLive: false,
         });
         const capabilities = listCapabilityDescriptors(manifests);
         markDetailPhase('plugins');
@@ -6065,6 +6088,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         // reuse the sampled HEAD/fingerprint instead of spawning subprocesses.
         const gitIdentityStartedAt = performance.now();
         const gitIdentity = cachedGitIdentity(repository.canonicalRoot);
+        const gitIdentityObservation = {
+          observedAt: new Date(gitIdentity.sampledAt).toISOString(),
+          ageMs: Math.max(0, Date.now() - gitIdentity.sampledAt),
+          maxAgeMs: GIT_IDENTITY_SAMPLE_TTL_MS,
+          policy: 'bounded_sample_with_mutation_invalidation' as const,
+        };
         markPhase('gitIdentity', gitIdentityStartedAt);
         const invalidationStartedAt = performance.now();
         const contextInvalidation = readControllerContextProjectionInvalidation(repository.canonicalRoot);
@@ -6141,6 +6170,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           transport: 'runtime-local',
           sessionId: ctx.sessionId,
           routing: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId },
+          sourceObservation: gitIdentityObservation,
         };
         const respondWith = (
           payload: Record<string, unknown>,
@@ -6200,14 +6230,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         const buildStartedAt = performance.now();
         const buildPayload = async (): Promise<Record<string, unknown>> => {
+          const readinessStartedAt = performance.now();
           const readiness = await controllerReadiness(ctx, repository);
+          markPhase('build.readiness', readinessStartedAt);
           const activeCheckout = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+          const gitStartedAt = performance.now();
           const liveGit = gitSnapshot(repository.canonicalRoot);
+          markPhase('build.git', gitStartedAt);
+          const taskStateStartedAt = performance.now();
           const board = legacyIssueAuthorityRetired(repository.canonicalRoot)
             ? undefined
             : projectBoard(repository.canonicalRoot);
           const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
           const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger);
+          markPhase('build.task_state', taskStateStartedAt);
           const currentIssueRecord = board?.currentIssueId
             ? board.issues.find((issue) => issue.id === board.currentIssueId)
             : undefined;
@@ -6229,6 +6265,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               })
               : [],
           } : undefined;
+          const jobsStartedAt = performance.now();
           const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
             runId: run.runId,
             issueId: run.issueId,
@@ -6255,6 +6292,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             finishedAt: job.finishedAt,
             error: job.error?.slice(0, 300),
           }));
+          markPhase('build.jobs', jobsStartedAt);
+          const checksStartedAt = performance.now();
           const checks = listControllerChecks(repository.canonicalRoot).map((check) => {
             const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, check.id);
             return {
@@ -6265,11 +6304,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               ...(evidence ? { lastFailureAt: evidence.ok ? undefined : evidence.executedAt, failed: !evidence.ok } : {}),
             };
           });
+          markPhase('build.checks', checksStartedAt);
+          const pluginsStartedAt = performance.now();
           const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
             preferStored: true,
-            // Summary context is a materialized read. Missing plugin projections
-            // must not synchronously probe every provider on the request path.
-            fallbackToLive: variant === 'detail',
+            // Controller context is a materialized read in every detail mode.
+            // Missing projections remain unknown until explicit plugin discovery
+            // or execution refreshes them; a context read never probes hosts.
+            fallbackToLive: false,
           }).map((plugin) => ({
             pluginId: plugin.pluginId,
             provider: plugin.provider,
@@ -6285,6 +6327,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               confirmation: action.confirmation,
             })),
           }));
+          markPhase('build.plugins', pluginsStartedAt);
           return {
             git: liveGit.branch || liveGit.head || liveGit.status || liveGit.diffStat ? liveGit : {
               branch: activeCheckout?.branch ?? sourceIdentity.branch ?? null,

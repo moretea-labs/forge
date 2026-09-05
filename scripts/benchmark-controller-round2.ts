@@ -77,7 +77,34 @@ async function main(): Promise<void> {
     const concurrent = await Promise.all(Array.from({ length: 30 }, () => call(context, 'controller_context', { repo_id: repository.repoId })));
     const timings = concurrent.map((item) => item.elapsedMs);
     const readiness = await call(context, 'controller_ready', { repo_id: repository.repoId });
-    const performance = await call(context, 'runtime_performance_diagnostics', {
+    const statusSummary = await call(context, 'rh_status', { repo_id: repository.repoId, operation: 'get', detail_level: 'summary' });
+    const statusDetail = await call(context, 'rh_status', { repo_id: repository.repoId, operation: 'get', detail_level: 'detail' });
+    const replacementContext = createMcpToolContext({
+      repo: repoRoot,
+      controllerHome,
+      profile: 'controller',
+      toolset: 'advanced',
+      sessionId: `benchmark-round2-replacement-${Date.now()}`,
+    });
+    const replacementSessionContext = await call(replacementContext, 'controller_context', { repo_id: repository.repoId });
+    const checkpointStartedAt = performance.now();
+    const checkpointStatus = await call(context, 'rh_status', { repo_id: repository.repoId, operation: 'get', detail_level: 'summary' });
+    const checkpointContext = await call(context, 'controller_context', { repo_id: repository.repoId });
+    const checkpointElapsedMs = Math.round((performance.now() - checkpointStartedAt) * 100) / 100;
+    const checkpointCalls = [checkpointStatus, checkpointContext];
+    const checkpointStatuses = checkpointCalls.map((entry) => {
+      const facadeStatus = typeof entry.value.status === 'string' ? entry.value.status : undefined;
+      const contextHealth = entry.value?.health && typeof entry.value.health === 'object' ? entry.value.health as Record<string, unknown> : undefined;
+      const status = facadeStatus ?? (contextHealth ? (contextHealth.ready === true ? 'ok' : 'blocked') : 'unknown');
+      const facadeReasons = entry.value?.data?.readiness?.reasonCodes;
+      const contextReasons = contextHealth?.reasonCodes;
+      const reasonCodes = Array.isArray(facadeReasons)
+        ? facadeReasons.map(String)
+        : Array.isArray(contextReasons) ? contextReasons.map(String) : [];
+      return { status, reasonCodes };
+    });
+    const checkpointNonOk = checkpointStatuses.filter((entry) => entry.status !== 'ok');
+    const performanceDiagnostics = await call(context, 'runtime_performance_diagnostics', {
       repo_id: repository.repoId,
       include_processes: false,
       include_temp_dirs: false,
@@ -117,12 +144,37 @@ async function main(): Promise<void> {
           },
         },
         readiness: { elapsedMs: readiness.elapsedMs, bytes: bytes(readiness.value) },
+        status: {
+          summary: { elapsedMs: statusSummary.elapsedMs, bytes: bytes(statusSummary.value), responseMeta: responseMeta(statusSummary.value) },
+          detail: { elapsedMs: statusDetail.elapsedMs, bytes: bytes(statusDetail.value), responseMeta: responseMeta(statusDetail.value) },
+        },
+        replacementSessionContext: {
+          elapsedMs: replacementSessionContext.elapsedMs,
+          bytes: bytes(replacementSessionContext.value),
+          responseMeta: responseMeta(replacementSessionContext.value),
+          interpretation: 'persistent projection reuse across controller-session replacement; not a Runtime restart measurement',
+        },
+        controllerCheckpoint: {
+          elapsedMs: checkpointElapsedMs,
+          toolRoundTrips: checkpointCalls.length,
+          nonOkCount: checkpointNonOk.length,
+          nonOkRate: checkpointCalls.length > 0 ? checkpointNonOk.length / checkpointCalls.length : 0,
+          statuses: checkpointStatuses,
+          statusMs: checkpointStatus.elapsedMs,
+          contextMs: checkpointContext.elapsedMs,
+          usable: checkpointNonOk.length === 0,
+          environment: generatedHome ? 'synthetic_controller_home' : 'supplied_controller_home',
+        },
+        runtimeRestartContextClosure: {
+          status: 'not_measured',
+          reason: 'This local benchmark does not own Runtime restart authority; Mac Recovery certification must bind restart-to-first-usable-context latency to the activated revision.',
+        },
       },
       transportPhases: {
         local: { status: 'measured', path: 'direct multi-repository runtime tool' },
         external: { status: 'unavailable', reason: 'No external endpoint was supplied to this local benchmark.' },
       },
-      resourceCost: performance.value.resourceCost ?? {},
+      resourceCost: performanceDiagnostics.value.resourceCost ?? {},
       toolSurface,
       budgets: {
         controllerContextSummaryBytes: 32 * 1024,
