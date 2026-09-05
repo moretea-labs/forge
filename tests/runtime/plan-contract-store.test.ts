@@ -11,6 +11,7 @@ import {
   createPlanContract,
   getPlanContract,
   listPlanContracts,
+  listUnresolvedPlanObligations,
   repairDraftPlanContract,
   replanActivePlanBoundWorkScope,
   supersedePlanContract,
@@ -25,6 +26,15 @@ import { createRequirement } from '../../src/runtime/control-plane/persistence/r
 import { createWorkContract, getWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
+
+function keepAllPlanObligations(plan: Parameters<typeof listUnresolvedPlanObligations>[0]) {
+  return listUnresolvedPlanObligations(plan).map((obligation) => ({
+    predecessorPlanId: plan.planId,
+    obligationId: obligation.obligationId,
+    disposition: 'keep' as const,
+    successorRefs: [obligation.sourceRef],
+  }));
+}
 
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
@@ -126,6 +136,7 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
 
   const approved = approvePlanContract(options, 'plan-1');
   expect(approved.status).toBe('approved');
+  expect(approved.steps[0]?.status).toBe('ready');
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(2);
 });
 
@@ -289,7 +300,15 @@ test('requires explicit Requirement relation and permits only distinct-scope par
   expect(admitPlanContract(options, { ...base, planId: 'plan-primary', scopeKey: 'primary-scope' }).admissionDecision).toBe('create_new');
   const unresolved = admitPlanContract(options, { ...base, planId: 'plan-second', scopeKey: 'second-scope' });
   expect(unresolved).toMatchObject({ admissionDecision: 'resolution_required', reason: 'requirement_relation_required' });
-  const extended = admitPlanContract(options, { ...base, planId: 'plan-extended', scopeKey: 'extended-scope', planRelation: 'extend', relatedPlanId: 'plan-primary' });
+  const primary = getPlanContract(options, 'plan-primary')!;
+  const extended = admitPlanContract(options, {
+    ...base,
+    planId: 'plan-extended',
+    scopeKey: 'extended-scope',
+    planRelation: 'extend',
+    relatedPlanId: 'plan-primary',
+    obligationDispositions: keepAllPlanObligations(primary),
+  });
   expect(extended).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-extended', status: 'draft' } });
   expect(getPlanContract(options, 'plan-primary')).toMatchObject({ status: 'superseded', supersededBy: 'plan-extended', supersessionReason: 'extend_existing' });
   expect(getPlanContract(options, 'plan-extended')).toMatchObject({ supersedes: ['plan-primary'] });
@@ -311,12 +330,14 @@ test('atomically replaces the exact-scope Plan authority during serial replannin
     steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
   };
   expect(admitPlanContract(options, { ...base, planId: 'plan-r1' }).plan?.planId).toBe('plan-r1');
+  const predecessor = getPlanContract(options, 'plan-r1')!;
   const replacement = admitPlanContract(options, {
     ...base,
     planId: 'plan-r2',
     sourceRevision: 'revision-b',
     planRelation: 'extend',
     relatedPlanId: 'plan-r1',
+    obligationDispositions: keepAllPlanObligations(predecessor),
   });
   expect(replacement).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-r2', scopeKey: 'release-scope', status: 'draft' } });
   expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2', supersessionReason: 'extend_existing' });
@@ -397,8 +418,12 @@ test('direct supersession records bidirectional Plan lineage and removes the pre
     planId, repoId: options.repoId, scopeKey, sourceRevision: 'revision-a', goal: `Deliver ${planId}`,
     steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
   });
-  create('plan-direct-old', 'scope-old');
-  create('plan-direct-new', 'scope-new');
+  const predecessor = create('plan-direct-old', 'scope-old');
+  createPlanContract(options, {
+    planId: 'plan-direct-new', repoId: options.repoId, scopeKey: 'scope-new', sourceRevision: 'revision-a', goal: 'Deliver plan-direct-new',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+    obligationDispositions: keepAllPlanObligations(predecessor),
+  });
   supersedePlanContract(options, 'plan-direct-old', 'plan-direct-new', 'replanned_after_drift');
   expect(getPlanContract(options, 'plan-direct-old')).toMatchObject({
     status: 'superseded', supersededBy: 'plan-direct-new', supersessionReason: 'replanned_after_drift',
@@ -637,6 +662,7 @@ test('keeps dependent Plan steps blocked while a delivered dependency still awai
     rationale: 'Reviewed both the canary receipt and the independent stabilization-supervisor evidence.',
   });
   expect(accepted.steps[0]?.status).toBe('completed');
+  expect(accepted.steps[1]?.status).toBe('ready');
   const admitted = claimPlanStepForWork(options, {
     planId: 'plan-partial-semantic-acceptance',
     stepId: 'publish',

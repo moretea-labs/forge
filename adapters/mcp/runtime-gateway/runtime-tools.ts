@@ -208,7 +208,7 @@ import {
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from '../../../src/runtime/control-plane/execution/work-task-receipt';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
-import { admitRequirement, continueRequirement } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { admitRequirement, completeRequirementGoal, continueRequirement } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { ensureManagedWorkspace } from '../../../src/runtime/execution/managed-workspace';
 import { materializeRepositoryWorkPlacement } from '../../../src/runtime/control-plane/facade/repository-work-admission';
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from '../../../src/runtime/control-plane/execution/retained-work-resume';
@@ -4271,21 +4271,58 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 bindFacadeControllerOwnership(ctx, store, workId, { ...identity, controllerType: 'chatgpt' });
               }
             }
+            const explicitRequirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+            if (explicitRequirementId && work.requirementId && explicitRequirementId !== work.requirementId) {
+              throw new Error(`CONTROLLER_RELAY_REQUIREMENT_MISMATCH: Work ${workId} belongs to ${work.requirementId}, not ${explicitRequirementId}`);
+            }
+            const rationale = typeof args.reason === 'string' ? args.reason.trim() : '';
             const chatgptBinding = chatgptControllerRoundBinding(store, workId);
-            const relay = submitControllerRoundDisposition({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
-              workId,
-              identity,
-              disposition: disposition as ControllerRoundDisposition,
-              relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),
-              requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
-              handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
-              stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
-              reason: typeof args.reason === 'string' ? args.reason : undefined,
-              bindingId: chatgptBinding?.bindingId,
-              maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
-              maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
-              maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
-            });
+            let relay: ControllerRoundRelayRecord;
+            let requirementAcceptance;
+            if (disposition === 'goal_complete' && work.requirementId) {
+              if (!rationale) throw new Error('REQUIREMENT_ACCEPTANCE_METADATA_REQUIRED: goal_complete for a Requirement-bound Work requires reason');
+              const completedGoal = completeRequirementGoal({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+                workId,
+                identity,
+                requirementId: work.requirementId,
+                rationale,
+                relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),
+                handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+                stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
+                bindingId: chatgptBinding?.bindingId,
+                maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
+                maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
+                maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
+              });
+              relay = completedGoal.relay;
+              requirementAcceptance = completedGoal.requirementAcceptance;
+            } else {
+              const existingRelay = disposition === 'goal_complete' ? getControllerRoundRelay(store, workId) : undefined;
+              if (existingRelay?.status === 'goal_complete' && existingRelay.disposition === 'goal_complete') {
+                relay = existingRelay;
+              } else {
+                try {
+                  relay = submitControllerRoundDisposition({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+                    workId,
+                    identity,
+                    disposition: disposition as ControllerRoundDisposition,
+                    relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),
+                    requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
+                    handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+                    stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
+                    reason: typeof args.reason === 'string' ? args.reason : undefined,
+                    bindingId: chatgptBinding?.bindingId,
+                    maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
+                    maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
+                    maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
+                  });
+                } catch (error) {
+                  const raced = disposition === 'goal_complete' ? getControllerRoundRelay(store, workId) : undefined;
+                  if (!raced || raced.status !== 'goal_complete' || raced.disposition !== 'goal_complete') throw error;
+                  relay = raced;
+                }
+              }
+            }
             const continuationSchedule = ensureControllerDispositionContinuation(
               ctx.controllerHome,
               repository.repoId,
@@ -4298,7 +4335,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 : continuationSchedule
                   ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
                   : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
-              data: { relay, ...(continuationSchedule ? { continuationSchedule } : {}) },
+              data: { relay, ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
             }) as unknown as Record<string, unknown>, relay.status === 'blocked');
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller disposition failed.', data: {} }) as unknown as Record<string, unknown>, true);

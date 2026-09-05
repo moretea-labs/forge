@@ -525,6 +525,28 @@ requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'PLAN_STEP_SEMA
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'CONTINUATION_GOAL_COMPLETE');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', "requestedBy ?? 'chatgpt') === 'scheduler'");
+// V2 Goal authority convergence: lifecycle enums are canonical Kernel Goal
+// domain facts; progression is a pure derived decision service and explicit
+// Controller goal_complete is the Requirement semantic acceptance boundary.
+requireText('packages/kernel/goal/domain/types.ts', 'export const REQUIREMENT_STATES');
+requireText('packages/kernel/goal/domain/types.ts', 'export const PLAN_CONTRACT_STATUSES');
+requireText('packages/kernel/goal/domain/types.ts', 'export const PLAN_STEP_STATUSES');
+requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'packages/kernel/goal/api/index');
+requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/goal/api/index');
+requireText('packages/kernel/progression/domain/types.ts', "from '../../goal/api/index'");
+requireText('packages/kernel/progression/domain/types.ts', "from '../../scheduler/api/index'");
+forbid('packages/kernel/progression/domain/types.ts', /export type Progression(?:RequirementState|PlanStatus|PlanStepStatus)\s*=/, 'Goal progression must consume canonical Goal lifecycle types instead of copying status unions');
+requireText('packages/kernel/progression/domain/types.ts', 'completionTargetRevision?: string');
+requireText('packages/kernel/progression/application/projector.ts', 'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE');
+requireText('packages/kernel/progression/application/projector.ts', 'completionTargetRevision === snapshot.currentSourceRevision');
+requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'acceptRequirementOutcome');
+requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE');
+requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');
+requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'withPlanAdmissionLock');
+requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRequirementGoal');
+forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must delegate Requirement-bound goal completion to the canonical Goal application boundary');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "disposition === 'goal_complete' && work.requirementId");
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');

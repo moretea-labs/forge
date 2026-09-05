@@ -100,6 +100,14 @@ function normalizeScopeKey(value: string): string {
   return normalizePlanScopeKey(value) || 'unknown';
 }
 
+function projectDependencyReadySteps(steps: readonly PlanStep[]): PlanStep[] {
+  const completed = new Set(steps.filter((step) => step.status === 'completed').map((step) => step.id));
+  return steps.map((step) => step.status === 'pending'
+    && step.dependencies.every((dependencyId) => completed.has(dependencyId))
+    ? { ...step, status: 'ready' as const }
+    : step);
+}
+
 function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep {
   return {
     id: sanitizeFileComponent(step.id).slice(0, 120),
@@ -247,8 +255,10 @@ function updatePlanContract(
 function assertRequirementReference(options: PlanContractStoreOptions, requirementId: string | undefined): void {
   const normalized = requirementId?.trim();
   if (!normalized || !options.controllerHome) return;
-  if (!readRequirement({ controllerHome: options.controllerHome, now: options.now }, normalized)) {
-    throw new Error(`PLAN_REQUIREMENT_NOT_FOUND: ${normalized}`);
+  const requirement = readRequirement({ controllerHome: options.controllerHome, now: options.now }, normalized)?.value;
+  if (!requirement) throw new Error(`PLAN_REQUIREMENT_NOT_FOUND: ${normalized}`);
+  if (requirement.state === 'done' || requirement.state === 'cancelled') {
+    throw new Error(`PLAN_REQUIREMENT_TERMINAL: ${normalized}:${requirement.state}`);
   }
 }
 
@@ -666,7 +676,12 @@ function approvePlanContractUnlocked(options: PlanContractStoreOptions, planId: 
   const errors = approvalErrors(current, store.contracts);
   if (errors.length > 0) throw new Error(`plan contract ${current.planId} cannot be approved: ${errors.join('; ')}`);
   const at = nowIso(options);
-  const next = { ...current, status: 'approved' as const, updatedAt: at };
+  const next = {
+    ...current,
+    status: 'approved' as const,
+    steps: projectDependencyReadySteps(current.steps),
+    updatedAt: at,
+  };
   const contracts = [...store.contracts];
   contracts[index] = next;
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
@@ -1030,12 +1045,13 @@ export function acceptPlanStepEvidence(
       evidenceRefs: [{ title: 'semantic acceptance', summary: `${reviewer}: ${rationale}`, detailLevel: 'summary' as const }, ...step.evidenceRefs].slice(0, 20),
     };
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
+    const projectedSteps = allCompleted ? steps : projectDependencyReadySteps(steps);
     const acceptedSourceRevision = input.acceptedSourceRevision?.trim();
     return {
       ...current,
       ...(acceptedSourceRevision ? { sourceRevision: acceptedSourceRevision } : {}),
       status: allCompleted ? 'finalized' : 'executing',
-      steps,
+      steps: projectedSteps,
       updatedAt: nowIso(options),
     };
   });

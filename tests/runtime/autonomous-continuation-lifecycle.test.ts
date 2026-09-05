@@ -16,6 +16,7 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
+import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -170,6 +171,17 @@ describe('autonomous continuation lifecycle', () => {
     const targetRevision = initRepo(repoRoot);
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-continuation-facade' });
     const store = { controllerHome, repoId: repository.repoId };
+    const requirementId = 'REQ-AUTONOMOUS-CONTINUATION-FACADE';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Terminal semantic goal closure',
+      outcomeStatement: 'A terminal Controller goal_complete explicitly accepts the Requirement.',
+    });
+    updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'test_activate_requirement',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    });
     const workId = 'WORK-AUTONOMOUS-CONTINUATION-FACADE';
     createWorkContract(store, {
       workId,
@@ -185,6 +197,7 @@ describe('autonomous continuation lifecycle', () => {
       requestedBy: 'chatgpt',
       workKind: 'completed_no_change',
       status: 'running',
+      requirementId,
     });
 
     const opened = beginInitialControllerRoundDispatch(store, {
@@ -278,6 +291,11 @@ describe('autonomous continuation lifecycle', () => {
       reason: 'Physical no-change finalization completed before semantic round closure.',
     }));
     expect(completed.status).toBe('ok');
+    expect(completed.data.requirementAcceptance).toMatchObject({
+      accepted: true,
+      requirement: { requirementId, state: 'done' },
+    });
+    expect(readRequirement({ controllerHome }, requirementId)?.value.state).toBe('done');
     expect(completed.data.relay).toMatchObject({
       originWorkId: workId,
       relayScopeId: opened.relayScopeId,

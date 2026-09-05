@@ -35,6 +35,9 @@ function stableSnapshot(snapshot: AutonomousGoalProgressionSnapshot): unknown {
     controllerRounds: [...(snapshot.controllerRounds ?? [])]
       .map((round) => ({ ...round }))
       .sort((left, right) => left.originWorkId.localeCompare(right.originWorkId) || left.roundCount - right.roundCount),
+    schedules: [...(snapshot.schedules ?? [])]
+      .map((schedule) => ({ ...schedule }))
+      .sort((left, right) => left.scheduleId.localeCompare(right.scheduleId)),
   };
 }
 
@@ -105,8 +108,28 @@ export function projectAutonomousGoalProgression(
   if (plan.requirementId && plan.requirementId !== requirement.requirementId) {
     return decision(snapshot, 'blocked_invalid_state', 'PLAN_REQUIREMENT_MISMATCH');
   }
-  if (plan.sourceRevision !== snapshot.currentSourceRevision) return decision(snapshot, 'request_replan', 'PLAN_SOURCE_DRIFT');
+
+  // A terminal Work may legitimately advance repository source A -> B before
+  // Controller semantic acceptance advances Plan.sourceRevision to B. Only that
+  // exact Work completion target may cross the drift boundary. Any later C is
+  // unrelated drift and still requires explicit re-evaluation.
+  const validatingDelivery = plan.steps
+    .filter((step) => step.status === 'executing' || step.status === 'validating')
+    .map((step) => ({ step, work: boundWork(snapshot, step) }))
+    .find(({ work }) => work?.status === 'completed'
+      && work.baseRevision === plan.sourceRevision
+      && work.completionTargetRevision === snapshot.currentSourceRevision);
+  const expectedDeliveryAdvance = Boolean(validatingDelivery && plan.sourceRevision !== snapshot.currentSourceRevision);
+  if (plan.sourceRevision !== snapshot.currentSourceRevision && !expectedDeliveryAdvance) {
+    return decision(snapshot, 'request_replan', 'PLAN_SOURCE_DRIFT');
+  }
   if (plan.status === 'replanning' || plan.status === 'invalidated_by_drift') return decision(snapshot, 'request_replan', 'PLAN_REPLAN_REQUIRED');
+  if (plan.status === 'finalized') {
+    if (!plan.steps.every((step) => step.status === 'completed')) {
+      return decision(snapshot, 'blocked_invalid_state', 'PLAN_COMPLETION_STATE_CONTRADICTION');
+    }
+    return decision(snapshot, 'request_requirement_acceptance', 'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE');
+  }
   if (plan.status === 'superseded' || plan.status === 'cancelled') return decision(snapshot, 'blocked_invalid_state', 'PLAN_TERMINAL_INVALID');
   if (!EXECUTABLE_PLAN_STATUSES.has(plan.status)) return decision(snapshot, 'blocked_invalid_state', 'PLAN_NOT_EXECUTABLE');
   if (plan.steps.length === 0) return decision(snapshot, 'blocked_invalid_state', 'PLAN_EMPTY');
@@ -127,6 +150,9 @@ export function projectAutonomousGoalProgression(
     if (!work) return decision(snapshot, 'blocked_invalid_state', 'PLAN_STEP_WORK_MISSING', { planStepId: step.id, workId: step.workId });
     if (work.planId !== plan.planId || work.planStepId !== step.id || (work.requirementId && work.requirementId !== requirement.requirementId)) {
       return decision(snapshot, 'blocked_invalid_state', 'WORK_IDENTITY_MISMATCH', { planStepId: step.id, workId: work.workId });
+    }
+    if ((work.status === 'completed' || work.status === 'failed' || work.status === 'cancelled') && step.status === 'executing') {
+      return decision(snapshot, 'blocked_invalid_state', 'PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED', { planStepId: step.id, workId: work.workId });
     }
     if (work.status === 'failed' || work.status === 'cancelled') {
       return decision(snapshot, 'request_replan', 'WORK_FAILED_REPLAN', { planStepId: step.id, workId: work.workId });
@@ -154,7 +180,7 @@ export function projectAutonomousGoalProgression(
   }
 
   if (plan.steps.every((step) => step.status === 'completed')) {
-    return decision(snapshot, 'goal_complete', 'ALL_PLAN_STEPS_ACCEPTED');
+    return decision(snapshot, 'blocked_invalid_state', 'PLAN_COMPLETION_STATE_CONTRADICTION');
   }
 
   const completedIds = new Set(plan.steps.filter((step) => step.status === 'completed').map((step) => step.id));

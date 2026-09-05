@@ -1,35 +1,22 @@
 import type { ControllerRoundRelayStatus } from '../../controller/api/index';
+import type { RequirementState, PlanContractStatus, PlanStepStatus } from '../../goal/api/index';
+import type { RepositorySchedule } from '../../scheduler/api/index';
 import type { WorkContractStatus } from '../../work/api/index';
 
 /**
  * Read-only lifecycle facts consumed by the Goal Progression projector.
  * These are projections of existing authorities, never a persistence schema.
  */
-export type ProgressionRequirementState = 'planned' | 'active' | 'waiting_for_user' | 'done' | 'cancelled';
-export type ProgressionPlanStatus =
-  | 'draft'
-  | 'reviewing'
-  | 'approved'
-  | 'executing'
-  | 'replanning'
-  | 'verifying'
-  | 'ready_to_finalize'
-  | 'finalized'
-  | 'superseded'
-  | 'cancelled'
-  | 'invalidated_by_drift';
-export type ProgressionPlanStepStatus = 'pending' | 'ready' | 'executing' | 'validating' | 'completed';
-
 export interface ProgressionRequirementSnapshot {
   requirementId: string;
-  state: ProgressionRequirementState;
+  state: RequirementState;
   revision: number;
 }
 
 export interface ProgressionPlanStepSnapshot {
   id: string;
   dependencies: readonly string[];
-  status: ProgressionPlanStepStatus;
+  status: PlanStepStatus;
   workId?: string;
 }
 
@@ -37,7 +24,7 @@ export interface ProgressionPlanSnapshot {
   planId: string;
   requirementId?: string;
   sourceRevision: string;
-  status: ProgressionPlanStatus;
+  status: PlanContractStatus;
   steps: readonly ProgressionPlanStepSnapshot[];
 }
 
@@ -47,7 +34,13 @@ export interface ProgressionWorkSnapshot {
   planId?: string;
   planStepId?: string;
   status: WorkContractStatus;
+  /** Exact source revision from which this Work execution started. */
+  baseRevision?: string;
+  /** Exact integrated target revision from the canonical Work completion receipt, when delivery changed source. */
+  completionTargetRevision?: string;
 }
+
+export type ProgressionScheduleSnapshot = Pick<RepositorySchedule, 'scheduleId' | 'revision' | 'enabled' | 'nextEligibleAt' | 'pausedReason'>;
 
 export interface ProgressionControllerRoundSnapshot {
   originWorkId: string;
@@ -61,12 +54,14 @@ export interface AutonomousGoalProgressionSnapshot {
   currentSourceRevision: string;
   works: readonly ProgressionWorkSnapshot[];
   controllerRounds?: readonly ProgressionControllerRoundSnapshot[];
+  schedules?: readonly ProgressionScheduleSnapshot[];
 }
 
 export const AUTONOMOUS_GOAL_PROGRESSION_ACTIONS = [
   'continue_current_work',
   'wait_current_work',
   'request_controller_acceptance',
+  'request_requirement_acceptance',
   'start_next_plan_step',
   'wait_dependency',
   'request_replan',
@@ -90,6 +85,7 @@ export const AUTONOMOUS_GOAL_PROGRESSION_REASONS = [
   'PLAN_DEPENDENCY_INVALID',
   'PLAN_STEP_WORK_MISSING',
   'WORK_IDENTITY_MISMATCH',
+  'PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED',
   'WORK_FAILED_REPLAN',
   'WORK_BLOCKED',
   'CONTROLLER_ROUND_IN_FLIGHT',
@@ -97,11 +93,12 @@ export const AUTONOMOUS_GOAL_PROGRESSION_REASONS = [
   'CONTROLLER_ROUND_TERMINAL_CONTRADICTION',
   'WORK_READY_TO_CONTINUE',
   'MACHINE_COMPLETE_REQUIRES_CONTROLLER_ACCEPTANCE',
+  'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE',
+  'PLAN_COMPLETION_STATE_CONTRADICTION',
   'NEXT_PLAN_STEP_READY',
   'PLAN_DEPENDENCY_WAIT',
   'MULTIPLE_READY_PLAN_STEPS',
   'PLAN_STEP_READINESS_NOT_PROJECTED',
-  'ALL_PLAN_STEPS_ACCEPTED',
 ] as const;
 export type AutonomousGoalProgressionReason = (typeof AUTONOMOUS_GOAL_PROGRESSION_REASONS)[number];
 

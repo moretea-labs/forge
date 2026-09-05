@@ -15,6 +15,18 @@ export type {
   PolicyDecision,
 } from '../../../../packages/kernel/work/domain/types';
 import { applyRouteContextHints, decideRoute, type ExplicitTaskMode, type RouteContextHints, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
+import {
+  TERMINAL_PLAN_CONTRACT_STATUSES,
+  type PlanContractStatus,
+  type PlanStepStatus,
+} from '../../../../packages/kernel/goal/api/index';
+export {
+  PLAN_CONTRACT_STATUSES,
+  TERMINAL_PLAN_CONTRACT_STATUSES,
+  PLAN_STEP_STATUSES,
+  type PlanContractStatus,
+  type PlanStepStatus,
+} from '../../../../packages/kernel/goal/api/index';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
 const _executionModesTypeCheck: readonly ExecutionMode[] = EXECUTION_MODES;
@@ -214,32 +226,6 @@ export type {
   ControllerLease,
   ControllerRoundContext,
 } from '../../../../packages/kernel/controller/domain/types';
-export const PLAN_CONTRACT_STATUSES = [
-  'draft',
-  'inspecting',
-  'reviewing',
-  'approved',
-  'executing',
-  'replanning',
-  'verifying',
-  'ready_to_finalize',
-  'finalized',
-  'superseded',
-  'cancelled',
-  'invalidated_by_drift',
-] as const;
-export type PlanContractStatus = (typeof PLAN_CONTRACT_STATUSES)[number];
-
-export const TERMINAL_PLAN_CONTRACT_STATUSES: readonly PlanContractStatus[] = [
-  'finalized',
-  'superseded',
-  'cancelled',
-  'invalidated_by_drift',
-];
-
-export const PLAN_STEP_STATUSES = ['pending', 'ready', 'executing', 'validating', 'completed'] as const;
-export type PlanStepStatus = (typeof PLAN_STEP_STATUSES)[number];
-
 export interface PlanStep {
   id: string;
   objective: string;

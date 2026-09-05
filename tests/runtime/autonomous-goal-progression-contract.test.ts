@@ -97,11 +97,28 @@ describe('Autonomous Goal Progression projector', () => {
     expect(result.reasonCode).toBe('PLAN_STEP_READINESS_NOT_PROJECTED');
   });
 
-  test('requests replan on source drift or failed Work', () => {
+  test('requests replan on source drift and reconciles a failed Work before replanning', () => {
     expect(projectAutonomousGoalProgression(snapshot({ currentSourceRevision: 'rev-2' })).kind).toBe('request_replan');
     expect(projectAutonomousGoalProgression(snapshot({
       works: [{ workId: 'WORK-A', requirementId: 'REQ-1', planId: 'PLAN-1', planStepId: 'A', status: 'failed' }],
-    })).kind).toBe('request_replan');
+    }))).toMatchObject({
+      kind: 'blocked_invalid_state',
+      reasonCode: 'PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED',
+      workId: 'WORK-A',
+    });
+    expect(projectAutonomousGoalProgression(snapshot({
+      plan: {
+        planId: 'PLAN-1',
+        requirementId: 'REQ-1',
+        sourceRevision: 'rev-1',
+        status: 'replanning',
+        steps: [
+          { id: 'A', dependencies: [], status: 'ready' },
+          { id: 'B', dependencies: ['A'], status: 'pending' },
+        ],
+      },
+      works: [{ workId: 'WORK-A', requirementId: 'REQ-1', planId: 'PLAN-1', planStepId: 'A', status: 'failed' }],
+    }))).toMatchObject({ kind: 'request_replan', reasonCode: 'PLAN_REPLAN_REQUIRED' });
   });
 
   test('preserves explicit user-only waits', () => {
@@ -111,11 +128,12 @@ describe('Autonomous Goal Progression projector', () => {
     expect(result.kind).toBe('wait_for_user');
   });
 
-  test('projects goal completion only after all Plan steps are accepted', () => {
+  test('projects explicit Requirement acceptance after canonical finalized Plan steps', () => {
     const base = snapshot();
     const result = projectAutonomousGoalProgression(snapshot({
       plan: {
         ...base.plan,
+        status: 'finalized',
         steps: [
           { id: 'A', dependencies: [], status: 'completed', workId: 'WORK-A' },
           { id: 'B', dependencies: ['A'], status: 'completed', workId: 'WORK-B' },
@@ -123,8 +141,8 @@ describe('Autonomous Goal Progression projector', () => {
       },
       works: [],
     }));
-    expect(result.kind).toBe('goal_complete');
-    expect(result.reasonCode).toBe('ALL_PLAN_STEPS_ACCEPTED');
+    expect(result.kind).toBe('request_requirement_acceptance');
+    expect(result.reasonCode).toBe('PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE');
   });
 
   test('does not arbitrarily select among multiple ready steps', () => {

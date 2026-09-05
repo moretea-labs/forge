@@ -6,6 +6,15 @@ import {
   type Requirement,
   type RequirementStoreOptions,
 } from '../persistence/requirement-store';
+import { readPlanContractStore } from './plan-contract-store';
+import { withPlanAdmissionLock } from './semantic-admission';
+import {
+  getControllerRoundRelay,
+  submitControllerRoundDisposition,
+  type ControllerRoundRelayRecord,
+  type SubmitControllerRoundDispositionInput,
+} from '../../../../packages/kernel/controller/api/index';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 
 export type RequirementAdmissionDecision = 'created' | 'reuse_existing' | 'existing_conflict';
 
@@ -130,4 +139,163 @@ export function continueRequirement(
     },
   });
   return { requirement, resumed: true };
+}
+
+export interface RequirementAcceptanceResult {
+  requirement: Requirement;
+  accepted: boolean;
+  finalizedPlanIds: string[];
+}
+
+export interface RequirementAcceptanceReadiness {
+  requirement: Requirement;
+  finalizedPlanIds: string[];
+}
+
+function requirementAcceptanceContext(
+  options: RequirementStoreOptions & { repoId: string },
+  input: { requirementId: string; workId: string; reviewer: string; rationale: string },
+): RequirementAcceptanceReadiness {
+  const requirementId = String(input.requirementId ?? '').trim();
+  const workId = String(input.workId ?? '').trim();
+  const reviewer = String(input.reviewer ?? '').trim();
+  const rationale = String(input.rationale ?? '').trim();
+  if (!requirementId) throw new Error('REQUIREMENT_ACCEPTANCE_ID_REQUIRED');
+  if (!workId) throw new Error('REQUIREMENT_ACCEPTANCE_WORK_REQUIRED');
+  if (!reviewer || !rationale) throw new Error('REQUIREMENT_ACCEPTANCE_METADATA_REQUIRED');
+
+  const current = readRequirement(options, requirementId)?.value;
+  if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+  if (current.state === 'cancelled') throw new Error(`REQUIREMENT_TERMINAL: ${requirementId}:cancelled`);
+  if (current.state === 'planned') throw new Error(`REQUIREMENT_ACCEPTANCE_NOT_ACTIVE: ${requirementId}:planned`);
+  if (current.state === 'done') {
+    return { requirement: current, finalizedPlanIds: current.semanticAcceptance?.planIds ?? [] };
+  }
+
+  const currentPlans = readPlanContractStore({ controllerHome: options.controllerHome, repoId: options.repoId, now: options.now })
+    .contracts
+    .filter((plan) => plan.requirementId === requirementId && !plan.supersededBy?.trim() && plan.status !== 'superseded');
+  const incomplete = currentPlans.filter((plan) => plan.status !== 'finalized');
+  if (incomplete.length > 0) {
+    throw new Error(`REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE: ${incomplete.map((plan) => `${plan.planId}:${plan.status}`).join(',')}`);
+  }
+  const work = getWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, workId);
+  if (!work) throw new Error(`REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND: ${workId}`);
+  if (work.requirementId !== requirementId) throw new Error(`REQUIREMENT_ACCEPTANCE_WORK_MISMATCH: ${workId}:${work.requirementId ?? 'none'}:${requirementId}`);
+  if (work.status !== 'completed') throw new Error(`REQUIREMENT_ACCEPTANCE_WORK_NOT_COMPLETED: ${workId}:${work.status}`);
+  return { requirement: current, finalizedPlanIds: currentPlans.map((plan) => plan.planId).sort() };
+}
+
+function acceptRequirementOutcomeUnlocked(
+  options: RequirementStoreOptions & { repoId: string },
+  input: { requirementId: string; workId: string; reviewer: string; rationale: string },
+): RequirementAcceptanceResult {
+  const context = requirementAcceptanceContext(options, input);
+  const requirementId = context.requirement.requirementId;
+  const reviewer = String(input.reviewer ?? '').trim();
+  const rationale = String(input.rationale ?? '').trim();
+  const relay = getControllerRoundRelay({ controllerHome: options.controllerHome, repoId: options.repoId }, input.workId);
+  if (!relay) throw new Error(`REQUIREMENT_ACCEPTANCE_GOAL_COMPLETE_REQUIRED: ${input.workId}:missing_relay`);
+  if (relay.originWorkId !== input.workId
+    || relay.requirementId !== requirementId
+    || relay.disposition !== 'goal_complete'
+    || relay.status !== 'goal_complete') {
+    throw new Error(`REQUIREMENT_ACCEPTANCE_GOAL_COMPLETE_REQUIRED: ${input.workId}:${relay.status}:${relay.disposition}`);
+  }
+  if (relay.principalId !== reviewer) {
+    throw new Error(`REQUIREMENT_ACCEPTANCE_CONTROLLER_MISMATCH: ${input.workId}:${relay.principalId}:${reviewer}`);
+  }
+  if (context.requirement.state === 'done') {
+    return { requirement: context.requirement, accepted: false, finalizedPlanIds: context.finalizedPlanIds };
+  }
+
+  const acceptedAt = options.now?.() ?? new Date().toISOString();
+  let accepted = false;
+  const requirement = updateRequirement(options, {
+    requirementId,
+    action: 'requirement_semantic_acceptance',
+    mutate: (latest) => {
+      if (latest.state === 'done') return latest;
+      if (latest.state === 'cancelled') throw new Error(`REQUIREMENT_TERMINAL: ${requirementId}:cancelled`);
+      if (latest.state === 'planned') throw new Error(`REQUIREMENT_ACCEPTANCE_NOT_ACTIVE: ${requirementId}:planned`);
+      accepted = true;
+      return {
+        ...latest,
+        state: 'done',
+        needsAttention: false,
+        attentionSummary: undefined,
+        semanticAcceptance: {
+          reviewer: reviewer.slice(0, 256),
+          rationale: rationale.slice(0, 2_000),
+          planIds: context.finalizedPlanIds,
+          acceptedAt,
+        },
+      };
+    },
+  });
+  return { requirement, accepted, finalizedPlanIds: context.finalizedPlanIds };
+}
+
+/**
+ * Canonical explicit semantic acceptance for a Requirement. Direct callers are
+ * serialized with Plan admission so Requirement completion cannot race a new
+ * current Plan slice into existence.
+ */
+export function acceptRequirementOutcome(
+  options: RequirementStoreOptions & { repoId: string },
+  input: { requirementId: string; workId: string; reviewer: string; rationale: string },
+): RequirementAcceptanceResult {
+  return withPlanAdmissionLock(options, () => acceptRequirementOutcomeUnlocked(options, input));
+}
+
+export interface RequirementGoalCompletionResult {
+  relay: ControllerRoundRelayRecord;
+  requirementAcceptance: RequirementAcceptanceResult;
+}
+
+/**
+ * One Goal application boundary for Requirement-bound goal_complete. The same
+ * short semantic lock used by Plan admission covers readiness, ControllerRound
+ * disposition persistence, and Requirement acceptance. A retry reuses an
+ * already-recorded goal_complete relay and repairs only the missing Requirement
+ * projection; no second ControllerRound or Plan authority is created.
+ */
+export function completeRequirementGoal(
+  options: RequirementStoreOptions & { repoId: string },
+  input: Omit<SubmitControllerRoundDispositionInput, 'disposition' | 'requirementId' | 'reason'> & {
+    requirementId: string;
+    rationale: string;
+  },
+): RequirementGoalCompletionResult {
+  return withPlanAdmissionLock(options, () => {
+    const reviewer = input.identity.principalId.trim();
+    const readinessInput = {
+      requirementId: input.requirementId,
+      workId: input.workId,
+      reviewer,
+      rationale: input.rationale,
+    };
+    requirementAcceptanceContext(options, readinessInput);
+
+    const existing = getControllerRoundRelay(options, input.workId);
+    let relay: ControllerRoundRelayRecord;
+    if (existing?.status === 'goal_complete' && existing.disposition === 'goal_complete') {
+      relay = existing;
+    } else {
+      try {
+        relay = submitControllerRoundDisposition(options, {
+          ...input,
+          disposition: 'goal_complete',
+          requirementId: input.requirementId,
+          reason: input.rationale,
+        });
+      } catch (error) {
+        const raced = getControllerRoundRelay(options, input.workId);
+        if (!raced || raced.status !== 'goal_complete' || raced.disposition !== 'goal_complete') throw error;
+        relay = raced;
+      }
+    }
+    const requirementAcceptance = acceptRequirementOutcomeUnlocked(options, readinessInput);
+    return { relay, requirementAcceptance };
+  });
 }

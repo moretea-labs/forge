@@ -5,6 +5,7 @@ import {
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
+import { projectAutonomousGoalProgression, type ProgressionWorkSnapshot } from '../../../../packages/kernel/progression/api/index';
 import {
   applyEngineeringBlockerDisposition,
   buildEngineeringBlockerDispositionReceipt,
@@ -876,57 +877,89 @@ export function startGoalWorkloop(
         data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, predecessorPlanStepId: terminalContinuationSource.planStepId },
       });
     }
-    if (predecessorStep.status === 'validating') {
+    const requirementRecord = plan.requirementId && ctx.workStore.controllerHome
+      ? readRequirement({ controllerHome: ctx.workStore.controllerHome }, plan.requirementId)
+      : undefined;
+    const progressionWorks: ProgressionWorkSnapshot[] = plan.steps
+      .flatMap((candidate) => candidate.workId ? [getWorkContract(ctx.workStore, candidate.workId)] : [])
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+      .map((candidate) => ({
+        workId: candidate.workId,
+        requirementId: candidate.requirementId,
+        planId: candidate.planId,
+        planStepId: candidate.planStepId,
+        status: candidate.status,
+        baseRevision: candidate.baseRevision,
+        completionTargetRevision: candidate.completionReceipt && 'targetRevision' in candidate.completionReceipt
+          ? candidate.completionReceipt.targetRevision
+          : undefined,
+      }));
+    const progression = projectAutonomousGoalProgression({
+      requirement: {
+        requirementId: plan.requirementId ?? terminalContinuationSource.requirementId ?? `plan:${plan.planId}`,
+        state: requirementRecord?.value.state ?? 'active',
+        revision: requirementRecord?.revision ?? 0,
+      },
+      plan: {
+        planId: plan.planId,
+        requirementId: plan.requirementId,
+        sourceRevision: plan.sourceRevision,
+        status: plan.status,
+        steps: plan.steps.map((candidate) => ({ id: candidate.id, dependencies: candidate.dependencies, status: candidate.status, workId: candidate.workId })),
+      },
+      currentSourceRevision: ctx.sourceRevision ?? plan.sourceRevision,
+      works: progressionWorks,
+      controllerRounds: [],
+    });
+    if (progression.kind === 'request_controller_acceptance') {
       return buildFacadeResult({
         status: 'blocked',
-        summary: `PLAN_STEP_SEMANTIC_ACCEPTANCE_REQUIRED: ${plan.planId}/${predecessorStep.id} is validating. Accept the delivered step before advancing the same semantic goal to a successor Work.`,
-        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, planStepId: predecessorStep.id, semanticAcceptanceRequired: true },
+        summary: `PLAN_STEP_SEMANTIC_ACCEPTANCE_REQUIRED: ${plan.planId}/${progression.planStepId ?? predecessorStep.id} has machine-complete delivery. Accept the delivered step before advancing the same semantic goal.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, planStepId: progression.planStepId ?? predecessorStep.id, semanticAcceptanceRequired: true, progression },
       });
     }
-    if (predecessorStep.status === 'executing') {
+    if (progression.reasonCode === 'PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED') {
       return buildFacadeResult({
         status: 'blocked',
-        summary: `PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED: ${plan.planId}/${predecessorStep.id} still executes terminal Work ${terminalContinuationSource.workId}. Reconcile its terminal result before admitting a successor.`,
-        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, planStepId: predecessorStep.id, repairRequired: true },
+        summary: `PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED: ${plan.planId}/${progression.planStepId ?? predecessorStep.id} must project terminal Work ${terminalContinuationSource.workId} before semantic progression.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, planStepId: progression.planStepId ?? predecessorStep.id, repairRequired: true, progression },
       });
     }
-    if (predecessorStep.status === 'ready') {
-      // Failed/cancelled predecessor returned the exact same Plan slice to ready.
-      resolvedPlanStepId = predecessorStep.id;
-    } else if (predecessorStep.status === 'completed') {
-      const eligibleSuccessors = plan.steps.filter((candidate) =>
-        (candidate.status === 'pending' || candidate.status === 'ready')
-        && candidate.dependencies.every((dependency) => plan.steps.find((step) => step.id === dependency)?.status === 'completed'));
-      if (eligibleSuccessors.length === 1) {
-        resolvedPlanStepId = eligibleSuccessors[0]!.id;
-      } else if (eligibleSuccessors.length === 0) {
-        if (plan.status === 'finalized') {
-          return buildFacadeResult({
-            status: 'ok',
-            summary: `CONTINUATION_GOAL_COMPLETE: ${plan.planId} has no remaining executable Plan step; no successor Work was created.`,
-            data: { executionStarted: false, workContractCreated: false, admissionDecision: 'goal_complete', goalComplete: true, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, requirementId: plan.requirementId },
-          });
-        }
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: `PLAN_SUCCESSOR_STEP_NOT_EXECUTABLE: ${plan.planId} has no dependency-satisfied pending/ready step after ${predecessorStep.id}.`,
-          data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId },
-        });
-      } else {
-        return buildFacadeResult({
-          status: 'ok',
-          summary: `PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED: ${plan.planId} has ${eligibleSuccessors.length} executable successor steps. The semantic Controller must select one; Forge will not invent ordering.`,
-          data: {
-            executionStarted: false,
-            workContractCreated: false,
-            admissionDecision: 'resolution_required',
-            resolutionRequired: true,
-            predecessorWorkId: terminalContinuationSource.workId,
-            planId: plan.planId,
-            candidatePlanSteps: eligibleSuccessors.map((step) => ({ id: step.id, objective: step.objective })),
-          },
-        });
-      }
+    if (progression.kind === 'start_next_plan_step' && progression.planStepId) {
+      resolvedPlanStepId = progression.planStepId;
+    } else if (progression.kind === 'request_requirement_acceptance') {
+      return buildFacadeResult({
+        status: 'ok',
+        summary: `CONTINUATION_REQUIREMENT_ACCEPTANCE_REQUIRED: ${plan.planId} is finalized; the semantic Controller must record goal_complete before the Requirement becomes done.`,
+        data: { executionStarted: false, workContractCreated: false, admissionDecision: 'requirement_acceptance_required', requirementAcceptanceRequired: true, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, requirementId: plan.requirementId, progression },
+      });
+    } else if (progression.kind === 'goal_complete') {
+      return buildFacadeResult({
+        status: 'ok',
+        summary: `CONTINUATION_GOAL_COMPLETE: ${plan.planId} Requirement is already semantically complete; no successor Work was created.`,
+        data: { executionStarted: false, workContractCreated: false, admissionDecision: 'goal_complete', goalComplete: true, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, requirementId: plan.requirementId, progression },
+      });
+    } else if (progression.reasonCode === 'MULTIPLE_READY_PLAN_STEPS') {
+      const candidates = (progression.dependencyStepIds ?? [])
+        .map((stepId) => plan.steps.find((candidate) => candidate.id === stepId))
+        .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+      return buildFacadeResult({
+        status: 'ok',
+        summary: `PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED: ${plan.planId} has ${candidates.length} executable successor steps. The semantic Controller must select one; Forge will not invent ordering.`,
+        data: { executionStarted: false, workContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, candidatePlanSteps: candidates.map((candidate) => ({ id: candidate.id, objective: candidate.objective })), progression },
+      });
+    } else if (progression.kind === 'request_replan') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_SUCCESSOR_REPLAN_REQUIRED: ${plan.planId} ${progression.reasonCode}.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, progression },
+      });
+    } else if (progression.kind !== 'start_next_plan_step') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_SUCCESSOR_PROGRESSION_BLOCKED: ${plan.planId} ${progression.reasonCode}.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, progression },
+      });
     }
   }
   const planStep = plan && resolvedPlanStepId ? plan.steps.find((step) => step.id === resolvedPlanStepId) : undefined;

@@ -8,9 +8,8 @@ import {
   type SqliteDatabase,
 } from './sqlite-store';
 import { isRepositoryCompletionReceipt, type WorkContract } from '../facade/types';
-
-export const REQUIREMENT_STATES = ['planned', 'active', 'waiting_for_user', 'done', 'cancelled'] as const;
-export type RequirementState = (typeof REQUIREMENT_STATES)[number];
+import { REQUIREMENT_STATE_TRANSITIONS, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
   schemaVersion: 1;
@@ -25,6 +24,12 @@ export interface Requirement {
   state: RequirementState;
   needsAttention: boolean;
   attentionSummary?: string;
+  semanticAcceptance?: {
+    reviewer: string;
+    rationale: string;
+    planIds: string[];
+    acceptedAt: string;
+  };
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -127,14 +132,6 @@ export function createRequirement(
   return requirement;
 }
 
-const ALLOWED_TRANSITIONS: Readonly<Record<RequirementState, readonly RequirementState[]>> = {
-  planned: ['planned', 'active', 'waiting_for_user', 'cancelled'],
-  active: ['active', 'waiting_for_user', 'done', 'cancelled'],
-  waiting_for_user: ['waiting_for_user', 'planned', 'active', 'done', 'cancelled'],
-  done: ['done', 'cancelled'],
-  cancelled: ['cancelled'],
-};
-
 export function updateRequirement(
   options: RequirementStoreOptions,
   input: {
@@ -148,7 +145,8 @@ export function updateRequirement(
     const current = readWithin(database, requirementId);
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
     const next = input.mutate(current.value);
-    if (!ALLOWED_TRANSITIONS[current.value.state].includes(next.state)) {
+    if (next === current.value) return current.value;
+    if (!REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(next.state)) {
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID: ${current.value.state} -> ${next.state}`);
     }
     if (next.requirementId !== requirementId) throw new Error('REQUIREMENT_ID_IMMUTABLE');

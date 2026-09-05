@@ -1065,7 +1065,7 @@ describe('single Route Policy authority', () => {
     expect(successorWork).not.toHaveProperty('planStepId');
   });
 
-  test('returns goal_complete instead of creating another Work after the final accepted Plan step', () => {
+  test('requires explicit Requirement acceptance instead of creating another Work after the final accepted Plan step', () => {
     const root = temp('route-plan-goal-complete-');
     const planStore = { root: join(root, 'plan') };
     const workStore = { root: join(root, 'work') };
@@ -1095,15 +1095,16 @@ describe('single Route Policy authority', () => {
       modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
     });
     expect(completed.status).toBe('ok');
-    expect(completed.summary).toContain('CONTINUATION_GOAL_COMPLETE');
+    expect(completed.summary).toContain('CONTINUATION_REQUIREMENT_ACCEPTANCE_REQUIRED');
     expect(completed.data).toMatchObject({
       executionStarted: false,
       workContractCreated: false,
-      admissionDecision: 'goal_complete',
-      goalComplete: true,
+      admissionDecision: 'requirement_acceptance_required',
+      requirementAcceptanceRequired: true,
       predecessorWorkId: firstWorkId,
       planId: 'plan-goal-complete',
       requirementId: 'REQ-goal-complete',
+      progression: { kind: 'request_requirement_acceptance', reasonCode: 'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE' },
     });
   });
 
