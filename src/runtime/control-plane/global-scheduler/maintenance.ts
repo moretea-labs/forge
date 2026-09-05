@@ -8,6 +8,7 @@ import {
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
+import { cleanupPersistedCheckResults } from '../../execution/process-runtime/check-result-retention';
 import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
@@ -92,6 +93,14 @@ export async function runSchedulerPeriodicCleanup(input: {
   }
   const result = input.processGc({ controllerHome: input.controllerHome, repoId: repo.repoId });
   if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
+  try {
+    const checkResults = cleanupPersistedCheckResults(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
+    if (checkResults.blockers.length > 0 || checkResults.budgetExhausted) {
+      console.error(`[forge cleanup] persisted check-result retention reported bounded blockers for ${repo.repoId}`);
+    }
+  } catch (error) {
+    console.error(`[forge cleanup] persisted check-result retention failed for ${repo.repoId}:`, error);
+  }
   try {
     const retiredJobs = cleanupRetiredExecutionJobs(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
     if (retiredJobs.blockers.length > 0 || retiredJobs.scanTruncated || retiredJobs.budgetExhausted) {
