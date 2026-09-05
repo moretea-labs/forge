@@ -1,5 +1,5 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from 'fs';
-import { basename, join } from 'path';
+import { cpSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'fs';
+import { basename, join, resolve } from 'path';
 import { writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError } from './errors';
 import {
@@ -11,33 +11,42 @@ const BROWSER_STATE_ROOT = '.forge/browser';
 
 import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
 
-/** Move legacy provider files out of the repository and keep the old path as a compatibility link only. */
-export function ensureBrowserStateCompatibilityLink(controllerHome: string, repoId: string, repoRoot: string): string {
+/** Move legacy provider files out of the repository and retire the old path after migration. */
+export function ensureBrowserStateInControllerHome(controllerHome: string, repoId: string, repoRoot: string): string {
   const targetRoot = join(controllerHome, 'repositories', repoId, 'browser');
   const compatibilityParent = join(repoRoot, '.forge');
   const compatibilityRoot = join(compatibilityParent, 'browser');
   mkdirSync(targetRoot, { recursive: true });
-  if (existsSync(compatibilityRoot)) {
-    const stat = lstatSync(compatibilityRoot);
-    if (stat.isSymbolicLink()) {
-      const linked = readlinkSync(compatibilityRoot);
-      if (linked !== targetRoot) throw new Error(`BROWSER_STATE_COMPATIBILITY_LINK_MISMATCH: ${compatibilityRoot} -> ${linked}`);
-      return targetRoot;
-    }
-    if (!stat.isDirectory()) throw new Error(`BROWSER_STATE_COMPATIBILITY_PATH_INVALID: ${compatibilityRoot}`);
-    cpSync(compatibilityRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
-    rmSync(compatibilityRoot, { recursive: true, force: true });
+
+  let stat;
+  try {
+    stat = lstatSync(compatibilityRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
   }
-  mkdirSync(compatibilityParent, { recursive: true });
-  if (!existsSync(compatibilityRoot)) symlinkSync(targetRoot, compatibilityRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  if (!stat) return targetRoot;
+
+  if (stat.isSymbolicLink()) {
+    const linked = readlinkSync(compatibilityRoot);
+    const resolvedLinked = resolve(compatibilityParent, linked);
+    if (resolvedLinked !== resolve(targetRoot)) {
+      throw new Error(`BROWSER_STATE_COMPATIBILITY_LINK_MISMATCH: ${compatibilityRoot} -> ${linked}`);
+    }
+    rmSync(compatibilityRoot, { force: true });
+    return targetRoot;
+  }
+  if (!stat.isDirectory()) throw new Error(`BROWSER_STATE_COMPATIBILITY_PATH_INVALID: ${compatibilityRoot}`);
+  cpSync(compatibilityRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
+  rmSync(compatibilityRoot, { recursive: true, force: true });
   return targetRoot;
 }
 
 /**
  * Browser session semantics are durable SQLite authority. Provider working state
  * (profiles, screenshots, downloads, diagnostics) is repository-scoped but lives
- * under Controller Home when an authority context exists. The repo-local path is
- * legacy compatibility storage only for migration/tests/standalone helpers.
+ * only under Controller Home when an authority context exists. The repo-local
+ * path is import-only legacy storage for migration/tests/standalone helpers and
+ * is removed after successful migration.
  */
 export function browserStateDir(
   repoRoot: string,
@@ -45,7 +54,7 @@ export function browserStateDir(
 ): string {
   const authority = currentRuntimeBrowserSessionAuthorityContext();
   return authority
-    ? join(ensureBrowserStateCompatibilityLink(authority.controllerHome, authority.repoId, repoRoot), name)
+    ? join(ensureBrowserStateInControllerHome(authority.controllerHome, authority.repoId, repoRoot), name)
     : join(repoRoot, BROWSER_STATE_ROOT, name);
 }
 

@@ -671,7 +671,7 @@ describe('browser session controller authority', () => {
   });
 
   test('legacy ChatGPT profile state cannot become general Browser authority, while schema-v2 explicit Browser config remains authoritative', () => {
-    const { repoA } = fixture();
+    const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge'), { recursive: true });
     writeFileSync(join(repoA, '.forge', 'chatgpt-browser.local.json'), JSON.stringify({
       version: 1,
@@ -683,7 +683,7 @@ describe('browser session controller authority', () => {
       updatedAt: '2026-08-24T00:00:00.000Z',
     }));
 
-    const migrated = buildBrowserPluginManifest(1, undefined, repoA);
+    const migrated = buildBrowserPluginManifest(1, undefined, repoA, { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false });
     expect(migrated.health.details?.browserMode).toBe('attach_preferred');
     expect(migrated.health.details?.profileMode).toBe('repo_local');
     expect(migrated.health.details?.profileDir).toBeUndefined();
@@ -708,7 +708,7 @@ describe('browser session controller authority', () => {
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['vivaldi'],
     }));
-    const explicit = buildBrowserPluginManifest(1, undefined, repoA);
+    const explicit = buildBrowserPluginManifest(1, undefined, repoA, { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false });
     expect(explicit.health.details?.browserMode).toBe('managed_persistent');
     expect(explicit.health.details?.profileMode).toBe('custom');
     expect(explicit.health.details?.profileDir).toBe('/tmp/explicit-browser-profile');
