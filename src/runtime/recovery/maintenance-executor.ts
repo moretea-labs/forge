@@ -496,6 +496,35 @@ interface StaleWorkSourceInspection {
   detail: string;
 }
 
+interface StaleWorkDeliveryTargetResolution {
+  targetBranch: string;
+  handle?: NonNullable<ReturnType<typeof readWorkHandle>>;
+  identityMismatch: boolean;
+}
+
+function resolveStaleWorkDeliveryTarget(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  contract: WorkContract,
+): StaleWorkDeliveryTargetResolution {
+  const handle = readWorkHandle(controllerHome, repository.repoId, contract.workId);
+  if (!handle) {
+    return { targetBranch: repository.defaultBranch?.trim() || 'main', identityMismatch: false };
+  }
+  if (!contract.checkoutId || handle.checkoutId !== contract.checkoutId) {
+    return {
+      targetBranch: repository.defaultBranch?.trim() || 'main',
+      handle,
+      identityMismatch: true,
+    };
+  }
+  return {
+    targetBranch: resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch),
+    handle,
+    identityMismatch: false,
+  };
+}
+
 function inspectStaleWorkRepositorySource(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
@@ -519,9 +548,10 @@ function inspectStaleWorkRepositorySource(
     };
   }
   if (!existsSync(path)) {
-    const handle = readWorkHandle(controllerHome, repository.repoId, contract.workId);
+    const deliveryTarget = resolveStaleWorkDeliveryTarget(repository, controllerHome, contract);
+    const handle = deliveryTarget.handle;
     const expectedHead = handle?.expectedHead?.trim();
-    if (!handle || handle.checkoutId !== contract.checkoutId || !expectedHead) {
+    if (deliveryTarget.identityMismatch || !handle || !expectedHead) {
       return {
         safeToCancel: false,
         state: 'source_state_unknown',
@@ -529,7 +559,7 @@ function inspectStaleWorkRepositorySource(
         detail: 'Recorded managed worktree path is absent and no identity-matched durable WorkHandle head can prove source preservation; destructive stale-Work cancellation is fenced.',
       };
     }
-    const targetBranch = resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch);
+    const targetBranch = deliveryTarget.targetBranch;
     const head = runProcess('git', ['rev-parse', '--verify', `${expectedHead}^{commit}`], {
       cwd: repository.canonicalRoot,
       timeoutMs: 10_000,
@@ -604,7 +634,16 @@ function inspectStaleWorkRepositorySource(
     timeoutMs: 10_000,
     maxOutputBytes: 100_000,
   });
-  const targetBranch = repository.defaultBranch?.trim() || 'main';
+  const deliveryTarget = resolveStaleWorkDeliveryTarget(repository, controllerHome, contract);
+  if (deliveryTarget.identityMismatch) {
+    return {
+      safeToCancel: false,
+      state: 'source_state_unknown',
+      path,
+      detail: 'Managed worktree has a durable WorkHandle whose checkout identity does not match the WorkContract; source containment cannot be proven against that handle and destructive stale-Work cancellation is fenced.',
+    };
+  }
+  const targetBranch = deliveryTarget.targetBranch;
   const target = runProcess('git', ['rev-parse', '--verify', `refs/heads/${targetBranch}`], {
     cwd: repository.canonicalRoot,
     timeoutMs: 10_000,

@@ -330,6 +330,47 @@ describe('runtime maintenance executor', () => {
     };
   }
 
+  function writeStaleManagedWorkHandle(
+    controllerHome: string,
+    repository: { repoId: string; canonicalRoot: string },
+    workId: string,
+    worktree: string,
+    deliveryTargetBranch?: string,
+  ): string {
+    const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+    if (!contract?.checkoutId) throw new Error(`fixture Work ${workId} is missing checkout identity`);
+    const expectedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).trim();
+    const branch = execFileSync('git', ['branch', '--show-current'], { cwd: worktree, encoding: 'utf8' }).trim();
+    const baseCommit = execFileSync('git', ['merge-base', 'main', expectedHead], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim();
+    writeWorkHandle(controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: `session-${workId}`,
+      principalId: 'principal-maintenance-test',
+      repositoryId: repository.repoId,
+      checkoutId: contract.checkoutId,
+      worktreePath: worktree,
+      branch,
+      managedWorktree: true,
+      baseCommit,
+      expectedHead,
+      ...(deliveryTargetBranch ? { deliveryTargetBranch } : {}),
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      finalization: {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+    });
+    return expectedHead;
+  }
+
   function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
     temporaryRoots.push(root);
@@ -695,8 +736,10 @@ describe('runtime maintenance executor', () => {
     expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repository.canonicalRoot, encoding: 'utf8' })).toContain(worktree);
   });
 
-  it('protects clean stale managed-worktree commits that are not integrated into the target branch', () => {
+  it('protects clean stale managed-worktree commits that are not integrated into the bound delivery target branch', () => {
     const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
+    execFileSync('git', ['branch', 'kernel-v2/integration', 'main'], { cwd: repository.canonicalRoot });
+    writeStaleManagedWorkHandle(controllerHome, repository, workId, worktree, 'kernel-v2/integration');
     const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
     expect(status.candidates).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
@@ -715,6 +758,42 @@ describe('runtime maintenance executor', () => {
     });
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
     expect(existsSync(join(worktree, 'unique.txt'))).toBe(true);
+  });
+
+  it('uses the identity-matched WorkHandle delivery target for a retained managed worktree', () => {
+    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
+    const expectedHead = writeStaleManagedWorkHandle(controllerHome, repository, workId, worktree, 'kernel-v2/architecture');
+    execFileSync('git', ['branch', 'kernel-v2/architecture', expectedHead], { cwd: repository.canonicalRoot });
+
+    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      path: worktree,
+      safe: false,
+      sourceState: 'clean_integrated',
+      disposition: 'semantic_completion_required',
+    }));
+    expect(status.candidates.find((candidate) => candidate.id === workId)?.reason).toContain('kernel-v2/architecture');
+  });
+
+  it('falls back to repository default branch for a retained legacy WorkHandle without a delivery target', () => {
+    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
+    const expectedHead = writeStaleManagedWorkHandle(controllerHome, repository, workId, worktree);
+    execFileSync('git', ['branch', 'release/integration', expectedHead], { cwd: repository.canonicalRoot });
+
+    const status = buildRuntimeMaintenanceStatus(
+      { ...repository, defaultBranch: 'release/integration' },
+      controllerHome,
+      { minAgeMinutes: 1, maxCandidates: 50 },
+    );
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      path: worktree,
+      sourceState: 'clean_integrated',
+      disposition: 'semantic_completion_required',
+    }));
   });
 
   it('uses an identity-matched durable WorkHandle head to reconcile an already-removed managed worktree', () => {
