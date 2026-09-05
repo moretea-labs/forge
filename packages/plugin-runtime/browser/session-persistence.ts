@@ -17,6 +17,7 @@ export interface BrowserSessionPersistenceWrite<T> {
 export interface BrowserSessionPersistenceTransaction {
   read<T>(namespace: string, scope: string, key: string): BrowserSessionPersistenceRecord<T> | undefined;
   write<T>(input: BrowserSessionPersistenceWrite<T>): BrowserSessionPersistenceRecord<T>;
+  delete(input: { namespace: string; scope: string; key: string; action?: string; expectedRevision?: number }): boolean;
 }
 
 /** Provider-neutral persistence contract. Concrete SQLite ownership remains in Runtime composition. */

@@ -1,5 +1,9 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
+import {
+  cleanupRuntimeBrowserSessionTombstones,
+  closeRuntimeBrowserSessionLegacyImportCutover,
+} from '../../root/browser-session-composition';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';

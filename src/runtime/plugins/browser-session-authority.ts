@@ -12,6 +12,9 @@ export {
   type BrowserSessionAuthorityPage,
   type BrowserSessionAuthorityPort,
   type BrowserSessionAuthoritySession,
+  type BrowserSessionLegacyCutoverRepository,
+  type BrowserSessionLegacyCutoverReport,
+  type BrowserSessionTombstoneCleanupReport,
 } from '../../../packages/plugin-runtime/browser/session-authority';
 export {
   currentRuntimeBrowserSessionAuthorityContext as currentBrowserSessionAuthorityContext,
@@ -63,4 +66,18 @@ export function listAllBrowserSessionsForRepository<T extends BrowserSessionAuth
 
 export function tombstoneBrowserSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string): boolean {
   return runtimeBrowserSessionAuthority().tombstone(context(controllerHome, repoId), repoRoot, sessionId);
+}
+
+export function closeLegacyBrowserSessionImportCutover(
+  controllerHome: string,
+  repositories: readonly import('../../../packages/plugin-runtime/browser/session-authority').BrowserSessionLegacyCutoverRepository[],
+) {
+  return runtimeBrowserSessionAuthority().closeLegacyImportCutover(controllerHome, repositories);
+}
+
+export function cleanupBrowserSessionTombstones(
+  controllerHome: string,
+  options?: { nowMs?: number; ttlMs?: number; maxTombstones?: number; maxRemovals?: number },
+) {
+  return runtimeBrowserSessionAuthority().cleanupTombstones(controllerHome, options);
 }
