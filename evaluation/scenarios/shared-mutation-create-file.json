@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-mutation-create-file",
+  "title": "Create one bounded repository file",
+  "userIntent": "Create one explicitly allowed evaluation file through the public safe-patch surface and change nothing else.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["The safe patch creates exactly one allowed file."],
+    "affectedDomains": ["bounded repository mutation"],
+    "behavioralInvariants": ["Only the isolated sandbox changes; source remains unchanged."],
+    "regressionRisks": ["The mutation escapes allowed paths or fails to record the created file."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "create", "tool": "repository_safe_patch_apply", "arguments": { "purpose": "Create one bounded evaluation file", "allowed_paths": ["evaluation-probe-created.txt"], "operations": [{ "type": "create", "path": "evaluation-probe-created.txt", "content": "created by shared evaluation\n" }] } }
+  ] },
+  "validators": [
+    { "id": "created-only-target", "kind": "change_precision", "type": "changed_paths", "requiredGlobs": ["evaluation-probe-created.txt"], "forbiddenGlobs": ["README.md", "AGENTS.md"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "bounded_mutation" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared behavior anchored to the exact Forge v1.7.2 release commit." }
+}

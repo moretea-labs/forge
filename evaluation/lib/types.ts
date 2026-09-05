@@ -3,6 +3,15 @@ export const TRACE_SCHEMA = 'forge-evaluation-trace/v1' as const;
 export const REPORT_SCHEMA = 'forge-evaluation-report/v1' as const;
 
 export type EvaluationAuthorityClass = 'cross_version_evaluation' | 'candidate_internal_diagnostic';
+export type EvaluationCorpusClass = 'shared' | 'v2_only';
+export type EvaluationBehaviorClass =
+  | 'discovery_context'
+  | 'bounded_mutation'
+  | 'work_lifecycle'
+  | 'failure_classification'
+  | 'restart_recovery'
+  | 'multi_repo_concurrency';
+export type EvaluationProvenanceKind = 'historical_regression' | 'historical_behavior' | 'synthetic_fixture';
 
 export type ValidatorKind = 'behavior' | 'invariant' | 'regression' | 'change_precision';
 export type ValidationStatus = 'passed' | 'failed' | 'skipped';
@@ -15,12 +24,49 @@ export interface GroundTruth {
   regressionRisks: string[];
 }
 
-export interface ForgeCliExecution {
-  interface: 'forge_cli';
+export interface ForgeCliExecutionStep {
+  id: string;
   arguments: string[];
   timeoutMs?: number;
+  expectedExitCode?: number;
   traceFile?: string;
 }
+
+export interface ForgeCliExecution {
+  interface: 'forge_cli';
+  arguments?: string[];
+  timeoutMs?: number;
+  traceFile?: string;
+  steps?: ForgeCliExecutionStep[];
+}
+
+export interface ForgeMcpCall {
+  id: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+  capture?: Record<string, string>;
+  expectedOutcome?: 'success' | 'error';
+  timeoutMs?: number;
+  restartBefore?: boolean;
+  parallelGroup?: string;
+}
+
+export interface EvaluationRepositoryFixture {
+  id: string;
+}
+
+export interface EvaluationScenarioFixtures {
+  repositories?: EvaluationRepositoryFixture[];
+}
+
+export interface ForgeMcpExecution {
+  interface: 'forge_mcp';
+  profile?: 'planner' | 'executor' | 'orchestrator' | 'controller';
+  toolset?: 'facade' | 'core' | 'advanced' | 'full';
+  calls: ForgeMcpCall[];
+}
+
+export type ScenarioExecution = ForgeCliExecution | ForgeMcpExecution;
 
 export interface CommandValidator {
   id: string;
@@ -40,7 +86,18 @@ export interface ChangedPathsValidator {
   forbiddenGlobs?: string[];
 }
 
-export type ScenarioValidator = CommandValidator | ChangedPathsValidator;
+export interface ExecutionOutputValidator {
+  id: string;
+  kind: 'behavior' | 'invariant' | 'regression';
+  type: 'execution_output';
+  stepId?: string;
+  stream?: 'stdout' | 'stderr' | 'combined';
+  includes?: string[];
+  excludes?: string[];
+  expectedExitCode?: number;
+}
+
+export type ScenarioValidator = CommandValidator | ChangedPathsValidator | ExecutionOutputValidator;
 
 export interface EvaluationScenario {
   schemaVersion: typeof SCENARIO_SCHEMA;
@@ -52,17 +109,25 @@ export interface EvaluationScenario {
     commit: string;
   };
   groundTruth: GroundTruth;
-  execution: ForgeCliExecution;
+  fixtures?: EvaluationScenarioFixtures;
+  execution: ScenarioExecution;
   validators: ScenarioValidator[];
+  corpus?: {
+    class: EvaluationCorpusClass;
+    behaviorClass: EvaluationBehaviorClass;
+  };
   provenance?: {
+    kind?: EvaluationProvenanceKind;
     sourceCommit?: string;
     fixCommit?: string;
+    references?: string[];
     note?: string;
   };
 }
 
 export interface CommandRecord {
   kind: CommandKind;
+  stepId?: string;
   command: string;
   arguments: string[];
   cwd: string;

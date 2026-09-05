@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-failure-create-target-exists",
+  "title": "Reject create over an existing file",
+  "userIntent": "Attempt to create README.md through safe patch and fail closed because the target already exists.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["Create semantics never overwrite an existing tracked file."],
+    "affectedDomains": ["failure classification", "bounded mutation"],
+    "behavioralInvariants": ["README.md remains unchanged after the rejected operation."],
+    "regressionRisks": ["Create is treated as write and clobbers existing source."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "create-existing", "tool": "repository_safe_patch_apply", "arguments": { "purpose": "Probe create target fencing", "allowed_paths": ["README.md"], "operations": [{ "type": "create", "path": "README.md", "content": "must not overwrite\n" }] }, "expectedOutcome": "error" }
+  ] },
+  "validators": [
+    { "id": "existing-target-rejected", "kind": "behavior", "type": "execution_output", "stepId": "create-existing", "expectedExitCode": 1, "includes": ["CREATE_TARGET_EXISTS", "README.md"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "failure_classification" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared mutation failure behavior anchored to the exact v1.7.2 release." }
+}

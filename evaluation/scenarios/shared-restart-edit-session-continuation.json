@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-restart-edit-session-continuation",
+  "title": "Continue a public edit session after candidate restart",
+  "userIntent": "Create the first file in a bounded edit session, restart the candidate process, then continue the same session at its captured revision with a second file.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["Edit-session identity and revision survive candidate restart and permit deterministic continuation."],
+    "affectedDomains": ["restart recovery", "bounded mutation", "edit-session persistence"],
+    "behavioralInvariants": ["Both changes belong to the same persisted edit session and remain inside declared allowed paths."],
+    "regressionRisks": ["Edit session is process-local, revision is lost, or continuation forks hidden state."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "first-edit", "tool": "repository_safe_patch_apply", "arguments": { "purpose": "Evaluation edit-session restart continuation", "allowed_paths": ["evaluation-restart-before.txt", "evaluation-restart-after.txt"], "operations": [{ "type": "create", "path": "evaluation-restart-before.txt", "content": "before restart\n" }] }, "capture": { "editSession": "session.sessionId", "editRevision": "session.currentRevision" } },
+    { "id": "second-edit", "tool": "repository_safe_patch_apply", "restartBefore": true, "arguments": { "session_id": "{{editSession}}", "expected_revision": "{{editRevision}}", "operations": [{ "type": "create", "path": "evaluation-restart-after.txt", "content": "after restart\n" }] } }
+  ] },
+  "validators": [
+    { "id": "continuation-succeeds", "kind": "behavior", "type": "execution_output", "stepId": "second-edit", "expectedExitCode": 0 },
+    { "id": "both-session-files-exist", "kind": "change_precision", "type": "changed_paths", "requiredGlobs": ["evaluation-restart-before.txt", "evaluation-restart-after.txt"], "forbiddenGlobs": ["README.md", "AGENTS.md"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "restart_recovery" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared edit-session restart behavior anchored to the exact v1.7.2 release." }
+}

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "forge-golden-corpus/v1",
+  "shared": [
+    "scenarios/shared-discovery-readme.json",
+    "scenarios/shared-discovery-agents-contract.json",
+    "scenarios/shared-discovery-repository-summary.json",
+    "scenarios/shared-discovery-context-summary.json",
+    "scenarios/shared-mutation-create-file.json",
+    "scenarios/shared-mutation-replace-readme.json",
+    "scenarios/shared-mutation-coherent-batch.json",
+    "scenarios/shared-mutation-guidance-only.json",
+    "scenarios/shared-work-direct-no-contract.json",
+    "scenarios/shared-work-investigation-stays-direct.json",
+    "scenarios/shared-work-dependency-durable-admission.json",
+    "scenarios/shared-work-recovery-durable-admission.json",
+    "scenarios/shared-failure-runtime-not-running.json",
+    "scenarios/shared-failure-missing-file.json",
+    "scenarios/shared-failure-unknown-tool.json",
+    "scenarios/shared-failure-create-target-exists.json",
+    "scenarios/shared-restart-repository-registration.json",
+    "scenarios/shared-restart-repository-list-projection.json",
+    "scenarios/shared-restart-edit-session-continuation.json",
+    "scenarios/shared-restart-durable-work-visible.json",
+    "scenarios/shared-multirepo-register-list.json",
+    "scenarios/shared-multirepo-parallel-read.json",
+    "scenarios/shared-multirepo-three-registry.json",
+    "scenarios/shared-multirepo-parallel-mutation.json"
+  ],
+  "v2Only": []
+}

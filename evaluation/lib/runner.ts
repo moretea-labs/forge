@@ -4,10 +4,23 @@ import { loadExecutionEvidence } from './execution-evidence.ts';
 import { assertOutsideSource, changedFiles, cleanupIsolatedSnapshot, createIsolatedSnapshot, inspectSourceState, isolatedEvaluationEnvironment, resolveSourcePath, type IsolatedSnapshot } from './sandbox.ts';
 import { captureCommand, commandSucceeded } from './trace.ts';
 import { runValidators } from './validators.ts';
-import { TRACE_SCHEMA, type EvaluationReport, type EvaluationTrace, type RunEvaluationInput, type SourceState, type ValidationResult } from './types.ts';
+import { TRACE_SCHEMA, type CommandRecord, type EvaluationReport, type EvaluationTrace, type ForgeCliExecutionStep, type RunEvaluationInput, type SourceState, type ValidationResult } from './types.ts';
 
 function sameSourceState(left: SourceState, right: SourceState): boolean {
   return left.clean === right.clean && left.statusDigest === right.statusDigest;
+}
+
+function executionSteps(input: RunEvaluationInput['scenario']): ForgeCliExecutionStep[] {
+  if (input.execution.interface !== 'forge_cli') throw new Error(`Evaluation scenario ${input.id} uses ${input.execution.interface}; use the matching public-surface runner.`);
+  if (input.execution.steps) return input.execution.steps.map((step) => ({ ...step, arguments: [...step.arguments] }));
+  if (!input.execution.arguments) throw new Error(`Evaluation scenario ${input.id} has no executable CLI arguments.`);
+  return [{
+    id: 'default',
+    arguments: [...input.execution.arguments],
+    timeoutMs: input.execution.timeoutMs,
+    expectedExitCode: 0,
+    traceFile: input.execution.traceFile,
+  }];
 }
 
 export function runEvaluationInSnapshot(input: {
@@ -19,27 +32,50 @@ export function runEvaluationInSnapshot(input: {
   env?: NodeJS.ProcessEnv;
 }): EvaluationReport {
   const retained = input.retained === true;
+  const scenario = input.scenario;
+  const executionConfig = scenario.execution;
+  if (executionConfig.interface !== 'forge_cli') throw new Error(`Evaluation scenario ${scenario.id} requires the public MCP runner.`);
   const forgeCommand = input.forgeCommand ?? { executable: 'forge' };
   const environment = input.env ?? isolatedEvaluationEnvironment(input.sandbox);
   const commands = [...input.sandbox.setupCommands];
-  const execution = captureCommand({
-    kind: 'forge',
-    command: forgeCommand.executable,
-    arguments: [...(forgeCommand.prefixArguments ?? []), ...input.scenario.execution.arguments],
-    cwd: input.sandbox.repository,
-    timeoutMs: input.scenario.execution.timeoutMs ?? 60_000,
-    env: environment,
-  });
-  commands.push(execution);
-  const executionEvidence = loadExecutionEvidence(input.sandbox.repository, input.scenario.execution.traceFile);
+  const executions: CommandRecord[] = [];
+  const evidenceRecords = [] as ReturnType<typeof loadExecutionEvidence>[];
+  let executionPassed = true;
+
+  for (const step of executionSteps(scenario)) {
+    const execution = {
+      ...captureCommand({
+        kind: 'forge',
+        command: forgeCommand.executable,
+        arguments: [...(forgeCommand.prefixArguments ?? []), ...step.arguments],
+        cwd: input.sandbox.repository,
+        timeoutMs: step.timeoutMs ?? executionConfig.timeoutMs ?? 60_000,
+        env: environment,
+      }),
+      stepId: step.id,
+    };
+    commands.push(execution);
+    executions.push(execution);
+    const expectedExitCode = step.expectedExitCode ?? 0;
+    if (!commandSucceeded(execution, expectedExitCode)) executionPassed = false;
+    const traceFile = step.traceFile ?? executionConfig.traceFile;
+    if (traceFile) evidenceRecords.push(loadExecutionEvidence(input.sandbox.repository, traceFile));
+  }
+
   const changes = changedFiles(input.sandbox.repository);
   commands.push(...changes.commands);
-  const traceArtifact = input.scenario.execution.traceFile?.replaceAll('\\', '/').replace(/^\.\//, '');
-  const taskChangedFiles = changes.files.filter((path) => path !== traceArtifact);
+  const traceArtifacts = new Set(
+    executionSteps(scenario)
+      .map((step) => step.traceFile ?? executionConfig.traceFile)
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.replaceAll('\\', '/').replace(/^\.\//, '')),
+  );
+  const taskChangedFiles = changes.files.filter((path) => !traceArtifacts.has(path));
   const validations = runValidators({
-    validators: input.scenario.validators,
+    validators: scenario.validators,
     cwd: input.sandbox.repository,
     changedFiles: taskChangedFiles,
+    executionCommands: executions,
     env: environment,
   });
   const sourceAfter = inspectSourceState(input.sandbox.source);
@@ -48,41 +84,43 @@ export function runEvaluationInSnapshot(input: {
   const isolation: ValidationResult = sameSourceState(input.sandbox.sourceStateBefore, sourceStateAfter)
     ? { id: 'source-repository-unchanged', kind: 'isolation', status: 'passed', summary: 'Source Git status was unchanged before and after the evaluation.' }
     : { id: 'source-repository-unchanged', kind: 'isolation', status: 'failed', summary: 'Source Git status changed during evaluation; do not trust this result.' };
+  const evidenceErrors = evidenceRecords
+    .map((entry) => entry.error)
+    .filter((value): value is string => Boolean(value));
   const validation = [
     ...validations.results,
-    ...(executionEvidence.error ? [{ id: 'execution-trace', kind: 'behavior' as const, status: 'failed' as const, summary: executionEvidence.error }] : []),
+    ...evidenceErrors.map((error, index) => ({ id: `execution-trace-${index + 1}`, kind: 'behavior' as const, status: 'failed' as const, summary: error })),
     isolation,
   ];
-  const forgeSucceeded = commandSucceeded(execution);
-  const passed = forgeSucceeded && validation.every((result) => result.status === 'passed');
+  const passed = executionPassed && validation.every((result) => result.status === 'passed');
   const trace: EvaluationTrace = {
     schemaVersion: TRACE_SCHEMA,
-    scenarioId: input.scenario.id,
-    taskInput: input.scenario.userIntent,
+    scenarioId: scenario.id,
+    taskInput: scenario.userIntent,
     snapshot: {
-      commit: input.scenario.snapshot.commit,
+      commit: scenario.snapshot.commit,
       sourceStateBefore: input.sandbox.sourceStateBefore,
       sourceStateAfter,
     },
     sandbox: { strategy: 'git-clone-no-local', retained, ...(retained ? { path: input.sandbox.root } : {}) },
-    contextRetrieval: executionEvidence.evidence.contextRetrieval,
-    inspectedEvidence: executionEvidence.evidence.inspectedEvidence,
+    contextRetrieval: evidenceRecords.flatMap((entry) => entry.evidence.contextRetrieval),
+    inspectedEvidence: evidenceRecords.flatMap((entry) => entry.evidence.inspectedEvidence),
     changedFiles: taskChangedFiles,
     commands,
     checks: validations.commands,
     toolInteractions: [
-      { kind: 'forge_cli', name: forgeCommand.executable, outcome: forgeSucceeded ? 'success' : 'failure' },
-      ...executionEvidence.evidence.toolInteractions,
+      ...executions.map((execution) => ({ kind: 'forge_cli' as const, name: execution.stepId ?? forgeCommand.executable, outcome: commandSucceeded(execution, executionConfig.steps?.find((step) => step.id === execution.stepId)?.expectedExitCode ?? 0) ? 'success' as const : 'failure' as const })),
+      ...evidenceRecords.flatMap((entry) => entry.evidence.toolInteractions),
       ...validations.commands.map((command) => ({ kind: 'check' as const, name: command.command, outcome: commandSucceeded(command) ? 'success' as const : 'failure' as const })),
     ],
     finalResult: {
       status: passed ? 'passed' : 'failed',
-      summary: executionEvidence.evidence.finalResult
+      summary: [...evidenceRecords].reverse().find((entry) => entry.evidence.finalResult)?.evidence.finalResult
         ?? (passed ? 'Forge execution and all validators passed in an isolated snapshot.' : 'Forge execution or validation failed; inspect the trace and diagnosis.'),
     },
     validation,
   };
-  const report = buildReport(input.scenario, trace);
+  const report = buildReport(scenario, trace);
   if (input.outputDirectory) writeReport(input.outputDirectory, report);
   return report;
 }

@@ -10,10 +10,17 @@ function globMatches(path: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`).test(path);
 }
 
+function outputFor(command: CommandRecord, stream: 'stdout' | 'stderr' | 'combined'): string {
+  if (stream === 'stderr') return command.stderr;
+  if (stream === 'combined') return `${command.stdout}\n${command.stderr}`;
+  return command.stdout;
+}
+
 export function runValidators(input: {
   validators: ScenarioValidator[];
   cwd: string;
   changedFiles: string[];
+  executionCommands?: CommandRecord[];
   env?: NodeJS.ProcessEnv;
 }): { results: ValidationResult[]; commands: CommandRecord[] } {
   const results: ValidationResult[] = [];
@@ -38,6 +45,37 @@ export function runValidators(input: {
         summary: passed
           ? `Command exited ${expected} as expected.`
           : `Expected exit ${expected}; received ${command.exitCode ?? 'no exit'}${command.timedOut ? ' (timed out)' : ''}.`,
+      });
+      continue;
+    }
+
+    if (validator.type === 'execution_output') {
+      const executionCommands = input.executionCommands ?? [];
+      const command = validator.stepId
+        ? executionCommands.find((entry) => entry.stepId === validator.stepId)
+        : executionCommands.at(-1);
+      if (!command) {
+        results.push({ id: validator.id, kind: validator.kind, status: 'failed', summary: `Execution step ${validator.stepId ?? '(last)'} was not captured.` });
+        continue;
+      }
+      const stream = validator.stream ?? 'stdout';
+      const output = outputFor(command, stream);
+      const missing = (validator.includes ?? []).filter((needle) => !output.includes(needle));
+      const forbidden = (validator.excludes ?? []).filter((needle) => output.includes(needle));
+      const exitMatches = validator.expectedExitCode === undefined || command.exitCode === validator.expectedExitCode;
+      const passed = missing.length === 0 && forbidden.length === 0 && exitMatches && !command.timedOut;
+      results.push({
+        id: validator.id,
+        kind: validator.kind,
+        status: passed ? 'passed' : 'failed',
+        summary: passed
+          ? `Captured ${stream} matched the evaluator-owned execution oracle.`
+          : [
+              ...(missing.length > 0 ? [`Missing output token(s): ${missing.join(', ')}`] : []),
+              ...(forbidden.length > 0 ? [`Forbidden output token(s): ${forbidden.join(', ')}`] : []),
+              ...(!exitMatches ? [`Expected exit ${validator.expectedExitCode}; received ${command.exitCode ?? 'no exit'}.`] : []),
+              ...(command.timedOut ? ['Execution timed out.'] : []),
+            ].join('; '),
       });
       continue;
     }

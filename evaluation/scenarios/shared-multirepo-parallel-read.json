@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-multirepo-parallel-read",
+  "title": "Read primary and secondary repositories concurrently",
+  "userIntent": "Resolve both repository identities and issue concurrent public reads against the same immutable README in each repository.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "fixtures": { "repositories": [{ "id": "secondary" }] },
+  "groundTruth": {
+    "intendedBehavior": ["Independent reads for two registered repositories may execute concurrently and return the correct snapshot content."],
+    "affectedDomains": ["multi-repository", "concurrency", "repository reads"],
+    "behavioralInvariants": ["Each read is explicitly bound to its captured repository identity."],
+    "regressionRisks": ["Concurrent calls cross repository identity or serialize through unintended global state."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "primary", "tool": "repository_list", "arguments": {}, "capture": { "primaryRepo": "repositories.0.repoId" } },
+    { "id": "secondary", "tool": "repository_register", "arguments": { "path": "{{fixture.secondary.repository}}" }, "capture": { "secondaryRepo": "repository.repoId" } },
+    { "id": "read-primary", "tool": "read_repository_file", "parallelGroup": "reads", "arguments": { "repo_id": "{{primaryRepo}}", "path": "README.md" } },
+    { "id": "read-secondary", "tool": "read_repository_file", "parallelGroup": "reads", "arguments": { "repo_id": "{{secondaryRepo}}", "path": "README.md" } }
+  ] },
+  "validators": [
+    { "id": "primary-read", "kind": "behavior", "type": "execution_output", "stepId": "read-primary", "expectedExitCode": 0, "includes": ["Forge has no internal AI brain"] },
+    { "id": "secondary-read", "kind": "behavior", "type": "execution_output", "stepId": "read-secondary", "expectedExitCode": 0, "includes": ["Forge has no internal AI brain"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "multi_repo_concurrency" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared parallel read behavior anchored to the exact v1.7.2 release." }
+}

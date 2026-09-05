@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-multirepo-register-list",
+  "title": "Register and enumerate a second repository",
+  "userIntent": "Register an evaluator-owned secondary repository and confirm both repositories are visible through the public registry.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "fixtures": { "repositories": [{ "id": "secondary" }] },
+  "groundTruth": {
+    "intendedBehavior": ["The public registry accepts the secondary local Git repository and lists it beside the primary repository."],
+    "affectedDomains": ["multi-repository", "repository registry"],
+    "behavioralInvariants": ["Repository identities remain distinct and both point to evaluator-owned clones."],
+    "regressionRisks": ["Second-repository registration is rejected, merged with primary identity, or omitted from projection."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "register", "tool": "repository_register", "arguments": { "path": "{{fixture.secondary.repository}}" } },
+    { "id": "list", "tool": "repository_list", "arguments": {} }
+  ] },
+  "validators": [
+    { "id": "secondary-registered", "kind": "behavior", "type": "execution_output", "stepId": "register", "expectedExitCode": 0, "includes": ["\"displayName\":\"secondary\"", "\"repositoryType\":\"local-git\""] },
+    { "id": "two-repositories-listed", "kind": "behavior", "type": "execution_output", "stepId": "list", "expectedExitCode": 0, "includes": ["\"displayName\":\"repository\"", "\"displayName\":\"secondary\""] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "multi_repo_concurrency" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared multi-repository behavior anchored to the exact v1.7.2 release." }
+}

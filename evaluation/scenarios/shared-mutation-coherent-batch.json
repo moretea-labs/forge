@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-mutation-coherent-batch",
+  "title": "Create a coherent two-file patch batch",
+  "userIntent": "Apply one coherent public safe-patch batch that creates two explicitly scoped files.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["Both declared files are created in one bounded edit batch."],
+    "affectedDomains": ["bounded repository mutation", "edit batching"],
+    "behavioralInvariants": ["No pre-existing source file changes."],
+    "regressionRisks": ["A multi-operation batch partially applies or leaks changes outside scope."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "create-pair", "tool": "repository_safe_patch_apply", "arguments": { "purpose": "Create two bounded evaluation files", "allowed_paths": ["evaluation-probe-a.txt", "evaluation-probe-b.txt"], "operations": [{ "type": "create", "path": "evaluation-probe-a.txt", "content": "a\n" }, { "type": "create", "path": "evaluation-probe-b.txt", "content": "b\n" }] } }
+  ] },
+  "validators": [
+    { "id": "both-created", "kind": "change_precision", "type": "changed_paths", "requiredGlobs": ["evaluation-probe-a.txt", "evaluation-probe-b.txt"], "forbiddenGlobs": ["README.md", "AGENTS.md", "package.json"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "bounded_mutation" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared behavior anchored to the exact Forge v1.7.2 release commit." }
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-work-dependency-durable-admission",
+  "title": "Create durable Work for dependency ordering",
+  "userIntent": "Admit dependency-ordered investigation into the durable Goal Workloop through the public surface.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["Dependency ordering creates canonical durable Work before controller-owned execution is attempted."],
+    "affectedDomains": ["Work lifecycle", "durable admission", "controller authentication"],
+    "behavioralInvariants": ["Canonical Work is retained even when raw stdio lacks an authenticated controller session."],
+    "regressionRisks": ["Dependency work silently degrades to Direct Control or canonical Work is lost on handle materialization failure."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "admit", "tool": "rh_work", "arguments": { "operation": "start", "objective": "Evaluation dependency ordered durable admission", "requested_by": "user", "work_kind": "investigation", "scope_clear": true, "requires_investigation": true, "requires_long_running_checks": false, "requires_parallelism": false, "needs_dependencies": true, "requires_recovery": false, "requires_worker": false, "requires_external_effect": false, "requires_approval": false, "requires_user_approval": false, "destructive": false, "remote_write": false, "secret_access": false }, "expectedOutcome": "error" }
+  ] },
+  "validators": [
+    { "id": "durable-work-retained", "kind": "behavior", "type": "execution_output", "stepId": "admit", "expectedExitCode": 1, "includes": ["\"mode\":\"goal_workloop\"", "\"workContractCreated\":true", "\"canonicalWorkRetained\":true", "CONTROLLER_AUTHENTICATED_SESSION_REQUIRED"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "work_lifecycle" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared lifecycle admission behavior anchored to the exact v1.7.2 release." }
+}

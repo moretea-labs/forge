@@ -7,7 +7,7 @@ function rate(results: ValidationResult[]): number | null {
 
 export function calculateMetrics(scenario: EvaluationScenario, trace: EvaluationTrace): EvaluationMetrics {
   const observedDomains = new Set([...trace.contextRetrieval, ...trace.inspectedEvidence].map((evidence) => evidence.domain));
-  const execution = trace.commands.find((command) => command.kind === 'forge');
+  const executionCommands = trace.commands.filter((command) => command.kind === 'forge');
   const invariants = trace.validation.filter((result) => result.kind === 'invariant');
   const regressions = trace.validation.filter((result) => result.kind === 'regression');
   const precision = trace.validation.filter((result) => result.kind === 'change_precision');
@@ -21,7 +21,9 @@ export function calculateMetrics(scenario: EvaluationScenario, trace: Evaluation
       ? null
       : 1 - (rate(regressions) ?? 0),
     changePrecision: rate(precision),
-    executionLatencyMs: execution?.durationMs ?? null,
+    executionLatencyMs: executionCommands.length > 0
+      ? executionCommands.reduce((total, command) => total + command.durationMs, 0)
+      : null,
     toolInteractionCount: trace.toolInteractions.length,
   };
 }

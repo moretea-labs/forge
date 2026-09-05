@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-restart-repository-registration",
+  "title": "Recover registered repository identity after candidate restart",
+  "userIntent": "Register an evaluator-owned secondary repository, restart the candidate MCP process, then resolve the same repository by its captured public identity.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "fixtures": { "repositories": [{ "id": "secondary" }] },
+  "groundTruth": {
+    "intendedBehavior": ["Repository registration survives a candidate process restart in the same isolated Controller Home."],
+    "affectedDomains": ["restart recovery", "repository registry"],
+    "behavioralInvariants": ["The recovered repository is the evaluator-owned secondary local Git repository."],
+    "regressionRisks": ["Repository identity is process-local or resolves to the wrong checkout after restart."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "register", "tool": "repository_register", "arguments": { "path": "{{fixture.secondary.repository}}" }, "capture": { "secondaryRepo": "repository.repoId" } },
+    { "id": "recover", "tool": "repository_get", "restartBefore": true, "arguments": { "repo_id": "{{secondaryRepo}}" } }
+  ] },
+  "validators": [
+    { "id": "secondary-recovered", "kind": "behavior", "type": "execution_output", "stepId": "recover", "expectedExitCode": 0, "includes": ["\"displayName\":\"secondary\"", "\"repositoryType\":\"local-git\""] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "restart_recovery" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared restart behavior anchored to the exact v1.7.2 release." }
+}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { loadScenario } from './lib/scenario.ts';
+import { runPublicMcpEvaluation } from './lib/public-mcp-runner.ts';
 import { runEvaluation } from './lib/runner.ts';
 
 function usage(): string {
@@ -53,7 +54,7 @@ function parseArguments(argv: string[]): Options {
 try {
   const options = parseArguments(process.argv.slice(2));
   const scenario = loadScenario(options.scenario!);
-  const report = runEvaluation({
+  const evaluationInput = {
     scenario,
     repositoryRoot: options.repo,
     outputDirectory: options.output,
@@ -61,7 +62,10 @@ try {
       ? { executable: options.forgeCommand, prefixArguments: options.forgeArguments }
       : undefined,
     keepSandbox: options.keepSandbox,
-  });
+  };
+  const report = scenario.execution.interface === 'forge_mcp'
+    ? await runPublicMcpEvaluation(evaluationInput)
+    : runEvaluation(evaluationInput);
   console.log(JSON.stringify({ scenario: report.scenario.id, status: report.trace.finalResult.status, output: options.output }, null, 2));
   process.exit(report.trace.finalResult.status === 'passed' ? 0 : 1);
 } catch (error) {

@@ -72,9 +72,20 @@ export function evaluationIsolationIdentity(snapshot: IsolatedSnapshot): Evaluat
   };
 }
 
+function isHostRuntimeAuthorityEnvironmentKey(key: string): boolean {
+  return key === 'FORGE_RUNTIME_INSTANCE_ID'
+    || key === 'FORGE_RUNTIME_OWNER_PID'
+    || key === 'FORGE_ARTIFACT_IDENTITY'
+    || key === 'FORGE_WORKER_PROTOCOL_VERSION'
+    || key.startsWith('FORGE_RELEASE_');
+}
+
 export function isolatedEvaluationEnvironment(snapshot: IsolatedSnapshot, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const inherited = Object.fromEntries(
+    Object.entries(base).filter(([key]) => !isHostRuntimeAuthorityEnvironmentKey(key)),
+  );
   return {
-    ...base,
+    ...inherited,
     HOME: snapshot.home,
     FORGE_CONTROLLER_HOME: snapshot.controllerHome,
     XDG_STATE_HOME: snapshot.stateHome,
@@ -170,6 +181,30 @@ export function createIsolatedSnapshot(source: string, commit: string): Isolated
     cleanupIsolatedSnapshot(root);
     throw error;
   }
+}
+
+export function createEvaluationRepositoryFixture(snapshot: IsolatedSnapshot, fixtureId: string, commit: string): {
+  repository: string;
+  commands: CommandRecord[];
+} {
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(fixtureId) || fixtureId === 'primary') {
+    throw new Error(`Invalid evaluation repository fixture id: ${fixtureId}`);
+  }
+  const fixtureRoot = join(snapshot.root, 'fixtures');
+  mkdirSync(fixtureRoot, { recursive: true });
+  const repository = join(fixtureRoot, fixtureId);
+  if (existsSync(repository)) throw new Error(`Evaluation repository fixture already exists: ${fixtureId}`);
+  const commands: CommandRecord[] = [];
+  const clone = gitRecord(fixtureRoot, ['clone', '--no-local', '--no-checkout', snapshot.repository, repository]);
+  commands.push(clone);
+  requireSuccessful(clone, `Evaluation repository fixture clone ${fixtureId}`);
+  const checkout = gitRecord(repository, ['checkout', '--detach', commit]);
+  commands.push(checkout);
+  requireSuccessful(checkout, `Evaluation repository fixture checkout ${fixtureId}`);
+  const removeOrigin = gitRecord(repository, ['remote', 'remove', 'origin']);
+  commands.push(removeOrigin);
+  requireSuccessful(removeOrigin, `Evaluation repository fixture remote removal ${fixtureId}`);
+  return { repository, commands };
 }
 
 export function changedFiles(repository: string): { files: string[]; commands: CommandRecord[] } {

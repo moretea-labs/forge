@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-work-investigation-stays-direct",
+  "title": "Do not create Work for investigation alone",
+  "userIntent": "Classify a bounded investigation that has no dependency, recovery, isolation, or external-effect requirement.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["Investigation alone does not force a durable WorkContract."],
+    "affectedDomains": ["Work routing", "investigation lifecycle"],
+    "behavioralInvariants": ["Durability is selected by execution needs rather than descriptive complexity."],
+    "regressionRisks": ["Read-only investigation is over-routed into durable Work."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "route", "tool": "rh_work", "arguments": { "operation": "start", "objective": "Evaluation bounded investigation", "requested_by": "user", "work_kind": "investigation", "scope_clear": true, "requires_investigation": true, "requires_long_running_checks": false, "requires_parallelism": false, "needs_dependencies": false, "requires_recovery": false, "requires_worker": false, "requires_external_effect": false, "requires_approval": false, "requires_user_approval": false, "destructive": false, "remote_write": false, "secret_access": false } }
+  ] },
+  "validators": [
+    { "id": "investigation-direct", "kind": "behavior", "type": "execution_output", "stepId": "route", "expectedExitCode": 0, "includes": ["\"mode\":\"direct_control\"", "\"workContractCreated\":false", "investigation"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "work_lifecycle" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared lifecycle routing behavior anchored to the exact v1.7.2 release." }
+}

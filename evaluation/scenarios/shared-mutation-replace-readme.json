@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-mutation-replace-readme",
+  "title": "Replace one known README phrase",
+  "userIntent": "Apply one deterministic replacement to README.md inside the isolated trial.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["The safe patch performs the requested exact text replacement."],
+    "affectedDomains": ["bounded repository mutation"],
+    "behavioralInvariants": ["Only README.md changes inside the trial clone."],
+    "regressionRisks": ["Replacement matching is imprecise or unrelated files change."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "replace-readme", "tool": "repository_safe_patch_apply", "arguments": { "purpose": "Replace a stable README phrase", "allowed_paths": ["README.md"], "operations": [{ "type": "replace", "path": "README.md", "old_text": "Forge has no internal AI brain.", "new_text": "Forge has no internal AI brain during evaluation." }] } }
+  ] },
+  "validators": [
+    { "id": "readme-only", "kind": "change_precision", "type": "changed_paths", "requiredGlobs": ["README.md"], "forbiddenGlobs": ["AGENTS.md", "package.json"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "bounded_mutation" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared behavior anchored to the exact Forge v1.7.2 release commit." }
+}

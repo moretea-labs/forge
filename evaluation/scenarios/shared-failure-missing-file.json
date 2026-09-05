@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-failure-missing-file",
+  "title": "Classify a missing repository path",
+  "userIntent": "Read a path that does not exist and return a bounded public error without mutating the repository.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["The repository reader returns an explicit missing-path failure."],
+    "affectedDomains": ["failure classification", "repository reads"],
+    "behavioralInvariants": ["Missing files are not represented as empty successful reads."],
+    "regressionRisks": ["The caller receives ambiguous success or an unrelated filesystem error."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "missing", "tool": "read_repository_file", "arguments": { "path": "definitely-missing-evaluation-file.txt" }, "expectedOutcome": "error" }
+  ] },
+  "validators": [
+    { "id": "missing-path-classified", "kind": "behavior", "type": "execution_output", "stepId": "missing", "expectedExitCode": 1, "includes": ["\"code\":\"path does not exist\"", "definitely-missing-evaluation-file.txt"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "failure_classification" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared failure behavior anchored to the exact v1.7.2 release." }
+}

@@ -15,6 +15,7 @@ import {
   type EvaluationRunIdentity,
   type FrozenEvaluationProtocol,
 } from './protocol.ts';
+import { runPublicMcpEvaluationInSnapshot } from './public-mcp-runner.ts';
 import { runEvaluationInSnapshot } from './runner.ts';
 import { evaluationScenarioDigest } from './scenario.ts';
 import {
@@ -75,9 +76,10 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function assertCandidateArtifact(candidate: EvaluationCandidateAdapter): void {
-  if (candidate.identity.executionSurface !== 'public_cli') {
-    throw new Error('EVALUATION_CANDIDATE_RUNNER_PUBLIC_CLI_REQUIRED');
+function assertCandidateArtifact(candidate: EvaluationCandidateAdapter, scenario: EvaluationScenario): void {
+  const expectedSurface = scenario.execution.interface === 'forge_mcp' ? 'public_mcp' : 'public_cli';
+  if (candidate.identity.executionSurface !== expectedSurface) {
+    throw new Error(`EVALUATION_CANDIDATE_EXECUTION_SURFACE_MISMATCH:${candidate.identity.candidateId}:${expectedSurface}`);
   }
   assertEvaluationCandidateArtifact({
     candidateId: candidate.identity.candidateId,
@@ -111,14 +113,14 @@ export function planCandidateTrials(protocol: FrozenEvaluationProtocol, scenario
   return trials;
 }
 
-export function runPairedCandidateEvaluation(input: {
+export async function runPairedCandidateEvaluation(input: {
   protocol: FrozenEvaluationProtocol;
   scenario: EvaluationScenario;
   candidates: readonly [EvaluationCandidateAdapter, EvaluationCandidateAdapter];
   environment: EvaluationEnvironmentIdentity;
   repositoryRoot?: string;
   keepSandboxes?: boolean;
-}): PairedCandidateRun {
+}): Promise<PairedCandidateRun> {
   if (!input.protocol.corpus.scenarioIds.includes(input.scenario.id)) {
     throw new Error(`EVALUATION_SCENARIO_NOT_IN_FROZEN_CORPUS:${input.scenario.id}`);
   }
@@ -130,7 +132,7 @@ export function runPairedCandidateEvaluation(input: {
   if (input.candidates[0].identity.candidateId === input.candidates[1].identity.candidateId) {
     throw new Error('EVALUATION_CANDIDATE_IDS_MUST_BE_DISTINCT');
   }
-  for (const candidate of input.candidates) assertCandidateArtifact(candidate);
+  for (const candidate of input.candidates) assertCandidateArtifact(candidate, input.scenario);
   if (input.protocol.trialPolicy.cacheModes.includes('warm')) {
     if (input.protocol.trialPolicy.warmupTrials < 1) throw new Error('EVALUATION_WARM_CACHE_REQUIRES_WARMUP_TRIALS');
     for (const candidate of input.candidates) {
@@ -188,13 +190,21 @@ export function runPairedCandidateEvaluation(input: {
           throw new Error(`EVALUATION_WARMUP_MUTATED_REPOSITORY:${candidate.identity.candidateId}:${warmupChanges.join(',')}`);
         }
       }
-      const report = runEvaluationInSnapshot({
-        scenario: input.scenario,
-        sandbox,
-        forgeCommand: trialCommand,
-        retained,
-        env,
-      });
+      const report = input.scenario.execution.interface === 'forge_mcp'
+        ? await runPublicMcpEvaluationInSnapshot({
+            scenario: input.scenario,
+            sandbox,
+            forgeCommand: trialCommand,
+            retained,
+            env,
+          })
+        : runEvaluationInSnapshot({
+            scenario: input.scenario,
+            sandbox,
+            forgeCommand: trialCommand,
+            retained,
+            env,
+          });
       assertMaterializedCandidateArtifactUnchanged(candidate.identity.candidateId, candidateArtifact);
       trials.push({
         ...planned,

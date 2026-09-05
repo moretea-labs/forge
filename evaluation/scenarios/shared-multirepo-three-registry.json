@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-multirepo-three-registry",
+  "title": "Maintain three independent repository identities",
+  "userIntent": "Register two evaluator-owned secondary repositories and enumerate all three repositories from the isolated registry.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "fixtures": { "repositories": [{ "id": "secondary" }, { "id": "tertiary" }] },
+  "groundTruth": {
+    "intendedBehavior": ["Primary, secondary, and tertiary repositories retain distinct registry identities."],
+    "affectedDomains": ["multi-repository", "registry scale"],
+    "behavioralInvariants": ["Adding repositories does not replace or alias an existing registry entry."],
+    "regressionRisks": ["Registry identity collisions appear when more than two repositories are present."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "register-secondary", "tool": "repository_register", "arguments": { "path": "{{fixture.secondary.repository}}" } },
+    { "id": "register-tertiary", "tool": "repository_register", "arguments": { "path": "{{fixture.tertiary.repository}}" } },
+    { "id": "list", "tool": "repository_list", "arguments": {} }
+  ] },
+  "validators": [
+    { "id": "three-identities", "kind": "behavior", "type": "execution_output", "stepId": "list", "expectedExitCode": 0, "includes": ["\"displayName\":\"repository\"", "\"displayName\":\"secondary\"", "\"displayName\":\"tertiary\""] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "multi_repo_concurrency" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared multi-repository scale behavior anchored to the exact v1.7.2 release." }
+}

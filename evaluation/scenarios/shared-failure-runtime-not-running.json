@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-failure-runtime-not-running",
+  "title": "Classify missing canonical Runtime",
+  "userIntent": "Report readiness for a fresh isolated Controller Home where no canonical Runtime has been started.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["rh_status classifies the isolated environment as blocked because the Runtime and source snapshot are absent."],
+    "affectedDomains": ["failure classification", "runtime readiness"],
+    "behavioralInvariants": ["Missing Runtime authority is not silently treated as healthy."],
+    "regressionRisks": ["Readiness falsely reports success or loses the actionable reason code."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "status", "tool": "rh_status", "arguments": {}, "expectedOutcome": "error" }
+  ] },
+  "validators": [
+    { "id": "runtime-missing-codes", "kind": "behavior", "type": "execution_output", "stepId": "status", "expectedExitCode": 1, "includes": ["RUNTIME_NOT_RUNNING", "RUNTIME_SOURCE_SNAPSHOT_MISSING"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "failure_classification" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared failure behavior anchored to the exact v1.7.2 release." }
+}

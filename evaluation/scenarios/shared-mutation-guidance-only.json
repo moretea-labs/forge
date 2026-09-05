@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-mutation-guidance-only",
+  "title": "Mutate only repository guidance",
+  "userIntent": "Update one stable sentence in AGENTS.md while proving unrelated product and package files stay untouched.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["The exact AGENTS.md sentence changes and no unrelated path changes."],
+    "affectedDomains": ["bounded repository mutation", "scope precision"],
+    "behavioralInvariants": ["README.md and package.json remain unchanged."],
+    "regressionRisks": ["Path scoping is ignored or exact replacement edits the wrong file."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "replace-guidance", "tool": "repository_safe_patch_apply", "arguments": { "purpose": "Update one stable AGENTS sentence", "allowed_paths": ["AGENTS.md"], "operations": [{ "type": "replace", "path": "AGENTS.md", "old_text": "Direct Edit is the default for understood work.", "new_text": "Direct Edit is the default for understood evaluation work." }] } }
+  ] },
+  "validators": [
+    { "id": "guidance-only", "kind": "change_precision", "type": "changed_paths", "requiredGlobs": ["AGENTS.md"], "forbiddenGlobs": ["README.md", "package.json"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "bounded_mutation" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared behavior anchored to the exact Forge v1.7.2 release commit." }
+}

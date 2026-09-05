@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-failure-unknown-tool",
+  "title": "Reject an unavailable public tool",
+  "userIntent": "Call a tool name that is not registered and receive an explicit capability error.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["The MCP surface rejects an unknown tool instead of dispatching a fallback."],
+    "affectedDomains": ["failure classification", "public MCP capability surface"],
+    "behavioralInvariants": ["Tool availability is explicit and closed-world for the selected toolset."],
+    "regressionRisks": ["Unknown names are silently routed or produce an unclassifiable transport failure."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "unknown", "tool": "definitely_not_a_forge_tool", "arguments": {}, "expectedOutcome": "error" }
+  ] },
+  "validators": [
+    { "id": "tool-not-found", "kind": "behavior", "type": "execution_output", "stepId": "unknown", "expectedExitCode": 1, "includes": ["TOOL_NOT_FOUND"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "failure_classification" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared capability failure behavior anchored to the exact v1.7.2 release." }
+}

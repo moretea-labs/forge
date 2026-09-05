@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "shared-discovery-readme",
+  "title": "Read stable repository product context",
+  "userIntent": "Read the repository README through the public Forge surface and recover the product boundary without mutating source.",
+  "snapshot": { "source": ".", "commit": "c873cfeb11a223ced342e7101c016261b4a93b38" },
+  "groundTruth": {
+    "intendedBehavior": ["The candidate reads the immutable README from the isolated repository."],
+    "affectedDomains": ["repository discovery", "product context"],
+    "behavioralInvariants": ["The source repository remains unchanged."],
+    "regressionRisks": ["Repository reads resolve the wrong checkout or omit requested content."]
+  },
+  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
+    { "id": "read-readme", "tool": "read_repository_file", "arguments": { "path": "README.md" } }
+  ] },
+  "validators": [
+    { "id": "readme-product-boundary", "kind": "behavior", "type": "execution_output", "stepId": "read-readme", "expectedExitCode": 0, "includes": ["Forge has no internal AI brain", "Give ChatGPT real, controlled hands"] }
+  ],
+  "corpus": { "class": "shared", "behaviorClass": "discovery_context" },
+  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared behavior anchored to the exact Forge v1.7.2 release commit." }
+}
