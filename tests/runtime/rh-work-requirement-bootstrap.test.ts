@@ -205,10 +205,39 @@ describe('rh_work Requirement bootstrap', () => {
     expect(successor.status).toBe('ok');
     expect(successor.data.planContractCreated).toBe(true);
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)?.status).toBe('superseded');
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toMatchObject({
+    const successorBeforeRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)!;
+    expect(successorBeforeRepair).toMatchObject({
       status: 'draft',
       supersedes: [predecessorPlanId],
     });
+    expect(successorBeforeRepair.obligationDispositions).toHaveLength(obligations.length);
+
+    const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      plan_id: successorPlanId,
+      repair_operation: 'repair',
+      dry_run: false,
+      plan_steps: [{
+        ...step,
+        acceptance_criteria: [...step.acceptance_criteria, 'Draft repair preserves predecessor continuity.'],
+      }],
+    }));
+    expect(repaired.status).toBe('ok');
+    expect(repaired.data.repaired).toBe(true);
+    const successorAfterRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)!;
+    expect(successorAfterRepair.planId).toBe(successorPlanId);
+    expect(successorAfterRepair.supersedes).toEqual([predecessorPlanId]);
+    expect(successorAfterRepair.obligationDispositions).toEqual(successorBeforeRepair.obligationDispositions);
+    expect(successorAfterRepair.steps[0]?.acceptanceCriteria).toContain('Draft repair preserves predecessor continuity.');
+
+    const approvedSuccessor = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_approve',
+      plan_id: successorPlanId,
+    }));
+    expect(approvedSuccessor.status).toBe('ok');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)?.status).toBe('approved');
 
     const conflictingNativeField = structured(await callRuntimeTool(ctx, 'rh_work', {
       ...successorArgs,
