@@ -1100,7 +1100,7 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   const entry = resolveProcessRunnerEntryPath();
   const useProcessGroup = process.platform !== 'win32';
-  const invocation = runnerInvocation(entry, descriptorPath);
+  const invocation = resolveProcessRunnerInvocation(entry, descriptorPath);
   // Detached so Controller crash does not kill the runner.
   return spawn(invocation.command, invocation.args, {
     cwd: descriptor.command.cwd,
