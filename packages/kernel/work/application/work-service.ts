@@ -90,6 +90,7 @@ export {
   transitionWorkContractPhase,
   requestWorkImplementationReview,
   recordWorkImplementationReview,
+  reconcileApprovedWorkImplementationReviewProjection,
   appendWorkEvidence,
   appendWorkHandoffRef,
   appendVerificationRecord,

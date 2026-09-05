@@ -1252,6 +1252,54 @@ export function recordWorkImplementationReview(
   }, false, true, false, true);
 }
 
+/**
+ * Repair only the lifecycle projection for an already-durable exact approved
+ * implementation review. This never appends or derives review authority. The
+ * caller must first independently prove that the immutable delivery candidate
+ * still matches the durable review/check boundary.
+ */
+export function reconcileApprovedWorkImplementationReviewProjection(
+  options: WorkContractStoreOptions,
+  workId: string,
+  expected: { reviewId: string; sourceRevision: string; changedPathDigest: string },
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  if (current.completionReceipt) return current;
+  if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_TERMINAL: ${workId}`);
+  const review = latestImplementationReview(current.implementationReviews);
+  if (!review || review.decision !== 'approved') throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+  if (review.reviewId !== expected.reviewId
+    || review.sourceRevision !== expected.sourceRevision
+    || review.changedPathDigest !== expected.changedPathDigest) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_PROJECTION_IDENTITY_MISMATCH');
+  }
+  if (current.phase === 'delivery' && current.phaseEvidence.review.state === 'satisfied') return current;
+  if (!['verification', 'review', 'delivery'].includes(current.phase)) {
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_PHASE_INVALID: ${current.phase}`);
+  }
+  const at = nowIso(options);
+  const summary = `Recovered lifecycle projection from durable approved implementation review ${review.reviewId}; review authority was not rewritten.`;
+  const phaseEvidence = transitionPhaseEvidence(current, 'delivery', {
+    status: 'running',
+    summary,
+    evidenceRefs: current.evidenceRefs,
+    recordedAt: at,
+  });
+  phaseEvidence.review = {
+    state: 'satisfied',
+    source: 'recorded',
+    summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
+    evidenceRefs: current.evidenceRefs.slice(0, 20),
+    recordedAt: review.recordedAt,
+  };
+  return updateWorkContractInternal(options, workId, {
+    phase: 'delivery',
+    phaseEvidence,
+    status: 'running',
+  }, false, true);
+}
+
 export function appendWorkEvidence(
   options: WorkContractStoreOptions,
   workId: string,
@@ -1275,6 +1323,21 @@ export function appendWorkHandoffRef(
   return updateWorkContract(options, workId, { handoffRefs });
 }
 
+function sameSuccessfulVerificationExecutionFact(left: VerificationRecord, right: VerificationRecord): boolean {
+  const a = left.receipt;
+  const b = right.receipt;
+  if (left.outcome !== 'valid_pass' || right.outcome !== 'valid_pass' || !a || !b) return false;
+  if (!left.sourceRevision || !right.sourceRevision || left.sourceRevision !== right.sourceRevision) return false;
+  if (!left.workspaceFingerprint || !right.workspaceFingerprint || left.workspaceFingerprint !== right.workspaceFingerprint) return false;
+  if (left.checkId !== right.checkId || a.processId !== b.processId) return false;
+  if (!a.checkCacheKey || !a.checkRevision || !a.checkDefinitionDigest || !a.checkEnvironmentFingerprint) return false;
+  if (!b.checkCacheKey || !b.checkRevision || !b.checkDefinitionDigest || !b.checkEnvironmentFingerprint) return false;
+  return a.checkCacheKey === b.checkCacheKey
+    && a.checkRevision === b.checkRevision
+    && a.checkDefinitionDigest === b.checkDefinitionDigest
+    && a.checkEnvironmentFingerprint === b.checkEnvironmentFingerprint;
+}
+
 export function appendVerificationRecord(
   options: WorkContractStoreOptions,
   workId: string,
@@ -1282,6 +1345,14 @@ export function appendVerificationRecord(
 ): WorkContract {
   const current = getWorkContract(options, workId);
   if (!current) throw new Error(`work contract not found: ${workId}`);
+  // Re-consuming the exact same successful Process against the exact same
+  // source/workspace is request provenance, not a new Work verification fact.
+  // Keep the original durable VerificationRecord so an approved review remains
+  // bound to one stable evidence identity. A changed source/workspace, Process,
+  // Check definition, environment, or cache identity still appends normally.
+  if (current.checkRefs.some((existing) => sameSuccessfulVerificationExecutionFact(existing, record))) {
+    return current;
+  }
   const checkRefs = [record, ...current.checkRefs].slice(0, 50);
   return updateWorkContract(options, workId, { checkRefs });
 }

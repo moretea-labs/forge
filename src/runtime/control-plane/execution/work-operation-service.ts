@@ -478,6 +478,7 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       next,
       infrastructureFailure ? 'infrastructure_failure' : passed ? 'passed' : 'failed',
       failureSummary,
+      passed ? { sourceRevision: validationHead, workspaceFingerprint } : undefined,
     );
   }
   if (completed && acceptedFailure) {

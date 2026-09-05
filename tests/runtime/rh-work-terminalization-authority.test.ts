@@ -2497,6 +2497,33 @@ describe('rh_work terminalization authority', () => {
       phaseEvidence: { review: { state: 'satisfied' } },
     });
 
+    let repeatedVerification: Record<string, any> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      repeatedVerification = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+        'rh_work',
+        {
+          repo_id: canonicalRepository.repoId,
+          checkout_id: workspace.checkoutId,
+          operation: 'verify',
+          work_id: workId,
+          check_id: checkId,
+          requested_by: 'chatgpt',
+          request_id: 'successor-finalize-exact-check-after-review',
+        },
+      ));
+      if (repeatedVerification.data?.verification?.completed === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(repeatedVerification?.status).toBe('ok');
+    expect(repeatedVerification?.data?.verification).toMatchObject({ completed: true, outcome: 'valid_pass' });
+    const afterRepeatedVerification = getWorkContract({ controllerHome: fx.controllerHome, repoId: canonicalRepository.repoId }, workId);
+    expect(afterRepeatedVerification).toMatchObject({
+      phase: 'delivery',
+      phaseEvidence: { review: { state: 'satisfied' } },
+    });
+    expect(afterRepeatedVerification?.checkRefs).toHaveLength(1);
+
     const finalized = structured(await callRuntimeTool(
       ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
       'rh_work',
@@ -2898,6 +2925,16 @@ describe('rh_work terminalization authority', () => {
       sourceRevision: candidate, workspaceFingerprint: 'cleaned-changed-content', verificationWorkspaceFingerprint: 'cleaned-changed-verification',
       changedPaths: ['owned.txt'], changedPathDigest: implementationReviewChangedPathDigest(['owned.txt']),
       acceptanceCriteriaSummary: 'Exact reviewed changed candidate is terminalized.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied',
+      summary: 'Simulate a late exact validation projection after the approved review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Late validation projection reopened review before the crash.');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      phase: 'review',
+      phaseEvidence: { review: { state: 'active' } },
+      implementationReviews: [{ reviewId: 'REV-changed-cleaned-recovery', decision: 'approved', sourceRevision: candidate }],
     });
     writeWorkHandle(fx.controllerHome, {
       schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,

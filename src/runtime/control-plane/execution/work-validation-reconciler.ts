@@ -4,6 +4,7 @@ import {
   transitionWorkContractPhase,
   updateWorkContract,
   workRequiresImplementationReview,
+  latestImplementationReview,
 } from '../../../../packages/kernel/work/api/index';
 import {
   listValidatingWorkHandles,
@@ -82,11 +83,17 @@ export function markWorkValidationCurrentFromReusedEvidence(controllerHome: stri
  * Process and Check records contribute evidence only; they never become a
  * second completion or lifecycle authority.
  */
+export interface WorkValidationProjectionCandidate {
+  sourceRevision: string;
+  workspaceFingerprint: string;
+}
+
 export function projectWorkValidationOutcome(
   controllerHome: string,
   handle: WorkHandleState,
   outcome: Exclude<WorkValidationOutcome, 'not_validating' | 'running'>,
   summary?: string,
+  candidate?: WorkValidationProjectionCandidate,
 ): void {
   const contractId = handle.workContractId;
   if (!contractId) return;
@@ -102,10 +109,24 @@ export function projectWorkValidationOutcome(
     // can preserve an approved review before evidenceState itself is projected.
     const validationWasRearmed = contract.evidenceState === 'stale' || contract.evidenceState === 'partial';
     const currentReviewIsAuthoritative = contract.phase === 'review' && contract.evidenceState === 'valid';
+    const latestReview = latestImplementationReview(contract.implementationReviews);
+    const approvedReviewMatchesCurrentCandidate = Boolean(
+      candidate
+      && contract.phase === 'delivery'
+      && contract.phaseEvidence.review.state === 'satisfied'
+      && latestReview?.decision === 'approved'
+      && latestReview.sourceRevision === candidate.sourceRevision
+      && latestReview.verificationWorkspaceFingerprint === candidate.workspaceFingerprint
+    );
     const approvedDeliveryIsAuthoritative = contract.phase === 'delivery'
       && contract.phaseEvidence.review.state === 'satisfied'
-      && !validationWasRearmed;
-    if (currentReviewIsAuthoritative || approvedDeliveryIsAuthoritative) return;
+      && (!validationWasRearmed || approvedReviewMatchesCurrentCandidate);
+    if (currentReviewIsAuthoritative || approvedDeliveryIsAuthoritative) {
+      if (approvedReviewMatchesCurrentCandidate && contract.evidenceState !== 'valid') {
+        updateWorkContract(options, contractId, { evidenceState: 'valid' });
+      }
+      return;
+    }
     const verified = transitionWorkContractPhase(options, contractId, {
       phase: 'verification',
       status: 'running',

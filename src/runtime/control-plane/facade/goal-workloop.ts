@@ -49,6 +49,7 @@ import {
   assertImplementationReviewPreDeliveryBoundary,
   authoritativeImplementationReviewVerificationEvidence,
   implementationReviewChangedPathDigest,
+  latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
   workRequiresImplementationReview,
   type ImplementationReviewDecision,
@@ -2164,8 +2165,25 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     ? evaluateWorkCompletionEvidence(updated, sourceRevision, input.workspaceFingerprint)
     : undefined;
   const validPassReadyForNextBoundary = completionEvidence?.status === 'complete';
+  const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? updated.scopeEvidence?.actualChangedPaths ?? []);
+  const latestReview = latestImplementationReview(updated.implementationReviews);
+  const approvedReviewRemainsAuthoritative = Boolean(
+    validPassReadyForNextBoundary
+    && updated.phase === 'delivery'
+    && updated.phaseEvidence.review.state === 'satisfied'
+    && latestReview?.decision === 'approved'
+    && sourceRevision
+    && input.workspaceFingerprint
+    && latestReview.sourceRevision === sourceRevision
+    && latestReview.verificationWorkspaceFingerprint === input.workspaceFingerprint
+    && latestReview.changedPathDigest === implementationReviewChangedPathDigest(currentChangedPaths)
+  );
   const reviewRequiredAfterPass = validPassReadyForNextBoundary
-    && workRequiresImplementationReview(updated.workKind, normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? updated.scopeEvidence?.actualChangedPaths ?? []));
+    && !approvedReviewRemainsAuthoritative
+    && workRequiresImplementationReview(updated.workKind, currentChangedPaths);
+  if (approvedReviewRemainsAuthoritative && updated.evidenceState !== 'valid') {
+    updateWorkContract(ctx.workStore, updated.workId, { evidenceState: 'valid' });
+  }
   if (reviewRequiredAfterPass) {
     recordWorkScopeEvidence(ctx.workStore, updated.workId, { actualChangedPaths: [...(ctx.workspaceChangedPaths ?? [])] });
     transitionWorkContractPhase(ctx.workStore, updated.workId, {

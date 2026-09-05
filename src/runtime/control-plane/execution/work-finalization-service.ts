@@ -11,7 +11,7 @@ import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { withControllerSessionTerminalizationFence } from '../../../../packages/kernel/controller/api/index';
 import type { VerificationRecord } from '../facade/types';
-import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkImplementationReview, reconcileApprovedWorkImplementationReviewProjection, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { assertResolvedAuthorization, decideAuthorization } from '../governance/authorization';
 import { updateExecutionSession } from './session-store';
@@ -488,7 +488,7 @@ function assertCleanedCompletionImplementationReviewGate(input: {
   target: RepositoryRecord;
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
-}): void {
+}): NonNullable<ReturnType<typeof latestImplementationReview>> {
   const deliveryRevision = input.handle.expectedHead ?? input.handle.baseCommit;
   if (!deliveryRevision) throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
   const review = latestImplementationReview(input.contract.implementationReviews);
@@ -532,6 +532,7 @@ function assertCleanedCompletionImplementationReviewGate(input: {
     requiredCheckIds: input.contract.checks,
     verificationRecords: input.contract.checkRefs,
   });
+  return review;
 }
 
 
@@ -1503,9 +1504,18 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
       const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
       const target = selectWorkFinalizationTarget(repository, current);
-      assertCleanedCompletionImplementationReviewGate({ target, handle: current, contract: terminalContract });
+      const durableReview = assertCleanedCompletionImplementationReviewGate({ target, handle: current, contract: terminalContract });
+      const reconciledContract = reconcileApprovedWorkImplementationReviewProjection(
+        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+        terminalContract.workId,
+        {
+          reviewId: durableReview.reviewId,
+          sourceRevision: durableReview.sourceRevision,
+          changedPathDigest: durableReview.changedPathDigest,
+        },
+      );
       completeFinalizedWorkContract({
-        ctx, handle: current, contract: terminalContract, args, terminalizationOwner, outcome: 'completed_changed',
+        ctx, handle: current, contract: reconciledContract, args, terminalizationOwner, outcome: 'completed_changed',
       });
       releasePreparedWorkOwnership(ctx, current);
       updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
