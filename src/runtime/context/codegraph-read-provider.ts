@@ -4,6 +4,8 @@ import { createRequire } from 'module';
 import { dirname, join, resolve } from 'path';
 import { createInterface, type Interface as ReadlineInterface } from 'readline';
 import { fileURLToPath } from 'url';
+import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { createCodegraphCacheLocator, codegraphRepositoryCacheRoot, type CodegraphCacheLocator } from './codegraph-cache-boundary';
 
 const require = createRequire(import.meta.url);
 const SCHEMA_VERSION = 1;
@@ -169,7 +171,7 @@ export function resolveCodeGraphBundledRuntime(options: { runtimeRoot?: string }
   return { nodeExecutable, sidecarPath, libraryPath, platformPackage, source: 'dependency' };
 }
 
-function minimalEnvironment(runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>): NodeJS.ProcessEnv {
+function minimalEnvironment(runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>, codegraphDir?: string): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries({
     PATH: dirname(runtime.nodeExecutable),
     HOME: process.env.HOME,
@@ -181,6 +183,7 @@ function minimalEnvironment(runtime: ReturnType<typeof resolveCodeGraphBundledRu
     CODEGRAPH_TELEMETRY: '0',
     DO_NOT_TRACK: '1',
     CODEGRAPH_NO_DAEMON: '1',
+    CODEGRAPH_DIR: codegraphDir,
     FORGE_CODEGRAPH_LIBRARY_PATH: runtime.libraryPath,
   }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
 }
@@ -299,16 +302,23 @@ export function queryCodeGraphReadProvider(
   }
 
   const processStartedAt = performance.now();
-  const execution = spawnSync(runtime.nodeExecutable, [runtime.sidecarPath], {
-    cwd: resolve(repoRoot),
-    input,
-    encoding: 'utf8',
-    env: minimalEnvironment(runtime),
-    timeout: boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1_000, 60_000),
-    maxBuffer: MAX_RESPONSE_BYTES,
-    windowsHide: true,
-    shell: false,
-  });
+  const resolvedRepoRoot = resolve(repoRoot);
+  const locator = createCodegraphCacheLocator(resolvedRepoRoot, resolveControllerHome(), { createTarget: false });
+  let execution: ReturnType<typeof spawnSync>;
+  try {
+    execution = spawnSync(runtime.nodeExecutable, [runtime.sidecarPath], {
+      cwd: resolvedRepoRoot,
+      input,
+      encoding: 'utf8',
+      env: minimalEnvironment(runtime, locator?.name),
+      timeout: boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1_000, 60_000),
+      maxBuffer: MAX_RESPONSE_BYTES,
+      windowsHide: true,
+      shell: false,
+    });
+  } finally {
+    locator?.release();
+  }
   const processMs = performance.now() - processStartedAt;
   if (execution.error) {
     const code = (execution.error as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? 'CODEGRAPH_TIMEOUT' : 'CODEGRAPH_START_FAILED';
@@ -359,6 +369,7 @@ interface PersistentCodeGraphSession {
   closed: boolean;
   idleTimer?: NodeJS.Timeout;
   queue: Promise<void>;
+  locator?: CodegraphCacheLocator;
 }
 
 const persistentSessions = new Map<string, PersistentCodeGraphSession>();
@@ -366,8 +377,8 @@ let persistentSessionSpawns = 0;
 let persistentSessionReuses = 0;
 let persistentSessionRequests = 0;
 
-function persistentRuntimeKey(runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>): string {
-  return `${runtime.nodeExecutable}\u0000${runtime.sidecarPath}\u0000${runtime.libraryPath}`;
+function persistentRuntimeKey(runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>, cacheMode: 'controller' | 'legacy'): string {
+  return `${runtime.nodeExecutable}\u0000${runtime.sidecarPath}\u0000${runtime.libraryPath}\u0000${cacheMode}`;
 }
 
 function closePersistentSessionNow(session: PersistentCodeGraphSession): void {
@@ -378,6 +389,8 @@ function closePersistentSessionNow(session: PersistentCodeGraphSession): void {
   try { session.reader.close(); } catch {}
   try { session.child.stdin.end(); } catch {}
   try { session.child.kill(); } catch {}
+  session.locator?.release();
+  session.locator = undefined;
 }
 
 function schedulePersistentSessionIdle(session: PersistentCodeGraphSession): void {
@@ -391,24 +404,36 @@ function createPersistentSession(
   repoRoot: string,
   runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>,
 ): PersistentCodeGraphSession {
-  const child = spawn(runtime.nodeExecutable, [runtime.sidecarPath], {
-    cwd: repoRoot,
-    env: { ...minimalEnvironment(runtime), FORGE_CODEGRAPH_PERSISTENT: '1' },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-    shell: false,
-  });
+  const controllerHome = resolveControllerHome();
+  const cacheMode: 'controller' | 'legacy' = existsSync(codegraphRepositoryCacheRoot(controllerHome, repoRoot)) ? 'controller' : 'legacy';
+  const locator = cacheMode === 'controller'
+    ? createCodegraphCacheLocator(repoRoot, controllerHome, { createTarget: false }) ?? undefined
+    : undefined;
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    child = spawn(runtime.nodeExecutable, [runtime.sidecarPath], {
+      cwd: repoRoot,
+      env: { ...minimalEnvironment(runtime, locator?.name), FORGE_CODEGRAPH_PERSISTENT: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: false,
+    });
+  } catch (error) {
+    locator?.release();
+    throw error;
+  }
   child.unref();
   const reader = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const session: PersistentCodeGraphSession = {
     repoRoot,
-    runtimeKey: persistentRuntimeKey(runtime),
+    runtimeKey: persistentRuntimeKey(runtime, cacheMode),
     child,
     reader,
     lines: reader[Symbol.asyncIterator](),
     stderr: '',
     closed: false,
     queue: Promise.resolve(),
+    locator,
   };
   child.stderr.on('data', (chunk: Buffer) => {
     if (session.stderr.length >= MAX_STDERR_CHARS) return;
@@ -419,6 +444,8 @@ function createPersistentSession(
     session.closed = true;
     if (session.idleTimer) clearTimeout(session.idleTimer);
     if (persistentSessions.get(repoRoot) === session) persistentSessions.delete(repoRoot);
+    session.locator?.release();
+    session.locator = undefined;
   });
   persistentSessions.set(repoRoot, session);
   persistentSessionSpawns += 1;
@@ -429,7 +456,9 @@ function getPersistentSession(
   repoRoot: string,
   runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>,
 ): PersistentCodeGraphSession {
-  const key = persistentRuntimeKey(runtime);
+  const controllerHome = resolveControllerHome();
+  const cacheMode: 'controller' | 'legacy' = existsSync(codegraphRepositoryCacheRoot(controllerHome, repoRoot)) ? 'controller' : 'legacy';
+  const key = persistentRuntimeKey(runtime, cacheMode);
   const current = persistentSessions.get(repoRoot);
   if (current && !current.closed && current.runtimeKey === key) {
     if (current.idleTimer) clearTimeout(current.idleTimer);

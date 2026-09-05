@@ -1,9 +1,9 @@
-import { createHash } from "crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { runProcess as runBoundedProcess } from "../../effects/process-runner";
 import { resolveControllerHome } from "../repositories/controller-home";
+import { createCodegraphCacheLocator, migrateLegacyCodegraphCache } from "../../runtime/context/codegraph-cache-boundary";
 
 const CLAUDE_CODEGRAPH_ALLOWED_TOOLS_PATTERN = "mcp__codegraph__*";
 const CLAUDE_CODEGRAPH_SERVER_NAME = "codegraph";
@@ -160,34 +160,22 @@ function normalize(raw: Record<string, any>): CodegraphCheckResult {
 }
 
 export function checkCodegraph(opts: CodegraphResolveOptions): CodegraphCheckResult {
-  return normalize(readToolingReport(opts.repoRoot, opts.env, opts.host));
+  const locator = createCodegraphCacheLocator(opts.repoRoot, resolveControllerHome(), { createTarget: false });
+  if (!locator) return normalize(readToolingReport(opts.repoRoot, opts.env, opts.host));
+  try {
+    return normalize(readToolingReport(opts.repoRoot, { ...opts.env, CODEGRAPH_DIR: locator.name }, opts.host));
+  } finally {
+    locator.release();
+  }
 }
 
 export function resolveCodegraph(opts: CodegraphResolveOptions): CodegraphResolution {
   return checkCodegraph(opts).resolution;
 }
 
+/** @deprecated Compatibility name retained for callers; no persistent repo symlink is created. */
 export function ensureCodegraphCacheCompatibilityLink(repoRoot: string, controllerHome = resolveControllerHome()): string {
-  const canonicalRepo = resolve(repoRoot);
-  const identity = createHash('sha256').update(canonicalRepo).digest('hex').slice(0, 24);
-  const targetRoot = join(controllerHome, 'tool-cache', 'codegraph', identity);
-  const compatibilityRoot = join(canonicalRepo, '.codegraph');
-  mkdirSync(targetRoot, { recursive: true });
-  if (existsSync(compatibilityRoot)) {
-    const stat = lstatSync(compatibilityRoot);
-    if (stat.isSymbolicLink()) {
-      const linked = readlinkSync(compatibilityRoot);
-      if (linked !== targetRoot) throw new Error(`CODEGRAPH_CACHE_LINK_MISMATCH: ${compatibilityRoot} -> ${linked}`);
-      return targetRoot;
-    }
-    if (!stat.isDirectory()) throw new Error(`CODEGRAPH_CACHE_PATH_INVALID: ${compatibilityRoot}`);
-    cpSync(compatibilityRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
-    rmSync(compatibilityRoot, { recursive: true, force: true });
-  }
-  if (!existsSync(compatibilityRoot)) {
-    symlinkSync(targetRoot, compatibilityRoot, process.platform === 'win32' ? 'junction' : 'dir');
-  }
-  return targetRoot;
+  return migrateLegacyCodegraphCache(repoRoot, controllerHome);
 }
 
 export function ensureCodegraph(opts: CodegraphEnsureOptions): CodegraphEnsureResult {
@@ -202,32 +190,37 @@ export function ensureCodegraph(opts: CodegraphEnsureOptions): CodegraphEnsureRe
     };
   }
 
-  ensureCodegraphCacheCompatibilityLink(opts.repoRoot);
-  let codegraph = readToolingReport(opts.repoRoot, opts.env, opts.host);
-  if (opts.installDeps !== false && hasCodegraphDependency(opts.repoRoot) && !codegraph.local_bin_path) {
-    appendAction(actions, "install-deps", ["bun", "install"], run("bun", ["install"], opts.repoRoot, opts.env));
-    codegraph = readToolingReport(opts.repoRoot, opts.env, opts.host);
-  }
+  const locator = createCodegraphCacheLocator(opts.repoRoot, resolveControllerHome(), { migrateLegacy: true, createTarget: true });
+  if (!locator) throw new Error('CODEGRAPH_LOCATOR_UNAVAILABLE');
+  const env = { ...opts.env, CODEGRAPH_DIR: locator.name };
+  try {
+    let codegraph = readToolingReport(opts.repoRoot, env, opts.host);
+    if (opts.installDeps !== false && hasCodegraphDependency(opts.repoRoot) && !codegraph.local_bin_path) {
+      appendAction(actions, "install-deps", ["bun", "install"], run("bun", ["install"], opts.repoRoot, env));
+      codegraph = readToolingReport(opts.repoRoot, env, opts.host);
+    }
 
-  const binPath = codegraph.bin_path;
-  if (binPath && opts.init && codegraph.project_index?.status === "not-initialized") {
-    appendAction(actions, "init-index", [binPath, "init", "-i", "."], run(binPath, ["init", "-i", "."], opts.repoRoot, opts.env));
-    codegraph = readToolingReport(opts.repoRoot, opts.env, opts.host);
-  }
+    const binPath = codegraph.bin_path;
+    if (binPath && opts.init && codegraph.project_index?.status === "not-initialized") {
+      appendAction(actions, "init-index", [binPath, "init", "-i", "."], run(binPath, ["init", "-i", "."], opts.repoRoot, env));
+      codegraph = readToolingReport(opts.repoRoot, env, opts.host);
+    }
 
-  if (binPath && opts.sync) {
-    mkdirSync(join(opts.repoRoot, ".codegraph"), { recursive: true });
-    appendAction(actions, "sync-index", [binPath, "sync", "."], run(binPath, ["sync", "."], opts.repoRoot, opts.env));
-    codegraph = readToolingReport(opts.repoRoot, opts.env, opts.host);
-  }
+    if (binPath && opts.sync) {
+      appendAction(actions, "sync-index", [binPath, "sync", "."], run(binPath, ["sync", "."], opts.repoRoot, env));
+      codegraph = readToolingReport(opts.repoRoot, env, opts.host);
+    }
 
-  const normalized = normalize(codegraph);
-  return {
-    ...normalized,
-    changed: actions.some((entry) => entry.status === "changed"),
-    readOnly: false,
-    actions,
-  };
+    const normalized = normalize(codegraph);
+    return {
+      ...normalized,
+      changed: actions.some((entry) => entry.status === "changed"),
+      readOnly: false,
+      actions,
+    };
+  } finally {
+    locator.release();
+  }
 }
 
 function configureTargets(target: CodegraphHostTarget): Array<"codex" | "claude"> {

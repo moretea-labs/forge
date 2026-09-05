@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AUTO_STRUCTURAL_PREFETCH_BUDGET_MS, AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS, buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
@@ -17,6 +17,7 @@ import {
   resolveCodeGraphBundledRuntime,
   type CodeGraphReadProviderResponse,
 } from '../../src/runtime/context/codegraph-read-provider';
+import { codegraphRepositoryCacheRoot } from '../../src/runtime/context/codegraph-cache-boundary';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -150,6 +151,25 @@ describe('CodeGraph read provider', () => {
       reuses: 1,
       requests: 2,
     });
+  });
+
+  test('holds a Controller Home cache locator only for the lifetime of the persistent sidecar', async () => {
+    const repoRoot = contextRepo();
+    const home = mkdtempSync(join(tmpdir(), 'forge-codegraph-provider-home-'));
+    roots.push(home);
+    mkdirSync(codegraphRepositoryCacheRoot(home, repoRoot), { recursive: true });
+    const previous = process.env.FORGE_CONTROLLER_HOME;
+    process.env.FORGE_CONTROLLER_HOME = home;
+    try {
+      const response = await queryCodeGraphReadProviderAsync(repoRoot, { operation: 'status' });
+      expect(response).toMatchObject({ provider: 'codegraph', operation: 'status', status: 'unavailable' });
+      expect(readdirSync(repoRoot).filter((name) => name.startsWith('.codegraph-forge-'))).toHaveLength(1);
+      await clearCodeGraphReadProviderSessionsForTest();
+      expect(readdirSync(repoRoot).filter((name) => name.startsWith('.codegraph-forge-'))).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previous;
+    }
   });
 
   test('does not make a structural index stale for Git-ignored operational paths', () => {

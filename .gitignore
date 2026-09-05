@@ -203,3 +203,5 @@ _ops/
 *.mobileprovision
 auth/
 .worktrees/
+
+.codegraph-forge-*
