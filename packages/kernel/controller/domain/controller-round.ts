@@ -24,6 +24,7 @@ export type ControllerRoundRelayStatus =
   | 'waiting'
   | 'waiting_for_user'
   | 'goal_complete'
+  | 'handed_off'
   | 'blocked'
   | 'failed';
 
@@ -32,6 +33,10 @@ export interface ControllerRoundRelayRecord {
   repoId: string;
   relayScopeId: string;
   originWorkId: string;
+  /** Previous Work when this round was mechanically handed across a Plan successor. */
+  predecessorWorkId?: string;
+  /** Already-admitted successor Work selected by GoalWorkloop; never selected by ControllerRound. */
+  successorWorkId?: string;
   requirementId?: string;
   disposition: ControllerRoundDisposition;
   status: ControllerRoundRelayStatus;

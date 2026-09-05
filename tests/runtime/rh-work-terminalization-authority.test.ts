@@ -2291,6 +2291,186 @@ describe('rh_work terminalization authority', () => {
   }, 15_000);
 
 
+  test('plan_accept_step automatically admits one successor Work for an exact claimed terminal round', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const planId = 'plan-terminal-auto-successor';
+    const predecessorWorkId = 'work-terminal-auto-predecessor';
+    const principalId = 'principal-terminal-auto-successor';
+    const sessionId = 'transport-terminal-auto-successor';
+    const controllerInstanceId = 'runtime-terminal-auto-successor';
+    createPlanContract(store, {
+      planId, repoId: fx.repository.repoId, scopeKey: 'terminal-auto-successor', sourceRevision: targetRevision,
+      goal: 'automatically continue the unique next Plan step after semantic acceptance',
+      steps: [
+        {
+          id: 'stage-a', objective: 'finish stage A', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:main'],
+          acceptanceCriteria: ['stage A delivered'],
+        },
+        {
+          id: 'stage-b', objective: 'continue stage B', dependencies: ['stage-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:main'],
+          acceptanceCriteria: ['stage B delivered'],
+        },
+      ],
+    });
+    approvePlanContract(store, planId);
+    createWorkContract(store, {
+      workId: predecessorWorkId, repoId: fx.repository.repoId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      objective: 'finish stage A', acceptanceCriteria: ['stage A delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      planId, planStepId: 'stage-a', planSourceRevision: targetRevision, baseRevision: targetRevision,
+    });
+    claimPlanStepForWork(store, { planId, stepId: 'stage-a', workId: predecessorWorkId, sourceRevision: targetRevision });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId: predecessorWorkId,
+      identity: { controllerId: 'schedule:terminal-auto-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-auto-successor' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
+    const owner = claimControllerSession(store, {
+      workId: predecessorWorkId, controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId, sessionId, leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId: predecessorWorkId, session: owner })).toMatchObject({ status: 'claimed' });
+
+    const recordedAt = '2026-09-05T09:10:00.000Z';
+    transitionWorkContractPhase(store, predecessorWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Stage A no-change delivery verified.' });
+    requestWorkImplementationReview(store, predecessorWorkId, 'Stage A requires review before terminal semantic handoff.');
+    recordWorkImplementationReview(store, predecessorWorkId, {
+      schemaVersion: 1, reviewId: 'REV-terminal-auto-predecessor', workId: predecessorWorkId, reviewerPrincipalId: principalId, reviewerControllerSessionId: sessionId,
+      decision: 'approved', rationale: 'Reviewed stage A before semantic acceptance.', findings: [], sourceRevision: targetRevision,
+      workspaceFingerprint: 'terminal-auto-content', verificationWorkspaceFingerprint: 'terminal-auto-verification', changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'stage A delivered', verificationEvidence: [], architectureEvidence: [], recordedAt,
+    });
+    const completed = recordWorkCompletionReceipt(store, predecessorWorkId, {
+      schemaVersion: 1, receiptId: 'receipt-terminal-auto-predecessor', source: 'controller_work', issueId: 'stage-a', taskId: predecessorWorkId,
+      workId: predecessorWorkId, targetBranch: 'main', targetRevision, changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    completePlanStepForWork(store, { planId, stepId: 'stage-a', work: completed });
+    expect(getPlanContract(store, planId)).toMatchObject({ status: 'verifying', steps: [{ id: 'stage-a', status: 'validating' }, { id: 'stage-b', status: 'pending' }] });
+    expect(getControllerSession(store, predecessorWorkId)?.sessionId).toBe(sessionId);
+
+    const caller = ctx(
+      fx.controllerHome, fx.repository, principalId,
+      `${sessionId}-rotated`, `${controllerInstanceId}-rotated`,
+    );
+    const accepted = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'plan_accept_step', plan_id: planId, plan_step_id: 'stage-a',
+      acceptance_rationale: 'Stage A delivery is semantically accepted; continue the unique approved successor.',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+    }));
+    expect(accepted.status).toBe('ok');
+    expect(accepted.data.semanticAcceptanceRecorded).toBe(true);
+    expect(accepted.data.autonomousContinuation?.relay).toMatchObject({ status: 'pending_release', originWorkId: predecessorWorkId });
+    const successorWorkId = String(accepted.data.autonomousContinuation?.successorWorkId ?? '');
+    expect(successorWorkId).toMatch(/^work-/);
+    expect(successorWorkId).not.toBe(predecessorWorkId);
+    expect(getWorkContract(store, successorWorkId)).toMatchObject({
+      status: 'running', predecessorWorkId, planId, planStepId: 'stage-b', planSourceRevision: targetRevision,
+    });
+    expect(getPlanContract(store, planId)).toMatchObject({
+      status: 'executing',
+      steps: [{ id: 'stage-a', status: 'completed' }, { id: 'stage-b', status: 'executing', workId: successorWorkId }],
+    });
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'pending_release', successorWorkId });
+    expect(getControllerSession(store, successorWorkId)).toBeUndefined();
+
+    const repeated = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'plan_accept_step', plan_id: planId, plan_step_id: 'stage-a',
+      acceptance_rationale: 'Idempotent replay after semantic acceptance.',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+    }));
+    expect(repeated.status).toBe('ok');
+    expect(getPlanContract(store, planId)?.steps[1]).toMatchObject({ status: 'executing', workId: successorWorkId });
+
+    const terminalClaim = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: predecessorWorkId,
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+    }));
+    expect(terminalClaim.status).toBe('blocked');
+    expect(terminalClaim.summary).toContain('WORK_CONTROLLER_CLAIM_TERMINAL');
+  }, 20_000);
+
+  test('plan_accept_step fails closed when multiple successor Plan steps are ready', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const planId = 'plan-terminal-multiple-ready-successors';
+    const predecessorWorkId = 'work-terminal-multiple-ready-predecessor';
+    const principalId = 'principal-terminal-multiple-ready';
+    const sessionId = 'transport-terminal-multiple-ready';
+    const controllerInstanceId = 'runtime-terminal-multiple-ready';
+    createPlanContract(store, {
+      planId, repoId: fx.repository.repoId, scopeKey: 'terminal-multiple-ready-successors', sourceRevision: targetRevision,
+      goal: 'require explicit Controller resolution when semantic acceptance unlocks multiple successor Plan steps',
+      steps: [
+        { id: 'stage-a', objective: 'finish stage A', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:main'], acceptanceCriteria: ['stage A delivered'] },
+        { id: 'stage-b', objective: 'continue stage B', dependencies: ['stage-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:main'], acceptanceCriteria: ['stage B delivered'] },
+        { id: 'stage-c', objective: 'continue stage C', dependencies: ['stage-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:main'], acceptanceCriteria: ['stage C delivered'] },
+      ],
+    });
+    approvePlanContract(store, planId);
+    createWorkContract(store, {
+      workId: predecessorWorkId, repoId: fx.repository.repoId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      objective: 'finish stage A', acceptanceCriteria: ['stage A delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      planId, planStepId: 'stage-a', planSourceRevision: targetRevision, baseRevision: targetRevision,
+    });
+    claimPlanStepForWork(store, { planId, stepId: 'stage-a', workId: predecessorWorkId, sourceRevision: targetRevision });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId: predecessorWorkId,
+      identity: { controllerId: 'schedule:terminal-multiple-ready', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-multiple-ready' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
+    const owner = claimControllerSession(store, {
+      workId: predecessorWorkId, controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId, sessionId, leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId: predecessorWorkId, session: owner })).toMatchObject({ status: 'claimed' });
+
+    const recordedAt = '2026-09-05T09:20:00.000Z';
+    transitionWorkContractPhase(store, predecessorWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Stage A no-change delivery verified.' });
+    requestWorkImplementationReview(store, predecessorWorkId, 'Stage A requires review before multiple-ready semantic handoff.');
+    recordWorkImplementationReview(store, predecessorWorkId, {
+      schemaVersion: 1, reviewId: 'REV-terminal-multiple-ready-predecessor', workId: predecessorWorkId, reviewerPrincipalId: principalId, reviewerControllerSessionId: sessionId,
+      decision: 'approved', rationale: 'Reviewed stage A before explicit successor resolution.', findings: [], sourceRevision: targetRevision,
+      workspaceFingerprint: 'terminal-multiple-ready-content', verificationWorkspaceFingerprint: 'terminal-multiple-ready-verification', changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'stage A delivered', verificationEvidence: [], architectureEvidence: [], recordedAt,
+    });
+    const completed = recordWorkCompletionReceipt(store, predecessorWorkId, {
+      schemaVersion: 1, receiptId: 'receipt-terminal-multiple-ready-predecessor', source: 'controller_work', issueId: 'stage-a', taskId: predecessorWorkId,
+      workId: predecessorWorkId, targetBranch: 'main', targetRevision, changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    completePlanStepForWork(store, { planId, stepId: 'stage-a', work: completed });
+
+    const caller = ctx(fx.controllerHome, fx.repository, principalId, `${sessionId}-rotated`, `${controllerInstanceId}-rotated`);
+    const accepted = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'plan_accept_step', plan_id: planId, plan_step_id: 'stage-a',
+      acceptance_rationale: 'Stage A is accepted, but the Controller has not selected between stage B and stage C.',
+      controller_authority_id: opened.authorityId, relay_scope_id: opened.relayScopeId,
+    }));
+    expect(accepted.status).toBe('ok');
+    expect(accepted.data.semanticAcceptanceRecorded).toBe(true);
+    expect(accepted.data.autonomousContinuation).toMatchObject({
+      admissionDecision: 'resolution_required', resolutionRequired: true,
+      successorAdmission: { status: 'ok', data: { resolutionRequired: true } },
+    });
+    expect(getPlanContract(store, planId)).toMatchObject({
+      status: 'executing',
+      steps: [
+        { id: 'stage-a', status: 'completed' },
+        { id: 'stage-b', status: 'ready' },
+        { id: 'stage-c', status: 'ready' },
+      ],
+    });
+    expect(getPlanContract(store, planId)?.steps[1]?.workId).toBeUndefined();
+    expect(getPlanContract(store, planId)?.steps[2]?.workId).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({ status: 'claimed', originWorkId: predecessorWorkId });
+    expect(getControllerSession(store, predecessorWorkId)).toBeTruthy();
+  }, 20_000);
+
   test('local_effect continue re-derives exact Work-bound repository Process evidence without substituting for checks', async () => {
     const fx = fixture();
     const workId = 'work-local-effect-process-semantic-evidence';

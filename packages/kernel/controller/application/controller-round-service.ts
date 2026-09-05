@@ -4,6 +4,7 @@ export {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
+  bindControllerRoundSuccessorWork,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,

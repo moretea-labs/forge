@@ -1110,6 +1110,30 @@ export function startGoalWorkloop(
   if (boundPlanStepWorks.length > 1) {
     return resolutionRequired(`PLAN_STEP_MULTIPLE_PRIMARY_WORKS: ${resolvedPlanId}/${resolvedPlanStepId} has ${boundPlanStepWorks.length} active primary Work records and requires repair before execution.`);
   }
+  if (terminalContinuationSource && requestedRelation === 'continue' && planStepWork) {
+    if (planStepWork.predecessorWorkId !== terminalContinuationSource.workId) {
+      return resolutionRequired(
+        `PLAN_STEP_SUCCESSOR_LINEAGE_CONFLICT: ${resolvedPlanId}/${resolvedPlanStepId} is already owned by ${planStepWork.workId}, but its predecessor is ${planStepWork.predecessorWorkId ?? 'none'} rather than ${terminalContinuationSource.workId}.`,
+        planStepWork,
+      );
+    }
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `PLAN_STEP_REUSES_SUCCESSOR_WORK: ${resolvedPlanId}/${resolvedPlanStepId} already continues terminal ${terminalContinuationSource.workId} as ${planStepWork.workId}.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        admissionDecision: 'reuse_existing',
+        resolutionRequired: false,
+        predecessorWorkId: terminalContinuationSource.workId,
+        work: summarizeWorkContract(planStepWork),
+      },
+      evidenceRefs: planStepWork.evidenceRefs,
+      suggestedNextActions: [{ label: 'Continue successor Work', tool: 'rh_work', operation: 'continue', payload: { work_id: planStepWork.workId }, risk: 'readonly', confidence: 'high' }],
+      rawAvailable: false,
+    });
+  }
+
   if (planStep?.workId && !explicitPlanStepWork) {
     return buildFacadeResult({
       status: 'blocked',
