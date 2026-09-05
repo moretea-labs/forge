@@ -49,7 +49,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Permanent semantic/audit retention is the explicit policy: SQLite stores exactly one current row per requirementId and revisions update that row in place. Cardinality grows only when a new Requirement identity is deliberately admitted, never from retry/recovery cycles.',
     cleanupAuthority: 'Requirement authority owns semantic retention. Runtime GC does not delete Requirement rows; replaceable execution evidence is reclaimed by its own lifecycle classes.',
     recoverySemantics: 'done may only remain done or become cancelled; cancelled may only remain cancelled. Recovery consumes the retained identity instead of reconstructing or reopening it.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/persistence/requirement-store.ts','packages/kernel/goal/domain/types.ts','tests/runtime/requirement-portfolio-migration.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/persistence/requirement-store.ts','packages/kernel/goal/api/index.ts','tests/runtime/requirement-portfolio-migration.test.ts'],
   }),
   lifecycle({
     id: 'plan', owner: 'Goal / Plan authority', scope: 'repository', dataClass: 'semantic_authority',
@@ -59,7 +59,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Permanent semantic/audit retention is the explicit policy: SQLite stores one current row per planId and revisions update that row in place. Only an explicit successor creates another Plan identity, so retries do not multiply Plan rows.',
     cleanupAuthority: 'Plan authority owns semantic retention. Runtime GC does not delete Plan rows; predecessor/successor lineage remains queryable while disposable validation/process evidence is reclaimed elsewhere.',
     recoverySemantics: 'Recovery preserves predecessor/successor and obligation disposition facts and cannot make a terminal predecessor current.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/facade/plan-contract-store.ts','packages/kernel/goal/domain/types.ts','tests/runtime/plan-contract-store.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/facade/plan-contract-store.ts','packages/kernel/goal/api/index.ts','tests/runtime/plan-contract-store.test.ts'],
   }),
   lifecycle({
     id: 'work', owner: 'Kernel Work authority', scope: 'work', dataClass: 'execution_authority',
@@ -69,7 +69,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Permanent semantic/audit retention is the explicit policy: SQLite stores one current row per workId and lifecycle mutations update that row in place. New rows correspond only to deliberately admitted Work identities; Process/log/check-result/artifact growth is bounded by separate lifecycle classes.',
     cleanupAuthority: 'Work finalization/terminal cleanup releases owned execution resources, but Runtime GC does not delete the durable Work row or its completion identity.',
     recoverySemantics: 'A retained cancelled Work can resume only through the explicit canonical resume contract; completed delivery identity and successor lineage remain durable and are never synthesized from deleted detail.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/work/infrastructure/work-contract-store.ts','src/runtime/control-plane/execution/work-terminal-cleanup.ts','tests/runtime/work-contract-store.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/work/api/index.ts','src/runtime/control-plane/execution/work-terminal-cleanup.ts','tests/runtime/repository-work-admission.test.ts'],
   }),
   lifecycle({
     id: 'process_record_log', owner: 'Process Runtime', scope: 'process', dataClass: 'execution_authority',
@@ -99,7 +99,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'A Process check receipt has no separate mutable authority: it is derived from one terminal Process record and copied into Work VerificationRecord when consumed. Process records are bounded by the 7-day/500 policy; persisted check-result sidecars use 30-day/500 retention, a 5000-entry scan bound and at most 50 removals per selected-repository cleanup pass.',
     cleanupAuthority: 'Process GC owns terminal Process/log source, Scheduler maintenance owns replaceable check-result sidecars, and Work lifecycle owns accepted VerificationRecord copies; none becomes a second receipt authority.',
     recoverySemantics: 'Active Work cache identities protect required sidecars; truncated/malformed scans fail closed, and missing or changed evidence becomes stale/replay-gap rather than synthetic success.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/process-runtime/check-receipt.ts','src/runtime/execution/process-runtime/gc.ts','src/runtime/execution/process-runtime/check-result-retention.ts','packages/kernel/work/domain/types.ts','tests/runtime/check-result-retention.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/process-runtime/check-receipt.ts','src/runtime/execution/process-runtime/gc.ts','src/runtime/execution/process-runtime/check-result-retention.ts','packages/kernel/work/api/index.ts','tests/runtime/check-result-retention.test.ts'],
   }),
   lifecycle({
     id: 'controller_round', owner: 'Kernel ControllerRound authority', scope: 'work', dataClass: 'semantic_authority',
@@ -109,7 +109,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Permanent semantic/audit retention is the explicit policy: controller_round_relay uses workId as its stable key and each round/recovery transition revision-updates that row. Round history lives in durable audit, so retries and additional semantic rounds do not create parallel current relay authority.',
     cleanupAuthority: 'ControllerRound authority owns relay retention. Runtime GC does not delete relay rows; ControllerSession/lease and provider/browser artifacts are separate bounded lifecycle classes.',
     recoverySemantics: 'failed and blocked remain explicit recoverable states, so their relay identity is retained. Transport/session replacement and ambiguous provider effect reconcile against the same fenced relay instead of fabricating a new semantic round.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/controller/infrastructure/controller-round-store.ts','packages/kernel/controller/domain/controller-round.ts','tests/runtime/controller-round-relay.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/controller/api/index.ts','tests/runtime/autonomous-continuation-lifecycle.test.ts'],
   }),
   lifecycle({
     id: 'controller_session_lease', owner: 'Kernel ControllerSession / resource lease authority', scope: 'session', dataClass: 'execution_authority',
