@@ -45,6 +45,7 @@ import {
   type ControllerHomeStorageMigration,
 } from '../../cli/repositories/controller-home';
 import { readCurrentRecoveryRelease } from './release';
+import { recoveryOperationLockPath } from './operation-lock';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 interface PublicTunnelRecoveryPolicy {
@@ -436,7 +437,7 @@ function writeJson(path: string, value: unknown): void {
 
 function recoveryRoot(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'recovery'); }
 function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
-function lockPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'locks', 'operation.lock'); }
+function lockPath(config: RecoveryConfig): string { return recoveryOperationLockPath(config.controllerHome); }
 function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
 function watchdogDiagnosticPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json'); }
 function quarantinePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'quarantine.json'); }

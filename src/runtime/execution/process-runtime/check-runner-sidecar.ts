@@ -4,7 +4,6 @@ import { rmSync } from 'fs';
 import { resolve } from 'path';
 import {
   controllerCheckExecutionIdentity,
-  controllerCheckLiveExecutionStateFingerprint,
   runControllerCheckAsync,
   snapshotControllerCheck,
 } from '../../../cli/controller/check-runner';
@@ -66,12 +65,8 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
     if (actualFingerprint !== args.expectedCheckFingerprint) {
       throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
     }
-    if (args.liveControllerHome) {
-      if (!args.executionStateFingerprint) throw new Error('LIVE_CHECK_EXECUTION_STATE_REQUIRED');
-      const observedLiveState = controllerCheckLiveExecutionStateFingerprint(args.controllerHome);
-      if (observedLiveState !== args.executionStateFingerprint) {
-        throw new Error('LIVE_CHECK_STATE_CHANGED_BEFORE_EXECUTION');
-      }
+    if (args.liveControllerHome && !args.executionStateFingerprint) {
+      throw new Error('LIVE_CHECK_EXECUTION_STATE_REQUIRED');
     }
     const identity = controllerCheckExecutionIdentity(root, args.checkId, args.timeoutMs, snapshot, args.executionStateFingerprint);
     const result = await runControllerCheckAsync(root, args.checkId, {

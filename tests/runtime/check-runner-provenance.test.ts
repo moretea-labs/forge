@@ -21,6 +21,7 @@ import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocat
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 
 const roots: string[] = [];
 const storageAuthorities = new Map<string, RepositoryCheckStorageAuthority>();
@@ -464,6 +465,96 @@ describe('controller check provenance and failure classification', () => {
     writeFileSync(join(controllerHome, 'recovery', 'locks', 'operation.lock'), '{}');
     expect(() => controllerCheckLiveExecutionStateFingerprint(controllerHome))
       .toThrow('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+  });
+
+  test('live certification holds the actual Recovery operation lock for the full execution window', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-live-cert-fence-home-'));
+    roots.push(controllerHome);
+    const repoRoot = fixture({});
+    const coordinationRoot = mkdtempSync(join(tmpdir(), 'forge-live-cert-fence-coordination-'));
+    roots.push(coordinationRoot);
+    const markerPath = join(coordinationRoot, 'live-cert-lock-ready');
+    const releasePath = join(coordinationRoot, 'live-cert-lock-release');
+    const scriptPath = join(repoRoot, 'hold-live-cert-lock.cjs');
+    writeFileSync(scriptPath, [
+      "const fs = require('fs');",
+      "const path = require('path');",
+      "const home = process.env.FORGE_CONTROLLER_HOME;",
+      "if (!home) process.exit(10);",
+      "const lock = path.join(home, 'recovery', 'locks', 'operation.lock');",
+      "const owner = JSON.parse(fs.readFileSync(lock, 'utf8'));",
+      "if (owner.action !== 'certify_stable_baseline' || !owner.requestId) process.exit(11);",
+      `fs.writeFileSync(${JSON.stringify(markerPath)}, owner.instanceId);`,
+      `const release = ${JSON.stringify(releasePath)};`,
+      "const gate = new Int32Array(new SharedArrayBuffer(4));",
+      "const deadline = Date.now() + 3000;",
+      "while (!fs.existsSync(release) && Date.now() < deadline) Atomics.wait(gate, 0, 0, 10);",
+      "if (!fs.existsSync(release)) process.exit(12);",
+    ].join('\n'));
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'check-provenance-fixture',
+      scripts: { 'check:stable-baseline': 'node hold-live-cert-lock.cjs' },
+    }));
+
+    const fingerprint = controllerCheckLiveExecutionStateFingerprint(controllerHome);
+    const running = runControllerCheckAsync(repoRoot, 'package:check:stable-baseline', {
+      liveControllerHome: controllerHome,
+      executionStateFingerprint: fingerprint,
+    });
+    for (let attempt = 0; attempt < 100 && !existsSync(markerPath); attempt += 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    expect(existsSync(markerPath)).toBe(true);
+    const recoveryAttempt = acquireRecoveryOperationLock({
+      controllerHome,
+      action: 'install_recovery_release',
+      requestId: 'test-recovery-during-live-cert',
+      instanceIdPrefix: 'test-recovery-',
+    });
+    expect(recoveryAttempt.acquired).toBe(false);
+    if (!recoveryAttempt.acquired) {
+      expect(recoveryAttempt.owner.action).toBe('certify_stable_baseline');
+      expect(recoveryAttempt.owner.requestId).toContain('package:check:stable-baseline');
+    }
+    writeFileSync(releasePath, 'release\n');
+    const result = await running;
+    expect(result.ok).toBe(true);
+    expect(existsSync(recoveryOperationLockPath(controllerHome))).toBe(false);
+  });
+
+  test('live certification fails closed behind Recovery ownership and releases its own fence on check failure', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-live-cert-recovery-owner-home-'));
+    roots.push(controllerHome);
+    const repoRoot = fixture({});
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'check-provenance-fixture',
+      scripts: { 'check:stable-baseline': 'node -e "process.exit(7)"' },
+    }));
+    const fingerprint = controllerCheckLiveExecutionStateFingerprint(controllerHome);
+    const recoveryOwner = acquireRecoveryOperationLock({
+      controllerHome,
+      action: 'install_recovery_release',
+      requestId: 'test-recovery-owner',
+      instanceIdPrefix: 'test-recovery-',
+    });
+    expect(recoveryOwner.acquired).toBe(true);
+    try {
+      await expect(runControllerCheckAsync(repoRoot, 'package:check:stable-baseline', {
+        liveControllerHome: controllerHome,
+        executionStateFingerprint: fingerprint,
+      })).rejects.toThrow('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+    } finally {
+      if (recoveryOwner.acquired) recoveryOwner.handle.close();
+    }
+    expect(existsSync(recoveryOperationLockPath(controllerHome))).toBe(false);
+
+    const failed = await runControllerCheckAsync(repoRoot, 'package:check:stable-baseline', {
+      liveControllerHome: controllerHome,
+      executionStateFingerprint: fingerprint,
+    });
+    expect(failed.ok).toBe(false);
+    expect(failed.status).toBe(7);
+    expect(existsSync(recoveryOperationLockPath(controllerHome))).toBe(false);
   });
 
   test('live certification invalidates a successful result when live state changes during execution', async () => {

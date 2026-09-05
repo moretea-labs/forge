@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
@@ -81,6 +81,7 @@ import {
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -663,6 +664,69 @@ test('standalone Recovery fails closed on a live legacy mutation lock without re
 
   expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ instanceId: 'legacy-live-lock' });
   expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('recovery_operation_lock_identity_uncertain');
+});
+
+test('shared Recovery operation locks synthesize core-compatible request attribution', async () => {
+  const home = controllerHome();
+  const plistPath = join(home, 'connector.plist');
+  writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath },
+  });
+  const aliasRoot = mkdtempSync(join(tmpdir(), 'forge-recovery-lock-alias-'));
+  roots.push(aliasRoot);
+  const aliasHome = join(aliasRoot, 'controller-home-link');
+  symlinkSync(home, aliasHome, 'dir');
+  expect(recoveryOperationLockPath(aliasHome)).toBe(recoveryOperationLockPath(home));
+  expect(recoveryOperationLockPath(aliasHome)).toBe(join(realpathSync(home), 'recovery', 'locks', 'operation.lock'));
+
+  const shared = acquireRecoveryOperationLock({
+    controllerHome: home,
+    action: 'install_recovery_release',
+    instanceIdPrefix: 'test-shared-recovery-',
+  });
+  expect(shared.acquired).toBe(true);
+  if (!shared.acquired) throw new Error('shared Recovery lock was not acquired');
+  expect(shared.handle.record.requestId).toBe(`internal:install_recovery_release:${shared.handle.record.instanceId}`);
+  try {
+    const competing = await restartPrimaryConnector(config, {
+      requestId: 'recovery-gateway:competing-restart',
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verifyLocal: async () => healthyVerify(),
+    });
+    expect(competing).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(competing.detail).toContain('Recovery mutation already in progress: action=install_recovery_release');
+    expect(competing.detail).toContain(`request=${shared.handle.record.requestId}`);
+  } finally {
+    shared.handle.close();
+  }
+});
+
+test('shared Recovery operation lock removes a malformed file when record persistence fails', () => {
+  const home = controllerHome();
+  const path = recoveryOperationLockPath(home);
+  expect(() => acquireRecoveryOperationLock({
+    controllerHome: home,
+    action: 'certify_stable_baseline',
+    requestId: 'test-write-failure',
+  }, {
+    writeRecord: (fd, content) => {
+      writeFileSync(fd, content.slice(0, 1));
+      throw new Error('synthetic lock write failure');
+    },
+  })).toThrow('synthetic lock write failure');
+  expect(existsSync(path)).toBe(false);
+
+  const retry = acquireRecoveryOperationLock({
+    controllerHome: home,
+    action: 'install_recovery_release',
+    requestId: 'test-retry-after-write-failure',
+  });
+  expect(retry.acquired).toBe(true);
+  if (retry.acquired) retry.handle.close();
+  expect(existsSync(path)).toBe(false);
 });
 
 test('standalone Recovery repairs immutable Connector release binding before deciding whether kickstart is still needed', async () => {

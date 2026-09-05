@@ -1,12 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
 import {
   chmodSync,
-  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -32,6 +30,7 @@ import {
 import { FORGE_VERSION } from '../../version';
 import { initializeStandaloneRecovery, loadRecoveryConfig, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig, type RecoveryTunnelServiceConfig } from './core';
 import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
+import { acquireRecoveryOperationLock } from './operation-lock';
 export { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import {
   RECOVERY_RELEASE_BINARIES,
@@ -489,79 +488,17 @@ export async function verifyRecoveryReleaseActivation(input: {
   return last;
 }
 
-interface RecoveryReleaseLockRecord {
-  schemaVersion?: 1;
-  pid: number;
-  instanceId: string;
-  processStartTime?: string;
-  acquiredAt: string;
-  action?: string;
-}
-
-function processStartTime(pid: number): string | undefined {
-  const result = runProcess('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], { timeoutMs: 2_000, maxOutputBytes: 4_096 });
-  return result.ok ? result.stdout.trim() || undefined : undefined;
-}
-
-function readRecoveryReleaseLock(path: string): RecoveryReleaseLockRecord | undefined {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as RecoveryReleaseLockRecord;
-    return Number.isInteger(parsed.pid) && typeof parsed.instanceId === 'string' && typeof parsed.acquiredAt === 'string'
-      ? parsed
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function recoveryReleaseLockOwnerAlive(lock: RecoveryReleaseLockRecord): boolean {
-  if (!isProcessAlive(lock.pid)) return false;
-  if (!lock.processStartTime) return true;
-  const observed = processStartTime(lock.pid);
-  return observed === undefined || observed === lock.processStartTime;
-}
-
 function acquireRecoveryReleaseLock(controllerHome: string): { path: string; instanceId: string; close: () => void } {
-  const path = join(recoveryRoot(controllerHome), 'locks', 'operation.lock');
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const instanceId = `recovery-release-${randomUUID()}`;
-  const record: RecoveryReleaseLockRecord = {
-    schemaVersion: 1,
-    pid: process.pid,
-    instanceId,
-    processStartTime: processStartTime(process.pid),
-    acquiredAt: new Date().toISOString(),
+  const attempt = acquireRecoveryOperationLock({
+    controllerHome,
     action: 'install_recovery_release',
-  };
-  let fd: number | undefined;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      fd = openSync(path, 'wx', 0o600);
-      writeFileSync(fd, JSON.stringify(record));
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const existing = readRecoveryReleaseLock(path);
-      if (!existing) throw new Error('RECOVERY_OPERATION_LOCK_UNCERTAIN');
-      if (recoveryReleaseLockOwnerAlive(existing)) throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
-      const latest = readRecoveryReleaseLock(path);
-      if (!latest || latest.instanceId !== existing.instanceId || recoveryReleaseLockOwnerAlive(latest)) {
-        if (attempt === 1) throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
-        continue;
-      }
-      try { writeFileSync(`${path}.stale-${Date.now()}-${existing.instanceId}`, readFileSync(path)); } catch { /* evidence best effort */ }
-      rmSync(path, { force: true });
-    }
-  }
-  if (fd === undefined) throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
+    instanceIdPrefix: 'recovery-release-',
+  });
+  if (!attempt.acquired) throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
   return {
-    path,
-    instanceId,
-    close: () => {
-      closeSync(fd);
-      const current = readRecoveryReleaseLock(path);
-      if (current?.instanceId === instanceId) rmSync(path, { force: true });
-    },
+    path: attempt.handle.path,
+    instanceId: attempt.handle.record.instanceId,
+    close: attempt.handle.close,
   };
 }
 

@@ -14,7 +14,8 @@ import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../r
 import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
 import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
 import { observeRuntimeStatus } from '../../runtime/root/status';
-import { readCurrentRecoveryRelease, recoveryRoot } from '../../runtime/standalone-recovery/release';
+import { readCurrentRecoveryRelease } from '../../runtime/standalone-recovery/release';
+import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../runtime/standalone-recovery/operation-lock';
 import {
   ensureRepositoryCheckStorage,
   resolveRepositoryCheckStorage,
@@ -511,13 +512,30 @@ const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-
  * observed Runtime liveness so a dead/replaced Runtime cannot reuse a prior
  * green Stable Baseline receipt merely because its status file remained.
  */
-export function controllerCheckLiveExecutionStateFingerprint(controllerHome: string): string {
-  const mutationLockPath = join(recoveryRoot(controllerHome), 'locks', 'operation.lock');
+export function controllerCheckLiveExecutionStateFingerprint(controllerHome: string, recoveryFenceInstanceId?: string): string {
+  const mutationLockPath = recoveryOperationLockPath(controllerHome);
   try {
-    readFileSync(mutationLockPath);
-    throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+    const raw = readFileSync(mutationLockPath, 'utf8');
+    if (recoveryFenceInstanceId?.trim()) {
+      try {
+        const owner = JSON.parse(raw) as { instanceId?: unknown };
+        if (owner?.instanceId === recoveryFenceInstanceId.trim()) {
+          // This check owns the real Recovery mutation fence; its own lock is not drift.
+        } else {
+          throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === 'LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS') throw error;
+        throw new Error('LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE');
+      }
+    } else {
+      throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+    }
   } catch (error) {
-    if (error instanceof Error && error.message === 'LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS') throw error;
+    if (error instanceof Error && (
+      error.message === 'LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS'
+      || error.message === 'LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE'
+    )) throw error;
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
       throw new Error('LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE');
     }
@@ -1114,15 +1132,14 @@ export function runControllerCheckAsync(
     return Promise.reject(error);
   }
   if (!check || check.id !== id) return Promise.reject(new Error(`check not found: ${id}`));
-  if (check.executionAuthority === 'live_controller_home') {
-    if (!options.liveControllerHome?.trim() || !options.executionStateFingerprint?.trim()) {
+  const liveCertification = check.executionAuthority === 'live_controller_home';
+  const liveControllerHome = options.liveControllerHome?.trim();
+  const expectedLiveState = options.executionStateFingerprint?.trim();
+  if (liveCertification) {
+    if (!liveControllerHome || !expectedLiveState) {
       return Promise.reject(new Error('LIVE_CHECK_EXPLICIT_AUTHORITY_REQUIRED'));
     }
-    const observedLiveState = controllerCheckLiveExecutionStateFingerprint(options.liveControllerHome);
-    if (observedLiveState !== options.executionStateFingerprint.trim()) {
-      return Promise.reject(new Error('LIVE_CHECK_STATE_CHANGED_BEFORE_EXECUTION'));
-    }
-  } else if (options.liveControllerHome?.trim()) {
+  } else if (liveControllerHome) {
     return Promise.reject(new Error('LIVE_CHECK_AUTHORITY_NOT_DECLARED'));
   }
   let storage: ResolvedRepositoryCheckStorage;
@@ -1138,8 +1155,37 @@ export function runControllerCheckAsync(
   const cacheKey = identity.cacheKey;
   const cached = readControllerCheckEvidenceByKey(storage, id, cacheKey)
     ?? readLatestControllerCheckEvidence(repoRoot, id, storage);
+  const withLiveRecoveryFence = async <T>(action: (recoveryFenceInstanceId?: string) => Promise<T> | T): Promise<T> => {
+    if (!liveCertification) return await action(undefined);
+    let attempt;
+    try {
+      attempt = acquireRecoveryOperationLock({
+        controllerHome: liveControllerHome!,
+        action: 'certify_stable_baseline',
+        requestId: `check:${id}:${cacheKey}`,
+        instanceIdPrefix: 'live-certification-',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === 'RECOVERY_OPERATION_LOCK_BUSY') throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+      throw new Error(`LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE: ${message}`);
+    }
+    if (!attempt.acquired) throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+    try {
+      const observedLiveState = controllerCheckLiveExecutionStateFingerprint(
+        liveControllerHome!,
+        attempt.handle.record.instanceId,
+      );
+      if (observedLiveState !== expectedLiveState) {
+        throw new Error('LIVE_CHECK_STATE_CHANGED_BEFORE_EXECUTION');
+      }
+      return await action(attempt.handle.record.instanceId);
+    } finally {
+      attempt.handle.close();
+    }
+  };
   if (cached?.cacheKey === cacheKey && cached.ok) {
-    return Promise.resolve({
+    return withLiveRecoveryFence(() => ({
       check,
       ok: cached.ok,
       status: cached.status,
@@ -1153,7 +1199,7 @@ export function runControllerCheckAsync(
       validatedRevision: cached.validatedRevision ?? cached.completedRevision ?? cached.revision ?? revision,
       originalExecutedAt: cached.originalExecutedAt ?? cached.executedAt,
       failureClass: cached.failureClass,
-    });
+    }));
   }
   const key = `${resolve(repoRoot)}\u0000${id}\u0000${cacheKey}`;
   const existing = activeAsyncChecks.get(key);
@@ -1199,51 +1245,56 @@ export function runControllerCheckAsync(
   };
   const execute = async (lease?: HeavyCheckLease) => {
     assertExecutionStillRequested();
-    const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, storage, (pid) => {
-      lease?.setChildPid(pid);
-      notifySpawn(pid);
-    }, options.isolatedControllerHome, options.liveControllerHome);
-    const completedRevision = currentControllerCheckRevision(repoRoot);
-    let liveStateStale = false;
-    if (check.executionAuthority === 'live_controller_home') {
-      try {
-        liveStateStale = controllerCheckLiveExecutionStateFingerprint(options.liveControllerHome!)
-          !== options.executionStateFingerprint!.trim();
-      } catch {
-        liveStateStale = true;
+    return withLiveRecoveryFence(async (recoveryFenceInstanceId) => {
+      assertExecutionStillRequested();
+      const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, storage, (pid) => {
+        lease?.setChildPid(pid);
+        notifySpawn(pid);
+      }, options.isolatedControllerHome, options.liveControllerHome);
+      const completedRevision = currentControllerCheckRevision(repoRoot);
+      let liveStateStale = false;
+      if (liveCertification) {
+        try {
+          liveStateStale = controllerCheckLiveExecutionStateFingerprint(
+            liveControllerHome!,
+            recoveryFenceInstanceId,
+          ) !== expectedLiveState;
+        } catch {
+          liveStateStale = true;
+        }
       }
-    }
-    const repositoryStale = completedRevision !== revision;
-    const stale = repositoryStale || liveStateStale;
-    const finalized = {
-      ...result,
-      ...(stale ? {
-        ok: false,
-        status: 1,
-        stderr: [
-          result.stderr,
-          repositoryStale
-            ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun'
-            : '',
-          liveStateStale
-            ? 'live Runtime/Recovery authority changed while the check was running; evidence is stale and the check must be rerun'
-            : '',
-        ].filter(Boolean).join('\n'),
-        failureClass: 'infrastructure_failure' as const,
-      } : {}),
-      cacheHit: false,
-      validatedRevision: stale ? completedRevision : revision,
-    };
-    const { artifactPath: _artifactPath, ...withoutPath } = finalized;
-    const artifactPath = persistCheckEvidence(storage, withoutPath, {
-      revision,
-      completedRevision,
-      stale,
-      cacheKey: stale ? undefined : cacheKey,
-      cacheHit: false,
-      validatedRevision: stale ? completedRevision : revision,
+      const repositoryStale = completedRevision !== revision;
+      const stale = repositoryStale || liveStateStale;
+      const finalized = {
+        ...result,
+        ...(stale ? {
+          ok: false,
+          status: 1,
+          stderr: [
+            result.stderr,
+            repositoryStale
+              ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun'
+              : '',
+            liveStateStale
+              ? 'live Runtime/Recovery authority changed while the check was running; evidence is stale and the check must be rerun'
+              : '',
+          ].filter(Boolean).join('\n'),
+          failureClass: 'infrastructure_failure' as const,
+        } : {}),
+        cacheHit: false,
+        validatedRevision: stale ? completedRevision : revision,
+      };
+      const { artifactPath: _artifactPath, ...withoutPath } = finalized;
+      const artifactPath = persistCheckEvidence(storage, withoutPath, {
+        revision,
+        completedRevision,
+        stale,
+        cacheKey: stale ? undefined : cacheKey,
+        cacheHit: false,
+        validatedRevision: stale ? completedRevision : revision,
+      });
+      return { ...finalized, artifactPath };
     });
-    return { ...finalized, artifactPath };
   };
   const executeHeavy = async (): Promise<ControllerCheckResult> => {
     assertExecutionStillRequested();
