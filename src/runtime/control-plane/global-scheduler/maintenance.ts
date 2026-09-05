@@ -1,4 +1,5 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
 import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
 import {
   cleanupRuntimeBrowserSessionTombstones,
@@ -48,6 +49,26 @@ export async function runSchedulerPeriodicCleanup(input: {
     if (xctestCleanup.error) console.error('[forge cleanup] XCTest device cleanup failed:', xctestCleanup.error);
   } catch (error) {
     console.error('[forge cleanup] XCTest device cleanup failed:', error);
+  }
+  try {
+    closeRuntimeBrowserSessionLegacyImportCutover(
+      input.controllerHome,
+      input.repositories.map((repository) => ({ repoId: repository.repoId, repoRoot: repository.canonicalRoot })),
+    );
+    const browserSessions = cleanupRuntimeBrowserSessionTombstones(input.controllerHome, { nowMs: input.nowMs });
+    if (browserSessions.blockers.length > 0 || browserSessions.budgetExhausted) {
+      console.error('[forge cleanup] Browser session retention reported bounded blockers');
+    }
+  } catch (error) {
+    console.error('[forge cleanup] Browser session retention failed:', error);
+  }
+  try {
+    const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
+    if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
+      console.error('[forge cleanup] Computer interaction-target retention reported bounded blockers');
+    }
+  } catch (error) {
+    console.error('[forge cleanup] Computer interaction-target retention failed:', error);
   }
   if (input.repositories.length === 0) return;
   const slot = Math.floor(input.nowMs / input.cleanupIntervalMs) % input.repositories.length;

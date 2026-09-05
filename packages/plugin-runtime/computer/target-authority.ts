@@ -33,6 +33,18 @@ export interface ComputerApplicationTargetLease {
   tombstone(): ComputerApplicationTarget;
 }
 
+export interface ComputerInteractionTargetCleanupReport {
+  policyVersion: 'computer-target-retention-v1';
+  inspected: number;
+  activeProtected: number;
+  tombstones: number;
+  removed: number;
+  retained: number;
+  overCapacity: boolean;
+  budgetExhausted: boolean;
+  blockers: string[];
+}
+
 /** Durable target authority. Provider live session ids never escape this boundary as semantic identity. */
 export interface ComputerInteractionTargetAuthorityPort {
   create(
@@ -46,4 +58,8 @@ export interface ComputerInteractionTargetAuthorityPort {
     targetId: string,
     operation: (lease: ComputerApplicationTargetLease) => Promise<T>,
   ): Promise<T>;
+  cleanupTombstones(
+    controllerHome: string,
+    options?: { nowMs?: number; ttlMs?: number; maxTombstones?: number; maxRemovals?: number },
+  ): Promise<ComputerInteractionTargetCleanupReport>;
 }
