@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { calculateMetrics } from './metrics.ts';
+import { CANDIDATE_INTERNAL_DIAGNOSTIC_AUTHORITY } from './protocol.ts';
 import { REPORT_SCHEMA, type EvaluationReport, type EvaluationScenario, type EvaluationTrace } from './types.ts';
 
 function percent(value: number | null): string {
@@ -33,6 +34,7 @@ export function buildReport(scenario: EvaluationScenario, trace: EvaluationTrace
   const metrics = calculateMetrics(scenario, trace);
   return {
     schemaVersion: REPORT_SCHEMA,
+    authority: CANDIDATE_INTERNAL_DIAGNOSTIC_AUTHORITY,
     generatedAt: new Date().toISOString(),
     scenario: {
       id: scenario.id,
@@ -56,6 +58,7 @@ export function renderMarkdownReport(report: EvaluationReport): string {
     `# Forge Evaluation: ${report.scenario.title}`,
     '',
     `- Scenario: \`${report.scenario.id}\``,
+    `- Authority: \`${report.authority}\``,
     `- Result: **${report.trace.finalResult.status}**`,
     `- Snapshot: \`${report.trace.snapshot.commit}\``,
     '',

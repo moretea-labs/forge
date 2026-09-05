@@ -4,6 +4,36 @@ This directory is a reproducible engineering-scenario harness for comparing
 future Forge versions. It is intentionally separate from `evals/`, which
 benchmarks prompt/skill behavior rather than repository-change scenarios.
 
+## Authority boundary
+
+`evaluation/` is the candidate-neutral, cross-version evaluation authority.
+Only reports produced under a frozen Evaluation Protocol may support a
+version-to-version quality verdict. The bounded `scripts/benchmark-*.ts`
+runners are candidate-internal diagnostics and profiling tools. They may find
+hot paths and regressions inside one Forge revision, but they are not allowed
+to produce a cross-version superiority verdict because many of them import the
+candidate's private implementation directly.
+
+The existing single-scenario `runEvaluation` / `buildReport` path remains
+`candidate_internal_diagnostic` by construction. It cannot issue a version-to-version
+verdict merely because it lives under `evaluation/`. A later cross-candidate runner must
+bind the frozen protocol digest, candidate artifact identity, and environment identity
+before any result may carry `cross_version_evaluation` authority.
+
+The machine-readable protocol lives in `lib/protocol.ts`. A frozen protocol
+identifies the evaluator implementation, content-addressed scenario corpus,
+trial policy, metric definitions, and failure taxonomy with one protocol
+digest. Candidate and environment identities are frozen separately for every
+run. Changing any frozen protocol input creates a different digest; results
+with different protocol digests are not the same A/B experiment.
+
+The final V2 vs 1.7.2 comparison follows three hard rules:
+
+1. the evaluator and shared corpus are frozen before formal V2 measurements;
+2. shared-capability A/B and V2-only capability expansion are reported
+   separately;
+3. correctness/reliability gates outrank latency or throughput improvements.
+
 ## Architecture
 
 ```text

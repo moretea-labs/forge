@@ -2,6 +2,8 @@ export const SCENARIO_SCHEMA = 'forge-evaluation-scenario/v1' as const;
 export const TRACE_SCHEMA = 'forge-evaluation-trace/v1' as const;
 export const REPORT_SCHEMA = 'forge-evaluation-report/v1' as const;
 
+export type EvaluationAuthorityClass = 'cross_version_evaluation' | 'candidate_internal_diagnostic';
+
 export type ValidatorKind = 'behavior' | 'invariant' | 'regression' | 'change_precision';
 export type ValidationStatus = 'passed' | 'failed' | 'skipped';
 export type CommandKind = 'sandbox_setup' | 'forge' | 'check' | 'evidence';
@@ -142,6 +144,7 @@ export interface EvaluationMetrics {
 
 export interface EvaluationReport {
   schemaVersion: typeof REPORT_SCHEMA;
+  authority: EvaluationAuthorityClass;
   generatedAt: string;
   scenario: Pick<EvaluationScenario, 'id' | 'title' | 'userIntent' | 'groundTruth' | 'provenance'>;
   trace: EvaluationTrace;
