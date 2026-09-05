@@ -6,6 +6,8 @@ import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlit
 import { packageRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { FORGE_VERSION } from '../../version';
 import { publishRuntimeRelease, type RuntimeReleaseAuthority } from './release-store';
+import { assertRuntimeReleaseExecutionSurface } from './release-manifest';
+import { assertRuntimeReleaseExecutionCanaries } from './release-execution-canary';
 import type { RuntimeReleaseManifest } from './types';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 
@@ -140,25 +142,32 @@ function packageVersion(root: string): string {
   }
 }
 
-function launcherSource(input: { packageRoot: string; indexPath: string; indexSha256: string }): string {
+function launcherSource(input: {
+  indexSha256: string;
+  entryRelativePath?: string;
+  managerSignalsProcessGroup?: boolean;
+}): string {
+  const entryRelativePath = input.entryRelativePath ?? 'src/runtime/root/entry.ts';
   return `#!${process.execPath}\n`
     + `import { createHash } from 'node:crypto';\n`
     + `import { existsSync, readFileSync } from 'node:fs';\n`
-    + `import { join } from 'node:path';\n`
+    + `import { dirname, join } from 'node:path';\n`
+    + `import { fileURLToPath } from 'node:url';\n`
     + `import { spawn } from 'node:child_process';\n`
-    + `const packageRoot=${JSON.stringify(input.packageRoot)};\n`
-    + `const indexPath=${JSON.stringify(input.indexPath)};\n`
+    + `const releaseRoot=dirname(fileURLToPath(import.meta.url));\n`
+    + `const packageRoot=join(releaseRoot,'package');\n`
+    + `const indexPath=join(releaseRoot,'package-files.json');\n`
     + `const expectedIndex=${JSON.stringify(input.indexSha256)};\n`
     + `const digest=(v)=>createHash('sha256').update(v).digest('hex');\n`
     + `let raw; try { raw=readFileSync(indexPath); } catch (error) { console.error('FORGE_PACKAGE_RUNTIME_INDEX_MISSING: '+error.message); process.exit(78); }\n`
     + `if(digest(raw)!==expectedIndex){console.error('FORGE_PACKAGE_RUNTIME_INDEX_CHANGED');process.exit(78);}\n`
     + `let records; try { records=JSON.parse(raw.toString('utf8')).files; } catch { console.error('FORGE_PACKAGE_RUNTIME_INDEX_INVALID'); process.exit(78); }\n`
     + `for(const record of records){const path=join(packageRoot,record.path);if(!existsSync(path)||digest(readFileSync(path))!==record.sha256){console.error('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED: '+record.path);process.exit(78);}}\n`
-    + `const entry=join(packageRoot,'src','runtime','root','entry.ts');\n`
+    + `const entry=join(packageRoot,...${JSON.stringify(entryRelativePath.split('/'))});\n`
     + `const loader=join(packageRoot,'src','runtime','shared','node-ts-loader.mjs');\n`
     + `const args=process.versions?.bun?[entry,...process.argv.slice(2)]:['--loader',loader,entry,...process.argv.slice(2)];\n`
     + `const child=spawn(process.execPath,args,{stdio:'inherit',env:process.env});\n`
-    + `const managerSignalsProcessGroup=process.platform==='linux'&&Boolean(process.env.INVOCATION_ID);\n`
+    + `const managerSignalsProcessGroup=${input.managerSignalsProcessGroup ? "process.platform==='linux'&&Boolean(process.env.INVOCATION_ID)" : "false"};\n`
     + `for(const signal of ['SIGINT','SIGTERM','SIGHUP']){try{process.on(signal,()=>{if(!managerSignalsProcessGroup)child.kill(signal);});}catch{}}\n`
     + `child.on('error',(error)=>{console.error('FORGE_PACKAGE_RUNTIME_LAUNCH_FAILED: '+error.message);process.exit(1);});\n`
     + `child.on('exit',(code)=>process.exit(code??1));\n`;
@@ -172,21 +181,28 @@ function assertImmutablePackageRuntimeRelease(input: {
   indexJson: string;
   entrypointPath: string;
   launcher: string;
+  processRunnerPath: string;
+  processRunnerLauncher: string;
+  checkRunnerPath: string;
+  checkRunnerLauncher: string;
   manifestPath: string;
   expectedManifest: Omit<RuntimeReleaseManifest, 'createdAt'>;
 }): void {
   const rootStat = lstatSync(input.releaseRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: release root is not a regular directory');
   assertPackageRuntimeSnapshot(input.packageRoot, input.records);
-  const assertFile = (path: string, expected: string, label: string) => {
+  const assertFile = (path: string, expected: string, label: string, executable = false) => {
     if (!existsSync(path)) throw new Error(`PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: ${label} is missing`);
     const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || readFileSync(path, 'utf8') !== expected) {
+    if (!stat.isFile() || stat.isSymbolicLink() || readFileSync(path, 'utf8') !== expected
+      || (executable && process.platform !== 'win32' && (stat.mode & 0o111) === 0)) {
       throw new Error(`PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: ${label} changed`);
     }
   };
   assertFile(input.indexPath, input.indexJson, 'package file index');
-  assertFile(input.entrypointPath, input.launcher, 'runtime launcher');
+  assertFile(input.entrypointPath, input.launcher, 'runtime launcher', true);
+  assertFile(input.processRunnerPath, input.processRunnerLauncher, 'process runner launcher', true);
+  assertFile(input.checkRunnerPath, input.checkRunnerLauncher, 'check runner launcher', true);
   if (!existsSync(input.manifestPath)) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: manifest is missing');
   const manifestStat = lstatSync(input.manifestPath);
   if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: manifest is not a regular file');
@@ -201,6 +217,10 @@ function assertImmutablePackageRuntimeRelease(input: {
     && manifest.releaseId === expected.releaseId
     && manifest.artifactIdentity === expected.artifactIdentity
     && manifest.entrypoint === expected.entrypoint
+    && manifest.processRunnerEntrypoint === expected.processRunnerEntrypoint
+    && manifest.processRunnerArtifactIdentity === expected.processRunnerArtifactIdentity
+    && manifest.checkRunnerEntrypoint === expected.checkRunnerEntrypoint
+    && manifest.checkRunnerArtifactIdentity === expected.checkRunnerArtifactIdentity
     && JSON.stringify(manifest.arguments ?? []) === JSON.stringify(expected.arguments ?? [])
     && manifest.configurationSchemaVersion === expected.configurationSchemaVersion
     && resolve(manifest.controllerHome) === resolve(expected.controllerHome)
@@ -211,6 +231,7 @@ function assertImmutablePackageRuntimeRelease(input: {
     && typeof manifest.createdAt === 'string'
     && Number.isFinite(Date.parse(manifest.createdAt));
   if (!compatible) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: manifest identity changed');
+  assertRuntimeReleaseExecutionSurface(input.manifestPath, expected.controllerHome);
 }
 
 export function materializePackageRuntimeRelease(input: {
@@ -224,7 +245,7 @@ export function materializePackageRuntimeRelease(input: {
   const records = packageRuntimeFileIndex(sourcePackageRoot);
   const fingerprint = packageRuntimeFingerprint(records);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
-  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v4`);
+  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v5`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   const releaseRoot = join(releasesRoot, releaseId);
@@ -232,13 +253,32 @@ export function materializePackageRuntimeRelease(input: {
   const indexPath = join(releaseRoot, 'package-files.json');
   const indexJson = `${JSON.stringify({ schemaVersion: 1, package: '@moretea-labs/forge', version, fingerprint, files: records }, null, 2)}\n`;
   const entrypointPath = join(releaseRoot, 'forge-runtime');
-  const launcher = launcherSource({ packageRoot, indexPath, indexSha256: sha256(Buffer.from(indexJson)) });
+  const indexSha256 = sha256(Buffer.from(indexJson));
+  const launcher = launcherSource({ indexSha256, managerSignalsProcessGroup: true });
   const artifactIdentity = `sha256:${sha256(Buffer.from(launcher))}`;
+  const processRunnerEntrypoint = 'process-runner.js' as const;
+  const processRunnerPath = join(releaseRoot, processRunnerEntrypoint);
+  const processRunnerLauncher = launcherSource({
+    indexSha256,
+    entryRelativePath: 'src/runtime/execution/process-runtime/process-runner-entry.ts',
+  });
+  const processRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(processRunnerLauncher))}`;
+  const checkRunnerEntrypoint = 'forge-check-runner' as const;
+  const checkRunnerPath = join(releaseRoot, checkRunnerEntrypoint);
+  const checkRunnerLauncher = launcherSource({
+    indexSha256,
+    entryRelativePath: 'src/runtime/execution/process-runtime/check-runner-sidecar.ts',
+  });
+  const checkRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(checkRunnerLauncher))}`;
   const expectedManifest: Omit<RuntimeReleaseManifest, 'createdAt'> = {
     schemaVersion: 1,
     releaseId,
     artifactIdentity,
     entrypoint: 'forge-runtime',
+    processRunnerEntrypoint,
+    processRunnerArtifactIdentity,
+    checkRunnerEntrypoint,
+    checkRunnerArtifactIdentity,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome,
@@ -251,9 +291,13 @@ export function materializePackageRuntimeRelease(input: {
   const stagedBytes = records.reduce((total, record) => total + record.bytes, 0)
     + Buffer.byteLength(indexJson)
     + Buffer.byteLength(launcher)
+    + Buffer.byteLength(processRunnerLauncher)
+    + Buffer.byteLength(checkRunnerLauncher)
     + Buffer.byteLength(JSON.stringify({ ...expectedManifest, createdAt: new Date(0).toISOString() }));
+  let executionCanariesValidated = false;
   const assertExisting = () => assertImmutablePackageRuntimeRelease({
-    releaseRoot, packageRoot, records, indexPath, indexJson, entrypointPath, launcher, manifestPath, expectedManifest,
+    releaseRoot, packageRoot, records, indexPath, indexJson, entrypointPath, launcher,
+    processRunnerPath, processRunnerLauncher, checkRunnerPath, checkRunnerLauncher, manifestPath, expectedManifest,
   });
 
   if (existsSync(releaseRoot)) {
@@ -272,9 +316,19 @@ export function materializePackageRuntimeRelease(input: {
       atomicWrite(join(stagingRoot, 'package-files.json'), indexJson);
       atomicWrite(join(stagingRoot, 'forge-runtime'), launcher, 0o700);
       chmodSync(join(stagingRoot, 'forge-runtime'), 0o700);
+      atomicWrite(join(stagingRoot, processRunnerEntrypoint), processRunnerLauncher, 0o700);
+      chmodSync(join(stagingRoot, processRunnerEntrypoint), 0o700);
+      atomicWrite(join(stagingRoot, checkRunnerEntrypoint), checkRunnerLauncher, 0o700);
+      chmodSync(join(stagingRoot, checkRunnerEntrypoint), 0o700);
       const manifest: RuntimeReleaseManifest = { ...expectedManifest, createdAt: new Date().toISOString() };
-      atomicWrite(join(stagingRoot, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      const stagingManifestPath = join(stagingRoot, 'manifest.json');
+      atomicWrite(stagingManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      // A failed execution surface is still a staging failure. Do not promote an
+      // immutable release directory until both manifest-owned runners execute
+      // their bounded no-op canary successfully.
+      assertRuntimeReleaseExecutionCanaries(stagingManifestPath, controllerHome);
       renameSync(stagingRoot, releaseRoot);
+      executionCanariesValidated = true;
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
       if (!existsSync(releaseRoot)) throw error;
@@ -282,6 +336,7 @@ export function materializePackageRuntimeRelease(input: {
     }
   }
 
+  if (!executionCanariesValidated) assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome);
   const authority = publishRuntimeRelease(controllerHome, manifestPath, input.operationId ?? `package-runtime-${FORGE_VERSION}-${Date.now()}`);
   return {
     releaseId,

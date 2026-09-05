@@ -5,8 +5,10 @@ import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
-import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest, type RuntimeReleaseExecutionSurface } from './release-manifest';
-import { processRuntimeReleaseCanaryCommands, type ProcessRuntimeReleaseCanaryCommand } from '../execution/process-runtime/canary';
+import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
+import type { ProcessRuntimeReleaseCanaryCommand } from '../execution/process-runtime/canary';
+import { assertRuntimeReleaseExecutionCanaries } from './release-execution-canary';
+export { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryDependencies } from './release-execution-canary';
 import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
 /**
@@ -237,31 +239,6 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
     throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: sourceCommit must be a Git commit');
   }
   return receipt;
-}
-
-export interface RuntimeReleaseExecutionCanaryDependencies {
-  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
-}
-
-/** Execute the exact immutable Process/Check Runner artifacts in bounded no-op mode. */
-export function assertRuntimeReleaseExecutionCanaries(
-  manifestPath: string,
-  controllerHome: string,
-  dependencies: RuntimeReleaseExecutionCanaryDependencies = {},
-): RuntimeReleaseExecutionSurface {
-  const surface = assertRuntimeReleaseExecutionSurface(manifestPath, controllerHome);
-  const runExecutionEntryCanary = dependencies.runExecutionEntryCanary ?? ((request: ProcessRuntimeReleaseCanaryCommand) => runProcess(
-    request.executable,
-    request.args,
-    { cwd: surface.releaseRoot, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 },
-  ));
-  for (const canary of processRuntimeReleaseCanaryCommands(surface.releaseRoot)) {
-    const result = runExecutionEntryCanary(canary);
-    if (!result.ok) {
-      throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${result.stderr || result.stdout || result.error || 'unknown failure'}`.slice(0, 2_000));
-    }
-  }
-  return surface;
 }
 
 /**

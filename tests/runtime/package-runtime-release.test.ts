@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -17,7 +17,7 @@ function fixture(): { home: string; packageRoot: string } {
   roots.push(root);
   const home = join(root, 'home');
   const packageRoot = join(root, 'package-source');
-  for (const dir of ['src/runtime/root', 'src/runtime/shared', 'adapters/mcp', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
+  for (const dir of ['src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'adapters/mcp', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
@@ -26,6 +26,8 @@ function fixture(): { home: string; packageRoot: string } {
   writeFileSync(join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'export const scheduler = 1;\n');
   writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), "import { adapter } from '../../../adapters/mcp/adapter';\nimport { scheduler } from '../../../packages/kernel/scheduler/api';\nprocess.exit(adapter === 1 && scheduler === 1 ? 0 : 1);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+  writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n");
+  writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
   mkdirSync(join(packageRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
@@ -45,6 +47,13 @@ describe('package Runtime release immutability', () => {
     expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe('export const scheduler = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8')).toBe('export const linked = 1;\n');
+    const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;
+    expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
+    expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
+    expect(manifest.processRunnerArtifactIdentity).toMatch(/^sha256:/);
+    expect(manifest.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
+    expect(spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' }).status).toBe(0);
 
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     rmSync(packageRoot, { recursive: true, force: true });
@@ -64,6 +73,30 @@ describe('package Runtime release immutability', () => {
       .toThrow('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION');
     expect(readFileSync(snapshotFile, 'utf8')).toBe('export const runtime = 999;\n');
   });
+
+  test('refuses to publish an existing package release whose execution surface is no longer executable', () => {
+    const { home, packageRoot } = fixture();
+    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-first' });
+    const processRunnerPath = join(release.releaseRoot, 'process-runner.js');
+    chmodSync(processRunnerPath, 0o600);
+
+    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-repeat' }))
+      .toThrow(/PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION|RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_EXECUTABLE/);
+  });
+
+  test('does not promote a package release whose staged Process Runner canary fails', () => {
+    const { home, packageRoot } = fixture();
+    writeFileSync(
+      join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'),
+      'process.exit(9);\n',
+    );
+
+    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-canary-fail' }))
+      .toThrow('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: process_runner');
+    const releasesRoot = join(home, 'runtime', 'releases');
+    expect(existsSync(releasesRoot) ? readdirSync(releasesRoot) : []).toEqual([]);
+  });
+
   test('fails before a storage mutation when required bytes exceed proven filesystem headroom', () => {
     const { home } = fixture();
     const capacity = readStorageCapacity(home);
