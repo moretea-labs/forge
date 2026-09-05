@@ -6,6 +6,7 @@ import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   normalizePlanScopeKey,
+  isPlanExtensionPredecessor,
   resolvePlanAdmission,
   withPlanAdmissionLock,
   withPlanAdmissionLockAsync,
@@ -488,7 +489,7 @@ function replacePlanContractUnlocked(
   const predecessorIndex = store.contracts.findIndex((contract) => contract.planId === predecessorKey);
   if (predecessorIndex < 0) throw new Error(`plan contract not found: ${predecessorKey}`);
   const predecessor = store.contracts[predecessorIndex]!;
-  if (isTerminalPlanContractStatus(predecessor.status)) throw new Error(`plan contract ${predecessor.planId} is terminal (${predecessor.status})`);
+  if (!isPlanExtensionPredecessor(predecessor)) throw new Error(`plan contract ${predecessor.planId} is terminal (${predecessor.status})`);
   const successor = {
     ...buildPlanContract(input, at),
     supersedes: [predecessor.planId],
@@ -595,8 +596,8 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
 
 function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
   assertRequirementReference(options, input.requirementId);
-  const activePlans = listPlanContracts({ ...options, status: 'active', limit: 100 });
-  const resolution = resolvePlanAdmission(activePlans, {
+  const plans = listPlanContracts({ ...options, status: 'all', limit: 100 });
+  const resolution = resolvePlanAdmission(plans, {
     requirementId: input.requirementId,
     scopeKey: input.scopeKey,
     planRelation: input.planRelation,

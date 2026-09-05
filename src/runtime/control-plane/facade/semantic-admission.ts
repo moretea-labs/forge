@@ -2,6 +2,10 @@ import { withControllerLock, withControllerLockAsync } from '../../../cli/reposi
 import { sanitizeFileComponent } from '../../shared/json-files';
 import { isTerminalPlanContractStatus, type PlanContract } from './types';
 
+export function isPlanExtensionPredecessor(plan: PlanContract): boolean {
+  return !isTerminalPlanContractStatus(plan.status) || plan.status === 'invalidated_by_drift';
+}
+
 export const PLAN_ADMISSION_RELATIONS = ['extend', 'parallel'] as const;
 export type PlanAdmissionRelation = (typeof PLAN_ADMISSION_RELATIONS)[number];
 
@@ -48,7 +52,7 @@ export function resolvePlanAdmission(
     : [];
   const relatedPlanId = input.relatedPlanId?.trim() || undefined;
   const explicitlyRelatedPlan = relatedPlanId
-    ? activePlans.find((candidate) => candidate.planId === relatedPlanId)
+    ? plans.find((candidate) => candidate.planId === relatedPlanId && isPlanExtensionPredecessor(candidate))
     : undefined;
   const relatedPlan = explicitlyRelatedPlan && (!requirementId || explicitlyRelatedPlan.requirementId === requirementId)
     ? explicitlyRelatedPlan

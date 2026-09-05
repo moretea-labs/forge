@@ -345,6 +345,88 @@ test('atomically replaces the exact-scope Plan authority during serial replannin
   expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-r2']);
 });
 
+test('extends an explicitly invalidated predecessor without hijacking an unrelated active Requirement plan', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-invalidated-successor-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-invalidated-successor' };
+  createRequirement({ controllerHome: home }, {
+    requirementId: 'REQ-invalidated-successor',
+    title: 'Recover drifted Plan lineage',
+    outcomeStatement: 'A drifted Plan can create its exact successor without replacing an unrelated Plan slice.',
+  });
+  const base = {
+    repoId: options.repoId,
+    requirementId: 'REQ-invalidated-successor',
+    sourceRevision: 'revision-a',
+    goal: 'Deliver one Plan slice',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+  };
+  expect(admitPlanContract(options, { ...base, planId: 'plan-r1', scopeKey: 'release-scope' }).plan?.planId).toBe('plan-r1');
+  approvePlanContract(options, 'plan-r1');
+  const invalidated = claimPlanStepForWork(options, {
+    planId: 'plan-r1',
+    stepId: 'step-a',
+    workId: 'work-never-created',
+    sourceRevision: 'revision-b',
+  });
+  expect(invalidated.status).toBe('invalidated_by_drift');
+
+  const unrelated = admitPlanContract(options, {
+    ...base,
+    planId: 'plan-post-v2',
+    scopeKey: 'post-v2-scope',
+    planRelation: 'parallel',
+  });
+  expect(unrelated).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-post-v2', status: 'draft' } });
+
+  const predecessor = getPlanContract(options, 'plan-r1')!;
+  const replacement = admitPlanContract(options, {
+    ...base,
+    planId: 'plan-r2',
+    scopeKey: 'release-scope',
+    sourceRevision: 'revision-b',
+    planRelation: 'extend',
+    relatedPlanId: 'plan-r1',
+    obligationDispositions: keepAllPlanObligations(predecessor),
+  });
+  expect(replacement).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-r2', status: 'draft' } });
+  expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2' });
+  expect(getPlanContract(options, 'plan-r2')).toMatchObject({ supersedes: ['plan-r1'] });
+  expect(getPlanContract(options, 'plan-post-v2')?.status).toBe('draft');
+  expect(getPlanContract(options, 'plan-post-v2')?.supersededBy).toBeUndefined();
+});
+
+test('does not allow cancelled Plans to become extension predecessors', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-cancelled-predecessor-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-cancelled-predecessor' };
+  const base = {
+    repoId: options.repoId,
+    scopeKey: 'release-scope',
+    sourceRevision: 'revision-a',
+    goal: 'Remain terminal after cancellation',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+  };
+  createPlanContract(options, { ...base, planId: 'plan-cancelled' });
+  const record = readControlPlaneRecord<any>(home, 'plan_contract', options.repoId, 'plan-cancelled')!;
+  writeControlPlaneRecord(home, {
+    namespace: 'plan_contract', scope: options.repoId, key: 'plan-cancelled', schemaVersion: 1,
+    value: { ...record.value, status: 'cancelled' }, expectedRevision: record.revision, action: 'seed_cancelled_plan',
+  });
+  const blocked = admitPlanContract(options, {
+    ...base,
+    planId: 'plan-illegal-successor',
+    sourceRevision: 'revision-b',
+    planRelation: 'extend',
+    relatedPlanId: 'plan-cancelled',
+    obligationDispositions: keepAllPlanObligations(getPlanContract(options, 'plan-cancelled')!),
+  });
+  expect(blocked).toMatchObject({ admissionDecision: 'resolution_required', reason: 'extension_target_required' });
+  expect(getPlanContract(options, 'plan-illegal-successor')).toBeUndefined();
+  expect(getPlanContract(options, 'plan-cancelled')?.status).toBe('cancelled');
+  expect(getPlanContract(options, 'plan-cancelled')?.supersededBy).toBeUndefined();
+});
+
 test('atomically replans one active Plan-bound Work by widening only its allowed-path authority', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-work-scope-replan-'));
   homes.push(home);

@@ -4870,8 +4870,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 }
                 throw new Error(`PLAN_ADMISSION_RESULT_INVALID: ${admission.admissionDecision}:${admission.reason}`);
               };
-              const activePlans = listPlanContracts({ ...store, status: 'active', limit: 100 });
-              const preflightAdmission = resolvePlanAdmission(activePlans, admissionInput);
+              const plans = listPlanContracts({ ...store, status: 'all', limit: 100 });
+              const preflightAdmission = resolvePlanAdmission(plans, admissionInput);
               const preflightResult = renderPlanAdmission(preflightAdmission);
               if (preflightResult) return preflightResult;
               const requestedPlanCheckIds = rawSteps
