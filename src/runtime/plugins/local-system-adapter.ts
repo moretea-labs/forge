@@ -16,7 +16,7 @@ import {
 } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
 import { forgeRuntimeServicePaths } from '../root/service';
-import { loadRecoveryConfig } from '../standalone-recovery/core';
+import { createRecoveryConfig, loadRecoveryConfig } from '../standalone-recovery/core';
 import { activateRecoveryRelease, recoverySourceIdentity, stageRecoveryRelease } from '../standalone-recovery/installer';
 import { readCurrentRecoveryRelease, type RecoveryReleaseDescriptor } from '../standalone-recovery/release';
 import {
@@ -51,6 +51,7 @@ import {
   assertRepositoryCommandInputAllowed,
 } from '../../cli/repositories/command-scope';
 import { runCanonicalCommand } from '../../cli/repositories/command-executor';
+import { listRepositories, repositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 
 const PLUGIN_ID = 'local_system';
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -77,6 +78,9 @@ export interface LocalSystemPluginHooks {
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   scheduleLaunchAgentRestart?: (service: string) => { pid: number };
   upgradeStandaloneRecovery?: (controllerHome: string) => Promise<Record<string, unknown>>;
+  recoverySourceIdentity?: typeof recoverySourceIdentity;
+  stageRecoveryRelease?: typeof stageRecoveryRelease;
+  activateRecoveryRelease?: typeof activateRecoveryRelease;
 }
 
 let hooks: LocalSystemPluginHooks = {};
@@ -639,11 +643,55 @@ function boundedRecoveryRelease(release: RecoveryReleaseDescriptor | undefined):
   };
 }
 
+interface RecoveryUpgradeSourceRepair {
+  performed: true;
+  repositoryId: string;
+  previousSourceRoot: string;
+  currentSourceRoot: string;
+}
+
+function resolveRecoveryUpgradeSource(controllerHome: string, configuredSourceRoot: string): {
+  sourceRoot: string;
+  repair?: RecoveryUpgradeSourceRepair;
+} {
+  const configured = resolve(configuredSourceRoot);
+  if (existsSync(configured)) return { sourceRoot: configured };
+
+  const owners = listRepositories(controllerHome)
+    .filter((repository) => repository.enabled !== false)
+    .filter((repository) => repository.checkouts.some((checkout) => (
+      checkout.worktree === true
+      && repositoryCheckoutLifecycle(checkout) !== 'active'
+      && [checkout.localRoot, checkout.canonicalRoot]
+        .filter((candidate): candidate is string => Boolean(candidate?.trim()))
+        .some((candidate) => resolve(candidate) === configured)
+    )));
+  if (owners.length !== 1) {
+    throw new Error(owners.length === 0
+      ? `RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND: ${configured}`
+      : `RECOVERY_SOURCE_REPAIR_LINEAGE_AMBIGUOUS: ${configured}`);
+  }
+  const owner = owners[0]!;
+  const canonical = resolve(owner.canonicalRoot);
+  if (!existsSync(canonical)) {
+    throw new Error(`RECOVERY_SOURCE_REPAIR_CANONICAL_MISSING: ${canonical}`);
+  }
+  return {
+    sourceRoot: canonical,
+    repair: {
+      performed: true,
+      repositoryId: owner.repoId,
+      previousSourceRoot: configured,
+      currentSourceRoot: canonical,
+    },
+  };
+}
+
 async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record<string, unknown>> {
   if (hooks.upgradeStandaloneRecovery) return hooks.upgradeStandaloneRecovery(controllerHome);
   const config = loadRecoveryConfig(controllerHome);
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot) {
+  const configuredSourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!configuredSourceRoot) {
     throw new AssistantPluginError(
       'LOCAL_SYSTEM_RECOVERY_SOURCE_UNCONFIGURED',
       'Standalone Recovery upgrade requires primaryRuntimeSourceRoot in the installed Recovery configuration.',
@@ -652,24 +700,34 @@ async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record
   }
   let sourceCommit = '';
   let candidate: RecoveryReleaseDescriptor | undefined;
+  let sourceRepair: RecoveryUpgradeSourceRepair | undefined;
   try {
-    const source = recoverySourceIdentity(sourceRoot);
+    const resolvedSource = resolveRecoveryUpgradeSource(controllerHome, configuredSourceRoot);
+    sourceRepair = resolvedSource.repair;
+    const source = (hooks.recoverySourceIdentity ?? recoverySourceIdentity)(resolvedSource.sourceRoot);
     sourceCommit = source.sourceCommit;
     const current = readCurrentRecoveryRelease(controllerHome);
     if (current && !current.legacy && current.cleanWorkspace && current.sourceCommit === source.sourceCommit) {
       candidate = current;
     } else {
-      const staged = stageRecoveryRelease({ controllerHome, sourceRoot });
+      const staged = (hooks.stageRecoveryRelease ?? stageRecoveryRelease)({ controllerHome, sourceRoot: source.sourceRoot });
       candidate = staged.release;
       if (candidate.sourceCommit !== source.sourceCommit || !candidate.cleanWorkspace) {
         throw new Error('RECOVERY_RELEASE_SOURCE_IDENTITY_DRIFT');
       }
     }
-    const activated = await activateRecoveryRelease({ controllerHome, config, candidate });
+    const activationConfig = sourceRepair
+      ? { ...config, primaryRuntimeSourceRoot: source.sourceRoot }
+      : config;
+    const activated = await (hooks.activateRecoveryRelease ?? activateRecoveryRelease)({ controllerHome, config: activationConfig, candidate });
+    if (sourceRepair) {
+      createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: source.sourceRoot });
+    }
     return {
       upgraded: activated.noOp !== true,
       noOp: activated.noOp === true,
       sourceCommit,
+      sourceRepair: sourceRepair ?? { performed: false },
       candidateRelease: boundedRecoveryRelease(candidate),
       currentRelease: boundedRecoveryRelease(activated.release),
       previousRelease: boundedRecoveryRelease(activated.previous),
@@ -691,6 +749,7 @@ async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record
         retryable: message.includes('RECOVERY_RELEASE_BUSY'),
         details: {
           sourceCommit: sourceCommit || undefined,
+          sourceRepair,
           candidateRelease: boundedRecoveryRelease(candidate),
           rollback: { performed: rolledBack },
         },

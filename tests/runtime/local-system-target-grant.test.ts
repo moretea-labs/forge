@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import {
   chmodSync,
@@ -15,6 +16,13 @@ import { tmpdir } from 'os';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { join, resolve } from 'path';
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { createRecoveryConfig, loadRecoveryConfig, recoveryConfigPath } from '../../src/runtime/standalone-recovery/core';
+import {
+  disableRepository,
+  getRepository,
+  registerRepository,
+  setRepositoryCheckoutLifecycle,
+} from '../../src/cli/repositories/registry';
 import {
   acquireControllerLock,
   releaseControllerLock,
@@ -64,6 +72,61 @@ function temp(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
   roots.push(root);
   return root;
+}
+
+function git(root: string, args: string[]): string {
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+}
+
+function registeredRemovedWorktree(controllerHome: string): {
+  repositoryId: string;
+  canonicalRoot: string;
+  removedWorktreeRoot: string;
+  sourceCommit: string;
+} {
+  const canonicalRoot = temp('local-system-recovery-canonical-');
+  git(canonicalRoot, ['init', '-q']);
+  git(canonicalRoot, ['config', 'user.email', 'forge@example.invalid']);
+  git(canonicalRoot, ['config', 'user.name', 'Forge Test']);
+  writeFileSync(join(canonicalRoot, 'README.md'), '# recovery source\n');
+  git(canonicalRoot, ['add', 'README.md']);
+  git(canonicalRoot, ['commit', '-qm', 'initial']);
+  const sourceCommit = git(canonicalRoot, ['rev-parse', 'HEAD']);
+  const repository = registerRepository({ path: canonicalRoot, controllerHome, displayName: 'Recovery Source' });
+  const worktreeParent = temp('local-system-recovery-worktree-parent-');
+  const removedWorktreeRoot = join(worktreeParent, 'removed-worktree');
+  git(canonicalRoot, ['worktree', 'add', '--detach', removedWorktreeRoot, 'HEAD']);
+  const selected = registerRepository({ path: removedWorktreeRoot, controllerHome });
+  const persisted = getRepository(repository.repoId, controllerHome);
+  const checkout = persisted.checkouts.find((entry) => entry.checkoutId === selected.activeCheckoutId);
+  if (!checkout?.worktree) throw new Error('expected registered worktree checkout');
+  const registeredWorktreeRoot = realpathSync(removedWorktreeRoot);
+  git(canonicalRoot, ['worktree', 'remove', '--force', removedWorktreeRoot]);
+  setRepositoryCheckoutLifecycle({
+    controllerHome,
+    repoId: repository.repoId,
+    checkoutId: checkout.checkoutId,
+    lifecycle: 'removed',
+    reason: 'simulate historical finalizer cleanup',
+  });
+  return { repositoryId: repository.repoId, canonicalRoot: realpathSync(canonicalRoot), removedWorktreeRoot: registeredWorktreeRoot, sourceCommit };
+}
+
+function recoveryRelease(sourceRoot: string, sourceCommit: string) {
+  return {
+    releasePath: join(sourceRoot, '.test-recovery-release'),
+    releaseRevision: sourceCommit,
+    sourceCommit,
+    sourceRoot: resolve(sourceRoot),
+    cleanWorkspace: true,
+    manifestSha256: 'a'.repeat(64),
+    artifacts: {
+      'forge-recovery': { sha256: 'b'.repeat(64) },
+      'forge-recovery-gateway': { sha256: 'c'.repeat(64) },
+      'forge-recovery-watchdog': { sha256: 'd'.repeat(64) },
+    },
+    legacy: false,
+  };
 }
 
 function input(
@@ -592,6 +655,103 @@ describe('local_system managed Recovery upgrade', () => {
     const controllerHome = temp('local-system-recovery-unconfigured-');
     await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
       .rejects.toThrow(/primaryRuntimeSourceRoot/);
+  });
+
+  test('repairs an exact removed Registry worktree source to its enabled repository canonical root after verified activation', async () => {
+    const controllerHome = temp('local-system-recovery-source-repair-');
+    const lineage = registeredRemovedWorktree(controllerHome);
+    createRecoveryConfig(controllerHome, {
+      primaryRuntimeSourceRoot: lineage.removedWorktreeRoot,
+      publicMcpUrl: 'https://example.invalid/forge-mcp',
+    });
+    const candidate = recoveryRelease(lineage.canonicalRoot, lineage.sourceCommit);
+    const observed: string[] = [];
+    setLocalSystemPluginHooksForTest({
+      recoverySourceIdentity: (sourceRoot) => {
+        observed.push(`identity:${resolve(sourceRoot)}`);
+        return { sourceCommit: lineage.sourceCommit, releaseRevision: lineage.sourceCommit, cleanWorkspace: true, sourceRoot: resolve(sourceRoot) };
+      },
+      stageRecoveryRelease: ({ sourceRoot }) => {
+        observed.push(`stage:${resolve(sourceRoot)}`);
+        return { release: candidate, canary: { ok: true, detail: 'stubbed canary' } };
+      },
+      activateRecoveryRelease: async ({ config, candidate: activatedCandidate }) => {
+        expect(config).toBeDefined();
+        observed.push(`activate:${resolve(config!.primaryRuntimeSourceRoot ?? '')}`);
+        expect(activatedCandidate).toBe(candidate);
+        return {
+          release: candidate,
+          verification: { ok: true, expectedReleaseRevision: lineage.sourceCommit, failures: [], gatewayPid: 101, watchdogPid: 102, healthStatus: 200 },
+        };
+      },
+    });
+
+    const result = await executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {}));
+    expect(observed).toEqual([
+      `identity:${lineage.canonicalRoot}`,
+      `stage:${lineage.canonicalRoot}`,
+      `activate:${lineage.canonicalRoot}`,
+    ]);
+    expect(result).toMatchObject({
+      sourceCommit: lineage.sourceCommit,
+      sourceRepair: {
+        performed: true,
+        repositoryId: lineage.repositoryId,
+        previousSourceRoot: lineage.removedWorktreeRoot,
+        currentSourceRoot: lineage.canonicalRoot,
+      },
+      verification: { ok: true },
+    });
+    const repaired = loadRecoveryConfig(controllerHome);
+    expect(repaired.primaryRuntimeSourceRoot).toBe(lineage.canonicalRoot);
+    expect(repaired.publicMcpUrl).toBe('https://example.invalid/forge-mcp');
+  });
+
+  test('keeps unknown missing Recovery source fail-closed without rewriting config', async () => {
+    const controllerHome = temp('local-system-recovery-source-unknown-');
+    const missing = join(controllerHome, 'missing-source');
+    createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: missing });
+    const before = readFileSync(recoveryConfigPath(controllerHome), 'utf8');
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
+      .rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
+    expect(readFileSync(recoveryConfigPath(controllerHome), 'utf8')).toBe(before);
+  });
+
+  test('does not migrate a missing worktree checkout that Registry still considers active', async () => {
+    const controllerHome = temp('local-system-recovery-source-active-');
+    const canonicalRoot = temp('local-system-recovery-active-canonical-');
+    git(canonicalRoot, ['init', '-q']);
+    git(canonicalRoot, ['config', 'user.email', 'forge@example.invalid']);
+    git(canonicalRoot, ['config', 'user.name', 'Forge Test']);
+    writeFileSync(join(canonicalRoot, 'README.md'), '# recovery source\n');
+    git(canonicalRoot, ['add', 'README.md']);
+    git(canonicalRoot, ['commit', '-qm', 'initial']);
+    registerRepository({ path: canonicalRoot, controllerHome, displayName: 'Active Recovery Source' });
+    const worktreeParent = temp('local-system-recovery-active-worktree-parent-');
+    const worktreeRoot = join(worktreeParent, 'active-missing-worktree');
+    git(canonicalRoot, ['worktree', 'add', '--detach', worktreeRoot, 'HEAD']);
+    registerRepository({ path: worktreeRoot, controllerHome });
+    const registeredRoot = realpathSync(worktreeRoot);
+    git(canonicalRoot, ['worktree', 'remove', '--force', worktreeRoot]);
+    createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: registeredRoot });
+    const before = readFileSync(recoveryConfigPath(controllerHome), 'utf8');
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
+      .rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
+    expect(readFileSync(recoveryConfigPath(controllerHome), 'utf8')).toBe(before);
+  });
+
+  test('does not migrate a removed worktree when its repository owner is disabled', async () => {
+    const controllerHome = temp('local-system-recovery-source-disabled-');
+    const lineage = registeredRemovedWorktree(controllerHome);
+    disableRepository(lineage.repositoryId, controllerHome);
+    createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: lineage.removedWorktreeRoot });
+    const before = readFileSync(recoveryConfigPath(controllerHome), 'utf8');
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
+      .rejects.toThrow(/RECOVERY_SOURCE_REPAIR_LINEAGE_NOT_FOUND/);
+    expect(readFileSync(recoveryConfigPath(controllerHome), 'utf8')).toBe(before);
   });
 
   test('executes the dedicated typed Recovery upgrade without accepting caller source or command arguments', async () => {
