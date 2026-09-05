@@ -219,6 +219,81 @@ describe('rh_work Requirement bootstrap', () => {
     expect(conflictingNativeField.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
   }, 15_000);
 
+  test('lets a frozen rh_work schema preserve completed_no_change WorkKind through canonical start admission', async () => {
+    const repoRoot = tempRoot('forge-frozen-work-kind-repo-');
+    const controllerHome = tempRoot('forge-frozen-work-kind-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Frozen WorkKind fixture' });
+    const ctx = {
+      ...mcpContext(controllerHome, repository),
+      principalId: 'principal-frozen-work-kind',
+      sessionId: 'frozen-work-kind-session',
+      controllerInstanceId: 'runtime-frozen-work-kind',
+      controllerType: 'chatgpt',
+    } as unknown as MultiRepositoryMcpToolContext;
+    const requirementId = 'REQ-FROZEN-WORK-KIND';
+
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_create',
+      requirement_id: requirementId,
+      requirement_title: 'Frozen WorkKind',
+      requirement_outcome: 'Preserve the canonical no-change Work evidence shape through an older transport schema.',
+    })).status).toBe('ok');
+
+    const capability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: { work_kind: 'completed_no_change' },
+    });
+    const started = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: capability,
+      requirement_id: requirementId,
+      session_id: 'frozen-work-kind-session',
+      objective: 'Certify that the requested state already holds without fabricating a repository mutation.',
+      scope_clear: true,
+      requires_recovery: true,
+      check_ids: ['package:check:type'],
+    }));
+    expect(started.status).toBe('ok');
+    expect(started.data.workContractCreated).toBe(true);
+    const workId = String(started.data.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      workKind: 'completed_no_change',
+      requirementId,
+      status: 'running',
+    });
+
+    const conflict = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: capability,
+      requirement_id: requirementId,
+      objective: 'Conflicting native and compatibility WorkKind must fail closed.',
+      work_kind: 'repository_change',
+      scope_clear: true,
+      requires_recovery: true,
+    }));
+    expect(conflict.status).toBe('blocked');
+    expect(conflict.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
+
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: { work_kind: 'superseded' } as any,
+    })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID: work_kind is invalid');
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: { work_kind: 'completed_no_change', hidden_authority: true } as any,
+    })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID: start args contains unsupported field hidden_authority');
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: { work_kind: 'x'.repeat(20_000) } as any,
+    })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID: work_kind exceeds transport bound');
+  }, 15_000);
+
   test('creates Requirement authority idempotently without implying Plan and still permits explicit Plan creation', async () => {
     const repoRoot = tempRoot('forge-requirement-repo-');
     const controllerHome = tempRoot('forge-requirement-home-');

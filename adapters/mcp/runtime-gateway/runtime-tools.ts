@@ -4017,6 +4017,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           // arguments and canonical Plan admission/continuity stays authoritative.
           args.obligation_dispositions = frozenSemanticOperation.args.obligation_dispositions;
         }
+        if (frozenSemanticOperation?.operation === 'start') {
+          // Older rh_work schemas cannot express work_kind. Compatibility may
+          // fill only that closed technical evidence shape; objective, Requirement,
+          // Plan binding, route policy, admission and lifecycle remain canonical.
+          args.work_kind = frozenSemanticOperation.args.work_kind;
+        }
         if (frozenImplementationReview) {
           const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
           if (!explicitWorkId || explicitWorkId !== frozenImplementationReview.workId) {
