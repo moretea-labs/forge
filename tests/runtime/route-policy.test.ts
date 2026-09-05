@@ -655,6 +655,46 @@ describe('single Route Policy authority', () => {
     expect(getWorkContract({ root: join(root, 'pure-work') }, pureId!)).toMatchObject({ workKind: 'remote_effect' });
     expect(getWorkContract({ root: join(root, 'pure-work') }, pureId!)?.constraints.remoteDeliveryRequired).toBeUndefined();
 
+    const dirtyRemoteStore = { root: join(root, 'dirty-remote-work') };
+    const dirtyRemote = routeWorkStart({ ...context, workStore: dirtyRemoteStore }, {
+      objective: 'Perform one pure remote action while the repository checkout is dirty',
+      workKind: 'remote_effect',
+      acceptanceCriteria: ['Remote action receipt exists'],
+      modeInput: {
+        scopeClear: true, mutation: true, workspaceDirty: true, requiresRecovery: true,
+        requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write',
+      },
+    });
+    const dirtyRemoteId = (dirtyRemote.data as { work?: { workId?: string } }).work?.workId;
+    expect(dirtyRemote.status).toBe('ok');
+    expect(dirtyRemoteId).toBeTruthy();
+    expect(getWorkContract(dirtyRemoteStore, dirtyRemoteId!)).toMatchObject({
+      workKind: 'remote_effect',
+      checkoutId: 'checkout-a',
+      constraints: { workspaceMode: 'auto', requireWorktree: false },
+      worktreePolicy: { required: false },
+    });
+
+    const isolatedRemoteStore = { root: join(root, 'isolated-remote-work') };
+    const isolatedRemote = routeWorkStart({ ...context, workStore: isolatedRemoteStore }, {
+      objective: 'Perform one remote action with an explicit isolated workspace contract',
+      workKind: 'remote_effect',
+      acceptanceCriteria: ['Remote action receipt exists'],
+      constraints: { workspaceMode: 'isolated', requireWorktree: true },
+      modeInput: {
+        scopeClear: true, mutation: true, requiresRecovery: true,
+        requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write',
+      },
+    });
+    const isolatedRemoteId = (isolatedRemote.data as { work?: { workId?: string } }).work?.workId;
+    expect(isolatedRemote.status).toBe('ok');
+    expect(isolatedRemoteId).toBeTruthy();
+    expect(getWorkContract(isolatedRemoteStore, isolatedRemoteId!)).toMatchObject({
+      workKind: 'remote_effect',
+      constraints: { workspaceMode: 'isolated', requireWorktree: true },
+      worktreePolicy: { required: true },
+    });
+
     const localStore = { root: join(root, 'local-effect-work') };
     const local = routeWorkStart({ ...context, workStore: localStore }, {
       objective: 'Activate one local Runtime release and verify its readiness',
@@ -791,6 +831,27 @@ describe('single Route Policy authority', () => {
     expect(admitted?.checkoutId).toBeUndefined();
     expect(admitted?.worktreeRef).toBeUndefined();
     expect(materializationCount).toBe(0);
+
+    const external = routeWorkStart(context, {
+      objective: 'Perform an unrelated pure remote action without repository source ownership',
+      relatedWorkId: firstWorkId,
+      workRelation: 'new_goal',
+      workKind: 'remote_effect',
+      acceptanceCriteria: ['Remote action receipt exists'],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresRecovery: true, requiresExternalEffect: true,
+        remoteWrite: true, risk: 'remote_write',
+      },
+    });
+    const externalWorkId = (external.data as { work?: { workId?: string } }).work?.workId;
+    expect(external.status).toBe('ok');
+    expect(externalWorkId).toBeTruthy();
+    expect(getWorkContract({ root: join(root, 'work') }, externalWorkId!)).toMatchObject({
+      workKind: 'remote_effect',
+      checkoutId: 'checkout-a',
+      constraints: { workspaceMode: 'auto', requireWorktree: false },
+      worktreePolicy: { required: false },
+    });
 
     const reused = routeWorkStart(context, { objective: 'Continue the primary change', relatedWorkId: firstWorkId, workRelation: 'continue', modeInput });
     expect(reused.status).toBe('ok');

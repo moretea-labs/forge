@@ -5,9 +5,10 @@ import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
 import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSession } from '../../cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
+import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, readWorkContractStore, transitionWorkContractPhase, updateWorkContract } from '../../../packages/kernel/work/api/index';
 import { getControllerSession, withControllerSessionTerminalizationFence } from '../../../packages/kernel/controller/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
@@ -30,6 +31,8 @@ import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
 import { cleanupRuntimeQuarantine, quarantineRuntimePath, type RuntimeQuarantineRetentionReport } from './quarantine-retention';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
+import { listProcessRecords } from '../execution/process-runtime/store';
+import { isManagedProcessActive } from '../execution/process-runtime/types';
 
 export type RuntimeMaintenanceActionId =
   | 'local_jobs_reconcile'
@@ -525,11 +528,88 @@ function resolveStaleWorkDeliveryTarget(
   };
 }
 
+function isLegacyImplicitRemoteEffectPlacement(contract: WorkContract): boolean {
+  if (contract.workKind !== 'remote_effect' || contract.worktreePolicy.required !== true || !contract.worktreeRef || !contract.checkoutId) return false;
+  if (contract.routeDecision?.requiresIsolation === true) return false;
+  const reason = contract.worktreePolicy.reason?.trim() ?? '';
+  if (/Typed placement|Route Policy requires isolated execution/i.test(reason)) return false;
+  return true;
+}
+
+interface LegacyRemoteEffectPlacementInspection {
+  safe: boolean;
+  path?: string;
+  detail: string;
+  checkoutId?: string;
+  canonicalCheckoutId?: string;
+  branch?: string;
+  canonicalBranch?: string;
+}
+
+function inspectLegacyRemoteEffectPlacement(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  contract: WorkContract,
+): LegacyRemoteEffectPlacementInspection | undefined {
+  if (!isLegacyImplicitRemoteEffectPlacement(contract)) return undefined;
+  const recordedPath = contract.worktreeRef?.trim();
+  if (!recordedPath) return undefined;
+  const path = resolve(recordedPath);
+  if (!looksLikeForgeManagedWorktree(path)) return { safe: false, path, detail: 'Legacy remote_effect placement is outside Forge-managed worktree storage; automatic resource detachment is forbidden.' };
+  if (readWorkHandle(controllerHome, repository.repoId, contract.workId)) return { safe: false, path, detail: 'Legacy remote_effect placement unexpectedly has a WorkHandle; repository source authority must be reconciled explicitly.' };
+  let registered;
+  try { registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true }); } catch (error) {
+    return { safe: false, path, detail: `Repository registry could not be read for legacy remote_effect placement: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const checkout = registered.checkouts.find((candidate) => candidate.checkoutId === contract.checkoutId);
+  if (!checkout) return { safe: false, path, detail: 'Legacy remote_effect checkout identity is missing from the Repository Registry.' };
+  if ((checkout.lifecycle ?? 'active') !== 'active' || checkout.worktree !== true) return { safe: false, path, detail: `Legacy remote_effect checkout ${checkout.checkoutId} is not an active registered worktree.` };
+  const registeredPath = resolve(checkout.canonicalRoot);
+  if (registeredPath !== path && resolve(checkout.localRoot) !== path) return { safe: false, path, detail: 'Legacy remote_effect WorkContract path does not match its registered checkout identity.' };
+  const otherOwner = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts.find((candidate) =>
+    candidate.workId !== contract.workId
+    && !isTerminalWorkContractStatus(candidate.status)
+    && candidate.worktreeRef
+    && resolve(candidate.worktreeRef) === path);
+  if (otherOwner) return { safe: false, path, detail: `Managed worktree is also owned by active Work ${otherOwner.workId}; resource detachment is fenced.` };
+  if (!existsSync(path)) return { safe: false, path, detail: 'Legacy remote_effect managed worktree path is absent; registry/source reconciliation is required before detachment.' };
+  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 500_000 });
+  if (!status.ok || status.stdout.trim()) return { safe: false, path, detail: status.ok ? 'Legacy remote_effect managed worktree is dirty; live source must be preserved.' : 'Legacy remote_effect managed worktree status could not be read.' };
+  const head = runProcess('git', ['rev-parse', 'HEAD'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  const baseRevision = contract.baseRevision?.trim();
+  if (!head.ok || !head.stdout.trim() || !baseRevision || head.stdout.trim() !== baseRevision) return { safe: false, path, detail: 'Legacy remote_effect worktree HEAD does not exactly equal the Work base revision; repository delta ownership is ambiguous.' };
+  const branch = runProcess('git', ['branch', '--show-current'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  if (!branch.ok || !branch.stdout.trim()) return { safe: false, path, detail: 'Legacy remote_effect managed worktree branch could not be resolved.' };
+  let canonical;
+  try { canonical = selectRepositoryCheckout(registered, registered.activeCheckoutId); } catch (error) {
+    return { safe: false, path, detail: `Canonical repository checkout could not be resolved: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (canonical.activeCheckoutId === checkout.checkoutId) return { safe: false, path, detail: 'Legacy remote_effect placement unexpectedly points at the canonical active checkout; automatic detachment is forbidden.' };
+  const canonicalBranch = runProcess('git', ['branch', '--show-current'], { cwd: canonical.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  if (!canonicalBranch.ok || !canonicalBranch.stdout.trim()) return { safe: false, path, detail: 'Canonical integration branch could not be resolved for legacy remote_effect detachment.' };
+  const contained = runProcess('git', ['merge-base', '--is-ancestor', baseRevision, `refs/heads/${canonicalBranch.stdout.trim()}`], { cwd: canonical.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+  if (!contained.ok) return { safe: false, path, detail: `Legacy remote_effect base revision ${baseRevision} is not contained in canonical branch ${canonicalBranch.stdout.trim()}; source preservation remains required.` };
+  return {
+    safe: true, path, checkoutId: checkout.checkoutId, canonicalCheckoutId: canonical.activeCheckoutId,
+    branch: branch.stdout.trim(), canonicalBranch: canonicalBranch.stdout.trim(),
+    detail: `Legacy remote_effect owns a clean no-delta managed worktree at base revision ${baseRevision}, which is already contained in canonical branch ${canonicalBranch.stdout.trim()}; repository placement may be detached without changing Work semantics.`,
+  };
+}
+
 function inspectStaleWorkRepositorySource(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
   contract: WorkContract,
 ): StaleWorkSourceInspection {
+  const legacyRemoteEffect = inspectLegacyRemoteEffectPlacement(repository, controllerHome, contract);
+  if (legacyRemoteEffect) {
+    return {
+      safeToCancel: legacyRemoteEffect.safe,
+      state: legacyRemoteEffect.safe ? 'clean_integrated' : 'source_state_unknown',
+      path: legacyRemoteEffect.path,
+      detail: legacyRemoteEffect.detail,
+    };
+  }
   const recordedPath = contract.worktreeRef?.trim();
   if (!recordedPath) {
     return {
@@ -823,6 +903,9 @@ function activeWorkAuthorityRefs(
     return args?.work_id === contract.workId;
   });
   if (boundSchedule) refs.push(`schedule:${boundSchedule.scheduleId}`);
+  const activeProcess = listProcessRecords(controllerHome, repository.repoId, 500)
+    .find((process) => process.workId === contract.workId && isManagedProcessActive(process));
+  if (activeProcess) refs.push(`process:${activeProcess.processId}`);
   return refs;
 }
 
@@ -851,25 +934,66 @@ function scanStaleWorkContractCandidates(
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
     .map(({ contract, ageMinutes, source }) => {
+      const legacyRemotePlacement = isLegacyImplicitRemoteEffectPlacement(contract);
       const semanticReady = staleWorkSemanticTerminalizationReady(contract);
       return {
         kind: 'stale_work_contract' as const,
         id: contract.workId,
         path: source.path,
         status: contract.status,
-        safe: source.safeToCancel && semanticReady,
-        reason: staleWorkCandidateReason(source, semanticReady),
+        safe: legacyRemotePlacement ? source.safeToCancel : source.safeToCancel && semanticReady,
+        reason: legacyRemotePlacement ? source.detail : staleWorkCandidateReason(source, semanticReady),
         ageMinutes,
         suggestedAction: 'full_maintenance_pass' as const,
         ownershipStatus: 'explicit' as const,
         sourceState: source.state,
         disposition: !source.safeToCancel
           ? ('source_preservation_required' as const)
-          : !semanticReady
+          : !legacyRemotePlacement && !semanticReady
             ? ('semantic_completion_required' as const)
             : undefined,
       };
     });
+}
+
+function detachLegacyRemoteEffectPlacement(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  current: WorkContract,
+  candidate: RuntimeMaintenanceCandidate,
+): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
+  const inspection = inspectLegacyRemoteEffectPlacement(repository, controllerHome, current);
+  if (!inspection || !inspection.safe || !inspection.path || !inspection.checkoutId || !inspection.canonicalCheckoutId || !inspection.branch || !inspection.canonicalBranch) {
+    return { ...candidate, safe: false, reason: inspection?.detail ?? 'Legacy remote_effect placement is no longer eligible for resource detachment.', sourceState: 'source_state_unknown', disposition: 'source_preservation_required', applied: false, result: 'legacy_remote_effect_placement_preserved' };
+  }
+  const store = { controllerHome, repoId: repository.repoId };
+  const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, driver: current.driver, worktreePolicy: current.worktreePolicy };
+  updateWorkContract(store, current.workId, {
+    checkoutId: inspection.canonicalCheckoutId,
+    worktreeRef: undefined,
+    constraints: { ...current.constraints, workspaceMode: 'auto', requireWorktree: false },
+    driver: { ...current.driver, preferred: 'direct_edit', allowDirectEdit: true },
+    worktreePolicy: { required: false, reason: 'Legacy pure remote_effect repository placement detached by explicit runtime maintenance; external-effect execution has no repository source authority.' },
+  });
+  try {
+    setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'removed', reason: `Legacy remote_effect placement detached for ${current.workId}.` });
+    const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], { cwd: repository.canonicalRoot, timeoutMs: 60_000, maxOutputBytes: 500_000 });
+    if (!removed.ok && existsSync(inspection.path)) throw new Error(`LEGACY_REMOTE_EFFECT_WORKTREE_REMOVE_FAILED: ${removed.stderr || removed.stdout}`);
+    if (inspection.branch !== inspection.canonicalBranch) {
+      const deleted = runProcess('git', ['branch', '--delete', inspection.branch], { cwd: repository.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+      if (!deleted.ok) {
+        const forced = runProcess('git', ['branch', '--delete', '--force', inspection.branch], { cwd: repository.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
+        if (!forced.ok) return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: `legacy_remote_effect_placement_detached_branch_retained:${inspection.branch}` };
+      }
+    }
+    return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: 'legacy_remote_effect_placement_detached' };
+  } catch (error) {
+    if (existsSync(inspection.path)) {
+      try { setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'active', reason: `Rollback failed legacy remote_effect detach for ${current.workId}.` }); } catch { /* preserve primary failure */ }
+      try { updateWorkContract(store, current.workId, previous); } catch { /* preserve primary failure */ }
+    }
+    throw error;
+  }
 }
 
 export function applyStaleWorkContractMaintenanceCandidate(
@@ -913,12 +1037,15 @@ export function applyStaleWorkContractMaintenanceCandidate(
           ...candidate,
           path: source.path ?? candidate.path,
           safe: false,
-          reason: staleWorkCandidateReason(source, staleWorkSemanticTerminalizationReady(current)),
+          reason: isLegacyImplicitRemoteEffectPlacement(current) ? source.detail : staleWorkCandidateReason(source, staleWorkSemanticTerminalizationReady(current)),
           sourceState: source.state,
           disposition: 'source_preservation_required' as const,
           applied: false,
           result: `work_source_preserved:${source.state}`,
         };
+      }
+      if (isLegacyImplicitRemoteEffectPlacement(current)) {
+        return detachLegacyRemoteEffectPlacement(repository, controllerHome, current, candidate);
       }
       const semanticReady = staleWorkSemanticTerminalizationReady(current);
       if (!semanticReady) {

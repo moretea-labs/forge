@@ -1237,13 +1237,24 @@ export function startGoalWorkloop(
     );
   }
 
-  const placementConflict = Boolean(workspaceOwner);
-  const needsWorktree = executionMode === 'goal_workloop' && (placementConstraint.requireWorktree
-    || placementConflict
+  // Pure remote effects do not participate in repository workspace ownership.
+  // An unrelated canonical writer, dirty checkout, or repository parallelism must
+  // not manufacture a Git worktree for browser/API work that has no source authority.
+  // Explicit typed isolation remains authoritative for the rare remote effect that
+  // genuinely declares a repository workspace requirement.
+  const repositoryWorkspaceParticipant = resolvedWorkKind !== 'remote_effect';
+  const placementConflict = repositoryWorkspaceParticipant && Boolean(workspaceOwner);
+  const automaticRepositoryIsolation = repositoryWorkspaceParticipant && (
+    placementConflict
     || input.modeInput.workspaceDirty === true
     || input.modeInput.requiresParallelism === true
-    || routeDecision.requiresIsolation === true);
-  if (!needsWorktree && workspaceOwner) {
+  );
+  const needsWorktree = executionMode === 'goal_workloop' && (
+    placementConstraint.requireWorktree
+    || automaticRepositoryIsolation
+    || routeDecision.requiresIsolation === true
+  );
+  if (!needsWorktree && workspaceOwner && repositoryWorkspaceParticipant) {
     return buildFacadeResult({
       status: 'blocked',
       summary: `WORKSPACE_OWNERSHIP_INVARIANT: unresolved admission reached checkout ${ctx.checkoutId} while active Work ${workspaceOwner.workId} owns it. This is an internal routing invariant, not a normal fallback path.`,
@@ -1307,14 +1318,14 @@ export function startGoalWorkloop(
     ...(needsWorktree ? { workspaceMode: 'isolated' as const, requireWorktree: true } : {}),
     ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
   };
-  const worktreeReason = input.modeInput.workspaceDirty === true
-    ? 'Trusted repository observation found the current checkout dirty; durable Goal Work is isolated so unrelated changes cannot enter Work ownership or verification.'
-    : placementConflict
-      ? 'The selected checkout is already owned by another active Work; this Work requires isolated placement.'
-      : input.modeInput.requiresParallelism === true
-        ? 'Parallel Work requires isolated placement.'
-        : routeDecision.requiresIsolation === true || placementConstraint.requireWorktree
-          ? 'Typed placement or Route Policy requires isolated execution.'
+  const worktreeReason = placementConstraint.requireWorktree || routeDecision.requiresIsolation === true
+    ? 'Typed placement or Route Policy requires isolated execution.'
+    : repositoryWorkspaceParticipant && input.modeInput.workspaceDirty === true
+      ? 'Trusted repository observation found the current checkout dirty; durable Goal Work is isolated so unrelated changes cannot enter Work ownership or verification.'
+      : placementConflict
+        ? 'The selected checkout is already owned by another active Work; this Work requires isolated placement.'
+        : repositoryWorkspaceParticipant && input.modeInput.requiresParallelism === true
+          ? 'Parallel Work requires isolated placement.'
           : 'Current workspace is the stability-first default; isolation remains opt-in.';
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,

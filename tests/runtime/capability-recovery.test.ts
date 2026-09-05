@@ -19,6 +19,7 @@ import {
   recoveryActionById,
 } from '../../src/runtime/recovery';
 import { applyEditOperations, beginEditSession, getEditSession } from '../../src/cli/editing/edit-session';
+import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
@@ -328,6 +329,42 @@ describe('runtime maintenance executor', () => {
       workId,
       worktree,
     };
+  }
+
+  function legacyRemoteEffectWorktreeFixture(dirty = false) {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-legacy-remote-effect-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'kernel-v2/architecture'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# legacy remote effect placement\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    const registered = registerRepository({ path: repoRoot, displayName: 'legacy-remote-effect', controllerHome });
+    const worktree = join(controllerHome, 'managed-worktrees', registered.repoId, 'work-legacy-remote');
+    mkdirSync(join(controllerHome, 'managed-worktrees', registered.repoId), { recursive: true });
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/legacy-remote-effect', worktree, 'HEAD'], { cwd: repoRoot });
+    const withCheckout = addRepositoryCheckout({ repoId: registered.repoId, path: worktree, controllerHome });
+    const checkout = withCheckout.checkouts.find((candidate) => candidate.checkoutId !== registered.activeCheckoutId && candidate.worktree);
+    if (!checkout) throw new Error('legacy remote effect fixture checkout missing');
+    const registeredWorktree = checkout.canonicalRoot;
+    const workId = 'work-legacy-remote-effect-placement';
+    createWorkContract({ controllerHome, repoId: registered.repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
+      workId, repoId: registered.repoId, mode: 'goal_workloop', workKind: 'remote_effect',
+      objective: 'continue an external browser task without repository mutation',
+      acceptanceCriteria: ['remote receipt exists'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'isolated', requireWorktree: true, requireHandoffOnAmbiguity: true },
+      requestedBy: 'user', status: 'running', checkoutId: checkout.checkoutId, worktreeRef: registeredWorktree, baseRevision,
+      driver: { preferred: 'isolated_worktree', allowWorker: false, allowDirectEdit: false },
+      worktreePolicy: { required: true, reason: 'legacy placement inherited from unrelated repository state' },
+    });
+    if (dirty) writeFileSync(join(registeredWorktree, 'unexpected.txt'), 'must preserve\n');
+    return { controllerHome, repository: { repoId: registered.repoId, canonicalRoot: registered.canonicalRoot, defaultBranch: 'main' }, workId, worktree: registeredWorktree, checkoutId: checkout.checkoutId, canonicalCheckoutId: registered.activeCheckoutId };
   }
 
   function writeStaleManagedWorkHandle(
@@ -648,6 +685,49 @@ describe('runtime maintenance executor', () => {
     });
     expect(again.migratedLegacyCount).toBe(0);
     expect(again.removedCount).toBe(0);
+  });
+
+  it('detaches a clean legacy remote_effect worktree without terminalizing the external Work', () => {
+    const { controllerHome, repository, workId, worktree, checkoutId, canonicalCheckoutId } = legacyRemoteEffectWorktreeFixture();
+    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(scanned.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract', id: workId, safe: true, sourceState: 'clean_integrated',
+    }));
+    expect(scanned.candidates.find((candidate) => candidate.id === workId)?.reason).toContain('repository placement may be detached');
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract', id: workId, applied: true, result: 'legacy_remote_effect_placement_detached',
+    }));
+    const retained = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+    expect(retained).toMatchObject({
+      status: 'running', workKind: 'remote_effect', checkoutId: canonicalCheckoutId,
+      constraints: { workspaceMode: 'auto', requireWorktree: false },
+      worktreePolicy: { required: false },
+    });
+    expect(retained?.worktreeRef).toBeUndefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(execFileSync('git', ['branch', '--list', 'work/legacy-remote-effect'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim()).toBe('');
+    const registry = getRepository(repository.repoId, controllerHome, { includeRemoved: true });
+    expect(registry.checkouts.find((candidate) => candidate.checkoutId === checkoutId)?.lifecycle).toBe('removed');
+  });
+
+  it('preserves a dirty legacy remote_effect worktree and leaves placement authority unchanged', () => {
+    const { controllerHome, repository, workId, worktree, checkoutId } = legacyRemoteEffectWorktreeFixture(true);
+    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(scanned.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract', id: workId, safe: false, sourceState: 'source_state_unknown', disposition: 'source_preservation_required',
+    }));
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: workId, applied: false, result: 'not_selected' }));
+    expect(existsSync(join(worktree, 'unexpected.txt'))).toBe(true);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'running', checkoutId, worktreeRef: worktree, worktreePolicy: { required: true },
+    });
   });
 
   it('does not bulk-cancel stale Work whose semantic lifecycle is still unresolved', () => {
