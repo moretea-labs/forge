@@ -341,6 +341,10 @@
       "module": "core",
       "resource": "temp-isolated"
     },
+    "tests/node/run-bounded-command.test.mjs": {
+      "module": "workflow",
+      "resource": "process-tree"
+    },
     "tests/release/package-release.test.ts": {
       "module": "release",
       "resource": "temp-isolated"
@@ -352,6 +356,10 @@
     "tests/runtime/app-store-connect-plugin.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/autonomous-goal-progression-contract.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/runtime/browser-state-controller-home-boundary.test.ts": {
       "module": "browser",
@@ -665,9 +673,17 @@
       "module": "routing",
       "resource": "temp-isolated"
     },
+    "tests/runtime/goal-authority-convergence.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/runtime-cleanup.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
+    },
+    "tests/runtime/runtime-lifecycle-inventory.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/runtime/runtime-observability.test.ts": {
       "module": "process-runtime",
@@ -732,6 +748,10 @@
     "tests/runtime/work-terminal-cleanup.test.ts": {
       "module": "workflow",
       "resource": "git-worktree"
+    },
+    "tests/runtime/work-operation-validation-identity.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
     },
     "tests/runtime/work-validation-reconciler.test.ts": {
       "module": "process-runtime",
