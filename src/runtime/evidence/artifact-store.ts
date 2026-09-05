@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto';
-import { closeSync, mkdirSync, openSync, readSync, statSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, opendirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import type { ExecutionJob } from '../execution/jobs/types';
-import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
+import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 
 export interface ExecutionArtifactRecord {
   schemaVersion: 1;
@@ -53,6 +53,69 @@ export function writeExecutionArtifact(
   };
   writeJsonAtomic(metadataPath(controllerHome, job.repoId, artifactId), record);
   return record;
+}
+
+export interface ExecutionArtifactJobCleanupReport {
+  policyVersion: 'execution-artifact-job-cleanup-v1';
+  inspected: number;
+  matched: number;
+  removed: number;
+  scanTruncated: boolean;
+  blockers: string[];
+}
+
+/**
+ * Reclaim only artifacts whose immutable metadata names the exact retired Job.
+ * Stored path strings are never followed; metadata/data paths are re-derived
+ * from the validated artifact id under this repository's Controller Home.
+ */
+export function cleanupExecutionArtifactsForJob(
+  controllerHome: string,
+  repoId: string,
+  jobId: string,
+  options: { maxScan?: number } = {},
+): ExecutionArtifactJobCleanupReport {
+  const report: ExecutionArtifactJobCleanupReport = {
+    policyVersion: 'execution-artifact-job-cleanup-v1', inspected: 0, matched: 0, removed: 0, scanTruncated: false, blockers: [],
+  };
+  const root = join(repositoryControllerRoot(controllerHome, repoId), 'artifacts');
+  const recordsRoot = join(root, 'records');
+  if (!existsSync(recordsRoot)) return report;
+  const maxScan = Math.max(1, Math.min(Math.trunc(options.maxScan ?? 5_000), 5_000));
+  const directory = opendirSync(recordsRoot);
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (!entry) break;
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      if (report.inspected >= maxScan) { report.scanTruncated = true; break; }
+      report.inspected += 1;
+      const recordPath = join(recordsRoot, entry.name);
+      let record: ExecutionArtifactRecord;
+      try { record = readJsonFile<ExecutionArtifactRecord>(recordPath); } catch {
+        report.blockers.push(`invalid_metadata:${entry.name}`);
+        continue;
+      }
+      if (record.schemaVersion !== 1 || record.repoId !== repoId || !record.artifactId || !record.jobId) {
+        report.blockers.push(`identity_mismatch:${entry.name}`);
+        continue;
+      }
+      const expectedName = `${sanitizeFileComponent(record.artifactId)}.json`;
+      if (entry.name !== expectedName) {
+        report.blockers.push(`artifact_key_mismatch:${entry.name}`);
+        continue;
+      }
+      if (record.jobId !== jobId) continue;
+      report.matched += 1;
+      removeFile(join(root, 'data', expectedName));
+      removeFile(recordPath);
+      report.removed += 1;
+    }
+  } finally {
+    directory.closeSync();
+  }
+  report.blockers = report.blockers.slice(0, 16);
+  return report;
 }
 
 export function readExecutionArtifact(
