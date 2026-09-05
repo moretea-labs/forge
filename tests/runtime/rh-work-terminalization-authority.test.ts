@@ -2161,6 +2161,184 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('already-terminal Work performs cleanup-only without reopening Controller ownership', async () => {
+    const fx = fixture();
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-cleanup', 'transport-terminal-cleanup', 'runtime-terminal-cleanup');
+    const workId = 'work-terminal-cleanup-only';
+    const branch = 'work/terminal-cleanup-only';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'terminal cleanup only regression',
+      baseRef: baseRevision,
+      branchName: branch,
+    });
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId!,
+      controllerInstanceId: caller.controllerInstanceId!,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Preserve terminal outcome while cleaning managed resources.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+      continuationPrompt: 'original terminal reason',
+      worktreeRef: workspace.root,
+    });
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const preservedDirtyProof = true;\n');
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId!,
+      principalId: caller.principalId!,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      deliveryTargetBranch: 'main',
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending',
+      },
+    });
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+
+    const cleaned = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      cleanup: true,
+      delete_branch: true,
+      target_branch: 'main',
+      authorize_destructive_cleanup: true,
+      reason: 'must not replace the durable terminal reason',
+    }));
+    expect(cleaned.status).toBe('ok');
+    expect(cleaned.data.cleanupOnly).toBe(true);
+    expect(cleaned.data.terminalizationApplied).toBe(false);
+    expect(cleaned.data.worktreeDeleted).toBe(true);
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+      status: 'cancelled',
+      phase: 'cleanup',
+      continuationPrompt: 'original terminal reason',
+    });
+    const cleanedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId);
+    expect(cleanedHandle?.state).toBe('cleaned');
+    expect(cleanedHandle?.cleanupReceipt?.complete).toBe(true);
+    expect(cleanedHandle?.cleanupReceipt?.preservation.status).toBe('checkpointed');
+    expect(cleanedHandle?.cleanupReceipt?.preservation.checkpointCommit).toMatch(/^[a-f0-9]{40}$/);
+  }, 20_000);
+
+  test('already-terminal cleanup remains fenced while a ControllerRound is still active', async () => {
+    const fx = fixture();
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-round', 'transport-terminal-round', 'runtime-terminal-round');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-terminal-cleanup-active-round';
+    const branch = 'work/terminal-cleanup-active-round';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'terminal cleanup active round regression',
+      baseRef: baseRevision,
+      branchName: branch,
+    });
+    const now = new Date().toISOString();
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId!,
+      controllerInstanceId: caller.controllerInstanceId!,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Do not clean terminal resources while a ControllerRound is still active.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'ready',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId!,
+      principalId: caller.principalId!,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      deliveryTargetBranch: 'main',
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending',
+      },
+    });
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:terminal-cleanup-round',
+        controllerType: 'chatgpt',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: caller.controllerInstanceId!,
+        sessionId: 'occurrence-terminal-cleanup-round',
+      },
+    });
+    expect(relay.status).toBe('dispatching');
+    transitionWorkContractPhase(store, workId, {
+      status: 'cancelled',
+      phase: 'cleanup',
+      state: 'skipped',
+      summary: 'terminal outcome became durable while the prior ControllerRound was still unsettled',
+    });
+
+    const blocked = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      cleanup: true,
+      delete_branch: true,
+      target_branch: 'main',
+      authorize_destructive_cleanup: true,
+    }));
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.summary).toContain(`WORK_TERMINAL_CLEANUP_ACTIVE_ROUND: ${workId}:dispatching`);
+    expect(existsSync(workspace.root!)).toBe(true);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('prepared');
+  }, 20_000);
+
   test('finalize leaves Plan semantic acceptance explicit and does not unlock dependent steps', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

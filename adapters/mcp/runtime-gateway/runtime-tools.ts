@@ -5177,6 +5177,92 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'stop') {
           const workId = String(args.work_id ?? '').trim();
+          const existingWork = workId ? getWorkContract(store, workId) : undefined;
+          const terminalCleanupOnly = Boolean(
+            existingWork
+            && ['completed', 'failed', 'cancelled'].includes(existingWork.status)
+            && args.cleanup !== false,
+          );
+          if (terminalCleanupOnly && existingWork) {
+            // Terminal resource cleanup is not semantic terminalization. Never
+            // reacquire/reopen Controller ownership merely to settle an outcome
+            // that is already durable. Active ownership/rounds still fence the
+            // cleanup path, while the lower terminal cleanup authority preserves
+            // dirty/unique source before removing Work-owned resources.
+            const owner = getControllerSession(store, workId);
+            if (owner) {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: `WORK_TERMINAL_CLEANUP_ACTIVE_CONTROLLER: ${workId} is still owned by ${owner.controllerId}.`,
+                data: { workId, terminalizationApplied: false, cleanupOnly: true },
+              }) as unknown as Record<string, unknown>, true);
+            }
+            const relay = getControllerRoundRelay(store, workId);
+            if (relay && !['goal_complete', 'handed_off', 'failed'].includes(relay.status)) {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: `WORK_TERMINAL_CLEANUP_ACTIVE_ROUND: ${workId}:${relay.status}.`,
+                data: { workId, terminalizationApplied: false, cleanupOnly: true, relayStatus: relay.status },
+              }) as unknown as Record<string, unknown>, true);
+            }
+            try {
+              const physical = await finalizeFacadeWorkHandle(
+                ctx,
+                repository,
+                { ...args, commit: false, merge: false, cleanup: true },
+                'stop',
+              );
+              if (!physical) {
+                return result(buildFacadeResult({
+                  status: 'ok',
+                  summary: `Terminal Work ${workId} has no managed repository resources requiring cleanup.`,
+                  data: {
+                    work: summarizeWorkContract(existingWork),
+                    finalStatus: existingWork.status,
+                    terminalizationApplied: false,
+                    cleanupOnly: true,
+                    worktreeDeleted: false,
+                    cleanupPending: false,
+                  },
+                }) as unknown as Record<string, unknown>);
+              }
+              const cleanup = contextRecord(physical.structuredContent);
+              const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
+              const cleanupRetained = cleanup.cleanupRetained === true;
+              const cleanupSettled = cleanupCompleted || cleanupRetained;
+              return result(buildFacadeResult({
+                status: cleanupSettled ? 'ok' : 'blocked',
+                summary: cleanupCompleted
+                  ? `Terminal Work ${workId} outcome was preserved; managed repository cleanup completed without reopening Controller ownership.`
+                  : cleanupRetained
+                    ? `Terminal Work ${workId} outcome was preserved; managed repository retention was recorded durably.`
+                    : `Terminal Work ${workId} outcome was preserved; managed repository cleanup remains incomplete and visible for retry.`,
+                data: {
+                  work: summarizeWorkContract(existingWork),
+                  finalStatus: existingWork.status,
+                  terminalizationApplied: false,
+                  cleanupOnly: true,
+                  worktreeDeleted: cleanupCompleted,
+                  cleanupPending: !cleanupSettled,
+                  cleanupRetained,
+                  lifecycleCleanup: cleanup,
+                },
+              }) as unknown as Record<string, unknown>, !cleanupSettled || physical.isError === true);
+            } catch (error) {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: `Terminal Work ${workId} cleanup-only reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+                data: {
+                  work: summarizeWorkContract(existingWork),
+                  finalStatus: existingWork.status,
+                  terminalizationApplied: false,
+                  cleanupOnly: true,
+                  worktreeDeleted: false,
+                  cleanupPending: true,
+                },
+              }) as unknown as Record<string, unknown>, true);
+            }
+          }
           try {
             if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
           } catch (error) {
