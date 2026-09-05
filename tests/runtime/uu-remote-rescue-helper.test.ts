@@ -138,4 +138,27 @@ describe('UU Remote rescue helper', () => {
     expect(decoded).toContain('forge recovery recover --controller-home');
     expect(decoded).not.toContain('whoami');
   });
+
+  test('host tunnel recovery dispatch is fixed and remains explicitly unverified', async () => {
+    const fx = fixture();
+    const result = await executeAction('host_tunnel_restart_dispatch', {}, config, { ...fx, requestId: 'host-tunnel-1' });
+    expect(fx.getCommand()).toContain(String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`);
+    expect(fx.getCommand()).toContain("'tunnel_restart'");
+    expect(fx.getCommand()).not.toContain("'full_recover'");
+    expect(result).toMatchObject({
+      dispatch: { accepted: true, action: 'tunnel_restart', recoveryStatus: 'unverified', verificationRequired: 'Forge Cloud connectivity' },
+    });
+    expect(fx.getClipboard()).toBe('private-existing-clipboard');
+  });
+
+  test('host full recovery dispatch cannot be parameterized and does not claim recovery success', async () => {
+    const fx = fixture();
+    const result = await executeAction('host_full_recover_dispatch', {}, config, { ...fx, requestId: 'host-full-1' });
+    expect(fx.getCommand()).toContain(String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`);
+    expect(fx.getCommand()).toContain("'full_recover'");
+    expect(result).toMatchObject({
+      dispatch: { accepted: true, action: 'full_recover', recoveryStatus: 'unverified', verificationRequired: 'Forge Cloud connectivity' },
+    });
+    await expect(executeAction('host_full_recover_dispatch', { command: 'whoami' }, config, { ...fixture(), requestId: 'host-full-arbitrary' })).rejects.toThrow('do not accept caller-provided');
+  });
 });

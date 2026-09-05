@@ -2,13 +2,14 @@ import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
 export const UU_REMOTE_RESCUE_PLUGIN_ID = 'uu_remote_rescue';
-export const UU_REMOTE_RESCUE_PLUGIN_VERSION = '0.1.0';
+export const UU_REMOTE_RESCUE_PLUGIN_VERSION = '0.1.1';
 export const UU_REMOTE_RESCUE_PROTOCOL_VERSION = '1.0';
 export const UU_REMOTE_RESCUE_CAPABILITIES = [
   'uu_remote.device_identity.v1',
   'uu_remote.terminal_transport.v1',
   'forge_wsl.health.v1',
   'forge_wsl.service_recovery.v1',
+  'forge_wsl.host_recovery.v1',
 ] as const;
 
 const REMOTE_WRITE = [{ resource: 'remote' as const, mode: 'write' as const }];
@@ -86,6 +87,25 @@ function actions(): AssistantPluginActionDescriptor[] {
       resourceClaims: REMOTE_WRITE,
       argumentsSchema: NO_ARGUMENTS,
     })),
+    ...(['host_tunnel_restart_dispatch', 'host_full_recover_dispatch'] as const).map((actionId): AssistantPluginActionDescriptor => ({
+      actionId,
+      title: actionId === 'host_tunnel_restart_dispatch'
+        ? 'Dispatch independent host tunnel recovery'
+        : 'Dispatch independent host full recovery',
+      description: actionId === 'host_tunnel_restart_dispatch'
+        ? 'Safely dispatch the fixed independent Windows/WSL Recovery tunnel_restart action to the registration-bound UU Remote Windows host. Success proves only dispatch; Forge Cloud connectivity must verify recovery.'
+        : 'Safely dispatch the fixed independent Windows/WSL Recovery full_recover action to the registration-bound UU Remote Windows host. Success proves only dispatch; Forge Cloud connectivity must verify recovery.',
+      readOnly: false,
+      risk: 'remote_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: false,
+      foregroundEffect: 'required',
+      scopes: ['uu-rescue.recover'],
+      resourceClaims: REMOTE_WRITE,
+      argumentsSchema: NO_ARGUMENTS,
+    })),
   ];
 }
 
@@ -128,7 +148,7 @@ export function createUuRemoteRescueRegistrationInput(
     capabilities: [
       { capabilityId: 'uu-rescue.device', title: 'UU Remote rescue device identity', description: 'Exact device identity and online-state fencing.', scopes: ['uu-rescue.device'], actions: ['device_status'] },
       { capabilityId: 'uu-rescue.observe', title: 'Remote WSL/Forge observation', description: 'Fixed WSL and Forge health probes over the UU Remote terminal.', scopes: ['uu-rescue.observe'], actions: ['wsl_status', 'forge_health'] },
-      { capabilityId: 'uu-rescue.recover', title: 'Remote Forge recovery', description: 'Allowlisted start/restart/recovery operations for the existing single Forge service authorities.', scopes: ['uu-rescue.recover'], actions: ['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover'] },
+      { capabilityId: 'uu-rescue.recover', title: 'Remote Forge recovery', description: 'Allowlisted start/restart/recovery operations for the existing single Forge service authorities.', scopes: ['uu-rescue.recover'], actions: ['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch'] },
     ],
     actions: registeredActions,
   };

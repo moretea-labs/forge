@@ -12,13 +12,14 @@ describe('UU Remote rescue registration', () => {
     expect(registration.transport).toMatchObject({ kind: 'managed_cli_json', requiredCapabilities: [...UU_REMOTE_RESCUE_CAPABILITIES] });
     expect(registration.actions.map((action) => action.actionId)).toEqual([
       'device_status', 'wsl_status', 'forge_health', 'runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover',
+      'host_tunnel_restart_dispatch', 'host_full_recover_dispatch',
     ]);
     for (const action of registration.actions) {
       expect(action.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
       expect(JSON.stringify(action.argumentsSchema)).not.toMatch(/command|shell|device|service|path/i);
     }
     expect(registration.actions.find((action) => action.actionId === 'device_status')).toMatchObject({ readOnly: true, risk: 'readonly' });
-    for (const id of ['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover']) {
+    for (const id of ['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch']) {
       expect(registration.actions.find((action) => action.actionId === id)).toMatchObject({ readOnly: false, risk: 'remote_write', confirmation: 'authorization' });
     }
   });

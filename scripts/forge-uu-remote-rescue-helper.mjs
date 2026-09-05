@@ -7,21 +7,27 @@ import { isAbsolute, join } from 'path';
 import { pathToFileURL } from 'url';
 
 export const PLUGIN_ID = 'uu_remote_rescue';
-export const PLUGIN_VERSION = '0.1.0';
+export const PLUGIN_VERSION = '0.1.1';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = [
   'uu_remote.device_identity.v1',
   'uu_remote.terminal_transport.v1',
   'forge_wsl.health.v1',
   'forge_wsl.service_recovery.v1',
+  'forge_wsl.host_recovery.v1',
 ];
 export const ACTIONS = [
   'device_status', 'wsl_status', 'forge_health',
   'runtime_start', 'runtime_restart', 'connector_start', 'connector_restart',
   'recovery_start', 'recovery_restart', 'runtime_recover',
+  'host_tunnel_restart_dispatch', 'host_full_recover_dispatch',
 ];
 
 const MUTATING_ACTIONS = new Set(['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover']);
+const HOST_RECOVERY_DISPATCH_ACTIONS = new Map([
+  ['host_tunnel_restart_dispatch', 'tunnel_restart'],
+  ['host_full_recover_dispatch', 'full_recover'],
+]);
 const TERMINAL_ACTIONS = new Set(ACTIONS.filter((action) => action !== 'device_status'));
 const TERMINAL_WORD = /terminal|powershell|cmd|wsl|shell|终端/i;
 
@@ -213,6 +219,14 @@ export function buildWslStatusCommand(markers) {
   return `$ErrorActionPreference='Continue'; $d=@(wsl.exe --list --quiet 2>$null | ForEach-Object { ($_ -replace [char]0,'').Trim() } | Where-Object { $_ }); $s=(wsl.exe --status 2>&1 | Out-String).Trim(); Write-Output '${markers.begin}'; foreach($x in $d){ Write-Output ('distro_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($x))) }; Write-Output ('status_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))); Write-Output '${markers.end}'`;
 }
 
+export function buildHostRecoveryDispatchCommand(action) {
+  const recoveryAction = HOST_RECOVERY_DISPATCH_ACTIONS.get(action);
+  if (!recoveryAction) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed host Recovery dispatch action.');
+  const recoveryScript = String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`;
+  const powershellSuffix = String.raw`System32\WindowsPowerShell\v1.0\powershell.exe`;
+  return `$recoveryScript='${recoveryScript}'; $powershell=Join-Path $env:SystemRoot '${powershellSuffix}'; if (-not (Test-Path -LiteralPath $recoveryScript -PathType Leaf)) { throw 'FORGE_RECOVERY_SCRIPT_MISSING' }; if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { throw 'WINDOWS_POWERSHELL_MISSING' }; Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoveryScript,'${recoveryAction}')`;
+}
+
 export function buildForgeCommand(action, config, markers) {
   const units = serviceUnits(config.wsl.controllerHome);
   const operation = {
@@ -268,7 +282,7 @@ async function verifyDevice(config, deps, requireOnline) {
   return { deviceId: item.deviceId, deviceName: item.deviceName, platform: 'windows', isOnline: item.isOnline === true };
 }
 
-async function runTerminalCommand(config, requestId, command, deps) {
+async function runTerminalCommand(config, requestId, command, deps, options = {}) {
   await verifyDevice(config, deps, true);
   await deps.runCli(config, ['term', 'open', config.device.id]);
   await deps.sleep(700);
@@ -287,6 +301,10 @@ async function runTerminalCommand(config, requestId, command, deps) {
     await deps.desktopCall(config, `${requestId}:clipboard-command`, 'desktop_clipboard_write', { text: command });
     await deps.desktopCall(config, `${requestId}:paste`, 'desktop_paste', { interaction_id: interactionId });
     await deps.desktopCall(config, `${requestId}:return`, 'desktop_key', { interaction_id: interactionId, keys: ['RETURN'] });
+    if (options.awaitResult === false) {
+      await deps.sleep(300);
+      return undefined;
+    }
     const markers = markerPair(requestId);
     for (let attempt = 0; attempt < 24; attempt += 1) {
       await deps.sleep(attempt === 0 ? 300 : 250);
@@ -312,9 +330,25 @@ export async function executeAction(actionId, input, configInput, injected = {})
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0) throw rescueError('UU_RESCUE_ARGUMENTS_FORBIDDEN', 'UU Remote rescue actions do not accept caller-provided commands, service names, devices, paths, or shell arguments.');
   const deps = { runCli: runCliDefault, desktopCall: desktopCallDefault, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), ...injected };
   if (actionId === 'device_status') return { device: await verifyDevice(config, deps, false) };
-  const markers = markerPair(injected.requestId || `${actionId}:${Date.now()}`);
+  const effectiveRequestId = injected.requestId || `${actionId}:${Date.now()}`;
+  if (HOST_RECOVERY_DISPATCH_ACTIONS.has(actionId)) {
+    const command = buildHostRecoveryDispatchCommand(actionId);
+    await runTerminalCommand(config, effectiveRequestId, command, deps, { awaitResult: false });
+    return {
+      device: config.device,
+      wsl: { configuredDistro: config.wsl.distro },
+      dispatch: {
+        accepted: true,
+        action: HOST_RECOVERY_DISPATCH_ACTIONS.get(actionId),
+        authority: 'C:\\ProgramData\\ForgeRecovery\\ForgeRecovery.ps1',
+        recoveryStatus: 'unverified',
+        verificationRequired: 'Forge Cloud connectivity',
+      },
+    };
+  }
+  const markers = markerPair(effectiveRequestId);
   const command = actionId === 'wsl_status' ? buildWslStatusCommand(markers) : buildForgeCommand(actionId, config, markers);
-  const payload = await runTerminalCommand(config, injected.requestId || `${actionId}:${Date.now()}`, command, deps);
+  const payload = await runTerminalCommand(config, effectiveRequestId, command, deps);
   if (actionId === 'wsl_status') {
     const records = parseRecords(payload);
     const distros = payload.split(/\r?\n/).filter((line) => line.startsWith('distro_b64|')).map((line) => decodeB64(line.slice('distro_b64|'.length))).filter(Boolean);
