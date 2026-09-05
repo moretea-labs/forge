@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupGeneratedRepositoryCaches } from '../../src/runtime/control-plane/generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches } from '../../src/runtime/control-plane/generated-cache-retention';
 
 const roots: string[] = [];
 
@@ -97,5 +97,84 @@ describe('generated repository cache retention', () => {
     expect(existsSync(upload)).toBe(false);
     expect(report.removedPaths).toEqual(['.forge/browser/uploads/stale.zip']);
     expect(report.budgetExhausted).toBe(true);
+  });
+
+  test('bounds Controller Home Browser disposable artifacts by TTL, count/bytes and active grace', () => {
+    const root = repository();
+    const controllerHome = join(root, 'controller-home');
+    const browserRoot = join(controllerHome, 'repositories', 'repo-a', 'browser');
+    const screenshots = join(browserRoot, 'screenshots');
+    const downloads = join(browserRoot, 'downloads');
+    const diagnostics = join(browserRoot, 'diagnostics');
+    for (const dir of [screenshots, downloads, diagnostics]) mkdirSync(dir, { recursive: true });
+    const staleShot = join(screenshots, 'stale.png');
+    const quotaShot = join(screenshots, 'quota.png');
+    const activeShot = join(screenshots, 'active.png');
+    const staleDownload = join(downloads, 'stale.zip');
+    const staleDiagnostic = join(diagnostics, 'stale.json');
+    for (const [path, body] of [
+      [staleShot, '1111'], [quotaShot, '2222'], [activeShot, '3333'],
+      [staleDownload, 'download'], [staleDiagnostic, 'diagnostic'],
+    ] as const) writeFileSync(path, body);
+    age(staleShot);
+    age(quotaShot);
+    age(staleDownload);
+    age(staleDiagnostic);
+
+    const report = cleanupControllerHomeBrowserArtifacts(controllerHome, 'repo-a', {
+      nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
+      activeGraceMs: 60 * 60_000,
+      graceMs: 60_000,
+      maxCountPerClass: 1,
+      maxBytesPerClass: 8,
+      maxEntries: 20,
+      maxRemovals: 10,
+    });
+
+    expect(existsSync(staleShot)).toBe(false);
+    expect(existsSync(quotaShot)).toBe(false);
+    expect(existsSync(activeShot)).toBe(true);
+    expect(existsSync(staleDownload)).toBe(false);
+    expect(existsSync(staleDiagnostic)).toBe(false);
+    expect(report.policyVersion).toBe('browser-disposable-artifact-retention-v1');
+    expect(report.classes.screenshots.retainedCount).toBe(1);
+    expect(report.classes.screenshots.overCapacity).toBe(false);
+    expect(report.removedPaths).toContain('screenshots/stale.png');
+    expect(report.removedPaths).toContain('downloads/stale.zip');
+    expect(report.removedPaths).toContain('diagnostics/stale.json');
+    expect(report.removedBytes).toBeGreaterThan(0);
+  });
+
+  test('fails closed on Browser symlinks and exposes capacity blockers when active grace prevents quota cleanup', () => {
+    const root = repository();
+    const controllerHome = join(root, 'controller-home');
+    const screenshots = join(controllerHome, 'repositories', 'repo-a', 'browser', 'screenshots');
+    mkdirSync(screenshots, { recursive: true });
+    const liveA = join(screenshots, 'live-a.png');
+    const liveB = join(screenshots, 'live-b.png');
+    writeFileSync(liveA, 'aaaa');
+    writeFileSync(liveB, 'bbbb');
+    const foreign = join(root, 'foreign.txt');
+    writeFileSync(foreign, 'foreign');
+    const link = join(screenshots, 'foreign-link.png');
+    symlinkSync(foreign, link);
+
+    const report = cleanupControllerHomeBrowserArtifacts(controllerHome, 'repo-a', {
+      nowMs: Date.now(),
+      activeGraceMs: 60 * 60_000,
+      maxCountPerClass: 1,
+      maxBytesPerClass: 4,
+      maxEntries: 20,
+      maxRemovals: 10,
+    });
+
+    expect(existsSync(liveA)).toBe(true);
+    expect(existsSync(liveB)).toBe(true);
+    expect(existsSync(link)).toBe(true);
+    expect(existsSync(foreign)).toBe(true);
+    expect(report.classes.screenshots.overCapacity).toBe(true);
+    expect(report.classes.screenshots.blockers).toContain('capacity_remains_above_limit');
+    expect(report.skippedByReason.ownership_unproven ?? 0).toBeGreaterThanOrEqual(1);
+    expect(report.skippedByReason.active_grace ?? 0).toBeGreaterThanOrEqual(1);
   });
 });
