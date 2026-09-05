@@ -8,6 +8,7 @@ import {
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
+import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import {
@@ -91,6 +92,14 @@ export async function runSchedulerPeriodicCleanup(input: {
   }
   const result = input.processGc({ controllerHome: input.controllerHome, repoId: repo.repoId });
   if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
+  try {
+    const retiredJobs = cleanupRetiredExecutionJobs(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
+    if (retiredJobs.blockers.length > 0 || retiredJobs.scanTruncated || retiredJobs.budgetExhausted) {
+      console.error(`[forge cleanup] retired ExecutionJob retention reported bounded blockers for ${repo.repoId}`);
+    }
+  } catch (error) {
+    console.error(`[forge cleanup] retired ExecutionJob retention failed for ${repo.repoId}:`, error);
+  }
 }
 
 export async function runSchedulerValidationReconciliation(input: {

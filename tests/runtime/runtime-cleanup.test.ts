@@ -31,6 +31,7 @@ import { cleanupStaleWorkVerificationSnapshots } from '../../src/runtime/control
 import { cleanupTerminalEditSessionRecords } from '../../src/cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
+import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import { createWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
@@ -903,6 +904,31 @@ describe('runtime cleanup', () => {
     }
     expect(launches).toBe(1);
     expect(inlineCleanupCalls).toBe(0);
+  });
+
+  test('retired ExecutionJob retention removes only proven-terminal legacy bundles', () => {
+    const home = controllerHome();
+    const repoId = 'repo-retired-job-retention';
+    const root = executionJobRoot(home, repoId);
+    const old = new Date(Date.now() - 2 * 60_000).toISOString();
+    const terminalId = 'legacy-terminal-job';
+    const activeId = 'legacy-active-job';
+    mkdirSync(join(root, 'records'), { recursive: true });
+    mkdirSync(join(root, 'receipts'), { recursive: true });
+    mkdirSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs'), { recursive: true });
+    const base = { schemaVersion: 1, revision: 1, repoId, priority: 'P2', requestId: 'legacy-request', semanticKey: 'legacy', payload: { operation: 'legacy' }, origin: { surface: 'system' }, resourceClaims: [], dependencies: [], leaseRefs: [], createdAt: old, updatedAt: old, queuedAt: old, attempt: 1, maxAttempts: 1, evidenceIds: [] };
+    writeFileSync(join(root, 'records', `${terminalId}.json`), JSON.stringify({ ...base, jobId: terminalId, type: 'reconciliation', status: 'succeeded', finishedAt: old }));
+    writeFileSync(join(root, 'records', `${activeId}.json`), JSON.stringify({ ...base, jobId: activeId, requestId: 'active-request', type: 'reconciliation', status: 'running' }));
+    writeFileSync(join(root, 'receipts', `${terminalId}.json`), '{}');
+    writeFileSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`), '{}\n');
+
+    const report = cleanupRetiredExecutionJobs(home, repoId, { retentionMs: 60_000, maxTerminalRecords: 500, maxRemovals: 32 });
+    expect(report.removed).toBe(1);
+    expect(report.protectedActive).toBe(1);
+    expect(existsSync(join(root, 'records', `${terminalId}.json`))).toBe(false);
+    expect(existsSync(join(root, 'receipts', `${terminalId}.json`))).toBe(false);
+    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`))).toBe(false);
+    expect(existsSync(join(root, 'records', `${activeId}.json`))).toBe(true);
   });
 
   test('periodic scheduler cleanup runs Process GC for only one enabled repository', async () => {
