@@ -206,17 +206,32 @@ export type EditOperation =
   | { type: 'delete'; path: string; expectedSha256: string };
 
 const SESSION_ROOT = '.ai/harness/edit-sessions';
+const SESSION_OWNER_MARKER = '.forge-owner.json';
 
-function assertDurableEditSessionStorageBound(repoRoot: string, repoId: string | undefined): void {
-  if (!repoId?.trim()) return;
+function hasDurableEditSessionStorageBinding(repoRoot: string, repoId: string): boolean {
   const root = join(repoRoot, SESSION_ROOT);
   try {
-    if (lstatSync(root).isSymbolicLink()) return;
+    if (!lstatSync(root).isSymbolicLink()) return false;
+    const marker = JSON.parse(readFileSync(join(root, SESSION_OWNER_MARKER), 'utf-8')) as {
+      schemaVersion?: unknown;
+      repoId?: unknown;
+      binding?: unknown;
+      managedBy?: unknown;
+    };
+    return marker.schemaVersion === 1
+      && marker.repoId === repoId
+      && marker.binding === 'edit-sessions'
+      && marker.managedBy === 'forge';
   } catch (_error) {
-    // Durable EditSession state must be bound before the first write. The
-    // repository runtime-storage authority owns migration/link creation.
+    return false;
   }
-  throw new Error(`EDIT_SESSION_STORAGE_NOT_BOUND: ${repoId.trim()} requires Controller Home edit-sessions binding`);
+}
+
+function assertDurableEditSessionStorageBound(repoRoot: string, repoId: string | undefined): void {
+  const normalizedRepoId = repoId?.trim();
+  if (!normalizedRepoId) return;
+  if (hasDurableEditSessionStorageBinding(repoRoot, normalizedRepoId)) return;
+  throw new Error(`EDIT_SESSION_STORAGE_NOT_BOUND: ${normalizedRepoId} requires Controller Home edit-sessions binding`);
 }
 
 export const MAX_EDIT_PATCH_BATCH_OPERATIONS = 500;

@@ -56,6 +56,21 @@ describe('v8.1 repository runtime storage isolation', () => {
       })).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
       expect(existsSync(editSource)).toBe(false);
 
+      const wrongTarget = join(fixture.root, 'wrong-edit-session-target');
+      mkdirSync(wrongTarget, { recursive: true });
+      symlinkSync(wrongTarget, editSource, 'dir');
+      expect(() => beginEditSession(fixture.repoA.canonicalRoot, {
+        purpose: 'durable storage wrong-target invariant',
+        allowedPaths: ['src/**'],
+        binding: {
+          workId: 'work-storage-wrong-target',
+          repoId: fixture.repoA.repoId,
+          checkoutId: fixture.repoA.activeCheckoutId,
+          principalId: 'test-principal',
+        },
+      })).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
+      rmSync(editSource, { force: true });
+
       const storage = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
       const editTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'edit-sessions');
       expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(storage.status);
