@@ -138,6 +138,17 @@ describe('cross-version evaluation protocol', () => {
     );
   });
 
+  test('requires at least one correctness/reliability P0/P1 blocking metric in a frozen cross-version protocol', () => {
+    const corpus = freezeEvaluationCorpus({ scenario: 'sha256:scenario' });
+    expect(() => freezeEvaluationProtocol({
+      evaluator: freezeEvaluatorIdentity({ evaluatorVersion: 'missing-tier1/v1', implementationDigest: 'sha256:evaluator' }),
+      corpus,
+      trialPolicy: { repetitions: 1, warmupTrials: 0, cacheModes: ['cold'], orderPolicy: 'balanced_alternating', timeoutMs: 1_000 },
+      metrics: [{ id: 'latency_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking' }],
+      failureTaxonomy: ['candidate_failure'],
+    })).toThrow('EVALUATION_PROTOCOL_TIER1_BLOCKING_METRIC_REQUIRED');
+  });
+
   test('forbids candidate-internal diagnostics from issuing a cross-version verdict', () => {
     expect(() => assertCrossVersionVerdictAuthority(CANDIDATE_INTERNAL_DIAGNOSTIC_AUTHORITY)).toThrow(
       'EVALUATION_CANDIDATE_INTERNAL_DIAGNOSTIC_CANNOT_PRODUCE_VERSION_VERDICT',

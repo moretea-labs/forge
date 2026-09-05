@@ -16,6 +16,7 @@ import {
   type FrozenEvaluationProtocol,
 } from './protocol.ts';
 import { runPublicMcpEvaluationInSnapshot } from './public-mcp-runner.ts';
+import { buildReport } from './report.ts';
 import { runEvaluationInSnapshot } from './runner.ts';
 import { evaluationScenarioDigest } from './scenario.ts';
 import {
@@ -23,12 +24,14 @@ import {
   cleanupIsolatedSnapshot,
   createIsolatedSnapshot,
   evaluationIsolationIdentity,
+  inspectSourceState,
   isolatedEvaluationEnvironment,
   resolveSourcePath,
   type EvaluationIsolationIdentity,
+  type IsolatedSnapshot,
 } from './sandbox.ts';
 import { captureCommand, commandSucceeded } from './trace.ts';
-import type { CommandRecord, EvaluationReport, EvaluationScenario, ForgeCommand } from './types.ts';
+import { TRACE_SCHEMA, type CommandRecord, type EvaluationReport, type EvaluationScenario, type EvaluationTrace, type ForgeCommand } from './types.ts';
 
 export const PAIRED_CANDIDATE_RUN_SCHEMA = 'forge-paired-candidate-run/v1' as const;
 
@@ -55,6 +58,11 @@ export interface CandidateTrialResult extends PlannedCandidateTrial {
   isolation: EvaluationIsolationIdentity;
   warmupCommands: readonly CommandRecord[];
   report: EvaluationReport;
+  failure?: {
+    code: 'candidate_failure' | 'candidate_timeout';
+    message: string;
+    timedOut: boolean;
+  };
 }
 
 export interface PairedCandidateRun {
@@ -113,6 +121,74 @@ export function planCandidateTrials(protocol: FrozenEvaluationProtocol, scenario
   return trials;
 }
 
+function measuredCandidateFailureReport(input: {
+  scenario: EvaluationScenario;
+  sandbox: IsolatedSnapshot;
+  retained: boolean;
+  trialCommand: ForgeCommand;
+  startedAtMs: number;
+  failureCode: 'candidate_failure' | 'candidate_timeout';
+  message: string;
+  timedOut: boolean;
+}): EvaluationReport {
+  const observedAt = Date.now();
+  const sourceAfter = inspectSourceState(input.sandbox.source);
+  const changes = changedFiles(input.sandbox.repository);
+  const sourceUnchanged = input.sandbox.sourceStateBefore.clean === sourceAfter.state.clean
+    && input.sandbox.sourceStateBefore.statusDigest === sourceAfter.state.statusDigest;
+  const failureCommand: CommandRecord = {
+    kind: 'forge',
+    stepId: 'candidate-execution',
+    command: input.trialCommand.executable,
+    arguments: [...(input.trialCommand.prefixArguments ?? []), '<evaluation>'],
+    cwd: input.sandbox.repository,
+    exitCode: 1,
+    startedAt: new Date(input.startedAtMs).toISOString(),
+    durationMs: Math.max(0, observedAt - input.startedAtMs),
+    stdout: '',
+    stderr: `${input.failureCode}:${input.message}`,
+    timedOut: input.timedOut,
+  };
+  const trace: EvaluationTrace = {
+    schemaVersion: TRACE_SCHEMA,
+    scenarioId: input.scenario.id,
+    taskInput: input.scenario.userIntent,
+    snapshot: {
+      commit: input.scenario.snapshot.commit,
+      sourceStateBefore: input.sandbox.sourceStateBefore,
+      sourceStateAfter: sourceAfter.state,
+    },
+    sandbox: {
+      strategy: 'git-clone-no-local',
+      retained: input.retained,
+      ...(input.retained ? { path: input.sandbox.repository } : {}),
+    },
+    contextRetrieval: [],
+    inspectedEvidence: [],
+    changedFiles: changes.files,
+    commands: [...input.sandbox.setupCommands, failureCommand, sourceAfter.command, ...changes.commands],
+    checks: [],
+    toolInteractions: [{
+      kind: input.scenario.execution.interface === 'forge_mcp' ? 'forge_tool' : 'forge_cli',
+      name: input.scenario.execution.interface,
+      outcome: 'failure',
+    }],
+    finalResult: { status: 'failed', summary: `${input.failureCode}:${input.message}` },
+    validation: [
+      ...input.scenario.validators.map((validator) => ({
+        id: validator.id,
+        kind: validator.kind,
+        status: 'failed' as const,
+        summary: `Candidate execution did not reach validator evaluation: ${input.failureCode}`,
+      })),
+      sourceUnchanged
+        ? { id: 'source-repository-unchanged', kind: 'isolation' as const, status: 'passed' as const, summary: 'Source Git status was unchanged before and after the failed candidate trial.' }
+        : { id: 'source-repository-unchanged', kind: 'isolation' as const, status: 'failed' as const, summary: 'Source Git status changed during the failed candidate trial; do not trust this result.' },
+    ],
+  };
+  return buildReport(input.scenario, trace);
+}
+
 export async function runPairedCandidateEvaluation(input: {
   protocol: FrozenEvaluationProtocol;
   scenario: EvaluationScenario;
@@ -166,8 +242,9 @@ export async function runPairedCandidateEvaluation(input: {
       FORGE_EVALUATION_REPETITION: String(planned.repetition),
       FORGE_EVALUATION_SEQUENCE: String(planned.sequence),
     };
+    const trialStartedAtMs = Date.now();
+    const warmupCommands: CommandRecord[] = [];
     try {
-      const warmupCommands: CommandRecord[] = [];
       if (planned.cacheMode === 'warm') {
         const warmup = candidate.warmup!;
         for (let warmupIndex = 0; warmupIndex < input.protocol.trialPolicy.warmupTrials; warmupIndex += 1) {
@@ -181,7 +258,8 @@ export async function runPairedCandidateEvaluation(input: {
           });
           warmupCommands.push(command);
           if (!commandSucceeded(command)) {
-            throw new Error(`EVALUATION_WARMUP_FAILED:${candidate.identity.candidateId}:${planned.repetition}:${warmupIndex}`);
+            const code = command.timedOut ? 'EVALUATION_CANDIDATE_WARMUP_TIMEOUT' : 'EVALUATION_CANDIDATE_WARMUP_FAILED';
+            throw new Error(`${code}:${candidate.identity.candidateId}:${planned.repetition}:${warmupIndex}`);
           }
         }
         assertMaterializedCandidateArtifactUnchanged(candidate.identity.candidateId, candidateArtifact);
@@ -212,6 +290,35 @@ export async function runPairedCandidateEvaluation(input: {
         isolation,
         warmupCommands,
         report,
+      });
+    } catch (error) {
+      assertMaterializedCandidateArtifactUnchanged(candidate.identity.candidateId, candidateArtifact);
+      const message = error instanceof Error ? error.message : String(error);
+      const measuredCandidateFailure = message.startsWith('EVALUATION_CANDIDATE_MCP_CONNECT_FAILED:')
+        || message.startsWith('EVALUATION_CANDIDATE_WARMUP_FAILED:')
+        || message.startsWith('EVALUATION_CANDIDATE_WARMUP_TIMEOUT:');
+      if (!measuredCandidateFailure) throw error;
+      const timedOut = message.includes('EVALUATION_MCP_TIMEOUT:')
+        || message.startsWith('EVALUATION_CANDIDATE_WARMUP_TIMEOUT:')
+        || warmupCommands.some((command) => command.timedOut);
+      const failureCode = timedOut ? 'candidate_timeout' : 'candidate_failure';
+      const report = measuredCandidateFailureReport({
+        scenario: input.scenario,
+        sandbox,
+        retained,
+        trialCommand,
+        startedAtMs: trialStartedAtMs,
+        failureCode,
+        message,
+        timedOut,
+      });
+      trials.push({
+        ...planned,
+        runIdentity: evaluationRunIdentity({ protocol: input.protocol, candidate: candidate.identity, environment: input.environment }),
+        isolation,
+        warmupCommands,
+        report,
+        failure: { code: failureCode, message, timedOut },
       });
     } finally {
       if (!retained) cleanupIsolatedSnapshot(sandbox.root);

@@ -135,7 +135,12 @@ async function openConnection(input: {
   const stderr = { value: '' };
   transport.stderr?.on('data', (chunk) => { stderr.value = safeText(`${stderr.value}${String(chunk)}`); });
   const client = new Client({ name: 'forge-evaluation-public-mcp', version: '1.0.0' });
-  await withTimeout(client.connect(transport), 30_000, 'connect');
+  try {
+    await withTimeout(client.connect(transport), 30_000, 'connect');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`EVALUATION_CANDIDATE_MCP_CONNECT_FAILED:${message}`);
+  }
   return { client, transport, stderr };
 }
 

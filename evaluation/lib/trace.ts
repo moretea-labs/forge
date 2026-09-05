@@ -32,6 +32,8 @@ export function captureCommand(input: {
     shell: false,
   });
   const error = result.error ? `${result.error.name}: ${result.error.message}` : '';
+  const errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const timedOut = errorCode === 'ETIMEDOUT' || /(?:timed?\s*out|ETIMEDOUT)/i.test(result.error?.message ?? '');
   return {
     kind: input.kind,
     command: input.command,
@@ -42,7 +44,7 @@ export function captureCommand(input: {
     durationMs: Date.now() - startedMs,
     stdout: bounded(result.stdout),
     stderr: bounded([result.stderr, error].filter(Boolean).join('\n')),
-    timedOut: result.error?.name === 'Error' && /timed?\s*out/i.test(result.error.message),
+    timedOut,
   };
 }
 

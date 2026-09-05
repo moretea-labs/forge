@@ -59,6 +59,8 @@ export interface EvaluationMetricDefinition {
   direction: EvaluationMetricDirection;
   unit: string;
   gate: 'p0_p1_blocking' | 'non_blocking';
+  /** Absolute metric-unit regression tolerance, frozen into the protocol before formal trials. */
+  regressionTolerance?: number;
 }
 
 export interface EvaluationTrialPolicy {
@@ -117,16 +119,22 @@ function normalizedMetrics(metrics: readonly EvaluationMetricDefinition[]): Eval
     if (!METRIC_TIERS.includes(metric.tier)) throw new Error('EVALUATION_PROTOCOL_METRIC_TIER_INVALID');
     if (!METRIC_DIRECTIONS.includes(metric.direction)) throw new Error('EVALUATION_PROTOCOL_METRIC_DIRECTION_INVALID');
     if (!METRIC_GATES.includes(metric.gate)) throw new Error('EVALUATION_PROTOCOL_METRIC_GATE_INVALID');
+    const regressionTolerance = metric.regressionTolerance ?? 0;
+    if (!Number.isFinite(regressionTolerance) || regressionTolerance < 0) throw new Error('EVALUATION_PROTOCOL_METRIC_REGRESSION_TOLERANCE_INVALID');
     return {
       id: text(metric.id, 'metric_id'),
       tier: metric.tier,
       direction: metric.direction,
       unit: text(metric.unit, 'metric_unit'),
       gate: metric.gate,
+      regressionTolerance,
     };
   }).sort((left, right) => left.id.localeCompare(right.id));
   if (result.length === 0) throw new Error('EVALUATION_PROTOCOL_METRICS_REQUIRED');
   if (new Set(result.map((metric) => metric.id)).size !== result.length) throw new Error('EVALUATION_PROTOCOL_METRIC_IDS_UNIQUE');
+  if (!result.some((metric) => metric.tier === 'correctness_reliability' && metric.gate === 'p0_p1_blocking')) {
+    throw new Error('EVALUATION_PROTOCOL_TIER1_BLOCKING_METRIC_REQUIRED');
+  }
   return result;
 }
 

@@ -4,10 +4,21 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
 import { evaluationCandidateArtifactDigest } from './lib/candidate-artifact.ts';
-import { planCandidateTrials, runPairedCandidateEvaluation, type EvaluationCandidateAdapter } from './lib/candidate-runner.ts';
+import { planCandidateTrials, runPairedCandidateEvaluation, type EvaluationCandidateAdapter, type PairedCandidateRun } from './lib/candidate-runner.ts';
 import { loadGoldenCorpus, REQUIRED_SHARED_BEHAVIOR_CLASSES } from './lib/corpus.ts';
-import { freezeCandidateIdentity, freezeEnvironmentIdentity, freezeEvaluationCorpus, freezeEvaluationProtocol } from './lib/protocol.ts';
+import { buildCrossVersionPairedStatistics } from './lib/metrics.ts';
+import {
+  CANDIDATE_INTERNAL_DIAGNOSTIC_AUTHORITY,
+  CROSS_VERSION_EVALUATION_AUTHORITY,
+  evaluationRunIdentity,
+  freezeCandidateIdentity,
+  freezeEnvironmentIdentity,
+  freezeEvaluationCorpus,
+  freezeEvaluationProtocol,
+  type FrozenEvaluationProtocol,
+} from './lib/protocol.ts';
 import { evaluationScenarioDigest, parseScenario } from './lib/scenario.ts';
+import type { EvaluationReport } from './lib/types.ts';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -61,6 +72,56 @@ fs.writeFileSync(path.join(process.env.FORGE_EVALUATION_ARTIFACT_ROOT, 'candidat
     artifactBinding: { kind: 'prefix_argument', index: 0, entryPath: 'entry.cjs' },
     command: { executable: process.execPath, prefixArguments: [entryPath] },
     warmup: { arguments: ['--warmup'] },
+  };
+}
+
+function fixtureCrashingMcpCandidate(root: string, id: string): EvaluationCandidateAdapter {
+  const artifactPath = join(root, id);
+  mkdirSync(artifactPath, { recursive: true });
+  const entryPath = join(artifactPath, 'entry.mjs');
+  writeFileSync(entryPath, `process.exit(17);\n`);
+  return {
+    identity: freezeCandidateIdentity({
+      candidateId: id,
+      versionLabel: id,
+      artifactDigest: digest(artifactPath),
+      executionSurface: 'public_mcp',
+    }),
+    artifactPath,
+    artifactBinding: { kind: 'prefix_argument', index: 0, entryPath: 'entry.mjs' },
+    command: { executable: process.execPath, prefixArguments: [entryPath] },
+  };
+}
+
+function fixtureWarmupTimeoutCandidate(root: string, id: string): EvaluationCandidateAdapter {
+  const artifactPath = join(root, id);
+  mkdirSync(artifactPath, { recursive: true });
+  const entryPath = join(artifactPath, 'entry.cjs');
+  writeFileSync(entryPath, `
+const fs = require('fs');
+if (process.argv.includes('--warmup')) {
+  setInterval(() => {}, 1_000);
+} else {
+  fs.writeFileSync('execution-evidence.txt', ${JSON.stringify(id)});
+  fs.writeFileSync('execution-trace.json', JSON.stringify({
+    contextRetrieval: [{ domain: 'fixture-domain', source: 'candidate', summary: 'fixture context' }],
+    inspectedEvidence: [{ domain: 'fixture-domain', source: 'candidate', summary: 'fixture evidence' }],
+    toolInteractions: [{ name: 'public_cli', outcome: 'success' }],
+    finalResult: 'candidate completed',
+  }));
+}
+`);
+  return {
+    identity: freezeCandidateIdentity({
+      candidateId: id,
+      versionLabel: id,
+      artifactDigest: digest(artifactPath),
+      executionSurface: 'public_cli',
+    }),
+    artifactPath,
+    artifactBinding: { kind: 'prefix_argument', index: 0, entryPath: 'entry.cjs' },
+    command: { executable: process.execPath, prefixArguments: [entryPath] },
+    warmup: { arguments: ['--warmup'], timeoutMs: 25 },
   };
 }
 
@@ -196,6 +257,132 @@ function protocol(scenarioDigest = 'sha256:scenario', orderPolicy: 'balanced_alt
   });
 }
 
+function statisticsProtocol(): FrozenEvaluationProtocol {
+  return freezeEvaluationProtocol({
+    evaluator: { schemaVersion: 'forge-evaluator-identity/v1', evaluatorVersion: 'statistics-test/v1', implementationDigest: 'sha256:statistics-test' },
+    corpus: freezeEvaluationCorpus({ 'scenario-a': 'sha256:scenario-a', 'scenario-b': 'sha256:scenario-b' }),
+    trialPolicy: { repetitions: 3, warmupTrials: 0, cacheModes: ['cold'], orderPolicy: 'balanced_alternating', timeoutMs: 1_000 },
+    metrics: [
+      { id: 'task_correctness', tier: 'correctness_reliability', direction: 'higher_is_better', unit: 'ratio', gate: 'p0_p1_blocking' },
+      { id: 'latency_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking' },
+    ],
+    failureTaxonomy: ['candidate_failure', 'candidate_timeout'],
+  });
+}
+
+function syntheticReport(input: {
+  scenarioId: string;
+  correctness: number;
+  latencyMs: number;
+  failed?: boolean;
+  timedOut?: boolean;
+}): EvaluationReport {
+  const failed = input.failed === true;
+  const sourceState = { clean: true, statusDigest: 'sha256:clean' };
+  return {
+    schemaVersion: 'forge-evaluation-report/v1',
+    authority: CANDIDATE_INTERNAL_DIAGNOSTIC_AUTHORITY,
+    generatedAt: '2026-09-05T00:00:00.000Z',
+    scenario: {
+      id: input.scenarioId,
+      title: input.scenarioId,
+      userIntent: 'statistics fixture',
+      groundTruth: { intendedBehavior: [], affectedDomains: [], behavioralInvariants: [], regressionRisks: [] },
+    },
+    trace: {
+      schemaVersion: 'forge-evaluation-trace/v1',
+      scenarioId: input.scenarioId,
+      taskInput: 'statistics fixture',
+      snapshot: { commit: 'fixture', sourceStateBefore: sourceState, sourceStateAfter: sourceState },
+      sandbox: { strategy: 'git-clone-no-local', retained: false },
+      contextRetrieval: [],
+      inspectedEvidence: [],
+      changedFiles: [],
+      commands: [{
+        kind: 'forge',
+        command: 'fixture',
+        arguments: [],
+        cwd: '/tmp',
+        exitCode: failed ? 1 : 0,
+        startedAt: '2026-09-05T00:00:00.000Z',
+        durationMs: input.latencyMs,
+        stdout: '',
+        stderr: failed ? 'candidate_failure' : '',
+        timedOut: input.timedOut === true,
+      }],
+      checks: [],
+      toolInteractions: [],
+      finalResult: { status: failed ? 'failed' : 'passed', summary: failed ? 'failed' : 'passed' },
+      validation: [],
+    },
+    metrics: {
+      taskSuccessRate: input.correctness,
+      impactCoverage: null,
+      behavioralInvariantSuccess: null,
+      regressionReintroductionRate: null,
+      changePrecision: null,
+      executionLatencyMs: input.latencyMs,
+      toolInteractionCount: 0,
+    },
+    diagnosis: [],
+  };
+}
+
+function syntheticRun(
+  frozen: FrozenEvaluationProtocol,
+  scenarioId: 'scenario-a' | 'scenario-b',
+  pairs: ReadonlyArray<{
+    baselineCorrectness: number;
+    candidateCorrectness: number;
+    baselineLatencyMs: number;
+    candidateLatencyMs: number;
+    candidateFailed?: boolean;
+    candidateTimedOut?: boolean;
+  }>,
+): PairedCandidateRun {
+  const baseline = freezeCandidateIdentity({ candidateId: 'baseline', versionLabel: 'baseline', artifactDigest: 'sha256:baseline', executionSurface: 'public_mcp' });
+  const candidate = freezeCandidateIdentity({ candidateId: 'candidate', versionLabel: 'candidate', artifactDigest: 'sha256:candidate', executionSurface: 'public_mcp' });
+  const environment = freezeEnvironmentIdentity({ os: 'test', arch: 'test', hardware: 'test', runtime: 'test', toolchain: { node: 'test' } });
+  const trials = pairs.flatMap((pair, repetition) => ([
+    {
+      sequence: repetition * 2,
+      repetition,
+      cacheMode: 'cold' as const,
+      candidateIndex: 0 as const,
+      runIdentity: evaluationRunIdentity({ protocol: frozen, candidate: baseline, environment }),
+      isolation: {} as never,
+      warmupCommands: [],
+      report: syntheticReport({ scenarioId, correctness: pair.baselineCorrectness, latencyMs: pair.baselineLatencyMs }),
+    },
+    {
+      sequence: (repetition * 2) + 1,
+      repetition,
+      cacheMode: 'cold' as const,
+      candidateIndex: 1 as const,
+      runIdentity: evaluationRunIdentity({ protocol: frozen, candidate, environment }),
+      isolation: {} as never,
+      warmupCommands: [],
+      report: syntheticReport({
+        scenarioId,
+        correctness: pair.candidateCorrectness,
+        latencyMs: pair.candidateLatencyMs,
+        failed: pair.candidateFailed,
+        timedOut: pair.candidateTimedOut,
+      }),
+    },
+  ]));
+  return {
+    schemaVersion: 'forge-paired-candidate-run/v1',
+    authority: CROSS_VERSION_EVALUATION_AUTHORITY,
+    protocolDigest: frozen.protocolDigest,
+    environmentFingerprint: environment.fingerprint,
+    scenarioId,
+    candidateIds: ['baseline', 'candidate'],
+    orderPolicy: frozen.trialPolicy.orderPolicy,
+    trials,
+  };
+}
+
 describe('candidate-neutral paired evaluation runner', () => {
   test('loads the shared Golden Corpus only when provenance, behavior coverage, and independent oracles are complete', () => {
     const corpus = loadGoldenCorpus();
@@ -217,6 +404,46 @@ describe('candidate-neutral paired evaluation runner', () => {
       restart_recovery: 4,
       multi_repo_concurrency: 4,
     });
+  });
+
+  test('uses scenario as the 95% confidence block and does not let one noisy raw performance pair mark the tier regressed', () => {
+    const frozen = statisticsProtocol();
+    const runs = [
+      syntheticRun(frozen, 'scenario-a', Array.from({ length: 3 }, () => ({
+        baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 100, candidateLatencyMs: 200,
+      }))),
+      syntheticRun(frozen, 'scenario-b', Array.from({ length: 3 }, () => ({
+        baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 200, candidateLatencyMs: 100,
+      }))),
+    ];
+    const statistics = buildCrossVersionPairedStatistics({ protocol: frozen, runs });
+    const latency = statistics.tiers.performance.metrics.find((metric) => metric.metric.id === 'latency_ms')!;
+    expect(latency.samples).toHaveLength(6);
+    expect(latency.directionalRegressionCount).toBe(3);
+    expect(latency.directionalDelta.confidence95).toMatchObject({ sampleCount: 2, unit: 'scenario' });
+    expect(latency.aggregateRegression).toBe(false);
+    expect(statistics.tiers.performance.status).toBe('passed');
+  });
+
+  test('keeps Tier1 correctness raw-pair blocking even when performance otherwise improves', () => {
+    const frozen = statisticsProtocol();
+    const runs = [
+      syntheticRun(frozen, 'scenario-a', [
+        { baselineCorrectness: 1, candidateCorrectness: 0, baselineLatencyMs: 200, candidateLatencyMs: 50 },
+        { baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 200, candidateLatencyMs: 50 },
+        { baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 200, candidateLatencyMs: 50 },
+      ]),
+      syntheticRun(frozen, 'scenario-b', Array.from({ length: 3 }, () => ({
+        baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 200, candidateLatencyMs: 50,
+      }))),
+    ];
+    const statistics = buildCrossVersionPairedStatistics({ protocol: frozen, runs });
+    const correctness = statistics.tiers.correctness_reliability.metrics.find((metric) => metric.metric.id === 'task_correctness')!;
+    expect(correctness.directionalRegressionCount).toBe(1);
+    expect(correctness.blockingRegression).toBe(true);
+    expect(statistics.tiers.performance.status).toBe('passed');
+    expect(statistics.verdict.status).toBe('blocked_by_correctness_reliability');
+    expect(statistics.verdict.blockingMetricIds).toEqual(['task_correctness']);
   });
 
   test('isolates repository, Controller Home, state, cache, runtime, logs, traces and artifacts for every cold/warm trial', async () => {
@@ -359,6 +586,95 @@ describe('candidate-neutral paired evaluation runner', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  test('records a candidate MCP startup crash as a measured failed trial and blocks Tier1 instead of dropping the pair', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-paired-mcp-crash-'));
+    try {
+      const source = join(root, 'source');
+      execFileSync('git', ['init', '--initial-branch=main', source]);
+      writeFileSync(join(source, 'README.md'), 'fixture\n');
+      git(source, ['add', 'README.md']);
+      git(source, ['-c', 'user.email=evaluation@example.test', '-c', 'user.name=Evaluation', 'commit', '-m', 'fixture']);
+      const commit = git(source, ['rev-parse', 'HEAD']);
+      const scenario = parseScenario({
+        schemaVersion: 'forge-evaluation-scenario/v1',
+        id: 'paired-mcp-runner-fixture',
+        title: 'Paired MCP crash fixture',
+        userIntent: 'Treat a candidate startup crash as measured reliability evidence.',
+        snapshot: { source, commit },
+        groundTruth: {
+          intendedBehavior: ['The public MCP candidate starts and serves the requested call.'],
+          affectedDomains: ['evaluation'],
+          behavioralInvariants: ['A candidate crash remains part of the pair.'],
+          regressionRisks: ['A startup crash disappears as a missing sample.'],
+        },
+        execution: {
+          interface: 'forge_mcp', profile: 'controller', toolset: 'advanced',
+          calls: [
+            { id: 'state-set', tool: 'state_set', arguments: { value: 'ready' } },
+            { id: 'state-get', tool: 'state_get', arguments: {} },
+          ],
+        },
+        validators: [{ id: 'state-get-ran', kind: 'behavior', type: 'execution_output', stepId: 'state-get', expectedExitCode: 0, includes: ['ready'] }],
+      });
+      const frozen = freezeEvaluationProtocol({
+        evaluator: { schemaVersion: 'forge-evaluator-identity/v1', evaluatorVersion: 'mcp-crash-statistics/v1', implementationDigest: 'sha256:mcp-crash-statistics' },
+        corpus: freezeEvaluationCorpus({ 'paired-mcp-runner-fixture': evaluationScenarioDigest(scenario) }),
+        trialPolicy: { repetitions: 1, warmupTrials: 0, cacheModes: ['cold'], orderPolicy: 'balanced_alternating', timeoutMs: 30_000 },
+        metrics: [
+          { id: 'task_correctness', tier: 'correctness_reliability', direction: 'higher_is_better', unit: 'ratio', gate: 'p0_p1_blocking' },
+          { id: 'latency_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking' },
+        ],
+        failureTaxonomy: ['candidate_failure', 'candidate_timeout'],
+      });
+      const candidates = [fixtureMcpCandidate(root, 'mcp-good'), fixtureCrashingMcpCandidate(root, 'mcp-crash')] as const;
+      const environment = freezeEnvironmentIdentity({ os: process.platform, arch: process.arch, hardware: 'fixture', runtime: process.version, toolchain: { node: process.version } });
+      const paired = await runPairedCandidateEvaluation({ protocol: frozen, scenario, candidates, environment });
+      expect(paired.trials).toHaveLength(2);
+      const failed = paired.trials.find((trial) => trial.candidateIndex === 1)!;
+      expect(failed.failure?.code).toBe('candidate_failure');
+      expect(failed.report.trace.finalResult.status).toBe('failed');
+      expect(failed.report.trace.validation.find((result) => result.id === 'source-repository-unchanged')?.status).toBe('passed');
+      expect(git(source, ['status', '--porcelain'])).toBe('');
+      const statistics = buildCrossVersionPairedStatistics({ protocol: frozen, runs: [paired] });
+      const correctness = statistics.tiers.correctness_reliability.metrics.find((metric) => metric.metric.id === 'task_correctness')!;
+      expect(correctness.samples).toHaveLength(1);
+      expect(correctness.candidate.failureProportion).toBe(1);
+      expect(correctness.newlyIntroducedFailureCount).toBe(1);
+      expect(statistics.verdict.status).toBe('blocked_by_correctness_reliability');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('records warmup timeout as a measured candidate timeout without losing pair membership', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-paired-warmup-timeout-'));
+    try {
+      const source = join(root, 'source');
+      execFileSync('git', ['init', '--initial-branch=main', source]);
+      writeFileSync(join(source, 'README.md'), 'fixture\n');
+      git(source, ['add', 'README.md']);
+      git(source, ['-c', 'user.email=evaluation@example.test', '-c', 'user.name=Evaluation', 'commit', '-m', 'fixture']);
+      const commit = git(source, ['rev-parse', 'HEAD']);
+      const scenario = fixtureScenario(source, commit);
+      const candidates = [fixtureCandidate(root, 'candidate-a'), fixtureWarmupTimeoutCandidate(root, 'candidate-timeout')] as const;
+      const environment = freezeEnvironmentIdentity({ os: process.platform, arch: process.arch, hardware: 'fixture', runtime: process.version, toolchain: { node: process.version } });
+      const paired = await runPairedCandidateEvaluation({
+        protocol: protocol(evaluationScenarioDigest(scenario)),
+        scenario,
+        candidates,
+        environment,
+      });
+      expect(paired.trials).toHaveLength(8);
+      const timedOut = paired.trials.filter((trial) => trial.candidateIndex === 1 && trial.cacheMode === 'warm');
+      expect(timedOut).toHaveLength(2);
+      expect(timedOut.every((trial) => trial.failure?.code === 'candidate_timeout')).toBe(true);
+      expect(timedOut.every((trial) => trial.report.trace.finalResult.status === 'failed')).toBe(true);
+      expect(timedOut.every((trial) => trial.report.trace.commands.some((command) => command.timedOut))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('runs paired public MCP candidates with durable restart state, evaluator-owned repo fixtures, and real parallel groups', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-paired-mcp-runner-'));
     try {
