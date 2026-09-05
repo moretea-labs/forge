@@ -15,7 +15,7 @@ import {
 } from './semantic-admission';
 import {
   listControlPlaneRecords,
-  listControlPlaneRecordsWithinTransaction,
+  listAllControlPlaneRecordsWithinTransaction,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -377,8 +377,8 @@ function writePlanSupersessionWithWorkRetirement(
   withControlPlaneTransaction(options.controllerHome, (database) => {
     let successorNext = successor;
     const workWrites: Array<{ value: WorkContract; revision: number; action: string }> = [];
-    const workRecords = listControlPlaneRecordsWithinTransaction<WorkContract>(database, {
-      namespace: 'work_contract', scope: options.repoId, limit: 5_000,
+    const workRecords = listAllControlPlaneRecordsWithinTransaction<WorkContract>(database, {
+      namespace: 'work_contract', scope: options.repoId,
     }).filter((record) => record.value.planId === predecessor.planId);
     for (const current of workRecords) {
       if (isTerminalWorkContractStatus(current.value.status)) continue;
