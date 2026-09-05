@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -405,6 +405,42 @@ describe('Work execution concurrency', () => {
     });
     expect(acquisition.acquired).toBe(false);
     expect(acquisition.blockers).toHaveLength(5_001);
+  });
+
+  test('physically reaps expired resource leases before they can block a new acquisition', () => {
+    const home = tempHome(), repoId = 'repo-expired-lease-reap';
+    const root = join(repositoryControllerRoot(home, repoId), 'leases', 'active');
+    mkdirSync(root, { recursive: true });
+    const resourceKey = `workspace:${repoId}`;
+    const leasePath = join(root, 'LEASE-expired.json');
+    const expiredAt = new Date(Date.now() - 60_000).toISOString();
+    writeFileSync(leasePath, JSON.stringify({
+      schemaVersion: 1,
+      leaseId: 'LEASE-expired',
+      repoId,
+      resourceKey,
+      mode: 'exclusive',
+      ownerJobId: 'process:stale',
+      fencingToken: 1,
+      acquiredAt: expiredAt,
+      heartbeatAt: expiredAt,
+      expiresAt: expiredAt,
+      visibility: 'ephemeral',
+    }));
+
+    expect(listActiveLeases(home, repoId)).toEqual([]);
+    expect(existsSync(leasePath)).toBe(false);
+    const acquisition = acquireExecutionLeases(home, repoId, 'process:replacement', [
+      { resourceKey, mode: 'exclusive', repoId },
+    ], {
+      ttlMs: 30_000,
+      visibility: 'ephemeral',
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    });
+    expect(acquisition.acquired).toBe(true);
+    expect(acquisition.blockers).toEqual([]);
   });
 
   test('keeps the Lease store authoritative while Scheduler reconciliation clears a resolved Work wait projection', () => {
