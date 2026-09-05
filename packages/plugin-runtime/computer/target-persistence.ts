@@ -2,6 +2,8 @@ export interface ComputerTargetPersistenceRecord<T> {
   key: string;
   revision: number;
   value: T;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ComputerTargetPersistenceWrite<T> {
