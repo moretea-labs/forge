@@ -33,6 +33,8 @@ export interface RuntimeReleaseManifest {
   releaseId: string;
   artifactIdentity: string;
   entrypoint: 'forge-runtime';
+  /** Explicit execution contract for compiled immutable releases. Absent means legacy/package launcher semantics. */
+  executionMode?: 'standalone-binary';
   diagnosticEntrypoint?: 'forge-cli';
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';

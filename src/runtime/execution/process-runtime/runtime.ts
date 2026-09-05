@@ -777,16 +777,14 @@ export function resolveProcessRunnerRuntime(
   return resolveBunExecutable(execPath, env);
 }
 
-function runnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
+export function resolveProcessRunnerInvocation(entry: string, descriptorPath: string): { command: string; args: string[] } {
   const scriptEntry = /\.(?:[cm]?js|tsx?)$/i.test(entry);
   let standalone = !scriptEntry && process.env.FORGE_RUNTIME_EXECUTION === 'standalone-binary';
-  if (!scriptEntry && !standalone) {
-    try {
-      const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as { executionMode?: unknown };
-      standalone = manifest.executionMode === 'standalone-binary';
-    } catch {
-      /* source and legacy script releases have no execution manifest */
-    }
+  try {
+    const manifest = JSON.parse(readFileSync(join(dirname(entry), 'manifest.json'), 'utf8')) as { executionMode?: unknown };
+    if (manifest.executionMode === 'standalone-binary') standalone = true;
+  } catch {
+    /* source and legacy script releases have no execution manifest */
   }
   const args = ['--descriptor', descriptorPath];
   return standalone

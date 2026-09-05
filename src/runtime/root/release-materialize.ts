@@ -598,6 +598,7 @@ export function stageRuntimeRelease(input: {
       releaseId,
       artifactIdentity,
       entrypoint: 'forge-runtime',
+      executionMode: 'standalone-binary',
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticEntrypoint: 'forge-cli',
       diagnosticArtifactIdentity,

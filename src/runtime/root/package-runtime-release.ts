@@ -217,6 +217,7 @@ function assertImmutablePackageRuntimeRelease(input: {
     && manifest.releaseId === expected.releaseId
     && manifest.artifactIdentity === expected.artifactIdentity
     && manifest.entrypoint === expected.entrypoint
+    && manifest.executionMode === expected.executionMode
     && manifest.processRunnerEntrypoint === expected.processRunnerEntrypoint
     && manifest.processRunnerArtifactIdentity === expected.processRunnerArtifactIdentity
     && manifest.checkRunnerEntrypoint === expected.checkRunnerEntrypoint

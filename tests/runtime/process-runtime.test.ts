@@ -31,7 +31,7 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
-import { resolveProcessRunnerEntryPath } from '../../src/runtime/execution/process-runtime/runtime';
+import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -207,6 +207,24 @@ describe('Unified Process Runtime', () => {
       FORGE_PROCESS_RUNNER_ENTRY: configuredRunner,
       FORGE_RELEASE_PATH: releaseRoot,
     }, root)).toBe(configuredRunner);
+  });
+
+  test('honors standalone-binary release authority for a .js-named compiled Process Runner', () => {
+    const root = mkdtempSync(join(tmpdir(), 'process-runner-invocation-mode-'));
+    roots.push(root);
+    const runner = join(root, 'process-runner.js');
+    writeFileSync(runner, 'native-runner-placeholder');
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify({ executionMode: 'standalone-binary' }));
+
+    expect(resolveProcessRunnerInvocation(runner, '/tmp/process-descriptor.json')).toEqual({
+      command: runner,
+      args: ['--descriptor', '/tmp/process-descriptor.json'],
+    });
+
+    rmSync(join(root, 'manifest.json'));
+    const legacy = resolveProcessRunnerInvocation(runner, '/tmp/process-descriptor.json');
+    expect(legacy.command).not.toBe(runner);
+    expect(legacy.args).toEqual([runner, '--descriptor', '/tmp/process-descriptor.json']);
   });
 
   test('repository command facade blocks inline plugin execution bypass before spawning or leasing', async () => {

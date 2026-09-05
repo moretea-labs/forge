@@ -104,6 +104,12 @@ export function loadRuntimeReleaseManifest(
   if (entrypoint !== 'forge-runtime') {
     throw new Error(`RELEASE_MANIFEST_INVALID: entrypoint must be forge-runtime, got ${entrypoint}`);
   }
+  const executionMode = value.executionMode === undefined
+    ? undefined
+    : requireString(value.executionMode, 'executionMode');
+  if (executionMode !== undefined && executionMode !== 'standalone-binary') {
+    throw new Error(`RELEASE_MANIFEST_INVALID: executionMode must be standalone-binary, got ${executionMode}`);
+  }
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
   }
@@ -250,6 +256,7 @@ export function loadRuntimeReleaseManifest(
     releaseId: requireString(value.releaseId, 'releaseId'),
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
+    ...(executionMode ? { executionMode: 'standalone-binary' as const } : {}),
     ...(diagnostic ?? {}),
     ...(browserNodeBridge ?? {}),
     ...(browserHandoff ?? {}),

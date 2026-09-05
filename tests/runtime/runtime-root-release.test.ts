@@ -403,6 +403,7 @@ describe('runtime release materialization', () => {
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBeUndefined();
     expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
+    expect(manifest.executionMode).toBe('standalone-binary');
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
