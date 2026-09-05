@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -9,6 +10,21 @@ import {
   type ScenarioValidator,
   type ValidatorKind,
 } from './types.ts';
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, nested]) => nested !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function evaluationScenarioDigest(scenario: EvaluationScenario): string {
+  return `sha256:${createHash('sha256').update(canonicalJson(scenario)).digest('hex')}`;
+}
 
 function fail(path: string, message: string): never {
   throw new Error(`Invalid evaluation scenario ${path}: ${message}`);

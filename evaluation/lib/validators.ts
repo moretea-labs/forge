@@ -14,6 +14,7 @@ export function runValidators(input: {
   validators: ScenarioValidator[];
   cwd: string;
   changedFiles: string[];
+  env?: NodeJS.ProcessEnv;
 }): { results: ValidationResult[]; commands: CommandRecord[] } {
   const results: ValidationResult[] = [];
   const commands: CommandRecord[] = [];
@@ -25,6 +26,7 @@ export function runValidators(input: {
         arguments: validator.arguments ?? [],
         cwd: input.cwd,
         timeoutMs: validator.timeoutMs ?? 60_000,
+        env: input.env,
       });
       commands.push(command);
       const expected = validator.expectedExitCode ?? 0;

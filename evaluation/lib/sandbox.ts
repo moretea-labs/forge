@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { captureCommand, commandSucceeded } from './trace.ts';
@@ -11,6 +11,85 @@ export interface IsolatedSnapshot {
   source: string;
   sourceStateBefore: SourceState;
   setupCommands: CommandRecord[];
+  home: string;
+  controllerHome: string;
+  stateHome: string;
+  cacheHome: string;
+  configHome: string;
+  runtimeRoot: string;
+  logRoot: string;
+  traceRoot: string;
+  tempRoot: string;
+  artifactRoot: string;
+}
+
+export interface EvaluationIsolationIdentity {
+  root: string;
+  repository: string;
+  home: string;
+  controllerHome: string;
+  stateHome: string;
+  cacheHome: string;
+  configHome: string;
+  runtimeRoot: string;
+  logRoot: string;
+  traceRoot: string;
+  tempRoot: string;
+  artifactRoot: string;
+}
+
+function createIsolationDirectories(root: string): Omit<EvaluationIsolationIdentity, 'root' | 'repository'> {
+  const paths = {
+    home: join(root, 'home'),
+    controllerHome: join(root, 'controller-home'),
+    stateHome: join(root, 'state'),
+    cacheHome: join(root, 'cache'),
+    configHome: join(root, 'config'),
+    runtimeRoot: join(root, 'runtime'),
+    logRoot: join(root, 'logs'),
+    traceRoot: join(root, 'traces'),
+    tempRoot: join(root, 'tmp'),
+    artifactRoot: join(root, 'artifacts'),
+  };
+  for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
+  return paths;
+}
+
+export function evaluationIsolationIdentity(snapshot: IsolatedSnapshot): EvaluationIsolationIdentity {
+  return {
+    root: snapshot.root,
+    repository: snapshot.repository,
+    home: snapshot.home,
+    controllerHome: snapshot.controllerHome,
+    stateHome: snapshot.stateHome,
+    cacheHome: snapshot.cacheHome,
+    configHome: snapshot.configHome,
+    runtimeRoot: snapshot.runtimeRoot,
+    logRoot: snapshot.logRoot,
+    traceRoot: snapshot.traceRoot,
+    tempRoot: snapshot.tempRoot,
+    artifactRoot: snapshot.artifactRoot,
+  };
+}
+
+export function isolatedEvaluationEnvironment(snapshot: IsolatedSnapshot, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    HOME: snapshot.home,
+    FORGE_CONTROLLER_HOME: snapshot.controllerHome,
+    XDG_STATE_HOME: snapshot.stateHome,
+    XDG_CACHE_HOME: snapshot.cacheHome,
+    XDG_CONFIG_HOME: snapshot.configHome,
+    TMPDIR: snapshot.tempRoot,
+    TMP: snapshot.tempRoot,
+    TEMP: snapshot.tempRoot,
+    FORGE_EVALUATION: '1',
+    FORGE_EVALUATION_SANDBOX: snapshot.repository,
+    FORGE_EVALUATION_RUNTIME_ROOT: snapshot.runtimeRoot,
+    FORGE_EVALUATION_LOG_ROOT: snapshot.logRoot,
+    FORGE_EVALUATION_TRACE_ROOT: snapshot.traceRoot,
+    FORGE_EVALUATION_ARTIFACT_ROOT: snapshot.artifactRoot,
+  };
 }
 
 function gitRecord(cwd: string, arguments_: string[]): CommandRecord {
@@ -75,6 +154,7 @@ export function createIsolatedSnapshot(source: string, commit: string): Isolated
 
   const root = mkdtempSync(join(tmpdir(), 'forge-evaluation-'));
   const repository = join(root, 'repository');
+  const isolation = createIsolationDirectories(root);
   try {
     const clone = gitRecord(root, ['clone', '--no-local', '--no-checkout', source, repository]);
     commands.push(clone);
@@ -85,7 +165,7 @@ export function createIsolatedSnapshot(source: string, commit: string): Isolated
     const removeOrigin = gitRecord(repository, ['remote', 'remove', 'origin']);
     commands.push(removeOrigin);
     requireSuccessful(removeOrigin, 'Sandbox remote removal');
-    return { root, repository, source, sourceStateBefore, setupCommands: commands };
+    return { root, repository, source, sourceStateBefore, setupCommands: commands, ...isolation };
   } catch (error) {
     cleanupIsolatedSnapshot(root);
     throw error;

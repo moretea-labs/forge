@@ -4,6 +4,21 @@ This directory is a reproducible engineering-scenario harness for comparing
 future Forge versions. It is intentionally separate from `evals/`, which
 benchmarks prompt/skill behavior rather than repository-change scenarios.
 
+## Hermetic paired candidate runner
+
+`lib/candidate-runner.ts` executes both candidates through the same external
+`public_cli` adapter. Candidate artifacts are content-addressed as a complete file or directory tree, verified, and required to contain the artifact entry explicitly bound to the public command. Each trial executes a private materialized copy, so transitive candidate code and candidate-side mutation cannot drift behind a stable identity; the evaluator never imports candidate `src/runtime`,
+`src/cli`, or `packages/kernel` modules.
+
+Every measured trial gets a fresh no-local Git clone plus independent HOME,
+`FORGE_CONTROLLER_HOME`, XDG state/config/cache, temp, runtime-output, log,
+trace, and artifact roots. Cold trials start with no adapter warmup. Warm trials
+may run only the adapter's explicitly declared public read-only warmup command
+inside that same otherwise-fresh trial root. Candidate order is either balanced
+alternating or deterministically seeded per pair. The paired runner also recomputes the canonical scenario digest and rejects content
+drift behind a frozen corpus ID. The paired bundle binds the frozen protocol digest,
+both immutable candidate identities, and the environment fingerprint; its per-trial legacy reports remain diagnostic-only.
+
 ## Authority boundary
 
 `evaluation/` is the candidate-neutral, cross-version evaluation authority.
