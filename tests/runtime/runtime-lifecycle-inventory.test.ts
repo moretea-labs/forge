@@ -40,7 +40,6 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
       'browser_disposable_artifact',
       'computer_interaction_target',
       'repository_controller_home_namespace',
-      'sqlite_control_plane',
     ]));
   });
 

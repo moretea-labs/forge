@@ -59,6 +59,37 @@ export interface ControlPlaneDatabaseInspection {
   orphanRecordCount: number;
 }
 
+export const CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION = 'control-plane-sqlite-maintenance-v1' as const;
+export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_RATIO = 0.20;
+
+export interface ControlPlaneDatabaseMaintenanceOptions {
+  minimumReclaimableBytes?: number;
+  minimumReclaimableRatio?: number;
+  allowVacuum?: boolean;
+}
+
+export interface ControlPlaneDatabaseMaintenanceReport {
+  policyVersion: typeof CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION;
+  path: string;
+  checkpointMode: 'passive';
+  checkpointed: boolean;
+  pageSize: number;
+  pageCountBefore: number;
+  freePageCountBefore: number;
+  reclaimableBytesBefore: number;
+  reclaimableRatioBefore: number;
+  vacuumEligible: boolean;
+  vacuumAttempted: boolean;
+  vacuumed: boolean;
+  pageCountAfter: number;
+  freePageCountAfter: number;
+  reclaimableBytesAfter: number;
+  reclaimableRatioAfter: number;
+  reclaimedBytes: number;
+  skippedReason?: 'database_missing' | 'below_threshold' | 'vacuum_disabled' | 'database_busy';
+}
+
 export const CONTROL_PLANE_SCHEMA_VERSION = 1;
 const DATABASE_FILE = 'control-plane.sqlite';
 const require = createRequire(import.meta.url);
@@ -587,6 +618,147 @@ export function inspectControlPlaneDatabaseFile(path: string): ControlPlaneDatab
   const database = openRawDatabase(path);
   try {
     return inspectOpenDatabase(database, path);
+  } finally {
+    database.close();
+  }
+}
+
+interface ControlPlaneDatabasePageSnapshot {
+  pageSize: number;
+  pageCount: number;
+  freePageCount: number;
+  reclaimableBytes: number;
+  reclaimableRatio: number;
+}
+
+function integerPragma(database: SqliteDatabase, sql: string, label: string): number {
+  const value = Number(scalar(database.prepare(sql).get()));
+  if (!Number.isFinite(value) || value < 0) throw new Error(`CONTROL_PLANE_SQLITE_PRAGMA_INVALID: ${label}`);
+  return Math.floor(value);
+}
+
+function controlPlaneDatabasePageSnapshot(database: SqliteDatabase): ControlPlaneDatabasePageSnapshot {
+  const pageSize = integerPragma(database, 'PRAGMA page_size', 'page_size');
+  const pageCount = integerPragma(database, 'PRAGMA page_count', 'page_count');
+  const freePageCount = integerPragma(database, 'PRAGMA freelist_count', 'freelist_count');
+  const reclaimableBytes = freePageCount * pageSize;
+  return {
+    pageSize,
+    pageCount,
+    freePageCount,
+    reclaimableBytes,
+    reclaimableRatio: pageCount > 0 ? freePageCount / pageCount : 0,
+  };
+}
+
+/**
+ * Physical SQLite maintenance only. Domain lifecycles own row deletion; this
+ * boundary never decides semantic terminality or removes canonical records.
+ * PASSIVE checkpointing is non-blocking, and VACUUM is attempted only when
+ * already-reclaimable free pages exceed both configured thresholds. A live
+ * writer causes a fail-closed busy skip instead of lock stealing or corruption
+ * recovery.
+ */
+export function maintainControlPlaneDatabase(
+  controllerHome: string,
+  options: ControlPlaneDatabaseMaintenanceOptions = {},
+): ControlPlaneDatabaseMaintenanceReport {
+  const path = controlPlaneDatabasePath(controllerHome);
+  const report: ControlPlaneDatabaseMaintenanceReport = {
+    policyVersion: CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION,
+    path,
+    checkpointMode: 'passive',
+    checkpointed: false,
+    pageSize: 0,
+    pageCountBefore: 0,
+    freePageCountBefore: 0,
+    reclaimableBytesBefore: 0,
+    reclaimableRatioBefore: 0,
+    vacuumEligible: false,
+    vacuumAttempted: false,
+    vacuumed: false,
+    pageCountAfter: 0,
+    freePageCountAfter: 0,
+    reclaimableBytesAfter: 0,
+    reclaimableRatioAfter: 0,
+    reclaimedBytes: 0,
+  };
+  if (!existsSync(path)) {
+    report.skippedReason = 'database_missing';
+    return report;
+  }
+
+  let database: SqliteDatabase;
+  try {
+    database = openRawDatabase(path);
+  } catch (error) {
+    if ((error instanceof Error ? error.message : String(error)).startsWith('CONTROL_PLANE_SQLITE_BUSY:')) {
+      report.skippedReason = 'database_busy';
+      return report;
+    }
+    throw error;
+  }
+  try {
+    database.exec('PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;');
+    assertSupportedSchema(database, path, true);
+    try {
+      database.exec('PRAGMA wal_checkpoint(PASSIVE);');
+      report.checkpointed = true;
+    } catch (error) {
+      const busy = sqliteBusyError(path, error);
+      if (busy) {
+        report.skippedReason = 'database_busy';
+        return report;
+      }
+      throw error;
+    }
+
+    const before = controlPlaneDatabasePageSnapshot(database);
+    report.pageSize = before.pageSize;
+    report.pageCountBefore = before.pageCount;
+    report.freePageCountBefore = before.freePageCount;
+    report.reclaimableBytesBefore = before.reclaimableBytes;
+    report.reclaimableRatioBefore = before.reclaimableRatio;
+    report.pageCountAfter = before.pageCount;
+    report.freePageCountAfter = before.freePageCount;
+    report.reclaimableBytesAfter = before.reclaimableBytes;
+    report.reclaimableRatioAfter = before.reclaimableRatio;
+
+    const minimumReclaimableBytes = Math.max(0, Math.floor(options.minimumReclaimableBytes ?? DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_BYTES));
+    const configuredRatio = Number(options.minimumReclaimableRatio ?? DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_RATIO);
+    const minimumReclaimableRatio = Number.isFinite(configuredRatio) ? Math.min(1, Math.max(0, configuredRatio)) : DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_RATIO;
+    report.vacuumEligible = before.freePageCount > 0
+      && before.reclaimableBytes >= minimumReclaimableBytes
+      && before.reclaimableRatio >= minimumReclaimableRatio;
+    if (!report.vacuumEligible) {
+      report.skippedReason = 'below_threshold';
+      return report;
+    }
+    if (options.allowVacuum === false) {
+      report.skippedReason = 'vacuum_disabled';
+      return report;
+    }
+
+    report.vacuumAttempted = true;
+    try {
+      database.exec('VACUUM;');
+    } catch (error) {
+      const busy = sqliteBusyError(path, error);
+      if (busy) {
+        report.skippedReason = 'database_busy';
+        return report;
+      }
+      throw error;
+    }
+    assertDatabaseIntegrity(database, path);
+    const after = controlPlaneDatabasePageSnapshot(database);
+    report.vacuumed = true;
+    report.pageCountAfter = after.pageCount;
+    report.freePageCountAfter = after.freePageCount;
+    report.reclaimableBytesAfter = after.reclaimableBytes;
+    report.reclaimableRatioAfter = after.reclaimableRatio;
+    report.reclaimedBytes = Math.max(0, (before.pageCount - after.pageCount) * before.pageSize);
+    return report;
   } finally {
     database.close();
   }
