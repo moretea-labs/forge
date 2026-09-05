@@ -2,9 +2,10 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { spawnSync } from 'child_process';
 import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
+import { runtimeReleaseCanaryEnvironment } from '../../src/runtime/root/release-execution-canary';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
@@ -89,11 +90,12 @@ function executionSurfaceFixture(input: {
   releaseId: string;
   processExit?: number;
   checkExit?: number;
+  processRunnerSource?: string;
 }): string {
   const releaseRoot = join(input.controllerHome, 'runtime', 'releases', input.releaseId);
   mkdirSync(releaseRoot, { recursive: true });
   const runtime = '#!/bin/sh\nexit 0\n';
-  const processRunner = `#!/bin/sh\nexit ${input.processExit ?? 0}\n`;
+  const processRunner = input.processRunnerSource ?? `#!/bin/sh\nexit ${input.processExit ?? 0}\n`;
   const checkRunner = `#!/bin/sh\nexit ${input.checkExit ?? 0}\n`;
   for (const [name, content] of [
     ['forge-runtime', runtime],
@@ -143,6 +145,30 @@ describe('immutable Runtime Process Runtime execution surface', () => {
     const manifestPath = executionSurfaceFixture({ controllerHome, releaseId: `canary-fail-${name}`, processExit, checkExit });
     expect(() => assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome))
       .toThrow(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${name}`);
+  });
+
+
+  test('rejects a release runner that only resolves through a developer PATH interpreter', () => {
+    if (process.platform === 'win32') return;
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-execution-surface-path-'));
+    const developerBin = mkdtempSync(join(tmpdir(), 'forge-runtime-developer-bin-'));
+    roots.push(controllerHome, developerBin);
+    const interpreterName = 'forge-release-developer-only';
+    const interpreterPath = join(developerBin, interpreterName);
+    writeFileSync(interpreterPath, '#!/bin/sh\nexec /bin/sh "$@"\n');
+    chmodSync(interpreterPath, 0o700);
+    const manifestPath = executionSurfaceFixture({
+      controllerHome,
+      releaseId: 'canary-developer-path',
+      processRunnerSource: `#!/usr/bin/env ${interpreterName}\nexit 0\n`,
+    });
+
+    const runnerPath = join(controllerHome, 'runtime', 'releases', 'canary-developer-path', 'process-runner.js');
+    const developerEnv = { ...process.env, PATH: `${developerBin}${delimiter}${process.env.PATH ?? ''}` };
+    expect(spawnSync(runnerPath, [], { encoding: 'utf8', env: developerEnv }).status).toBe(0);
+    expect(spawnSync(runnerPath, [], { encoding: 'utf8', env: runtimeReleaseCanaryEnvironment(developerEnv) }).status).not.toBe(0);
+    expect(() => assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome))
+      .toThrow('RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: process_runner');
   });
 });
 

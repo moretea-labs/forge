@@ -498,7 +498,12 @@ export function stageRuntimeRelease(input: {
 
     const processRunnerEntrypoint = 'process-runner.js' as const;
     const processRunnerPath = join(staging, processRunnerEntrypoint);
-    const bundleProcessRunner = dependencies.bundleProcessRunner ?? defaultBundleNodeScript;
+    // Process Runner is part of the immutable execution surface and must not
+    // depend on a developer-installed Bun/Node interpreter after staging. Keep
+    // the historical .js manifest entrypoint name for compatibility, but emit
+    // a compiled executable by default. Tests/legacy callers may still inject
+    // bundleProcessRunner through the existing seam.
+    const bundleProcessRunner = dependencies.bundleProcessRunner ?? defaultCompileBinary;
     const processRunnerBundle = bundleProcessRunner({
       sourceRoot,
       outputPath: processRunnerPath,
