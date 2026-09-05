@@ -386,6 +386,39 @@ export function isFailedReviewedDirectEditWorkRecovery(
     && String(handle.finalization.lastError ?? handle.failureReason ?? '').includes('WORK_HANDLE_HEAD_CHANGED');
 }
 
+function isStalePreMutationDirectOwnershipRecovery(
+  work: WorkContract,
+  handle: WorkHandleState | undefined,
+  input: { repoRoot: string; checkoutId: string; targetBranch: string; targetRevision: string },
+): handle is WorkHandleState {
+  const baseRevision = work.baseRevision?.trim();
+  const target = input.targetRevision.trim();
+  const targetBranch = input.targetBranch.trim();
+  if (
+    work.workKind !== 'repository_change'
+    || isTerminalWorkContractStatus(work.status)
+    || !baseRevision
+    || !target
+    || !targetBranch
+    || !handle
+    || handle.managedWorktree
+    || handle.state !== 'prepared'
+    || handle.repositoryId !== work.repoId
+    || handle.checkoutId !== input.checkoutId
+    || resolve(handle.worktreePath) !== resolve(input.repoRoot)
+    || handle.branch !== targetBranch
+    || (handle.deliveryTargetBranch !== undefined && handle.deliveryTargetBranch !== targetBranch)
+  ) return false;
+
+  const handleBase = handle.baseCommit?.trim();
+  const deliveryBase = (handle.deliveryBaseCommit ?? handle.baseCommit)?.trim();
+  const expectedHead = handle.expectedHead?.trim();
+  if (!handleBase || handleBase !== baseRevision || deliveryBase !== baseRevision || expectedHead !== baseRevision) return false;
+
+  const review = latestImplementationReview(work.implementationReviews);
+  return review?.decision === 'approved' && review.sourceRevision.trim() === target;
+}
+
 export function hasReviewedDirectEditReconciliationOwnership(input: {
   work: WorkContract;
   handle?: WorkHandleState;
@@ -423,6 +456,12 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   }
   const currentHandle = readWorkHandle(input.controllerHome, input.repoId, input.workId);
   const failedReviewedRecovery = isFailedReviewedDirectEditWorkRecovery(work, currentHandle);
+  const stalePreMutationOwnershipRecovery = isStalePreMutationDirectOwnershipRecovery(work, currentHandle, {
+    repoRoot: input.repoRoot,
+    checkoutId: input.checkoutId,
+    targetBranch: input.targetBranch,
+    targetRevision: input.targetRevision,
+  });
   const historicalEffectRecovery = !currentHandle
     && !isTerminalWorkContractStatus(work.status)
     && (work.workKind === 'local_effect' || work.workKind === 'remote_effect');
@@ -430,7 +469,7 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     || (work.workKind !== 'repository_change' && !historicalEffectRecovery)) {
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_NOT_ELIGIBLE: ${input.workId}`);
   }
-  if (historicalEffectRecovery && work.checks.length === 0) {
+  if ((historicalEffectRecovery || stalePreMutationOwnershipRecovery) && work.checks.length === 0) {
     throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_REQUIRED');
   }
   if (!work.baseRevision?.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_BASE_REVISION_MISSING');
@@ -445,11 +484,15 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   if (!git(input.repoRoot, ['merge-base', '--is-ancestor', targetRevision, targetBranch]).ok) {
     throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_UNREACHABLE');
   }
-  assertRemoteContainmentIfApplicable(input.repoRoot, targetBranch, targetRevision);
+  // Ordinary historical reconciliation must prove remote containment. The stale
+  // pre-mutation ownership repair is different: it repairs an active Direct Work
+  // already contained by the current local target branch, matching normal local
+  // finalize semantics without turning push state into a second ownership gate.
+  if (!stalePreMutationOwnershipRecovery) assertRemoteContainmentIfApplicable(input.repoRoot, targetBranch, targetRevision);
 
   const comparedPaths = normalizedComparedPaths(input.comparedPaths);
   let comparisonBaseRevision = baseRevision;
-  if (failedReviewedRecovery) {
+  if (failedReviewedRecovery || stalePreMutationOwnershipRecovery) {
     const targetParent = exactCommit(input.repoRoot, `${targetRevision}^`, 'TARGET_PARENT_REVISION');
     if (!git(input.repoRoot, ['merge-base', '--is-ancestor', baseRevision, targetParent]).ok) {
       throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_PARENT_NOT_DESCENDANT');
