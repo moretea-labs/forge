@@ -1082,7 +1082,7 @@ export function cleanupControllerRuntimeState(
     });
     errors.push(...releaseRetention.errors);
   }
-  if (!worktrees || !dependencyCleanup || !temporaryCleanup || !artifactRetention || !codegraphRetention || !releaseRetention) {
+  if (!worktrees || !dependencyCleanup || !temporaryCleanup || !artifactRetention || !codegraphRetention || !repositoryNamespaceRetention || !releaseRetention) {
     throw new Error('RUNTIME_CLEANUP_PHASE_INCOMPLETE');
   }
   const removedTemporaryPaths = temporaryCleanup.removed.sort();
