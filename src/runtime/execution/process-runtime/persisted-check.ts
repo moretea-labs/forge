@@ -4,6 +4,7 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
   controllerCheckExecutionIdentity,
+  controllerCheckLiveExecutionStateFingerprint,
   listControllerChecks,
   snapshotControllerCheck,
 } from '../../../cli/controller/check-runner';
@@ -247,16 +248,26 @@ export async function runPersistedCheckViaProcessRuntime(
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,
     check.effects,
+    check.executionAuthority,
   );
   const checkSnapshot = snapshotControllerCheck(executionRoot, input.checkId);
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
+  const liveCertification = check.executionAuthority === 'live_controller_home';
+  if (liveCertification && input.allowDurableCheckExecution !== true) {
+    cleanupVerificationSnapshot();
+    throw new Error('LIVE_CHECK_CONTROLLER_OWNERSHIP_REQUIRED');
+  }
+  const executionStateFingerprint = liveCertification
+    ? controllerCheckLiveExecutionStateFingerprint(input.controllerHome)
+    : undefined;
   const semanticCheck = controllerCheckExecutionIdentity(
     executionRoot,
     input.checkId,
     timeoutMs,
     checkSnapshot,
+    executionStateFingerprint,
   );
   const processCheckExecution = {
     schemaVersion: 1 as const,
@@ -291,7 +302,8 @@ export async function runPersistedCheckViaProcessRuntime(
     '--result-receipt',
     checkResultReceiptPath,
     ...(verificationSnapshot ? [
-      '--isolated-controller-home', verificationSnapshot.isolatedControllerHome,
+      ...(liveCertification ? ['--live-controller-home'] : ['--isolated-controller-home', verificationSnapshot.isolatedControllerHome]),
+      ...(executionStateFingerprint ? ['--execution-state-fingerprint', executionStateFingerprint] : []),
       '--cleanup-root', verificationSnapshot.root,
     ] : []),
   ];

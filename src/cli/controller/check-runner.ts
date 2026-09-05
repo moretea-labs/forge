@@ -12,6 +12,9 @@ import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
 import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
+import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
+import { observeRuntimeStatus } from '../../runtime/root/status';
+import { readCurrentRecoveryRelease, recoveryRoot } from '../../runtime/standalone-recovery/release';
 import {
   ensureRepositoryCheckStorage,
   resolveRepositoryCheckStorage,
@@ -35,6 +38,7 @@ export interface ControllerCheckEffects {
 export type ControllerCheckCostClass = 'L0' | 'L1' | 'L2' | 'L3' | 'L4';
 export type ControllerCheckRiskFloor = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
 export type ControllerCheckPhase = 'pre_edit' | 'post_edit' | 'pre_finalize' | 'release';
+export type ControllerCheckExecutionAuthority = 'isolated_controller_home' | 'live_controller_home';
 
 export interface ControllerCheckSelection {
   /** Execution cost only; it does not lower severity or automatically run the check. */
@@ -51,6 +55,8 @@ export interface ControllerCheck {
   cwd: string;
   timeoutMs: number;
   source: 'repo-config' | 'package-script';
+  /** Where authority-sensitive child state is resolved. Ordinary checks stay isolated. */
+  executionAuthority?: ControllerCheckExecutionAuthority;
   effects?: ControllerCheckEffects;
   /** Selection/preflight metadata; intentionally excluded from physical execution identity. */
   selection?: ControllerCheckSelection;
@@ -259,6 +265,9 @@ export function controllerCheckSelection(check: Pick<ControllerCheck, 'id' | 'se
 
 function inferredPackageCheckEffects(name: string): ControllerCheckEffects | undefined {
   const normalized = name.trim().toLowerCase();
+  if (normalized === 'check:stable-baseline') {
+    return { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] };
+  }
   const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
   if (staticAnalysis) return { reads: ['.'], cache: 'write' };
   const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(normalized);
@@ -318,6 +327,9 @@ function packageChecks(repoRoot: string): ControllerCheck[] {
       cwd: '.',
       timeoutMs: packageScriptTimeoutMs(name),
       source: 'package-script' as const,
+      executionAuthority: name.trim().toLowerCase() === 'check:stable-baseline'
+        ? 'live_controller_home' as const
+        : 'isolated_controller_home' as const,
       effects: inferredPackageCheckEffects(name),
       selection: inferredCheckSelection(name),
     }];
@@ -457,6 +469,7 @@ function checkDefinitionDigest(check: ControllerCheck): string {
     cwd: check.cwd,
     timeoutMs: check.timeoutMs,
     source: check.source,
+    executionAuthority: check.executionAuthority ?? 'isolated_controller_home',
     effects: check.effects,
   })).digest('hex');
 }
@@ -484,6 +497,7 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
     cwd: normalizeCwd(repoRoot, snapshot.cwd),
     timeoutMs: boundedTimeout(snapshot.timeoutMs),
     source: snapshot.source,
+    executionAuthority: snapshot.executionAuthority ?? 'isolated_controller_home',
     effects: normalizeCheckEffects(repoRoot, snapshot.effects),
     selection: normalizeCheckSelection(snapshot.selection, snapshot.id),
   };
@@ -491,7 +505,55 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
 
 const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-v2';
 
-export function controllerCheckEnvironmentFingerprint(check: ControllerCheck): string {
+/**
+ * Bounded live-state identity for certification checks. This is read-only
+ * evidence, not lifecycle authority. It includes current release authority and
+ * observed Runtime liveness so a dead/replaced Runtime cannot reuse a prior
+ * green Stable Baseline receipt merely because its status file remained.
+ */
+export function controllerCheckLiveExecutionStateFingerprint(controllerHome: string): string {
+  const mutationLockPath = join(recoveryRoot(controllerHome), 'locks', 'operation.lock');
+  try {
+    readFileSync(mutationLockPath);
+    throw new Error('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+  } catch (error) {
+    if (error instanceof Error && error.message === 'LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS') throw error;
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      throw new Error('LIVE_CHECK_RECOVERY_MUTATION_STATE_UNREADABLE');
+    }
+  }
+  const release = readRuntimeReleaseAuthority(controllerHome);
+  const recoveryRelease = readCurrentRecoveryRelease(controllerHome);
+  const runtime = observeRuntimeStatus(controllerHome);
+  return createHash('sha256')
+    .update(JSON.stringify({
+      release: release ? {
+        revision: release.revision,
+        releaseId: release.active.releaseId,
+        artifactIdentity: release.active.artifactIdentity,
+        manifestSha256: release.active.manifestSha256,
+      } : null,
+      recoveryRelease: recoveryRelease ? {
+        releaseRevision: recoveryRelease.releaseRevision,
+        sourceCommit: recoveryRelease.sourceCommit,
+        manifestSha256: recoveryRelease.manifestSha256,
+      } : null,
+      runtime: {
+        running: runtime.running,
+        ready: runtime.ready,
+        stale: runtime.stale,
+        reasonCodes: [...runtime.reasonCodes].sort(),
+        runtimeInstanceId: runtime.snapshot?.runtimeInstanceId ?? null,
+        pid: runtime.snapshot?.pid ?? null,
+        releaseId: runtime.snapshot?.releaseId ?? null,
+        artifactIdentity: runtime.snapshot?.artifactIdentity ?? null,
+      },
+    }))
+    .digest('hex')
+    .slice(0, 24);
+}
+
+export function controllerCheckEnvironmentFingerprint(check: ControllerCheck, executionStateFingerprint?: string): string {
   const env = repositoryChildProcessEnvironment(process.env);
   return createHash('sha256')
     .update(JSON.stringify({
@@ -504,6 +566,8 @@ export function controllerCheckEnvironmentFingerprint(check: ControllerCheck): s
       // for the parent and forge-check-runner for the sidecar; process.execPath
       // therefore differs even though both execute the exact same check/toolchain.
       commandExecutable: check.command[0],
+      executionAuthority: check.executionAuthority ?? 'isolated_controller_home',
+      executionStateFingerprint: executionStateFingerprint?.trim() || '',
       path: env.PATH ?? '',
       home: env.HOME ?? env.USERPROFILE ?? '',
       bunInstall: env.BUN_INSTALL ?? '',
@@ -570,6 +634,7 @@ export function controllerCheckExecutionIdentity(
   id: string,
   requestedTimeoutMs?: number,
   snapshot?: ControllerCheckSnapshot,
+  executionStateFingerprint?: string,
 ): ControllerCheckExecutionIdentity {
   const check = snapshot
     ? validateControllerCheckSnapshot(repoRoot, snapshot)
@@ -580,7 +645,7 @@ export function controllerCheckExecutionIdentity(
     : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
   const revision = currentControllerCheckRevision(repoRoot);
   const definitionDigest = checkDefinitionDigest(check);
-  const environmentFingerprint = controllerCheckEnvironmentFingerprint(check);
+  const environmentFingerprint = controllerCheckEnvironmentFingerprint(check, executionStateFingerprint);
   const checkoutClean = checkWorkspaceClean(repoRoot);
   const crossCheckoutReusable = checkoutClean
     && checkEffectsAllowCrossCheckoutReuse(check)
@@ -688,6 +753,9 @@ export function runControllerCheck(
 ): ControllerCheckResult {
   const check = snapshot ? validateControllerCheckSnapshot(repoRoot, snapshot) : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
+  if (check.executionAuthority === 'live_controller_home') {
+    throw new Error('LIVE_CHECK_DURABLE_EXECUTION_REQUIRED');
+  }
   const storage = ensureRepositoryCheckStorage(repoRoot, storageAuthority);
   prepareControllerCheckDependencies(repoRoot, check);
   const identity = controllerCheckExecutionIdentity(repoRoot, id, requestedTimeoutMs, snapshot);
@@ -826,6 +894,10 @@ export function runControllerCheck(
 
 export interface AsyncControllerCheckOptions {
   snapshot?: ControllerCheckSnapshot;
+  /** Exact live-state identity supplied by the persisted Work verifier for live certification checks. */
+  executionStateFingerprint?: string;
+  /** Explicit installed Controller Home; never inferred from ambient child environment. */
+  liveControllerHome?: string;
   storageAuthority?: RepositoryCheckStorageAuthority;
   /** Explicit isolated authority for Candidate verification child processes. */
   isolatedControllerHome?: string;
@@ -970,11 +1042,14 @@ async function executeControllerCheckAsync(
   storage: ResolvedRepositoryCheckStorage,
   onSpawn?: (pid: number) => void,
   isolatedControllerHome?: string,
+  liveControllerHome?: string,
 ): Promise<ControllerCheckResult> {
   const maxOutputBytes = 256 * 1024;
   const command = [check.command[0], ...check.command.slice(1)];
   const childEnvironment = repositoryChildProcessEnvironment();
-  if (isolatedControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(isolatedControllerHome);
+  if (isolatedControllerHome?.trim() && liveControllerHome?.trim()) throw new Error('CHECK_CONTROLLER_HOME_AUTHORITY_CONFLICT');
+  if (liveControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(liveControllerHome);
+  else if (isolatedControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(isolatedControllerHome);
   const supervised = await runBoundedChild(check.command[0], check.command.slice(1), {
     cwd: resolve(repoRoot, check.cwd),
     env: childEnvironment,
@@ -1039,6 +1114,17 @@ export function runControllerCheckAsync(
     return Promise.reject(error);
   }
   if (!check || check.id !== id) return Promise.reject(new Error(`check not found: ${id}`));
+  if (check.executionAuthority === 'live_controller_home') {
+    if (!options.liveControllerHome?.trim() || !options.executionStateFingerprint?.trim()) {
+      return Promise.reject(new Error('LIVE_CHECK_EXPLICIT_AUTHORITY_REQUIRED'));
+    }
+    const observedLiveState = controllerCheckLiveExecutionStateFingerprint(options.liveControllerHome);
+    if (observedLiveState !== options.executionStateFingerprint.trim()) {
+      return Promise.reject(new Error('LIVE_CHECK_STATE_CHANGED_BEFORE_EXECUTION'));
+    }
+  } else if (options.liveControllerHome?.trim()) {
+    return Promise.reject(new Error('LIVE_CHECK_AUTHORITY_NOT_DECLARED'));
+  }
   let storage: ResolvedRepositoryCheckStorage;
   try {
     storage = ensureRepositoryCheckStorage(repoRoot, options.storageAuthority);
@@ -1046,7 +1132,7 @@ export function runControllerCheckAsync(
   } catch (error) {
     return Promise.reject(error);
   }
-  const identity = controllerCheckExecutionIdentity(repoRoot, id, options.requestedTimeoutMs, options.snapshot);
+  const identity = controllerCheckExecutionIdentity(repoRoot, id, options.requestedTimeoutMs, options.snapshot, options.executionStateFingerprint);
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
@@ -1116,9 +1202,19 @@ export function runControllerCheckAsync(
     const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, storage, (pid) => {
       lease?.setChildPid(pid);
       notifySpawn(pid);
-    }, options.isolatedControllerHome);
+    }, options.isolatedControllerHome, options.liveControllerHome);
     const completedRevision = currentControllerCheckRevision(repoRoot);
-    const stale = completedRevision !== revision;
+    let liveStateStale = false;
+    if (check.executionAuthority === 'live_controller_home') {
+      try {
+        liveStateStale = controllerCheckLiveExecutionStateFingerprint(options.liveControllerHome!)
+          !== options.executionStateFingerprint!.trim();
+      } catch {
+        liveStateStale = true;
+      }
+    }
+    const repositoryStale = completedRevision !== revision;
+    const stale = repositoryStale || liveStateStale;
     const finalized = {
       ...result,
       ...(stale ? {
@@ -1126,7 +1222,12 @@ export function runControllerCheckAsync(
         status: 1,
         stderr: [
           result.stderr,
-          'repository revision changed while the check was running; evidence is stale and the check must be rerun',
+          repositoryStale
+            ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun'
+            : '',
+          liveStateStale
+            ? 'live Runtime/Recovery authority changed while the check was running; evidence is stale and the check must be rerun'
+            : '',
         ].filter(Boolean).join('\n'),
         failureClass: 'infrastructure_failure' as const,
       } : {}),

@@ -4,6 +4,7 @@ import { rmSync } from 'fs';
 import { resolve } from 'path';
 import {
   controllerCheckExecutionIdentity,
+  controllerCheckLiveExecutionStateFingerprint,
   runControllerCheckAsync,
   snapshotControllerCheck,
 } from '../../../cli/controller/check-runner';
@@ -20,6 +21,8 @@ interface ParsedArgs {
   resultReceiptPath?: string;
   cleanupRoot?: string;
   isolatedControllerHome?: string;
+  liveControllerHome: boolean;
+  executionStateFingerprint?: string;
 }
 
 function requiredValue(argv: string[], flag: string): string {
@@ -45,6 +48,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     resultReceiptPath: argv.includes('--result-receipt') ? requiredValue(argv, '--result-receipt') : undefined,
     cleanupRoot: argv.includes('--cleanup-root') ? requiredValue(argv, '--cleanup-root') : undefined,
     isolatedControllerHome: argv.includes('--isolated-controller-home') ? requiredValue(argv, '--isolated-controller-home') : undefined,
+    liveControllerHome: argv.includes('--live-controller-home'),
+    executionStateFingerprint: argv.includes('--execution-state-fingerprint') ? requiredValue(argv, '--execution-state-fingerprint') : undefined,
   };
 }
 
@@ -61,12 +66,21 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
     if (actualFingerprint !== args.expectedCheckFingerprint) {
       throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
     }
-    const identity = controllerCheckExecutionIdentity(root, args.checkId, args.timeoutMs, snapshot);
+    if (args.liveControllerHome) {
+      if (!args.executionStateFingerprint) throw new Error('LIVE_CHECK_EXECUTION_STATE_REQUIRED');
+      const observedLiveState = controllerCheckLiveExecutionStateFingerprint(args.controllerHome);
+      if (observedLiveState !== args.executionStateFingerprint) {
+        throw new Error('LIVE_CHECK_STATE_CHANGED_BEFORE_EXECUTION');
+      }
+    }
+    const identity = controllerCheckExecutionIdentity(root, args.checkId, args.timeoutMs, snapshot, args.executionStateFingerprint);
     const result = await runControllerCheckAsync(root, args.checkId, {
       requestedTimeoutMs: args.timeoutMs,
       snapshot,
       storageAuthority: { controllerHome: args.controllerHome, repoId: args.repoId },
-      isolatedControllerHome: args.isolatedControllerHome,
+      isolatedControllerHome: args.liveControllerHome ? undefined : args.isolatedControllerHome,
+      liveControllerHome: args.liveControllerHome ? args.controllerHome : undefined,
+      executionStateFingerprint: args.executionStateFingerprint,
     });
     if (args.resultReceiptPath) {
       writePersistedCheckResultReceipt(args.resultReceiptPath, {

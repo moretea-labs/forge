@@ -107,6 +107,7 @@ const DURABLE_CHECK_ID = /(?:^|:)(?:release|migration|integrate|public-export|de
  * Ordinary typecheck / lint / package test / focused validation stay on Process Runtime.
  */
 export function checkRequiresDurableWorkflow(checkId: string, check?: ControllerCheck): boolean {
+  if (check?.executionAuthority === 'live_controller_home') return true;
   if (DURABLE_CHECK_ID.test(checkId)) return true;
   if (check && /release|rollback|blue.?green|migrate/i.test(check.description)) return true;
   return false;
@@ -228,6 +229,7 @@ export async function runCheckViaProcessRuntime(
       executionIdentity.repositoryId,
       executionIdentity.checkoutId,
       check.effects,
+      check.executionAuthority,
     ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,

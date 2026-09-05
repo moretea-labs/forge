@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, join } from 'path';
 import {
   controllerCheckExecutionIdentity,
+  controllerCheckLiveExecutionStateFingerprint,
   listControllerChecks,
   readLatestControllerCheckEvidence as readLatestControllerCheckEvidenceRaw,
   resolveSyncSupervisorBridgeRuntime,
@@ -18,6 +19,8 @@ import {
 import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
 import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
+import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 
 const roots: string[] = [];
 const storageAuthorities = new Map<string, RepositoryCheckStorageAuthority>();
@@ -399,6 +402,151 @@ describe('controller check provenance and failure classification', () => {
     expect(controllerCheckExecutionIdentity(repoRoot, 'unknown_effects').crossCheckoutReusable).toBe(false);
     expect(controllerCheckExecutionIdentity(repoRoot, 'networked').crossCheckoutReusable).toBe(false);
     expect(controllerCheckExecutionIdentity(repoRoot, 'external_tool').crossCheckoutReusable).toBe(false);
+  });
+
+  test('classifies Stable Baseline as an explicit live Controller Home certification check', () => {
+    const repoRoot = fixture({});
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'check-provenance-fixture',
+      scripts: { 'check:stable-baseline': 'node -e \"process.exit(0)\"' },
+    }));
+    const check = snapshotControllerCheck(repoRoot, 'package:check:stable-baseline');
+    expect(check.executionAuthority).toBe('live_controller_home');
+    expect(check.effects?.hostServices).toEqual(['canonical-runtime', 'forge-recovery']);
+    const claims = claimsForCheck(check.id, check.command, 'repo-live-cert', 'checkout-live-cert', check.effects, check.executionAuthority);
+    expect(claims.map((claim) => claim.resourceKey)).toEqual(expect.arrayContaining([
+      'release:repo-live-cert',
+      'host-service:canonical-runtime',
+      'host-service:forge-recovery',
+    ]));
+    const a = controllerCheckExecutionIdentity(repoRoot, check.id, undefined, check, 'runtime-generation-a');
+    const b = controllerCheckExecutionIdentity(repoRoot, check.id, undefined, check, 'runtime-generation-b');
+    expect(a.cacheKey).not.toBe(b.cacheKey);
+    expect(a.crossCheckoutReusable).toBe(false);
+  });
+
+  test('live certification fingerprints Recovery release identity and rejects an active Recovery mutation', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-live-cert-recovery-home-'));
+    roots.push(controllerHome);
+    const releaseRoot = join(controllerHome, 'recovery', 'releases', 'release-a');
+    mkdirSync(releaseRoot, { recursive: true });
+    const artifacts = {} as Record<string, { sha256: string }>;
+    for (const binary of ['forge-recovery', 'forge-recovery-gateway', 'forge-recovery-watchdog']) {
+      const content = `#!/bin/sh\necho ${binary}\n`;
+      writeFileSync(join(releaseRoot, binary), content, { mode: 0o700 });
+      artifacts[binary] = { sha256: createHash('sha256').update(content).digest('hex') };
+    }
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({
+      schemaVersion: 1, releaseRevision: 'recovery-a', sourceCommit: 'source-a',
+      sourceRoot: releaseRoot, cleanWorkspace: true, builtAt: new Date().toISOString(), artifacts,
+    }));
+    mkdirSync(join(controllerHome, 'recovery'), { recursive: true });
+    symlinkSync(releaseRoot, join(controllerHome, 'recovery', 'current'));
+    const first = controllerCheckLiveExecutionStateFingerprint(controllerHome);
+
+    const secondRoot = join(controllerHome, 'recovery', 'releases', 'release-b');
+    mkdirSync(secondRoot, { recursive: true });
+    const secondArtifacts = {} as Record<string, { sha256: string }>;
+    for (const binary of ['forge-recovery', 'forge-recovery-gateway', 'forge-recovery-watchdog']) {
+      const content = `#!/bin/sh\necho ${binary}-b\n`;
+      writeFileSync(join(secondRoot, binary), content, { mode: 0o700 });
+      secondArtifacts[binary] = { sha256: createHash('sha256').update(content).digest('hex') };
+    }
+    writeFileSync(join(secondRoot, 'manifest.json'), JSON.stringify({
+      schemaVersion: 1, releaseRevision: 'recovery-b', sourceCommit: 'source-b',
+      sourceRoot: secondRoot, cleanWorkspace: true, builtAt: new Date().toISOString(), artifacts: secondArtifacts,
+    }));
+    rmSync(join(controllerHome, 'recovery', 'current'));
+    symlinkSync(secondRoot, join(controllerHome, 'recovery', 'current'));
+    expect(controllerCheckLiveExecutionStateFingerprint(controllerHome)).not.toBe(first);
+
+    mkdirSync(join(controllerHome, 'recovery', 'locks'), { recursive: true });
+    writeFileSync(join(controllerHome, 'recovery', 'locks', 'operation.lock'), '{}');
+    expect(() => controllerCheckLiveExecutionStateFingerprint(controllerHome))
+      .toThrow('LIVE_CHECK_RECOVERY_MUTATION_IN_PROGRESS');
+  });
+
+  test('live certification invalidates a successful result when live state changes during execution', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-live-cert-drift-home-'));
+    roots.push(controllerHome);
+    const repoRoot = fixture({});
+    const statusPath = join(controllerHome, 'runtime', 'status.json');
+    const changedStatus = {
+      schemaVersion: 1, runtimeInstanceId: 'runtime-drifted', pid: process.pid,
+      releaseId: 'release-drifted', artifactIdentity: 'artifact-drifted',
+      startedAt: '2026-09-05T00:00:00.000Z', updatedAt: '2026-09-05T00:00:01.000Z',
+      readiness: {
+        ready: true, reasonCodes: [], observedAt: '2026-09-05T00:00:01.000Z',
+        diagnostics: {
+          database: { outcome: 'pass' }, scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' }, mcpEndToEnd: { outcome: 'pass' },
+        },
+      },
+    };
+    const driftScriptPath = join(repoRoot, 'change-live-status.cjs');
+    writeFileSync(driftScriptPath, [
+      "const fs = require('fs');",
+      `fs.mkdirSync(${JSON.stringify(dirname(statusPath))}, { recursive: true });`,
+      `fs.writeFileSync(${JSON.stringify(statusPath)}, ${JSON.stringify(JSON.stringify(changedStatus))});`,
+    ].join('\n'));
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'check-provenance-fixture',
+      scripts: { 'check:stable-baseline': 'node change-live-status.cjs' },
+    }));
+    const fingerprint = controllerCheckLiveExecutionStateFingerprint(controllerHome);
+    const result = await runControllerCheckAsync(repoRoot, 'package:check:stable-baseline', {
+      liveControllerHome: controllerHome,
+      executionStateFingerprint: fingerprint,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('live Runtime/Recovery authority changed while the check was running');
+  });
+
+  test('live certification uses the explicit installed Controller Home while ordinary checks remain isolated', async () => {
+    const probePath = join(mkdtempSync(join(tmpdir(), 'forge-live-cert-home-probe-')), 'controller-home.txt');
+    roots.push(dirname(probePath));
+    const installedControllerHome = mkdtempSync(join(tmpdir(), 'forge-live-cert-installed-home-'));
+    const isolatedControllerHome = mkdtempSync(join(tmpdir(), 'forge-live-cert-isolated-home-'));
+    roots.push(installedControllerHome, isolatedControllerHome);
+    const repoRoot = fixture({});
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'check-provenance-fixture',
+      scripts: {
+        'check:stable-baseline': `node -e \"require('fs').writeFileSync(${JSON.stringify(JSON.stringify(probePath))},process.env.FORGE_CONTROLLER_HOME||'<missing>')\"`,
+      },
+    }));
+    const liveFingerprint = controllerCheckLiveExecutionStateFingerprint(installedControllerHome);
+    const result = await runControllerCheckAsync(repoRoot, 'package:check:stable-baseline', {
+      isolatedControllerHome: undefined,
+      liveControllerHome: installedControllerHome,
+      executionStateFingerprint: liveFingerprint,
+    });
+    expect(result.ok).toBe(true);
+    expect(readFileSync(probePath, 'utf8')).toBe(installedControllerHome);
+    expect(existsSync(join(isolatedControllerHome, 'unexpected'))).toBe(false);
+
+    writeRuntimeStatusSnapshot(installedControllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'runtime-live-cert-changed',
+      pid: process.pid,
+      releaseId: 'release-live-cert-changed',
+      artifactIdentity: 'artifact-live-cert-changed',
+      startedAt: '2026-09-05T00:00:00.000Z',
+      updatedAt: '2026-09-05T00:00:01.000Z',
+      readiness: {
+        ready: true, reasonCodes: [], observedAt: '2026-09-05T00:00:01.000Z',
+        diagnostics: {
+          database: { outcome: 'pass' }, scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' }, mcpEndToEnd: { outcome: 'pass' },
+        },
+      },
+    });
+    await expect(runControllerCheckAsync(repoRoot, 'package:check:stable-baseline', {
+      liveControllerHome: installedControllerHome,
+      executionStateFingerprint: liveFingerprint,
+    })).rejects.toThrow('LIVE_CHECK_STATE_CHANGED_BEFORE_EXECUTION');
+    expect(controllerCheckLiveExecutionStateFingerprint(installedControllerHome)).not.toBe(liveFingerprint);
   });
 
   test('injects only the explicit candidate Controller Home after generic authority sanitization', async () => {

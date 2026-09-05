@@ -62,6 +62,21 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey.startsWith('heavy-check:'))).toBe(false);
   });
 
+  test('live certification fences release and host Runtime/Recovery resources', () => {
+    const claims = claimsForCheck(
+      'package:check:stable-baseline',
+      ['bun', 'run', 'check:stable-baseline'],
+      'repo1',
+      'co1',
+      { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] },
+      'live_controller_home',
+    );
+    expect(claims).toContainEqual({ resourceKey: 'release:repo1', mode: 'exclusive' });
+    expect(claims).toContainEqual({ resourceKey: 'host-service:canonical-runtime', mode: 'write' });
+    expect(claims).toContainEqual({ resourceKey: 'host-service:forge-recovery', mode: 'write' });
+    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
+  });
+
   test('raw typed tsc --noEmit uses workspace read plus cache instead of a workspace writer', () => {
     for (const command of [
       ['tsc', '--noEmit'],

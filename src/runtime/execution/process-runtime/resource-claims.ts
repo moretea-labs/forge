@@ -6,7 +6,7 @@
 import type { ResourceClaimSpec } from '../jobs/types';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import type { ControllerCheckEffects } from '../../../cli/controller/check-runner';
+import type { ControllerCheckEffects, ControllerCheckExecutionAuthority } from '../../../cli/controller/check-runner';
 import {
   classifyRepositoryCommand,
   fixedShellWrapperCommand,
@@ -561,6 +561,7 @@ export function claimsForCheck(
   repoId: string,
   checkoutId?: string,
   effects?: ControllerCheckEffects,
+  executionAuthority?: ControllerCheckExecutionAuthority,
 ): ResourceClaimSpec[] {
   const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?))$/.test(checkId)
     || /release|migration|integrate/i.test(checkId);
@@ -573,7 +574,10 @@ export function claimsForCheck(
         : [claimWorkspaceWrite(checkoutId)];
   // Heavy-check is an additional cross-check serialization fence, not a
   // substitute for the resources the check actually reads or writes.
-  return heavy ? normalizeClaims([claimHeavyCheck(repoId), ...baseClaims]) : baseClaims;
+  const liveAuthorityClaims = executionAuthority === 'live_controller_home' ? [claimRelease(repoId)] : [];
+  return heavy
+    ? normalizeClaims([claimHeavyCheck(repoId), ...liveAuthorityClaims, ...baseClaims])
+    : normalizeClaims([...liveAuthorityClaims, ...baseClaims]);
 }
 
 export function scopeResourceClaims(
