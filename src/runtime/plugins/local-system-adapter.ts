@@ -16,6 +16,9 @@ import {
 } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
 import { forgeRuntimeServicePaths } from '../root/service';
+import { loadRecoveryConfig } from '../standalone-recovery/core';
+import { activateRecoveryRelease, recoverySourceIdentity, stageRecoveryRelease } from '../standalone-recovery/installer';
+import { readCurrentRecoveryRelease, type RecoveryReleaseDescriptor } from '../standalone-recovery/release';
 import {
   WorkspaceTargetGrantError,
   authorizeWorkspaceTargetGrant,
@@ -73,6 +76,7 @@ export interface LocalSystemPluginHooks {
   runCommand?: (command: string, args: string[], timeoutMs?: number) => CommandResult;
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   scheduleLaunchAgentRestart?: (service: string) => { pid: number };
+  upgradeStandaloneRecovery?: (controllerHome: string) => Promise<Record<string, unknown>>;
 }
 
 let hooks: LocalSystemPluginHooks = {};
@@ -625,6 +629,76 @@ export function startVerifiedUserLaunchAgent(labelValue: unknown, expectedProgra
   return { started: true, label: identity.label, service: identity.service, plistPath: identity.plistPath, bootstrapCommand, enableCommand: enabled.command, startCommand: started.command };
 }
 
+function boundedRecoveryRelease(release: RecoveryReleaseDescriptor | undefined): Record<string, unknown> | undefined {
+  if (!release) return undefined;
+  return {
+    releaseRevision: release.releaseRevision,
+    sourceCommit: release.sourceCommit,
+    manifestSha256: release.manifestSha256,
+    legacy: release.legacy,
+  };
+}
+
+async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record<string, unknown>> {
+  if (hooks.upgradeStandaloneRecovery) return hooks.upgradeStandaloneRecovery(controllerHome);
+  const config = loadRecoveryConfig(controllerHome);
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) {
+    throw new AssistantPluginError(
+      'LOCAL_SYSTEM_RECOVERY_SOURCE_UNCONFIGURED',
+      'Standalone Recovery upgrade requires primaryRuntimeSourceRoot in the installed Recovery configuration.',
+      { retryable: false },
+    );
+  }
+  let sourceCommit = '';
+  let candidate: RecoveryReleaseDescriptor | undefined;
+  try {
+    const source = recoverySourceIdentity(sourceRoot);
+    sourceCommit = source.sourceCommit;
+    const current = readCurrentRecoveryRelease(controllerHome);
+    if (current && !current.legacy && current.cleanWorkspace && current.sourceCommit === source.sourceCommit) {
+      candidate = current;
+    } else {
+      const staged = stageRecoveryRelease({ controllerHome, sourceRoot });
+      candidate = staged.release;
+      if (candidate.sourceCommit !== source.sourceCommit || !candidate.cleanWorkspace) {
+        throw new Error('RECOVERY_RELEASE_SOURCE_IDENTITY_DRIFT');
+      }
+    }
+    const activated = await activateRecoveryRelease({ controllerHome, config, candidate });
+    return {
+      upgraded: activated.noOp !== true,
+      noOp: activated.noOp === true,
+      sourceCommit,
+      candidateRelease: boundedRecoveryRelease(candidate),
+      currentRelease: boundedRecoveryRelease(activated.release),
+      previousRelease: boundedRecoveryRelease(activated.previous),
+      migratedLegacyRelease: boundedRecoveryRelease(activated.migratedLegacy),
+      verification: {
+        ok: activated.verification.ok,
+        gatewayPid: activated.verification.gatewayPid,
+        watchdogPid: activated.verification.watchdogPid,
+      },
+      rollback: { performed: false },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const rolledBack = message.includes('RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK');
+    throw new AssistantPluginError(
+      'LOCAL_SYSTEM_RECOVERY_UPGRADE_FAILED',
+      bounded(message, 2_000).content,
+      {
+        retryable: message.includes('RECOVERY_RELEASE_BUSY'),
+        details: {
+          sourceCommit: sourceCommit || undefined,
+          candidateRelease: boundedRecoveryRelease(candidate),
+          rollback: { performed: rolledBack },
+        },
+      },
+    );
+  }
+}
+
 function actions(): AssistantPluginActionDescriptor[] {
   const controllerRead = [{ resource: 'repo-state' as const, mode: 'read' as const }];
   const controllerWrite = [{ resource: 'repo-state' as const, mode: 'write' as const }];
@@ -639,6 +713,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'restart_user_launch_agent', title: 'Restart verified user LaunchAgent', description: 'Restart one loaded user LaunchAgent by exact label only after launchctl evidence contains the expected program identity.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { label: { type: 'string' }, expected_program_contains: { type: 'string' } }, required: ['label', 'expected_program_contains'], additionalProperties: false } },
     { actionId: 'stop_user_launch_agent', title: 'Stop verified user LaunchAgent', description: 'Boot out one exact loaded user LaunchAgent only after its launchd identity matches the expected program.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { label: { type: 'string' }, expected_program_contains: { type: 'string' } }, required: ['label', 'expected_program_contains'], additionalProperties: false } },
     { actionId: 'start_user_launch_agent', title: 'Start verified user LaunchAgent', description: 'Bootstrap or start one exact current-user LaunchAgent from ~/Library/LaunchAgents only after the installed plist matches the expected program identity.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { label: { type: 'string' }, expected_program_contains: { type: 'string' } }, required: ['label', 'expected_program_contains'], additionalProperties: false } },
+    { actionId: 'upgrade_standalone_recovery', title: 'Upgrade standalone Recovery', description: 'Upgrade the installed standalone Recovery from its configured primary Runtime source using the existing immutable Recovery release authority. No caller source path or command is accepted.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 240_000, cancellable: false, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'open_application', title: 'Open application', description: 'Open one macOS application by name or bundle id in the background without stealing foreground focus.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { app_name: { type: 'string' }, bundle_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_targets', title: 'List filesystem targets', description: 'List active expiring local filesystem grants.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize an expiring filesystem target. By default, a path inside a Git project authorizes the whole project/repository root; use scope=directory only when intentionally granting a narrower directory.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, scope: { type: 'string', enum: ['auto', 'project', 'directory'] }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
@@ -692,6 +767,7 @@ function capabilities(): AssistantPluginCapability[] {
   return [
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
     { capabilityId: 'local-system-process-control', title: 'Verified process lifecycle', description: 'Terminate one verified PID or stop/start/restart one verified macOS user LaunchAgent without exposing arbitrary shell execution.', scopes: ['local-system.process'], actions: ['terminate_process', 'restart_user_launch_agent', 'stop_user_launch_agent', 'start_user_launch_agent'] },
+    { capabilityId: 'local-system-recovery-upgrade', title: 'Managed standalone Recovery upgrade', description: 'Upgrade standalone Recovery only from its installed configured source through the immutable Recovery release and rollback authority.', scopes: ['local-system.process'], actions: ['upgrade_standalone_recovery'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
     { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'delete_empty_directory', 'initialize_git', 'execute_command', 'execute_project_script', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
@@ -747,6 +823,7 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     case 'restart_user_launch_agent': return restartVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains, input.controllerHome);
     case 'stop_user_launch_agent': return stopVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'start_user_launch_agent': return startVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
+    case 'upgrade_standalone_recovery': return await upgradeStandaloneRecovery(input.controllerHome);
     case 'open_application': {
       const appName = optionalString(input.args, 'app_name');
       const bundleId = optionalString(input.args, 'bundle_id');

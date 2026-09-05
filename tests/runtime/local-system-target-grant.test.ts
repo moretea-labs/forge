@@ -32,7 +32,9 @@ import {
   workspaceTargetMutationResourceId,
 } from '../../src/runtime/workspace-targets';
 import {
+  buildLocalSystemPluginManifest,
   executeLocalSystemPluginAction,
+  localSystemPluginAdapter,
   resetLocalSystemPluginHooksForTest,
   setLocalSystemPluginHooksForTest,
 } from '../../src/runtime/plugins/local-system-adapter';
@@ -570,6 +572,48 @@ describe('plugin capability authorization grant authority', () => {
       ...base, riskCeiling: 'workspace_write', now: new Date('2026-08-18T00:30:00.000Z'),
     }));
     expect(readFileSync(path, 'utf8')).toBe('{not-json\n');
+  });
+});
+
+describe('local_system managed Recovery upgrade', () => {
+  test('exposes one argument-free controller-scoped typed Recovery upgrade action without facade or shell inputs', () => {
+    const manifest = buildLocalSystemPluginManifest();
+    expect(localSystemPluginAdapter.scope).toBe('controller');
+    const action = manifest.actions.find((entry) => entry.actionId === 'upgrade_standalone_recovery');
+    expect(action).toBeDefined();
+    expect(action?.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
+    expect(action?.confirmation).toBe('authorization');
+    expect(action?.scopes).toEqual(['local-system.process']);
+    expect(manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-recovery-upgrade')?.actions)
+      .toEqual(['upgrade_standalone_recovery']);
+  });
+
+  test('fails closed when installed Recovery has no configured primary Runtime source', async () => {
+    const controllerHome = temp('local-system-recovery-unconfigured-');
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {})))
+      .rejects.toThrow(/primaryRuntimeSourceRoot/);
+  });
+
+  test('executes the dedicated typed Recovery upgrade without accepting caller source or command arguments', async () => {
+    const controllerHome = temp('local-system-recovery-upgrade-');
+    const calls: string[] = [];
+    setLocalSystemPluginHooksForTest({
+      upgradeStandaloneRecovery: async (observedControllerHome) => {
+        calls.push(observedControllerHome);
+        return {
+          upgraded: true,
+          noOp: false,
+          sourceCommit: 'a'.repeat(40),
+          candidateRelease: { releaseRevision: 'a'.repeat(40) },
+          currentRelease: { releaseRevision: 'a'.repeat(40) },
+          verification: { ok: true, gatewayPid: 101, watchdogPid: 102 },
+          rollback: { performed: false },
+        };
+      },
+    });
+    const result = await executeLocalSystemPluginAction(input(controllerHome, 'upgrade_standalone_recovery', {}));
+    expect(calls).toEqual([controllerHome]);
+    expect(result).toMatchObject({ upgraded: true, noOp: false, verification: { ok: true }, rollback: { performed: false } });
   });
 });
 
@@ -1165,6 +1209,11 @@ describe('local_system target adapter', () => {
       access: 'read_write',
       reason: 'command policy',
     });
+
+    await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
+      target_key: 'project',
+      command: ['forge', 'recovery', 'activate-runtime', '--release-manifest', 'manifest.json'],
+    }))).rejects.toThrow(/LOCAL_SYSTEM_COMMAND_REPOSITORY_REQUIRED/);
 
     await expect(executeLocalSystemPluginAction(input(controllerHome, 'execute_command', {
       target_key: 'project',
