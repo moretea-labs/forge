@@ -486,7 +486,8 @@ describe('autonomous continuation lifecycle', () => {
     transitionWorkContractPhase(store, workId, { status: 'cancelled', phase: 'cleanup', state: 'skipped', summary: 'Cancelled for recovery regression.' });
     releaseControllerSession(store, workId, owner.controllerId);
 
-    const abandoned = reconcileControllerRoundAfterAbandonedRelease(store, { workId, releasedSession: owner });
+    const rotatedTransportOwner = { ...owner, sessionId: 'mcp-cancelled-round-rotated' };
+    const abandoned = reconcileControllerRoundAfterAbandonedRelease(store, { workId, releasedSession: rotatedTransportOwner });
     expect(abandoned).toMatchObject({
       relayScopeId: opened.relayScopeId,
       status: 'failed',

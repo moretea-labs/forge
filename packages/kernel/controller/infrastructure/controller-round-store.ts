@@ -807,7 +807,6 @@ export function reconcileControllerRoundAfterAbandonedRelease(
       || record.controllerId !== input.releasedSession.controllerId
       || record.principalId !== releasedPrincipal
       || record.controllerInstanceId !== releasedInstanceId
-      || record.sessionId !== input.releasedSession.sessionId
     ) {
       throw new Error(`CONTROLLER_RELAY_RELEASE_FENCE_MISMATCH: ${input.workId}`);
     }
