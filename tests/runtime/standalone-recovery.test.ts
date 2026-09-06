@@ -81,7 +81,7 @@ import {
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
-import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 
 const roots: string[] = [];
@@ -112,6 +112,23 @@ afterEach(async () => {
   while (ownerships.length > 0) ownerships.pop()!.release();
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))));
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+test('standalone Recovery compiler resolves account Bun when compiled Runtime PATH omits Bun', () => {
+  const home = mkdtempSync(join(tmpdir(), 'forge-recovery-bun-home-'));
+  roots.push(home);
+  const bun = join(home, '.bun', 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
+  mkdirSync(dirname(bun), { recursive: true });
+  writeFileSync(bun, 'fixture bun');
+  chmodSync(bun, 0o700);
+
+  expect(resolveRecoveryCompilerExecutable(
+    join(home, 'runtime', 'forge-runtime'),
+    { HOME: home, PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin' },
+    home,
+  )).toBe(bun);
+  expect(resolveRecoveryCompilerExecutable('/tmp/forge-runtime', { FORGE_BUN_BIN: '/opt/forge/custom-bun' }, home))
+    .toBe('/opt/forge/custom-bun');
 });
 
 test('standalone Recovery stage-only build never rewrites installed durable source authority', async () => {

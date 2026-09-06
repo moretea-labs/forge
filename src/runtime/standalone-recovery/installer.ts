@@ -13,6 +13,7 @@ import {
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess, type ProcessRunResult } from '../../effects/process-runner';
+import { resolveBunExecutable } from '../shared/process-environment';
 import {
   installLaunchAgent,
   launchAgentPath,
@@ -209,9 +210,20 @@ export function recoverySourceIdentity(sourceRoot: string): RecoverySourceIdenti
   return { sourceCommit, releaseRevision: sourceCommit, cleanWorkspace: true, sourceRoot: root };
 }
 
+export function resolveRecoveryCompilerExecutable(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+  accountHome?: string,
+): string {
+  const configured = env.FORGE_BUN_BIN?.trim();
+  if (configured) return configured;
+  return accountHome === undefined
+    ? resolveBunExecutable(execPath, env)
+    : resolveBunExecutable(execPath, env, accountHome);
+}
+
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string }): ProcessRunResult {
-  const configured = process.env.FORGE_BUN_BIN?.trim();
-  const bun = configured || (process.versions.bun && /(?:^|\/)bun(?:$|-)/.test(process.execPath) ? process.execPath : 'bun');
+  const bun = resolveRecoveryCompilerExecutable();
   return runProcess(bun, [
     'build',
     join(input.sourceRoot, 'src/runtime/standalone-recovery/entry.ts'),
