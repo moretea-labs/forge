@@ -182,6 +182,57 @@ function exactVerification(input: {
 }
 
 describe('rh_work terminalization authority', () => {
+  test('materializes a canonical WorkHandle for isolated completed_no_change Work', () => {
+    const fx = fixture();
+    const workId = 'work-completed-no-change-handle';
+    const caller = {
+      principalId: 'principal-completed-no-change',
+      sessionId: 'transport-completed-no-change',
+      controllerInstanceId: 'runtime-completed-no-change',
+    };
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Completed no-change handle',
+      branchName: 'work/completed-no-change-handle',
+    });
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Prove isolated no-change Work retains canonical delivery authority.',
+      acceptanceCriteria: ['No-change Work can finalize through its owned WorkHandle.'],
+      allowedPaths: [],
+      forbiddenPaths: ['**'],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    });
+
+    expect(handle).toMatchObject({
+      workId,
+      checkoutId: workspace.checkoutId,
+      worktreePath: workspace.root,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      managedWorktree: true,
+      baseCommit: workspace.baseRevision,
+      expectedHead: workspace.baseRevision,
+      state: 'prepared',
+    });
+  });
+
   test('continue upgrades only a proven legacy false-negative managed WorkHandle placement', async () => {
     const fx = fixture();
     const workId = 'work-legacy-managed-placement-reconcile';

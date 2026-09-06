@@ -55,6 +55,7 @@ export function ensureRepositoryWorkHandle(input: {
     input.workId,
   );
   const supportedKind = contract?.workKind === 'repository_change'
+    || contract?.workKind === 'completed_no_change'
     || (input.allowEffectWork === true && (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect'));
   if (!contract || !supportedKind || contract.mode !== 'goal_workloop' || !contract.checkoutId) {
     return undefined;
