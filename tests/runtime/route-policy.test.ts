@@ -331,6 +331,42 @@ describe('single Route Policy authority', () => {
     expect(forced.data).toMatchObject({ executionStarted: false, workContractCreated: false });
   });
 
+  test('durable Goal Work stays on current mainline when every trusted dirty path is inside its declared scope', () => {
+    const root = temp('route-dirty-goal-same-scope-');
+    const context = {
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-dirty-goal-same-scope',
+      checkoutId: 'checkout-main',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+      workspaceDirty: true,
+      workspaceChangedPaths: ['AGENTS.md'],
+    };
+    const started = routeWorkStart(context, {
+      objective: 'Persist one already-owned mainline governance edit',
+      allowedPaths: ['AGENTS.md'],
+      constraints: { workspaceMode: 'current', requireWorktree: false },
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        requiresRecovery: true,
+        expectedFiles: 1,
+        expectedChangedLines: 5,
+        risk: 'local_repo_write',
+      },
+    });
+    expect(started.status).toBe('ok');
+    expect(started.data).toMatchObject({ workContractCreated: true, worktreeRequired: false });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(getWorkContract(context.workStore, workId!)).toMatchObject({
+      mode: 'goal_workloop',
+      constraints: { workspaceMode: 'current', requireWorktree: false },
+      worktreePolicy: { required: false },
+    });
+  });
+
   test('durable Goal Work isolates a trusted dirty canonical checkout without changing fast Direct Control routing', () => {
     const root = temp('route-dirty-goal-isolation-');
     const context = {

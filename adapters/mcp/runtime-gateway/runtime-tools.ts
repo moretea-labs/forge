@@ -4796,6 +4796,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         const checks = listControllerChecks(repository.canonicalRoot);
         const workloopSource = freshGitIdentity(repository.canonicalRoot);
+        const workloopStatus = repositoryGitStatus(repository);
+        const workloopChangedPaths = [...new Set([
+          ...workloopStatus.staged,
+          ...workloopStatus.unstaged,
+          ...workloopStatus.untracked,
+        ])].sort();
         const workloopCtx = {
           workStore: store,
           handoffStore: store,
@@ -4807,7 +4813,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           availableChecks: checks,
           sourceRevision: workloopSource.head ?? undefined,
           sourceBaseState: workloopSource.head ? 'revision' as const : 'unborn' as const,
-          workspaceDirty: workloopSource.dirty,
+          workspaceDirty: !workloopStatus.clean,
+          workspaceChangedPaths: workloopChangedPaths,
           materializeIsolatedWorkspace: ({ workId, title, baseRef, needsDependencies }: { workId: string; title: string; baseRef?: string; needsDependencies?: boolean }) => {
             const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
               requestId: workId,

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { globMatches } from '../../../cli/mcp/paths';
 import {
   createHandoffItem,
   listHandoffItems,
@@ -1244,9 +1245,23 @@ export function startGoalWorkloop(
   // genuinely declares a repository workspace requirement.
   const repositoryWorkspaceParticipant = resolvedWorkKind !== 'remote_effect';
   const placementConflict = repositoryWorkspaceParticipant && Boolean(workspaceOwner);
+  const trustedDirtyPaths = ctx.workspaceChangedPaths
+    ? [...new Set(ctx.workspaceChangedPaths.map((path) => path.trim()).filter(Boolean))].sort()
+    : undefined;
+  const dirtyWorkspaceOwnershipConflict = repositoryWorkspaceParticipant
+    && input.modeInput.workspaceDirty === true
+    && (
+      !trustedDirtyPaths
+      || trustedDirtyPaths.length === 0
+      || effectiveAllowedPaths.length === 0
+      || trustedDirtyPaths.some((path) => (
+        effectiveForbiddenPaths.some((pattern) => globMatches(pattern, path))
+        || !effectiveAllowedPaths.some((pattern) => globMatches(pattern, path))
+      ))
+    );
   const automaticRepositoryIsolation = repositoryWorkspaceParticipant && (
     placementConflict
-    || input.modeInput.workspaceDirty === true
+    || dirtyWorkspaceOwnershipConflict
     || input.modeInput.requiresParallelism === true
   );
   const needsWorktree = executionMode === 'goal_workloop' && (
@@ -1320,8 +1335,8 @@ export function startGoalWorkloop(
   };
   const worktreeReason = placementConstraint.requireWorktree || routeDecision.requiresIsolation === true
     ? 'Typed placement or Route Policy requires isolated execution.'
-    : repositoryWorkspaceParticipant && input.modeInput.workspaceDirty === true
-      ? 'Trusted repository observation found the current checkout dirty; durable Goal Work is isolated so unrelated changes cannot enter Work ownership or verification.'
+    : dirtyWorkspaceOwnershipConflict
+      ? 'Trusted repository observation found dirty paths outside or ambiguous to the Work path fence; isolated placement prevents unrelated changes from entering Work ownership or verification.'
       : placementConflict
         ? 'The selected checkout is already owned by another active Work; this Work requires isolated placement.'
         : repositoryWorkspaceParticipant && input.modeInput.requiresParallelism === true
