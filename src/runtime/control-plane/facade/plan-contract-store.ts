@@ -766,9 +766,11 @@ function repairDraftPlanContractUnlocked(
   if (continuityErrors.length > 0) {
     throw new Error(`PLAN_DRAFT_REPAIR_INVALID: ${continuityErrors.join('; ')}`);
   }
+  const explicitPredecessors = new Set(candidateWithLineage.supersedes ?? []);
   const conflictingScope = store.contracts.find((existing, candidateIndex) => candidateIndex !== index
     && !isTerminalPlanContractStatus(existing.status)
-    && existing.scopeKey === candidateWithLineage.scopeKey);
+    && existing.scopeKey === candidateWithLineage.scopeKey
+    && !explicitPredecessors.has(existing.planId));
   if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${candidateWithLineage.scopeKey}:${conflictingScope.planId}`);
   const predecessor = current.supersedes?.length === 1
     ? store.contracts.find((existing) => existing.planId === current.supersedes![0])

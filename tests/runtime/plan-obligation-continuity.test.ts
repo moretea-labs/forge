@@ -16,7 +16,7 @@ import {
   type CreatePlanContractInput,
   type PlanContractStoreOptions,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import type { PlanObligationDisposition } from '../../src/runtime/control-plane/facade/types';
+import type { PlanContract, PlanObligationDisposition } from '../../src/runtime/control-plane/facade/types';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
@@ -259,6 +259,14 @@ describe('Plan obligation continuity', () => {
       expect(admitted).toMatchObject({ status: 'draft', supersedes: [executing.planId] });
       expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
       expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId });
+      const repaired = repairDraftPlanContract(options, admitted.planId, {
+        ...successor,
+        expectedSourceRevision: successor.sourceRevision,
+        obligationDispositions: successorDispositions(executing),
+      });
+      expect(repaired).toMatchObject({ status: 'draft', supersedes: [executing.planId], sourceRevision: 'revision-c' });
+      expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
+      expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId });
       const lateWorkId = !changed ? `WORK-LATE-${changed}` : undefined;
       if (lateWorkId) {
         createWorkContract(options, {
@@ -281,6 +289,72 @@ describe('Plan obligation continuity', () => {
       expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).filter((work) => work.workId === workId)).toHaveLength(1);
       if (lateWorkId) expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'cancelled', phase: 'cleanup', planId: executing.planId });
     }
+  });
+
+  test('draft successor repair still rejects an unrelated nonterminal Plan that owns the same scope', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-draft-repair-unrelated-scope-'));
+    roots.push(controllerHome);
+    const options = { controllerHome, repoId: 'repo-a' };
+    createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Keep one exact Plan scope authority.' });
+    const predecessorDraft = createPlanContract(options, input('PLAN-R1-scope'));
+    const predecessor = approvePlanContract(options, predecessorDraft.planId);
+    const step = predecessor.steps[0]!;
+    createWorkContract(options, {
+      workId: 'WORK-SCOPE', repoId: 'repo-a', requirementId: 'REQ-A', planId: predecessor.planId, planStepId: step.id, planSourceRevision: predecessor.sourceRevision,
+      baseRevision: predecessor.sourceRevision, mode: 'goal_workloop', workKind: 'repository_change', objective: step.objective,
+      acceptanceCriteria: step.acceptanceCriteria, allowedPaths: step.allowedPaths, forbiddenPaths: step.forbiddenPaths, checks: step.checks,
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    const executing = claimPlanStepForWork(options, { planId: predecessor.planId, stepId: step.id, workId: 'WORK-SCOPE', sourceRevision: predecessor.sourceRevision });
+    const successor = input('PLAN-R2-scope');
+    successor.sourceRevision = 'revision-c';
+    const dispositions = successorDispositions(executing);
+    const admitted = admitPlanContract(options, {
+      ...successor, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: dispositions,
+    }).plan!;
+    const unrelated = createPlanContract(options, { ...input('PLAN-OTHER-scope'), scopeKey: 'unrelated-scope', sourceRevision: 'revision-other' });
+    const storedUnrelated = readControlPlaneRecord<PlanContract>(controllerHome, 'plan_contract', options.repoId, unrelated.planId)!;
+    writeControlPlaneRecord(controllerHome, {
+      namespace: 'plan_contract', scope: options.repoId, key: unrelated.planId, schemaVersion: 1,
+      value: { ...storedUnrelated.value, scopeKey: successor.scopeKey },
+      action: 'test_seed_historical_same_scope_conflict', expectedRevision: storedUnrelated.revision,
+    });
+
+    expect(() => repairDraftPlanContract(options, admitted.planId, {
+      ...successor, expectedSourceRevision: successor.sourceRevision, obligationDispositions: dispositions,
+    })).toThrow('PLAN_SCOPE_ALREADY_OWNED: kernel-v2:PLAN-OTHER-scope');
+    expect(getPlanContract(options, admitted.planId)).toMatchObject({ status: 'draft', supersedes: [executing.planId] });
+    expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
+  });
+
+  test('draft successor repair validates obligation continuity before allowing explicit predecessor scope coexistence', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-draft-repair-continuity-first-'));
+    roots.push(controllerHome);
+    const options = { controllerHome, repoId: 'repo-a' };
+    createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Never repair stale successor continuity into Plan state.' });
+    const predecessorDraft = createPlanContract(options, input('PLAN-R1-continuity'));
+    const predecessor = approvePlanContract(options, predecessorDraft.planId);
+    const step = predecessor.steps[0]!;
+    createWorkContract(options, {
+      workId: 'WORK-CONTINUITY', repoId: 'repo-a', requirementId: 'REQ-A', planId: predecessor.planId, planStepId: step.id, planSourceRevision: predecessor.sourceRevision,
+      baseRevision: predecessor.sourceRevision, mode: 'goal_workloop', workKind: 'repository_change', objective: step.objective,
+      acceptanceCriteria: step.acceptanceCriteria, allowedPaths: step.allowedPaths, forbiddenPaths: step.forbiddenPaths, checks: step.checks,
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    const executing = claimPlanStepForWork(options, { planId: predecessor.planId, stepId: step.id, workId: 'WORK-CONTINUITY', sourceRevision: predecessor.sourceRevision });
+    const successor = input('PLAN-R2-continuity');
+    successor.sourceRevision = 'revision-c';
+    const dispositions = successorDispositions(executing);
+    const admitted = admitPlanContract(options, {
+      ...successor, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: dispositions,
+    }).plan!;
+    const stale = dispositions.map((entry, index) => index === 0 ? { ...entry, obligationId: 'obl_stale_not_authoritative' } : entry);
+
+    expect(() => repairDraftPlanContract(options, admitted.planId, {
+      ...successor, expectedSourceRevision: successor.sourceRevision, obligationDispositions: stale,
+    })).toThrow('PLAN_DRAFT_REPAIR_INVALID: unknown predecessor obligation');
+    expect(getPlanContract(options, admitted.planId)?.obligationDispositions).toEqual(dispositions);
+    expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
   });
 
   test('draft repair retires only exact predecessor obligations resolved after successor staging', () => {
