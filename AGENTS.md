@@ -12,6 +12,15 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Ordinary local risk levels are metadata, not permission gates. There is no approval queue and no `approve_risk` handshake. Only an explicitly destructive or irreversible operation requires authorization in the same request.
 - The Controller UI is an auxiliary configuration/state utility behind ChatGPT: Overview, Work, Automations, Capabilities, Repositories, Settings, and System. It presents durable user-facing state and hides Issue/Task/Run internals unless diagnostics require them.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
+
+### Main checkout and worktree policy
+
+- `main` is the canonical local integration and default development branch. Normal investigation, implementation, review fixes, and focused verification run in the canonical `main` checkout.
+- Do not create a branch or managed worktree merely because work is durable, multi-step, recoverable, or represented by a WorkContract. Work lifecycle and Git workspace topology are separate concerns.
+- Create an isolated worktree only when there is a concrete concurrent-write/dirty-ownership conflict, explicitly parallel independent writers, or a verification/release operation whose correctness requires a frozen isolated source identity. The reason for isolation must be observable in routing/Work evidence.
+- When no such conflict exists, do not set `workspace_mode=isolated`, `require_worktree=true`, or `direct_main_prohibited=true`; prefer the current canonical checkout and serialize writes there.
+- Integrate completed isolated work promptly back to `main` and remove its managed worktree/branch after containment and cleanup are proven. Do not accumulate completed worktrees as standing development environments.
+
 ## Canonical Workflow Authority
 
 - Root `forge.config.json` is the modern declarative opt-in marker. It selects Controller Home Runtime authority; it is not a mirror of mutable state.
