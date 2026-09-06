@@ -165,6 +165,7 @@ test('standalone Recovery stage-only build never rewrites installed durable sour
 
   expect(result.activated).toBeUndefined();
   expect(result.staged.release.sourceCommit).toBe(stageCommit);
+  expect(result.staged.release.productVersion).toBe('1.7.2');
   expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
   expect(readFileSync(recoveryConfigPath(home), 'utf8')).toBe(before);
 });
@@ -224,7 +225,11 @@ test('standalone Recovery non-stage install persists a durable canonical source 
   expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
   expect(loadRecoveryConfig(home).primaryRuntimeSourceRoot).toBe(resolve(durableSource));
   expect(result.staged.release.sourceCommit).toBe(sourceCommit);
+  expect(result.staged.release.productVersion).toBe('1.7.2');
   expect(result.activated?.release.sourceCommit).toBe(sourceCommit);
+  expect(result.activated?.release.productVersion).toBe('1.7.2');
+  const gatewayPlist = readFileSync(join(home, 'recovery', 'launchd', 'com.moretea.forge-recovery-gateway.plist'), 'utf8');
+  expect(gatewayPlist).toContain('FORGE_BUILD_VERSION=1.7.2');
   expect(result.activated?.verification.ok).toBe(true);
 });
 
@@ -244,8 +249,9 @@ function controllerHome(): string {
 function committedRecoverySource(root: string): string {
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'README.md'), 'recovery source\n');
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: 'forge-recovery-fixture', version: '1.7.2' })}\n`);
   execFileSync('git', ['init', '-q'], { cwd: root });
-  execFileSync('git', ['add', 'README.md'], { cwd: root });
+  execFileSync('git', ['add', 'README.md', 'package.json'], { cwd: root });
   execFileSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge-test@example.invalid', 'commit', '-qm', 'recovery source'], { cwd: root });
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 }

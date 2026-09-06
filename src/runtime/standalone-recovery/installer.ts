@@ -176,7 +176,7 @@ export interface RecoveryInstallerDependencies {
   now?: () => number;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string }) => ProcessRunResult;
-  runCanary?: (input: { binaryPath: string; controllerHome: string; role?: RecoveryRuntimeRole }) => ProcessRunResult;
+  runCanary?: (input: { binaryPath: string; controllerHome: string; productVersion: string; role?: RecoveryRuntimeRole }) => ProcessRunResult;
   installAgent?: typeof installLaunchAgent;
   handoff?: typeof safeLaunchdHandoff;
   verify?: (input: {
@@ -193,6 +193,28 @@ export interface RecoveryInstallerDependencies {
 
 function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function recoverySourceProductVersion(sourceRoot: string): string {
+  const packagePath = join(resolve(sourceRoot), 'package.json');
+  try {
+    const parsed = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: unknown };
+    const version = typeof parsed.version === 'string' ? parsed.version.trim() : '';
+    if (version && version !== '0.0.0-unknown') return version;
+  } catch {
+    // Fall through to one explicit release-build error.
+  }
+  throw new Error(`RECOVERY_RELEASE_PRODUCT_VERSION_INVALID: ${packagePath}`);
+}
+
+function recoveryReleaseProductVersion(release: RecoveryReleaseDescriptor): string {
+  const bound = release.productVersion?.trim();
+  if (bound) return bound;
+  // Compatibility for Recovery releases created before productVersion became
+  // manifest-bound. Prefer their exact recorded source package when it still
+  // exists; only the legacy fallback may inherit the current process version.
+  try { return recoverySourceProductVersion(release.sourceRoot); } catch { /* legacy/retired source */ }
+  return FORGE_VERSION;
 }
 
 function gitText(root: string, args: string[]): string {
@@ -233,14 +255,14 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string })
   ], { cwd: input.sourceRoot, timeoutMs: 180_000, maxOutputBytes: 512 * 1024 });
 }
 
-function defaultRunCanary(input: { binaryPath: string; controllerHome: string; role?: RecoveryRuntimeRole }): ProcessRunResult {
+function defaultRunCanary(input: { binaryPath: string; controllerHome: string; productVersion: string; role?: RecoveryRuntimeRole }): ProcessRunResult {
   const args = input.role
     ? [input.role, RECOVERY_RELEASE_ROLE_CANARY_ARG, '--controller-home', input.controllerHome]
     : ['status', '--controller-home', input.controllerHome];
   return runProcess(input.binaryPath, args, {
     timeoutMs: 30_000,
     maxOutputBytes: 128 * 1024,
-    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', FORGE_BUILD_VERSION: FORGE_VERSION },
+    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', FORGE_BUILD_VERSION: input.productVersion },
     replaceEnv: true,
   });
 }
@@ -256,6 +278,7 @@ export function stageRecoveryRelease(input: {
   sourceRoot: string;
 }, dependencies: RecoveryInstallerDependencies = {}): StagedRecoveryRelease {
   const identity = recoverySourceIdentity(input.sourceRoot);
+  const productVersion = recoverySourceProductVersion(identity.sourceRoot);
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
   const releasesRoot = recoveryReleasesRoot(input.controllerHome);
@@ -278,6 +301,7 @@ export function stageRecoveryRelease(input: {
       schemaVersion: 1,
       ...identity,
       builtAt: new Date(now()).toISOString(),
+      productVersion,
       artifacts: completeArtifacts(staging),
     });
     const runCanary = dependencies.runCanary ?? defaultRunCanary;
@@ -291,6 +315,7 @@ export function stageRecoveryRelease(input: {
       const canaryResult = runCanary({
         binaryPath: canary.binaryPath,
         controllerHome: resolve(input.controllerHome),
+        productVersion,
         role: canary.role,
       });
       if (!canaryResult.ok) {
@@ -366,6 +391,7 @@ export function recoverySystemdUserUnitInput(
   controllerHome: string,
   role: RecoveryRuntimeRole,
   env: NodeJS.ProcessEnv = process.env,
+  productVersion: string = FORGE_VERSION,
 ): SystemdUserUnitInput {
   const binary = role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog';
   return {
@@ -374,7 +400,7 @@ export function recoverySystemdUserUnitInput(
     args: [role, '--controller-home', resolve(controllerHome)],
     environment: {
       PATH: env.PATH?.trim() || '/usr/bin:/bin:/usr/sbin:/sbin',
-      FORGE_BUILD_VERSION: FORGE_VERSION,
+      FORGE_BUILD_VERSION: productVersion,
       // Recovery can be running from its own compiled binary. Never let that
       // binary become the interpreter for the primary OAuth Connector after a
       // Controller Home cutover; preserve the explicit package executable.
@@ -395,10 +421,11 @@ function recoveryPlist(input: {
   command: RecoveryRuntimeRole;
   controllerHome: string;
   logPath: string;
+  productVersion: string;
 }): string {
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const argumentsList = [
-    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${FORGE_VERSION}`, `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
+    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${input.productVersion}`, `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
     input.executable, input.command, '--controller-home', input.controllerHome,
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(input.label)}</string><key>ProgramArguments</key><array>${argumentsList.map((argument) => `<string>${xml(argument)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer><key>StandardOutPath</key><string>${xml(input.logPath)}</string><key>StandardErrorPath</key><string>${xml(input.logPath)}</string></dict></plist>\n`;
@@ -475,8 +502,9 @@ export async function verifyRecoveryReleaseActivation(input: {
         signal: AbortSignal.timeout(3_000),
       });
       healthStatus = response.status;
-      const health = await response.json() as { status?: unknown; releaseRevision?: unknown; manifestSha256?: unknown };
+      const health = await response.json() as { status?: unknown; version?: unknown; releaseRevision?: unknown; manifestSha256?: unknown };
       if (response.status !== 200 || health.status !== 'ok') failures.push(`gateway health HTTP ${response.status}`);
+      if (input.expectedRelease.productVersion && health.version !== input.expectedRelease.productVersion) failures.push('gateway health product version mismatch');
       if (!input.expectedRelease.legacy || health.releaseRevision !== undefined) {
         if (health.releaseRevision !== input.expectedRelease.releaseRevision) failures.push('gateway health release revision mismatch');
       }
@@ -528,13 +556,13 @@ async function handoffRecoveryServices(input: {
     const installUnit = input.dependencies.installSystemdUnit ?? installSystemdUserUnit;
     const gatewayPath = installUnit({
       unitName: RECOVERY_GATEWAY_LABEL,
-      unit: recoverySystemdUserUnitInput(input.controllerHome, 'gateway', env),
+      unit: recoverySystemdUserUnitInput(input.controllerHome, 'gateway', env, recoveryReleaseProductVersion(input.expectedRelease)),
       env,
       errorPrefix: 'RECOVERY_SYSTEMD_INSTALL_FAILED',
     });
     const watchdogPath = installUnit({
       unitName: RECOVERY_WATCHDOG_LABEL,
-      unit: recoverySystemdUserUnitInput(input.controllerHome, 'watchdog', env),
+      unit: recoverySystemdUserUnitInput(input.controllerHome, 'watchdog', env, recoveryReleaseProductVersion(input.expectedRelease)),
       env,
       errorPrefix: 'RECOVERY_SYSTEMD_INSTALL_FAILED',
     });
@@ -579,8 +607,9 @@ async function handoffRecoveryServices(input: {
     mkdirSync(auditRoot, { recursive: true, mode: 0o700 });
     const gatewayPath = join(generatedRoot, `${RECOVERY_GATEWAY_LABEL}.plist`);
     const watchdogPath = join(generatedRoot, `${RECOVERY_WATCHDOG_LABEL}.plist`);
-    writeFileSync(gatewayPath, recoveryPlist({ label: RECOVERY_GATEWAY_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'forge-recovery-gateway'), command: 'gateway', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'gateway.log') }), { mode: 0o600 });
-    writeFileSync(watchdogPath, recoveryPlist({ label: RECOVERY_WATCHDOG_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'forge-recovery-watchdog'), command: 'watchdog', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'watchdog.log') }), { mode: 0o600 });
+    const productVersion = recoveryReleaseProductVersion(input.expectedRelease);
+    writeFileSync(gatewayPath, recoveryPlist({ label: RECOVERY_GATEWAY_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'forge-recovery-gateway'), command: 'gateway', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'gateway.log'), productVersion }), { mode: 0o600 });
+    writeFileSync(watchdogPath, recoveryPlist({ label: RECOVERY_WATCHDOG_LABEL, executable: join(recoveryCurrentPath(input.controllerHome), 'forge-recovery-watchdog'), command: 'watchdog', controllerHome: resolve(input.controllerHome), logPath: join(auditRoot, 'watchdog.log'), productVersion }), { mode: 0o600 });
     return {
       gateway: installAgent(gatewayPath, RECOVERY_GATEWAY_LABEL).path,
       watchdog: installAgent(watchdogPath, RECOVERY_WATCHDOG_LABEL).path,
@@ -627,6 +656,7 @@ function sameRecoveryReleasePayload(left: RecoveryReleaseDescriptor, right: Reco
   return left.releaseRevision === right.releaseRevision
     && left.sourceCommit === right.sourceCommit
     && left.cleanWorkspace === right.cleanWorkspace
+    && left.productVersion === right.productVersion
     && RECOVERY_RELEASE_BINARIES.every((binary) => left.artifacts[binary].sha256 === right.artifacts[binary].sha256);
 }
 

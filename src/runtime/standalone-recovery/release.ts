@@ -32,6 +32,8 @@ export interface RecoveryReleaseManifest {
   sourceRoot: string;
   cleanWorkspace: boolean;
   builtAt: string;
+  /** Product version derived from the source package and bound by the manifest hash. */
+  productVersion?: string;
   legacy?: boolean;
   artifacts: Record<RecoveryReleaseBinary, { sha256: string }>;
 }
@@ -42,6 +44,7 @@ export interface RecoveryReleaseDescriptor {
   sourceCommit: string;
   sourceRoot: string;
   cleanWorkspace: boolean;
+  productVersion?: string;
   manifestSha256: string;
   artifacts: RecoveryReleaseManifest['artifacts'];
   legacy: boolean;
@@ -109,6 +112,7 @@ export function readRecoveryRelease(path: string | undefined): RecoveryReleaseDe
     if (typeof parsed.sourceCommit !== 'string' || !parsed.sourceCommit.trim()) return undefined;
     if (typeof parsed.sourceRoot !== 'string' || !parsed.sourceRoot.trim()) return undefined;
     if (typeof parsed.cleanWorkspace !== 'boolean') return undefined;
+    if (parsed.productVersion !== undefined && (typeof parsed.productVersion !== 'string' || !parsed.productVersion.trim())) return undefined;
     if (!parsed.artifacts || typeof parsed.artifacts !== 'object') return undefined;
     const artifacts = {} as RecoveryReleaseManifest['artifacts'];
     for (const binary of RECOVERY_RELEASE_BINARIES) {
@@ -123,6 +127,7 @@ export function readRecoveryRelease(path: string | undefined): RecoveryReleaseDe
       sourceCommit: parsed.sourceCommit,
       sourceRoot: resolve(parsed.sourceRoot),
       cleanWorkspace: parsed.cleanWorkspace,
+      productVersion: typeof parsed.productVersion === 'string' ? parsed.productVersion.trim() : undefined,
       manifestSha256: createHash('sha256').update(bytes).digest('hex'),
       artifacts,
       legacy: parsed.legacy === true,
