@@ -57,7 +57,7 @@ describe('status command (Phase 1C)', () => {
     });
   });
 
-  test('detects opt-in repo via .ai/harness/workflow-contract.json marker', () => {
+  test('does not treat the retired repository-local workflow marker as opt-in authority', () => {
     withTempHome(() => {
       const repo = fs.realpathSync(
         fs.mkdtempSync(path.join(os.tmpdir(), 'forge-status-repo-')),
@@ -68,7 +68,7 @@ describe('status command (Phase 1C)', () => {
         fs.writeFileSync(path.join(repo, '.ai/harness/workflow-contract.json'), '{}');
         const r = runStatus(repo);
         expect(r.repo.inGitRepo).toBe(true);
-        expect(r.repo.optIn).toBe(true);
+        expect(r.repo.optIn).toBe(false);
         expect(r.repo.repoRoot).toBe(repo);
       } finally {
         fs.rmSync(repo, { recursive: true, force: true });

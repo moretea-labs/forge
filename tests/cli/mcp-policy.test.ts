@@ -155,7 +155,7 @@ describe('mcp redaction and audit', () => {
     expect(result.text).toContain('Authorization: Bearer [REDACTED]');
     expect(result.text).toContain('OPENAI_API_KEY=[REDACTED]');
     expect(result.text).toContain('MY_API_KEY=[REDACTED]');
-    expect(result.text).toContain('APP_SECRET:[REDACTED]');
+    expect(result.text).toContain('APP_SECRET: [REDACTED]');
     expect(result.text).toContain('[PRIVATE KEY REDACTED]');
     expect(result.text).not.toContain('token-value');
     expect(result.text).not.toContain('abcdefghijklmnopqrstuvwxyz');

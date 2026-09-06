@@ -6,7 +6,7 @@ import { runsAsInteractiveSyncWrite } from '../../src/runtime/gateway/mcp/router
 
 describe('interactive sync routing policy', () => {
   test('router marks interactive write tools as sync-by-default and supports wait', () => {
-    const source = readFileSync(join(import.meta.dir, '../../src/runtime/gateway/mcp/router.ts'), 'utf8');
+    const source = readFileSync(join(import.meta.dir, '../../adapters/mcp/runtime-gateway/router.ts'), 'utf8');
     expect(source).toContain('INTERACTIVE_SYNC_WRITE_TOOLS');
     expect(source).toContain('repository_safe_patch_apply');
     expect(source).toContain('begin_edit_session');
