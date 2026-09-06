@@ -95,6 +95,8 @@ interface RuntimeReleaseManifestRecord {
   artifactIdentity: string;
   arguments?: string[];
   diagnosticEntrypoint?: string;
+  packageRoot?: string;
+  packageArtifactIdentity?: string;
   browserAutomationHelperEntrypoint?: string;
   browserAutomationHelperArtifactIdentity?: string;
   browserAutomationHelperContractIdentity?: string;
@@ -148,6 +150,30 @@ export function activeRuntimeEntrypoint(controllerHome: string): string | undefi
   return readActiveRuntimeRelease(controllerHome)?.entrypoint;
 }
 
+function activeRuntimeProductVersion(active: ActiveRuntimeReleaseRecord): string | undefined {
+  const packageRoot = active.manifest.packageRoot?.trim();
+  if (!packageRoot) return undefined;
+  if (!active.manifest.packageArtifactIdentity?.trim()) {
+    throw new Error('FORGE_RUNTIME_RELEASE_PACKAGE_VERSION_UNATTESTED');
+  }
+  const packageDirectory = resolve(active.releaseRoot, packageRoot);
+  if (!isInside(active.releaseRoot, packageDirectory)) {
+    throw new Error('FORGE_RUNTIME_RELEASE_PACKAGE_ROOT_OUTSIDE_RELEASE');
+  }
+  const packagePath = join(packageDirectory, 'package.json');
+  try {
+    const status = lstatSync(packagePath);
+    if (status.isSymbolicLink() || !status.isFile()) throw new Error('not a regular file');
+    const parsed = JSON.parse(readFileSync(packagePath, 'utf8')) as { version?: unknown };
+    const version = typeof parsed.version === 'string' ? parsed.version.trim() : '';
+    if (!version) throw new Error('version is missing');
+    return version;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`FORGE_RUNTIME_RELEASE_PACKAGE_VERSION_INVALID: ${detail}`);
+  }
+}
+
 function legacyBrowserAutomationLaunchAgentPaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): { label: string; installedPlistPath: string } {
   const home = resolveControllerHome(controllerHome);
   const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
@@ -182,6 +208,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   if (diagnosticEntrypoint && (!isInside(active.releaseRoot, diagnosticEntrypoint) || !existsSync(diagnosticEntrypoint))) {
     throw new Error('FORGE_RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_INVALID');
   }
+  const productVersion = activeRuntimeProductVersion(active);
   return {
     args: [
       '--controller-home', home,
@@ -199,6 +226,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
       ...(diagnosticEntrypoint ? { FORGE_CLI_EXECUTABLE: diagnosticEntrypoint } : {}),
       FORGE_RELEASE_PATH: active.releaseRoot,
       FORGE_RELEASE_ID: active.releaseId,
+      ...(productVersion ? { FORGE_BUILD_VERSION: productVersion } : {}),
       FORGE_RELEASE_REVISION: active.manifest.releaseRevision ?? active.releaseId,
       ...(active.manifest.sourceCommit ? { FORGE_RELEASE_SOURCE_COMMIT: active.manifest.sourceCommit } : {}),
       FORGE_RELEASE_CLEAN_WORKSPACE: String(active.manifest.cleanWorkspace !== false),
