@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import {
   buildAppStoreConnectPluginManifest,
   executeAppStoreConnectPluginAction,
@@ -60,7 +61,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     });
   });
 
-  test('reads legacy repo-harness config when the Forge config path has not been migrated yet', async () => {
+  test('imports legacy repo-harness config only through an explicit Controller context', async () => {
     const repoRoot = root();
     const legacyRoot = join(repoRoot, '.repo-harness', 'plugins');
     mkdirSync(legacyRoot, { recursive: true });
@@ -71,10 +72,12 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       defaultLocale: 'en-US',
     }, null, 2));
 
-    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    const controllerHome = join(repoRoot, '.controller');
+    const context = { controllerHome, repoId: 'repo-test', repoRoot, controllerScoped: false };
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, context);
     expect(manifest.enabled).toBe(true);
     expect(manifest.health.ready).toBe(true);
-    expect(manifest.authority.sourceOfTruth).toContain('legacy-read-fallback:.repo-harness/plugins/app-store-connect.json');
+    expect(manifest.authority.sourceOfTruth).toContain('legacy-import-only:.forge/plugins|.repo-harness/plugins/app-store-connect.json');
     const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {}));
     expect(auth).toMatchObject({ ready: true, provider: 'mock' });
   });
@@ -121,18 +124,15 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     const privateKeyPath = join(repoRoot, 'AuthKey_DIRECTORY.p8');
     mkdirSync(privateKeyPath);
-    const configRoot = join(repoRoot, '.forge', 'plugins');
-    mkdirSync(configRoot, { recursive: true });
-    writeFileSync(join(configRoot, 'app-store-connect.json'), JSON.stringify({
-      schemaVersion: 1,
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
       enabled: true,
       provider: 'app-store-connect-api',
-      issuerId: 'issuer-test',
-      keyId: 'key-test',
-      privateKeyPath,
-    }, null, 2));
+      issuer_id: 'issuer-test',
+      key_id: 'key-test',
+      private_key_path: privateKeyPath,
+    }));
 
-    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, { controllerHome: join(repoRoot, '.controller'), repoId: 'repo-test', repoRoot, controllerScoped: false });
     expect(manifest.enabled).toBe(true);
     expect(manifest.health).toMatchObject({ state: 'degraded', ready: false, probed: true });
     expect(manifest.health.warnings.join(' ')).toContain('private key path is not a regular file');
@@ -151,16 +151,13 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const privateKeyPath = join(repoRoot, 'AuthKey_REMOTE.p8');
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
     writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
-    const configRoot = join(repoRoot, '.forge', 'plugins');
-    mkdirSync(configRoot, { recursive: true });
-    writeFileSync(join(configRoot, 'app-store-connect.json'), JSON.stringify({
-      schemaVersion: 1,
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
       enabled: true,
       provider: 'app-store-connect-api',
-      issuerId: 'issuer-remote',
-      keyId: 'key-remote',
-      privateKeyPath,
-    }, null, 2));
+      issuer_id: 'issuer-remote',
+      key_id: 'key-remote',
+      private_key_path: privateKeyPath,
+    }));
 
     const originalReadFile = fsPromises.readFile;
     const originalFetch = globalThis.fetch;
@@ -243,7 +240,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const child = { ...input(repoRoot, 'configure', { default_locale: 'fr-FR' }), controllerHome, repoId: 'repo-child' };
     const configured = await executeAppStoreConnectPluginAction(child) as { config: { enabled: boolean; teamId?: string; defaultLocale?: string } };
     expect(configured.config).toMatchObject({ enabled: true, teamId: 'GLOBAL', defaultLocale: 'fr-FR' });
-    const overlayPath = join(repoRoot, '.forge', 'plugins', 'app-store-connect.json');
+    const overlayPath = repositoryPluginConfigPath({ controllerHome, repoId: 'repo-child' }, 'app_store_connect');
     const overlay = JSON.parse(readFileSync(overlayPath, 'utf-8')) as Record<string, unknown>;
     expect(overlay).toMatchObject({ schemaVersion: 1, defaultLocale: 'fr-FR' });
     expect(overlay).not.toHaveProperty('teamId');
