@@ -74,11 +74,14 @@ describe('repository-change Work with an unborn Git baseline', () => {
     const continued = continueGoalWorkloop(currentContext, { workId: workId! });
     expect(continued.status).toBe('ok');
     expect(continued.summary).not.toContain('no current net source changes');
-    expect(getWorkContract(workStore, workId!)).toMatchObject({ phase: 'delivery', status: 'running' });
+    // A repository change now stops at the explicit Controller review phase;
+    // this assertion keeps the unborn-base regression focused on net-change
+    // identity rather than bypassing the normal delivery review fence.
+    expect(getWorkContract(workStore, workId!)).toMatchObject({ phase: 'review', status: 'running' });
 
     const semanticFinalize = finalizeGoalWorkloop(currentContext, { workId: workId! });
     expect(semanticFinalize.status).toBe('blocked');
-    expect(semanticFinalize.summary).toContain('exact delivery and cleanup completion receipt is required');
+    expect(semanticFinalize.summary).toContain('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
     expect(semanticFinalize.summary).not.toContain('no current net source changes');
   });
 

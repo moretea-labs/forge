@@ -38,7 +38,7 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { loadRepositoryRegistry } from "../../src/cli/repositories/registry";
+import { loadRepositoryRegistry, registerRepository } from "../../src/cli/repositories/registry";
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 
@@ -92,6 +92,7 @@ function repo(): string {
   writeFileSync(join(root, "tasks/current.md"), "# Current\n");
   expect(spawnSync("git", ["init", "-b", "main"], { cwd: root }).status).toBe(0);
   process.env.FORGE_CONTROLLER_HOME = controllerHome;
+  registerRepository({ path: root, controllerHome });
   return root;
 }
 
@@ -189,9 +190,10 @@ describe("Local Execution Bridge", () => {
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
 
-    const repository = JSON.parse(readFileSync(join(root, ".ai/harness/repository.json"), "utf-8")) as { repoId: string };
     const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-    const controllerLocalJobs = join(controllerHome, "repositories", repository.repoId, "local-jobs");
+    const repository = loadRepositoryRegistry(controllerHome).repositories.find((entry) => entry.canonicalRoot === realpathSync(root));
+    expect(repository).toBeTruthy();
+    const controllerLocalJobs = join(controllerHome, "repositories", repository!.repoId, "local-jobs");
     expect(realpathSync(localJobsPath)).toBe(realpathSync(controllerLocalJobs));
     expect((await fetch(new URL("/health", handle.url))).status).toBe(200);
   });
@@ -208,7 +210,6 @@ describe("Local Execution Bridge", () => {
   test("waits for a repository heavy-check lock held by another Controller", async () => {
     const root = repo();
     mkdirSync(join(root, ".forge"), { recursive: true });
-    mkdirSync(join(root, ".ai/harness/controller"), { recursive: true });
     writeFileSync(join(root, ".forge/checks.json"), JSON.stringify({
       version: 1,
       checks: {
@@ -218,7 +219,11 @@ describe("Local Execution Bridge", () => {
         },
       },
     }));
-    const lockPath = join(root, ".ai/harness/controller/heavy-check.lock");
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const repository = loadRepositoryRegistry(controllerHome).repositories.find((entry) => entry.canonicalRoot === realpathSync(root));
+    expect(repository).toBeTruthy();
+    const lockPath = join(controllerHome, 'repositories', repository!.repoId, 'checks', 'locks', 'heavy-check.lock');
+    mkdirSync(join(controllerHome, 'repositories', repository!.repoId, 'checks', 'locks'), { recursive: true });
     writeFileSync(lockPath, `${JSON.stringify({
       lockId: "external-controller",
       controllerPid: process.pid,
@@ -545,7 +550,7 @@ describe("Local Execution Bridge", () => {
       outcome: "passed",
       source: "human_review",
     });
-    expect(verifiedTask?.verification?.checkResults?.some((entry: { id?: string; ok?: boolean }) => entry.id === 'focused' && entry.ok)).toBe(true);
+    expect(verifiedTask?.verification?.checkResults?.some((entry: { checkId?: string; ok?: boolean }) => entry.checkId === 'focused' && entry.ok)).toBe(true);
     expect(existsSync(join(root, '.ai', 'harness', 'checks'))).toBe(false);
     const accepted = await fetch(new URL(`/api/issues/${issue.id}/tasks/T1/accept`, handle.url), {
       method: "POST",
@@ -1008,7 +1013,7 @@ describe("Local Execution Bridge", () => {
     expect(Array.isArray(plugins.plugins)).toBe(true);
     expect(plugins.summary).toBeTruthy();
     expect(typeof plugins.summary.total).toBe("number");
-    expect(plugins.plugins.some((entry: { id?: string }) => entry.id === "browser")).toBe(true);
+    expect(plugins.plugins.some((entry: { id?: string }) => entry.id === "browser")).toBe(false);
     expect(plugins.plugins.some((entry: { id?: string }) => entry.id === "desktop")).toBe(false);
   });
 });

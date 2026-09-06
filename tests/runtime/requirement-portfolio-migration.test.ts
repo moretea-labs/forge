@@ -171,7 +171,9 @@ describe('Requirement portfolio migration', () => {
   test('applies explicit legacy Issue close and block decisions to Requirement/Plan authority without rewriting frozen files', () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'requirement-decision-repo-'));
     const controllerHome = join(repoRoot, '_ops', 'controller-home');
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
     try {
+      process.env.FORGE_CONTROLLER_HOME = controllerHome;
       mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
       writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`, 'utf8');
       const legacyIssue = createIssue(repoRoot, {
@@ -241,6 +243,8 @@ describe('Requirement portfolio migration', () => {
       expect(Object.fromEntries(beforeFiles.map((name) => [name, readFileSync(join(issueDir, name), 'utf8')]))).toEqual(beforeContents);
       expect(() => updateIssue(repoRoot, legacyIssue.id, { summary: 'Still frozen.' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
     } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });
@@ -261,7 +265,9 @@ describe('Requirement portfolio migration', () => {
   test('retires legacy writes, records migrated completion, and exports deterministic offline snapshots', () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'requirement-cutover-repo-'));
     const controllerHome = join(repoRoot, '_ops', 'controller-home');
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
     try {
+      process.env.FORGE_CONTROLLER_HOME = controllerHome;
       mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
       writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`, 'utf8');
       const legacyIssue = createIssue(repoRoot, {
@@ -334,6 +340,8 @@ describe('Requirement portfolio migration', () => {
       expect(() => exportRequirementPortfolio({ controllerHome, repoId: REPO_ID, repoRoot, outputDir: issueDir })).toThrow('REQUIREMENT_EXPORT_LEGACY_AUTHORITY_PATH_REFUSED');
       expect(readdirSync(issueDir).sort()).toEqual(beforeFiles);
     } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });

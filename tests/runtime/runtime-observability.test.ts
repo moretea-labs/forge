@@ -34,7 +34,9 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
@@ -447,9 +449,35 @@ describe('runtime observability', () => {
         verifiedAt: now,
         recordedAt: now,
       });
+      const approveNoChangeCompletion = (workId: string, sourceRevision: string) => {
+        transitionWorkContractPhase(store, workId, {
+          phase: 'verification', status: 'running', state: 'satisfied',
+          summary: 'The exact audit fixture candidate was verified before review.',
+        });
+        requestWorkImplementationReview(store, workId, 'The repository completion audit fixture requires explicit review.');
+        recordWorkImplementationReview(store, workId, {
+          schemaVersion: 1,
+          reviewId: `REV-${workId}`,
+          workId,
+          reviewerPrincipalId: 'runtime-observability-test',
+          decision: 'approved',
+          rationale: 'The exact no-change completion candidate was reviewed before recording its immutable receipt.',
+          findings: [],
+          sourceRevision,
+          workspaceFingerprint: `runtime-observability-${workId}-content`,
+          verificationWorkspaceFingerprint: `runtime-observability-${workId}-verification`,
+          changedPaths: [],
+          changedPathDigest: implementationReviewChangedPathDigest([]),
+          acceptanceCriteriaSummary: 'Lifecycle attention distinguishes immutable receipt delivery from cleanup ownership.',
+          verificationEvidence: [],
+          architectureEvidence: [],
+          recordedAt: now,
+        });
+      };
 
       const completedWorkId = 'work-completed-audit-fixture';
       baseWork(completedWorkId);
+      approveNoChangeCompletion(completedWorkId, mainRevision);
       writeWorkHandle(controllerHome, handle(completedWorkId, {
         validation: 'pending',
         commit: 'pending',
@@ -467,6 +495,7 @@ describe('runtime observability', () => {
       spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       const unreachableWorkId = 'work-unreachable-receipt-fixture';
       baseWork(unreachableWorkId);
+      approveNoChangeCompletion(unreachableWorkId, unreachableRevision);
       writeWorkHandle(controllerHome, handle(unreachableWorkId, {
         validation: 'done',
         commit: 'done',
@@ -761,10 +790,22 @@ describe('runtime observability', () => {
         if (index === 3) {
           expect(result).toMatchObject({ eligible: true, recurrent: true, repairRepoId: repository.repoId, reusedExistingWork: false });
           expect(result.workId).toBeTruthy();
-          expect(result.scheduleId).toBeTruthy();
+          // An incident record does not invent an external Controller session.
+          // It creates repair Work first; a later authenticated session claim
+          // authorizes the continuation schedule.
+          expect(result.scheduleId).toBeUndefined();
           repairWorkId = result.workId;
+          claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+            workId: repairWorkId!,
+            controllerId: 'incident-repair-chatgpt',
+            controllerType: 'chatgpt',
+            principalId: 'incident-repair-chatgpt',
+            controllerInstanceId: 'incident-repair-runtime',
+            sessionId: 'incident-repair-session',
+          });
         } else {
           expect(result).toMatchObject({ eligible: true, recurrent: true, workId: repairWorkId, reusedExistingWork: true });
+          expect(result.scheduleId).toBeTruthy();
         }
       }
 

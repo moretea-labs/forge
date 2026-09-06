@@ -22,9 +22,14 @@ const NOW = '2026-08-05T00:00:00.000Z';
 function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: string) => void): void {
   const repoRoot = mkdtempSync(join(tmpdir(), 'legacy-cutover-cli-'));
   const controllerHome = join(repoRoot, '_ops', 'controller-home');
+  const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
   const issueDir = join(repoRoot, 'tasks', 'issues');
   const issuePath = join(issueDir, `${ISSUE_ID}-legacy.issue.json`);
   try {
+    // The repository-local path is intentionally not discovered implicitly.
+    // This fixture selects its isolated Controller Home explicitly, as a real
+    // caller would through configuration or --controller-home.
+    process.env.FORGE_CONTROLLER_HOME = controllerHome;
     mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
     mkdirSync(issueDir, { recursive: true });
     writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`);
@@ -90,6 +95,8 @@ function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: str
     });
     run(repoRoot, controllerHome, issuePath);
   } finally {
+    if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+    else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
     rmSync(repoRoot, { recursive: true, force: true });
   }
 }

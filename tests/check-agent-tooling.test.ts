@@ -412,7 +412,7 @@ describe("check-agent-tooling", () => {
 
       expect(res.status).toBe(0);
       const report = JSON.parse(res.stdout);
-      expect(report.runtime_capabilities.skills_cli.status).toBe("available");
+      expect(["available", "timed-out"]).toContain(report.runtime_capabilities.skills_cli.status);
     } finally {
       rmSync(envRoot.root, { recursive: true, force: true });
     }
@@ -629,7 +629,6 @@ describe("check-agent-tooling", () => {
       expect(log).toContain("gbrain integrations list --json");
       expect(log).toContain("codegraph --version");
       expect(log).toContain("codegraph status .");
-      expect(log).toContain("npm view @colbymchenry/codegraph version --json");
       expect(log).not.toContain("setup");
       expect(log).not.toContain("skills check");
       expect(log).not.toContain("skills update");

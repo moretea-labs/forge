@@ -72,7 +72,6 @@ const RUNTIME_STORAGE_SPECS: RuntimeStorageSpec[] = [
   // Legacy callers may still use these repository-relative paths, but the
   // physical state is Controller Home-owned. Keep them as compatibility links
   // until the corresponding adapters consume Controller paths directly.
-  { name: 'checks', sourceName: 'checks', controllerName: 'checks' },
   { name: 'session', sourceName: 'session', controllerName: 'session' },
   { name: 'planning', sourceName: 'planning', controllerName: 'planning' },
   { name: 'security', sourceName: 'security', controllerName: 'security' },

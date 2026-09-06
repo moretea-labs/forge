@@ -99,17 +99,17 @@ describe('v8.1 repository runtime storage isolation', () => {
     }
   });
 
-  test('backs compatibility check/session/planning/security/transfer paths with Controller Home', () => {
+  test('backs compatibility session/planning/security/transfer paths with Controller Home', () => {
     const fixture = repositoryFixture();
     try {
-      for (const name of ['checks', 'session', 'planning', 'security', 'transfers']) {
+      for (const name of ['session', 'planning', 'security', 'transfers']) {
         const source = join(fixture.repoA.canonicalRoot, '.ai', 'harness', name);
         mkdirSync(source, { recursive: true });
         writeFileSync(join(source, 'marker.txt'), `${name}\n`, 'utf-8');
       }
       const storage = ensureRepositoryRuntimeStorage(fixture.repoA, fixture.controllerHome);
       const controllerRoot = repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId);
-      for (const name of ['checks', 'session', 'planning', 'security', 'transfers']) {
+      for (const name of ['session', 'planning', 'security', 'transfers']) {
         const source = join(fixture.repoA.canonicalRoot, '.ai', 'harness', name);
         const target = join(controllerRoot, name);
         expect(lstatSync(source).isSymbolicLink()).toBe(true);
