@@ -1146,6 +1146,15 @@ export async function callRepositoryTool(
           defaultBranch: repository.defaultBranch,
           timeoutMs,
         });
+        const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+        if (executionIdentity.workId
+          && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable')
+          && !processRequestId) {
+          throw new Error(
+            `WORK_PROCESS_REQUEST_ID_REQUIRED: ${executionIdentity.workId}; `
+            + 'Work-attributed Process Runtime commands require a stable request_id so reconnect/retry can resume the original Process without duplicate execution.',
+          );
+        }
         let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
         if (executionIdentity.workId) {
           const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
@@ -1162,6 +1171,7 @@ export async function callRepositoryTool(
                 repository,
                 workId: executionIdentity.workId!,
                 principalId: caller?.principalId ?? '',
+                deferEffectPromotion: true,
               }),
               60_000,
             );
@@ -1240,13 +1250,6 @@ export async function callRepositoryTool(
               });
             }
             if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable') {
-              const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-              if (executionIdentity.workId && !processRequestId) {
-                throw new Error(
-                  `WORK_PROCESS_REQUEST_ID_REQUIRED: ${executionIdentity.workId}; `
-                  + 'Work-attributed Process Runtime commands require a stable request_id so reconnect/retry can resume the original Process without duplicate execution.',
-                );
-              }
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
                 repository,

@@ -46,6 +46,7 @@ export function ensureRepositoryWorkHandle(input: {
   repository: RepositoryRecord;
   workId: string;
   identity: RepositoryWorkHandleControllerIdentity;
+  allowEffectWork?: boolean;
 }): WorkHandleState | undefined {
   const existing = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (existing) return existing;
@@ -53,7 +54,9 @@ export function ensureRepositoryWorkHandle(input: {
     { controllerHome: input.controllerHome, repoId: input.repository.repoId },
     input.workId,
   );
-  if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) {
+  const supportedKind = contract?.workKind === 'repository_change'
+    || (input.allowEffectWork === true && (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect'));
+  if (!contract || !supportedKind || contract.mode !== 'goal_workloop' || !contract.checkoutId) {
     return undefined;
   }
   // Callers may already be scoped to the Work checkout. Re-read the unselected
@@ -181,6 +184,11 @@ export function markRepositoryMutationStarted(input: {
   workId: string;
   expectedDeliveryBase?: string;
 }): WorkHandleState | undefined {
+  const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
+  const contract = getWorkContract(store, input.workId);
+  if (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect') {
+    updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+  }
   const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
   const boundWorkId = handle.workContractId ?? handle.workId;
@@ -205,6 +213,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
   repository: RepositoryRecord;
   workId: string;
   principalId: string;
+  deferEffectPromotion?: boolean;
 }): { handle: WorkHandleState; promotedFrom?: 'local_effect' | 'remote_effect' } {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   let contract = getWorkContract(store, input.workId);
@@ -230,9 +239,11 @@ export function ensureRepositoryMutationWorkHandle(input: {
   let promotedFrom: 'local_effect' | 'remote_effect' | undefined;
   if (contract.workKind === 'local_effect' || contract.workKind === 'remote_effect') {
     promotedFrom = contract.workKind;
-    contract = updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+    if (input.deferEffectPromotion !== true) {
+      contract = updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+    }
   }
-  if (contract.workKind !== 'repository_change') {
+  if (contract.workKind !== 'repository_change' && input.deferEffectPromotion !== true) {
     throw new Error(`WORK_REPOSITORY_MUTATION_KIND_INVALID: ${input.workId}:${contract.workKind}`);
   }
 
@@ -242,6 +253,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
     repository: input.repository,
     workId: input.workId,
     identity: { sessionId: owner.sessionId, principalId },
+    allowEffectWork: input.deferEffectPromotion === true,
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
   handle = alignRepositoryMutationBase({

@@ -7,7 +7,7 @@ import { repositoryControllerRoot } from "../../src/cli/repositories/controller-
 import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
-import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto } from "../../src/cli/repositories/structured-git";
+import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
 import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
 import { inspectFailedNonLinearTargetAdvanceRepair } from "../../src/runtime/control-plane/execution/work-finalization-service";
 import { commandFingerprint, verificationInputFingerprint } from "../../src/runtime/control-plane/execution/verification-evidence";
@@ -299,6 +299,8 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["commit", "-m", "init"]);
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
       writeFileSync(join(repoRoot, "tracked.txt"), "v1\n");
+      git(repoRoot, ["add", "tracked.txt"]);
+      git(repoRoot, ["commit", "-m", "tracked fixture"]);
       const workId = "WORK-PROCESS-REQUEST-ID";
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId,
@@ -338,7 +340,7 @@ describe("repository MCP command tools", () => {
         approval_token: preview.approvalToken,
       }, caller));
       expect(missingKey.error).toMatchObject({ code: "WORK_PROCESS_REQUEST_ID_REQUIRED" });
-      expect(spawnSync("git", ["-C", repoRoot, "status", "--short"], { encoding: "utf8" }).stdout).toContain("?? tracked.txt");
+      expect(spawnSync("git", ["-C", repoRoot, "status", "--short"], { encoding: "utf8" }).stdout).toBe("");
 
       const keyed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
         repo_id: repository.repoId,
@@ -565,6 +567,49 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("effect Work command with no repository delta preserves effect semantics after conservative write-risk admission", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-command-no-source-delta-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    const externalPath = join(workspace, "external-effect.txt");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-EFFECT-COMMAND-NO-SOURCE-DELTA";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
+        workKind: "local_effect", objective: "Run a local effect from repository context without changing repository source.",
+        acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-effect-no-source", principalId: "principal-effect-no-source", controllerInstanceId: "runtime-effect-no-source" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const effect = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId, work_id: workId, command: ["touch", externalPath], request_id: "effect-command-no-source-delta",
+      }, caller));
+      expect(effect.accepted).toBe(true);
+      expect(effect.ok).toBe(true);
+      expect(existsSync(externalPath)).toBe(true);
+      expect(repositoryGitStatus(getRepository(repository.repoId, controllerHome)).clean).toBe(true);
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("local_effect");
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toBeDefined();
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal Work ids remain usable only as explicit read-only historical context", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-readonly-context-"));
     const controllerHome = join(workspace, "controller");
@@ -586,7 +631,7 @@ describe("repository MCP command tools", () => {
         mode: "goal_workloop",
         objective: "preserve post-finalize read-only observation without reviving Work authority",
         acceptanceCriteria: ["terminal Work is context only"],
-        allowedPaths: [],
+        allowedPaths: ["work-edit.txt"],
         forbiddenPaths: [],
         checks: [],
         constraints: { requireHandoffOnAmbiguity: true },
@@ -658,6 +703,7 @@ describe("repository MCP command tools", () => {
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId: unrelatedWorkId,
         repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
         mode: "goal_workloop",
         objective: "Keep verifying an unrelated stabilization goal.",
         acceptanceCriteria: ["verification continues independently"],
@@ -686,6 +732,8 @@ describe("repository MCP command tools", () => {
       }, caller));
       expect(unboundPatch.status).toBe("applied");
       expect(unboundPatch.session.workId).toBeUndefined();
+      git(repoRoot, ["add", "direct-edit.txt"]);
+      git(repoRoot, ["commit", "-m", "independent direct edit"]);
 
       const explicitlyBoundPatch = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
         repo_id: repository.repoId,
