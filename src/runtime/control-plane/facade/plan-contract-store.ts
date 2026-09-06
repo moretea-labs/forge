@@ -160,7 +160,7 @@ function planObligationId(planId: string, kind: PlanObligation['kind'], sourceRe
   return `obl_${digest}`;
 }
 
-export function listUnresolvedPlanObligations(plan: PlanContract): PlanObligation[] {
+function listPlanObligations(plan: PlanContract, mode: 'unresolved' | 'completed_steps'): PlanObligation[] {
   const out: PlanObligation[] = [];
   const add = (kind: PlanObligation['kind'], sourceRef: string, summary: string) => {
     const normalized = summary.trim();
@@ -168,15 +168,42 @@ export function listUnresolvedPlanObligations(plan: PlanContract): PlanObligatio
     out.push({ obligationId: planObligationId(plan.planId, kind, sourceRef, normalized), predecessorPlanId: plan.planId, kind, sourceRef, summary: normalized });
   };
   for (const step of plan.steps) {
-    if (step.status === 'completed') continue;
+    if (mode === 'unresolved' && step.status === 'completed') continue;
+    if (mode === 'completed_steps' && step.status !== 'completed') continue;
     add('step_objective', `step:${step.id}`, step.objective);
     step.acceptanceCriteria.forEach((criterion, index) => add('step_acceptance', `step:${step.id}:acceptance:${index}`, criterion));
   }
-  plan.nonGoals.forEach((value, index) => add('non_goal', `non_goal:${index}`, value));
-  plan.resolvedDecisions.forEach((value, index) => add('resolved_decision', `resolved_decision:${index}`, value));
-  plan.stopConditions.forEach((value, index) => add('stop_condition', `stop_condition:${index}`, value));
-  plan.replanConditions.forEach((value, index) => add('replan_condition', `replan_condition:${index}`, value));
+  if (mode === 'unresolved') {
+    plan.nonGoals.forEach((value, index) => add('non_goal', `non_goal:${index}`, value));
+    plan.resolvedDecisions.forEach((value, index) => add('resolved_decision', `resolved_decision:${index}`, value));
+    plan.stopConditions.forEach((value, index) => add('stop_condition', `stop_condition:${index}`, value));
+    plan.replanConditions.forEach((value, index) => add('replan_condition', `replan_condition:${index}`, value));
+  }
   return out;
+}
+
+export function listUnresolvedPlanObligations(plan: PlanContract): PlanObligation[] {
+  return listPlanObligations(plan, 'unresolved');
+}
+
+function retireResolvedPredecessorObligationDispositions(
+  plan: PlanContract,
+  allPlans: readonly PlanContract[],
+): PlanContract {
+  const dispositions = plan.obligationDispositions ?? [];
+  if (dispositions.length === 0 || (plan.supersedes?.length ?? 0) === 0) return plan;
+  const resolvedByPredecessor = new Map<string, Set<string>>();
+  for (const predecessorId of plan.supersedes ?? []) {
+    const predecessor = allPlans.find((candidate) => candidate.planId === predecessorId);
+    if (!predecessor) continue;
+    resolvedByPredecessor.set(
+      predecessorId,
+      new Set(listPlanObligations(predecessor, 'completed_steps').map((obligation) => obligation.obligationId)),
+    );
+  }
+  const retained = dispositions.filter((disposition) =>
+    !resolvedByPredecessor.get(disposition.predecessorPlanId)?.has(disposition.obligationId));
+  return retained.length === dispositions.length ? plan : { ...plan, obligationDispositions: retained };
 }
 
 function successorObligationRefs(plan: PlanContract): Set<string> {
@@ -727,10 +754,10 @@ function repairDraftPlanContractUnlocked(
     requirementId: current.requirementId,
     evidenceRefs: current.evidenceRefs,
   }, at);
-  const candidateWithLineage: PlanContract = {
+  const candidateWithLineage = retireResolvedPredecessorObligationDispositions({
     ...candidate,
     ...(current.supersedes?.length ? { supersedes: [...current.supersedes] } : {}),
-  };
+  }, store.contracts);
   const contentErrors = draftContentErrors(candidateWithLineage);
   if (contentErrors.length > 0) {
     throw new Error(`PLAN_DRAFT_REPAIR_INVALID: ${contentErrors.join('; ')}`);
