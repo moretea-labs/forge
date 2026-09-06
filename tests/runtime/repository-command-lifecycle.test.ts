@@ -35,6 +35,7 @@ import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renew
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { terminateProcessTree } from '../../src/runtime/shared/process-tree';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from './process-hygiene';
+import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
 
 const roots: string[] = [];
 const tracked: ChildProcess[] = [];
@@ -75,6 +76,21 @@ function seedRepo(controllerHome: string, repoRoot: string) {
 function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string): WorkHandleState {
   const now = new Date().toISOString();
   const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
+  createWorkContract({ controllerHome, repoId: repository.repoId }, {
+    workId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    mode: 'goal_workloop',
+    workKind: 'repository_change',
+    objective: `Execute repository command lifecycle fixture for ${workId}.`,
+    acceptanceCriteria: [],
+    allowedPaths: ['**'],
+    forbiddenPaths: [],
+    checks: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+    requestedBy: 'chatgpt',
+    status: 'running',
+  });
   return writeWorkHandle(controllerHome, {
     schemaVersion: 1,
     workId,
@@ -279,16 +295,7 @@ describe('repository command execution lifecycle', () => {
     expect(failedTerminal?.ok ?? failedExecution.ok).toBe(false);
     expect(readWorkHandle(controllerHome, repository.repoId, failed.workId)?.expectedHead).toBe(failedHead);
 
-    const newHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
-    const drift = writeWorkHandle(controllerHome, {
-      ...readWorkHandle(controllerHome, repository.repoId, failed.workId)!,
-      workId: 'work-head-branch-drift',
-      sessionId: 'session-work-head-branch-drift',
-      expectedHead: newHead,
-      baseCommit: newHead,
-      deliveryBaseCommit: newHead,
-      recordRevision: undefined,
-    });
+    const drift = seedWorkHandle(controllerHome, repository, 'work-head-branch-drift');
     const driftExecution = await executeRepositoryCommandViaProcessRuntime({
       controllerHome,
       repository,
@@ -303,7 +310,7 @@ describe('repository command execution lifecycle', () => {
         ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, driftExecution.process.processId, { timeoutMs: 10_000 })
         : undefined;
     expect(driftTerminal?.ok ?? driftExecution.ok).toBe(true);
-    expect(readWorkHandle(controllerHome, repository.repoId, drift.workId)?.expectedHead).toBe(newHead);
+    expect(readWorkHandle(controllerHome, repository.repoId, drift.workId)?.expectedHead).toBe(drift.expectedHead);
   });
 
   test('raw git commits require explicit path scope and selected-path commits keep unrelated staged work isolated', () => {
@@ -536,6 +543,7 @@ describe('repository command execution lifecycle', () => {
       handoffStore: { controllerHome, repoId: repository.repoId },
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
+      sourceRevision: gitOutput(repoRoot, ['rev-parse', 'HEAD']),
     }, {
       objective: 'Modify source and deliver the exact integrated revision to origin.',
       acceptanceCriteria: ['Repository change remains authoritative through remote delivery.'],
@@ -543,6 +551,9 @@ describe('repository command execution lifecycle', () => {
       initialLikelyPaths: ['src/example.ts'],
       forbiddenPaths: [],
       checks: [],
+      forceMode: 'goal_workloop',
+      workKind: 'repository_change',
+      verifiedEngineeringEvidence: trustedEngineeringEvidence(gitOutput(repoRoot, ['rev-parse', 'HEAD'])),
       modeInput: {
         scopeClear: true,
         mutation: true,
