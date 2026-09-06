@@ -6,6 +6,30 @@ benchmarks prompt/skill behavior rather than repository-change scenarios.
 
 ## Hermetic paired candidate runner
 
+`bun evaluation/run-paired.ts <experiment.json> <new-external-output-directory>`
+runs the complete shared corpus. The input declares `mode: "aa" | "ab"` and
+two `EvaluationCandidateAdapter` objects (immutable identity, artifact root,
+bound public command, and an explicit warmup for formal cold/warm runs).
+The baseline must match the pinned published v1.7.2 identity. A/A uses identical
+artifacts, one cold repetition, and correctness/latency metrics only; it is
+calibration evidence, not formal superiority evidence. A/B requires the current
+frozen authority. Every completed scenario is preserved before the next starts;
+existing evidence directories are never overwritten or implicitly resumed.
+
+The protocol timeout is one monotonic candidate execution budget covering all
+CLI steps or MCP connect/restart/call operations. Sandbox preparation, declared
+warmup, artifact verification, evaluator-owned validation and cleanup are outside
+that execution budget. Startup/call timeouts and missing declared MCP capture
+results remain measured candidate failures. Artifact/protocol/isolation corruption
+invalidates the experiment. Aggregation rejects missing scenarios, missing or
+duplicate trials, mixed candidate artifacts and inconsistent environment facts.
+
+Unobserved dimensions remain unmeasured. A partially measured metric is listed
+with its missing/total trial count, retains its raw reports, and makes the overall
+assessment `inconclusive_missing_metrics`; it is never silently averaged over
+only the successful subset or treated as a passing zero. The current shared
+corpus alone does not provide complete engineering-quality or CPU/RSS coverage.
+
 `lib/candidate-runner.ts` executes both candidates through the same declared external
 public surface (`public_cli` or `public_mcp`). Candidate artifacts are content-addressed as a complete file or directory tree, verified, and required to contain the artifact entry explicitly bound to the public command. Each trial executes a private materialized copy, so transitive candidate code and candidate-side mutation cannot drift behind a stable identity; the evaluator never imports candidate `src/runtime`,
 `src/cli`, or `packages/kernel` modules.
@@ -59,7 +83,7 @@ and failure taxonomy, trial policy, exact v1.7.2 baseline artifact, A/A
 calibration evidence, and the environment policy. The calibration authority code
 itself is part of the evaluator implementation digest.
 
-The durable pre-freeze v1.7.2 A/A run (`proc_mtnxmzmd_fbe1cf2d`) is evidence for arm
+The current v1.7.2 A/A summary in `aa-calibration.json` is evidence for arm
 symmetry and harness noise on the exact frozen shared-corpus digest only. It used the same immutable artifact on both
 arms, passed all 24 shared scenarios / 48 trials with no correctness or
 reliability failures, and its scenario-blocked latency interval crosses zero.

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
@@ -384,6 +384,30 @@ function syntheticRun(
 }
 
 describe('candidate-neutral paired evaluation runner', () => {
+  test('rejects incomplete experiments and mixed trial identities before issuing a verdict', () => {
+    const frozen = statisticsProtocol();
+    const fresh = () => ['scenario-a', 'scenario-b'].map((id) => syntheticRun(frozen, id as 'scenario-a' | 'scenario-b',
+      Array.from({ length: 3 }, () => ({ baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 100, candidateLatencyMs: 80 }))));
+    expect(() => buildCrossVersionPairedStatistics({ protocol: frozen, runs: fresh().slice(0, 1) })).toThrow('CORPUS_INCOMPLETE');
+    const missingPair = fresh();
+    missingPair[0] = { ...missingPair[0]!, trials: missingPair[0]!.trials.slice(2) };
+    expect(() => buildCrossVersionPairedStatistics({ protocol: frozen, runs: missingPair })).toThrow('TRIALS_INCOMPLETE');
+    for (const [field, message] of [
+      ['artifact', 'ARTIFACT_IDENTITY_MISMATCH'],
+      ['protocol', 'TRIAL_PROTOCOL_MISMATCH'],
+      ['environment', 'TRIAL_ENVIRONMENT_MISMATCH'],
+      ['isolation', 'ISOLATION_FAILED'],
+    ] as const) {
+      const runs = structuredClone(fresh());
+      const trial = runs[1]!.trials[1]!;
+      if (field === 'artifact') trial.runIdentity.candidate.artifactDigest = 'sha256:different-package';
+      if (field === 'protocol') trial.runIdentity.protocolDigest = 'sha256:different-protocol';
+      if (field === 'environment') trial.runIdentity.environment.hardware = 'different-machine';
+      if (field === 'isolation') trial.report.trace.validation.push({ id: 'source', kind: 'isolation', status: 'failed', summary: 'source changed' });
+      expect(() => buildCrossVersionPairedStatistics({ protocol: frozen, runs })).toThrow(message);
+    }
+  });
+
   test('loads the shared Golden Corpus only when provenance, behavior coverage, and independent oracles are complete', () => {
     const corpus = loadGoldenCorpus();
     expect(corpus.shared).toHaveLength(24);
@@ -444,6 +468,18 @@ describe('candidate-neutral paired evaluation runner', () => {
     expect(statistics.tiers.performance.status).toBe('passed');
     expect(statistics.verdict.status).toBe('blocked_by_correctness_reliability');
     expect(statistics.verdict.blockingMetricIds).toEqual(['task_correctness']);
+  });
+
+  test('preserves missing metrics as inconclusive instead of dropping samples or inventing passes', () => {
+    const frozen = statisticsProtocol();
+    const runs = ['scenario-a', 'scenario-b'].map((id) => syntheticRun(frozen, id as 'scenario-a' | 'scenario-b',
+      Array.from({ length: 3 }, () => ({ baselineCorrectness: 1, candidateCorrectness: 1, baselineLatencyMs: 100, candidateLatencyMs: 80 }))));
+    runs[0]!.trials[1]!.report.metrics.executionLatencyMs = null;
+    const statistics = buildCrossVersionPairedStatistics({ protocol: frozen, runs });
+    expect(statistics.pairCount).toBe(6);
+    expect(statistics.unmeasuredMetrics).toEqual([{ metricId: 'latency_ms', missingTrialCount: 1, totalTrialCount: 12 }]);
+    expect(statistics.tiers.performance.status).toBe('informational');
+    expect(statistics.verdict.status).toBe('inconclusive_missing_metrics');
   });
 
   test('isolates repository, Controller Home, state, cache, runtime, logs, traces and artifacts for every cold/warm trial', async () => {
@@ -641,6 +677,53 @@ describe('candidate-neutral paired evaluation runner', () => {
       expect(correctness.candidate.failureProportion).toBe(1);
       expect(correctness.newlyIntroducedFailureCount).toBe(1);
       expect(statistics.verdict.status).toBe('blocked_by_correctness_reliability');
+      const hanging = fixtureCrashingMcpCandidate(root, 'mcp-hanging');
+      writeFileSync(join(hanging.artifactPath, 'entry.mjs'), 'setInterval(() => {}, 1000);\n');
+      hanging.identity = freezeCandidateIdentity({ ...hanging.identity, artifactDigest: digest(hanging.artifactPath) });
+      const shortProtocol = freezeEvaluationProtocol({ ...frozen, trialPolicy: { ...frozen.trialPolicy, timeoutMs: 500 } });
+      const timeoutRun = await runPairedCandidateEvaluation({ protocol: shortProtocol, scenario, candidates: [candidates[0], hanging], environment });
+      expect(timeoutRun.trials[0]!.report.trace.finalResult.status).toBe('passed');
+      expect(timeoutRun.trials[1]!.failure?.code).toBe('candidate_timeout');
+
+      const missingCapture = structuredClone(scenario);
+      if (missingCapture.execution.interface !== 'forge_mcp') throw new Error('Expected MCP scenario');
+      missingCapture.execution.calls[1]!.capture = { observed: 'absent.field' };
+      const captureProtocol = freezeEvaluationProtocol({ ...frozen, corpus: freezeEvaluationCorpus({ [scenario.id]: evaluationScenarioDigest(missingCapture) }) });
+      const captureRun = await runPairedCandidateEvaluation({ protocol: captureProtocol, scenario: missingCapture, candidates, environment });
+      expect(captureRun.trials[0]!.failure?.code).toBe('candidate_failure');
+      expect(captureRun.trials[0]!.failure?.message).toContain('EVALUATION_CANDIDATE_MCP_CAPTURE_FAILED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('enforces the frozen trial budget across CLI steps and never dispatches a later mutation after timeout', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-paired-execution-timeout-'));
+    try {
+      const source = join(root, 'source');
+      execFileSync('git', ['init', '--initial-branch=main', source]);
+      writeFileSync(join(source, 'README.md'), 'fixture\n');
+      git(source, ['add', 'README.md']);
+      git(source, ['-c', 'user.email=evaluation@example.test', '-c', 'user.name=Evaluation', 'commit', '-m', 'fixture']);
+      const scenario = fixtureScenario(source, git(source, ['rev-parse', 'HEAD']));
+      scenario.execution = { interface: 'forge_cli', steps: [
+        { id: 'first', arguments: ['--slow'], timeoutMs: 5_000 },
+        { id: 'second', arguments: ['--slow'], timeoutMs: 5_000 },
+        { id: 'late', arguments: ['--late'], timeoutMs: 5_000 },
+      ] };
+      const first = fixtureCandidate(root, 'fast');
+      const second = fixtureCandidate(root, 'slow');
+      const entry = join(second.artifactPath, 'entry.cjs');
+      writeFileSync(entry, `${readFileSync(entry, 'utf8')}\nif (process.argv.includes('--slow')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);\nif (process.argv.includes('--late')) fs.writeFileSync('late-mutation.txt', 'unexpected');\n`);
+      second.identity = freezeCandidateIdentity({ ...second.identity, artifactDigest: digest(second.artifactPath) });
+      const frozen = freezeEvaluationProtocol({ ...protocol(evaluationScenarioDigest(scenario)),
+        trialPolicy: { repetitions: 1, warmupTrials: 0, cacheModes: ['cold'], orderPolicy: 'balanced_alternating', timeoutMs: 500 },
+      });
+      const environment = freezeEnvironmentIdentity({ os: process.platform, arch: process.arch, hardware: 'fixture', runtime: process.version, toolchain: {} });
+      const paired = await runPairedCandidateEvaluation({ protocol: frozen, scenario, candidates: [first, second], environment });
+      expect(paired.trials[0]!.report.trace.finalResult.status).toBe('passed');
+      expect(paired.trials[1]!.failure?.code).toBe('candidate_timeout');
+      expect(paired.trials[1]!.report.trace.changedFiles).not.toContain('late-mutation.txt');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

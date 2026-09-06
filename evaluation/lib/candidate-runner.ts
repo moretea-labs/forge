@@ -270,6 +270,7 @@ export async function runPairedCandidateEvaluation(input: {
       }
       const report = input.scenario.execution.interface === 'forge_mcp'
         ? await runPublicMcpEvaluationInSnapshot({
+            executionTimeoutMs: input.protocol.trialPolicy.timeoutMs,
             scenario: input.scenario,
             sandbox,
             forgeCommand: trialCommand,
@@ -277,6 +278,7 @@ export async function runPairedCandidateEvaluation(input: {
             env,
           })
         : runEvaluationInSnapshot({
+            executionTimeoutMs: input.protocol.trialPolicy.timeoutMs,
             scenario: input.scenario,
             sandbox,
             forgeCommand: trialCommand,
@@ -295,10 +297,13 @@ export async function runPairedCandidateEvaluation(input: {
       assertMaterializedCandidateArtifactUnchanged(candidate.identity.candidateId, candidateArtifact);
       const message = error instanceof Error ? error.message : String(error);
       const measuredCandidateFailure = message.startsWith('EVALUATION_CANDIDATE_MCP_CONNECT_FAILED:')
+        || message.startsWith('EVALUATION_CANDIDATE_TIMEOUT:')
+        || message.startsWith('EVALUATION_CANDIDATE_MCP_CAPTURE_FAILED:')
         || message.startsWith('EVALUATION_CANDIDATE_WARMUP_FAILED:')
         || message.startsWith('EVALUATION_CANDIDATE_WARMUP_TIMEOUT:');
       if (!measuredCandidateFailure) throw error;
       const timedOut = message.includes('EVALUATION_MCP_TIMEOUT:')
+        || message.includes('EVALUATION_CANDIDATE_TIMEOUT:')
         || message.startsWith('EVALUATION_CANDIDATE_WARMUP_TIMEOUT:')
         || warmupCommands.some((command) => command.timedOut);
       const failureCode = timedOut ? 'candidate_timeout' : 'candidate_failure';

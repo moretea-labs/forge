@@ -3,6 +3,13 @@ import type { CommandKind, CommandRecord } from './types.ts';
 
 const OUTPUT_LIMIT = 16 * 1024;
 
+/** One monotonic execution budget shared by every call in a candidate trial. */
+export function candidateTimeRemaining(deadline: number): number {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) throw new Error('EVALUATION_CANDIDATE_TIMEOUT:execution_budget_exhausted');
+  return Math.ceil(remaining);
+}
+
 function redact(value: string): string {
   return value
     .replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, '$1[REDACTED]')

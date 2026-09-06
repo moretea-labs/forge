@@ -1,0 +1,33 @@
+{
+  "processId": "codex-local-aa-macos-20260906",
+  "evaluatorImplementationDigest": "sha256:df880b860b04e6734d2c12bb0de1577f88b07bbcf0773d708053febe42b0c580",
+  "rawBundleDigest": "sha256:c336ef94a5f087f59b05158f3a1089304291b9188d74ac2eb93863eb0707632d",
+  "scope": "candidate_symmetry_and_harness_noise",
+  "formalTrialSample": false,
+  "baselineSourceRevision": "c873cfeb11a223ced342e7101c016261b4a93b38",
+  "baselineArtifactDigest": "sha256:52ef73f9299d84895cd1a0692bf53023608dff6bc4ba29942a8f8d2bc3837db0",
+  "sharedCorpusDigest": "sha256:cd45a4ff9b3a5a7b84aed736f72fd7d920115225c2b35fcb74fd0e80337233ee",
+  "publishedTarballSha256": "2073bf8a6ab377e63ebe109c197039647bcf0626fb357954156c9f83f429fb10",
+  "scenarioCount": 24,
+  "trialCount": 48,
+  "passedScenarioCount": 24,
+  "failedScenarioCount": 0,
+  "failureCount": 0,
+  "latencyDeltaMs": {
+    "count": 24,
+    "mean": 3.991359374997804,
+    "p50": 0.2251040000046487,
+    "p95": 35.92029199996614,
+    "min": -53.10908300001756,
+    "max": 58.725208999967435,
+    "meanAbsolute": 14.3102587083337,
+    "positiveCount": 12,
+    "negativeCount": 12,
+    "confidence95": {
+      "low": -5.576434450340699,
+      "high": 13.559153200336308,
+      "sampleCount": 24,
+      "unit": "scenario"
+    }
+  }
+}

@@ -20,6 +20,7 @@ import {
 } from '../../src/runtime/recovery';
 import { applyEditOperations, beginEditSession, getEditSession } from '../../src/cli/editing/edit-session';
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
@@ -424,8 +425,10 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
 
-    const repoId = 'repo-maintenance-edit';
-    const checkoutId = 'checkout-maintenance-edit';
+    const registered = registerRepository({ path: repoRoot, displayName: 'maintenance-edit', controllerHome });
+    const repoId = registered.repoId;
+    const checkoutId = registered.activeCheckoutId;
+    ensureRepositoryRuntimeStorageBinding(registered, 'edit-sessions', controllerHome);
     const workId = input.contractFree ? undefined : input.createWork === false ? 'work-missing' : `work-${input.workStatus ?? 'cancelled'}`;
     if (input.createWork !== false && workId) {
       createWorkContract({ controllerHome, repoId }, {
@@ -457,7 +460,7 @@ describe('runtime maintenance executor', () => {
     return {
       controllerHome,
       repoRoot,
-      repository: { repoId, canonicalRoot: repoRoot, runtimeTempRoots: [runtimeTempRoot] },
+      repository: { ...registered, runtimeTempRoots: [runtimeTempRoot] },
       sessionId: session.sessionId,
     };
   }

@@ -15,6 +15,7 @@ import {
   type IsolatedSnapshot,
 } from './sandbox.ts';
 import { runValidators } from './validators.ts';
+import { candidateTimeRemaining } from './trace.ts';
 import {
   TRACE_SCHEMA,
   type CommandRecord,
@@ -119,6 +120,7 @@ interface PublicMcpConnection {
 }
 
 async function openConnection(input: {
+  deadline: number;
   forgeCommand: ForgeCommand;
   sandbox: IsolatedSnapshot;
   execution: Extract<RunEvaluationInput['scenario']['execution'], { interface: 'forge_mcp' }>;
@@ -136,8 +138,10 @@ async function openConnection(input: {
   transport.stderr?.on('data', (chunk) => { stderr.value = safeText(`${stderr.value}${String(chunk)}`); });
   const client = new Client({ name: 'forge-evaluation-public-mcp', version: '1.0.0' });
   try {
-    await withTimeout(client.connect(transport), 30_000, 'connect');
+    const timeout = Math.min(candidateTimeRemaining(input.deadline), 30_000);
+    await withTimeout(client.connect(transport), timeout, 'connect');
   } catch (error) {
+    await client.close().catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`EVALUATION_CANDIDATE_MCP_CONNECT_FAILED:${message}`);
   }
@@ -157,12 +161,14 @@ interface PublicMcpCallResult {
 }
 
 async function executeCall(input: {
+  deadline: number;
   call: ForgeMcpCall;
   connection: PublicMcpConnection;
   variables: Readonly<Record<string, unknown>>;
   cwd: string;
 }): Promise<PublicMcpCallResult> {
   const resolvedArguments = resolveTemplate(input.call.arguments, input.variables) as Record<string, unknown>;
+  const timeoutMs = Math.min(candidateTimeRemaining(input.deadline), input.call.timeoutMs ?? 60_000);
   const startedAt = new Date().toISOString();
   const started = performance.now();
   let payload: unknown = {};
@@ -171,7 +177,7 @@ async function executeCall(input: {
   try {
     const result = await withTimeout(
       input.connection.client.callTool({ name: input.call.tool, arguments: resolvedArguments }),
-      input.call.timeoutMs ?? 60_000,
+      timeoutMs,
       input.call.id,
     );
     actualOutcome = (result as { isError?: boolean }).isError === true ? 'error' : 'success';
@@ -210,7 +216,11 @@ function applyCallResult(input: {
   input.commands.push(input.result.record);
   input.executions.push(input.result.record);
   for (const [name, selector] of Object.entries(input.result.call.capture ?? {})) {
-    input.variables[name] = structuredClone(select(input.result.payload, selector));
+    try {
+      input.variables[name] = structuredClone(select(input.result.payload, selector));
+    } catch (error) {
+      throw new Error(`EVALUATION_CANDIDATE_MCP_CAPTURE_FAILED:${input.result.call.id}:${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   return input.result.actualOutcome === (input.result.call.expectedOutcome ?? 'success');
 }
@@ -232,6 +242,7 @@ function restartCommand(callId: string, cwd: string, startedAt: string, duration
 }
 
 export async function runPublicMcpEvaluationInSnapshot(input: {
+  executionTimeoutMs?: number;
   scenario: RunEvaluationInput['scenario'];
   sandbox: IsolatedSnapshot;
   forgeCommand?: ForgeCommand;
@@ -261,15 +272,16 @@ export async function runPublicMcpEvaluationInSnapshot(input: {
   }
 
   let connection: PublicMcpConnection | undefined;
+  const deadline = performance.now() + (input.executionTimeoutMs ?? Infinity);
   try {
-    connection = await openConnection({ forgeCommand, sandbox: input.sandbox, execution: input.scenario.execution, environment });
+    connection = await openConnection({ forgeCommand, sandbox: input.sandbox, execution: input.scenario.execution, environment, deadline });
     for (let index = 0; index < input.scenario.execution.calls.length;) {
       const call = input.scenario.execution.calls[index]!;
       if (call.restartBefore) {
         const restartStartedAt = new Date().toISOString();
         const restartStarted = performance.now();
         await closeConnection(connection);
-        connection = await openConnection({ forgeCommand, sandbox: input.sandbox, execution: input.scenario.execution, environment });
+        connection = await openConnection({ forgeCommand, sandbox: input.sandbox, execution: input.scenario.execution, environment, deadline });
         commands.push(restartCommand(call.id, input.sandbox.repository, restartStartedAt, Math.max(0, performance.now() - restartStarted)));
       }
 
@@ -286,15 +298,18 @@ export async function runPublicMcpEvaluationInSnapshot(input: {
           connection: connection!,
           variables: variableSnapshot,
           cwd: input.sandbox.repository,
+          deadline,
         })));
         for (const result of results) {
+          if (result.record.timedOut && input.executionTimeoutMs !== undefined) throw new Error('EVALUATION_CANDIDATE_TIMEOUT:mcp_execution');
           if (!applyCallResult({ result, variables, commands, executions })) executionPassed = false;
         }
         index = cursor;
         continue;
       }
 
-      const result = await executeCall({ call, connection, variables, cwd: input.sandbox.repository });
+      const result = await executeCall({ call, connection, variables, cwd: input.sandbox.repository, deadline });
+      if (result.record.timedOut && input.executionTimeoutMs !== undefined) throw new Error('EVALUATION_CANDIDATE_TIMEOUT:mcp_execution');
       if (!applyCallResult({ result, variables, commands, executions })) executionPassed = false;
       index += 1;
     }

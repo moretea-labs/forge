@@ -21,6 +21,7 @@ export const V172_PUBLISHED_TARBALL_SHA256 = '2073bf8a6ab377e63ebe109c197039647b
 
 /** Candidate-neutral execution/verdict implementation only. Candidate-internal diagnostics are intentionally excluded. */
 export const CROSS_VERSION_EVALUATOR_FILES = Object.freeze([
+  'evaluation/run-paired.ts',
   'evaluation/lib/calibration.ts',
   'evaluation/lib/candidate-artifact.ts',
   'evaluation/lib/candidate-runner.ts',
@@ -75,6 +76,8 @@ export const FORMAL_ENVIRONMENT_POLICY = Object.freeze({
 
 export interface AaCalibrationEvidence {
   processId: string;
+  evaluatorImplementationDigest: string;
+  rawBundleDigest: string;
   scope: 'candidate_symmetry_and_harness_noise';
   formalTrialSample: false;
   baselineSourceRevision: string;
@@ -100,38 +103,10 @@ export interface AaCalibrationEvidence {
   };
 }
 
-/** Durable Process proc_mtnxmzmd_fbe1cf2d: same v1.7.2 artifact on both arms, 24 shared scenarios, 48 trials. */
-export const V172_AA_CALIBRATION: AaCalibrationEvidence = Object.freeze({
-  processId: 'proc_mtnxmzmd_fbe1cf2d',
-  scope: 'candidate_symmetry_and_harness_noise',
-  formalTrialSample: false,
-  baselineSourceRevision: V172_SOURCE_REVISION,
-  baselineArtifactDigest: V172_ARTIFACT_DIGEST,
-  sharedCorpusDigest: 'sha256:cd45a4ff9b3a5a7b84aed736f72fd7d920115225c2b35fcb74fd0e80337233ee',
-  publishedTarballSha256: V172_PUBLISHED_TARBALL_SHA256,
-  scenarioCount: 24,
-  trialCount: 48,
-  passedScenarioCount: 24,
-  failedScenarioCount: 0,
-  failureCount: 0,
-  latencyDeltaMs: Object.freeze({
-    count: 24,
-    mean: -35.42093220833567,
-    p50: -7.2237090000126045,
-    p95: 104.96220799999719,
-    min: -331.62091599999985,
-    max: 111.57325000001583,
-    meanAbsolute: 75.2153387083443,
-    positiveCount: 11,
-    negativeCount: 13,
-    confidence95: Object.freeze({
-      low: -83.34274791566614,
-      high: 12.500883498999478,
-      sampleCount: 24,
-      unit: 'scenario' as const,
-    }),
-  }),
-});
+/** Calibration data is independently hashed evidence, not evaluator implementation. */
+export const V172_AA_CALIBRATION: AaCalibrationEvidence = Object.freeze(
+  JSON.parse(readFileSync(new URL('../aa-calibration.json', import.meta.url), 'utf8')) as AaCalibrationEvidence,
+);
 
 export interface FrozenCrossVersionAuthorityManifest {
   schemaVersion: typeof CROSS_VERSION_FREEZE_SCHEMA;
@@ -260,7 +235,13 @@ export function assertFrozenCrossVersionAuthority(repoRoot = process.cwd()): Fro
   if (frozen.aaCalibrationDigest !== digestJson(V172_AA_CALIBRATION)) throw new Error('EVALUATION_FREEZE_AA_CALIBRATION_DRIFT');
   if (frozen.environmentPolicyDigest !== digestJson(FORMAL_ENVIRONMENT_POLICY)) throw new Error('EVALUATION_FREEZE_ENVIRONMENT_POLICY_DRIFT');
   const ci = V172_AA_CALIBRATION.latencyDeltaMs.confidence95;
-  if (V172_AA_CALIBRATION.sharedCorpusDigest !== protocol.corpus.digest
+  if (V172_AA_CALIBRATION.evaluatorImplementationDigest !== protocol.evaluator.implementationDigest
+    || !/^sha256:[0-9a-f]{64}$/.test(V172_AA_CALIBRATION.rawBundleDigest ?? '')
+    || V172_AA_CALIBRATION.baselineSourceRevision !== V172_SOURCE_REVISION
+    || V172_AA_CALIBRATION.baselineArtifactDigest !== V172_ARTIFACT_DIGEST
+    || V172_AA_CALIBRATION.publishedTarballSha256 !== V172_PUBLISHED_TARBALL_SHA256
+    || V172_AA_CALIBRATION.trialCount !== protocol.corpus.scenarioIds.length * 2
+    || V172_AA_CALIBRATION.sharedCorpusDigest !== protocol.corpus.digest
     || V172_AA_CALIBRATION.scenarioCount !== protocol.corpus.scenarioIds.length
     || V172_AA_CALIBRATION.passedScenarioCount !== V172_AA_CALIBRATION.scenarioCount
     || V172_AA_CALIBRATION.failedScenarioCount !== 0

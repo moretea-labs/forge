@@ -26,7 +26,6 @@ describe('frozen cross-version evaluation authority', () => {
 
   test('binds the durable A/A calibration evidence and records noise without turning it into a formal threshold', () => {
     expect(V172_AA_CALIBRATION).toMatchObject({
-      processId: 'proc_mtnxmzmd_fbe1cf2d',
       scope: 'candidate_symmetry_and_harness_noise',
       formalTrialSample: false,
       scenarioCount: 24,
@@ -36,8 +35,11 @@ describe('frozen cross-version evaluation authority', () => {
       failedScenarioCount: 0,
       failureCount: 0,
     });
-    expect(V172_AA_CALIBRATION.latencyDeltaMs.positiveCount).toBe(11);
-    expect(V172_AA_CALIBRATION.latencyDeltaMs.negativeCount).toBe(13);
+    expect(V172_AA_CALIBRATION.processId).toBeTruthy();
+    expect(V172_AA_CALIBRATION.rawBundleDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(V172_AA_CALIBRATION.evaluatorImplementationDigest).toBe(readFrozenCrossVersionAuthority().evaluatorImplementationDigest);
+    expect(V172_AA_CALIBRATION.latencyDeltaMs.positiveCount).toBeGreaterThan(0);
+    expect(V172_AA_CALIBRATION.latencyDeltaMs.negativeCount).toBeGreaterThan(0);
     expect(V172_AA_CALIBRATION.latencyDeltaMs.confidence95.low).toBeLessThan(0);
     expect(V172_AA_CALIBRATION.latencyDeltaMs.confidence95.high).toBeGreaterThan(0);
   });

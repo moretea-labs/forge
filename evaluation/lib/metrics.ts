@@ -1,6 +1,8 @@
 import type { PairedCandidateRun } from './candidate-runner.ts';
 import {
   CROSS_VERSION_EVALUATION_AUTHORITY,
+  freezeCandidateIdentity,
+  freezeEnvironmentIdentity,
   type EvaluationMetricDefinition,
   type EvaluationMetricDirection,
   type EvaluationMetricTier,
@@ -21,7 +23,7 @@ export function calculateMetrics(scenario: EvaluationScenario, trace: Evaluation
   const precision = trace.validation.filter((result) => result.kind === 'change_precision');
   return {
     taskSuccessRate: trace.finalResult.status === 'passed' ? 1 : 0,
-    impactCoverage: scenario.groundTruth.affectedDomains.length === 0
+    impactCoverage: scenario.groundTruth.affectedDomains.length === 0 || observedDomains.size === 0
       ? null
       : scenario.groundTruth.affectedDomains.filter((domain) => observedDomains.has(domain)).length / scenario.groundTruth.affectedDomains.length,
     behavioralInvariantSuccess: rate(invariants),
@@ -134,9 +136,10 @@ export interface CrossVersionPairedStatistics {
   baselineCandidateId: string;
   candidateId: string;
   pairCount: number;
+  unmeasuredMetrics: readonly { metricId: string; missingTrialCount: number; totalTrialCount: number }[];
   tiers: Readonly<Record<EvaluationMetricTier, EvaluationTierStatistics>>;
   verdict: {
-    status: 'blocked_by_correctness_reliability' | 'eligible_for_superiority_assessment';
+    status: 'blocked_by_correctness_reliability' | 'inconclusive_missing_metrics' | 'eligible_for_superiority_assessment';
     blockingMetricIds: readonly string[];
     newlyIntroducedFailureCount: number;
     newlyIntroducedTimeoutCount: number;
@@ -351,18 +354,56 @@ export function buildCrossVersionPairedStatistics(input: {
   if (first.authority !== CROSS_VERSION_EVALUATION_AUTHORITY) throw new Error('EVALUATION_PAIRED_AUTHORITY_MISMATCH');
   const [baselineCandidateId, candidateId] = first.candidateIds;
   if (!baselineCandidateId || !candidateId || baselineCandidateId === candidateId) throw new Error('EVALUATION_PAIRED_CANDIDATE_IDS_INVALID');
+  const seenScenarios = new Set<string>();
+  const candidateIdentities = new Map<number, string>();
   for (const run of input.runs) {
     if (run.authority !== CROSS_VERSION_EVALUATION_AUTHORITY) throw new Error('EVALUATION_PAIRED_AUTHORITY_MISMATCH');
     if (run.protocolDigest !== input.protocol.protocolDigest) throw new Error(`EVALUATION_PAIRED_PROTOCOL_MISMATCH:${run.scenarioId}`);
     if (run.environmentFingerprint !== first.environmentFingerprint) throw new Error(`EVALUATION_PAIRED_ENVIRONMENT_MISMATCH:${run.scenarioId}`);
     if (run.candidateIds[0] !== baselineCandidateId || run.candidateIds[1] !== candidateId) throw new Error(`EVALUATION_PAIRED_CANDIDATE_SET_MISMATCH:${run.scenarioId}`);
+    if (!input.protocol.corpus.scenarioIds.includes(run.scenarioId) || seenScenarios.has(run.scenarioId)) {
+      throw new Error(`EVALUATION_PAIRED_CORPUS_MISMATCH:${run.scenarioId}`);
+    }
+    seenScenarios.add(run.scenarioId);
+    if (run.orderPolicy !== input.protocol.trialPolicy.orderPolicy) throw new Error(`EVALUATION_PAIRED_ORDER_MISMATCH:${run.scenarioId}`);
+    const expectedTrials = new Set(input.protocol.trialPolicy.cacheModes.flatMap((mode) =>
+      Array.from({ length: input.protocol.trialPolicy.repetitions }, (_, repetition) =>
+        [0, 1].map((arm) => `${mode}:${repetition}:${arm}`)).flat()));
+    for (const trial of run.trials) {
+      const key = `${trial.cacheMode}:${trial.repetition}:${trial.candidateIndex}`;
+      if (!expectedTrials.delete(key)) throw new Error(`EVALUATION_PAIRED_TRIAL_MISMATCH:${run.scenarioId}:${key}`);
+      const identity = trial.runIdentity;
+      if (identity.protocolDigest !== input.protocol.protocolDigest) throw new Error(`EVALUATION_PAIRED_TRIAL_PROTOCOL_MISMATCH:${run.scenarioId}`);
+      if (identity.environment.fingerprint !== run.environmentFingerprint
+        || freezeEnvironmentIdentity(identity.environment).fingerprint !== run.environmentFingerprint) {
+        throw new Error(`EVALUATION_PAIRED_TRIAL_ENVIRONMENT_MISMATCH:${run.scenarioId}`);
+      }
+      if (identity.candidate.candidateId !== run.candidateIds[trial.candidateIndex]) throw new Error(`EVALUATION_PAIRED_CANDIDATE_IDENTITY_MISMATCH:${run.scenarioId}`);
+      const candidateIdentity = JSON.stringify(freezeCandidateIdentity(identity.candidate));
+      const previousIdentity = candidateIdentities.get(trial.candidateIndex);
+      if (previousIdentity !== undefined && previousIdentity !== candidateIdentity) {
+        throw new Error(`EVALUATION_PAIRED_ARTIFACT_IDENTITY_MISMATCH:${run.scenarioId}`);
+      }
+      candidateIdentities.set(trial.candidateIndex, candidateIdentity);
+      if (trial.report.trace.scenarioId !== run.scenarioId) throw new Error(`EVALUATION_PAIRED_REPORT_SCENARIO_MISMATCH:${run.scenarioId}`);
+      if (trial.report.trace.validation.some((result) => result.kind === 'isolation' && result.status !== 'passed')) {
+        throw new Error(`EVALUATION_PAIRED_ISOLATION_FAILED:${run.scenarioId}`);
+      }
+    }
+    if (expectedTrials.size > 0) throw new Error(`EVALUATION_PAIRED_TRIALS_INCOMPLETE:${run.scenarioId}`);
   }
-  const metrics = input.protocol.metrics.map((metric) => summarizeMetric(metric, collectMetricSamples({
-    runs: input.runs,
-    metric,
-    baselineCandidateId,
-    candidateId,
-  })));
+  if (seenScenarios.size !== input.protocol.corpus.scenarioIds.length) throw new Error('EVALUATION_PAIRED_CORPUS_INCOMPLETE');
+  const allTrials = input.runs.flatMap((run) => [...run.trials]);
+  const unmeasuredMetrics: { metricId: string; missingTrialCount: number; totalTrialCount: number }[] = [];
+  const metrics = input.protocol.metrics.flatMap((metric) => {
+    const reader = metricReader(metric.id);
+    const missingTrialCount = allTrials.filter((trial) => reader(trial.report) === null).length;
+    if (missingTrialCount > 0) {
+      unmeasuredMetrics.push({ metricId: metric.id, missingTrialCount, totalTrialCount: allTrials.length });
+      return [];
+    }
+    return [summarizeMetric(metric, collectMetricSamples({ runs: input.runs, metric, baselineCandidateId, candidateId }))];
+  });
   const tierStatistics = (tier: EvaluationMetricTier): EvaluationTierStatistics => {
     const tierMetrics = metrics.filter((metric) => metric.metric.tier === tier);
     const regressed = tier === 'correctness_reliability'
@@ -371,7 +412,9 @@ export function buildCrossVersionPairedStatistics(input: {
       : tierMetrics.some((metric) => metric.aggregateRegression);
     return {
       tier,
-      status: tierMetrics.length === 0 ? 'informational' : regressed ? 'regressed' : 'passed',
+      status: regressed ? 'regressed' : tierMetrics.length === 0
+        || input.protocol.metrics.some((metric) => metric.tier === tier && unmeasuredMetrics.some((entry) => entry.metricId === metric.id))
+        ? 'informational' : 'passed',
       metrics: tierMetrics,
     };
   };
@@ -387,7 +430,7 @@ export function buildCrossVersionPairedStatistics(input: {
   const introducedTimeouts = taskMetric?.newlyIntroducedTimeoutCount ?? Math.max(...metrics.map((metric) => metric.newlyIntroducedTimeoutCount), 0);
   const verdictStatus: CrossVersionPairedStatistics['verdict']['status'] = blockingMetrics.length > 0
     ? 'blocked_by_correctness_reliability'
-    : 'eligible_for_superiority_assessment';
+    : unmeasuredMetrics.length > 0 ? 'inconclusive_missing_metrics' : 'eligible_for_superiority_assessment';
   return Object.freeze({
     schemaVersion: 'forge-cross-version-paired-statistics/v1',
     authority: CROSS_VERSION_EVALUATION_AUTHORITY,
@@ -395,7 +438,8 @@ export function buildCrossVersionPairedStatistics(input: {
     environmentFingerprint: first.environmentFingerprint,
     baselineCandidateId,
     candidateId,
-    pairCount: metrics[0]?.samples.length ?? 0,
+    pairCount: allTrials.length / 2,
+    unmeasuredMetrics,
     tiers,
     verdict: {
       status: verdictStatus,

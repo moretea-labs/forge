@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { buildReport, writeReport } from './report.ts';
 import { loadExecutionEvidence } from './execution-evidence.ts';
 import { assertOutsideSource, changedFiles, cleanupIsolatedSnapshot, createIsolatedSnapshot, inspectSourceState, isolatedEvaluationEnvironment, resolveSourcePath, type IsolatedSnapshot } from './sandbox.ts';
-import { captureCommand, commandSucceeded } from './trace.ts';
+import { candidateTimeRemaining, captureCommand, commandSucceeded } from './trace.ts';
 import { runValidators } from './validators.ts';
 import { TRACE_SCHEMA, type CommandRecord, type EvaluationReport, type EvaluationTrace, type ForgeCliExecutionStep, type RunEvaluationInput, type SourceState, type ValidationResult } from './types.ts';
 
@@ -24,6 +24,7 @@ function executionSteps(input: RunEvaluationInput['scenario']): ForgeCliExecutio
 }
 
 export function runEvaluationInSnapshot(input: {
+  executionTimeoutMs?: number;
   scenario: RunEvaluationInput['scenario'];
   sandbox: IsolatedSnapshot;
   forgeCommand?: RunEvaluationInput['forgeCommand'];
@@ -41,6 +42,7 @@ export function runEvaluationInSnapshot(input: {
   const executions: CommandRecord[] = [];
   const evidenceRecords = [] as ReturnType<typeof loadExecutionEvidence>[];
   let executionPassed = true;
+  const deadline = performance.now() + (input.executionTimeoutMs ?? Infinity);
 
   for (const step of executionSteps(scenario)) {
     const execution = {
@@ -49,13 +51,14 @@ export function runEvaluationInSnapshot(input: {
         command: forgeCommand.executable,
         arguments: [...(forgeCommand.prefixArguments ?? []), ...step.arguments],
         cwd: input.sandbox.repository,
-        timeoutMs: step.timeoutMs ?? executionConfig.timeoutMs ?? 60_000,
+        timeoutMs: Math.min(candidateTimeRemaining(deadline), step.timeoutMs ?? executionConfig.timeoutMs ?? 60_000),
         env: environment,
       }),
       stepId: step.id,
     };
     commands.push(execution);
     executions.push(execution);
+    if (execution.timedOut && input.executionTimeoutMs !== undefined) throw new Error('EVALUATION_CANDIDATE_TIMEOUT:cli_execution');
     const expectedExitCode = step.expectedExitCode ?? 0;
     if (!commandSucceeded(execution, expectedExitCode)) executionPassed = false;
     const traceFile = step.traceFile ?? executionConfig.traceFile;
