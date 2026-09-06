@@ -18,6 +18,7 @@ import {
   RECOVERY_MUTATION_IDENTITY_FIELDS,
   recoveryConfigPath,
   recoveryCommandPath,
+  resolveRecoveryPackageConnectorExecutable,
   listReleases,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
@@ -129,6 +130,21 @@ test('standalone Recovery compiler resolves account Bun when compiled Runtime PA
   )).toBe(bun);
   expect(resolveRecoveryCompilerExecutable('/tmp/forge-runtime', { FORGE_BUN_BIN: '/opt/forge/custom-bun' }, home))
     .toBe('/opt/forge/custom-bun');
+});
+
+test('standalone Recovery package Connector runner does not inherit the compiled Recovery executable', () => {
+  const home = mkdtempSync(join(tmpdir(), 'forge-recovery-connector-bun-home-'));
+  roots.push(home);
+  const bun = join(home, '.bun', 'bin', process.platform === 'win32' ? 'bun.exe' : 'bun');
+  mkdirSync(dirname(bun), { recursive: true });
+  writeFileSync(bun, 'fixture bun');
+  chmodSync(bun, 0o700);
+
+  expect(resolveRecoveryPackageConnectorExecutable(
+    join(home, 'recovery', 'current', 'forge-recovery'),
+    { HOME: home, PATH: process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/bin:/bin' },
+    home,
+  )).toBe(bun);
 });
 
 test('standalone Recovery stage-only build never rewrites installed durable source authority', async () => {

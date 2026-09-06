@@ -4,6 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { homedir, hostname } from 'os';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
+import { resolveBunExecutable } from '../shared/process-environment';
 import { observeRuntimeStatus } from '../root/status';
 import {
   activeRuntimeEntrypoint,
@@ -2029,6 +2030,14 @@ function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageCo
   return { releaseId: authority.active.releaseId, releaseRoot, packageRoot };
 }
 
+export function resolveRecoveryPackageConnectorExecutable(
+  execPath: string = process.execPath,
+  env: NodeJS.ProcessEnv = process.env,
+  accountHome: string = homedir(),
+): string {
+  return resolveBunExecutable(execPath, env, accountHome);
+}
+
 async function repairPrimaryConnectorBinding(
   config: RecoveryConfig,
   platform: NodeJS.Platform = process.platform,
@@ -2037,7 +2046,8 @@ async function repairPrimaryConnectorBinding(
   const endpoint = config.primaryConnectorService?.localMcpUrl?.trim();
   if (!release || !endpoint) return { ok: true, attempted: false, noOp: true, detail: 'primary Connector does not use the canonical package-release binding contract' };
   try {
-    const result = await ensurePackageConnectorService({ release, controllerHome: config.controllerHome, endpoint, platform });
+    const executable = resolveRecoveryPackageConnectorExecutable();
+    const result = await ensurePackageConnectorService({ release, controllerHome: config.controllerHome, endpoint, executable, platform });
     const attempted = result.reused !== true;
     return {
       ok: true,
