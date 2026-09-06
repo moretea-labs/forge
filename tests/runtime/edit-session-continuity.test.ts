@@ -14,6 +14,7 @@ import {
 } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { applySafePatch } from '../../src/cli/repositories/safe-patch';
 
 const roots: string[] = [];
@@ -88,12 +89,9 @@ test('adopts a non-overlapping successor HEAD in the same Work-bound session and
 
   test('safe patch transparently continues the same Work-bound session after a non-overlapping HEAD advance', () => {
     const fx = fixture();
-    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-edit-session-controller-'));
-    roots.push(controllerHome);
-    const repository = registerRepository({ path: fx.repoRoot, controllerHome, repoIdOverride: 'repo-runtime-continuity' });
-    const binding = durableBinding('runtime-a', { repoId: repository.repoId, checkoutId: repository.activeCheckoutId });
+    const binding = durableBinding('runtime-a', { repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId });
     const session = beginEditSession(fx.repoRoot, { purpose: 'Safe patch successor recovery', allowedPaths: ['source.ts'], binding });
-    const first = applySafePatch(repository, {
+    const first = applySafePatch(fx.repository, {
       sessionId: session.sessionId,
       operations: [{ type: 'replace', path: 'source.ts', old_text: 'value = 1', new_text: 'value = 2' }],
       binding,
@@ -104,7 +102,7 @@ test('adopts a non-overlapping successor HEAD in the same Work-bound session and
     spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
     spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
     const rebound = { ...binding, controllerInstanceId: 'runtime-b' };
-    const second = applySafePatch(repository, {
+    const second = applySafePatch(fx.repository, {
       sessionId: session.sessionId,
       expectedRevision: first.session.currentRevision,
       operations: [{ type: 'replace', path: 'source.ts', old_text: 'value = 2', new_text: 'value = 3' }],
@@ -124,7 +122,8 @@ function sha256(value: string): string {
 
 function fixture() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-edit-session-continuity-'));
-  roots.push(repoRoot);
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-edit-session-controller-'));
+  roots.push(repoRoot, controllerHome);
   spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
   spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
@@ -132,7 +131,9 @@ function fixture() {
   writeFileSync(join(repoRoot, 'source.ts'), initial);
   spawnSync('git', ['add', 'source.ts'], { cwd: repoRoot });
   spawnSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-  return { repoRoot, initial, policy: getMcpPolicy('controller', { repoRoot }) };
+  const repository = registerRepository({ path: repoRoot, controllerHome, repoIdOverride: 'repo-runtime-continuity' });
+  ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
+  return { repoRoot, controllerHome, repository, initial, policy: getMcpPolicy('controller', { repoRoot }) };
 }
 
 function durableBinding(controllerInstanceId: string, overrides: Partial<EditSessionBinding> = {}): EditSessionBinding {

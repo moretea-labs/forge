@@ -6,6 +6,7 @@ import { join } from 'path';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
@@ -36,6 +37,7 @@ function fixture(requirementId?: string) {
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
 
   const repository = registerRepository({ path: repoRoot, controllerHome });
+  ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
   const repoId = repository.repoId;
   const checkoutId = repository.activeCheckoutId;
   const workId = 'work-direct-edit-work';

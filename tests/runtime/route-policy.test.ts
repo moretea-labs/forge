@@ -6,6 +6,8 @@ import { join } from 'path';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, runGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -1341,7 +1343,7 @@ describe('single Route Policy authority', () => {
   });
 });
 describe('EditSession identity and post-diff assurance', () => {
-  function gitRepo(): string {
+  function gitRepo() {
     const root = temp('route-edit-');
     execFileSync('git', ['init', '-q'], { cwd: root });
     execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: root });
@@ -1349,36 +1351,39 @@ describe('EditSession identity and post-diff assurance', () => {
     writeFileSync(join(root, 'README.md'), '# Test\n');
     execFileSync('git', ['add', 'README.md'], { cwd: root });
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: root });
-    return root;
+    const controllerHome = temp('route-edit-controller-');
+    const repository = registerRepository({ path: root, controllerHome, repoIdOverride: 'repo-a' });
+    ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
+    return { root, repository };
   }
   test('blocks patch execution when workspace fingerprint changes', () => {
-    const root = gitRepo();
+    const { root, repository } = gitRepo();
     const session = beginEditSession(root, {
       purpose: 'Bound edit', allowedPaths: ['src/**'],
-      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+      binding: { workId: 'work-a', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId: 'principal-a' },
     });
     writeFileSync(join(root, 'outside.txt'), 'unowned change\n');
     expect(() => applyEditOperations(root, getMcpPolicy('executor'), session.sessionId, [
       { type: 'create', path: 'src/example.ts', content: 'export const value = 1;\n' },
     ], {
-      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+      binding: { workId: 'work-a', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId: 'principal-a' },
     })).toThrow('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   });
   test('raises assurance when the real diff touches a protected path', () => {
-    const root = gitRepo();
+    const { root, repository } = gitRepo();
     const session = beginEditSession(root, {
       purpose: 'Workflow edit', allowedPaths: ['.github/**'],
-      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+      binding: { workId: 'work-a', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId: 'principal-a' },
     });
     const updated = applyEditOperations(root, getMcpPolicy('controller'), session.sessionId, [
       { type: 'create', path: '.github/protected.yml', content: 'name: checks\n' },
     ], {
-      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+      binding: { workId: 'work-a', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId: 'principal-a' },
     });
     expect(updated.assurance).toMatchObject({ semanticRisk: 'high', approvalRequired: true, verificationDepth: 'architecture' });
     expect(updated.requestedChecks).toContain('package:check:runtime-architecture');
     expect(() => finalizeEditSession(root, session.sessionId, {
-      binding: { workId: 'work-a', repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a' },
+      binding: { workId: 'work-a', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId: 'principal-a' },
     })).toThrow('EDIT_SESSION_APPROVAL_REQUIRED');
     expect(readFileSync(join(root, '.github/protected.yml'), 'utf8')).toContain('checks');
   });
