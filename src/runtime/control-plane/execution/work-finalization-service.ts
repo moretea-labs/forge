@@ -25,6 +25,7 @@ import {
   latestImplementationReview,
   implementationReviewChangedPathDigest,
   normalizeImplementationReviewChangedPaths,
+  workRequiresImplementationReview,
   type ImplementationReviewCandidateIdentity,
 } from '../../../../packages/kernel/work/api/index';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
@@ -437,6 +438,12 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
   if (input.handle.expectedHead && branchHead !== input.handle.expectedHead) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_BRANCH_SOURCE_CHANGED');
   }
+  const deliveryBase = workDeliveryBaseRevision(input.handle) ?? input.contract.baseRevision;
+  if (!deliveryBase) throw new Error('WORK_IMPLEMENTATION_REVIEW_BASE_REQUIRED');
+  const changedPaths = branchHead === deliveryBase
+    ? []
+    : completionReceiptChangedPaths(input.target.canonicalRoot, deliveryBase, branchHead);
+  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths)) return;
   const review = latestImplementationReview(input.contract.implementationReviews);
   if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
   if (review.sourceRevision !== branchHead) throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: branch source revision changed');
@@ -460,7 +467,7 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
       sourceRevision: branchHead,
       workspaceFingerprint: review.workspaceFingerprint,
       verificationWorkspaceFingerprint: review.verificationWorkspaceFingerprint,
-      changedPaths: review.changedPaths,
+      changedPaths,
       verificationEvidence: verification.evidence,
       architectureEvidence: review.architectureEvidence,
     },
@@ -2657,7 +2664,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     } else {
       const cleanupContract = contractFor(ctx, current);
       if (!cleanupContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
-      if (cleanupContract.status !== 'cancelled' && cleanupContract.status !== 'failed' && requestedOutcome !== 'completed_no_change') {
+      if (cleanupContract.status !== 'cancelled' && cleanupContract.status !== 'failed') {
         const cleanupRepository = selectRepositoryCheckout(
           getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
           current.checkoutId,
@@ -2688,7 +2695,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
     const branchCleanupContract = contractFor(ctx, current);
     if (!branchCleanupContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
-    if (branchCleanupContract.status !== 'cancelled' && branchCleanupContract.status !== 'failed' && requestedOutcome !== 'completed_no_change') {
+    if (branchCleanupContract.status !== 'cancelled' && branchCleanupContract.status !== 'failed') {
       assertPhysicalBranchCleanupImplementationReviewGate({ target, handle: current, contract: branchCleanupContract });
     }
     const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });

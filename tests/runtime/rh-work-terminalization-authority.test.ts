@@ -3615,6 +3615,130 @@ describe('rh_work terminalization authority', () => {
     expect(selectRepositoryCheckout(getRepository(repository.repoId, fx.controllerHome), workspace.checkoutId!).activeCheckoutId).toBe(workspace.checkoutId!);
   }, 20_000);
 
+  test('completed_no_change finalize preserves the managed worktree until exact implementation review is approved', async () => {
+    const fx = fixture();
+    const workId = 'work-no-change-review-before-cleanup';
+    const caller = {
+      principalId: 'principal-no-change-review-before-cleanup',
+      sessionId: 'transport-no-change-review-before-cleanup',
+      controllerInstanceId: 'runtime-no-change-review-before-cleanup',
+    };
+    const branch = 'work/no-change-review-before-cleanup';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'No Change Review Before Cleanup',
+      branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: base,
+      mode: 'goal_workloop',
+      objective: 'Keep the exact no-change workspace until implementation review authorizes delivery cleanup.',
+      acceptanceCriteria: ['No-change physical cleanup happens only after exact implementation review approval.'],
+      allowedPaths: [],
+      forbiddenPaths: ['**'],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+      phase: 'review',
+      worktreeRef: workspace.root,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      worktreePath: workspace.root!,
+      branch,
+      sourceCheckoutId: repository.activeCheckoutId,
+      workContractId: workId,
+      baseCommit: base,
+      deliveryBaseCommit: base,
+      expectedHead: base,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      managedWorktree: true,
+      createdAt: now,
+      updatedAt: now,
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const blocked = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        completion_outcome: 'completed_no_change',
+        no_change_evidence: 'Exact source remained unchanged.',
+        cleanup: true,
+        target_branch: 'main',
+      },
+    ));
+    expect(blocked.status).not.toBe('ok');
+    expect(JSON.stringify(blocked)).toContain('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+    expect(existsSync(workspace.root!)).toBe(true);
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup).toBe('pending');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)).toMatchObject({ status: 'running', phase: 'review' });
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'The exact verified no-change candidate is approved before any managed resource is removed.',
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        completion_outcome: 'completed_no_change',
+        no_change_evidence: 'Exact source remained unchanged.',
+        cleanup: true,
+        target_branch: 'main',
+      },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed',
+      completionOutcome: 'completed_no_change',
+    });
+  }, 20_000);
+
   test('no-change finalization can settle from retained validation after a prior cleanup already removed the worktree', async () => {
     const fx = fixture();
     const workId = 'work-no-change-removed-worktree-retry';
