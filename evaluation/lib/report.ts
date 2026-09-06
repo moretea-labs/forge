@@ -72,6 +72,8 @@ export function renderMarkdownReport(report: EvaluationReport): string {
     `| Regression reintroduction rate | ${percent(report.metrics.regressionReintroductionRate)} |`,
     `| Change precision | ${percent(report.metrics.changePrecision)} |`,
     `| Execution latency | ${report.metrics.executionLatencyMs === null ? 'not measured' : `${report.metrics.executionLatencyMs} ms`} |`,
+    `| Execution CPU time | ${report.metrics.executionCpuTimeMs === null ? 'not measured' : `${report.metrics.executionCpuTimeMs} ms`} |`,
+    `| Execution peak RSS | ${report.metrics.executionPeakRssBytes === null ? 'not measured' : `${report.metrics.executionPeakRssBytes} bytes`} |`,
     `| Tool interaction count | ${report.metrics.toolInteractionCount} |`,
     '',
     '## Validation',

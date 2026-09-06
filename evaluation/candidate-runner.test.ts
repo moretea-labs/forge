@@ -322,6 +322,8 @@ function syntheticReport(input: {
       regressionReintroductionRate: null,
       changePrecision: null,
       executionLatencyMs: input.latencyMs,
+      executionCpuTimeMs: input.latencyMs,
+      executionPeakRssBytes: 1024,
       toolInteractionCount: 0,
     },
     diagnosis: [],

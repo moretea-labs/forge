@@ -137,6 +137,12 @@ export interface CommandRecord {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** Resource accounting is available only where the host can observe the child process. */
+  resourceUsage?: {
+    userCpuMs: number;
+    systemCpuMs: number;
+    peakRssBytes: number;
+  };
 }
 
 export interface EvidenceRecord {
@@ -204,6 +210,8 @@ export interface EvaluationMetrics {
   regressionReintroductionRate: number | null;
   changePrecision: number | null;
   executionLatencyMs: number | null;
+  executionCpuTimeMs: number | null;
+  executionPeakRssBytes: number | null;
   toolInteractionCount: number;
 }
 

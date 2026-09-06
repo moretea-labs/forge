@@ -21,6 +21,8 @@ export function calculateMetrics(scenario: EvaluationScenario, trace: Evaluation
   const invariants = trace.validation.filter((result) => result.kind === 'invariant');
   const regressions = trace.validation.filter((result) => result.kind === 'regression');
   const precision = trace.validation.filter((result) => result.kind === 'change_precision');
+  const executionResources = executionCommands.map((command) => command.resourceUsage);
+  const resourceUsageComplete = executionCommands.length > 0 && executionResources.every((usage) => usage !== undefined);
   return {
     taskSuccessRate: trace.finalResult.status === 'passed' ? 1 : 0,
     impactCoverage: scenario.groundTruth.affectedDomains.length === 0 || observedDomains.size === 0
@@ -34,6 +36,12 @@ export function calculateMetrics(scenario: EvaluationScenario, trace: Evaluation
     executionLatencyMs: executionCommands.length > 0
       ? executionCommands.reduce((total, command) => total + command.durationMs, 0)
       : null,
+    executionCpuTimeMs: resourceUsageComplete
+      ? executionResources.reduce((total, usage) => total + usage!.userCpuMs + usage!.systemCpuMs, 0)
+      : null,
+    executionPeakRssBytes: resourceUsageComplete
+      ? Math.max(...executionResources.map((usage) => usage!.peakRssBytes))
+      : null,
     toolInteractionCount: trace.toolInteractions.length,
   };
 }
@@ -45,7 +53,9 @@ export type CanonicalEvaluationMetricId =
   | 'impact_coverage'
   | 'change_precision'
   | 'tool_interaction_count'
-  | 'latency_ms';
+  | 'latency_ms'
+  | 'cpu_ms'
+  | 'peak_rss_bytes';
 
 const CANONICAL_METRIC_READERS: Readonly<Record<CanonicalEvaluationMetricId, (report: EvaluationReport) => number | null>> = Object.freeze({
   task_correctness: (report) => report.metrics.taskSuccessRate,
@@ -55,6 +65,8 @@ const CANONICAL_METRIC_READERS: Readonly<Record<CanonicalEvaluationMetricId, (re
   change_precision: (report) => report.metrics.changePrecision,
   tool_interaction_count: (report) => report.metrics.toolInteractionCount,
   latency_ms: (report) => report.metrics.executionLatencyMs,
+  cpu_ms: (report) => report.metrics.executionCpuTimeMs,
+  peak_rss_bytes: (report) => report.metrics.executionPeakRssBytes,
 });
 
 export interface PairedConfidenceInterval95 {
