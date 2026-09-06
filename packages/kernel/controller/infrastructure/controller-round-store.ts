@@ -815,7 +815,11 @@ export function reconcileControllerRoundAfterAbandonedRelease(
       throw new Error(`CONTROLLER_RELAY_ABANDONED_RELEASE_ACTIVE_CLAIM: ${input.workId}`);
     }
     const work = getWorkContract(options, input.workId);
-    if (!work || isTerminalWorkContractStatus(work.status)) return undefined;
+    // Completed Work still requires semantic goal_complete or a valid terminal
+    // successor. Failed/cancelled Work has no legal semantic continuation, so
+    // its exact released controller epoch may mechanically abandon the claimed
+    // round and free the relay scope for later recovery/replanning.
+    if (!work || work.status === 'completed') return undefined;
 
     const at = nowIso(options);
     const abandoned: ControllerRoundRelayRecord = {

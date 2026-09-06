@@ -14,6 +14,7 @@ import {
   bindControllerRoundSuccessorWork,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  reconcileControllerRoundAfterAbandonedRelease,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
@@ -436,6 +437,84 @@ describe('autonomous continuation lifecycle', () => {
     expect(reopened.authorityId).not.toBe(opened.authorityId);
   });
 
+
+  test('cancelled Work abandons its claimed round after exact release so Requirement scope can reopen', () => {
+    const root = temp('forge-autonomous-cancelled-round-release-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-cancelled-round-release' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const requirementId = 'REQ-AUTONOMOUS-CANCELLED-ROUND';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Cancelled round recovery',
+      outcomeStatement: 'A cancelled Work cannot permanently own the Requirement ControllerRound scope.',
+    });
+    updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'activate_cancelled_round_requirement',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    });
+
+    const workId = 'WORK-AUTONOMOUS-CANCELLED-ROUND';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Cancel one claimed round without wedging the Requirement scope.',
+      acceptanceCriteria: ['cancelled claimed round is mechanically abandoned after exact release'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running', requirementId,
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:cancelled-round', controllerType: 'chatgpt', principalId: 'forge-scheduler',
+        controllerInstanceId: 'runtime-test', sessionId: 'occurrence-cancelled-round',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const owner = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-principal', controllerType: 'chatgpt', principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test', sessionId: 'mcp-cancelled-round',
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+    transitionWorkContractPhase(store, workId, { status: 'cancelled', phase: 'cleanup', state: 'skipped', summary: 'Cancelled for recovery regression.' });
+    releaseControllerSession(store, workId, owner.controllerId);
+
+    const abandoned = reconcileControllerRoundAfterAbandonedRelease(store, { workId, releasedSession: owner });
+    expect(abandoned).toMatchObject({
+      relayScopeId: opened.relayScopeId,
+      status: 'failed',
+      lastError: 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION',
+    });
+
+    const successorWorkId = 'WORK-AUTONOMOUS-CANCELLED-ROUND-SUCCESSOR';
+    createWorkContract(store, {
+      workId: successorWorkId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Prove the same Requirement scope can open another round after cancellation.',
+      acceptanceCriteria: ['same Requirement relay scope is reusable'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running', requirementId,
+    });
+    const reopened = beginInitialControllerRoundDispatch(store, {
+      workId: successorWorkId,
+      identity: {
+        controllerId: 'schedule:cancelled-round-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler',
+        controllerInstanceId: 'runtime-test', sessionId: 'occurrence-cancelled-round-successor',
+      },
+    });
+    expect(reopened).toMatchObject({ status: 'dispatching', relayScopeId: opened.relayScopeId });
+    expect(reopened.authorityId).not.toBe(opened.authorityId);
+  });
 
   test('a continued ChatGPT conversation is still instructed to claim the exact Work before continue', async () => {
     const root = temp('forge-autonomous-continuation-launcher-');

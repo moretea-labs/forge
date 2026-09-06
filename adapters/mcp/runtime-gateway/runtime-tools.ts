@@ -5370,13 +5370,30 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           if (facade.status !== 'ok') {
             return result(facade as unknown as Record<string, unknown>, true);
           }
+          const reconcileStoppedRound = () => {
+            const stopped = getWorkContract(store, workId);
+            if (!stopped || !['failed', 'cancelled'].includes(stopped.status) || getControllerSession(store, workId)) return undefined;
+            const retained = getRetainedControllerSession(store, workId);
+            if (!retained) return undefined;
+            return reconcileControllerRoundAfterAbandonedRelease(
+              { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+              { workId, releasedSession: retained },
+            );
+          };
           try {
             const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'stop');
-            if (!physical) return result(facade as unknown as Record<string, unknown>);
+            if (!physical) {
+              const relay = reconcileStoppedRound();
+              return result({
+                ...facade,
+                data: { ...(facade.data && typeof facade.data === 'object' ? facade.data : {}), ...(relay ? { relay } : {}) },
+              } as unknown as Record<string, unknown>);
+            }
             const cleanup = contextRecord(physical.structuredContent);
             const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
             const cleanupRetained = cleanup.cleanupRetained === true;
             const cleanupSettled = cleanupCompleted || cleanupRetained;
+            const stoppedRelay = reconcileStoppedRound();
             const response = {
               ...facade,
               status: cleanupSettled ? 'ok' : 'blocked',
@@ -5391,6 +5408,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 cleanupPending: !cleanupSettled,
                 cleanupRetained,
                 lifecycleCleanup: cleanup,
+                ...(stoppedRelay ? { relay: stoppedRelay } : {}),
               },
             };
             return result(response as unknown as Record<string, unknown>, !cleanupSettled || physical.isError === true);
