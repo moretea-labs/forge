@@ -475,6 +475,12 @@ describe('external plugin reusable authorization targets', () => {
 });
 
 describe('external plugin store integration', () => {
+  test('resolves the built-in browser adapter from controller scope for ChatGPT continuation', () => {
+    const fx = fixture();
+    expect(assistantPluginScope('browser', fx.controllerHome)).toBe('controller_with_repository_overlay');
+    expect(getAssistantPluginManifest(fx.controllerHome, fx.repository, 'browser').pluginId).toBe('browser');
+  });
+
   test('lists trusted external registrations through the existing plugin surface with truthful degraded health', () => {
     const fx = fixture();
     const manifests = listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
