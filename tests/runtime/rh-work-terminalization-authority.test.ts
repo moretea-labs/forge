@@ -3829,4 +3829,100 @@ describe('rh_work terminalization authority', () => {
     )).toThrow(`resolved_checkout=${fx.repository.activeCheckoutId}; expected_work_checkout=${expectedCheckoutId}; retry with checkout_id=${expectedCheckoutId}`);
   });
 
+  test('plan.step.retry restores a cleaned zero-delta cancelled Plan step through rh_work without reviving the terminal Work', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const planId = 'plan-technical-retry-facade';
+    const stepId = 'step-technical-retry';
+    const workId = 'work-technical-retry-facade';
+    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const now = new Date().toISOString();
+    createPlanContract(store, {
+      planId, repoId: fx.repository.repoId, scopeKey: 'technical-retry-facade', sourceRevision,
+      goal: 'Retry one technically cancelled Plan slice without rewriting semantic authority.',
+      steps: [{ id: stepId, objective: 'certify already integrated behavior', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['same semantic contract'] }],
+    });
+    approvePlanContract(store, planId);
+    createWorkContract(store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      baseRevision: sourceRevision, repositoryBaseState: 'revision', planId, planStepId: stepId, planSourceRevision: sourceRevision,
+      mode: 'goal_workloop', workKind: 'repository_change', objective: 'certify already integrated behavior', acceptanceCriteria: ['same semantic contract'],
+      allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
+      status: 'cancelled', phase: 'cleanup', dispatchState: 'terminal', evidenceState: 'none',
+      scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
+    });
+    claimPlanStepForWork(store, { planId, stepId, workId, sourceRevision });
+    const terminalWork = getWorkContract(store, workId)!;
+    const replanning = completePlanStepForWork(store, { planId, stepId, work: terminalWork });
+    expect(replanning).toMatchObject({ status: 'replanning', steps: [{ id: stepId, status: 'ready' }] });
+    expect(replanning.steps[0]?.workId).toBeUndefined();
+
+    const removedWorktree = join(fx.controllerHome, 'removed-worktree-for-technical-retry');
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: 'terminal-technical-retry-session',
+      principalId: 'principal-technical-retry',
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: removedWorktree,
+      branch: 'work/technical-retry-facade',
+      managedWorktree: true,
+      baseCommit: sourceRevision,
+      expectedHead: sourceRevision,
+      permissionSnapshotVersion: 1,
+      state: 'cleaned',
+      createdAt: now,
+      updatedAt: now,
+      finalization: { validation: 'pending', commit: 'skipped', merge: 'skipped', branchCleanup: 'done', worktreeCleanup: 'done' },
+      cleanupReceipt: {
+        schemaVersion: 1,
+        receiptId: 'cleanup-technical-retry-facade',
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        workId,
+        branch: 'work/technical-retry-facade',
+        targetBranch: 'main',
+        terminalOutcome: 'cancelled',
+        startedAt: now,
+        updatedAt: now,
+        completedAt: now,
+        verification: { mode: 'cleanup_only', checksRun: [] },
+        processes: { examined: [], terminated: [], blocking: [], allTerminal: true },
+        ownership: { controllerLease: 'already_released', processLeases: 'released' },
+        preservation: { status: 'not_needed' },
+        worktree: { path: removedWorktree, status: 'already_removed' },
+        branchCleanup: { branch: 'work/technical-retry-facade', status: 'already_deleted', uniqueCommits: 0 },
+        checkoutRegistry: { status: 'already_removed' },
+        prune: { status: 'done' },
+        complete: true,
+        partial: false,
+        blockers: [],
+      },
+    });
+
+    const mismatch = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-technical-retry', 'transport-technical-retry', 'runtime-technical-retry'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: 'wrong-work', capability_id: `plan.step.retry:${workId}`, reason: 'technical classification retry' },
+    ));
+    expect(mismatch.status).toBe('blocked');
+    expect(mismatch.summary).toContain('PLAN_STEP_TECHNICAL_RETRY_SCOPE_MISMATCH');
+
+    const repaired = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-technical-retry', 'transport-technical-retry', 'runtime-technical-retry'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `plan.step.retry:${workId}`, reason: 'The prior Work was cancelled only to correct its technical WorkKind before delivery.' },
+    ));
+    expect(repaired.status).toBe('ok');
+    expect(repaired.data?.repaired).toBe(true);
+    expect(repaired.data?.replacementWorkCreated).toBe(false);
+    const plan = getPlanContract(store, planId)!;
+    expect(plan).toMatchObject({ status: 'executing', steps: [{ id: stepId, status: 'ready' }] });
+    expect(plan.steps[0]?.workId).toBeUndefined();
+    expect(plan.steps[0]?.evidenceRefs[0]?.title).toBe('technical Work retry authorized');
+    expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
+  });
+
 });

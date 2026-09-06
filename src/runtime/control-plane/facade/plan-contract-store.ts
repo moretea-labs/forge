@@ -1228,6 +1228,63 @@ export function repairDanglingPlanStepWorkBinding(
   });
 }
 
+export function repairPlanStepForTechnicalRetry(
+  options: PlanContractStoreOptions,
+  input: { work: WorkContract; cleanupComplete: boolean; reason: string },
+): PlanContract {
+  const work = input.work;
+  const reason = input.reason.trim();
+  if (!reason) throw new Error('PLAN_STEP_TECHNICAL_RETRY_REASON_REQUIRED');
+  if (work.status !== 'cancelled' && work.status !== 'failed') {
+    throw new Error(`PLAN_STEP_TECHNICAL_RETRY_WORK_STATUS_INVALID: ${work.workId}:${work.status}`);
+  }
+  if (work.phase !== 'cleanup') throw new Error(`PLAN_STEP_TECHNICAL_RETRY_WORK_PHASE_INVALID: ${work.workId}:${work.phase}`);
+  if (work.completionReceipt || work.completionOutcome) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_DELIVERY_PRESENT: ${work.workId}`);
+  if (work.scopeEvidence?.actualChangedPaths.length !== 0) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_SOURCE_DELTA_PRESENT: ${work.workId}`);
+  if (!input.cleanupComplete) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_CLEANUP_INCOMPLETE: ${work.workId}`);
+  if (!work.planId?.trim() || !work.planStepId?.trim() || !work.planSourceRevision?.trim()) {
+    throw new Error(`PLAN_STEP_TECHNICAL_RETRY_LINEAGE_REQUIRED: ${work.workId}`);
+  }
+  if (work.status === 'failed') {
+    const checks = work.checkRefs ?? [];
+    if (checks.length === 0 || checks.some((check) => check.outcome !== 'infrastructure_failure')) {
+      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_FAILED_WORK_NOT_INFRASTRUCTURE_ONLY: ${work.workId}`);
+    }
+  }
+  return updatePlanContract(options, work.planId, (current) => {
+    if (current.status !== 'replanning') throw new Error(`PLAN_STEP_TECHNICAL_RETRY_PLAN_STATUS_INVALID: ${current.planId}:${current.status}`);
+    if (current.sourceRevision !== work.planSourceRevision) {
+      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_SOURCE_MISMATCH: ${current.planId}:plan=${current.sourceRevision}:work=${work.planSourceRevision}`);
+    }
+    if (work.requirementId !== current.requirementId) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_REQUIREMENT_MISMATCH: ${work.workId}`);
+    const stepIndex = current.steps.findIndex((step) => step.id === work.planStepId);
+    if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${work.planStepId}`);
+    const step = current.steps[stepIndex]!;
+    if (step.status !== 'ready' || step.workId) {
+      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_STEP_STATE_INVALID: ${step.id}:${step.status}:${step.workId ?? 'unbound'}`);
+    }
+    const dependenciesSatisfied = step.dependencies.every((dependency) => current.steps.find((candidate) => candidate.id === dependency)?.status === 'completed');
+    if (!dependenciesSatisfied) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_DEPENDENCY_INVALID: ${step.id}`);
+    const contractMatches = work.objective === step.objective
+      && sameOrderedStrings(work.acceptanceCriteria, step.acceptanceCriteria)
+      && sameOrderedStrings(work.allowedPaths, step.allowedPaths)
+      && sameOrderedStrings(work.forbiddenPaths, step.forbiddenPaths)
+      && sameOrderedStrings(work.checks, step.checks);
+    if (!contractMatches) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_CONTRACT_MISMATCH: ${work.workId}`);
+    const at = nowIso(options);
+    const steps = [...current.steps];
+    steps[stepIndex] = {
+      ...step,
+      evidenceRefs: [{
+        title: 'technical Work retry authorized',
+        summary: `${work.workId}: ${reason}`.slice(0, 2_000),
+        detailLevel: 'summary' as const,
+      }, ...step.evidenceRefs].slice(0, 20),
+    };
+    return { ...current, status: 'executing', steps, updatedAt: at };
+  });
+}
+
 export function completePlanStepForWork(
   options: PlanContractStoreOptions,
   input: {

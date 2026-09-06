@@ -190,6 +190,7 @@ import {
   resolvePlanAdmission,
   withPrimaryWorkAdmissionLockAsync,
   repairDanglingPlanStepWorkBinding,
+  repairPlanStepForTechnicalRetry,
   replanActivePlanBoundWorkScope,
   repairDraftPlanContractAsync,
   completePlanStepForWork,
@@ -4200,6 +4201,52 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Schedule operation failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
         }
+        const technicalRetryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('plan.step.retry:')
+          ? args.capability_id.slice('plan.step.retry:'.length).trim()
+          : '';
+        if (technicalRetryWorkId) {
+          const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+          if (!explicitWorkId || explicitWorkId !== technicalRetryWorkId) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: `PLAN_STEP_TECHNICAL_RETRY_SCOPE_MISMATCH: capability targets ${technicalRetryWorkId}; exact work_id is required.`,
+              data: { workId: technicalRetryWorkId, repaired: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const work = getWorkContract(store, technicalRetryWorkId);
+            if (!work) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_WORK_NOT_FOUND: ${technicalRetryWorkId}`);
+            const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+            if (!reason) throw new Error('PLAN_STEP_TECHNICAL_RETRY_REASON_REQUIRED');
+            const handle = readWorkHandle(ctx.controllerHome, repository.repoId, technicalRetryWorkId);
+            const cleanupComplete = Boolean(handle
+              && handle.managedWorktree
+              && handle.state === 'cleaned'
+              && handle.finalization.branchCleanup === 'done'
+              && handle.finalization.worktreeCleanup === 'done'
+              && handle.cleanupReceipt?.complete === true
+              && handle.baseCommit
+              && handle.expectedHead === handle.baseCommit
+              && !existsSync(handle.worktreePath));
+            if (!cleanupComplete) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_CLEANUP_INCOMPLETE: ${technicalRetryWorkId}`);
+            const conflicting = work.planId && work.planStepId
+              ? listWorkContracts({ ...store, status: 'active', limit: 200 }).filter((candidate) => candidate.planId === work.planId && candidate.planStepId === work.planStepId)
+              : [];
+            if (conflicting.length > 0) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_ACTIVE_WORK_CONFLICT: ${conflicting.map((candidate) => candidate.workId).join(',')}`);
+            const repairedPlan = repairPlanStepForTechnicalRetry(store, { work, cleanupComplete, reason });
+            return result(buildFacadeResult({
+              summary: `Plan step ${work.planId}/${work.planStepId} was restored for an explicit technical retry after terminal Work ${work.workId}; no Work was revived or created.`,
+              data: { workId: work.workId, plan: summarizePlanContract(repairedPlan), repaired: true, replacementWorkCreated: false },
+            }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'PLAN_STEP_TECHNICAL_RETRY_FAILED',
+              data: { workId: technicalRetryWorkId, repaired: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
+
         const authorityRecoveryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('controller.authority.recover:')
           ? args.capability_id.slice('controller.authority.recover:'.length).trim()
           : '';

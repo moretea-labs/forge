@@ -13,6 +13,7 @@ import {
   listPlanContracts,
   listUnresolvedPlanObligations,
   repairDraftPlanContract,
+  repairPlanStepForTechnicalRetry,
   replanActivePlanBoundWorkScope,
   supersedePlanContract,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -613,6 +614,56 @@ test('rejects nonterminal Work and replans from failed Work', () => {
     work: { workId: 'work-terminal', status: 'failed', phase: 'cleanup', evidenceState: 'failed', completionOutcome: undefined, completionReceipt: undefined, evidenceRefs: [] },
   });
   expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: undefined, status: 'ready' }] });
+});
+
+test('explicit technical retry restores only a cleaned zero-delta cancelled Plan step without rewriting the Plan', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-technical-retry-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-09-06T00:00:00.000Z' };
+  claimedPlan(options, 'plan-technical-retry', 'work-technical-retry');
+  createWorkContract(options, {
+    workId: 'work-technical-retry', repoId: options.repoId, planId: 'plan-technical-retry', planStepId: 'step-1', planSourceRevision: 'abc123',
+    mode: 'goal_workloop', objective: 'execute bounded work', acceptanceCriteria: ['Work receipt is exact'], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'],
+    constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+  });
+  const cancelled = {
+    ...getWorkContract(options, 'work-technical-retry')!,
+    status: 'cancelled' as const, phase: 'cleanup' as const, dispatchState: 'terminal' as const, evidenceState: 'none' as const,
+    scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: '2026-09-06T00:00:00.000Z' },
+  };
+  const replanning = completePlanStepForWork(options, { planId: 'plan-technical-retry', stepId: 'step-1', work: cancelled });
+  expect(replanning).toMatchObject({ status: 'replanning', steps: [{ status: 'ready', workId: undefined }] });
+
+  const repaired = repairPlanStepForTechnicalRetry(options, {
+    work: cancelled, cleanupComplete: true, reason: 'The Work was cancelled only to correct its technical WorkKind before any delivery.',
+  });
+  expect(repaired).toMatchObject({ planId: 'plan-technical-retry', status: 'executing', sourceRevision: 'abc123', steps: [{ status: 'ready' }] });
+  expect(repaired.steps[0]).not.toHaveProperty('workId');
+  expect(repaired.steps[0]?.evidenceRefs[0]?.title).toBe('technical Work retry authorized');
+  expect(getWorkContract(options, 'work-technical-retry')).toMatchObject({ status: 'running' });
+});
+
+test('technical retry remains fail-closed for delivery, source delta, incomplete cleanup, changed contract, and non-replanning state', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-technical-retry-fences-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-09-06T00:00:00.000Z' };
+  claimedPlan(options, 'plan-technical-retry-fences', 'work-technical-retry-fences');
+  createWorkContract(options, {
+    workId: 'work-technical-retry-fences', repoId: options.repoId, planId: 'plan-technical-retry-fences', planStepId: 'step-1', planSourceRevision: 'abc123',
+    mode: 'goal_workloop', objective: 'execute bounded work', acceptanceCriteria: ['Work receipt is exact'], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'],
+    constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+  });
+  const cancelled = {
+    ...getWorkContract(options, 'work-technical-retry-fences')!,
+    status: 'cancelled' as const, phase: 'cleanup' as const, dispatchState: 'terminal' as const, evidenceState: 'none' as const,
+    scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: '2026-09-06T00:00:00.000Z' },
+  };
+  expect(() => repairPlanStepForTechnicalRetry(options, { work: cancelled, cleanupComplete: true, reason: 'too early' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_PLAN_STATUS_INVALID');
+  completePlanStepForWork(options, { planId: 'plan-technical-retry-fences', stepId: 'step-1', work: cancelled });
+  expect(() => repairPlanStepForTechnicalRetry(options, { work: cancelled, cleanupComplete: false, reason: 'cleanup missing' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_CLEANUP_INCOMPLETE');
+  expect(() => repairPlanStepForTechnicalRetry(options, { work: { ...cancelled, scopeEvidence: { ...cancelled.scopeEvidence!, actualChangedPaths: ['src/changed.ts'] } }, cleanupComplete: true, reason: 'changed' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_SOURCE_DELTA_PRESENT');
+  expect(() => repairPlanStepForTechnicalRetry(options, { work: { ...cancelled, completionOutcome: 'completed_no_change' }, cleanupComplete: true, reason: 'delivered' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_DELIVERY_PRESENT');
+  expect(() => repairPlanStepForTechnicalRetry(options, { work: { ...cancelled, objective: 'different objective' }, cleanupComplete: true, reason: 'contract drift' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_CONTRACT_MISMATCH');
 });
 
 test('projects terminal Work evidence to validating and requires explicit semantic acceptance to complete the PlanStep', () => {
