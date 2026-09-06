@@ -82,6 +82,7 @@ import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
 import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
 
@@ -183,6 +184,28 @@ function fixture() {
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'process-rt' });
   return { root, controllerHome, repoRoot, repository };
+}
+
+function createFixtureWork(
+  fx: ReturnType<typeof fixture>,
+  workId: string,
+  workKind: 'repository_change' | 'local_effect' = 'repository_change',
+): void {
+  createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+    workId,
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId,
+    mode: 'goal_workloop',
+    workKind,
+    objective: `Process Runtime fixture ${workId}.`,
+    acceptanceCriteria: [],
+    allowedPaths: ['**'],
+    forbiddenPaths: [],
+    checks: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+    requestedBy: 'chatgpt',
+    status: 'running',
+  });
 }
 
 describe('Unified Process Runtime', () => {
@@ -1055,6 +1078,7 @@ describe('run_check Process Runtime facade', () => {
 
   test('reuses identical Check Process evidence across Edit Session and Work consumers', async () => {
     const fx = fixture();
+    createFixtureWork(fx, 'work-a');
     const common = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, repoRoot: fx.repoRoot, executionIdentity: executionIdentityForRepository(fx.repository), checkId: 'quick-ok', interactiveWaitMs: 5_000 };
     const edit = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check', commandId: 'edit-check', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
     const work = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check', commandId: 'work-check', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } });
@@ -1066,6 +1090,7 @@ describe('run_check Process Runtime facade', () => {
 
   test('structured check failure remains acceptance failure evidence', async () => {
     const fx = fixture();
+    createFixtureWork(fx, 'work-quick-fail');
     const result = await runPersistedCheckViaProcessRuntime({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -1953,6 +1978,8 @@ describe('Process Runtime real lease contention', () => {
 
   test('Homebrew host-only Work can overlap an independent repository write', async () => {
     const fx = fixture();
+    createFixtureWork(fx, 'work-host-package', 'local_effect');
+    createFixtureWork(fx, 'work-independent-repository-write');
     const hostClaims = claimsForRepositoryCommand(
       ['brew', 'install', 'jmeter'],
       fx.repository.repoId,
@@ -2016,6 +2043,9 @@ describe('Process Runtime real lease contention', () => {
   test('cross-Work build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
     expect(DEFAULT_WORK_CHECK_LEASE_WAIT_MS).toBe(30_000);
     const fx = fixture();
+    createFixtureWork(fx, 'work-build-cache-holder');
+    createFixtureWork(fx, 'work-build-cache-short-budget');
+    createFixtureWork(fx, 'work-build-cache-waiter');
     const buildCacheClaim = { resourceKey: `build-cache:${fx.repository.repoId}`, mode: 'write' as const };
     const holder = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
@@ -2092,6 +2122,7 @@ describe('Process Runtime real lease contention', () => {
 
   test('write claim blocks concurrent write; multiple reads may run', async () => {
     const fx = fixture();
+    createFixtureWork(fx, 'work-lease-a');
     const claims = claimsForRepositoryCommand(['git', 'status'], fx.repository.repoId, fx.repository.activeCheckoutId);
     // First long-running managed process holds workspace read (and any path claims).
     const first = await spawnManagedProcess({
@@ -2197,6 +2228,7 @@ describe('Process Runtime real lease contention', () => {
 
   test('lease release is exactly once across recover and complete', async () => {
     const fx = fixture();
+    createFixtureWork(fx, 'work-release-once');
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -2961,7 +2993,7 @@ describe('Process Runner exactly-once semantics', () => {
         executable: 'node',
         args: [
           '-e',
-          `const keys = ${JSON.stringify(privateKeys)}; process.stdout.write(JSON.stringify({ private: Object.fromEntries(keys.map((key) => [key, process.env[key] ?? null])), safe: process.env.SAFE_REPOSITORY_ENV ?? null }));`,
+          `const keys = ${JSON.stringify(privateKeys)}; process.stdout.write(JSON.stringify({ privateEntries: keys.map((key) => [key, process.env[key] ?? null]), safe: process.env.SAFE_REPOSITORY_ENV ?? null }));`,
         ],
         cwd: root,
         env: {
@@ -2981,11 +3013,11 @@ describe('Process Runner exactly-once semantics', () => {
     const receipt = await runProcessRunnerFromDescriptor(descriptor);
     expect(receipt.exitCode).toBe(0);
     const output = JSON.parse(readFileSync(stdoutPath, 'utf8')) as {
-      private: Record<string, string | null>;
+      privateEntries: Array<[string, string | null]>;
       safe: string | null;
     };
     expect(output.safe).toBe('preserved');
-    for (const key of privateKeys) expect(output.private[key]).toBeNull();
+    expect(Object.fromEntries(output.privateEntries)).toEqual(Object.fromEntries(privateKeys.map((key) => [key, null])));
   });
 
   test('redacts split secrets in runner files before controller reconciliation', async () => {
