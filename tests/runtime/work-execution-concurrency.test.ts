@@ -297,6 +297,64 @@ describe('Work execution concurrency', () => {
     });
   });
 
+  test('lets read-only review checks coordinate cache/temp capacity without granting source or authority mutation', () => {
+    const home = tempHome(), repoId = 'repo-review-check';
+    const reviewer = work({ controllerHome: home, repoId, workId: 'work-review-check', stepId: 'review-step', workKind: 'read_only_review' });
+    const claim = (resourceKey: string, mode: ProcessResourceClaim['mode']): ProcessResourceClaim => ({
+      resourceKey, mode, repoId, checkoutId: reviewer.checkoutId, workId: reviewer.workId,
+    });
+    const checkExecution = {
+      schemaVersion: 1 as const,
+      checkId: 'package:check:type',
+      cacheKey: 'review-check-cache',
+      revision: 'review-check-revision',
+      definitionDigest: 'review-check-definition',
+      environmentFingerprint: 'review-check-environment',
+      timeoutMs: 10_000,
+      reuseScope: 'checkout' as const,
+      scopeKey: reviewer.checkoutId!,
+    };
+
+    expect(evaluateManagedProcessWorkCompatibility({
+      controllerHome: home,
+      repoId,
+      processId: 'proc-review-check',
+      workId: reviewer.workId,
+      checkExecution,
+      resourceClaims: [
+        claim(`workspace:${reviewer.checkoutId}`, 'read'),
+        claim(`build-cache:${repoId}`, 'write'),
+        claim(`temp:${repoId}:package-check-type`, 'write'),
+        claim(`heavy-check:${repoId}`, 'exclusive'),
+      ],
+    })).toEqual({ compatible: true, hardBlocked: false });
+
+    for (const forbidden of [
+      claim(`workspace:${reviewer.checkoutId}`, 'write'),
+      claim(`path:${reviewer.checkoutId}:src/a.ts`, 'write'),
+      claim(`git-index:${reviewer.checkoutId}`, 'exclusive'),
+      claim(`git-refs:${repoId}`, 'exclusive'),
+      claim(`integration:${repoId}`, 'exclusive'),
+      claim(`release:${repoId}`, 'exclusive'),
+      claim(`remote:${repoId}`, 'exclusive'),
+      claim(`network:${repoId}`, 'write'),
+      claim('host-service:canonical-runtime', 'write'),
+    ]) {
+      expect(evaluateManagedProcessWorkCompatibility({
+        controllerHome: home,
+        repoId,
+        processId: `proc-review-forbidden-${forbidden.resourceKey}`,
+        workId: reviewer.workId,
+        checkExecution,
+        resourceClaims: [claim(`workspace:${reviewer.checkoutId}`, 'read'), forbidden],
+      })).toMatchObject({
+        compatible: false,
+        hardBlocked: true,
+        wait: { blockerCode: 'reviewer_mutation_forbidden', disposition: 'invalid' },
+      });
+    }
+  });
+
   test('serializes shared integration/external targets while allowing distinct targets', () => {
     const home = tempHome(), repoId = 'repo-targets';
     const first = work({ controllerHome: home, repoId, workId: 'work-first', stepId: 'first' });

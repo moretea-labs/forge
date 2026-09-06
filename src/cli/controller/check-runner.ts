@@ -269,6 +269,11 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
   if (normalized === 'check:stable-baseline') {
     return { reads: ['.'], hostServices: ['canonical-runtime', 'forge-recovery'] };
   }
+  if (normalized === 'check:task' || normalized === 'check:main') {
+    // Governed gates reject any candidate workspace mutation after every step
+    // and persist only content-bound receipts/caches outside repository source.
+    return { reads: ['.'], cache: 'write', temp: 'isolated', git: 'read' };
+  }
   const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
   if (staticAnalysis) return { reads: ['.'], cache: 'write' };
   const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(normalized);

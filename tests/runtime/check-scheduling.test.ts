@@ -94,6 +94,27 @@ describe('check execution scheduling', () => {
     }
   });
 
+  test('declares governed task/main gates as source-read-only while release remains conservative', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-governed-gate-effects-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({
+        scripts: {
+          'check:task': 'bun scripts/run-governed-gate.ts task',
+          'check:main': 'bun scripts/run-governed-gate.ts main',
+          'check:release': 'bun scripts/run-governed-gate.ts release',
+        },
+      }));
+      const checks = listControllerChecks(root);
+      const byId = new Map(checks.map((entry) => [entry.id, entry]));
+      const governedEffects = { reads: ['.'], cache: 'write' as const, temp: 'isolated' as const, git: 'read' as const };
+      expect(byId.get('package:check:task')?.effects).toEqual(governedEffects);
+      expect(byId.get('package:check:main')?.effects).toEqual(governedEffects);
+      expect(byId.get('package:check:release')?.effects).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('places disjoint explicitly read-only path checks in one parallel-safe wave', () => {
     const schedule = buildCheckExecutionSchedule({
       checks: [

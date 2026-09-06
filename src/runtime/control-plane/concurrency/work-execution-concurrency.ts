@@ -29,8 +29,30 @@ function intents(claims: readonly Pick<ResourceClaimSpec, 'resourceKey' | 'mode'
   return claims.map((claim) => ({ resourceKey: claim.resourceKey, mode: claim.mode }));
 }
 
+function processIsCheckExecution(record: Pick<ManagedProcessRecord, 'checkExecution' | 'origin'>): boolean {
+  return Boolean(record.checkExecution || record.origin?.surface === 'check');
+}
+
+function isVerificationCoordinationResource(resourceKey: string): boolean {
+  const normalized = resourceKey.trim();
+  return normalized.startsWith('build-cache:')
+    || normalized.startsWith('temp:')
+    || normalized.startsWith('heavy-check:');
+}
+
+function workCompatibilityIntentsForProcess(
+  record: Pick<ManagedProcessRecord, 'checkExecution' | 'origin'>,
+  claims: readonly Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>[],
+): WorkExecutionResourceIntent[] {
+  if (!processIsCheckExecution(record)) return intents(claims);
+  // Physical Process leases still retain cache/temp/heavy-check claims. They are
+  // execution coordination, not authority to mutate the source under review, so
+  // do not project them into Work semantic mutation compatibility.
+  return intents(claims.filter((claim) => !isVerificationCoordinationResource(claim.resourceKey)));
+}
+
 function laneForProcess(record: Pick<ManagedProcessRecord, 'checkExecution' | 'origin'>, fallback?: WorkExecutionLane): WorkExecutionLane | undefined {
-  if (record.checkExecution || record.origin?.surface === 'check') return 'read';
+  if (processIsCheckExecution(record)) return 'read';
   return fallback;
 }
 
@@ -123,7 +145,7 @@ function contractForProcess(
   if (!work) return undefined;
   return buildWorkExecutionConcurrencyContract(work, {
     lane: laneForProcess(record),
-    resourceIntents: intents(record.resourceClaims),
+    resourceIntents: workCompatibilityIntentsForProcess(record, record.resourceClaims),
   });
 }
 
@@ -154,7 +176,7 @@ export function evaluateManagedProcessWorkCompatibility(input: {
   }
   const candidate = buildWorkExecutionConcurrencyContract(work, {
     lane: laneForProcess({ checkExecution: input.checkExecution, origin: input.origin }),
-    resourceIntents: intents(input.resourceClaims),
+    resourceIntents: workCompatibilityIntentsForProcess({ checkExecution: input.checkExecution, origin: input.origin }, input.resourceClaims),
   });
   const activeProcessContracts = listProcessRecords(input.controllerHome, input.repoId, 500)
     .filter((record) => record.processId !== input.processId && record.workId && isManagedProcessActive(record))
