@@ -51,6 +51,7 @@ import {
   RECOVERY_VERIFIER_OAUTH_REDIRECT_URI,
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
+import { RecoveryMcpSessionServer } from '../../src/runtime/standalone-recovery/mcp-server';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../src/runtime/standalone-recovery/mutation-identity-contract';
 import {
   evaluateRecoveryWatchdogHealth,
@@ -1504,10 +1505,146 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(classifyRecoveryMcpRequest(request('GET', path), 'test-token')).toBe('auth_required');
       expect(classifyRecoveryMcpRequest(request('DELETE', path), 'test-token')).toBe('auth_required');
       expect(classifyRecoveryMcpRequest(request('POST', path), 'test-token')).toBe('auth_required');
-      expect(classifyRecoveryMcpRequest(request('GET', path, 'Bearer test-token'), 'test-token')).toBe('method_not_supported');
+      expect(classifyRecoveryMcpRequest(request('GET', path, 'Bearer test-token'), 'test-token')).toBe('mcp');
+      expect(classifyRecoveryMcpRequest(request('DELETE', path, 'Bearer test-token'), 'test-token')).toBe('mcp');
       expect(classifyRecoveryMcpRequest(request('POST', path, 'Bearer test-token'), 'test-token')).toBe('mcp');
     }
     expect(classifyRecoveryMcpRequest(request('GET', '/recovery/health'), 'test-token')).toBe('not_mcp');
+  });
+
+
+  test('Recovery MCP reinitializes a stale session after gateway restart', async () => {
+    const tools = [{
+      name: 'runtime_status',
+      description: 'test recovery status',
+      inputSchema: { type: 'object' as const, additionalProperties: false },
+    }];
+    const start = async (port = 0) => {
+      const mcp = new RecoveryMcpSessionServer({
+        tools,
+        dispatchTool: async () => ({ ok: true }),
+      });
+      const httpServer = createServer(async (request, response) => {
+        let body: unknown;
+        if (request.method === 'POST') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        }
+        await mcp.handle(request, response, body);
+      });
+      await new Promise<void>((resolveListen, rejectListen) => {
+        httpServer.once('error', rejectListen);
+        httpServer.listen(port, '127.0.0.1', () => resolveListen());
+      });
+      const address = httpServer.address();
+      if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_MCP_ADDRESS_MISSING');
+      return { mcp, httpServer, port: address.port };
+    };
+    const stop = async (instance: Awaited<ReturnType<typeof start>>) => {
+      await instance.mcp.close();
+      await new Promise<void>((resolveClose, rejectClose) => instance.httpServer.close((error) => error ? rejectClose(error) : resolveClose()));
+    };
+    const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+    const initializeBody = (id: number) => JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'recovery-restart-test', version: '1.0.0' },
+      },
+    });
+    const toolsListBody = (id: number) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', params: {} });
+    const readMcpResponse = async (response: Response): Promise<{ result?: { tools?: unknown[] } }> => {
+      const text = await response.text();
+      if (/text\/event-stream/i.test(response.headers.get('content-type') ?? '')) {
+        const dataLine = text.split(/\r?\n/).find((line) => line.startsWith('data: '));
+        if (!dataLine) throw new Error(`TEST_MCP_SSE_DATA_MISSING: ${text}`);
+        return JSON.parse(dataLine.slice('data: '.length)) as { result?: { tools?: unknown[] } };
+      }
+      return JSON.parse(text) as { result?: { tools?: unknown[] } };
+    };
+
+    const first = await start();
+    let second: Awaited<ReturnType<typeof start>> | undefined;
+    try {
+      const initialized = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, { method: 'POST', headers, body: initializeBody(1) });
+      expect(initialized.status).toBe(200);
+      const staleSessionId = initialized.headers.get('mcp-session-id');
+      expect(staleSessionId).toBeTruthy();
+      await initialized.text();
+
+      const initializedNotification = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': staleSessionId! },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      });
+      expect([200, 202]).toContain(initializedNotification.status);
+      await initializedNotification.text();
+
+      const beforeRestart = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': staleSessionId! },
+        body: toolsListBody(2),
+      });
+      expect(beforeRestart.status).toBe(200);
+      expect((await readMcpResponse(beforeRestart)).result?.tools?.length).toBe(1);
+
+      const restartPort = first.port;
+      await stop(first);
+      second = await start(restartPort);
+
+      const staleCall = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': staleSessionId! },
+        body: toolsListBody(3),
+      });
+      expect(staleCall.status).toBe(404);
+      expect(staleCall.headers.get('mcp-session-reset')).toBe('reinitialize');
+      expect((await staleCall.json() as { code?: string }).code).toBe('MCP_SESSION_EXPIRED');
+
+      const replacement = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': staleSessionId! },
+        body: initializeBody(4),
+      });
+      expect(replacement.status).toBe(200);
+      expect(replacement.headers.get('mcp-session-reset')).toBe('reinitialized');
+      const replacementSessionId = replacement.headers.get('mcp-session-id');
+      expect(replacementSessionId).toBeTruthy();
+      expect(replacementSessionId).not.toBe(staleSessionId);
+      await replacement.text();
+
+      const afterRestart = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': replacementSessionId! },
+        body: toolsListBody(5),
+      });
+      expect(afterRestart.status).toBe(200);
+      expect((await readMcpResponse(afterRestart)).result?.tools?.length).toBe(1);
+
+      const deleted = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
+        method: 'DELETE',
+        headers: { accept: 'application/json, text/event-stream', 'mcp-session-id': replacementSessionId! },
+      });
+      expect(deleted.status).toBeGreaterThanOrEqual(200);
+      expect(deleted.status).toBeLessThan(300);
+      await deleted.text();
+
+      const afterDelete = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': replacementSessionId! },
+        body: toolsListBody(6),
+      });
+      expect(afterDelete.status).toBe(404);
+      expect(afterDelete.headers.get('mcp-session-reset')).toBe('reinitialize');
+      await afterDelete.text();
+    } finally {
+      if (second) await stop(second);
+      else if (first.httpServer.listening) await stop(first);
+    }
   });
 
   test('verifies and attests the single active whole-Runtime release', async () => {

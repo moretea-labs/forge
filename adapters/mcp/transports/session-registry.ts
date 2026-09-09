@@ -1,6 +1,6 @@
 import { clearSessionCachesForSession } from '../../../src/cli/repository/session-cache';
 
-export type McpSessionRoute = '/mcp' | '/mcp-grok' | '/mcp-bearer';
+export type McpSessionRoute = '/mcp' | '/mcp-grok' | '/mcp-bearer' | '/recovery/mcp';
 
 export type McpSessionCloseReason =
   | 'client_delete'

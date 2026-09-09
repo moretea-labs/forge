@@ -4,6 +4,8 @@ import { basename, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../../adapters/mcp/auth';
 import { FORGE_VERSION } from '../../version';
+import type { Tool } from '@modelcontextprotocol/server';
+import { RecoveryMcpSessionServer } from './mcp-server';
 import {
   activateRuntimeRelease,
   assertRecoveryMutationIdentity,
@@ -245,7 +247,7 @@ function html(response: ServerResponse, status: number, payload: string): void {
 
 function setCorsHeaders(response: ServerResponse): void {
   response.setHeader('access-control-allow-origin', '*');
-  response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+  response.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS');
   response.setHeader('access-control-allow-headers', 'authorization, content-type, mcp-session-id, mcp-protocol-version');
   response.setHeader('access-control-expose-headers', 'www-authenticate, mcp-session-id');
 }
@@ -455,7 +457,7 @@ export function classifyRecoveryMcpRequest(
   if (!matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) return 'not_mcp';
   const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
   if (!expectedToken || !supplied || !secureEqual(supplied, expectedToken)) return 'auth_required';
-  if (request.method !== 'POST') return 'method_not_supported';
+  if (request.method !== 'POST' && request.method !== 'GET' && request.method !== 'DELETE') return 'method_not_supported';
   return 'mcp';
 }
 
@@ -671,6 +673,24 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
   const recentMutations = new Map<string, number[]>();
   const oauthCodes = new Map<string, PendingOAuthCode>();
   const oauthClients = new Map<string, OAuthClient>();
+  const recoveryTools = RECOVERY_TOOLS.map((tool) => ({
+    ...tool,
+    securitySchemes: TOOL_SECURITY_SCHEMES,
+    _meta: { securitySchemes: TOOL_SECURITY_SCHEMES },
+  })) as unknown as Tool[];
+  const recoveryMcp = new RecoveryMcpSessionServer({
+    tools: recoveryTools,
+    dispatchTool: async (name, args, context) => {
+      if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
+        const now = Date.now();
+        const window = (recentMutations.get(context.remoteAddress) ?? []).filter((at) => now - at < 60_000);
+        if (window.length >= 3) throw new Error('Recovery mutation rate limit exceeded.');
+        window.push(now);
+        recentMutations.set(context.remoteAddress, window);
+      }
+      return await dispatchRecoveryTool(config, name, args);
+    },
+  });
   const server = createServer(async (request, response) => {
     if (request.method === 'OPTIONS') {
       response.statusCode = 204;
@@ -834,34 +854,12 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     const mcpRequest = classifyRecoveryMcpRequest(request, gatewayToken(config));
     if (mcpRequest === 'not_mcp' || mcpRequest === 'method_not_supported') { json(response, 404, { error: 'NOT_FOUND' }); return; }
     if (mcpRequest === 'auth_required') { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, recoveryUnauthorizedBody()); return; }
-    if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
-    let message: { id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } };
-    try { message = JSON.parse(await readBody(request)) as typeof message; } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
-    const id = message.id ?? null;
-    if (message.method === 'initialize') { json(response, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'forge-standalone-recovery', version: FORGE_VERSION } } }); return; }
-    if (message.method === 'notifications/initialized') { response.statusCode = 202; response.end(); return; }
-    if (message.method === 'tools/list') {
-      const tools = RECOVERY_TOOLS.map((tool) => ({
-        ...tool,
-        securitySchemes: TOOL_SECURITY_SCHEMES,
-        _meta: { securitySchemes: TOOL_SECURITY_SCHEMES },
-      }));
-      json(response, 200, { jsonrpc: '2.0', id, result: { tools } });
-      return;
+    let body: unknown;
+    if (request.method === 'POST') {
+      if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
+      try { body = JSON.parse(await readBody(request)); } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
     }
-    if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
-    const name = message.params.name;
-    const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
-      const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
-      const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
-      if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }
-      window.push(now); recentMutations.set(address, window);
-    }
-    try {
-      const payload = await dispatchRecoveryTool(config, name, args);
-      json(response, 200, { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload } });
-    } catch (error) { json(response, 200, rpcError(id, -32602, error instanceof Error ? error.message : 'Recovery request rejected')); }
+    await recoveryMcp.handle(request, response, body);
   });
   await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(gateway.port, gateway.host, () => resolveListen()); });
   runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');
