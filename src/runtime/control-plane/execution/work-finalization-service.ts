@@ -21,7 +21,6 @@ import { transferReviewedWorkAuthorityAcrossContentEquivalentCommit } from './co
 import {
   assertImplementationReviewPreDeliveryBoundary,
   authoritativeImplementationReviewVerificationEvidence,
-  failWorkContract,
   latestImplementationReview,
   implementationReviewChangedPathDigest,
   normalizeImplementationReviewChangedPaths,
@@ -30,7 +29,7 @@ import {
 } from '../../../../packages/kernel/work/api/index';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { completeWorkWithReceipt } from './work-completion-authority';
-import { adoptWorkHandleSuccessorCandidate, markWorkHandleFailed, readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
+import { adoptWorkHandleSuccessorCandidate, readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
 import type { WorkFinalizationFailureCode, WorkFinalizationStages, WorkHandleState } from './work-handle-store';
 import { findWorkPathScopeViolation } from './work-path-scope';
 import type { WorkRemoteDeliveryReceipt } from './work-remote-delivery';
@@ -1480,13 +1479,11 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args, { allowClaimedTerminalCleanup: args.cleanup !== false });
   const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
-  let retryStage = current.state === 'failed'
-    ? requestedFailedFinalizationRetry(current.finalization, requestedWants)
-    : undefined;
+  let retryStage = requestedFailedFinalizationRetry(current.finalization, requestedWants);
   const retryContract = retryStage ? contractFor(ctx, current) : undefined;
   if (
     retryStage
-    && retryContract?.status === 'failed'
+    && (retryContract?.status === 'failed' || retryContract?.status === 'blocked')
     && !retryContract.completionOutcome
     && !retryContract.completionReceipt
   ) {
@@ -1507,7 +1504,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   }
   const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
   current = reconcileFailedNonLinearTargetAdvanceRepair(ctx, current, args);
-  if (current.state !== 'failed') retryStage = undefined;
+  if (retryStage && current.finalization[retryStage] !== 'failed') retryStage = undefined;
   if (terminalOutcome && args.cleanup === false) {
     const recordedAt = new Date().toISOString();
     current = withControllerLock(
@@ -1667,15 +1664,29 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   ): Record<string, unknown> => {
     current = transact(`fail:${String(stage)}`, (fresh) => {
       const finalization = { ...fresh.finalization, [stage]: 'failed', failureCode, lastError: reason } as WorkFinalizationStages;
-      return markWorkHandleFailed(ctx.controllerHome, { ...fresh, finalization }, reason);
+      const retryableState = stage === 'validation'
+        ? 'validating'
+        : retryHandleStateForFinalization(finalization);
+      return transitionWorkHandle(ctx.controllerHome, fresh, retryableState, {
+        failureReason: reason,
+        finalization,
+        ...(stage === 'validation' ? { validationRun: undefined, validatedInputFingerprint: undefined } : {}),
+      });
     });
     if (current.workContractId) {
       if (stage === 'validation') {
-        failWorkContract(
+        transitionWorkContractPhase(
           { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
           current.workContractId,
-          { phase: 'verification', summary: `Work finalization validation failed: ${reason}` },
+          {
+            phase: 'verification',
+            status: 'blocked',
+            state: 'blocked',
+            dispatchState: 'blocked',
+            summary: `Retryable Work finalization validation failed; exact verification/review authority must be re-established: ${reason}`,
+          },
         );
+        markWorkValidationPending(ctx.controllerHome, current);
       } else if (stage === 'commit' || stage === 'merge' || stage === 'branchCleanup' || stage === 'worktreeCleanup') {
         transitionWorkContractPhase(
           { controllerHome: ctx.controllerHome, repoId: current.repositoryId },

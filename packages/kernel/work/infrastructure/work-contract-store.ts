@@ -974,6 +974,7 @@ function updateWorkContractInternal(
   allowLifecycleWrite = false,
   allowRetainedCancelledResume = false,
   allowImplementationReviewWrite = false,
+  allowPhaseRegression = false,
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
@@ -1036,7 +1037,7 @@ function updateWorkContractInternal(
     reconciliations: (patch.reconciliations ?? current.reconciliations ?? []).slice(0, 20),
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
-    }), { allowRetainedCancelledResume });
+    }), { allowRetainedCancelledResume, allowPhaseRegression });
     const contracts = [...store.contracts];
     contracts[index] = next;
     writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
@@ -1314,7 +1315,7 @@ export function activateWorkContract(
     dispatchState: 'running',
     evidenceState,
     worktreeRef: input.worktreeRef ?? current.worktreeRef,
-  }, false, true);
+  }, false, true, false, false, true);
 }
 
 export function failWorkContract(
@@ -1428,7 +1429,7 @@ export function resumeRetainedCancelledWorkContract(
     worktreeRef: input.worktreeRef ?? current.worktreeRef,
     controllerInstanceId: input.controllerInstanceId,
     continuationPrompt: input.summary,
-  }, false, true, true);
+  }, false, true, true, false, true);
 }
 
 /** Merge non-authoritative discovery/change evidence without changing policy fences. */
@@ -1489,7 +1490,7 @@ export function transitionWorkContractPhase(
     status: input.status,
     dispatchState: input.dispatchState ?? current.dispatchState,
     evidenceState: input.evidenceState ?? current.evidenceState,
-  }, false, true);
+  }, false, true, false, false, true);
 }
 
 /** Enter the first-class implementation-review phase without recording a decision. */
@@ -1564,7 +1565,7 @@ export function recordWorkImplementationReview(
         ? 'running'
         : current.dispatchState,
     implementationReviews: history,
-  }, false, true, false, true);
+  }, false, true, false, true, review.decision === 'changes_required');
 }
 
 export interface ContentEquivalentCommitAuthorityTransferInput {

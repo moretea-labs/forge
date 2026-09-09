@@ -214,7 +214,7 @@ const EVIDENCE_TRANSITIONS: Readonly<Record<EvidenceState, readonly EvidenceStat
 export function validateWorkSemanticTransition(
   current: WorkContract,
   next: WorkContract,
-  options: { allowRetainedCancelledResume?: boolean } = {},
+  options: { allowRetainedCancelledResume?: boolean; allowPhaseRegression?: boolean } = {},
 ): WorkContract {
   const retryingFailedWork = current.status === 'failed'
     && !current.completionOutcome
@@ -228,6 +228,9 @@ export function validateWorkSemanticTransition(
     && next.status === 'running'
     && next.dispatchState === 'running'
     && next.phase === 'implementation';
+  if (phaseIndex(next.phase) < phaseIndex(current.phase) && options.allowPhaseRegression !== true) {
+    throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: phase ${current.phase} -> ${next.phase} requires explicit regression authority`);
+  }
   if (!retryingFailedWork && !resumingRetainedCancelledWork && !DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
     throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: dispatch ${current.dispatchState} -> ${next.dispatchState}`);
   }

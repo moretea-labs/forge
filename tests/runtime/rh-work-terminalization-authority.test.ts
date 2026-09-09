@@ -4637,6 +4637,85 @@ describe('rh_work terminalization authority', () => {
     expect(workRequiresImplementationReview('repository_change', [])).toBe(true);
   }, 20_000);
 
+  test('finalize validation failure re-arms verification without terminalizing the WorkHandle after approved delivery', async () => {
+    const fx = fixture();
+    const workId = 'work-finalize-validation-retry-atomicity';
+    const caller = {
+      principalId: 'principal-finalize-validation-retry',
+      sessionId: 'transport-finalize-validation-retry',
+      controllerInstanceId: 'runtime-finalize-validation-retry',
+    };
+    const branch = 'work/finalize-validation-retry-atomicity';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'Finalize Validation Retry Atomicity', branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+
+    writeFileSync(join(workspace.root!, 'owned.txt'), 'candidate changed after recorded handle head\n');
+    execFileSync('git', ['add', 'owned.txt'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'candidate ahead of stale handle'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+
+    createWorkContract(store, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Preserve one lifecycle authority when finalization discovers stale validation identity.',
+      acceptanceCriteria: ['Retryable finalization validation failure re-arms verification without terminal Handle divergence.'],
+      allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: ['owned.txt'], inspectedPaths: ['owned.txt'], actualChangedPaths: ['owned.txt'], recordedAt: now },
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Exact candidate verification was satisfied before review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Exact changed candidate requires implementation review before delivery.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1, reviewId: 'REV-finalize-validation-retry', workId, reviewerPrincipalId: caller.principalId,
+      reviewerControllerSessionId: caller.sessionId, decision: 'approved',
+      rationale: 'Approve the exact candidate before simulating a stale WorkHandle head at finalization.', findings: [],
+      sourceRevision: candidate, workspaceFingerprint: 'finalize-validation-retry-content', verificationWorkspaceFingerprint: 'finalize-validation-retry-verification',
+      changedPaths: ['owned.txt'], changedPathDigest: implementationReviewChangedPathDigest(['owned.txt']),
+      acceptanceCriteriaSummary: 'Retryable validation failure preserves lifecycle atomicity.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    expect(getWorkContract(store, workId)).toMatchObject({ phase: 'delivery', status: 'running' });
+
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,
+      repositoryId: repository.repoId, checkoutId: workspace.checkoutId!, sourceCheckoutId: repository.activeCheckoutId,
+      worktreePath: workspace.root!, branch: `${branch}-stale`, deliveryTargetBranch: 'main', managedWorktree: true, baseCommit: base,
+      deliveryBaseCommit: base, expectedHead: candidate, permissionSnapshotVersion: 1, state: 'committed',
+      validatedInputFingerprint: 'stale-finalize-validation-authority', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'done', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    claimControllerSession(store, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const context = ctx(fx.controllerHome, getRepository(repository.repoId, fx.controllerHome), caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: true, cleanup: false, target_branch: 'main',
+    }));
+
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)).toMatchObject({
+      state: 'validating',
+      finalization: { validation: 'failed', commit: 'done', merge: 'pending' },
+    });
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'blocked',
+      phase: 'verification',
+      dispatchState: 'blocked',
+      evidenceState: 'partial',
+      phaseEvidence: { verification: { state: 'blocked' }, review: { state: 'pending' }, delivery: { state: 'pending' } },
+      implementationReviews: [{ reviewId: 'REV-finalize-validation-retry', decision: 'approved' }],
+    });
+  }, 20_000);
+
   test('finalize recovers a reviewed changed Work after physical cleanup removed its checkout before completion receipt persistence', async () => {
     const fx = fixture();
     const workId = 'work-changed-cleaned-missing-completion-receipt';
