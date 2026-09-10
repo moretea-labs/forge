@@ -6,9 +6,13 @@ import type {
 } from '../../../packages/plugin-runtime/computer/target-authority';
 import {
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
-  type ComputerExecutionRequest,
+  type ComputerElementSemanticAction,
+  type ComputerElementTarget,
+  type ComputerRuntimeExecutionRequest,
   type ComputerSemanticSelector,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputer } from '../root/computer-composition';
@@ -37,6 +41,9 @@ const DESKTOP_PROVIDER_ID = 'desktop_operator';
 const computerTargetAuthority = runtimeComputerInteractionTargetAuthority();
 const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
 const DESKTOP_TARGET_CLOSE_ACTION = 'desktop_target_close';
+const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
+const DESKTOP_ELEMENT_ACTION_ACTION = 'desktop_element_action';
+const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] as const;
 const DESKTOP_SEMANTIC_ACTION_IDS = new Set([
   'desktop_observe',
   'desktop_press',
@@ -49,6 +56,8 @@ const DESKTOP_PRODUCT_ACTION_IDS = new Set([
   DESKTOP_TARGET_OPEN_ACTION,
   DESKTOP_TARGET_CLOSE_ACTION,
   ...DESKTOP_SEMANTIC_ACTION_IDS,
+  DESKTOP_ELEMENT_OBSERVE_ACTION,
+  DESKTOP_ELEMENT_ACTION_ACTION,
 ]);
 
 function providerActionDescriptor(actionId: string): AssistantPluginActionDescriptor {
@@ -97,6 +106,75 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       },
     },
     ...[...DESKTOP_SEMANTIC_ACTION_IDS].map(targetBoundDescriptor),
+    {
+      actionId: DESKTOP_ELEMENT_OBSERVE_ACTION,
+      title: 'Observe Computer elements',
+      description: 'Observe provider-neutral semantic elements for one Forge-owned desktop target. Returned refs and target context are valid only for the returned observation epoch.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'none',
+      scopes: ['desktop.observe'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          target_id: { type: 'string', description: 'Forge-owned durable Computer target id.' },
+          max_depth: { type: 'integer', minimum: 1, maximum: 20 },
+          max_nodes: { type: 'integer', minimum: 1, maximum: 5_000 },
+          include_values: { type: 'boolean' },
+          root_selector: {
+            type: 'object',
+            properties: { ref: { type: 'string' }, role: { type: 'string' }, title: { type: 'string' }, identifier: { type: 'string' } },
+            anyOf: [{ required: ['ref'] }, { required: ['role'] }, { required: ['title'] }, { required: ['identifier'] }],
+            additionalProperties: false,
+          },
+        },
+        required: ['target_id'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: DESKTOP_ELEMENT_ACTION_ACTION,
+      title: 'Act on observed Computer element',
+      description: 'Perform one provider-neutral semantic action against an exact element ref and observation target returned by desktop_element_observe. Stale or rebound observations fail closed.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      foregroundEffect: 'none',
+      scopes: ['desktop.interact'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          target_id: { type: 'string', description: 'Forge-owned durable Computer target id.' },
+          target: {
+            type: 'object',
+            properties: {
+              interactionId: { type: 'string' },
+              pid: { type: 'integer' },
+              bundleIdentifier: { type: 'string' },
+              appName: { type: 'string' },
+              windowRef: { type: 'string' },
+              snapshotRevision: { type: 'integer', minimum: 1 },
+            },
+            required: ['interactionId', 'pid', 'appName', 'snapshotRevision'],
+            additionalProperties: false,
+          },
+          ref: { type: 'string' },
+          action: { type: 'string', enum: [...COMPUTER_ELEMENT_SEMANTIC_ACTIONS] },
+          value: { anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }] },
+        },
+        required: ['target_id', 'target', 'ref', 'action'],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
@@ -115,6 +193,8 @@ function desktopProductCapabilities(): AssistantPluginCapability[] {
     { capabilityId: 'computer.observe.v1', title: 'Computer observation', description: 'Observe bounded desktop semantic state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
     { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Perform bounded semantic desktop input.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
     { capabilityId: 'computer.capture.v1', title: 'Computer capture', description: 'Capture authorized desktop state.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
+    { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Observe exact provider-neutral semantic element snapshots for a Forge-owned target.', scopes: ['desktop.observe'], actions: [DESKTOP_ELEMENT_OBSERVE_ACTION] },
+    { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer element action', description: 'Act on exact observed element refs with observation-epoch fencing.', scopes: ['desktop.interact'], actions: [DESKTOP_ELEMENT_ACTION_ACTION] },
   ];
 }
 
@@ -257,7 +337,7 @@ function desktopComputerRequest(
   actionId: string,
   args: Record<string, unknown>,
   interactionId?: string,
-): ComputerExecutionRequest {
+): ComputerRuntimeExecutionRequest {
   const requireInteractionId = (): string => {
     if (interactionId) return interactionId;
     throw new AssistantPluginError('PLUGIN_COMPUTER_PROVIDER_BINDING_MISSING', `${actionId} requires a live provider interaction binding.`, { retryable: true });
@@ -282,7 +362,7 @@ function desktopComputerRequest(
       interactionId: requireInteractionId(),
       selector: args.selector as ComputerSemanticSelector,
       ...(typeof args.semantic_action === 'string' ? { semanticAction: args.semantic_action } : {}),
-    } as ComputerExecutionRequest;
+    } as ComputerRuntimeExecutionRequest;
   }
   if (actionId === 'desktop_type_text') {
     return {
@@ -315,6 +395,32 @@ function desktopComputerRequest(
       ...(typeof args.label === 'string' ? { label: args.label } : {}),
     };
   }
+  if (actionId === DESKTOP_ELEMENT_OBSERVE_ACTION) {
+    return {
+      capability: COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
+      action: 'observe_elements',
+      interactionId: requireInteractionId(),
+      ...(typeof args.max_depth === 'number' ? { maxDepth: args.max_depth } : {}),
+      ...(typeof args.max_nodes === 'number' ? { maxNodes: args.max_nodes } : {}),
+      ...(typeof args.include_values === 'boolean' ? { includeValues: args.include_values } : {}),
+      ...(args.root_selector && typeof args.root_selector === 'object' ? { rootSelector: args.root_selector as ComputerSemanticSelector } : {}),
+    };
+  }
+  if (actionId === DESKTOP_ELEMENT_ACTION_ACTION) {
+    const semanticAction = typeof args.action === 'string' && (COMPUTER_ELEMENT_SEMANTIC_ACTIONS as readonly string[]).includes(args.action)
+      ? args.action as ComputerElementSemanticAction
+      : undefined;
+    if (!semanticAction || !args.target || typeof args.target !== 'object' || typeof args.ref !== 'string') {
+      throw new AssistantPluginError('PLUGIN_COMPUTER_ELEMENT_ACTION_INVALID', 'desktop_element_action requires target, ref, and one declared semantic action.', { retryable: false });
+    }
+    return {
+      capability: COMPUTER_ELEMENT_ACTION_CAPABILITY,
+      action: semanticAction,
+      target: args.target as ComputerElementTarget,
+      ref: args.ref,
+      ...(args.value !== undefined ? { value: args.value } : {}),
+    };
+  }
   throw new AssistantPluginError('PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED', `Unsupported retained Desktop Computer action ${actionId}.`, { retryable: false });
 }
 
@@ -323,7 +429,8 @@ async function executeRetainedDesktopAction(
   args: Record<string, unknown>,
   interactionId?: string,
 ): Promise<Record<string, unknown>> {
-  const descriptor = providerActionDescriptor(input.actionId);
+  const descriptor = desktopProductActions().find((action) => action.actionId === input.actionId);
+  if (!descriptor) throw new AssistantPluginError('PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED', `Computer product action ${input.actionId} is not registered.`, { retryable: false });
   return await executeRuntimeComputer(
     desktopComputerRequest(input.actionId, args, interactionId),
     input.timeoutMs ?? descriptor.defaultTimeoutMs ?? 30_000,
@@ -495,6 +602,24 @@ async function executeDesktopSemanticAction(
     return executeRetainedDesktopAction(input, input.args);
   }
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
+  if (input.actionId === DESKTOP_ELEMENT_ACTION_ACTION) {
+    if (!targetId) throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_REQUIRED', 'desktop_element_action requires target_id.', { retryable: false });
+    return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
+      const current = lease.current();
+      const observedTarget = input.args.target && typeof input.args.target === 'object' ? input.args.target as Record<string, unknown> : undefined;
+      const observedInteractionId = typeof observedTarget?.interactionId === 'string' ? observedTarget.interactionId : '';
+      const binding = current.providerBinding;
+      if (!binding || binding.providerId !== DESKTOP_PROVIDER_ID || !observedInteractionId || binding.providerSessionId !== observedInteractionId) {
+        throw new AssistantPluginError(
+          'COMPUTER_ELEMENT_OBSERVATION_STALE',
+          'Observed element target no longer matches the current provider binding. Re-observe the Forge Computer target instead of replaying an old element ref after rebind.',
+          { retryable: true, details: { targetId, providerBound: Boolean(binding), observedInteractionId: observedInteractionId || undefined } },
+        );
+      }
+      const { target_id: _targetId, ...rest } = input.args;
+      return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+    });
+  }
   if (!targetId) {
     if (input.actionId === 'desktop_screenshot') {
       return executeRetainedDesktopAction(input, input.args);

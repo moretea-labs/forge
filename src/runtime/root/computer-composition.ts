@@ -3,9 +3,9 @@ import {
   ComputerProviderRegistry,
   computerProviderRegistrationSnapshot,
 } from '../../../packages/plugin-runtime/computer/index';
-import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY, type ComputerBrowserAutomationRequest, type ComputerBrowserProduct, type ComputerExecutionRequest } from '../../../packages/protocols/computer/index';
+import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY, type ComputerBrowserAutomationRequest, type ComputerBrowserProduct, type ComputerRuntimeExecutionRequest } from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
-import { createDesktopOperatorComputerProvider } from '../../../adapters/computer/index';
+import { createDesktopOperatorComputerProvider, type DesktopOperatorComputerProvider } from '../../../adapters/computer/index';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import { getExternalPluginAdapter } from '../plugins/external-adapter';
@@ -15,6 +15,7 @@ import type { AssistantPluginActionExecutionInput } from '../plugins/types';
 
 let computerProviders: ComputerProviderRegistry | undefined;
 let computerProviderCompositionKey: string | undefined;
+let desktopOperatorProvider: DesktopOperatorComputerProvider | undefined;
 const NATIVE_BROWSER_BUNDLE_IDS: Record<ComputerBrowserProduct, string> = {
   chrome: 'com.google.Chrome',
   vivaldi: 'com.vivaldi.Vivaldi',
@@ -39,7 +40,7 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
   const next = new ComputerProviderRegistry();
   if (currentComputerPlatform() === 'darwin') {
     const registration = currentDesktopOperatorRegistration(controllerHome);
-    next.register(createDesktopOperatorComputerProvider({
+    desktopOperatorProvider = createDesktopOperatorComputerProvider({
       lookupRegistration: (providerPluginId) => {
         if (providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID || !registration) return undefined;
         return computerProviderRegistrationSnapshot(registration);
@@ -47,7 +48,8 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
       // Compatibility is an explicit Runtime composition decision, never an adapter fallback.
       // Remove this switch once Desktop Operator 0.2.x support is retired.
       legacyFallback: 'unregistered_v0_2',
-    }));
+    });
+    next.register(desktopOperatorProvider);
   }
   computerProviders = next;
   computerProviderCompositionKey = compositionKey;
@@ -55,7 +57,7 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
 }
 
 export async function executeRuntimeComputer(
-  request: ComputerExecutionRequest,
+  request: ComputerRuntimeExecutionRequest,
   timeoutMs: number,
   controllerHome: string = resolveControllerHome(),
 ): Promise<Record<string, unknown>> {
@@ -77,8 +79,17 @@ export async function executeRuntimeComputer(
 export async function executeRuntimeComputerBrowserAutomation(
   request: ComputerBrowserAutomationRequest,
   timeoutMs: number,
+  controllerHome: string = resolveControllerHome(),
 ): Promise<Record<string, unknown>> {
-  return await executeRuntimeComputer({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request }, timeoutMs);
+  ensureComputerComposition(controllerHome);
+  if (!desktopOperatorProvider) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_COMPATIBILITY_PROVIDER_UNAVAILABLE',
+      'Native Browser compatibility requires the macOS Desktop Operator provider.',
+      { retryable: true, details: { providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } },
+    );
+  }
+  return await desktopOperatorProvider.executeBrowserCompatibility(request, timeoutMs);
 }
 
 export async function activateRuntimeComputerBrowserApplication(
@@ -125,4 +136,5 @@ export function disposeRuntimeComputerComposition(): void {
   computerProviders?.dispose();
   computerProviders = undefined;
   computerProviderCompositionKey = undefined;
+  desktopOperatorProvider = undefined;
 }

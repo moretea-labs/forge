@@ -1,5 +1,5 @@
 import type {
-  ComputerExecutionRequest,
+  ComputerRuntimeExecutionRequest,
   ComputerRuntimeProviderCapabilityId,
 } from '../../protocols/computer/index';
 
@@ -8,7 +8,7 @@ export interface ComputerProvider {
   providerId: string;
   capabilities: readonly ComputerRuntimeProviderCapabilityId[];
   execute(
-    request: ComputerExecutionRequest,
+    request: ComputerRuntimeExecutionRequest,
     timeoutMs: number,
   ): Promise<Record<string, unknown>>;
   dispose?(): void;

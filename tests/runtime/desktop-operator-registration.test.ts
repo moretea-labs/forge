@@ -27,12 +27,15 @@ describe('Desktop Operator trusted external registration', () => {
       'computer.observe.v1',
       'computer.input.v1',
       'computer.capture.v1',
-      'computer.browser_automation.v1',
+      'computer.element.observe.v2',
+      'computer.element.action.v2',
     ]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.observe.v1')?.actions).toEqual(['desktop_observe']);
-    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.input.v1')?.actions).toEqual(['desktop_press', 'desktop_type_text', 'desktop_key']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.input.v1')?.actions).toEqual(['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url']);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.capture.v1')?.actions).toEqual(['desktop_screenshot']);
-    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')?.actions).toEqual([]);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.element.observe.v2')?.actions).toEqual([]);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.element.action.v2')?.actions).toEqual([]);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')).toBeUndefined();
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
       'desktop_pointer_click',

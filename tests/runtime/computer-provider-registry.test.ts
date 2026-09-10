@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
@@ -15,7 +14,7 @@ import {
 
 function provider(
   providerId: string,
-  capabilities: ComputerRuntimeProviderCapabilityId[] = [COMPUTER_BROWSER_AUTOMATION_CAPABILITY],
+  capabilities: ComputerRuntimeProviderCapabilityId[] = [COMPUTER_OBSERVE_CAPABILITY],
   seen: ComputerExecutionRequest[] = [],
 ): ComputerProvider {
   return {
@@ -42,9 +41,9 @@ describe('ComputerProviderRegistry authority', () => {
 
   test('fails with a typed unavailable error when no provider owns the capability', () => {
     const registry = new ComputerProviderRegistry();
-    expect(() => registry.resolve(COMPUTER_BROWSER_AUTOMATION_CAPABILITY)).toThrow(ComputerProviderError);
+    expect(() => registry.resolve(COMPUTER_CAPTURE_CAPABILITY)).toThrow(ComputerProviderError);
     try {
-      registry.resolve(COMPUTER_BROWSER_AUTOMATION_CAPABILITY);
+      registry.resolve(COMPUTER_CAPTURE_CAPABILITY);
     } catch (error) {
       expect(error).toMatchObject({ code: 'COMPUTER_PROVIDER_UNAVAILABLE', retryable: true });
     }
@@ -55,7 +54,7 @@ describe('ComputerProviderRegistry authority', () => {
     registry.register(provider('native-b'));
     registry.register(provider('native-a'));
     try {
-      registry.resolve(COMPUTER_BROWSER_AUTOMATION_CAPABILITY);
+      registry.resolve(COMPUTER_OBSERVE_CAPABILITY);
       throw new Error('expected ambiguous provider resolution to fail');
     } catch (error) {
       expect(error).toMatchObject({
@@ -66,11 +65,10 @@ describe('ComputerProviderRegistry authority', () => {
     }
   });
 
-  test('dispatches every typed Computer capability through its declared provider and preserves the browser facade', async () => {
+  test('dispatches declared Unified Computer capabilities through their provider', async () => {
     const registry = new ComputerProviderRegistry();
     const seen: ComputerExecutionRequest[] = [];
     registry.register(provider('native-all', [
-      COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
       COMPUTER_OBSERVE_CAPABILITY,
       COMPUTER_INPUT_CAPABILITY,
       COMPUTER_CAPTURE_CAPABILITY,
@@ -79,21 +77,18 @@ describe('ComputerProviderRegistry authority', () => {
     await registry.execute({ capability: COMPUTER_OBSERVE_CAPABILITY, action: 'observe', interactionId: 'interaction-1' }, 1_000);
     await registry.execute({ capability: COMPUTER_INPUT_CAPABILITY, action: 'key', interactionId: 'interaction-1', keys: ['ENTER'] }, 1_000);
     await registry.execute({ capability: COMPUTER_CAPTURE_CAPABILITY, action: 'screenshot', scope: 'window', windowId: 7 }, 1_000);
-    await registry.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 1_000);
 
     expect(seen.map((request) => request.capability)).toEqual([
       COMPUTER_OBSERVE_CAPABILITY,
       COMPUTER_INPUT_CAPABILITY,
       COMPUTER_CAPTURE_CAPABILITY,
-      COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
     ]);
-    expect(seen.at(-1)).toEqual({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request: { action: 'list_tabs', product: 'chrome' } });
   });
 
   test('does not dispatch an undeclared partial capability to an otherwise healthy provider', async () => {
     const registry = new ComputerProviderRegistry();
-    registry.register(provider('browser-only'));
-    await expect(registry.execute({ capability: COMPUTER_OBSERVE_CAPABILITY, action: 'observe', interactionId: 'interaction-1' }, 1_000))
+    registry.register(provider('observe-only'));
+    await expect(registry.execute({ capability: COMPUTER_INPUT_CAPABILITY, action: 'key', interactionId: 'interaction-1', keys: ['ENTER'] }, 1_000))
       .rejects.toMatchObject({ code: 'COMPUTER_PROVIDER_UNAVAILABLE' });
   });
 

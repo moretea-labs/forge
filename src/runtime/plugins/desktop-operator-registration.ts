@@ -1,6 +1,7 @@
 import {
-  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
 } from '../../../packages/protocols/computer/index';
@@ -451,9 +452,10 @@ export function createDesktopOperatorRegistrationInput(
       { capabilityId: 'desktop.clipboard', title: 'Desktop clipboard', description: 'Read or replace plain-text clipboard content and issue explicit copy/paste in a bound session.', scopes: ['desktop.clipboard'], actions: ['desktop_clipboard_read', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste'] },
       { capabilityId: 'desktop.batch', title: 'Desktop batch', description: 'Run bounded desktop action batches.', scopes: ['desktop.batch'], actions: ['desktop_batch'] },
       { capabilityId: COMPUTER_OBSERVE_CAPABILITY, title: 'Computer observation', description: 'Provider-neutral bounded computer observation implemented by Desktop Operator.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
-      { capabilityId: COMPUTER_INPUT_CAPABILITY, title: 'Computer input', description: 'Provider-neutral bounded computer input implemented by Desktop Operator.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key'] },
+      { capabilityId: COMPUTER_INPUT_CAPABILITY, title: 'Computer input', description: 'Provider-neutral bounded computer input implemented by Desktop Operator.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
       { capabilityId: COMPUTER_CAPTURE_CAPABILITY, title: 'Computer capture', description: 'Provider-neutral authorized computer capture implemented by Desktop Operator.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
-      { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, title: 'Computer browser automation', description: 'Internal provider capability used by Forge Browser through the Computer runtime boundary.', scopes: ['desktop.observe', 'desktop.interact', 'desktop.capture'], actions: [] },
+      { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Provider-neutral element snapshot observation with exact observation-epoch target identity. Provider semantic actions are negotiated through the Computer handshake, not the Assistant Plugin action registry.', scopes: ['desktop.observe'], actions: [] },
+      { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer semantic element actions', description: 'Provider-neutral semantic actions against exact observed element targets. The provider handshake is the action-set authority.', scopes: ['desktop.interact'], actions: [] },
     ],
     actions,
     legacyIdentities: ['Repo Harness Desktop Operator'],

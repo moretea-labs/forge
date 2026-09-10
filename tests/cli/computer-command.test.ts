@@ -64,6 +64,8 @@ describe('Computer product facade', () => {
       expect.objectContaining({ capabilityId: 'computer.observe.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.input.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.capture.v1', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.element.observe.v2', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.element.action.v2', supported: false, state: 'unsupported' }),
     ]));
   });
 
@@ -93,6 +95,20 @@ describe('Computer product facade', () => {
       health: { state: 'unprobed', ready: false, probed: false },
     });
     expect(formatComputerStatus(status)).not.toContain('desktop_operator');
+  });
+
+  test('treats 0.4 element capabilities as native Computer surface without requiring Desktop to advertise Browser authority', () => {
+    const home = controllerHome();
+    registerProvider(home, { version: '0.4.0', enabled: true });
+    const status = readComputerStatus({ controllerHome: home, platform: 'darwin' });
+    expect(status.provider.installedVersion).toBe('0.4.0');
+    expect(status.provider.catalogVersion).toBe('0.3.2');
+    expect(status.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', provider: 'browser', supported: true }),
+      expect.objectContaining({ capabilityId: 'computer.element.observe.v2', provider: 'desktop_operator', supported: true }),
+      expect.objectContaining({ capabilityId: 'computer.element.action.v2', provider: 'desktop_operator', supported: true }),
+    ]));
+    expect(status.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')?.reason).not.toContain('does not declare');
   });
 
   test('doctor refreshes only a compatible Computer provider and does not probe unrelated external providers', () => {

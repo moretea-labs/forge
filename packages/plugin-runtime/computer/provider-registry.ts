@@ -1,8 +1,6 @@
-import {
-  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-  type ComputerBrowserAutomationRequest,
-  type ComputerExecutionRequest,
-  type ComputerRuntimeProviderCapabilityId,
+import type {
+  ComputerRuntimeExecutionRequest,
+  ComputerRuntimeProviderCapabilityId,
 } from '../../protocols/computer/index';
 import { ComputerProviderError } from './provider-error';
 import { computerProviderSupports, type ComputerProvider } from './provider';
@@ -45,18 +43,12 @@ export class ComputerProviderRegistry {
   }
 
   async execute(
-    request: ComputerExecutionRequest,
+    request: ComputerRuntimeExecutionRequest,
     timeoutMs: number,
   ): Promise<Record<string, unknown>> {
     return await this.resolve(request.capability).execute(request, timeoutMs);
   }
 
-  async executeBrowserAutomation(
-    request: ComputerBrowserAutomationRequest,
-    timeoutMs: number,
-  ): Promise<Record<string, unknown>> {
-    return await this.execute({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request }, timeoutMs);
-  }
 
   dispose(): void {
     for (const provider of this.providers.values()) provider.dispose?.();

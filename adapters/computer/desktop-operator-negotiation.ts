@@ -1,9 +1,10 @@
 import {
   COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPABILITY_EXECUTION_METHOD,
-  COMPUTER_CAPABILITY_PROTOCOL_VERSION,
+  computerCapabilityProtocolVersion,
   type ComputerBrowserAutomationRequest,
   type ComputerCapabilityAdvertisement,
+  type ComputerRuntimeProviderCapabilityId,
 } from '../../packages/protocols/computer/index';
 import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
 import {
@@ -17,12 +18,13 @@ import {
 export type DesktopOperatorComputerTransportPlan =
   | {
       kind: 'computer';
-      capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY;
-      protocolVersion: typeof COMPUTER_CAPABILITY_PROTOCOL_VERSION;
+      capability: ComputerRuntimeProviderCapabilityId;
+      protocolVersion: 1 | 2;
       method: typeof COMPUTER_CAPABILITY_EXECUTION_METHOD;
     }
   | {
       kind: 'legacy';
+      capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY;
       protocolVersion: typeof DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION;
       method: typeof DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_METHOD;
     };
@@ -32,10 +34,7 @@ export interface DesktopOperatorComputerInvocation {
   params: Record<string, unknown>;
 }
 
-function unsupported(
-  message: string,
-  details: Record<string, unknown>,
-): never {
+function unsupported(message: string, details: Record<string, unknown>): never {
   throw new ComputerProviderError(
     'PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED',
     message,
@@ -59,22 +58,18 @@ export function validateDesktopOperatorComputerProviderIdentity(handshake: Recor
   );
 }
 
-function parseComputerAdvertisements(raw: unknown): ComputerCapabilityAdvertisement[] | undefined {
+function parseComputerAdvertisements(raw: unknown, requiredCapability: ComputerRuntimeProviderCapabilityId): ComputerCapabilityAdvertisement[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw)) {
     unsupported('Installed Forge Desktop Operator returned a malformed Computer capability advertisement.', {
-      requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+      requiredCapability,
       genericAdvertisementPresent: true,
       malformedReason: 'computerCapabilities must be an array',
     });
   }
   return raw.map((entry, index) => {
     if (!entry || typeof entry !== 'object') {
-      unsupported('Installed Forge Desktop Operator returned a malformed Computer capability advertisement.', {
-        requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-        genericAdvertisementPresent: true,
-        malformedIndex: index,
-      });
+      unsupported('Installed Forge Desktop Operator returned a malformed Computer capability advertisement.', { requiredCapability, genericAdvertisementPresent: true, malformedIndex: index });
     }
     const value = entry as Record<string, unknown>;
     const actions = value.actions;
@@ -83,18 +78,9 @@ function parseComputerAdvertisements(raw: unknown): ComputerCapabilityAdvertisem
       || typeof value.method !== 'string'
       || !Array.isArray(actions)
       || actions.some((action) => typeof action !== 'string')) {
-      unsupported('Installed Forge Desktop Operator returned a malformed Computer capability advertisement.', {
-        requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-        genericAdvertisementPresent: true,
-        malformedIndex: index,
-      });
+      unsupported('Installed Forge Desktop Operator returned a malformed Computer capability advertisement.', { requiredCapability, genericAdvertisementPresent: true, malformedIndex: index });
     }
-    return {
-      capabilityId: value.capabilityId,
-      protocolVersion: value.protocolVersion,
-      method: value.method,
-      actions: actions as string[],
-    };
+    return { capabilityId: value.capabilityId, protocolVersion: value.protocolVersion, method: value.method, actions: actions as string[] };
   });
 }
 
@@ -111,8 +97,8 @@ function legacyPlan(handshake: Record<string, unknown>, requestedAction?: string
     || (requestedAction && !actions.includes(requestedAction))) {
     unsupported(
       requestedAction
-        ? `Installed Forge Desktop Operator does not declare required Computer browser automation action ${requestedAction}.`
-        : 'Installed Forge Desktop Operator does not declare the required Computer browser automation capability.',
+        ? `Installed Forge Desktop Operator does not declare required legacy Browser compatibility action ${requestedAction}.`
+        : 'Installed Forge Desktop Operator does not declare the required legacy Browser compatibility capability.',
       {
         requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
         providerCompatibilityCapability: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY,
@@ -124,85 +110,65 @@ function legacyPlan(handshake: Record<string, unknown>, requestedAction?: string
       },
     );
   }
-  return {
-    kind: 'legacy',
-    protocolVersion: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION,
-    method: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_METHOD,
-  };
+  return { kind: 'legacy', capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, protocolVersion: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION, method: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_METHOD };
 }
 
-export function negotiateDesktopOperatorComputerHandshake(
+export function negotiateDesktopOperatorComputerCapability(
   handshake: Record<string, unknown>,
+  capability: ComputerRuntimeProviderCapabilityId,
   requestedAction?: string,
 ): DesktopOperatorComputerTransportPlan {
   validateDesktopOperatorComputerProviderIdentity(handshake);
-  const advertisements = parseComputerAdvertisements(handshake.computerCapabilities);
-  const browserAdvertisements = advertisements?.filter(
-    (entry) => entry.capabilityId === COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-  ) ?? [];
-  if (browserAdvertisements.length > 1) {
-    unsupported('Installed Forge Desktop Operator declared duplicate Computer browser automation capabilities.', {
-      requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-      declaredCount: browserAdvertisements.length,
-    });
+  const advertisements = parseComputerAdvertisements(handshake.computerCapabilities, capability);
+  const matching = advertisements?.filter((entry) => entry.capabilityId === capability) ?? [];
+  if (matching.length > 1) {
+    unsupported('Installed Forge Desktop Operator declared a duplicate Computer capability.', { requiredCapability: capability, declaredCount: matching.length });
   }
-  const browser = browserAdvertisements[0];
-  if (browser) {
-    if (browser.protocolVersion !== COMPUTER_CAPABILITY_PROTOCOL_VERSION
-      || browser.method !== COMPUTER_CAPABILITY_EXECUTION_METHOD
-      || (requestedAction && !browser.actions.includes(requestedAction))) {
-      unsupported(
-        requestedAction
-          ? `Installed Forge Desktop Operator does not support ${requestedAction} through the negotiated Computer browser automation capability.`
-          : 'Installed Forge Desktop Operator declares an incompatible Computer browser automation capability.',
-        {
-          requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-          requiredComputerProtocolVersion: COMPUTER_CAPABILITY_PROTOCOL_VERSION,
-          requiredMethod: COMPUTER_CAPABILITY_EXECUTION_METHOD,
-          ...(requestedAction ? { requiredAction: requestedAction } : {}),
-          declaredComputerProtocolVersion: browser.protocolVersion,
-          declaredMethod: browser.method,
-          declaredActionCount: browser.actions.length,
-        },
-      );
-    }
-    return {
-      kind: 'computer',
-      capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-      protocolVersion: COMPUTER_CAPABILITY_PROTOCOL_VERSION,
-      method: COMPUTER_CAPABILITY_EXECUTION_METHOD,
-    };
+  const advertisement = matching[0];
+  if (!advertisement) {
+    unsupported('Installed Forge Desktop Operator does not advertise the required Unified Computer capability.', { requiredCapability: capability, genericAdvertisementPresent: advertisements !== undefined });
   }
+  const requiredProtocolVersion = computerCapabilityProtocolVersion(capability);
+  if (advertisement.protocolVersion !== requiredProtocolVersion
+    || advertisement.method !== COMPUTER_CAPABILITY_EXECUTION_METHOD
+    || (requestedAction && !advertisement.actions.includes(requestedAction))) {
+    unsupported(
+      requestedAction
+        ? `Installed Forge Desktop Operator does not support ${requestedAction} through ${capability}.`
+        : `Installed Forge Desktop Operator declares an incompatible ${capability} capability.`,
+      {
+        requiredCapability: capability,
+        requiredComputerProtocolVersion: requiredProtocolVersion,
+        requiredMethod: COMPUTER_CAPABILITY_EXECUTION_METHOD,
+        ...(requestedAction ? { requiredAction: requestedAction } : {}),
+        declaredComputerProtocolVersion: advertisement.protocolVersion,
+        declaredMethod: advertisement.method,
+        declaredActionCount: advertisement.actions.length,
+      },
+    );
+  }
+  return { kind: 'computer', capability, protocolVersion: requiredProtocolVersion, method: COMPUTER_CAPABILITY_EXECUTION_METHOD };
+}
+
+/** Compatibility wrapper retained for the thin macOS Browser broker while that adapter is retired. */
+export function negotiateDesktopOperatorComputerHandshake(handshake: Record<string, unknown>, requestedAction?: string): DesktopOperatorComputerTransportPlan {
+  validateDesktopOperatorComputerProviderIdentity(handshake);
   return legacyPlan(handshake, requestedAction);
 }
 
-/** Compatibility validator retained for the thin macOS broker facade and existing callers. */
-export function validateDesktopOperatorComputerHandshake(
-  handshake: Record<string, unknown>,
-  requestedAction?: string,
-): void {
+export function validateDesktopOperatorComputerHandshake(handshake: Record<string, unknown>, requestedAction?: string): void {
   negotiateDesktopOperatorComputerHandshake(handshake, requestedAction);
 }
 
 export function buildDesktopOperatorComputerInvocation(
   plan: DesktopOperatorComputerTransportPlan,
-  request: ComputerBrowserAutomationRequest,
+  argumentsValue: Record<string, unknown>,
   timeoutMs: number,
+  legacyBrowserRequest?: ComputerBrowserAutomationRequest,
 ): DesktopOperatorComputerInvocation {
   if (plan.kind === 'computer') {
-    const argumentsValue = { ...request } as Record<string, unknown>;
-    delete argumentsValue.protocolVersion;
-    return {
-      method: plan.method,
-      params: {
-        capability: plan.capability,
-        protocolVersion: plan.protocolVersion,
-        arguments: { ...argumentsValue, timeoutMs },
-      },
-    };
+    return { method: plan.method, params: { capability: plan.capability, protocolVersion: plan.protocolVersion, arguments: argumentsValue } };
   }
-  return {
-    method: plan.method,
-    params: { ...request, timeoutMs, protocolVersion: plan.protocolVersion },
-  };
+  if (!legacyBrowserRequest) throw new ComputerProviderError('COMPUTER_REQUEST_UNSUPPORTED', 'Legacy Browser compatibility invocation requires an explicit browser request.', { retryable: false });
+  return { method: plan.method, params: { ...legacyBrowserRequest, timeoutMs, protocolVersion: plan.protocolVersion } };
 }

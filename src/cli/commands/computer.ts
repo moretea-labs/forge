@@ -5,6 +5,8 @@ import { Command } from 'commander';
 import {
   COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
   type ComputerCapabilityId,
@@ -141,32 +143,29 @@ function browserCapabilityStatus(input: {
     };
   }
 
-  const declared = input.registration?.capabilities.some((capability) => capability.capabilityId === COMPUTER_BROWSER_AUTOMATION_CAPABILITY) === true;
   if (!input.registration) {
     return {
       capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-      provider: 'desktop_operator',
+      provider: 'browser',
       supported: true,
       ready: false,
       state: 'missing',
-      reason: 'Native Computer browser provider is not installed.',
+      reason: 'Native Browser compatibility mechanics require the installed macOS Computer provider.',
     };
   }
-  const ready = input.registration.enabled && input.health.ready && declared;
+  const ready = input.registration.enabled && input.health.ready;
   return {
     capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-    provider: 'desktop_operator',
+    provider: 'browser',
     supported: true,
     ready,
     state: ready ? 'ready' : 'degraded',
-    reason: ready ? undefined : (!declared
-      ? `Installed native Computer provider does not declare ${COMPUTER_BROWSER_AUTOMATION_CAPABILITY}.`
-      : (input.health.errors[0] ?? input.health.warnings[0] ?? `Native Computer provider health is ${input.health.state}.`)),
+    reason: ready ? undefined : (input.health.errors[0] ?? input.health.warnings[0] ?? `Native Browser compatibility health is ${input.health.state}.`),
   };
 }
 
 function desktopCapabilityStatus(
-  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY,
+  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY | typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY | typeof COMPUTER_ELEMENT_ACTION_CAPABILITY,
   compatibility: ReturnType<typeof pluginCatalogCompatibility>,
   registration: ReturnType<typeof getExternalPluginRegistration>,
   health: ComputerProviderHealth,
@@ -213,6 +212,8 @@ export function readComputerStatus(options: { controllerHome?: string; platform?
     desktopCapabilityStatus(COMPUTER_OBSERVE_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_INPUT_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_CAPTURE_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_ELEMENT_OBSERVE_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_ELEMENT_ACTION_CAPABILITY, compatibility, registration, health),
   ];
   const supportedCapabilities = capabilities.filter((capability) => capability.supported);
   return {

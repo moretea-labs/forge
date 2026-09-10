@@ -25,6 +25,8 @@ interface ProviderFixture {
     statusCount: number;
     observeCount: number;
     pressCount: number;
+    elementObserveCount: number;
+    elementActionCount: number;
     failNextPressAfterDispatch: boolean;
     nextOpenBundleId?: string;
   };
@@ -58,7 +60,7 @@ async function providerFixture(): Promise<ProviderFixture> {
     : join(controllerHome, 'desktop.sock');
   const registrationInput = createDesktopOperatorRegistrationInput({
     socketPath,
-    pluginVersion: '0.3.2',
+    pluginVersion: '0.4.0',
     protocolVersion: '1.0',
   });
   const registration = installExternalPluginRegistration(controllerHome, registrationInput);
@@ -72,6 +74,8 @@ async function providerFixture(): Promise<ProviderFixture> {
     statusCount: 0,
     observeCount: 0,
     pressCount: 0,
+    elementObserveCount: 0,
+    elementActionCount: 0,
     failNextPressAfterDispatch: false,
     nextOpenBundleId: undefined as string | undefined,
   };
@@ -87,10 +91,20 @@ async function providerFixture(): Promise<ProviderFixture> {
         buffer = buffer.slice(newline + 1);
         const request = JSON.parse(raw) as { id: string; method: string; params?: Record<string, unknown> };
         const envelopeParams = request.params ?? {};
-        const actionId = request.method === 'execute' && typeof envelopeParams.action === 'string' ? envelopeParams.action : request.method;
+        const computerArguments = request.method === 'computer_execute' && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
+          ? envelopeParams.arguments as Record<string, unknown>
+          : undefined;
+        const computerCapability = request.method === 'computer_execute' && typeof envelopeParams.capability === 'string' ? envelopeParams.capability : undefined;
+        const actionId = request.method === 'execute' && typeof envelopeParams.action === 'string'
+          ? envelopeParams.action
+          : request.method === 'computer_execute'
+            ? computerCapability === 'computer.element.observe.v2'
+              ? 'observe_elements'
+              : typeof computerArguments?.action === 'string' ? computerArguments.action : request.method
+            : request.method;
         const params = request.method === 'execute' && envelopeParams.arguments && typeof envelopeParams.arguments === 'object'
           ? envelopeParams.arguments as Record<string, unknown>
-          : envelopeParams;
+          : computerArguments ?? envelopeParams;
         const respond = (result: Record<string, unknown>) => socket.write(`${JSON.stringify({ id: request.id, ok: true, result })}\n`);
         const fail = (code: string, message: string) => socket.write(`${JSON.stringify({ id: request.id, ok: false, error: { code, message, retryable: false, domain: 'session' } })}\n`);
         let result: Record<string, unknown>;
@@ -101,7 +115,14 @@ async function providerFixture(): Promise<ProviderFixture> {
             protocolVersion: registration.protocolVersion,
             processId: 4242,
             startedAt: '2026-09-09T00:00:00.000Z',
-            computerCapabilities: [],
+            pluginVersion: registration.pluginVersion,
+            computerCapabilities: [
+              { capabilityId: 'computer.observe.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_observe'] },
+              { capabilityId: 'computer.input.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+              { capabilityId: 'computer.capture.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_screenshot'] },
+              { capabilityId: 'computer.element.observe.v2', protocolVersion: 2, method: 'computer_execute', actions: ['observe_elements'] },
+              { capabilityId: 'computer.element.action.v2', protocolVersion: 2, method: 'computer_execute', actions: ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] },
+            ],
           };
         } else if (actionId === 'manifest') {
           state.manifestCount += 1;
@@ -145,6 +166,37 @@ async function providerFixture(): Promise<ProviderFixture> {
           }
           state.observeCount += 1;
           result = { observed: true, interactionId: params.interaction_id };
+        } else if (actionId === 'observe_elements') {
+          const interactionId = typeof params.interactionId === 'string' ? params.interactionId : '';
+          const session = sessions.get(interactionId);
+          if (!session) {
+            fail('SESSION_NOT_FOUND', 'Desktop session was not found');
+            continue;
+          }
+          state.elementObserveCount += 1;
+          const snapshotRevision = state.elementObserveCount * 2 - 1;
+          session.snapshotRevision = snapshotRevision;
+          const target = { interactionId, pid: 4242, bundleIdentifier: session.bundleIdentifier, appName: session.appName, windowRef: 'ax_window_1', snapshotRevision };
+          result = {
+            protocolVersion: 2, interactionId, snapshotRevision, pid: 4242, bundleIdentifier: session.bundleIdentifier, appName: session.appName,
+            truncated: false, nodeCount: 1,
+            root: { ref: `ax_${snapshotRevision}_1`, target, role: 'AXButton', name: 'One', state: { enabled: true }, actions: ['invoke'], children: [] },
+          };
+        } else if (computerCapability === 'computer.element.action.v2') {
+          const target = params.target && typeof params.target === 'object' ? params.target as Record<string, unknown> : undefined;
+          const interactionId = typeof target?.interactionId === 'string' ? target.interactionId : '';
+          const session = sessions.get(interactionId);
+          if (!session) {
+            fail('SESSION_NOT_FOUND', 'Desktop session was not found');
+            continue;
+          }
+          if (typeof target?.snapshotRevision !== 'number' || target.snapshotRevision !== session.snapshotRevision) {
+            fail('COMPUTER_ELEMENT_OBSERVATION_STALE', 'Observed element epoch is stale');
+            continue;
+          }
+          state.elementActionCount += 1;
+          session.snapshotRevision = Number(session.snapshotRevision ?? 0) + 1;
+          result = { acted: true, action: params.action, ref: params.ref, interactionId };
         } else if (actionId === 'desktop_press') {
           if (typeof params.interaction_id !== 'string' || !sessions.has(params.interaction_id)) {
             fail('SESSION_NOT_FOUND', 'Desktop session was not found');
@@ -280,6 +332,54 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.statusCount).toBe(0);
     expect(fixture.state.pressCount).toBe(1);
     expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+  });
+
+  test('round-trips exact element v2 observation authority and rejects stale refs after semantic mutation', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+
+    const observed = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_element_observe',
+      { target_id: targetId, max_depth: 2, max_nodes: 20 },
+      'element-observe-v2',
+    ));
+    const root = observed.root as Record<string, unknown>;
+    const elementTarget = root.target as Record<string, unknown>;
+    const ref = String(root.ref);
+    expect(observed.protocolVersion).toBe(2);
+    expect(observed.snapshotRevision).toBe(1);
+    expect(elementTarget.interactionId).toBe('provider_session_1');
+
+    const acted = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_element_action',
+      { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
+      'element-action-v2',
+    ));
+    expect(acted).toMatchObject({ acted: true, action: 'invoke', ref });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.elementActionCount).toBe(1);
+
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_element_action',
+      { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
+      'element-action-v2-stale-replay',
+    ))).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.elementActionCount).toBe(1);
+
+    const refreshed = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_element_observe',
+      { target_id: targetId, max_depth: 2, max_nodes: 20 },
+      'element-reobserve-v2',
+    ));
+    expect(refreshed.snapshotRevision).toBe(3);
+    expect(fixture.state.elementObserveCount).toBe(2);
+    expect(fixture.state.handshakeCount).toBe(1);
+    expect(fixture.state.sessionOpenCount).toBe(1);
   });
 
   test('closes a bound target without enumerating provider sessions first', async () => {
