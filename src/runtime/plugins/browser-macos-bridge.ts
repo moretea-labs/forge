@@ -333,6 +333,15 @@ export function getMacOsBrowserAttachObservation(): MacOsBrowserAttachObservatio
     : undefined;
 }
 
+function recordSuccessfulMacOsBrowserAttachment(attachment: MacOsBrowserAttachment): void {
+  lastAttachObservation = {
+    checkedAt: new Date().toISOString(),
+    ready: true,
+    selectedProduct: attachment.metadata.product,
+    attempts: attachment.attempts.map((attempt) => ({ ...attempt })),
+  };
+}
+
 const BROWSERS: Record<MacOsBrowserProduct, MacOsBrowserDefinition> = {
   chrome: {
     product: 'chrome',
@@ -679,18 +688,14 @@ export async function discoverMacOsBrowserAttachment(
   }
   const selectedAttempt = attempts.find((entry) => entry.product === selected.metadata.product);
   if (selectedAttempt) selectedAttempt.status = 'selected';
-  lastAttachObservation = {
-    checkedAt: new Date().toISOString(),
-    ready: true,
-    selectedProduct: selected.metadata.product,
-    attempts: attempts.map((attempt) => ({ ...attempt })),
+  const attachment: MacOsBrowserAttachment = {
+    metadata: selected.metadata,
+    attempts,
   };
+  recordSuccessfulMacOsBrowserAttachment(attachment);
   return {
     attempts,
-    attachment: {
-      metadata: selected.metadata,
-      attempts,
-    },
+    attachment,
   };
 }
 
@@ -1530,6 +1535,7 @@ export async function reattachMacOsBrowserOwnedPage(
     : ref;
   const page = new MacOsAppleEventsPage(attachment, timeoutMs, resolvedRef);
   rememberMacOsBrowserPageHandle(product, resolvedRef, page);
+  recordSuccessfulMacOsBrowserAttachment(attachment);
   return { page, attachment };
 }
 

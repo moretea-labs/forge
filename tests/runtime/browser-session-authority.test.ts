@@ -11,6 +11,7 @@ import {
 } from '../../src/runtime/plugins/browser-adapter';
 import {
   invalidateMacOsBrowserPageHandles,
+  reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
@@ -681,6 +682,50 @@ describe('browser session controller authority', () => {
       args: { session_id: sessionId },
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
+  });
+
+  test('successful exact native reattach publishes Browser health evidence', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const separator = String.fromCharCode(30);
+    const metadata = [
+      'false', 'https://example.com/native-health', 'Native Health', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+    ].join(separator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => metadata,
+    });
+
+    const manifestContext = { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false };
+    const before = buildBrowserPluginManifest(1, undefined, repoA, manifestContext);
+    expect(before.health.state).toBe('degraded');
+    expect(before.health.ready).toBe(false);
+    expect(before.health.warnings).toContain('Native active-browser attach has not completed a live probe in this Runtime instance.');
+
+    await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+
+    const after = buildBrowserPluginManifest(2, undefined, repoA, manifestContext);
+    expect(after.health.state).toBe('ready');
+    expect(after.health.ready).toBe(true);
+    expect(after.health.probed).toBe(true);
+    expect(after.health.details?.nativeAttachObservation).toMatchObject({
+      ready: true,
+      selectedProduct: 'chrome',
+      attempts: [{ product: 'chrome', status: 'selected' }],
+    });
   });
 
   test('browser defaults fail closed and declares foreground effects per action', () => {
