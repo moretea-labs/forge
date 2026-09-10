@@ -196,6 +196,41 @@ describe('canonical single Runtime', () => {
     expect(process.listenerCount('SIGUSR2')).toBe(listenersBefore);
   });
 
+  test('SIGUSR1 JSC sampling profiler remains dormant, starts once, and unregisters on stop', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-jsc-sampling-profiler' });
+    const listenersBefore = process.listenerCount('SIGUSR1');
+    const starts: string[] = [];
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9882/mcp', host: '127.0.0.1', port: 9882, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+      startJscSamplingProfiler: async (directory) => { starts.push(directory); },
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+    expect(process.listenerCount('SIGUSR1')).toBe(listenersBefore + 1);
+    expect(starts).toEqual([]);
+
+    process.emit('SIGUSR1', 'SIGUSR1');
+    for (let attempt = 0; attempt < 100 && starts.length === 0; attempt += 1) {
+      await Bun.sleep(1);
+    }
+    expect(starts).toEqual([join(fixture.controllerHome, 'diagnostics', 'jsc-profile')]);
+
+    process.emit('SIGUSR1', 'SIGUSR1');
+    await Bun.sleep(5);
+    expect(starts).toHaveLength(1);
+
+    await runtime.stop('TEST_JSC_SAMPLING_PROFILER_STOP');
+    expect(process.listenerCount('SIGUSR1')).toBe(listenersBefore);
+  });
+
   test('materialized package Runtime needs no repository overlay while development Runtime still does', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-package-no-repo' });
     writeFileSync(fixture.manifestPath, JSON.stringify({

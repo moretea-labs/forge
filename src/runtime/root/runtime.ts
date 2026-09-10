@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { statSync } from 'fs';
+import { mkdirSync, statSync } from 'fs';
 import { writeJsonAtomic } from '../shared/json-files';
 import { ensureForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { dirname, join } from 'path';
@@ -58,6 +58,7 @@ export interface CanonicalRuntimeDependencies {
   stopContextReadHelpers(): Promise<void>;
   computeToolSurfaceFingerprint: typeof runtimeGatewayToolSurfaceFingerprint;
   ensureForgeInstanceIdentity: typeof ensureForgeInstanceIdentity;
+  startJscSamplingProfiler(directory: string): Promise<void>;
 }
 
 async function defaultMcpProbe(endpoint: string, authToken: string): Promise<void> {
@@ -91,6 +92,12 @@ function startDefaultReleaseAuthorityMonitor(observe: () => void): RuntimeReleas
   return { stop: () => clearInterval(timer) };
 }
 
+async function startDefaultJscSamplingProfiler(directory: string): Promise<void> {
+  mkdirSync(directory, { recursive: true });
+  const { startSamplingProfiler } = await import('bun:jsc');
+  startSamplingProfiler(directory);
+}
+
 const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   loadReleaseManifest: loadRuntimeReleaseManifest,
   ensureReleaseAuthority: ensureActiveRuntimeRelease,
@@ -109,6 +116,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   stopContextReadHelpers: closeCodeGraphReadProviderSessions,
   computeToolSurfaceFingerprint: runtimeGatewayToolSurfaceFingerprint,
   ensureForgeInstanceIdentity,
+  startJscSamplingProfiler: startDefaultJscSamplingProfiler,
 };
 
 export class CanonicalForgeRuntime {
@@ -131,6 +139,9 @@ export class CanonicalForgeRuntime {
   private stopping = false;
   private jscHeapDiagnosticsSignalHandler?: () => void;
   private jscHeapDiagnosticsCaptureInFlight = false;
+  private jscSamplingProfilerSignalHandler?: () => void;
+  private jscSamplingProfilerStartInFlight = false;
+  private jscSamplingProfilerStarted = false;
   lastExit?: RuntimeExitEvidence;
 
   constructor(
@@ -215,6 +226,42 @@ export class CanonicalForgeRuntime {
     if (!handler) return;
     process.off('SIGUSR2', handler);
     this.jscHeapDiagnosticsSignalHandler = undefined;
+  }
+
+  private installJscSamplingProfilerSignal(): void {
+    if (process.platform === 'win32' || this.jscSamplingProfilerSignalHandler) return;
+    const handler = () => {
+      if (this.jscSamplingProfilerStarted || this.jscSamplingProfilerStartInFlight) return;
+      this.jscSamplingProfilerStartInFlight = true;
+      const directory = join(this.config.controllerHome, 'diagnostics', 'jsc-profile');
+      void this.dependencies.startJscSamplingProfiler(directory).then(() => {
+        this.jscSamplingProfilerStarted = true;
+        process.stderr.write(`${JSON.stringify({
+          event: 'forge_runtime_jsc_sampling_profiler_started',
+          runtimeInstanceId: this.runtimeInstanceId,
+          directory,
+          observedAt: new Date().toISOString(),
+        })}\n`);
+      }).catch((error) => {
+        process.stderr.write(`${JSON.stringify({
+          event: 'forge_runtime_jsc_sampling_profiler_failed',
+          runtimeInstanceId: this.runtimeInstanceId,
+          message: error instanceof Error ? error.message : String(error),
+          observedAt: new Date().toISOString(),
+        })}\n`);
+      }).finally(() => {
+        this.jscSamplingProfilerStartInFlight = false;
+      });
+    };
+    process.on('SIGUSR1', handler);
+    this.jscSamplingProfilerSignalHandler = handler;
+  }
+
+  private removeJscSamplingProfilerSignal(): void {
+    const handler = this.jscSamplingProfilerSignalHandler;
+    if (!handler) return;
+    process.off('SIGUSR1', handler);
+    this.jscSamplingProfilerSignalHandler = undefined;
   }
 
   private publishStatus(): void {
@@ -346,6 +393,7 @@ export class CanonicalForgeRuntime {
       // semantics.
       enableControlPlaneReadConnectionReuse(this.config.controllerHome);
       this.installJscHeapDiagnosticsSignal();
+      this.installJscSamplingProfilerSignal();
       this.readinessState.setDiagnostic('database', 'pass');
       this.publishStatus();
       if (this.config.exclusiveWorkId) {
@@ -466,6 +514,7 @@ export class CanonicalForgeRuntime {
       try { this.releaseAuthorityMonitor?.stop(); } catch { /* cleanup is best effort */ }
       this.releaseAuthorityMonitor = undefined;
       this.removeJscHeapDiagnosticsSignal();
+      this.removeJscSamplingProfilerSignal();
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
