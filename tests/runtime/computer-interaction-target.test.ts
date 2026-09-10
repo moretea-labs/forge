@@ -272,6 +272,70 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('owns browser surfaces in the same durable authority while treating session and tab handles as compatibility/binding data', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-target-'));
+    try {
+      const surface = targetAuthority.createSurface(controllerHome, {
+        stableIdentity: {
+          surfaceType: 'browser-tab',
+          ownership: 'plugin_owned',
+          application: { bundleId: 'com.google.Chrome', appName: 'Google Chrome' },
+        },
+        compatibilityAliases: ['legacy-session-a', 'legacy-session-a'],
+        repositoryIds: ['repo-a'],
+        providerBinding: {
+          providerId: 'macos-apple-events',
+          observedAt: '2026-09-10T10:00:00.000Z',
+          browserProduct: 'chrome',
+          windowId: '7',
+          tabId: '9',
+        },
+      });
+
+      expect(surface.kind).toBe('surface');
+      expect(surface.compatibilityAliases).toEqual(['legacy-session-a']);
+      expect(surface.repositoryIds).toEqual(['repo-a']);
+      expect(targetAuthority.get(controllerHome, surface.targetId)).toBeUndefined();
+      expect(targetAuthority.getSurface(controllerHome, surface.targetId)).toMatchObject({
+        targetId: surface.targetId,
+        kind: 'surface',
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'plugin_owned' },
+        providerBinding: { providerId: 'macos-apple-events', browserProduct: 'chrome', windowId: '7', tabId: '9' },
+      });
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-a')?.targetId).toBe(surface.targetId);
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-b')).toBeUndefined();
+
+      await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => {
+        lease.mergeCompatibility({ compatibilityAliases: ['legacy-session-b'], repositoryIds: ['repo-b'] });
+        lease.bind({
+          providerId: 'macos-apple-events',
+          observedAt: '2026-09-10T10:01:00.000Z',
+          browserProduct: 'chrome',
+          windowId: '99',
+          tabId: '9',
+        });
+      });
+
+      const rebound = targetAuthority.requireSurface(controllerHome, surface.targetId);
+      expect(rebound.compatibilityAliases).toEqual(['legacy-session-a', 'legacy-session-b']);
+      expect(rebound.repositoryIds).toEqual(['repo-a', 'repo-b']);
+      expect(rebound.providerBinding).toMatchObject({ windowId: '99', tabId: '9' });
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-b', 'repo-b')?.targetId).toBe(surface.targetId);
+      expect(targetAuthority.listSurfaces(controllerHome, { repoId: 'repo-a' }).map((target) => target.targetId)).toContain(surface.targetId);
+
+      await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => { lease.tombstone(); });
+      expect(targetAuthority.getSurface(controllerHome, surface.targetId)).toBeUndefined();
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-a', 'repo-a')).toBeUndefined();
+
+      expect(() => targetAuthority.createSurface(controllerHome, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'user_owned' },
+        compatibilityAliases: Array.from({ length: 65 }, (_, index) => `alias-${index}`),
+      })).toThrow('COMPUTER_SURFACE_ALIAS_LIMIT_EXCEEDED');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('rebinds a lost provider session once and serializes concurrent use of the same target', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
