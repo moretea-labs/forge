@@ -4,7 +4,11 @@ import { ensureForgeInstanceIdentity } from '../../../packages/kernel/identity/a
 import { dirname, join } from 'path';
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
-import { inspectControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
+import {
+  disableControlPlaneReadConnectionReuse,
+  enableControlPlaneReadConnectionReuse,
+  inspectControlPlaneDatabase,
+} from '../control-plane/persistence/sqlite-store';
 import { activateExclusiveWorkAdmission } from '../control-plane/facade/work-admission-policy';
 import { closeCodeGraphReadProviderSessions } from '../context/codegraph-read-provider';
 import { cancelAllLightweightProcesses } from '../execution/process-runtime/lightweight-managed';
@@ -279,6 +283,11 @@ export class CanonicalForgeRuntime {
         this.dependencies.inspectDatabase,
       );
       this.controller.initialize();
+      // The Canonical Runtime is the only process that keeps a control-plane
+      // reader alive across operations. Writers remain short-lived WAL/CAS
+      // transactions, while CLI/tests/workers keep their existing close-on-read
+      // semantics.
+      enableControlPlaneReadConnectionReuse(this.config.controllerHome);
       this.readinessState.setDiagnostic('database', 'pass');
       this.publishStatus();
       if (this.config.exclusiveWorkId) {
@@ -405,6 +414,7 @@ export class CanonicalForgeRuntime {
       await this.dependencies.stopContextReadHelpers().catch(() => undefined);
       await this.localBridge?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
+      disableControlPlaneReadConnectionReuse(this.config.controllerHome);
       const ownerPid = this.ownership?.record.pid;
       this.ownership?.release();
       clearRuntimeWriteClaim(this.runtimeInstanceId);

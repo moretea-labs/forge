@@ -6,6 +6,8 @@ import { join } from 'path';
 import {
   backupControlPlaneDatabase,
   controlPlaneDatabasePath,
+  disableControlPlaneReadConnectionReuse,
+  enableControlPlaneReadConnectionReuse,
   inspectControlPlaneDatabase,
   listControlPlaneRecords,
   maintainControlPlaneDatabase,
@@ -77,6 +79,37 @@ describe('final SQLite control-plane cutover', () => {
       } finally {
         writer.exec('ROLLBACK');
         writer.close();
+      }
+    });
+  });
+
+
+  test('Runtime-scoped reusable reader observes WAL commits and reopens after restore replacement', () => {
+    withHome((controllerHome) => {
+      const initial = writeControlPlaneRecord(controllerHome, {
+        namespace: 'probe', scope: 'controller', key: 'REUSED-READER', schemaVersion: 1,
+        value: { state: 'backed-up' }, expectedRevision: null,
+      });
+      const backupPath = join(controllerHome, 'verified-backups', 'reused-reader.sqlite');
+      backupControlPlaneDatabase(controllerHome, backupPath);
+      enableControlPlaneReadConnectionReuse(controllerHome);
+      try {
+        expect(readControlPlaneRecord(controllerHome, 'probe', 'controller', 'REUSED-READER')).toMatchObject({
+          revision: initial.revision, value: { state: 'backed-up' },
+        });
+        const updated = writeControlPlaneRecord(controllerHome, {
+          namespace: 'probe', scope: 'controller', key: 'REUSED-READER', schemaVersion: 1,
+          value: { state: 'updated' }, expectedRevision: initial.revision,
+        });
+        expect(readControlPlaneRecord(controllerHome, 'probe', 'controller', 'REUSED-READER')).toMatchObject({
+          revision: updated.revision, value: { state: 'updated' },
+        });
+        restoreControlPlaneDatabase(controllerHome, backupPath);
+        expect(readControlPlaneRecord(controllerHome, 'probe', 'controller', 'REUSED-READER')).toMatchObject({
+          revision: initial.revision, value: { state: 'backed-up' },
+        });
+      } finally {
+        disableControlPlaneReadConnectionReuse(controllerHome);
       }
     });
   });

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
 import { durableControllerHome } from '../../../cli/repositories/controller-home';
 
@@ -95,6 +95,49 @@ export interface ControlPlaneDatabaseMaintenanceReport {
 export const CONTROL_PLANE_SCHEMA_VERSION = 1;
 const DATABASE_FILE = 'control-plane.sqlite';
 const require = createRequire(import.meta.url);
+
+interface ReusableReadDatabase {
+  database: SqliteDatabase;
+  fileIdentity: string;
+}
+
+const reusableReadDatabasePaths = new Set<string>();
+const reusableReadDatabases = new Map<string, ReusableReadDatabase>();
+
+function databaseFileIdentity(path: string): string | undefined {
+  try {
+    const stat = statSync(path);
+    // Content changes must not invalidate a WAL reader. Identity changes only
+    // when the live database file itself is replaced.
+    return stat.ino
+      ? `${stat.dev}:${stat.ino}`
+      : `${stat.dev}:birth:${stat.birthtimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function closeReusableReadDatabase(path: string): void {
+  const cached = reusableReadDatabases.get(path);
+  if (!cached) return;
+  reusableReadDatabases.delete(path);
+  cached.database.close();
+}
+
+/**
+ * Opt in only for the long-lived Canonical Runtime. CLI, tests, and short-lived
+ * workers retain one-open-per-operation semantics so process exit and temporary
+ * Controller Home cleanup never depend on hidden SQLite handles.
+ */
+export function enableControlPlaneReadConnectionReuse(controllerHome: string): void {
+  reusableReadDatabasePaths.add(controlPlaneDatabasePath(controllerHome));
+}
+
+export function disableControlPlaneReadConnectionReuse(controllerHome: string): void {
+  const path = controlPlaneDatabasePath(controllerHome);
+  reusableReadDatabasePaths.delete(path);
+  closeReusableReadDatabase(path);
+}
 
 function now(): string {
   return new Date().toISOString();
@@ -302,6 +345,42 @@ function openDatabaseForRead(controllerHome: string): SqliteDatabase {
   return openDatabase(controllerHome);
 }
 
+
+function withDatabaseForRead<T>(controllerHome: string, operation: (database: SqliteDatabase) => T): T {
+  const path = controlPlaneDatabasePath(controllerHome);
+  if (!reusableReadDatabasePaths.has(path)) {
+    const database = openDatabaseForRead(controllerHome);
+    try {
+      return operation(database);
+    } finally {
+      database.close();
+    }
+  }
+
+  const liveIdentity = databaseFileIdentity(path);
+  const cached = reusableReadDatabases.get(path);
+  if (cached && liveIdentity && cached.fileIdentity === liveIdentity) {
+    return operation(cached.database);
+  }
+  if (cached) closeReusableReadDatabase(path);
+
+  const database = openDatabaseForRead(controllerHome);
+  const openedIdentity = databaseFileIdentity(path);
+  if (!openedIdentity) {
+    database.close();
+    throw new Error(`CONTROL_PLANE_SQLITE_MISSING: ${path}`);
+  }
+  reusableReadDatabases.set(path, { database, fileIdentity: openedIdentity });
+  try {
+    return operation(database);
+  } catch (error) {
+    // Do not retain a reader that failed while evaluating a query/schema. The
+    // next operation gets a clean connection and repeats the fail-closed checks.
+    closeReusableReadDatabase(path);
+    throw error;
+  }
+}
+
 function rowToRecord<T>(row: StoredRecordRow): ControlPlaneRecord<T> {
   let value: T;
   try {
@@ -424,12 +503,8 @@ export function withControlPlaneTransaction<T>(controllerHome: string, operation
 }
 
 export function readControlPlaneRecord<T>(controllerHome: string, namespace: string, scope: string, key: string): ControlPlaneRecord<T> | undefined {
-  const database = openDatabaseForRead(controllerHome);
-  try {
-    return selectRecord<T>(database, namespace, scope, key);
-  } finally {
-    database.close();
-  }
+  return withDatabaseForRead(controllerHome, (database) =>
+    selectRecord<T>(database, namespace, scope, key));
 }
 
 export function writeControlPlaneRecord<T>(
@@ -553,12 +628,8 @@ export function listControlPlaneRecords<T>(
   controllerHome: string,
   input: { namespace: string; scope?: string; limit?: number },
 ): ControlPlaneRecord<T>[] {
-  const database = openDatabaseForRead(controllerHome);
-  try {
-    return listControlPlaneRecordsWithinTransaction<T>(database, input);
-  } finally {
-    database.close();
-  }
+  return withDatabaseForRead(controllerHome, (database) =>
+    listControlPlaneRecordsWithinTransaction<T>(database, input));
 }
 
 /**
@@ -590,12 +661,8 @@ export function listAllControlPlaneRecords<T>(
   controllerHome: string,
   input: { namespace: string; scope?: string },
 ): ControlPlaneRecord<T>[] {
-  const database = openDatabaseForRead(controllerHome);
-  try {
-    return listAllControlPlaneRecordsWithinTransaction<T>(database, input);
-  } finally {
-    database.close();
-  }
+  return withDatabaseForRead(controllerHome, (database) =>
+    listAllControlPlaneRecordsWithinTransaction<T>(database, input));
 }
 
 function inspectOpenDatabase(database: SqliteDatabase, path: string): ControlPlaneDatabaseInspection {
@@ -828,6 +895,10 @@ export function backupControlPlaneDatabase(controllerHome: string, destinationPa
 export function restoreControlPlaneDatabase(controllerHome: string, backupPath: string): ControlPlaneDatabaseInspection {
   if (!existsSync(backupPath)) throw new Error(`CONTROL_PLANE_BACKUP_MISSING: ${backupPath}`);
   const target = controlPlaneDatabasePath(controllerHome);
+  // A reusable Runtime reader refers to the current inode, not the pathname.
+  // Close it before replacing the live authority; reuse remains enabled and the
+  // next read opens the verified replacement.
+  closeReusableReadDatabase(target);
   const staging = `${target}.restore-${process.pid}-${Date.now()}`;
   copyFileSync(backupPath, staging);
   try {
