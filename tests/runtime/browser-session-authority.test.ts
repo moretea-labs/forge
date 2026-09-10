@@ -27,6 +27,7 @@ import {
   tombstoneBrowserSession,
 } from '../../src/runtime/plugins/browser-session-authority';
 import { findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
+import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
 import { withRuntimeBrowserSessionAuthorityContext } from '../../src/runtime/root/browser-session-composition';
 import {
   withControlPlaneTransaction,
@@ -93,7 +94,7 @@ function session(
   };
 }
 
-describe('browser session controller authority', () => {
+describe('browser session compatibility on Computer target authority', () => {
   test('imports repo-local legacy sessions only once', () => {
     const { controllerHome, repoA } = fixture();
     const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
@@ -124,23 +125,20 @@ describe('browser session controller authority', () => {
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
   });
 
-  test('browser tombstone retention waits for legacy cutover then reclaims only expired tombstones', () => {
+  test('Browser-owned retention is retired while Computer tombstones remain authoritative', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(repoA, { recursive: true });
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('active-keep', '2026-08-24T01:00:00.000Z'));
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('stale-drop', '2026-08-24T02:00:00.000Z'));
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBe(true);
 
-    const blocked = cleanupBrowserSessionTombstones(controllerHome, { nowMs: Date.now() + 31 * 24 * 60 * 60_000, ttlMs: 30 * 24 * 60 * 60_000 });
-    expect(blocked.removed).toBe(0);
-    expect(blocked.blockers).toContain('legacy_import_cutover_open');
-
-    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
-    expect(cutover.closed).toBe(true);
-    const cleaned = cleanupBrowserSessionTombstones(controllerHome, {
-      nowMs: Date.now() + 31 * 24 * 60 * 60_000, ttlMs: 30 * 24 * 60 * 60_000, maxTombstones: 5000, maxRemovals: 10,
+    const retiredRetention = cleanupBrowserSessionTombstones(controllerHome, {
+      nowMs: Date.now() + 31 * 24 * 60 * 60_000,
+      ttlMs: 30 * 24 * 60 * 60_000,
     });
-    expect(cleaned.removed).toBe(1);
+    expect(retiredRetention).toMatchObject({ cutoverClosed: true, removed: 0, blockers: [] });
+    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
+    expect(cutover).toMatchObject({ closed: true, alreadyClosed: true, migratedRecordCount: 0 });
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'active-keep')?.sessionId).toBe('active-keep');
   });
@@ -154,7 +152,7 @@ describe('browser session controller authority', () => {
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
   });
 
-  test('legacy import cannot resurrect a tombstoned native identity from another repository', () => {
+  test('legacy import may observe but cannot resurrect a tombstoned native identity from another repository', () => {
     const { controllerHome, repoA, repoB } = fixture();
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-a', '2026-08-24T01:00:00.000Z', { native: true }));
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBe(true);
@@ -165,7 +163,7 @@ describe('browser session controller authority', () => {
       session('native-b', '2026-08-24T02:00:00.000Z', { native: true }),
     ));
 
-    expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-b', repoB)).toBe(0);
+    expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-b', repoB)).toBe(1);
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
     expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions).toEqual([]);
@@ -186,7 +184,7 @@ describe('browser session controller authority', () => {
     expect(second.sessions.map((entry) => entry.sessionId)).toEqual(['one']);
     expect(second.nextCursor).toBeUndefined();
   });
-  test('authoritative scans retain sessions beyond the bounded 5000-record diagnostic limit', () => {
+  test('legacy migration reader scans beyond the bounded 5000-record diagnostic limit without materializing Computer targets', () => {
     const { controllerHome, repoA } = fixture();
     const updatedAt = '2026-08-24T01:00:00.000Z';
     withControlPlaneTransaction(controllerHome, (database) => {
@@ -210,12 +208,9 @@ describe('browser session controller authority', () => {
       }
     });
 
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'bulk-05000')?.sessionId).toBe('bulk-05000');
-    expect(listAllBrowserSessionsForRepository(controllerHome, 'repo-a', repoA)).toHaveLength(5_001);
-    const bounded = listBrowserSessions(controllerHome, 'repo-a', repoA, { limit: 10_000 });
-    expect(bounded.sessions).toHaveLength(200);
-    expect(bounded.totalCount).toBe(5_001);
-    expect(bounded.nextCursor).toBeTruthy();
+    const legacy = readLegacyBrowserSessionMigrationEntries({ controllerHome, repoId: 'repo-a', repoRoot: repoA });
+    expect(legacy).toHaveLength(5_001);
+    expect(legacy.some((entry) => entry.session.sessionId === 'bulk-05000')).toBe(true);
   });
 
   test('browser adapter lists central authority with bounded pagination and authorization sees migrated sessions', async () => {
@@ -584,7 +579,7 @@ describe('browser session controller authority', () => {
       args: { url, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
     });
     const sessionId = String((opened.session as { sessionId: string }).sessionId);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)).toBeUndefined();
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
     expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
 
     ownedExists = false;
@@ -598,7 +593,7 @@ describe('browser session controller authority', () => {
 
     expect(observed.text).toBe('Recovered Body');
     expect(createCalls).toBe(2);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)).toBeUndefined();
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
     expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
   });
 
@@ -683,7 +678,7 @@ describe('browser session controller authority', () => {
     });
     expect(observed.url).toBe(driftedUrl);
     expect(observed.text).toBe('Drifted Body');
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)).toBeUndefined();
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
     expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
 
     const closed = await executeBrowserPluginAction({

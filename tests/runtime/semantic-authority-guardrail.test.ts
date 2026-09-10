@@ -16,6 +16,17 @@ function runFixture(sources: Array<{ path: string; source: string }>, allowed: s
   });
 }
 
+function runInteractionAuthorityFixture(sources: Array<{ path: string; source: string }>) {
+  return spawnSync(process.execPath, [script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      FORGE_INTERACTION_AUTHORITY_GUARDRAIL_FIXTURE: JSON.stringify({ sources }),
+    },
+    encoding: 'utf8',
+  });
+}
+
 describe('Semantic Authority Guardrail', () => {
   test('rejects a new human-readable string branch in an authority-critical shape', () => {
     const violation = `src/runtime/control-plane/fake.ts::message.includes('network')`;
@@ -56,6 +67,19 @@ describe('Semantic Authority Guardrail', () => {
     ], []);
 
     expect(result.status).toBe(0);
+  });
+
+  test('rejects Browser/Desktop durable interaction authority outside Computer target authority', () => {
+    const result = runInteractionAuthorityFixture([
+      {
+        path: 'src/runtime/plugins/fake-browser-owner.ts',
+        source: `export interface BrowserSurfacePersistence { save(): void }`,
+      },
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Browser/Desktop durable interaction authority must live only in Computer target authority');
+    expect(result.stderr).toContain('BrowserSurfacePersistence');
   });
 
   test('catches regex tests against check ids so naming cannot silently become lifecycle authority again', () => {

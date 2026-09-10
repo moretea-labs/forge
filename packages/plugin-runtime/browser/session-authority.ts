@@ -1,11 +1,16 @@
 export const DEFAULT_BROWSER_SESSION_LIST_LIMIT = 50;
 export const MAX_BROWSER_SESSION_LIST_LIMIT = 200;
 
-export interface BrowserSessionAuthorityContext {
+/** State-free Browser execution scope. Durable interaction identity belongs to Computer SurfaceTarget authority. */
+export interface BrowserSessionExecutionContext {
   controllerHome: string;
   repoId: string;
 }
 
+/** @deprecated Compatibility alias for frozen callers; this is context, not an authority capability. */
+export type BrowserSessionAuthorityContext = BrowserSessionExecutionContext;
+
+/** Compatibility shape for Browser-facing session metadata. It is persisted only inside a Computer SurfaceTarget record. */
 export interface BrowserSessionAuthoritySession {
   schemaVersion: 1;
   sessionId: string;
@@ -43,6 +48,7 @@ export interface BrowserSessionLegacyCutoverReport {
   migratedRecordCount: number;
 }
 
+/** Compatibility-only report shape; Browser no longer owns tombstone retention. */
 export interface BrowserSessionTombstoneCleanupReport {
   policyVersion: 'browser-session-tombstone-retention-v1';
   cutoverClosed: boolean;
@@ -52,16 +58,4 @@ export interface BrowserSessionTombstoneCleanupReport {
   retained: number;
   blockers: string[];
   budgetExhausted: boolean;
-}
-
-/** Durable Browser session persistence port. Runtime context binding is owned by composition. */
-export interface BrowserSessionAuthorityPort {
-  ensureLegacyImported(context: BrowserSessionAuthorityContext, repoRoot: string): number;
-  save<T extends BrowserSessionAuthoritySession>(context: BrowserSessionAuthorityContext, repoRoot: string, session: T): T;
-  find<T extends BrowserSessionAuthoritySession>(context: BrowserSessionAuthorityContext, repoRoot: string, sessionId: string): T | undefined;
-  list<T extends BrowserSessionAuthoritySession>(context: BrowserSessionAuthorityContext, repoRoot: string, options?: { limit?: number; cursor?: string }): BrowserSessionAuthorityPage<T>;
-  listAll<T extends BrowserSessionAuthoritySession>(context: BrowserSessionAuthorityContext, repoRoot: string): T[];
-  tombstone(context: BrowserSessionAuthorityContext, repoRoot: string, sessionId: string): boolean;
-  closeLegacyImportCutover(controllerHome: string, repositories: readonly BrowserSessionLegacyCutoverRepository[]): BrowserSessionLegacyCutoverReport;
-  cleanupTombstones(controllerHome: string, options?: { nowMs?: number; ttlMs?: number; maxTombstones?: number; maxRemovals?: number }): BrowserSessionTombstoneCleanupReport;
 }

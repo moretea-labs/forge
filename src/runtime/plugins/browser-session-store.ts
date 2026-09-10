@@ -6,31 +6,18 @@ import type {
   ComputerSurfaceVisibility,
 } from '../../../packages/plugin-runtime/computer/target-authority';
 import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
-import { createRuntimeBrowserSessionPersistence } from '../root/browser-session-persistence';
-import {
-  currentRuntimeBrowserSessionAuthorityContext,
-  runtimeBrowserSessionAuthority,
-} from '../root/browser-session-composition';
+import { currentRuntimeBrowserSessionExecutionContext } from '../root/browser-session-composition';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
+import {
+  cleanupLegacyBrowserSessionJson,
+  readLegacyBrowserSessionMigrationEntries,
+} from './browser-session-legacy-migration';
 import { writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError } from './errors';
 
 const BROWSER_STATE_ROOT = '.forge/browser';
 const BROWSER_SESSION_COMPATIBILITY_NAMESPACE = 'browser.session.v1';
 const BROWSER_SESSION_COMPUTER_MIGRATION_ID = 'browser-session-authority-v1-to-computer-surface-v1';
-const LEGACY_BROWSER_SESSION_NAMESPACE = 'browser_session';
-const LEGACY_BROWSER_SESSION_SCOPE = 'controller';
-
-interface LegacyBrowserSessionAuthorityEntry {
-  schemaVersion: 1;
-  status: 'active' | 'tombstoned';
-  session: BrowserSessionState;
-  aliases: string[];
-  repositoryIds: string[];
-  nativeIdentity?: string;
-  tombstonedAt?: string;
-  importedFromLegacy?: boolean;
-}
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
@@ -116,39 +103,27 @@ function surfaceInput(
   };
 }
 
-function assertLegacyEntry(value: LegacyBrowserSessionAuthorityEntry): LegacyBrowserSessionAuthorityEntry {
-  if (value?.schemaVersion !== 1 || (value.status !== 'active' && value.status !== 'tombstoned')
-    || !value.session || value.session.schemaVersion !== 1 || typeof value.session.sessionId !== 'string'
-    || !Array.isArray(value.aliases) || !Array.isArray(value.repositoryIds)) {
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Legacy Browser session authority contains malformed durable state; migration stopped fail-closed.', {
-      retryable: false,
-    });
-  }
-  return value;
-}
-
 /**
  * One-way compatibility cutover. The old Browser authority is only an import
  * source here. Once the per-repository Computer marker is closed, steady-state
  * Browser actions never read or write Browser-owned durable session state.
  */
-function ensureBrowserSessionsMigratedToComputer(repoRoot: string): void {
-  const context = currentRuntimeBrowserSessionAuthorityContext();
-  if (!context) return;
+export function ensureBrowserSessionsMigratedToComputer(repoRoot: string): number {
+  const context = currentRuntimeBrowserSessionExecutionContext();
+  if (!context) return 0;
   const computer = runtimeComputerInteractionTargetAuthority();
-  if (computer.compatibilityMigrationMarker(context.controllerHome, BROWSER_SESSION_COMPUTER_MIGRATION_ID, context.repoId)) return;
+  if (computer.compatibilityMigrationMarker(context.controllerHome, BROWSER_SESSION_COMPUTER_MIGRATION_ID, context.repoId)) {
+    cleanupLegacyBrowserSessionJson(context.controllerHome, context.repoId, repoRoot);
+    return 0;
+  }
 
-  // First absorb repository-local JSON through the old authority so its existing
-  // tombstones can still prevent a legacy file from resurrecting retired state.
-  runtimeBrowserSessionAuthority().ensureLegacyImported(context, repoRoot);
-  const legacyPersistence = createRuntimeBrowserSessionPersistence();
-  const legacyRecords = legacyPersistence.listAll<LegacyBrowserSessionAuthorityEntry>(context.controllerHome, {
-    namespace: LEGACY_BROWSER_SESSION_NAMESPACE,
-    scope: LEGACY_BROWSER_SESSION_SCOPE,
+  const legacyEntries = readLegacyBrowserSessionMigrationEntries({
+    controllerHome: context.controllerHome,
+    repoId: context.repoId,
+    repoRoot,
   });
   let importedRecordCount = 0;
-  for (const record of legacyRecords) {
-    const entry = assertLegacyEntry(record.value);
+  for (const entry of legacyEntries) {
     const visible = Boolean(entry.nativeIdentity) || entry.repositoryIds.includes(context.repoId);
     if (!visible) continue;
     const visibility: ComputerSurfaceVisibility = entry.nativeIdentity ? 'controller' : 'repositories';
@@ -166,6 +141,8 @@ function ensureBrowserSessionsMigratedToComputer(repoRoot: string): void {
     scopeId: context.repoId,
     importedRecordCount,
   });
+  cleanupLegacyBrowserSessionJson(context.controllerHome, context.repoId, repoRoot);
+  return importedRecordCount;
 }
 
 /** Move legacy provider files out of the repository and retire the old path after migration. */
@@ -208,7 +185,7 @@ export function browserStateDir(
   repoRoot: string,
   name: 'sessions' | 'screenshots' | 'profiles' | 'downloads' | 'diagnostics',
 ): string {
-  const context = currentRuntimeBrowserSessionAuthorityContext();
+  const context = currentRuntimeBrowserSessionExecutionContext();
   return context
     ? join(ensureBrowserStateInControllerHome(context.controllerHome, context.repoId, repoRoot), name)
     : join(repoRoot, BROWSER_STATE_ROOT, name);
@@ -240,7 +217,7 @@ function readLegacyBrowserSessionJson(path: string): BrowserSessionState | undef
 }
 
 export function saveBrowserSession(repoRoot: string, session: BrowserSessionState): BrowserSessionState {
-  const context = currentRuntimeBrowserSessionAuthorityContext();
+  const context = currentRuntimeBrowserSessionExecutionContext();
   if (!context) {
     writeJsonAtomic(sessionPath(repoRoot, session.sessionId), session);
     return session;
@@ -279,7 +256,7 @@ export function saveBrowserSession(repoRoot: string, session: BrowserSessionStat
 
 export function findBrowserSession(repoRoot: string, sessionId?: string): BrowserSessionState | undefined {
   if (!sessionId) return undefined;
-  const context = currentRuntimeBrowserSessionAuthorityContext();
+  const context = currentRuntimeBrowserSessionExecutionContext();
   if (!context) return readLegacyBrowserSessionJson(sessionPath(repoRoot, sessionId));
   ensureBrowserSessionsMigratedToComputer(repoRoot);
   const target = runtimeComputerInteractionTargetAuthority().findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
@@ -287,7 +264,7 @@ export function findBrowserSession(repoRoot: string, sessionId?: string): Browse
 }
 
 export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
-  const context = currentRuntimeBrowserSessionAuthorityContext();
+  const context = currentRuntimeBrowserSessionExecutionContext();
   if (context) {
     ensureBrowserSessionsMigratedToComputer(repoRoot);
     return runtimeComputerInteractionTargetAuthority().listAllSurfaces(context.controllerHome, { repoId: context.repoId })
@@ -313,7 +290,7 @@ export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[
 }
 
 export function removeBrowserSession(repoRoot: string, sessionId: string): void {
-  const context = currentRuntimeBrowserSessionAuthorityContext();
+  const context = currentRuntimeBrowserSessionExecutionContext();
   if (context) {
     ensureBrowserSessionsMigratedToComputer(repoRoot);
     const computer = runtimeComputerInteractionTargetAuthority();

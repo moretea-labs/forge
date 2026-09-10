@@ -486,6 +486,30 @@ function semanticAuthorityProductionStringMatchRecords() {
   return semanticAuthorityStringMatchRecordsFromSources(paths.map((path) => ({ path, source: text(path) })));
 }
 
+const LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION = /\b(?:class|interface|type|function|const)\s+\w*(?:Browser|Desktop)\w*(?:Authority|Persistence)\b/;
+function legacyInteractionAuthorityOwnerRecordsFromSources(sources) {
+  const records = new Set();
+  for (const { path, source } of sources) {
+    for (const line of String(source).split('\n')) {
+      if (LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION.test(line)) records.add(`${path}::${line.trim()}`);
+    }
+  }
+  return records;
+}
+
+const interactionAuthorityGuardrailFixture = process.env.FORGE_INTERACTION_AUTHORITY_GUARDRAIL_FIXTURE;
+if (interactionAuthorityGuardrailFixture) {
+  const fixture = JSON.parse(interactionAuthorityGuardrailFixture);
+  const actual = legacyInteractionAuthorityOwnerRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  if (actual.size > 0) {
+    console.error('[interaction-authority-guardrail] FAILED');
+    for (const record of actual) console.error(`- Browser/Desktop durable interaction authority must live only in Computer target authority: ${record}`);
+    process.exit(1);
+  }
+  console.log('[interaction-authority-guardrail] OK');
+  process.exit(0);
+}
+
 const semanticAuthorityGuardrailFixture = process.env.FORGE_SEMANTIC_AUTHORITY_GUARDRAIL_FIXTURE;
 if (semanticAuthorityGuardrailFixture) {
   const fixture = JSON.parse(semanticAuthorityGuardrailFixture);
@@ -1893,20 +1917,29 @@ for (const path of sourceFiles('src/runtime/plugins')) {
   if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-provider-registry.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
   forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
 }
-requireText('packages/plugin-runtime/browser/session-authority.ts', 'export interface BrowserSessionAuthorityPort');
-forbid('packages/plugin-runtime/browser/session-authority.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session authority port must not own persistence implementation');
-requireText('packages/plugin-runtime/browser/session-persistence.ts', 'export interface BrowserSessionPersistencePort');
-forbid('packages/plugin-runtime/browser/session-persistence.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session persistence port must remain storage-implementation neutral');
-requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthority');
-requireText('adapters/browser/session-authority.ts', "current?.value.status === 'tombstoned'");
-forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
+// Computer SurfaceTarget is the only durable interaction-target authority. Browser
+// compatibility may retain old type/API names, but it must not recreate a Browser
+// or Desktop authority/persistence owner alongside Computer.
+requireMissing('adapters/browser/session-authority.ts');
 requireMissing('adapters/browser/sqlite-session-authority.ts');
-requireText('src/runtime/root/browser-session-persistence.ts', 'createRuntimeBrowserSessionPersistence');
-requireText('src/runtime/root/browser-session-composition.ts', 'createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence())');
-requireText('src/runtime/plugins/browser-session-authority.ts', '@deprecated C0 compatibility shim');
-for (const path of sourceFiles('src/runtime/plugins')) {
-  if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
-  forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');
+requireMissing('packages/plugin-runtime/browser/session-persistence.ts');
+requireMissing('src/runtime/root/browser-session-persistence.ts');
+forbid('packages/plugin-runtime/browser/session-authority.ts', /\bBrowserSession(?:Authority|Persistence)Port\b/, 'Browser compatibility contracts must not expose a second durable authority or persistence port');
+requireText('src/runtime/plugins/browser-session-authority.ts', 'findComputerBackedBrowserSession');
+requireText('src/runtime/plugins/browser-session-authority.ts', 'saveComputerBackedBrowserSession');
+forbid('src/runtime/plugins/browser-session-authority.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'Browser compatibility facade must delegate semantic identity to Computer and cannot persist its own authority');
+requireText('src/runtime/plugins/browser-session-legacy-migration.ts', 'readLegacyBrowserSessionMigrationEntries');
+forbid('src/runtime/plugins/browser-session-legacy-migration.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'legacy Browser migration may read retired state but cannot mutate or recreate Browser durable authority');
+requireText('src/runtime/root/browser-session-composition.ts', 'BrowserSessionExecutionContext');
+forbid('src/runtime/root/browser-session-composition.ts', /\b(?:createBrowserSessionAuthority|runtimeBrowserSessionAuthority|createRuntimeBrowserSessionPersistence)\b/, 'Browser Runtime composition may carry execution context but cannot compose a second durable interaction authority');
+for (const path of [
+  ...sourceFiles('adapters/browser'),
+  ...sourceFiles('packages/plugin-runtime/browser'),
+  ...sourceFiles('src/runtime/plugins'),
+  ...sourceFiles('src/runtime/root'),
+]) {
+  if (path === 'src/runtime/plugins/browser-session-legacy-migration.ts') continue;
+  forbid(path, LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION, 'Browser/Desktop durable interaction authority must live only in Computer target authority');
 }
 // Workflow Asset authority: editable content stays in files; machine registry stays metadata-only.
 requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'export interface WorkflowAssetDefinition');
