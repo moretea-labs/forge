@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
+import { writeJsonAtomic } from '../shared/json-files';
 import { ensureForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { dirname, join } from 'path';
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -128,6 +129,8 @@ export class CanonicalForgeRuntime {
   private readonly stopped = new Promise<void>((resolve) => { this.stoppedResolve = resolve; });
   private started = false;
   private stopping = false;
+  private jscHeapDiagnosticsSignalHandler?: () => void;
+  private jscHeapDiagnosticsCaptureInFlight = false;
   lastExit?: RuntimeExitEvidence;
 
   constructor(
@@ -158,6 +161,60 @@ export class CanonicalForgeRuntime {
 
   readiness(): RuntimeReadiness {
     return this.readinessState.snapshot();
+  }
+
+  private installJscHeapDiagnosticsSignal(): void {
+    if (process.platform === 'win32' || this.jscHeapDiagnosticsSignalHandler) return;
+    const handler = () => {
+      if (this.jscHeapDiagnosticsCaptureInFlight) return;
+      this.jscHeapDiagnosticsCaptureInFlight = true;
+      void import('bun:jsc').then(({ heapStats, memoryUsage }) => {
+        const heap = heapStats();
+        const topTypes = (counts: Record<string, number>, limit: number) => Object.entries(counts)
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, limit)
+          .map(([type, count]) => ({ type, count }));
+        writeJsonAtomic(join(this.config.controllerHome, 'diagnostics', 'jsc-heap.json'), {
+          schemaVersion: 1,
+          capturedAt: new Date().toISOString(),
+          pid: process.pid,
+          runtimeInstanceId: this.runtimeInstanceId,
+          releaseId: this.release?.releaseId,
+          heap: {
+            heapSize: heap.heapSize,
+            heapCapacity: heap.heapCapacity,
+            extraMemorySize: heap.extraMemorySize,
+            objectCount: heap.objectCount,
+            protectedObjectCount: heap.protectedObjectCount,
+            globalObjectCount: heap.globalObjectCount,
+            protectedGlobalObjectCount: heap.protectedGlobalObjectCount,
+            objectTypeCount: Object.keys(heap.objectTypeCounts).length,
+            protectedObjectTypeCount: Object.keys(heap.protectedObjectTypeCounts).length,
+            topObjectTypes: topTypes(heap.objectTypeCounts, 100),
+            topProtectedObjectTypes: topTypes(heap.protectedObjectTypeCounts, 50),
+          },
+          memoryUsage: memoryUsage(),
+        });
+      }).catch((error) => {
+        process.stderr.write(`${JSON.stringify({
+          event: 'forge_runtime_jsc_heap_diagnostics_failed',
+          runtimeInstanceId: this.runtimeInstanceId,
+          message: error instanceof Error ? error.message : String(error),
+          observedAt: new Date().toISOString(),
+        })}\n`);
+      }).finally(() => {
+        this.jscHeapDiagnosticsCaptureInFlight = false;
+      });
+    };
+    process.on('SIGUSR2', handler);
+    this.jscHeapDiagnosticsSignalHandler = handler;
+  }
+
+  private removeJscHeapDiagnosticsSignal(): void {
+    const handler = this.jscHeapDiagnosticsSignalHandler;
+    if (!handler) return;
+    process.off('SIGUSR2', handler);
+    this.jscHeapDiagnosticsSignalHandler = undefined;
   }
 
   private publishStatus(): void {
@@ -288,6 +345,7 @@ export class CanonicalForgeRuntime {
       // transactions, while CLI/tests/workers keep their existing close-on-read
       // semantics.
       enableControlPlaneReadConnectionReuse(this.config.controllerHome);
+      this.installJscHeapDiagnosticsSignal();
       this.readinessState.setDiagnostic('database', 'pass');
       this.publishStatus();
       if (this.config.exclusiveWorkId) {
@@ -407,6 +465,7 @@ export class CanonicalForgeRuntime {
       // supersession callback can race the teardown sequence.
       try { this.releaseAuthorityMonitor?.stop(); } catch { /* cleanup is best effort */ }
       this.releaseAuthorityMonitor = undefined;
+      this.removeJscHeapDiagnosticsSignal();
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);

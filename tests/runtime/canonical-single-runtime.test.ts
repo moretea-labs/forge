@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
@@ -155,6 +155,47 @@ function inertScheduler() {
 }
 
 describe('canonical single Runtime', () => {
+  test('SIGUSR2 heap diagnostics remain dormant until signaled and unregister on stop', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-jsc-heap-diagnostics' });
+    const diagnosticsPath = join(fixture.controllerHome, 'diagnostics', 'jsc-heap.json');
+    const listenersBefore = process.listenerCount('SIGUSR2');
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9881/mcp', host: '127.0.0.1', port: 9881, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    expect(existsSync(diagnosticsPath)).toBe(false);
+    await runtime.start();
+    expect(process.listenerCount('SIGUSR2')).toBe(listenersBefore + 1);
+    expect(existsSync(diagnosticsPath)).toBe(false);
+
+    process.emit('SIGUSR2', 'SIGUSR2');
+    for (let attempt = 0; attempt < 100 && !existsSync(diagnosticsPath); attempt += 1) {
+      await Bun.sleep(10);
+    }
+    expect(existsSync(diagnosticsPath)).toBe(true);
+    const diagnostics = JSON.parse(readFileSync(diagnosticsPath, 'utf8')) as Record<string, any>;
+    expect(diagnostics).toMatchObject({
+      schemaVersion: 1,
+      pid: process.pid,
+      runtimeInstanceId: 'runtime-jsc-heap-diagnostics',
+      releaseId: 'release-test-1',
+    });
+    expect(typeof diagnostics.heap?.objectCount).toBe('number');
+    expect(Array.isArray(diagnostics.heap?.topObjectTypes)).toBe(true);
+    expect(typeof diagnostics.memoryUsage?.current).toBe('number');
+
+    await runtime.stop('TEST_JSC_HEAP_DIAGNOSTICS_STOP');
+    expect(process.listenerCount('SIGUSR2')).toBe(listenersBefore);
+  });
+
   test('materialized package Runtime needs no repository overlay while development Runtime still does', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-package-no-repo' });
     writeFileSync(fixture.manifestPath, JSON.stringify({
