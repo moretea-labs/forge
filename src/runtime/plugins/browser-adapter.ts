@@ -3236,7 +3236,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/browser.json', 'controller-home:sqlite/browser_session', 'controller-home:repository browser artifacts'],
+      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/browser.json', 'controller-home:sqlite/computer_interaction_target', 'controller-home:repository browser artifacts'],
     },
     enabled: config.enabled,
     lifecycle: {

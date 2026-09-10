@@ -12,6 +12,7 @@ export interface ComputerProviderTargetBinding {
 
 export type ComputerSurfaceType = 'browser-tab' | 'browser-page';
 export type ComputerSurfaceOwnership = 'plugin_owned' | 'user_owned' | 'provider_owned';
+export type ComputerSurfaceVisibility = 'repositories' | 'controller';
 
 /**
  * Durable semantic description of a Computer surface. Mutable URL/title and
@@ -38,6 +39,14 @@ export interface ComputerSurfaceProviderBinding {
   ownerToken?: string;
 }
 
+/** Opaque, bounded compatibility payload owned semantically by its namespace adapter. */
+export interface ComputerSurfaceCompatibilityRecord {
+  namespace: string;
+  schemaVersion: number;
+  value: Record<string, unknown>;
+  updatedAt: string;
+}
+
 export interface ComputerApplicationTarget {
   schemaVersion: 1;
   targetId: string;
@@ -55,8 +64,12 @@ export interface ComputerSurfaceTarget {
   stableIdentity: ComputerSurfaceStableIdentity;
   /** Legacy/user-facing identifiers only. They resolve to targetId and never become canonical identity. */
   compatibilityAliases: string[];
-  /** Repositories allowed to resolve this target through compatibility APIs. */
+  /** Explicit visibility replaces legacy implicit native-session global visibility. */
+  visibility: ComputerSurfaceVisibility;
+  /** Repositories that created or observed this target; used when visibility=repositories. */
   repositoryIds: string[];
+  /** Bounded opaque adapter records; these do not create a separate persistence authority. */
+  compatibilityRecords: ComputerSurfaceCompatibilityRecord[];
   providerBinding?: ComputerSurfaceProviderBinding;
   createdAt: string;
   updatedAt: string;
@@ -81,7 +94,36 @@ export interface ComputerSurfaceTargetLease {
   current(): ComputerSurfaceTarget;
   bind(binding: ComputerSurfaceProviderBinding): ComputerSurfaceTarget;
   mergeCompatibility(input: { compatibilityAliases?: string[]; repositoryIds?: string[] }): ComputerSurfaceTarget;
+  putCompatibility(record: ComputerSurfaceCompatibilityRecord): ComputerSurfaceTarget;
   tombstone(): ComputerSurfaceTarget;
+}
+
+export interface ComputerSurfaceUpsertInput {
+  stableIdentity: ComputerSurfaceStableIdentity;
+  compatibilityAliases?: string[];
+  visibility?: ComputerSurfaceVisibility;
+  repositoryIds?: string[];
+  compatibilityRecords?: ComputerSurfaceCompatibilityRecord[];
+  providerBinding?: ComputerSurfaceProviderBinding;
+  /** Migration may seed a tombstone. Steady-state callers normally omit this. */
+  initialStatus?: 'active' | 'tombstoned';
+  /** Migration preserves an existing status; fresh authoritative writes may reactivate. */
+  reactivate?: boolean;
+}
+
+export interface ComputerSurfaceUpsertResult {
+  target: ComputerSurfaceTarget;
+  status: 'active' | 'tombstoned';
+  created: boolean;
+}
+
+export interface ComputerCompatibilityMigrationMarker {
+  schemaVersion: 1;
+  migrationId: string;
+  scopeId: string;
+  status: 'closed';
+  closedAt: string;
+  importedRecordCount: number;
 }
 
 export interface ComputerInteractionTargetCleanupReport {
@@ -119,14 +161,22 @@ export interface ComputerInteractionTargetAuthorityPort {
     input: {
       stableIdentity: ComputerSurfaceStableIdentity;
       compatibilityAliases?: string[];
+      visibility?: ComputerSurfaceVisibility;
       repositoryIds?: string[];
+      compatibilityRecords?: ComputerSurfaceCompatibilityRecord[];
       providerBinding?: ComputerSurfaceProviderBinding;
     },
   ): ComputerSurfaceTarget;
+  upsertSurface(controllerHome: string, input: ComputerSurfaceUpsertInput): ComputerSurfaceUpsertResult;
   getSurface(controllerHome: string, targetId: string): ComputerSurfaceTarget | undefined;
   requireSurface(controllerHome: string, targetId: string): ComputerSurfaceTarget;
   findSurfaceByAlias(controllerHome: string, alias: string, repoId?: string): ComputerSurfaceTarget | undefined;
+  findSurfaceByProviderBinding(controllerHome: string, binding: ComputerSurfaceProviderBinding): ComputerSurfaceTarget | undefined;
   listSurfaces(controllerHome: string, options?: { repoId?: string; limit?: number }): ComputerSurfaceTarget[];
+  listAllSurfaces(controllerHome: string, options?: { repoId?: string }): ComputerSurfaceTarget[];
+  compatibilityMigrationMarker(controllerHome: string, migrationId: string, scopeId: string): ComputerCompatibilityMigrationMarker | undefined;
+  closeCompatibilityMigration(controllerHome: string, input: { migrationId: string; scopeId: string; importedRecordCount: number }): ComputerCompatibilityMigrationMarker;
+  tombstoneSurface(controllerHome: string, targetId: string): boolean;
   withSurfaceLease<T>(
     controllerHome: string,
     targetId: string,

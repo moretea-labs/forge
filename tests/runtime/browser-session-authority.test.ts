@@ -26,6 +26,8 @@ import {
   saveBrowserSession,
   tombstoneBrowserSession,
 } from '../../src/runtime/plugins/browser-session-authority';
+import { findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
+import { withRuntimeBrowserSessionAuthorityContext } from '../../src/runtime/root/browser-session-composition';
 import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -46,6 +48,13 @@ function fixture() {
     repoA: join(root, 'repo-a'),
     repoB: join(root, 'repo-b'),
   };
+}
+
+function computerBackedSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string) {
+  return withRuntimeBrowserSessionAuthorityContext(
+    { controllerHome, repoId },
+    () => findComputerBackedBrowserSession(repoRoot, sessionId),
+  );
 }
 
 function session(
@@ -223,7 +232,7 @@ describe('browser session controller authority', () => {
     const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
     mkdirSync(legacyRoot, { recursive: true });
     for (const [id, at] of [['one', '2026-08-24T01:00:00.000Z'], ['two', '2026-08-24T02:00:00.000Z'], ['three', '2026-08-24T03:00:00.000Z']] as const) {
-      writeFileSync(join(legacyRoot, `${id}.json`), JSON.stringify(session(id, at)));
+      writeFileSync(join(legacyRoot, `${id}.json`), JSON.stringify(session(id, at, id === 'three' ? { native: true } : {})));
     }
     const baseInput = {
       controllerHome,
@@ -241,11 +250,10 @@ describe('browser session controller authority', () => {
     const second = await executeBrowserPluginAction({ ...baseInput, actionId: 'list_sessions', args: { limit: 2, cursor: first.nextCursor } });
     expect((second.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['one']);
 
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-auth', '2026-08-24T04:00:00.000Z', { native: true }));
     const auth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
       actionId: 'click',
-      args: { session_id: 'native-auth', selector: '#submit' },
+      args: { session_id: 'three', selector: '#submit' },
     });
     expect(auth?.target.kind).toBe('browser-origin');
     expect(auth?.target.id).toBe('chrome@https://example.com');
@@ -253,7 +261,7 @@ describe('browser session controller authority', () => {
     const navigateAuth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
       actionId: 'navigate',
-      args: { session_id: 'native-auth', url: 'https://chatgpt.com/' },
+      args: { session_id: 'three', url: 'https://chatgpt.com/' },
     });
     expect(navigateAuth?.target.kind).toBe('browser-origin');
     expect(navigateAuth?.target.id).toBe('chrome@https://chatgpt.com');
@@ -576,7 +584,8 @@ describe('browser session controller authority', () => {
       args: { url, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
     });
     const sessionId = String((opened.session as { sessionId: string }).sessionId);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)).toBeUndefined();
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
 
     ownedExists = false;
     invalidateMacOsBrowserPageHandles();
@@ -589,7 +598,8 @@ describe('browser session controller authority', () => {
 
     expect(observed.text).toBe('Recovered Body');
     expect(createCalls).toBe(2);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)).toBeUndefined();
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
   });
 
   test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
@@ -673,7 +683,8 @@ describe('browser session controller authority', () => {
     });
     expect(observed.url).toBe(driftedUrl);
     expect(observed.text).toBe('Drifted Body');
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)).toBeUndefined();
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
 
     const closed = await executeBrowserPluginAction({
       ...baseInput,
@@ -759,7 +770,8 @@ describe('browser session controller authority', () => {
     expect(migrated.health.details?.browserChannel).toBe('chrome');
     expect(migrated.health.details?.cdpAttachFallback).toBe('fail_closed');
     expect(migrated.health.details?.nativeBrowserCandidates).toEqual(['chrome']);
-    expect(migrated.authority.sourceOfTruth).toContain('controller-home:sqlite/browser_session');
+    expect(migrated.authority.sourceOfTruth).toContain('controller-home:sqlite/computer_interaction_target');
+    expect(migrated.authority.sourceOfTruth).not.toContain('controller-home:sqlite/browser_session');
     expect(migrated.health.details?.sessionCountSemantics).toBe('controller_authority_unavailable');
 
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });

@@ -295,6 +295,7 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(surface.kind).toBe('surface');
       expect(surface.compatibilityAliases).toEqual(['legacy-session-a']);
       expect(surface.repositoryIds).toEqual(['repo-a']);
+      expect(surface.compatibilityRecords).toEqual([]);
       expect(targetAuthority.get(controllerHome, surface.targetId)).toBeUndefined();
       expect(targetAuthority.getSurface(controllerHome, surface.targetId)).toMatchObject({
         targetId: surface.targetId,
@@ -322,6 +323,42 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(rebound.providerBinding).toMatchObject({ windowId: '99', tabId: '9' });
       expect(targetAuthority.findSurfaceByAlias(controllerHome, 'legacy-session-b', 'repo-b')?.targetId).toBe(surface.targetId);
       expect(targetAuthority.listSurfaces(controllerHome, { repoId: 'repo-a' }).map((target) => target.targetId)).toContain(surface.targetId);
+
+      await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => {
+        lease.putCompatibility({
+          namespace: 'browser.session.v1',
+          schemaVersion: 1,
+          value: { sessionId: 'legacy-session-a', url: 'https://example.com/' },
+          updatedAt: '2026-09-10T10:02:00.000Z',
+        });
+      });
+      expect(targetAuthority.requireSurface(controllerHome, surface.targetId).compatibilityRecords).toMatchObject([
+        { namespace: 'browser.session.v1', schemaVersion: 1, value: { sessionId: 'legacy-session-a' } },
+      ]);
+
+      const converged = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity: surface.stableIdentity,
+        compatibilityAliases: ['legacy-session-b', 'legacy-session-c'],
+        repositoryIds: ['repo-b', 'repo-c'],
+        compatibilityRecords: [{
+          namespace: 'browser.session.v1',
+          schemaVersion: 1,
+          value: { sessionId: 'legacy-session-c', url: 'https://example.com/new' },
+          updatedAt: '2026-09-10T10:03:00.000Z',
+        }],
+        providerBinding: {
+          providerId: 'macos-apple-events',
+          observedAt: '2026-09-10T10:03:00.000Z',
+          browserProduct: 'chrome',
+          windowId: '111',
+          tabId: '9',
+        },
+      });
+      expect(converged.created).toBe(false);
+      expect(converged.target.targetId).toBe(surface.targetId);
+      expect(converged.target.compatibilityAliases).toContain('legacy-session-c');
+      expect(converged.target.repositoryIds).toContain('repo-c');
+      expect(converged.target.providerBinding).toMatchObject({ windowId: '111', tabId: '9' });
 
       await targetAuthority.withSurfaceLease(controllerHome, surface.targetId, async (lease) => { lease.tombstone(); });
       expect(targetAuthority.getSurface(controllerHome, surface.targetId)).toBeUndefined();

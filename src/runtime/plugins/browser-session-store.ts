@@ -1,15 +1,172 @@
 import { cpSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'fs';
 import { basename, join, resolve } from 'path';
-import { writeJsonAtomic } from '../shared/json-files';
-import { AssistantPluginError } from './errors';
+import type {
+  ComputerSurfaceProviderBinding,
+  ComputerSurfaceTarget,
+  ComputerSurfaceVisibility,
+} from '../../../packages/plugin-runtime/computer/target-authority';
+import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
+import { createRuntimeBrowserSessionPersistence } from '../root/browser-session-persistence';
 import {
   currentRuntimeBrowserSessionAuthorityContext,
   runtimeBrowserSessionAuthority,
 } from '../root/browser-session-composition';
+import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
+import { writeJsonAtomic } from '../shared/json-files';
+import { AssistantPluginError } from './errors';
 
 const BROWSER_STATE_ROOT = '.forge/browser';
+const BROWSER_SESSION_COMPATIBILITY_NAMESPACE = 'browser.session.v1';
+const BROWSER_SESSION_COMPUTER_MIGRATION_ID = 'browser-session-authority-v1-to-computer-surface-v1';
+const LEGACY_BROWSER_SESSION_NAMESPACE = 'browser_session';
+const LEGACY_BROWSER_SESSION_SCOPE = 'controller';
 
-import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
+interface LegacyBrowserSessionAuthorityEntry {
+  schemaVersion: 1;
+  status: 'active' | 'tombstoned';
+  session: BrowserSessionState;
+  aliases: string[];
+  repositoryIds: string[];
+  nativeIdentity?: string;
+  tombstonedAt?: string;
+  importedFromLegacy?: boolean;
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function exactNativeSession(session: BrowserSessionState): boolean {
+  return session.browser?.provider === 'macos-apple-events'
+    && Boolean(session.browser.browserProduct && session.browser.tab?.windowId && session.browser.tab.tabId);
+}
+
+function surfaceOwnership(session: BrowserSessionState): 'plugin_owned' | 'user_owned' | 'provider_owned' {
+  const ownership = session.browser?.tab?.ownership;
+  if (ownership === 'plugin_owned' || ownership === 'user_owned') return ownership;
+  return session.browser?.provider === 'playwright-persistent-context' || session.browser?.activeMode === 'managed_persistent'
+    ? 'plugin_owned'
+    : 'provider_owned';
+}
+
+function surfaceProviderBinding(session: BrowserSessionState): ComputerSurfaceProviderBinding | undefined {
+  const browser = session.browser;
+  if (!browser?.provider) return undefined;
+  const tab = browser.tab;
+  return {
+    providerId: browser.provider,
+    observedAt: tab?.capturedAt ?? session.updatedAt,
+    ...(browser.browserProduct ? { browserProduct: browser.browserProduct } : {}),
+    ...(tab?.windowId ? { windowId: tab.windowId } : {}),
+    ...(tab?.tabId ? { tabId: tab.tabId } : {}),
+    ...(tab?.ownerToken ? { ownerToken: tab.ownerToken } : {}),
+  };
+}
+
+function browserCompatibilityRecord(session: BrowserSessionState) {
+  return {
+    namespace: BROWSER_SESSION_COMPATIBILITY_NAMESPACE,
+    schemaVersion: 1,
+    value: structuredClone(session) as unknown as Record<string, unknown>,
+    updatedAt: session.updatedAt,
+  };
+}
+
+function browserSessionFromSurface(target: ComputerSurfaceTarget): BrowserSessionState | undefined {
+  const record = target.compatibilityRecords.find((entry) => entry.namespace === BROWSER_SESSION_COMPATIBILITY_NAMESPACE);
+  if (!record) return undefined;
+  const session = structuredClone(record.value) as unknown as BrowserSessionState;
+  if (session?.schemaVersion !== 1 || typeof session.sessionId !== 'string' || typeof session.url !== 'string'
+    || typeof session.createdAt !== 'string' || typeof session.updatedAt !== 'string') {
+    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Computer browser surface contains malformed compatibility session metadata.', {
+      retryable: false,
+      details: { targetId: target.targetId },
+    });
+  }
+  const canonicalSessionId = target.compatibilityAliases[0] ?? session.sessionId;
+  session.sessionId = canonicalSessionId;
+  if (session.browser?.sessionResume) session.browser.sessionResume.sessionId = canonicalSessionId;
+  return session;
+}
+
+function surfaceInput(
+  session: BrowserSessionState,
+  input: {
+    aliases?: string[];
+    repositoryIds?: string[];
+    visibility?: ComputerSurfaceVisibility;
+    includeCompatibility?: boolean;
+    initialStatus?: 'active' | 'tombstoned';
+    reactivate?: boolean;
+  } = {},
+) {
+  const providerBinding = surfaceProviderBinding(session);
+  return {
+    stableIdentity: {
+      surfaceType: session.browser?.tab ? 'browser-tab' as const : 'browser-page' as const,
+      ownership: surfaceOwnership(session),
+    },
+    compatibilityAliases: unique([session.sessionId, ...(input.aliases ?? [])]),
+    visibility: input.visibility ?? (exactNativeSession(session) ? 'controller' : 'repositories'),
+    repositoryIds: unique(input.repositoryIds ?? []),
+    ...(input.includeCompatibility === false ? {} : { compatibilityRecords: [browserCompatibilityRecord(session)] }),
+    ...(providerBinding ? { providerBinding } : {}),
+    ...(input.initialStatus ? { initialStatus: input.initialStatus } : {}),
+    ...(input.reactivate !== undefined ? { reactivate: input.reactivate } : {}),
+  };
+}
+
+function assertLegacyEntry(value: LegacyBrowserSessionAuthorityEntry): LegacyBrowserSessionAuthorityEntry {
+  if (value?.schemaVersion !== 1 || (value.status !== 'active' && value.status !== 'tombstoned')
+    || !value.session || value.session.schemaVersion !== 1 || typeof value.session.sessionId !== 'string'
+    || !Array.isArray(value.aliases) || !Array.isArray(value.repositoryIds)) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Legacy Browser session authority contains malformed durable state; migration stopped fail-closed.', {
+      retryable: false,
+    });
+  }
+  return value;
+}
+
+/**
+ * One-way compatibility cutover. The old Browser authority is only an import
+ * source here. Once the per-repository Computer marker is closed, steady-state
+ * Browser actions never read or write Browser-owned durable session state.
+ */
+function ensureBrowserSessionsMigratedToComputer(repoRoot: string): void {
+  const context = currentRuntimeBrowserSessionAuthorityContext();
+  if (!context) return;
+  const computer = runtimeComputerInteractionTargetAuthority();
+  if (computer.compatibilityMigrationMarker(context.controllerHome, BROWSER_SESSION_COMPUTER_MIGRATION_ID, context.repoId)) return;
+
+  // First absorb repository-local JSON through the old authority so its existing
+  // tombstones can still prevent a legacy file from resurrecting retired state.
+  runtimeBrowserSessionAuthority().ensureLegacyImported(context, repoRoot);
+  const legacyPersistence = createRuntimeBrowserSessionPersistence();
+  const legacyRecords = legacyPersistence.listAll<LegacyBrowserSessionAuthorityEntry>(context.controllerHome, {
+    namespace: LEGACY_BROWSER_SESSION_NAMESPACE,
+    scope: LEGACY_BROWSER_SESSION_SCOPE,
+  });
+  let importedRecordCount = 0;
+  for (const record of legacyRecords) {
+    const entry = assertLegacyEntry(record.value);
+    const visible = Boolean(entry.nativeIdentity) || entry.repositoryIds.includes(context.repoId);
+    if (!visible) continue;
+    const visibility: ComputerSurfaceVisibility = entry.nativeIdentity ? 'controller' : 'repositories';
+    computer.upsertSurface(context.controllerHome, surfaceInput(entry.session, {
+      aliases: entry.aliases,
+      repositoryIds: entry.repositoryIds,
+      visibility,
+      initialStatus: entry.status,
+      reactivate: false,
+    }));
+    importedRecordCount += 1;
+  }
+  computer.closeCompatibilityMigration(context.controllerHome, {
+    migrationId: BROWSER_SESSION_COMPUTER_MIGRATION_ID,
+    scopeId: context.repoId,
+    importedRecordCount,
+  });
+}
 
 /** Move legacy provider files out of the repository and retire the old path after migration. */
 export function ensureBrowserStateInControllerHome(controllerHome: string, repoId: string, repoRoot: string): string {
@@ -42,19 +199,18 @@ export function ensureBrowserStateInControllerHome(controllerHome: string, repoI
 }
 
 /**
- * Browser session semantics are durable SQLite authority. Provider working state
- * (profiles, screenshots, downloads, diagnostics) is repository-scoped but lives
- * only under Controller Home when an authority context exists. The repo-local
- * path is import-only legacy storage for migration/tests/standalone helpers and
- * is removed after successful migration.
+ * Browser semantic identity belongs to Computer SurfaceTarget authority. Provider
+ * working state (profiles, screenshots, downloads, diagnostics) remains
+ * repository-scoped under Controller Home. Repo-local session JSON exists only
+ * for standalone compatibility when no Controller execution context is present.
  */
 export function browserStateDir(
   repoRoot: string,
   name: 'sessions' | 'screenshots' | 'profiles' | 'downloads' | 'diagnostics',
 ): string {
-  const authority = currentRuntimeBrowserSessionAuthorityContext();
-  return authority
-    ? join(ensureBrowserStateInControllerHome(authority.controllerHome, authority.repoId, repoRoot), name)
+  const context = currentRuntimeBrowserSessionAuthorityContext();
+  return context
+    ? join(ensureBrowserStateInControllerHome(context.controllerHome, context.repoId, repoRoot), name)
     : join(repoRoot, BROWSER_STATE_ROOT, name);
 }
 
@@ -84,34 +240,60 @@ function readLegacyBrowserSessionJson(path: string): BrowserSessionState | undef
 }
 
 export function saveBrowserSession(repoRoot: string, session: BrowserSessionState): BrowserSessionState {
-  const authority = currentRuntimeBrowserSessionAuthorityContext();
-  if (!authority) {
+  const context = currentRuntimeBrowserSessionAuthorityContext();
+  if (!context) {
     writeJsonAtomic(sessionPath(repoRoot, session.sessionId), session);
     return session;
   }
-  const saved = runtimeBrowserSessionAuthority().save<BrowserSessionState>(authority, repoRoot, session);
-  if (saved.sessionId === session.sessionId || !saved.browser?.sessionResume) return saved;
-  return {
-    ...saved,
-    browser: {
-      ...saved.browser,
-      sessionResume: { ...saved.browser.sessionResume, sessionId: saved.sessionId },
-    },
-  };
+  ensureBrowserSessionsMigratedToComputer(repoRoot);
+  const computer = runtimeComputerInteractionTargetAuthority();
+  const binding = surfaceProviderBinding(session);
+  let existing = binding?.windowId && binding.tabId
+    ? computer.findSurfaceByProviderBinding(context.controllerHome, binding)
+    : undefined;
+  existing ??= computer.findSurfaceByAlias(context.controllerHome, session.sessionId, context.repoId);
+
+  // A tombstoned target is intentionally hidden from find*. Probe without a
+  // Browser payload so reactivation preserves its canonical alias/createdAt.
+  if (!existing) {
+    existing = computer.upsertSurface(context.controllerHome, surfaceInput(session, {
+      aliases: [session.sessionId],
+      repositoryIds: [context.repoId],
+      includeCompatibility: false,
+      reactivate: true,
+    })).target;
+  }
+  const previous = browserSessionFromSurface(existing);
+  const canonicalSessionId = existing.compatibilityAliases[0] ?? session.sessionId;
+  const normalized = structuredClone(session);
+  normalized.sessionId = canonicalSessionId;
+  if (previous?.createdAt) normalized.createdAt = previous.createdAt;
+  if (normalized.browser?.sessionResume) normalized.browser.sessionResume.sessionId = canonicalSessionId;
+  const saved = computer.upsertSurface(context.controllerHome, surfaceInput(normalized, {
+    aliases: [session.sessionId, canonicalSessionId],
+    repositoryIds: [context.repoId],
+    reactivate: true,
+  }));
+  return browserSessionFromSurface(saved.target) ?? normalized;
 }
 
 export function findBrowserSession(repoRoot: string, sessionId?: string): BrowserSessionState | undefined {
   if (!sessionId) return undefined;
-  const authority = currentRuntimeBrowserSessionAuthorityContext();
-  return authority
-    ? runtimeBrowserSessionAuthority().find<BrowserSessionState>(authority, repoRoot, sessionId)
-    : readLegacyBrowserSessionJson(sessionPath(repoRoot, sessionId));
+  const context = currentRuntimeBrowserSessionAuthorityContext();
+  if (!context) return readLegacyBrowserSessionJson(sessionPath(repoRoot, sessionId));
+  ensureBrowserSessionsMigratedToComputer(repoRoot);
+  const target = runtimeComputerInteractionTargetAuthority().findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
+  return target ? browserSessionFromSurface(target) : undefined;
 }
 
 export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
-  const authority = currentRuntimeBrowserSessionAuthorityContext();
-  if (authority) {
-    return runtimeBrowserSessionAuthority().listAll<BrowserSessionState>(authority, repoRoot);
+  const context = currentRuntimeBrowserSessionAuthorityContext();
+  if (context) {
+    ensureBrowserSessionsMigratedToComputer(repoRoot);
+    return runtimeComputerInteractionTargetAuthority().listAllSurfaces(context.controllerHome, { repoId: context.repoId })
+      .map(browserSessionFromSurface)
+      .filter((session): session is BrowserSessionState => Boolean(session))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.sessionId.localeCompare(right.sessionId));
   }
   const root = browserStateDir(repoRoot, 'sessions');
   let names: string[];
@@ -131,9 +313,12 @@ export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[
 }
 
 export function removeBrowserSession(repoRoot: string, sessionId: string): void {
-  const authority = currentRuntimeBrowserSessionAuthorityContext();
-  if (authority) {
-    runtimeBrowserSessionAuthority().tombstone(authority, repoRoot, sessionId);
+  const context = currentRuntimeBrowserSessionAuthorityContext();
+  if (context) {
+    ensureBrowserSessionsMigratedToComputer(repoRoot);
+    const computer = runtimeComputerInteractionTargetAuthority();
+    const target = computer.findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
+    if (target) computer.tombstoneSurface(context.controllerHome, target.targetId);
     return;
   }
   rmSync(sessionPath(repoRoot, sessionId), { force: true });
