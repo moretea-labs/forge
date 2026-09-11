@@ -170,6 +170,56 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("restores the exact pre-stage index when an explicit-path commit fails and preserves unrelated staged changes on success", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-commit-rollback-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "repo");
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "owned.txt"), "base-owned\n");
+      writeFileSync(join(repoRoot, "outside.txt"), "base-outside\n");
+      git(repoRoot, ["add", "owned.txt", "outside.txt"]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      writeFileSync(join(repoRoot, "owned.txt"), "changed-owned\n");
+      writeFileSync(join(repoRoot, "outside.txt"), "changed-outside\n");
+      git(repoRoot, ["add", "outside.txt"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const indexPath = join(repoRoot, ".git", "index");
+      const indexBefore = readFileSync(indexPath);
+      const hook = join(repoRoot, ".git", "hooks", "pre-commit");
+      writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+      spawnSync("chmod", ["+x", hook]);
+
+      const failed = repositoryGitCommit(controllerHome, repository, {
+        message: "must roll back staged representation",
+        paths: ["owned.txt"],
+      });
+
+      expect(failed.committed).toBe(false);
+      expect(failed.error?.code).toBe("GIT_COMMIT_FAILED");
+      expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
+      const afterFailure = repositoryGitStatus(repository);
+      expect(afterFailure.staged).toEqual(["outside.txt"]);
+      expect(afterFailure.unstaged).toEqual(["owned.txt"]);
+      expect(readFileSync(join(repoRoot, "owned.txt"), "utf8")).toBe("changed-owned\n");
+
+      rmSync(hook, { force: true });
+      const committed = repositoryGitCommit(controllerHome, repository, {
+        message: "commit after rollback",
+        paths: ["owned.txt"],
+      });
+      expect(committed.committed).toBe(true);
+      expect(repositoryGitStatus(repository).staged).toEqual(["outside.txt"]);
+      expect(spawnSync("git", ["-C", repoRoot, "show", "HEAD:owned.txt"], { encoding: "utf8" }).stdout).toBe("changed-owned\n");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("documents the facade-first shortest path without widening the tool surface", () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === "rh_context");
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === "rh_work");

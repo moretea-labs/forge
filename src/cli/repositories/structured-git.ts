@@ -1,4 +1,7 @@
 import { spawnSync } from 'child_process';
+import { randomUUID } from 'crypto';
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { isAbsolute, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
 import { validateBranchName } from './branch-name-policy';
@@ -292,55 +295,105 @@ export function repositoryGitCommit(controllerHome: string, repository: Reposito
   const scope = resolveRepositoryGitCommitScope(repository, { paths: input.paths });
   const paths = scope.source === 'explicit_paths' ? scope.paths : [];
   let stage: RepositoryGitExecution | undefined;
+  let explicitIndexSnapshot: { path: string; existed: boolean; contents?: Buffer } | undefined;
+  const restoreExplicitIndex = (): { ok: boolean; message?: string } => {
+    if (!explicitIndexSnapshot) return { ok: true };
+    const restorePath = `${explicitIndexSnapshot.path}.forge-restore-${randomUUID()}`;
+    try {
+      if (!explicitIndexSnapshot.existed) {
+        rmSync(explicitIndexSnapshot.path, { force: true });
+        return { ok: true };
+      }
+      if (!explicitIndexSnapshot.contents) return { ok: false, message: 'pre-stage index contents are unavailable' };
+      writeFileSync(restorePath, explicitIndexSnapshot.contents);
+      renameSync(restorePath, explicitIndexSnapshot.path);
+      return { ok: true };
+    } catch (error) {
+      rmSync(restorePath, { force: true });
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const failedAfterExplicitStage = (code: string, message: string, commit?: RepositoryGitExecution): RepositoryGitCommitResult => {
+    const restored = restoreExplicitIndex();
+    return {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      before,
+      ...(stage ? { stage } : {}),
+      ...(commit ? { commit } : {}),
+      after: repositoryGitStatus(repository),
+      committed: false,
+      error: restored.ok
+        ? { code, message }
+        : { code: `${code}_INDEX_RESTORE_FAILED`, message: `${message}; failed to restore the exact pre-stage index: ${restored.message}` },
+    };
+  };
   if (scope.source === 'explicit_paths') {
+    const rawIndexPath = gitText(repository, ['rev-parse', '--git-path', 'index']);
+    if (!rawIndexPath) {
+      return {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        before,
+        after: repositoryGitStatus(repository),
+        committed: false,
+        error: { code: 'GIT_INDEX_SNAPSHOT_FAILED', message: 'Unable to resolve the Git index path before an explicit-path commit.' },
+      };
+    }
+    const indexPath = isAbsolute(rawIndexPath) ? rawIndexPath : resolve(repository.canonicalRoot, rawIndexPath);
+    try {
+      const existed = existsSync(indexPath);
+      explicitIndexSnapshot = {
+        path: indexPath,
+        existed,
+        ...(existed ? { contents: readFileSync(indexPath) } : {}),
+      };
+    } catch (error) {
+      return {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        before,
+        after: repositoryGitStatus(repository),
+        committed: false,
+        error: { code: 'GIT_INDEX_SNAPSHOT_FAILED', message: error instanceof Error ? error.message : String(error) },
+      };
+    }
     stage = executeRepositoryGitCommand(controllerHome, repository, { args: ['add', '--all', '--', ...paths], authorization: 'explicit_user_request', ...input });
     if (stage.status !== 'executed' || stage.ok !== true) {
-      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, before, stage, after: repositoryGitStatus(repository), committed: false, error: { code: 'GIT_STAGE_FAILED', message: stage.stderr || 'git add failed' } };
+      return failedAfterExplicitStage('GIT_STAGE_FAILED', stage.stderr || 'git add failed');
     }
   }
   const diffCheck = runGit(repository, ['diff', '--cached', '--quiet'], 64 * 1024);
   if (diffCheck.status === 0 && input.allowEmpty !== true) {
-    return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, before, stage, after: repositoryGitStatus(repository), committed: false, error: { code: 'GIT_NOTHING_STAGED', message: 'No staged changes to commit. Pass paths to stage, or allow_empty=true for an empty commit.' } };
+    return failedAfterExplicitStage('GIT_NOTHING_STAGED', 'No staged changes to commit. Pass paths to stage, or allow_empty=true for an empty commit.');
   }
   const mergeInProgress = runGit(repository, ['rev-parse', '--verify', 'MERGE_HEAD'], 64 * 1024).ok;
   if (mergeInProgress) {
     const unresolved = runGit(repository, ['diff', '--name-only', '--diff-filter=U', '-z'], 128 * 1024);
     const unresolvedPaths = unresolved.stdout.split('\0').map((path) => path.trim()).filter(Boolean);
     if (!unresolved.ok || unresolvedPaths.length > 0) {
-      return {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        before,
-        stage,
-        after: repositoryGitStatus(repository),
-        committed: false,
-        error: { code: 'GIT_MERGE_UNRESOLVED', message: unresolvedPaths.length > 0 ? `Merge still has unresolved path(s): ${unresolvedPaths.join(', ')}` : unresolved.stderr || 'Unable to inspect unresolved merge paths.' },
-      };
+      return failedAfterExplicitStage(
+        'GIT_MERGE_UNRESOLVED',
+        unresolvedPaths.length > 0 ? `Merge still has unresolved path(s): ${unresolvedPaths.join(', ')}` : unresolved.stderr || 'Unable to inspect unresolved merge paths.',
+      );
     }
     if (paths.length > 0) {
       const stagedNames = runGit(repository, ['diff', '--cached', '--name-only', '-z'], 128 * 1024);
       if (!stagedNames.ok) {
-        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, before, stage, after: repositoryGitStatus(repository), committed: false, error: { code: 'GIT_MERGE_STAGED_SCOPE_INSPECTION_FAILED', message: stagedNames.stderr || 'Unable to inspect the merge index.' } };
+        return failedAfterExplicitStage('GIT_MERGE_STAGED_SCOPE_INSPECTION_FAILED', stagedNames.stderr || 'Unable to inspect the merge index.');
       }
       const allowed = new Set(paths);
       const stagedPaths = stagedNames.stdout.split('\0').map((path) => path.trim()).filter(Boolean);
       const outsideScope = stagedPaths.filter((path) => !allowed.has(path));
       if (outsideScope.length > 0) {
-        return {
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          before,
-          stage,
-          after: repositoryGitStatus(repository),
-          committed: false,
-          error: { code: 'GIT_MERGE_STAGED_SCOPE_MISMATCH', message: `Resolved merge index contains staged path(s) outside the requested commit scope: ${outsideScope.join(', ')}` },
-        };
+        return failedAfterExplicitStage('GIT_MERGE_STAGED_SCOPE_MISMATCH', `Resolved merge index contains staged path(s) outside the requested commit scope: ${outsideScope.join(', ')}`);
       }
     }
   }
   const commitArgs = ['commit', '-m', message, ...(input.allowEmpty === true ? ['--allow-empty'] : []), ...(!mergeInProgress && paths.length > 0 ? ['--only', '--', ...paths] : [])];
   const commit = executeRepositoryGitCommand(controllerHome, repository, { args: commitArgs, authorization: 'explicit_user_request', ...input });
   const ok = commit.status === 'executed' && commit.ok === true;
+  if (!ok) return failedAfterExplicitStage('GIT_COMMIT_FAILED', commit.stderr || 'git commit failed', commit);
   return {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
@@ -348,8 +401,7 @@ export function repositoryGitCommit(controllerHome: string, repository: Reposito
     ...(stage ? { stage } : {}),
     commit,
     after: repositoryGitStatus(repository),
-    committed: ok,
-    ...(ok ? {} : { error: { code: 'GIT_COMMIT_FAILED', message: commit.stderr || 'git commit failed' } }),
+    committed: true,
   };
 }
 
