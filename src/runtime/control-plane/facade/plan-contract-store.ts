@@ -503,6 +503,9 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
         options.repoId,
         contract.planId,
       );
+      // SQLite is authoritative per Plan row. A sibling Plan appearing in an
+      // aggregate compatibility snapshot is not itself a mutation.
+      if (current && JSON.stringify(current.value) === JSON.stringify(contract)) continue;
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'plan_contract',
         scope: options.repoId,

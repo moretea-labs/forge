@@ -439,18 +439,23 @@ export function writeWorkContractStore(options: WorkContractStoreOptions, store:
   }
   withControlPlaneTransaction(options.controllerHome, (database) => {
     for (const contract of store.contracts) {
+      const value = validateCanonicalWorkContract(contract);
       const current = readControlPlaneRecordWithinTransaction<WorkContract>(
         database,
         'work_contract',
         options.repoId,
         contract.workId,
       );
+      // SQLite is authoritative per Work row. Aggregate-store callers may still
+      // construct a complete compatibility snapshot, but unchanged siblings are
+      // not authoritative mutations and must not advance revision/audit history.
+      if (current && JSON.stringify(current.value) === JSON.stringify(value)) continue;
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'work_contract',
         scope: options.repoId,
         key: contract.workId,
         schemaVersion: 3,
-        value: validateCanonicalWorkContract(contract),
+        value,
         action: 'work_contract_write',
         expectedRevision: current?.revision ?? null,
       });

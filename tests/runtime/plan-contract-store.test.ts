@@ -25,7 +25,7 @@ import {
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, getWorkContract } from '../../packages/kernel/work/api/index';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
 
@@ -131,15 +131,43 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
     goal: 'freeze authority',
     steps: [{ id: 'step-1', objective: 'define schema', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['schema is explicit'] }],
   });
+  createPlanContract(options, {
+    planId: 'plan-2',
+    repoId: 'repo-1',
+    scopeKey: 'runtime-sibling',
+    sourceRevision: 'abc123',
+    goal: 'preserve sibling authority',
+    steps: [{ id: 'step-2', objective: 'remain unchanged', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['revision remains stable'] }],
+  });
 
   expect(getPlanContract(options, 'plan-1')).toEqual(plan);
-  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(1);
-  expect(listControlPlaneRecords(options.controllerHome, { namespace: 'plan_contract', scope: 'repo-1' })).toHaveLength(1);
+  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(2);
+  expect(listControlPlaneRecords(options.controllerHome, { namespace: 'plan_contract', scope: 'repo-1' })).toHaveLength(2);
 
   const approved = approvePlanContract(options, 'plan-1');
   expect(approved.status).toBe('approved');
   expect(approved.steps[0]?.status).toBe('ready');
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(2);
+  expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-2')?.revision).toBe(1);
+});
+
+test('persists Work contracts as independent SQLite rows without sibling revision fan-out', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-work-store-row-delta-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-work-row-delta', now: () => '2026-09-11T00:00:00.000Z' };
+  for (const workId of ['work-1', 'work-2']) {
+    createWorkContract(options, {
+      workId, repoId: options.repoId, mode: 'goal_workloop', objective: `deliver ${workId}`,
+      acceptanceCriteria: ['deliver independently'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+  }
+
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-1')?.revision).toBe(1);
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-2')?.revision).toBe(1);
+  updateWorkContract(options, 'work-1', { objective: 'deliver work-1 with updated metadata' });
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-1')?.revision).toBe(2);
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-2')?.revision).toBe(1);
 });
 
 test('repairs a legacy malformed draft in place without replacing Plan authority', () => {
