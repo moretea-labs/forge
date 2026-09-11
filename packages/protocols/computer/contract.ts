@@ -6,6 +6,7 @@ export const COMPUTER_CAPABILITY_EXECUTION_METHOD = 'computer_execute' as const;
 export const COMPUTER_BROWSER_AUTOMATION_CAPABILITY = 'computer.browser_automation.v1' as const;
 export const COMPUTER_OBSERVE_CAPABILITY = 'computer.observe.v1' as const;
 export const COMPUTER_INPUT_CAPABILITY = 'computer.input.v1' as const;
+export const COMPUTER_CONSOLE_UNLOCK_CAPABILITY = 'computer.console.unlock.v1' as const;
 export const COMPUTER_CAPTURE_CAPABILITY = 'computer.capture.v1' as const;
 export const COMPUTER_ELEMENT_OBSERVE_CAPABILITY = 'computer.element.observe.v2' as const;
 export const COMPUTER_ELEMENT_ACTION_CAPABILITY = 'computer.element.action.v2' as const;
@@ -14,6 +15,7 @@ export type ComputerCapabilityId =
   | typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY
   | typeof COMPUTER_OBSERVE_CAPABILITY
   | typeof COMPUTER_INPUT_CAPABILITY
+  | typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY
   | typeof COMPUTER_CAPTURE_CAPABILITY
   | typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY
   | typeof COMPUTER_ELEMENT_ACTION_CAPABILITY;
@@ -98,6 +100,25 @@ export type ComputerInputRequest =
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'key'; interactionId: string; keys: string[] }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'open_url'; url: string };
 
+
+export interface ComputerConsoleUnlockRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'unlock_console';
+  /** Ephemeral invocation input. It must never be copied into durable plugin/work/evidence state. */
+  credential: string;
+}
+
+export interface ComputerConsoleUnlockAuthorization {
+  kind: 'explicit_single_use';
+  confirmed: true;
+  /** Unique per authorized attempt; provider replay protection consumes this exact id once. */
+  invocationId: string;
+}
+
+export interface ComputerConsoleUnlockProviderRequest extends ComputerConsoleUnlockRequest {
+  authorization: ComputerConsoleUnlockAuthorization;
+}
+
 export interface ComputerCaptureRequest {
   capability: typeof COMPUTER_CAPTURE_CAPABILITY;
   action: 'screenshot';
@@ -152,6 +173,7 @@ export type ComputerExecutionRequest =
   | { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY; request: ComputerBrowserAutomationRequest }
   | ComputerObserveRequest
   | ComputerInputRequest
+  | ComputerConsoleUnlockRequest
   | ComputerCaptureRequest
   | ComputerElementObserveRequest
   | ComputerElementActionRequest;
@@ -159,5 +181,11 @@ export type ComputerExecutionRequest =
 /** Requests eligible for the Unified Computer provider registry. Browser automation remains an explicit compatibility path. */
 export type ComputerRuntimeExecutionRequest = Exclude<
   ComputerExecutionRequest,
-  { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY }
+  | { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY }
+  | { capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY }
 >;
+
+/** Provider-internal execution includes protected capabilities after trusted Runtime authorization. */
+export type ComputerRuntimeProviderExecutionRequest =
+  | ComputerRuntimeExecutionRequest
+  | ComputerConsoleUnlockProviderRequest;

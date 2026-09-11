@@ -1,5 +1,5 @@
 import type {
-  ComputerRuntimeExecutionRequest,
+  ComputerRuntimeProviderExecutionRequest,
   ComputerRuntimeProviderCapabilityId,
 } from '../../protocols/computer/index';
 import { ComputerProviderError } from './provider-error';
@@ -43,7 +43,7 @@ export class ComputerProviderRegistry {
   }
 
   async execute(
-    request: ComputerRuntimeExecutionRequest,
+    request: ComputerRuntimeProviderExecutionRequest,
     timeoutMs: number,
   ): Promise<Record<string, unknown>> {
     return await this.resolve(request.capability).execute(request, timeoutMs);

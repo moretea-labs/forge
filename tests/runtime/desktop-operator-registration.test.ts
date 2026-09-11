@@ -26,12 +26,14 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop.batch',
       'computer.observe.v1',
       'computer.input.v1',
+      'computer.console.unlock.v1',
       'computer.capture.v1',
       'computer.element.observe.v2',
       'computer.element.action.v2',
     ]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.observe.v1')?.actions).toEqual(['desktop_observe']);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.input.v1')?.actions).toEqual(['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.console.unlock.v1')?.actions).toEqual([]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.capture.v1')?.actions).toEqual(['desktop_screenshot']);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.element.observe.v2')?.actions).toEqual([]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.element.action.v2')?.actions).toEqual([]);
@@ -43,6 +45,7 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_key',
       'desktop_open_url',
     ]);
+    expect(input.actions.find((action) => action.actionId === 'unlock_console')).toBeUndefined();
     expect(input.actions.map((action) => action.actionId)).toEqual([
       'desktop_status',
       'desktop_permissions_request',

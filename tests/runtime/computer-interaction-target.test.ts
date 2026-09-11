@@ -5,7 +5,7 @@ import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
-import { disposeRuntimeComputerComposition } from '../../src/runtime/root/computer-composition';
+import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock } from '../../src/runtime/root/computer-composition';
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
@@ -27,6 +27,9 @@ interface ProviderFixture {
     pressCount: number;
     elementObserveCount: number;
     elementActionCount: number;
+    consoleUnlockCount: number;
+    lastConsoleCredential?: string;
+    lastConsoleAuthorization?: Record<string, unknown>;
     failNextPressAfterDispatch: boolean;
     nextOpenBundleId?: string;
   };
@@ -76,6 +79,9 @@ async function providerFixture(): Promise<ProviderFixture> {
     pressCount: 0,
     elementObserveCount: 0,
     elementActionCount: 0,
+    consoleUnlockCount: 0,
+    lastConsoleCredential: undefined as string | undefined,
+    lastConsoleAuthorization: undefined as Record<string, unknown> | undefined,
     failNextPressAfterDispatch: false,
     nextOpenBundleId: undefined as string | undefined,
   };
@@ -119,6 +125,7 @@ async function providerFixture(): Promise<ProviderFixture> {
             computerCapabilities: [
               { capabilityId: 'computer.observe.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_observe'] },
               { capabilityId: 'computer.input.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+              { capabilityId: 'computer.console.unlock.v1', protocolVersion: 1, method: 'computer_execute', actions: ['unlock_console'] },
               { capabilityId: 'computer.capture.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_screenshot'] },
               { capabilityId: 'computer.element.observe.v2', protocolVersion: 2, method: 'computer_execute', actions: ['observe_elements'] },
               { capabilityId: 'computer.element.action.v2', protocolVersion: 2, method: 'computer_execute', actions: ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] },
@@ -197,6 +204,11 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.elementActionCount += 1;
           session.snapshotRevision = Number(session.snapshotRevision ?? 0) + 1;
           result = { acted: true, action: params.action, ref: params.ref, interactionId };
+        } else if (actionId === 'unlock_console') {
+          state.consoleUnlockCount += 1;
+          state.lastConsoleCredential = typeof params.credential === 'string' ? params.credential : undefined;
+          state.lastConsoleAuthorization = params.authorization && typeof params.authorization === 'object' ? params.authorization as Record<string, unknown> : undefined;
+          result = { unlocked: true, verified: true, postcondition: 'console_unlocked' };
         } else if (actionId === 'desktop_press') {
           if (typeof params.interaction_id !== 'string' || !sessions.has(params.interaction_id)) {
             fail('SESSION_NOT_FOUND', 'Desktop session was not found');
@@ -566,5 +578,34 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.sessionCloseCount).toBe(1);
     expect(fixture.sessions.size).toBe(0);
+  });
+});
+
+
+describe('protected Computer console unlock composition', () => {
+  test('keeps unlock out of generic plugin actions and routes only after explicit ephemeral authorization', async () => {
+    const fixture = await providerFixture();
+    const fixtureCredential = 'fixture-ephemeral-never-persist';
+    const request = { capability: 'computer.console.unlock.v1' as const, action: 'unlock_console' as const, credential: fixtureCredential };
+    await expect(executeRuntimeComputerConsoleUnlock(
+      request,
+      { kind: 'explicit_single_use', confirmed: true, invocationId: 'not-a-uuid' },
+      5_000,
+      fixture.controllerHome,
+    )).rejects.toMatchObject({ code: 'COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED' });
+    expect(fixture.state.connectionCount).toBe(0);
+
+    const result = await executeRuntimeComputerConsoleUnlock(
+      request,
+      { kind: 'explicit_single_use', confirmed: true, invocationId: randomUUID() },
+      5_000,
+      fixture.controllerHome,
+    );
+    expect(result).toMatchObject({ unlocked: true, verified: true, postcondition: 'console_unlocked' });
+    expect(fixture.state.consoleUnlockCount).toBe(1);
+    expect(fixture.state.lastConsoleCredential).toBe(fixtureCredential);
+    expect(fixture.state.lastConsoleAuthorization).toMatchObject({ kind: 'explicit_single_use', confirmed: true });
+    expect(JSON.stringify(result)).not.toContain(fixtureCredential);
+    disposeRuntimeComputerComposition();
   });
 });

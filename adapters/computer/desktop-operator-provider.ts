@@ -1,12 +1,13 @@
 import { randomUUID } from 'crypto';
 import {
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
   COMPUTER_ELEMENT_ACTION_CAPABILITY,
   COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
   type ComputerBrowserAutomationRequest,
-  type ComputerRuntimeExecutionRequest,
+  type ComputerRuntimeProviderExecutionRequest,
 } from '../../packages/protocols/computer/index';
 import { ComputerProviderError, type ComputerProvider } from '../../packages/plugin-runtime/computer/index';
 import {
@@ -65,7 +66,7 @@ function unavailable(error: ComputerProviderError, endpoint: DesktopOperatorComp
 export { validateDesktopOperatorComputerHandshake } from './desktop-operator-negotiation';
 
 export function desktopOperatorActionForComputerRequest(
-  request: ComputerRuntimeExecutionRequest,
+  request: ComputerRuntimeProviderExecutionRequest,
 ): { actionId: string; args: Record<string, unknown> } {
   if (request.capability === COMPUTER_OBSERVE_CAPABILITY) {
     return {
@@ -86,6 +87,19 @@ export function desktopOperatorActionForComputerRequest(
     if (request.action === 'type_text') return { actionId: 'desktop_type_text', args: { interaction_id: request.interactionId, selector: request.selector, text: request.text, ...(request.replace !== undefined ? { replace: request.replace } : {}) } };
     if (request.action === 'key') return { actionId: 'desktop_key', args: { interaction_id: request.interactionId, keys: request.keys } };
     return { actionId: 'desktop_open_url', args: { url: request.url } };
+  }
+  if (request.capability === COMPUTER_CONSOLE_UNLOCK_CAPABILITY) {
+    return {
+      actionId: 'unlock_console',
+      args: {
+        credential: request.credential,
+        authorization: {
+          kind: request.authorization.kind,
+          confirmed: request.authorization.confirmed,
+          invocation_id: request.authorization.invocationId,
+        },
+      },
+    };
   }
   if (request.capability === COMPUTER_CAPTURE_CAPABILITY) {
     return {
@@ -121,7 +135,7 @@ export function desktopOperatorActionForComputerRequest(
       },
     };
   }
-  throw new ComputerProviderError('COMPUTER_REQUEST_UNSUPPORTED', `Unsupported Desktop Operator Computer capability ${(request as ComputerRuntimeExecutionRequest).capability}.`, { retryable: false });
+  throw new ComputerProviderError('COMPUTER_REQUEST_UNSUPPORTED', `Unsupported Desktop Operator Computer capability ${(request as ComputerRuntimeProviderExecutionRequest).capability}.`, { retryable: false });
 }
 
 function endpointBindingKey(endpoint: DesktopOperatorComputerEndpoint): string {
@@ -151,7 +165,7 @@ class DesktopOperatorComputerBinding {
     this.channel.close();
   }
 
-  async execute(request: ComputerRuntimeExecutionRequest, timeoutMs: number): Promise<Record<string, unknown>> {
+  async execute(request: ComputerRuntimeProviderExecutionRequest, timeoutMs: number): Promise<Record<string, unknown>> {
     if (!this.endpoint.capabilityIds.includes(request.capability)) {
       throw new ComputerProviderError(
         'COMPUTER_PROVIDER_CAPABILITY_UNAVAILABLE',
@@ -165,6 +179,7 @@ class DesktopOperatorComputerBinding {
       const plan = negotiateDesktopOperatorComputerCapability(negotiated.value, request.capability, mapped.actionId);
       const computerArguments = request.capability === COMPUTER_OBSERVE_CAPABILITY
         || request.capability === COMPUTER_INPUT_CAPABILITY
+        || request.capability === COMPUTER_CONSOLE_UNLOCK_CAPABILITY
         || request.capability === COMPUTER_CAPTURE_CAPABILITY
         ? { action: mapped.actionId, ...mapped.args }
         : mapped.args;

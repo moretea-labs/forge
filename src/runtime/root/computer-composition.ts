@@ -3,7 +3,16 @@ import {
   ComputerProviderRegistry,
   computerProviderRegistrationSnapshot,
 } from '../../../packages/plugin-runtime/computer/index';
-import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY, type ComputerBrowserAutomationRequest, type ComputerBrowserProduct, type ComputerRuntimeExecutionRequest } from '../../../packages/protocols/computer/index';
+import {
+  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  type ComputerBrowserAutomationRequest,
+  type ComputerBrowserProduct,
+  type ComputerConsoleUnlockProviderRequest,
+  type ComputerConsoleUnlockRequest,
+  type ComputerRuntimeExecutionRequest,
+  type ComputerRuntimeProviderExecutionRequest,
+} from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
 import { createDesktopOperatorComputerProvider, type DesktopOperatorComputerProvider } from '../../../adapters/computer/index';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
@@ -56,10 +65,10 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
   return next;
 }
 
-export async function executeRuntimeComputer(
-  request: ComputerRuntimeExecutionRequest,
+async function executeComputerProviderRequest(
+  request: ComputerRuntimeProviderExecutionRequest,
   timeoutMs: number,
-  controllerHome: string = resolveControllerHome(),
+  controllerHome: string,
 ): Promise<Record<string, unknown>> {
   const providers = ensureComputerComposition(controllerHome);
   try {
@@ -74,6 +83,50 @@ export async function executeRuntimeComputer(
     }
     throw error;
   }
+}
+
+export async function executeRuntimeComputer(
+  request: ComputerRuntimeExecutionRequest,
+  timeoutMs: number,
+  controllerHome: string = resolveControllerHome(),
+): Promise<Record<string, unknown>> {
+  return await executeComputerProviderRequest(request, timeoutMs, controllerHome);
+}
+
+export interface RuntimeComputerConsoleUnlockAuthorization {
+  kind: 'explicit_single_use';
+  confirmed: true;
+  invocationId: string;
+}
+
+/**
+ * Protected Computer path. The caller must obtain explicit authorization and an ephemeral
+ * credential without using the generic Assistant Plugin action/Job/receipt pipeline.
+ */
+export async function executeRuntimeComputerConsoleUnlock(
+  request: ComputerConsoleUnlockRequest,
+  authorization: RuntimeComputerConsoleUnlockAuthorization,
+  timeoutMs: number,
+  controllerHome: string = resolveControllerHome(),
+): Promise<Record<string, unknown>> {
+  if (request.capability !== COMPUTER_CONSOLE_UNLOCK_CAPABILITY || request.action !== 'unlock_console') {
+    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID', 'Protected console unlock accepts only computer.console.unlock.v1 / unlock_console.', { retryable: false });
+  }
+  if (!request.credential || Buffer.byteLength(request.credential, 'utf8') > 1_024) {
+    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_REQUIRED', 'Protected console unlock requires one bounded ephemeral credential.', { retryable: false });
+  }
+  if (authorization.kind !== 'explicit_single_use'
+    || authorization.confirmed !== true
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(authorization.invocationId)) {
+    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED', 'Protected console unlock requires one explicit single-use authorization bound to this invocation.', { retryable: false });
+  }
+  const providerRequest: ComputerConsoleUnlockProviderRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'unlock_console',
+    credential: request.credential,
+    authorization,
+  };
+  return await executeComputerProviderRequest(providerRequest, timeoutMs, controllerHome);
 }
 
 export async function executeRuntimeComputerBrowserAutomation(
