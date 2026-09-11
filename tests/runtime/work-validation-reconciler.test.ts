@@ -334,6 +334,8 @@ describe('Work validation receipt convergence', () => {
     });
     expect(existsSync(join(reused.root, 'node_modules', 'fixture-dependency', 'marker.txt'))).toBe(true);
     expect(realpathSync(join(reused.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+    expect(currentControllerCheckRevision(reused.root)).toBe(currentControllerCheckRevision(worktreeRoot));
+    expect(execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'node_modules'], { cwd: reused.root, encoding: 'utf8' }).trim()).toBe('');
 
     symlinkSync(join(repoRoot, 'node_modules'), join(worktreeRoot, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     const reusedFromManagedLink = materializeWorkVerificationSnapshot({
@@ -343,6 +345,7 @@ describe('Work validation receipt convergence', () => {
       scope: { workId: 'work-validation-dependency-reuse-linked', allowedPaths: ['package.json'], forbiddenPaths: [] },
     });
     expect(realpathSync(join(reusedFromManagedLink.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+    expect(currentControllerCheckRevision(reusedFromManagedLink.root)).toBe(currentControllerCheckRevision(worktreeRoot));
     rmSync(join(worktreeRoot, 'node_modules'), { recursive: true, force: true });
 
     writeFileSync(join(worktreeRoot, 'package.json'), '{\"name\":\"fixture\",\"private\":true,\"dependencies\":{\"new-package\":\"1.0.0\"}}\n');
