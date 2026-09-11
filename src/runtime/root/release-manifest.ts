@@ -52,6 +52,7 @@ function optionalRuntimeComponent<
 
 export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'executionMode',
+  'runtimeBundleEntrypoint', 'runtimeBundleArtifactIdentity',
   'diagnosticEntrypoint', 'diagnosticArtifactIdentity',
   'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
@@ -113,6 +114,12 @@ export function loadRuntimeReleaseManifest(
   if (executionMode !== undefined && executionMode !== 'standalone-binary') {
     throw new Error(`RELEASE_MANIFEST_INVALID: executionMode must be standalone-binary, got ${executionMode}`);
   }
+  const runtimeBundle = optionalRuntimeComponent({
+    value,
+    entryField: 'runtimeBundleEntrypoint',
+    identityField: 'runtimeBundleArtifactIdentity',
+    canonicalEntry: 'forge-runtime-bundle.js',
+  });
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
   }
@@ -272,6 +279,7 @@ export function loadRuntimeReleaseManifest(
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
     ...(executionMode ? { executionMode: 'standalone-binary' as const } : {}),
+    ...(runtimeBundle ?? {}),
     ...(diagnostic ?? {}),
     ...(browserNodeBridge ?? {}),
     ...(browserHandoff ?? {}),

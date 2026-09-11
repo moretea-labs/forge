@@ -35,6 +35,9 @@ export interface RuntimeReleaseManifest {
   entrypoint: 'forge-runtime';
   /** Explicit execution contract for compiled immutable releases. Absent means legacy/package launcher semantics. */
   executionMode?: 'standalone-binary';
+  /** Immutable Runtime payload loaded by the small signed compiled entrypoint. */
+  runtimeBundleEntrypoint?: 'forge-runtime-bundle.js';
+  runtimeBundleArtifactIdentity?: string;
   diagnosticEntrypoint?: 'forge-cli';
   diagnosticArtifactIdentity?: string;
   browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';
