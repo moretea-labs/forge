@@ -10,6 +10,7 @@ import {
   enableControlPlaneReadConnectionReuse,
   inspectControlPlaneDatabase,
   listControlPlaneRecords,
+  listControlPlaneRecordsExcludingPayloadTextValues,
   maintainControlPlaneDatabase,
   readControlPlaneRecord,
   restoreControlPlaneDatabase,
@@ -58,6 +59,21 @@ describe('final SQLite control-plane cutover', () => {
         revision: winner.revision,
         value: { state: 'done' },
       });
+    });
+  });
+
+  test('candidate JSON prefilters exclude only explicit text values and keep ambiguous rows for domain validation', () => {
+    withHome((controllerHome) => {
+      for (const [key, status] of [['running', 'running'], ['completed', 'completed'], ['missing', undefined], ['null', null]] as const) {
+        writeControlPlaneRecord(controllerHome, {
+          namespace: 'work_contract', scope: 'repo-filter', key, schemaVersion: 1,
+          value: status === undefined ? { workId: key } : { workId: key, status }, expectedRevision: null,
+        });
+      }
+      const candidates = listControlPlaneRecordsExcludingPayloadTextValues<{ workId: string; status?: string | null }>(controllerHome, {
+        namespace: 'work_contract', scope: 'repo-filter', field: 'status', excludedValues: ['completed', 'failed', 'cancelled'], limit: 20,
+      });
+      expect(candidates.map((record) => record.key).sort()).toEqual(['missing', 'null', 'running']);
     });
   });
 

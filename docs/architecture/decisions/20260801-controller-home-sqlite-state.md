@@ -19,6 +19,7 @@ an ORM or a premature table per product concept:
   monotonic revision, JSON payload, and timestamps;
 - its primary key gives one atomic identity per durable fact;
 - `control_plane_audit` records each authoritative row mutation or legacy import; aggregate compatibility writers must not advance revision or audit history for unchanged sibling rows;
+- hot-path candidate reads may prefilter authoritative JSON rows in SQLite to avoid materializing known-irrelevant records, but the domain layer must still validate every returned candidate and the filter never becomes lifecycle authority;
 - SQLite WAL, foreign-key enforcement, a busy timeout, and `BEGIN IMMEDIATE`
   make cross-process writes serializable; and
 - `control_plane_schema` records schema migrations independently from payload

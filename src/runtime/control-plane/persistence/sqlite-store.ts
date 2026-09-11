@@ -633,6 +633,56 @@ export function listControlPlaneRecords<T>(
 }
 
 /**
+ * Candidate-only read optimization for top-level JSON text fields. This never
+ * establishes domain authority: missing/null/non-text values remain candidates,
+ * and callers must still run their canonical semantic validation.
+ */
+export function listControlPlaneRecordsExcludingPayloadTextValues<T>(
+  controllerHome: string,
+  input: {
+    namespace: string;
+    scope: string;
+    field: string;
+    excludedValues: readonly string[];
+    limit?: number;
+  },
+): ControlPlaneRecord<T>[] {
+  const field = input.field.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) {
+    throw new Error(`CONTROL_PLANE_JSON_FIELD_INVALID: ${input.field}`);
+  }
+  const excludedValues = [...new Set(input.excludedValues.map((value) => value.trim()).filter(Boolean))];
+  if (excludedValues.length === 0) {
+    return listControlPlaneRecords<T>(controllerHome, input);
+  }
+  if (excludedValues.length > 32) throw new Error('CONTROL_PLANE_JSON_EXCLUSION_LIMIT_EXCEEDED');
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1_000), 5_000));
+  const jsonPath = `$.${field}`;
+  const placeholders = excludedValues.map(() => '?').join(', ');
+  return withDatabaseForRead(controllerHome, (database) => {
+    const rows = withSqliteStatement(database, `
+      SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+      FROM control_plane_records
+      WHERE namespace = ? AND scope = ?
+        AND (
+          json_extract(payload, ?) IS NULL
+          OR json_extract(payload, ?) NOT IN (${placeholders})
+        )
+      ORDER BY updated_at ASC, record_key ASC
+      LIMIT ?
+    `, (statement) => statement.all(
+      input.namespace,
+      input.scope,
+      jsonPath,
+      jsonPath,
+      ...excludedValues,
+      limit,
+    ));
+    return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
+  });
+}
+
+/**
  * Internal correctness surface for authorities that must observe every durable
  * fact in a namespace/scope. User-facing and diagnostic list APIs should keep
  * using listControlPlaneRecords so their output remains bounded.

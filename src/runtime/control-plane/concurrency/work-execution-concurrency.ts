@@ -3,7 +3,6 @@ import {
   evaluateWorkExecutionCompatibility,
   getWorkContract,
   isTerminalWorkContractStatus,
-  listWorkContracts,
   readActiveWorkCandidates,
   workExecutionLaneMutates,
   updateWorkContract,
@@ -290,12 +289,16 @@ export function reconcileWorkExecutionConcurrencyWaits(input: {
   repoId: string;
   limit?: number;
 }): { scanned: number; waiting: number; cleared: number; workIds: string[] } {
-  const works = listWorkContracts({
+  const active = readActiveWorkCandidates({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
-    status: 'active',
-    limit: Math.max(1, Math.min(input.limit ?? 500, 1_000)),
+    // Preserve the historical listWorkContracts maintenance bound.
+    limit: Math.max(1, Math.min(input.limit ?? 500, 100)),
   });
+  if (active.invalid.length > 0) {
+    throw new Error(`WORK_CONCURRENCY_ACTIVE_WORK_INVALID: ${active.invalid.map((work) => work.workId).join(',')}`);
+  }
+  const works = active.contracts;
   const waiting = works.filter((work) => work.executionConcurrency);
   const cleared: string[] = [];
   for (const work of waiting) {

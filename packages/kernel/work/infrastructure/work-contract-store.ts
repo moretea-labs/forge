@@ -6,6 +6,7 @@ import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
   listControlPlaneRecords,
+  listControlPlaneRecordsExcludingPayloadTextValues,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
@@ -53,6 +54,7 @@ import {
   isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
+  TERMINAL_WORK_CONTRACT_STATUSES,
   semanticScopeRefForWork,
 } from '../domain/types';
 
@@ -803,9 +805,11 @@ export function readActiveWorkCandidates(
   if (!sqliteBacked(options)) {
     return { contracts: listWorkContracts({ ...options, status: 'active', limit }), invalid: [] };
   }
-  const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+  const records = listControlPlaneRecordsExcludingPayloadTextValues<WorkContract>(options.controllerHome, {
     namespace: 'work_contract',
     scope: options.repoId,
+    field: 'status',
+    excludedValues: TERMINAL_WORK_CONTRACT_STATUSES,
     limit: 5_000,
   });
   const contracts: WorkContract[] = [];
