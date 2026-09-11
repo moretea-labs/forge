@@ -543,11 +543,227 @@ function cleanupRetainedByRequest(contract: WorkContract, handle: WorkHandleStat
   // completion-receipt warning as the delivery authority.
   if (
     handle.terminalResourceDisposition?.mode === 'retained_by_request'
-    && handle.terminalResourceDisposition.retainWorktree === true
+    && (handle.terminalResourceDisposition.retainWorktree === true
+      || handle.terminalResourceDisposition.retainBranch === true)
   ) return true;
   const receipt = contract.completionReceipt;
   if (!receipt || !isRepositoryCompletionReceipt(receipt)) return false;
   return receipt.cleanup.warnings.some((warning) => warning.code === 'cleanup_retained_by_request');
+}
+
+function cleanedManagedBranchRetirementCandidate(
+  repository: ReturnType<typeof getRepository>,
+  contract: WorkContract,
+  handle: WorkHandleState,
+  targetBranch: string,
+  deleteBranch: boolean,
+): boolean {
+  const receipt = handle.cleanupReceipt;
+  if (
+    handle.state !== 'cleaned'
+    || !handle.managedWorktree
+    || !deleteBranch
+    || !receipt
+    || receipt.targetBranch !== targetBranch
+    || cleanupRetainedByRequest(contract, handle)
+  ) return false;
+  if (!['removed', 'already_removed'].includes(receipt.worktree.status)
+    || !['removed', 'already_removed'].includes(receipt.checkoutRegistry.status)
+    || receipt.prune.status !== 'done'
+    || !['retained', 'failed', 'pending'].includes(receipt.branchCleanup.status)) return false;
+  // A crash may occur after branch deletion but before the final cleanup receipt
+  // is persisted. The unsettled branchCleanup status is sufficient residue to
+  // re-enter cleanup; applyManagedBranchCleanup will converge an absent branch
+  // to already_deleted without reopening semantic Work state.
+  return handle.branch !== targetBranch;
+}
+
+function prepareManagedBranchPreservation(
+  input: TerminalWorkCleanupInput,
+  receipt: WorkCleanupReceipt,
+  current: WorkHandleState,
+  target: ReturnType<typeof getRepository>,
+  targetBranch: string,
+): { uniqueCommits: number; branchPreserved: boolean } {
+  let uniqueCommits = 0;
+  if (branchExists(target.canonicalRoot, current.branch)) {
+    if (!branchExists(target.canonicalRoot, targetBranch)) {
+      addBlocker(receipt, `TARGET_BRANCH_MISSING: ${targetBranch}`);
+    } else {
+      const unique = git(target.canonicalRoot, ['rev-list', '--count', `refs/heads/${targetBranch}..refs/heads/${current.branch}`]);
+      if (!unique.ok || !/^\d+$/.test(unique.stdout)) addBlocker(receipt, `BRANCH_UNIQUENESS_UNKNOWN: ${unique.stderr || unique.stdout}`);
+      else uniqueCommits = Number(unique.stdout);
+    }
+  }
+  receipt.branchCleanup.uniqueCommits = uniqueCommits;
+
+  let branchPreserved = Boolean(
+    receipt.preservation.bundleRetirement?.status === 'not_needed'
+    || receipt.preservation.bundleRetirement?.status === 'removed',
+  );
+  if (receipt.preservation.bundlePath && !branchPreserved) {
+    try {
+      const bundle = createVerifiedBundle(input.controllerHome, current, target.canonicalRoot);
+      if (receipt.preservation.bundleSha256 && receipt.preservation.bundleSha256 !== bundle.sha256) {
+        throw new Error(`stored bundle digest ${receipt.preservation.bundleSha256} does not match ${bundle.sha256}`);
+      }
+      receipt.preservation.bundleSha256 = bundle.sha256;
+      branchPreserved = true;
+    } catch (error) {
+      addBlocker(receipt, `BRANCH_BUNDLE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (uniqueCommits > 0 && !branchPreserved && receipt.blockers.length === 0) {
+    const proof = proveWorkPreservationContained(target.canonicalRoot, { ...current, cleanupReceipt: receipt }, targetBranch);
+    if (proof.contained) {
+      receipt.preservation.bundleRetirement = {
+        status: 'not_needed',
+        reason: proof.reason === 'no_source_delta' ? 'no_source_delta' : 'target_and_remote_content_contained',
+        protectedRevision: proof.protectedRevision!,
+        targetRevision: proof.targetRevision,
+        remoteRevision: proof.remoteRevision,
+        comparedPaths: proof.comparedPaths,
+        provedAt: nowIso(),
+      };
+      receipt.preservation.recoveryInstructions = `Branch bundle not created after ${proof.reason}; exact proof is stored in cleanupReceipt.preservation.bundleRetirement.`;
+      branchPreserved = true;
+    } else {
+      try {
+        const bundle = createVerifiedBundle(input.controllerHome, current, target.canonicalRoot);
+        receipt.preservation.bundlePath = bundle.path;
+        receipt.preservation.bundleSha256 = bundle.sha256;
+        receipt.preservation.recoveryInstructions = [
+          receipt.preservation.recoveryInstructions,
+          `Recover branch commits with: git fetch ${bundle.path} refs/heads/${current.branch}:refs/heads/${current.branch}`,
+        ].filter(Boolean).join(' ');
+        branchPreserved = true;
+      } catch (error) {
+        addBlocker(receipt, `BRANCH_BUNDLE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  return { uniqueCommits, branchPreserved };
+}
+
+function applyManagedBranchCleanup(
+  target: ReturnType<typeof getRepository>,
+  current: WorkHandleState,
+  targetBranch: string,
+  deleteBranch: boolean,
+  receipt: WorkCleanupReceipt,
+  uniqueCommits: number,
+  branchPreserved: boolean,
+): void {
+  if (!deleteBranch) {
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Branch retention was explicitly requested.';
+  } else if (!branchExists(target.canonicalRoot, current.branch)) {
+    receipt.branchCleanup.status = 'already_deleted';
+    receipt.branchCleanup.reason = undefined;
+  } else if (current.branch === targetBranch) {
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Refusing to delete the target branch.';
+    addBlocker(receipt, `BRANCH_IS_TARGET: ${targetBranch}`);
+  } else if (branchUsedByAnotherWorktree(target.canonicalRoot, current.branch, current.worktreePath)) {
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Branch is checked out by another worktree.';
+    addBlocker(receipt, `BRANCH_IN_USE: ${current.branch}`);
+  } else if (uniqueCommits > 0 && !branchPreserved) {
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Unique commits are not archived.';
+    addBlocker(receipt, `BRANCH_UNPRESERVED: ${current.branch}`);
+  } else {
+    // We already proved the exact branch relation against targetBranch above.
+    // `git branch -d` instead consults the checkout's current HEAD, which may be
+    // an older/stale source checkout and can falsely reject a branch that is
+    // fully contained in the explicit target branch. After that target-branch
+    // proof (or a verified archive for unique commits), delete the ref directly.
+    const deleted = git(target.canonicalRoot, ['branch', '-D', current.branch]);
+    if (!deleted.ok && branchExists(target.canonicalRoot, current.branch)) {
+      receipt.branchCleanup.status = 'failed';
+      receipt.branchCleanup.reason = deleted.stderr || 'branch delete failed';
+      addBlocker(receipt, `BRANCH_DELETE_FAILED: ${receipt.branchCleanup.reason}`);
+    } else {
+      receipt.branchCleanup.status = uniqueCommits > 0 && receipt.preservation.bundlePath ? 'archived' : 'deleted';
+      receipt.branchCleanup.reason = undefined;
+    }
+  }
+}
+
+function cleanupReceiptComplete(receipt: WorkCleanupReceipt, deleteBranch: boolean): boolean {
+  return receipt.blockers.length === 0
+    && ['removed', 'already_removed'].includes(receipt.worktree.status)
+    && ['removed', 'already_removed'].includes(receipt.checkoutRegistry.status)
+    && (deleteBranch
+      ? ['deleted', 'already_deleted', 'archived'].includes(receipt.branchCleanup.status)
+      : receipt.branchCleanup.status === 'retained');
+}
+
+function reconcileCleanedManagedBranchRetirement(
+  input: TerminalWorkCleanupInput,
+  repository: ReturnType<typeof getRepository>,
+  targetBranch: string,
+  deleteBranch: boolean,
+  current: WorkHandleState,
+  receipt: WorkCleanupReceipt,
+): TerminalWorkCleanupResult | undefined {
+  const workId = current.workContractId ?? current.workId;
+  const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: current.repositoryId }, workId);
+  if (!contract || !isTerminalWorkContractStatus(contract.status)
+    || !cleanedManagedBranchRetirementCandidate(repository, contract, current, targetBranch, deleteBranch)) return undefined;
+
+  const target = selectTerminalCleanupTarget(repository, current);
+  receipt.blockers = [];
+  receipt.partial = false;
+  receipt.complete = false;
+  receipt.completedAt = undefined;
+  receipt.branchCleanup.status = 'pending';
+  receipt.branchCleanup.reason = undefined;
+
+  const preservation = prepareManagedBranchPreservation(input, receipt, current, target, targetBranch);
+  current = persist(input.controllerHome, current, receipt);
+  if (receipt.blockers.length === 0) {
+    applyManagedBranchCleanup(
+      target,
+      current,
+      targetBranch,
+      deleteBranch,
+      receipt,
+      preservation.uniqueCommits,
+      preservation.branchPreserved,
+    );
+  } else if (receipt.branchCleanup.status === 'pending') {
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Branch retirement proof could not be re-established.';
+  }
+
+  const pruned = git(target.canonicalRoot, ['worktree', 'prune']);
+  receipt.prune.status = pruned.ok ? 'done' : 'failed';
+  if (!pruned.ok) {
+    receipt.prune.reason = pruned.stderr || 'git worktree prune failed';
+    addBlocker(receipt, `WORKTREE_PRUNE_FAILED: ${receipt.prune.reason}`);
+  } else {
+    receipt.prune.reason = undefined;
+  }
+
+  receipt.complete = cleanupReceiptComplete(receipt, deleteBranch);
+  receipt.partial = !receipt.complete;
+  if (receipt.complete) receipt.completedAt = nowIso();
+  const finalization = {
+    ...current.finalization,
+    branchCleanup: receipt.complete ? 'done' as const : 'failed' as const,
+    worktreeCleanup: 'done' as const,
+  };
+  current = writeWorkHandle(input.controllerHome, {
+    ...current,
+    state: 'cleaned',
+    cleanupReceipt: receipt,
+    finalization,
+  });
+  if (receipt.complete) {
+    markRepositoryProjectionDirty(input.controllerHome, current.repositoryId, `cleanup:${current.workId}:terminal-branch-retirement`);
+  }
+  return { handle: current, receipt };
 }
 
 function reconcileLegacyTerminalBranchDrift(
@@ -613,6 +829,15 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   ) throw new Error('WORK_CLEANUP_RECEIPT_IDENTITY_MISMATCH');
 
   if (current.state === 'cleaned') {
+    const branchRetirement = reconcileCleanedManagedBranchRetirement(
+      input,
+      repository,
+      targetBranch,
+      deleteBranch,
+      current,
+      receipt,
+    );
+    if (branchRetirement) return branchRetirement;
     if (!receipt.complete) {
       receipt.complete = true;
       receipt.partial = false;
@@ -778,52 +1003,13 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt.worktree.status = 'already_removed';
   }
 
-  let uniqueCommits = 0;
-  if (branchExists(target.canonicalRoot, current.branch)) {
-    if (!branchExists(target.canonicalRoot, targetBranch)) {
-      addBlocker(receipt, `TARGET_BRANCH_MISSING: ${targetBranch}`);
-    } else {
-      const unique = git(target.canonicalRoot, ['rev-list', '--count', `refs/heads/${targetBranch}..refs/heads/${current.branch}`]);
-      if (!unique.ok || !/^\d+$/.test(unique.stdout)) addBlocker(receipt, `BRANCH_UNIQUENESS_UNKNOWN: ${unique.stderr || unique.stdout}`);
-      else uniqueCommits = Number(unique.stdout);
-    }
-  }
-  receipt.branchCleanup.uniqueCommits = uniqueCommits;
-
-  let branchPreserved = Boolean(
-    receipt.preservation.bundlePath
-    || receipt.preservation.bundleRetirement?.status === 'not_needed'
-    || receipt.preservation.bundleRetirement?.status === 'removed',
+  const { uniqueCommits, branchPreserved } = prepareManagedBranchPreservation(
+    input,
+    receipt,
+    current,
+    target,
+    targetBranch,
   );
-  if (uniqueCommits > 0 && !branchPreserved) {
-    const proof = proveWorkPreservationContained(target.canonicalRoot, { ...current, cleanupReceipt: receipt }, targetBranch);
-    if (proof.contained) {
-      receipt.preservation.bundleRetirement = {
-        status: 'not_needed',
-        reason: proof.reason === 'no_source_delta' ? 'no_source_delta' : 'target_and_remote_content_contained',
-        protectedRevision: proof.protectedRevision!,
-        targetRevision: proof.targetRevision,
-        remoteRevision: proof.remoteRevision,
-        comparedPaths: proof.comparedPaths,
-        provedAt: nowIso(),
-      };
-      receipt.preservation.recoveryInstructions = `Branch bundle not created after ${proof.reason}; exact proof is stored in cleanupReceipt.preservation.bundleRetirement.`;
-      branchPreserved = true;
-    } else {
-      try {
-        const bundle = createVerifiedBundle(input.controllerHome, current, target.canonicalRoot);
-        receipt.preservation.bundlePath = bundle.path;
-        receipt.preservation.bundleSha256 = bundle.sha256;
-        receipt.preservation.recoveryInstructions = [
-          receipt.preservation.recoveryInstructions,
-          `Recover branch commits with: git fetch ${bundle.path} refs/heads/${current.branch}:refs/heads/${current.branch}`,
-        ].filter(Boolean).join(' ');
-        branchPreserved = true;
-      } catch (error) {
-        addBlocker(receipt, `BRANCH_BUNDLE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  }
   current = persist(input.controllerHome, current, receipt);
   if (receipt.blockers.length > 0) {
     receipt.worktree.status = existsSync(current.worktreePath) ? 'retained' : receipt.worktree.status;
@@ -869,38 +1055,15 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt.checkoutRegistry.reason = 'Checkout metadata was absent after Controller Home migration; canonical managed-worktree and Git identity checks passed before cleanup.';
   }
 
-  if (!deleteBranch) {
-    receipt.branchCleanup.status = 'retained';
-    receipt.branchCleanup.reason = 'Branch retention was explicitly requested.';
-  } else if (!branchExists(target.canonicalRoot, current.branch)) {
-    receipt.branchCleanup.status = 'already_deleted';
-  } else if (current.branch === targetBranch) {
-    receipt.branchCleanup.status = 'retained';
-    receipt.branchCleanup.reason = 'Refusing to delete the target branch.';
-    addBlocker(receipt, `BRANCH_IS_TARGET: ${targetBranch}`);
-  } else if (branchUsedByAnotherWorktree(target.canonicalRoot, current.branch, current.worktreePath)) {
-    receipt.branchCleanup.status = 'retained';
-    receipt.branchCleanup.reason = 'Branch is checked out by another worktree.';
-    addBlocker(receipt, `BRANCH_IN_USE: ${current.branch}`);
-  } else if (uniqueCommits > 0 && !branchPreserved) {
-    receipt.branchCleanup.status = 'retained';
-    receipt.branchCleanup.reason = 'Unique commits are not archived.';
-    addBlocker(receipt, `BRANCH_UNPRESERVED: ${current.branch}`);
-  } else {
-    // We already proved the exact branch relation against targetBranch above.
-    // `git branch -d` instead consults the checkout's current HEAD, which may be
-    // an older/stale source checkout and can falsely reject a branch that is
-    // fully contained in the explicit target branch. After that target-branch
-    // proof (or a verified archive for unique commits), delete the ref directly.
-    const deleted = git(target.canonicalRoot, ['branch', '-D', current.branch]);
-    if (!deleted.ok && branchExists(target.canonicalRoot, current.branch)) {
-      receipt.branchCleanup.status = 'failed';
-      receipt.branchCleanup.reason = deleted.stderr || 'branch delete failed';
-      addBlocker(receipt, `BRANCH_DELETE_FAILED: ${receipt.branchCleanup.reason}`);
-    } else {
-      receipt.branchCleanup.status = uniqueCommits > 0 && receipt.preservation.bundlePath ? 'archived' : 'deleted';
-    }
-  }
+  applyManagedBranchCleanup(
+    target,
+    current,
+    targetBranch,
+    deleteBranch,
+    receipt,
+    uniqueCommits,
+    branchPreserved,
+  );
 
   const pruned = git(target.canonicalRoot, ['worktree', 'prune']);
   receipt.prune.status = pruned.ok ? 'done' : 'failed';
@@ -909,12 +1072,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     addBlocker(receipt, `WORKTREE_PRUNE_FAILED: ${receipt.prune.reason}`);
   }
 
-  receipt.complete = receipt.blockers.length === 0
-    && ['removed', 'already_removed'].includes(receipt.worktree.status)
-    && ['removed', 'already_removed'].includes(receipt.checkoutRegistry.status)
-    && (deleteBranch
-      ? ['deleted', 'already_deleted', 'archived'].includes(receipt.branchCleanup.status)
-      : receipt.branchCleanup.status === 'retained');
+  receipt.complete = cleanupReceiptComplete(receipt, deleteBranch);
   receipt.partial = !receipt.complete;
   if (receipt.complete) receipt.completedAt = receipt.completedAt ?? nowIso();
 
@@ -1093,10 +1251,19 @@ export async function reconcileTerminalWorkCleanups(
         report.skippedNonTerminal.push(originalHandle.workId);
         continue;
       }
-      if (originalHandle.state === 'cleaned' && originalHandle.cleanupReceipt?.complete === true) continue;
       if (cleanupRetainedByRequest(contract, originalHandle)) {
         report.skippedRetained.push(originalHandle.workId);
         continue;
+      }
+      if (originalHandle.state === 'cleaned' && originalHandle.cleanupReceipt?.complete === true) {
+        const targetBranch = resolveWorkDeliveryTargetBranch(originalHandle, repository.defaultBranch);
+        if (!cleanedManagedBranchRetirementCandidate(
+          repository,
+          contract,
+          originalHandle,
+          targetBranch,
+          true,
+        )) continue;
       }
       // Reconstructing a missing handle is metadata recovery, not new Work activity.
       // Do not let that write reset the terminal-age grace period indefinitely.
