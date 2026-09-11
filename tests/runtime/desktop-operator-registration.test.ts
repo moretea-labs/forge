@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { validateMacOsCapabilityBrokerHandshake } from '../../src/runtime/plugins/macos-capability-broker';
 import { getExternalPluginRegistration, installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { reconcileFirstPartyExternalPluginRegistration } from '../../src/runtime/plugins/first-party-external-registration';
 import { syncControllerPluginManifest } from '../../src/runtime/plugins/store';
-import { mkdtempSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -170,6 +171,83 @@ describe('Desktop Operator trusted external registration', () => {
       expectedProgramContains: 'forge-desktop-operator',
     });
     expect(input.actions.map((action) => action.actionId)).not.toContain('provider_restart');
+  });
+
+  test('reconciles an independently installed Desktop Operator release only across the same trusted endpoint and lifecycle identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-desktop-installed-release-'));
+    const controllerHome = join(root, 'controller');
+    const socketPath = join(root, 'desktop-operator.sock');
+    const receiptDir = join(root, 'provider-registration');
+    const receiptPath = join(receiptDir, 'registration.json');
+    const manifestPath = join(receiptDir, 'forge-plugin.json');
+    mkdirSync(receiptDir, { recursive: true });
+    installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
+      socketPath,
+      launchAgentLabel: 'com.moretea.forge.desktop-operator',
+      expectedProgramContains: 'Forge Desktop Operator.app',
+      pluginVersion: '0.4.0',
+      protocolVersion: '1.0',
+    }));
+    writeFileSync(manifestPath, JSON.stringify({ id: 'desktop_operator', version: '0.4.1', protocolVersion: '1.0' }));
+    writeFileSync(receiptPath, JSON.stringify({
+      schemaVersion: 1,
+      pluginId: 'desktop_operator',
+      pluginVersion: '0.4.1',
+      protocolVersion: '1.0',
+      socketPath,
+      executablePath: join(root, 'Applications', 'Forge Desktop Operator.app', 'Contents', 'MacOS', 'desktop-operator'),
+      manifestPath,
+      serviceManager: 'launchd-user-agent',
+      bundleIdentifier: 'com.moretea.forge.desktop-operator',
+      launchAgentLabel: 'com.moretea.forge.desktop-operator',
+      expectedProgramContains: 'Forge Desktop Operator.app',
+    }));
+
+    const reconciled = reconcileFirstPartyExternalPluginRegistration(controllerHome, 'desktop_operator', { desktopOperatorInstallReceiptPath: receiptPath })!;
+    expect(reconciled.pluginVersion).toBe('0.4.1');
+    expect(reconciled.protocolVersion).toBe('1.0');
+    expect(reconciled.transport).toMatchObject({ kind: 'unix_socket_jsonl', socketPath });
+    expect(reconciled.lifecycle).toEqual({
+      kind: 'verified_user_launch_agent',
+      label: 'com.moretea.forge.desktop-operator',
+      expectedProgramContains: 'Forge Desktop Operator.app',
+    });
+    expect(reconciled.capabilities.some((capability) => capability.capabilityId === 'computer.console.unlock.v1')).toBe(true);
+  });
+
+  test('rejects contradictory installed-release evidence without rewriting the trusted registration', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-desktop-installed-release-invalid-'));
+    const controllerHome = join(root, 'controller');
+    const socketPath = join(root, 'desktop-operator.sock');
+    const receiptDir = join(root, 'provider-registration');
+    const receiptPath = join(receiptDir, 'registration.json');
+    const manifestPath = join(receiptDir, 'forge-plugin.json');
+    mkdirSync(receiptDir, { recursive: true });
+    installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
+      socketPath,
+      launchAgentLabel: 'com.moretea.forge.desktop-operator',
+      expectedProgramContains: 'Forge Desktop Operator.app',
+      pluginVersion: '0.4.0',
+      protocolVersion: '1.0',
+    }));
+    writeFileSync(manifestPath, JSON.stringify({ id: 'desktop_operator', version: '0.4.0', protocolVersion: '1.0' }));
+    writeFileSync(receiptPath, JSON.stringify({
+      schemaVersion: 1,
+      pluginId: 'desktop_operator',
+      pluginVersion: '0.4.1',
+      protocolVersion: '1.0',
+      socketPath,
+      executablePath: join(root, 'Applications', 'Forge Desktop Operator.app', 'Contents', 'MacOS', 'desktop-operator'),
+      manifestPath,
+      serviceManager: 'launchd-user-agent',
+      bundleIdentifier: 'com.moretea.forge.desktop-operator',
+      launchAgentLabel: 'com.moretea.forge.desktop-operator',
+      expectedProgramContains: 'Forge Desktop Operator.app',
+    }));
+
+    expect(() => reconcileFirstPartyExternalPluginRegistration(controllerHome, 'desktop_operator', { desktopOperatorInstallReceiptPath: receiptPath }))
+      .toThrow('DESKTOP_OPERATOR_INSTALLED_MANIFEST_IDENTITY_MISMATCH');
+    expect(getExternalPluginRegistration(controllerHome, 'desktop_operator')?.pluginVersion).toBe('0.4.0');
   });
 
   test('controller sync rematerializes same-version first-party policy drift through the canonical registration authority', () => {

@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'fs';
+import { homedir } from 'os';
+import { dirname, join, resolve } from 'path';
 import { createDesktopOperatorRegistrationInput } from './desktop-operator-registration';
 import {
   getExternalPluginRegistration,
@@ -16,6 +19,102 @@ function isForgeDesktopOperatorBinding(
     && registration.transport.kind === 'unix_socket_jsonl';
 }
 
+const DESKTOP_OPERATOR_BUNDLE_ID = 'com.moretea.forge.desktop-operator';
+const DESKTOP_OPERATOR_APP_NAME = 'Forge Desktop Operator.app';
+
+interface DesktopOperatorInstallReceipt {
+  schemaVersion: 1;
+  pluginId: string;
+  pluginVersion: string;
+  protocolVersion: string;
+  socketPath: string;
+  executablePath: string;
+  manifestPath: string;
+  serviceManager: string;
+  bundleIdentifier: string;
+  launchAgentLabel: string;
+  expectedProgramContains: string;
+}
+
+interface DesktopOperatorInstalledManifest {
+  id?: unknown;
+  version?: unknown;
+  protocolVersion?: unknown;
+}
+
+export interface FirstPartyExternalRegistrationReconcileOptions {
+  /** Test/repair seam only. Production uses the stable provider-owned install receipt path. */
+  desktopOperatorInstallReceiptPath?: string;
+}
+
+function canonicalDesktopOperatorSocketPath(): string {
+  return join(homedir(), 'Library', 'Caches', 'Forge', 'desktop-operator.sock');
+}
+
+function defaultDesktopOperatorInstallReceiptPath(): string {
+  return join(homedir(), 'Library', 'Application Support', 'Forge', 'DesktopOperator', 'registration', 'registration.json');
+}
+
+function parseJsonObject(path: string, code: string): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new Error(`${code}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(code);
+  return value as Record<string, unknown>;
+}
+
+function installedDesktopOperatorReleaseIdentity(
+  existing: ExternalPluginRegistration & { transport: ExternalPluginUnixSocketTransport },
+  options: FirstPartyExternalRegistrationReconcileOptions,
+): { pluginVersion: string; protocolVersion: string } | undefined {
+  const lifecycle = existing.lifecycle?.kind === 'verified_user_launch_agent' ? existing.lifecycle : undefined;
+  if (!lifecycle) return undefined;
+
+  const explicitReceiptPath = options.desktopOperatorInstallReceiptPath?.trim();
+  if (!explicitReceiptPath) {
+    // Only the stable first-party installation may contribute release metadata.
+    // Synthetic/custom registrations keep their existing version authority.
+    if (resolve(existing.transport.socketPath) !== resolve(canonicalDesktopOperatorSocketPath())
+      || lifecycle.label !== DESKTOP_OPERATOR_BUNDLE_ID
+      || lifecycle.expectedProgramContains !== DESKTOP_OPERATOR_APP_NAME) return undefined;
+  }
+
+  const receiptPath = resolve(explicitReceiptPath || defaultDesktopOperatorInstallReceiptPath());
+  if (!existsSync(receiptPath)) return undefined;
+  const raw = parseJsonObject(receiptPath, 'DESKTOP_OPERATOR_INSTALL_RECEIPT_INVALID');
+  const receipt = raw as unknown as DesktopOperatorInstallReceipt;
+
+  // The receipt is evidence for installed release metadata only. It may never
+  // replace the already-trusted endpoint or lifecycle identity.
+  if (receipt.schemaVersion !== 1
+    || receipt.pluginId !== 'desktop_operator'
+    || typeof receipt.pluginVersion !== 'string' || !receipt.pluginVersion.trim()
+    || typeof receipt.protocolVersion !== 'string' || !receipt.protocolVersion.trim()
+    || typeof receipt.socketPath !== 'string'
+    || resolve(receipt.socketPath) !== resolve(existing.transport.socketPath)
+    || receipt.bundleIdentifier !== DESKTOP_OPERATOR_BUNDLE_ID
+    || receipt.launchAgentLabel !== lifecycle.label
+    || receipt.expectedProgramContains !== lifecycle.expectedProgramContains
+    || receipt.serviceManager !== 'launchd-user-agent'
+    || typeof receipt.executablePath !== 'string'
+    || !receipt.executablePath.endsWith(`/${DESKTOP_OPERATOR_APP_NAME}/Contents/MacOS/desktop-operator`)
+    || typeof receipt.manifestPath !== 'string'
+    || resolve(receipt.manifestPath) !== resolve(join(dirname(receiptPath), 'forge-plugin.json'))) {
+    throw new Error('DESKTOP_OPERATOR_INSTALL_RECEIPT_IDENTITY_MISMATCH');
+  }
+
+  const manifest = parseJsonObject(receipt.manifestPath, 'DESKTOP_OPERATOR_INSTALLED_MANIFEST_INVALID') as DesktopOperatorInstalledManifest;
+  if (manifest.id !== 'desktop_operator'
+    || manifest.version !== receipt.pluginVersion
+    || manifest.protocolVersion !== receipt.protocolVersion) {
+    throw new Error('DESKTOP_OPERATOR_INSTALLED_MANIFEST_IDENTITY_MISMATCH');
+  }
+  return { pluginVersion: receipt.pluginVersion, protocolVersion: receipt.protocolVersion };
+}
+
 /**
  * Reconcile one installed first-party external provider to the current Forge-owned
  * policy contract while preserving installation/runtime identity. The external
@@ -25,6 +124,7 @@ function isForgeDesktopOperatorBinding(
 export function reconcileFirstPartyExternalPluginRegistration(
   controllerHome: string,
   pluginId: string,
+  options: FirstPartyExternalRegistrationReconcileOptions = {},
 ): ExternalPluginRegistration | undefined {
   const existing = getExternalPluginRegistration(controllerHome, pluginId);
   if (!existing) return undefined;
@@ -33,12 +133,13 @@ export function reconcileFirstPartyExternalPluginRegistration(
   const lifecycle = existing.lifecycle?.kind === 'verified_user_launch_agent'
     ? existing.lifecycle
     : undefined;
+  const installedRelease = installedDesktopOperatorReleaseIdentity(existing, options);
   const desired = createDesktopOperatorRegistrationInput({
     socketPath: existing.transport.socketPath,
     launchAgentLabel: lifecycle?.label,
     expectedProgramContains: lifecycle?.expectedProgramContains,
-    pluginVersion: existing.pluginVersion,
-    protocolVersion: existing.protocolVersion,
+    pluginVersion: installedRelease?.pluginVersion ?? existing.pluginVersion,
+    protocolVersion: installedRelease?.protocolVersion ?? existing.protocolVersion,
     enabled: existing.enabled,
   });
   return installExternalPluginRegistration(controllerHome, desired);

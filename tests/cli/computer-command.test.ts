@@ -63,6 +63,7 @@ describe('Computer product facade', () => {
       expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.observe.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.input.v1', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.console.unlock.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.capture.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.element.observe.v2', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.element.action.v2', supported: false, state: 'unsupported' }),
@@ -105,6 +106,7 @@ describe('Computer product facade', () => {
     expect(status.provider.catalogVersion).toBe('0.3.2');
     expect(status.capabilities).toEqual(expect.arrayContaining([
       expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', provider: 'browser', supported: true }),
+      expect.objectContaining({ capabilityId: 'computer.console.unlock.v1', provider: 'desktop_operator', supported: true }),
       expect.objectContaining({ capabilityId: 'computer.element.observe.v2', provider: 'desktop_operator', supported: true }),
       expect.objectContaining({ capabilityId: 'computer.element.action.v2', provider: 'desktop_operator', supported: true }),
     ]));

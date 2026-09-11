@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import {
   COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
   COMPUTER_ELEMENT_ACTION_CAPABILITY,
   COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
@@ -165,7 +166,7 @@ function browserCapabilityStatus(input: {
 }
 
 function desktopCapabilityStatus(
-  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY | typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY | typeof COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY | typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY | typeof COMPUTER_ELEMENT_ACTION_CAPABILITY,
   compatibility: ReturnType<typeof pluginCatalogCompatibility>,
   registration: ReturnType<typeof getExternalPluginRegistration>,
   health: ComputerProviderHealth,
@@ -211,6 +212,7 @@ export function readComputerStatus(options: { controllerHome?: string; platform?
     browserCapabilityStatus({ compatibility, registration, health }),
     desktopCapabilityStatus(COMPUTER_OBSERVE_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_INPUT_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_CONSOLE_UNLOCK_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_CAPTURE_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_ELEMENT_OBSERVE_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_ELEMENT_ACTION_CAPABILITY, compatibility, registration, health),
