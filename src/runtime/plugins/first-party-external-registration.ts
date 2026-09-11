@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { dirname, join, resolve } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { createDesktopOperatorRegistrationInput } from './desktop-operator-registration';
 import {
   getExternalPluginRegistration,
@@ -43,12 +43,18 @@ interface DesktopOperatorInstalledManifest {
 }
 
 export interface FirstPartyExternalRegistrationReconcileOptions {
-  /** Test/repair seam only. Production uses the stable provider-owned install receipt path. */
+  /** Test/repair seams only. Production uses the stable provider-owned installation paths. */
   desktopOperatorInstallReceiptPath?: string;
+  desktopOperatorCanonicalSocketPath?: string;
+  desktopOperatorCanonicalExecutablePath?: string;
 }
 
 function canonicalDesktopOperatorSocketPath(): string {
   return join(homedir(), 'Library', 'Caches', 'Forge', 'desktop-operator.sock');
+}
+
+function canonicalDesktopOperatorExecutablePath(): string {
+  return join(homedir(), 'Applications', DESKTOP_OPERATOR_APP_NAME, 'Contents', 'MacOS', 'desktop-operator');
 }
 
 function defaultDesktopOperatorInstallReceiptPath(): string {
@@ -73,16 +79,18 @@ function installedDesktopOperatorReleaseIdentity(
   const lifecycle = existing.lifecycle?.kind === 'verified_user_launch_agent' ? existing.lifecycle : undefined;
   if (!lifecycle) return undefined;
 
-  const explicitReceiptPath = options.desktopOperatorInstallReceiptPath?.trim();
-  if (!explicitReceiptPath) {
-    // Only the stable first-party installation may contribute release metadata.
-    // Synthetic/custom registrations keep their existing version authority.
-    if (resolve(existing.transport.socketPath) !== resolve(canonicalDesktopOperatorSocketPath())
-      || lifecycle.label !== DESKTOP_OPERATOR_BUNDLE_ID
-      || lifecycle.expectedProgramContains !== DESKTOP_OPERATOR_APP_NAME) return undefined;
-  }
+  const expectedSocketPath = options.desktopOperatorCanonicalSocketPath?.trim() || canonicalDesktopOperatorSocketPath();
+  const expectedExecutablePath = options.desktopOperatorCanonicalExecutablePath?.trim() || canonicalDesktopOperatorExecutablePath();
+  // Only the stable first-party installation may contribute release metadata.
+  // Synthetic/custom registrations keep their existing version authority.
+  if (!isAbsolute(expectedSocketPath)
+    || !isAbsolute(expectedExecutablePath)
+    || resolve(existing.transport.socketPath) !== resolve(expectedSocketPath)
+    || lifecycle.label !== DESKTOP_OPERATOR_BUNDLE_ID
+    || !isAbsolute(lifecycle.expectedProgramContains)
+    || resolve(lifecycle.expectedProgramContains) !== resolve(expectedExecutablePath)) return undefined;
 
-  const receiptPath = resolve(explicitReceiptPath || defaultDesktopOperatorInstallReceiptPath());
+  const receiptPath = resolve(options.desktopOperatorInstallReceiptPath?.trim() || defaultDesktopOperatorInstallReceiptPath());
   if (!existsSync(receiptPath)) return undefined;
   const raw = parseJsonObject(receiptPath, 'DESKTOP_OPERATOR_INSTALL_RECEIPT_INVALID');
   const receipt = raw as unknown as DesktopOperatorInstallReceipt;
@@ -97,9 +105,12 @@ function installedDesktopOperatorReleaseIdentity(
     || resolve(receipt.socketPath) !== resolve(existing.transport.socketPath)
     || receipt.bundleIdentifier !== DESKTOP_OPERATOR_BUNDLE_ID
     || receipt.launchAgentLabel !== lifecycle.label
-    || receipt.expectedProgramContains !== lifecycle.expectedProgramContains
+    || typeof receipt.expectedProgramContains !== 'string' || !receipt.expectedProgramContains.trim()
     || receipt.serviceManager !== 'launchd-user-agent'
     || typeof receipt.executablePath !== 'string'
+    || !isAbsolute(receipt.executablePath)
+    || resolve(receipt.executablePath) !== resolve(lifecycle.expectedProgramContains)
+    || !receipt.executablePath.includes(receipt.expectedProgramContains)
     || !receipt.executablePath.endsWith(`/${DESKTOP_OPERATOR_APP_NAME}/Contents/MacOS/desktop-operator`)
     || typeof receipt.manifestPath !== 'string'
     || resolve(receipt.manifestPath) !== resolve(join(dirname(receiptPath), 'forge-plugin.json'))) {
