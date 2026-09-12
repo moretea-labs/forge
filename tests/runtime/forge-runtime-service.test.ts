@@ -26,7 +26,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorReadinessEndpoint, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
@@ -729,6 +729,10 @@ describe('Forge Runtime service', () => {
     expect(packageConnectorEndpointStatusHealthy(404)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(500)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(502)).toBe(false);
+  });
+
+  test('uses the transport readiness surface instead of an unauthenticated MCP session request', () => {
+    expect(packageConnectorReadinessEndpoint('http://127.0.0.1:8767/mcp')).toBe('http://127.0.0.1:8767/transport-ready');
   });
 
   test('waits for the package Connector OAuth listener before declaring cutover ready', async () => {

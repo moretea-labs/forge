@@ -111,12 +111,26 @@ export function packageConnectorEndpointStatusHealthy(status: number, authMode: 
   return status === 200 || (authMode === 'oauth' && status === 401);
 }
 
-async function defaultConnectorEndpointProbe(endpoint: string, authMode: PackageConnectorAuthMode): Promise<boolean> {
+export function packageConnectorReadinessEndpoint(endpoint: string): string {
+  const parsed = new URL(endpoint);
+  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp') {
+    throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
+  }
+  parsed.pathname = '/transport-ready';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(endpoint, { method: 'GET', redirect: 'manual', signal: controller.signal });
-    return packageConnectorEndpointStatusHealthy(response.status, authMode);
+    // GET /mcp is a protocol request, not a liveness request: in auth:none it
+    // correctly responds 400 without an MCP session. /transport-ready is the
+    // in-memory, transport-scoped readiness surface used by Recovery.
+    const response = await fetch(packageConnectorReadinessEndpoint(endpoint), { method: 'GET', redirect: 'manual', signal: controller.signal });
+    return response.status === 200;
   } catch {
     return false;
   } finally {
@@ -137,8 +151,7 @@ export async function waitForPackageConnectorEndpointReady(
 ): Promise<boolean> {
   const timeoutMs = Math.max(0, options.timeoutMs ?? 15_000);
   const pollIntervalMs = Math.max(10, options.pollIntervalMs ?? 100);
-  const authMode = options.authMode ?? 'oauth';
-  const probeEndpoint = options.probeEndpoint ?? ((candidateEndpoint) => defaultConnectorEndpointProbe(candidateEndpoint, authMode));
+  const probeEndpoint = options.probeEndpoint ?? defaultConnectorEndpointProbe;
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolveWait) => setTimeout(resolveWait, ms)));
   const now = options.now ?? Date.now;
   const deadline = now() + timeoutMs;
@@ -378,7 +391,7 @@ export async function ensurePackageConnectorService(input: {
         env: input.env,
         executable: input.executable,
       })
-      && await (input.probeEndpoint ?? ((candidateEndpoint) => defaultConnectorEndpointProbe(candidateEndpoint, authMode)))(input.endpoint)
+      && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
     ) {
       return {
         endpoint: authority.endpoint,
