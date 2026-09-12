@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -17,6 +17,9 @@ import {
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
+import { ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
+import { controllerPluginRepository } from '../../src/runtime/plugins/store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { ensureForgeInstanceIdentity, executionPlacement } from '../../packages/kernel/identity/api/index';
@@ -61,6 +64,38 @@ import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/ty
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+
+describe('ChatGPT Browser controller authority', () => {
+  test('does not reconfigure an already-enabled controller-scoped Browser', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-controller-browser-enabled-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repository = controllerPluginRepository(controllerHome);
+    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+    mkdirSync(dirname(configPath), { recursive: true });
+    const persisted = `${JSON.stringify({ schemaVersion: 2, enabled: true }, null, 2)}\n`;
+    writeFileSync(configPath, persisted, 'utf8');
+
+    await expect(ensureControllerChatgptBrowser(controllerHome, 'WORK-BROWSER-ENABLED')).resolves.toBeUndefined();
+    expect(readFileSync(configPath, 'utf8')).toBe(persisted);
+  });
+
+  test('keeps disabled Browser enablement behind canonical configure authorization', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-controller-browser-disabled-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repository = controllerPluginRepository(controllerHome);
+    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+    mkdirSync(dirname(configPath), { recursive: true });
+    const persisted = `${JSON.stringify({ schemaVersion: 2, enabled: false }, null, 2)}\n`;
+    writeFileSync(configPath, persisted, 'utf8');
+
+    await expect(ensureControllerChatgptBrowser(controllerHome, 'WORK-BROWSER-DISABLED')).rejects.toThrow('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
+    expect(readFileSync(configPath, 'utf8')).toBe(persisted);
+  });
+});
 
 describe('ChatGPT Browser action result contract', () => {
   test('unwraps the typed plugin envelope exactly once and rejects malformed envelopes', () => {
@@ -908,9 +943,6 @@ describe('ChatGPT Work conversation binding', () => {
     expect(workContinuation).not.toContain('tabCleanupStatus: tabCleanup.status');
     expect(browserRuntime).toContain("'PLUGIN_BROWSER_SESSION_STATE_LOST'");
     expect(browserRuntime).toContain("'PLUGIN_SESSION_NOT_FOUND'");
-    expect(browserRuntime).toContain('buildBrowserPluginManifest(0, undefined, repoRoot).enabled');
-    expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })");
-    expect(browserRuntime.indexOf('buildBrowserPluginManifest(0, undefined, repoRoot).enabled')).toBeLessThan(browserRuntime.indexOf("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })"));
     expect(source).toContain('runStandaloneChatgptPrompt');
     const standaloneStart = source.indexOf('export async function runStandaloneChatgptPrompt');
     const workStart = source.indexOf('export async function runWorkChatgptContinuation');

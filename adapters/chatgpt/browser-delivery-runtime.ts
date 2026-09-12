@@ -1,10 +1,8 @@
 import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types';
-import { buildBrowserPluginManifest } from '../../src/runtime/plugins/browser-adapter';
 import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
-import { controllerPluginRepository, executeControllerScopedPluginAction, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
-import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { controllerPluginRepository, executeControllerScopedPluginAction, getControllerPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   ChatgptProviderDeliveryError,
@@ -119,12 +117,12 @@ async function controllerBrowserAction(
 }
 
 export async function ensureControllerChatgptBrowser(controllerHome: string, workId: string): Promise<void> {
-  const repoRoot = controllerSystemRoot(controllerHome);
   // Browser configure is not a read: it persists configuration and closes managed
   // contexts. Scheduled continuations must not disturb an already-enabled provider
-  // merely to prove it is available. Only enable it when the persisted authority is
-  // explicitly disabled; action-level transport overrides still fail closed later.
-  if (buildBrowserPluginManifest(0, undefined, repoRoot).enabled) return;
+  // merely to prove it is available. Read the existing controller-scoped manifest
+  // authority, and only enable it when that persisted authority is explicitly disabled;
+  // action-level transport overrides still fail closed later.
+  if (getControllerPluginManifest(controllerHome, 'browser').enabled) return;
   await controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true });
 }
 
