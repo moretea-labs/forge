@@ -84,6 +84,7 @@ export function desktopOperatorActionForComputerRequest(
   }
   if (request.capability === COMPUTER_INPUT_CAPABILITY) {
     if (request.action === 'press') return { actionId: 'desktop_press', args: { interaction_id: request.interactionId, selector: request.selector, ...(request.semanticAction ? { semantic_action: request.semanticAction } : {}) } };
+    if (request.action === 'select_rows') return { actionId: 'desktop_select_rows', args: { interaction_id: request.interactionId, selector: request.selector, start_index: request.startIndex, ...(request.endIndex !== undefined ? { end_index: request.endIndex } : {}) } };
     if (request.action === 'type_text') return { actionId: 'desktop_type_text', args: { interaction_id: request.interactionId, selector: request.selector, text: request.text, ...(request.replace !== undefined ? { replace: request.replace } : {}) } };
     if (request.action === 'key') return { actionId: 'desktop_key', args: { interaction_id: request.interactionId, keys: request.keys } };
     return { actionId: 'desktop_open_url', args: { url: request.url } };

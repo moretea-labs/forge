@@ -47,6 +47,7 @@ const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = ['invoke', 'focus', 'set_value', 'togg
 const DESKTOP_SEMANTIC_ACTION_IDS = new Set([
   'desktop_observe',
   'desktop_press',
+  'desktop_select_rows',
   'desktop_type_text',
   'desktop_key',
   'desktop_open_url',
@@ -191,7 +192,7 @@ function desktopProductCapabilities(): AssistantPluginCapability[] {
   return [
     { capabilityId: 'computer.desktop_target.v1', title: 'Desktop targets', description: 'Bind and retire Forge-owned desktop application targets.', scopes: ['desktop.session'], actions: [DESKTOP_TARGET_OPEN_ACTION, DESKTOP_TARGET_CLOSE_ACTION] },
     { capabilityId: 'computer.observe.v1', title: 'Computer observation', description: 'Observe bounded desktop semantic state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
-    { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Perform bounded semantic desktop input.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+    { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Perform bounded semantic desktop input.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_select_rows', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
     { capabilityId: 'computer.capture.v1', title: 'Computer capture', description: 'Capture authorized desktop state.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
     { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Observe exact provider-neutral semantic element snapshots for a Forge-owned target.', scopes: ['desktop.observe'], actions: [DESKTOP_ELEMENT_OBSERVE_ACTION] },
     { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer element action', description: 'Act on exact observed element refs with observation-epoch fencing.', scopes: ['desktop.interact'], actions: [DESKTOP_ELEMENT_ACTION_ACTION] },
@@ -363,6 +364,16 @@ function desktopComputerRequest(
       selector: args.selector as ComputerSemanticSelector,
       ...(typeof args.semantic_action === 'string' ? { semanticAction: args.semantic_action } : {}),
     } as ComputerRuntimeExecutionRequest;
+  }
+  if (actionId === 'desktop_select_rows') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'select_rows',
+      interactionId: requireInteractionId(),
+      selector: args.selector as ComputerSemanticSelector,
+      startIndex: args.start_index as number,
+      ...(typeof args.end_index === 'number' ? { endIndex: args.end_index } : {}),
+    };
   }
   if (actionId === 'desktop_type_text') {
     return {

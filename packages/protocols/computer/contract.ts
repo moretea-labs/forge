@@ -96,6 +96,7 @@ export interface ComputerObserveRequest {
 
 export type ComputerInputRequest =
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'press'; interactionId: string; selector: ComputerSemanticSelector; semanticAction?: 'press' | 'show_menu' | 'pick' | 'open' | 'confirm' | 'scroll_down_page' | 'scroll_up_page' }
+  | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'select_rows'; interactionId: string; selector: ComputerSemanticSelector; startIndex: number; endIndex?: number }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'type_text'; interactionId: string; selector: ComputerSemanticSelector; text: string; replace?: boolean }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'key'; interactionId: string; keys: string[] }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'open_url'; url: string };
