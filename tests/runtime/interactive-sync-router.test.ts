@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, STABLE_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
-import { runsAsInteractiveSyncWrite } from '../../src/runtime/gateway/mcp/router';
+import { classifyGatewayExecutionPath, runsAsInteractiveSyncWrite } from '../../src/runtime/gateway/mcp/router';
+import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 describe('interactive sync routing policy', () => {
   test('router marks interactive write tools as sync-by-default and supports wait', () => {
@@ -25,9 +26,19 @@ describe('interactive sync routing policy', () => {
     expect(runsAsInteractiveSyncWrite('dispatch_task')).toBe(false);
   });
 
+  test('protected console unlock is exposed but stays on the direct non-durable boundary', () => {
+    const definition = runtimeToolDefinitions.find((tool) => tool.name === 'computer_console_unlock');
+    expect(definition).toBeDefined();
+    expect(classifyGatewayExecutionPath('computer_console_unlock', {
+      credential: 'fixture-only',
+      confirm_authorization: true,
+    }, { definition })).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
+  });
+
   test('stable connector surface stays identical to the bounded default surface', () => {
     expect(STABLE_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('computer_console_unlock');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('work_wait');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('git_commit_paths');

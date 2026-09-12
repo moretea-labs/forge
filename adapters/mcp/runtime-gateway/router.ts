@@ -31,7 +31,12 @@ export const RETIRED_AGENT_OPERATIONS = new Set([
 
 // Explicitly authorized bounded control-plane writes whose handlers already own
 // their mutation boundary. These must not be promoted to retired ExecutionJobs.
-const DIRECT_CONTROL_WRITE_TOOLS = new Set(['runtime_maintenance_apply']);
+const DIRECT_CONTROL_WRITE_TOOLS = new Set([
+  'runtime_maintenance_apply',
+  // Protected physical input owns its authorization and postcondition boundary.
+  // It must never be promoted into Process/ExecutionJob persistence or replay.
+  'computer_console_unlock',
+]);
 
 // Historical ExecutionJobs remain readable migration evidence only.
 function executionJobCreationRetired(): boolean {

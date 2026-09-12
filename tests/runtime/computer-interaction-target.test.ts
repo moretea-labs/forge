@@ -9,6 +9,7 @@ import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock 
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
+import { executeProtectedConsoleUnlockInvocation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 
@@ -583,6 +584,37 @@ describe('Computer durable InteractionTarget authority', () => {
 
 
 describe('protected Computer console unlock composition', () => {
+  test('protected MCP invocation requires explicit authorization and never returns credential material', async () => {
+    const fixture = await providerFixture();
+    const fixtureCredential = 'fixture-protected-console-credential';
+
+    await expect(executeProtectedConsoleUnlockInvocation({
+      credential: fixtureCredential,
+      confirmAuthorization: false,
+      timeoutMs: 5_000,
+    }, fixture.controllerHome)).rejects.toThrow('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED');
+    expect(fixture.state.consoleUnlockCount).toBe(0);
+
+    const result = await executeProtectedConsoleUnlockInvocation({
+      credential: fixtureCredential,
+      confirmAuthorization: true,
+      timeoutMs: 5_000,
+    }, fixture.controllerHome);
+    expect(result).toMatchObject({
+      capability: 'computer.console.unlock.v1',
+      action: 'unlock_console',
+      unlocked: true,
+      verified: true,
+      postcondition: 'console_unlocked',
+    });
+    expect(typeof result.invocationId).toBe('string');
+    expect(fixture.state.consoleUnlockCount).toBe(1);
+    expect(fixture.state.lastConsoleCredential).toBe(fixtureCredential);
+    expect(fixture.state.lastConsoleAuthorization).toMatchObject({ kind: 'explicit_single_use', confirmed: true });
+    expect(JSON.stringify(result)).not.toContain(fixtureCredential);
+    disposeRuntimeComputerComposition();
+  });
+
   test('keeps unlock out of generic plugin actions and routes only after explicit ephemeral authorization', async () => {
     const fixture = await providerFixture();
     const fixtureCredential = 'fixture-ephemeral-never-persist';

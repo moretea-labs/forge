@@ -121,6 +121,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', args)).toBe(true);
     expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', { ...args, request_id: '' })).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
+    expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock', { credential: 'fixture-only', confirm_authorization: true })).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsTransient(new SdkError(SdkErrorCode.ConnectionClosed, 'connection closed'))).toBe(true);
     expect(canonicalRuntimeToolCallFailureIsTransient(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }))).toBe(true);
     expect(canonicalRuntimeToolCallFailureIsTransient(new SdkHttpError(

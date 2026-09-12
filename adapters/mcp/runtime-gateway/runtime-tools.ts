@@ -4,6 +4,7 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callLegacyIosAdapter } from './legacy-ios-tool-adapter';
 import { result } from './result-adapter';
 import { callContextAdapter } from './context-adapter';import { callPluginAdapter } from './plugin-adapter';import { callRecoveryAdapter } from './recovery-adapter';import { callArtifactAdapter } from './artifact-adapter';import { callFilesystemAdapter } from './filesystem-adapter';import { callModelAdapter } from './model-adapter';
+import { callProtectedComputerAdapter } from './protected-computer-adapter';
 import { callWorkCompatibilityAdapter } from './work-compat-adapter';
 import { callRepositoryCompatibilityAdapter } from './repository-compat-adapter';
 import { callSchedulerAdapter } from './scheduler-adapter';
@@ -27,6 +28,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
     if (statusInbox) return statusInbox;
     const context = await callContextAdapter(ctx, name, args);
     if (context) return context;
+    const protectedComputer = await callProtectedComputerAdapter(ctx, name, args);
+    if (protectedComputer) return protectedComputer;
     const plugin = await callPluginAdapter(ctx, name, args);
     if (plugin) return plugin;
     const recovery = await callRecoveryAdapter(ctx, name, args);

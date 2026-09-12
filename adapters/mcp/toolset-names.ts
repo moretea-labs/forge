@@ -28,6 +28,10 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   // Focused checks through Process Runtime.
   'run_check',
 
+  // Protected Computer input is a dedicated direct Runtime boundary. It is not
+  // a Plugin action because credentials must never enter generic durable state.
+  'computer_console_unlock',
+
   // One typed plugin dispatcher. Plugin discovery/action schemas stay routed
   // through rh_context(capability_id=plugin.<plugin>.<action>) to avoid widening
   // the default surface with list/get plugin atomics.
