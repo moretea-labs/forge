@@ -40,22 +40,53 @@ function nativeIdentity(session: BrowserSessionState): string | undefined {
   return `${browser.provider}:${browser.browserProduct}:${tab.windowId}:${tab.tabId}`;
 }
 
+function corruptSession(source: string, message: string, field?: string): never {
+  throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', message, {
+    retryable: false,
+    details: { source, ...(field ? { field } : {}) },
+  });
+}
+
+function legacyNativeBrowserId(value: unknown, source: string, field: 'windowId' | 'tabId'): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (normalized) return normalized;
+  }
+  // Before the Browser runtime-contract extraction, macOS native ids were
+  // persisted as integers. Accept only that exact retired representation.
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  return corruptSession(source, 'Legacy Browser native tab identity is malformed; migration stopped fail-closed.', `browser.tab.${field}`);
+}
+
 function assertSession(value: unknown, source: string): BrowserSessionState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Legacy Browser session metadata is malformed; migration stopped fail-closed.', {
-      retryable: false,
-      details: { source },
-    });
+    return corruptSession(source, 'Legacy Browser session metadata is malformed; migration stopped fail-closed.');
   }
-  const session = value as Partial<BrowserSessionState>;
+  const session = structuredClone(value) as Record<string, unknown>;
   if (session.schemaVersion !== 1 || typeof session.sessionId !== 'string' || typeof session.url !== 'string'
     || typeof session.createdAt !== 'string' || typeof session.updatedAt !== 'string') {
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Legacy Browser session metadata is missing required fields; migration stopped fail-closed.', {
-      retryable: false,
-      details: { source },
-    });
+    return corruptSession(source, 'Legacy Browser session metadata is missing required fields; migration stopped fail-closed.');
   }
-  return session as BrowserSessionState;
+  const browser = session.browser;
+  if (browser !== undefined) {
+    if (!browser || typeof browser !== 'object' || Array.isArray(browser)) {
+      return corruptSession(source, 'Legacy Browser connection metadata is malformed; migration stopped fail-closed.', 'browser');
+    }
+    const browserRecord = browser as Record<string, unknown>;
+    const tab = browserRecord.tab;
+    if (tab !== undefined) {
+      if (!tab || typeof tab !== 'object' || Array.isArray(tab)) {
+        return corruptSession(source, 'Legacy Browser tab metadata is malformed; migration stopped fail-closed.', 'browser.tab');
+      }
+      const tabRecord = tab as Record<string, unknown>;
+      const windowId = legacyNativeBrowserId(tabRecord.windowId, source, 'windowId');
+      const tabId = legacyNativeBrowserId(tabRecord.tabId, source, 'tabId');
+      if (windowId === undefined) delete tabRecord.windowId; else tabRecord.windowId = windowId;
+      if (tabId === undefined) delete tabRecord.tabId; else tabRecord.tabId = tabId;
+    }
+  }
+  return session as unknown as BrowserSessionState;
 }
 
 function assertEntry(value: unknown): LegacyBrowserSessionMigrationEntry {

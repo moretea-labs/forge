@@ -213,6 +213,56 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(legacy.some((entry) => entry.session.sessionId === 'bulk-05000')).toBe(true);
   });
 
+  test('legacy migration canonicalizes historical numeric native tab ids before Computer authority', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+    }));
+    const updatedAt = '2026-08-24T01:00:00.000Z';
+    const legacySession = session('legacy-numeric-native', updatedAt, { native: true });
+    const legacyTab = legacySession.browser?.tab as unknown as Record<string, unknown>;
+    legacyTab.windowId = 2_095_923_550;
+    legacyTab.tabId = 2_095_923_553;
+    withControlPlaneTransaction(controllerHome, (database) => {
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'browser_session', scope: 'controller', key: 'legacy-numeric-native', schemaVersion: 1,
+        expectedRevision: null, action: 'test_seed',
+        value: { schemaVersion: 1, status: 'active', session: legacySession, aliases: ['legacy-numeric-native'], repositoryIds: ['repo-a'] },
+      });
+    });
+
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser', requestId: 'legacy-numeric-list',
+      origin: { surface: 'mcp', actor: 'test' }, actionId: 'list_sessions', args: {},
+    });
+    const migrated = (listed.sessions as Array<{ sessionId: string; browser?: { tab?: { windowId?: string; tabId?: string } } }>).find((entry) => entry.sessionId === 'legacy-numeric-native');
+    expect(migrated?.browser?.tab).toMatchObject({ windowId: '2095923550', tabId: '2095923553' });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'legacy-numeric-native')?.browser?.tab)
+      .toMatchObject({ windowId: '2095923550', tabId: '2095923553' });
+  });
+
+  test('legacy migration rejects malformed nested native ids with the Browser corruption contract', () => {
+    const { controllerHome, repoA } = fixture();
+    const legacySession = session('legacy-malformed-native', '2026-08-24T01:00:00.000Z', { native: true });
+    const legacyTab = legacySession.browser?.tab as unknown as Record<string, unknown>;
+    legacyTab.windowId = { unexpected: true };
+    withControlPlaneTransaction(controllerHome, (database) => {
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'browser_session', scope: 'controller', key: 'legacy-malformed-native', schemaVersion: 1,
+        expectedRevision: null, action: 'test_seed',
+        value: { schemaVersion: 1, status: 'active', session: legacySession, aliases: ['legacy-malformed-native'], repositoryIds: ['repo-a'] },
+      });
+    });
+
+    let failure: unknown;
+    try { readLegacyBrowserSessionMigrationEntries({ controllerHome, repoId: 'repo-a', repoRoot: repoA }); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(AssistantPluginError);
+    expect((failure as AssistantPluginError).code).toBe('PLUGIN_BROWSER_SESSION_STATE_CORRUPT');
+    expect((failure as AssistantPluginError).details?.field).toBe('browser.tab.windowId');
+  });
+
   test('browser adapter lists central authority with bounded pagination and authorization sees migrated sessions', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
