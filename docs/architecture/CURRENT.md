@@ -18,6 +18,10 @@ Semantic Controller
 
 Quality is prioritized over interactive performance; performance is prioritized over durability machinery that does not materially improve ordinary coding.
 
+## Runtime performance acceptance
+
+Work candidate JSON filters use a Work-defined, SQLite-maintained partial index initialized during Runtime database startup; Work JSON and CAS remain authority. Read paths perform no DDL. Recovery known-good is explicit release acceptance, requiring functional verification and fresh process/release-bound CPU evidence (60 seconds warmup, 5 minutes observation, mean <=5%, 10-second-window p95 <=10%, one core = 100%). The long read-only observation does not hold the exclusive Recovery mutation lock: every sample is fenced to exact Runtime/release identity, while final verification and known-good persistence reacquire the short mutation lock. Watchdog health does not grant this acceptance or trigger CPU-based recovery. Explicit rollback cannot be vetoed by an active known-good designation; stopped-owner and whole-release/backup safety checks remain mandatory. Historical functional attestations remain rollback evidence without being reclassified as performance evidence. See [design and evidence](../researches/runtime-cpu-work-candidate-recovery-acceptance.md).
+
 ## Controller efficiency contract
 
 - The optimization unit is a **semantic checkpoint**, not a single low-level operation. GPT may issue one intent that mechanically fans into several bounded reads/searches or one coherent edit-plus-validation transaction when the implied steps require no new semantic judgement.

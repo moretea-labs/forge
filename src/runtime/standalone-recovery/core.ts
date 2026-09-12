@@ -1,3 +1,4 @@
+import { assertRuntimePerformanceEvidence, measureRuntimePerformance, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
@@ -220,6 +221,7 @@ interface ReleaseEvidence {
   releaseAuthorityRevision?: number;
   releaseFencingTokenSha256?: string;
   attestedAt?: string;
+  performance?: RuntimePerformanceEvidence;
 }
 
 interface KnownGoodStore {
@@ -1305,7 +1307,7 @@ export async function verifyStableRuntime(
   return result;
 }
 /** Explicitly records evidence only after the full independent verification passed. */
-function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): ReleaseEvidence {
+function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult, performance: RuntimePerformanceEvidence): ReleaseEvidence {
   const authority = releaseAuthority(config);
     const active = verified.releases.active;
     if (
@@ -1319,8 +1321,10 @@ function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult
     ) {
       throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
     }
+    assertRuntimePerformanceEvidence(performance, runtimePerformanceIdentity(config));
     const attested: ReleaseEvidence = {
       ...active,
+      performance,
       controllerHome: resolve(config.controllerHome),
       releaseAuthorityRevision: authority.revision,
       releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
@@ -1341,10 +1345,39 @@ function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult
   return attested;
 }
 
-export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
-  const locked = await withLock(config, { action: 'attest_known_good' }, async () => (
-    persistVerifiedKnownGood(config, await verifyStableRuntime(config))
-  ));
+function runtimePerformanceIdentity(config: RecoveryConfig): RuntimePerformanceIdentity {
+  const authority = releaseAuthority(config);
+  const status = observeRuntimeStatus(config.controllerHome);
+  const snapshot = status.snapshot;
+  if (!authority || !status.running || !status.ready || status.stale || !snapshot
+    || snapshot.releaseId !== authority.active.releaseId
+    || snapshot.artifactIdentity !== authority.active.artifactIdentity) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: coherent live Runtime required');
+  }
+  return {
+    releaseId: authority.active.releaseId, authorityRevision: authority.revision,
+    pid: snapshot.pid, runtimeInstanceId: snapshot.runtimeInstanceId, startedAt: snapshot.startedAt,
+  };
+}
+
+export async function attestKnownGood(
+  config: RecoveryConfig,
+  dependencies: RuntimePerformanceDependencies = {},
+): Promise<ReleaseEvidence> {
+  const before = await verifyStableRuntime(config);
+  if (!before.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+
+  // Performance observation is read-only and deliberately stays outside the
+  // single Recovery mutation lock. Runtime/release identity is fenced on every
+  // sample; a concurrent restart/rollback/activation therefore invalidates the
+  // evidence instead of being blocked for the six-minute observation window.
+  const performance = await measureRuntimePerformance(() => runtimePerformanceIdentity(config), dependencies);
+
+  const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
+    const verified = await verifyStableRuntime(config);
+    if (!verified.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+    return persistVerifiedKnownGood(config, verified, performance);
+  });
   if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
   return locked.value;
 }
@@ -1359,9 +1392,6 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
 async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): Promise<RollbackResult> {
   const before = await verifyStableRuntime(config);
   const active = before.releases.active;
-  if (before.ok && matchingKnownGood(config, active)) {
-    return { ok: true, noOp: true, detail: 'active whole-Runtime release is currently healthy and independently attested known-good', verify: before };
-  }
   if (before.runtime.running) {
     return {
       ok: false,
@@ -3647,18 +3677,6 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     ),
   );
   if (primaryRuntimeHealthy && !primaryConnectorFailed && !primaryPublicTransportFailed && recoveryHealthy) {
-    if (fullVerificationPerformed && verified.ok && !matchingKnownGood(config, verified.releases.active)) {
-      try {
-        const attestation = await withLock(config, { action: 'attest_known_good' }, async () => persistVerifiedKnownGood(config, verified));
-        if (!attestation.acquired) {
-          audit(config, 'known_good_attestation_deferred', { reason: recoveryBusyDetail(attestation.owner) });
-        }
-      } catch (error) {
-        audit(config, 'known_good_attestation_deferred', {
-          reason: error instanceof Error ? error.message : 'watchdog known-good attestation failed',
-        });
-      }
-    }
     const stable = recordWatchdogRuntimeHealthy(
       scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
       now,

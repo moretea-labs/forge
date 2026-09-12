@@ -7,6 +7,7 @@ import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../.
 import {
   listControlPlaneRecords,
   listControlPlaneRecordsExcludingPayloadTextValues,
+  initializeControlPlanePayloadTextExclusionIndex,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
@@ -798,6 +799,12 @@ function rawWorkMayBeCurrent(contract: WorkContract): boolean {
  * admission. Invalid active rows stay explicit and conservative by identity,
  * lineage, scope and isolation; they are never mutated or silently accepted.
  */
+export function initializeWorkCandidateIndex(controllerHome: string): void {
+  initializeControlPlanePayloadTextExclusionIndex(controllerHome, {
+    namespace: 'work_contract', field: 'status', excludedValues: TERMINAL_WORK_CONTRACT_STATUSES,
+  });
+}
+
 export function readActiveWorkCandidates(
   options: WorkContractStoreOptions & { limit?: number },
 ): ActiveWorkCandidateSnapshot {

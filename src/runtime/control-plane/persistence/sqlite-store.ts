@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs';
 import { dirname, join } from 'path';
@@ -637,47 +638,63 @@ export function listControlPlaneRecords<T>(
  * establishes domain authority: missing/null/non-text values remain candidates,
  * and callers must still run their canonical semantic validation.
  */
-export function listControlPlaneRecordsExcludingPayloadTextValues<T>(
-  controllerHome: string,
-  input: {
-    namespace: string;
-    scope: string;
-    field: string;
-    excludedValues: readonly string[];
-    limit?: number;
-  },
-): ControlPlaneRecord<T>[] {
+export interface PayloadTextExclusion {
+  namespace: string;
+  field: string;
+  excludedValues: readonly string[];
+}
+
+function payloadTextExclusionPredicate(input: PayloadTextExclusion): string {
   const field = input.field.trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) {
     throw new Error(`CONTROL_PLANE_JSON_FIELD_INVALID: ${input.field}`);
   }
-  const excludedValues = [...new Set(input.excludedValues.map((value) => value.trim()).filter(Boolean))];
-  if (excludedValues.length === 0) {
-    return listControlPlaneRecords<T>(controllerHome, input);
-  }
-  if (excludedValues.length > 32) throw new Error('CONTROL_PLANE_JSON_EXCLUSION_LIMIT_EXCEEDED');
+  const values = [...new Set(input.excludedValues.map((value) => value.trim()).filter(Boolean))].sort();
+  if (values.length > 32) throw new Error('CONTROL_PLANE_JSON_EXCLUSION_LIMIT_EXCEEDED');
+  // These literals are escaped here, never supplied as SQL by a domain caller.
+  // SQLite must see identical literals in the query and partial-index predicate.
+  const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const namespace = `namespace = ${literal(input.namespace)}`;
+  if (values.length === 0) return namespace;
+  const extraction = `json_extract(payload, ${literal(`$.${field}`)})`;
+  return `${namespace} AND (${extraction} IS NULL OR ${extraction} NOT IN (${values.map(literal).join(', ')}))`;
+}
+
+/** Explicit startup DDL. JSON remains authority; SQLite maintains the derived index in every write transaction. */
+export function initializeControlPlanePayloadTextExclusionIndex(
+  controllerHome: string,
+  input: PayloadTextExclusion,
+): void {
+  const predicate = payloadTextExclusionPredicate(input);
+  const prefix = `control_plane_candidate_${createHash('sha256').update(`${input.namespace}/${input.field}`).digest('hex').slice(0, 16)}_`;
+  const name = `${prefix}${createHash('sha256').update(predicate).digest('hex').slice(0, 16)}`;
+  withControlPlaneTransaction(controllerHome, (database) => {
+    database.exec(`CREATE INDEX IF NOT EXISTS ${name} ON control_plane_records (scope, updated_at, record_key) WHERE ${predicate}`);
+    // Retire obsolete predicates for this domain field in the same transaction.
+    const old = withSqliteStatement(database, "SELECT name FROM sqlite_master WHERE type = 'index' AND substr(name, 1, ?) = ?",
+      (statement) => statement.all(prefix.length, prefix)) as Array<{ name: string }>;
+    for (const index of old) {
+      if (index.name !== name && /^control_plane_candidate_[a-f0-9]{16}_[a-f0-9]{16}$/.test(index.name)) {
+        database.exec(`DROP INDEX ${index.name}`);
+      }
+    }
+  });
+}
+
+export function listControlPlaneRecordsExcludingPayloadTextValues<T>(
+  controllerHome: string,
+  input: PayloadTextExclusion & { scope: string; limit?: number },
+): ControlPlaneRecord<T>[] {
+  const predicate = payloadTextExclusionPredicate(input);
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1_000), 5_000));
-  const jsonPath = `$.${field}`;
-  const placeholders = excludedValues.map(() => '?').join(', ');
   return withDatabaseForRead(controllerHome, (database) => {
     const rows = withSqliteStatement(database, `
       SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
       FROM control_plane_records
-      WHERE namespace = ? AND scope = ?
-        AND (
-          json_extract(payload, ?) IS NULL
-          OR json_extract(payload, ?) NOT IN (${placeholders})
-        )
+      WHERE ${predicate} AND scope = ?
       ORDER BY updated_at ASC, record_key ASC
       LIMIT ?
-    `, (statement) => statement.all(
-      input.namespace,
-      input.scope,
-      jsonPath,
-      jsonPath,
-      ...excludedValues,
-      limit,
-    ));
+    `, (statement) => statement.all(input.scope, limit));
     return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
   });
 }

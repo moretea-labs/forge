@@ -11,6 +11,7 @@ import {
   inspectControlPlaneDatabase,
   listControlPlaneRecords,
   listControlPlaneRecordsExcludingPayloadTextValues,
+  initializeControlPlanePayloadTextExclusionIndex,
   maintainControlPlaneDatabase,
   readControlPlaneRecord,
   restoreControlPlaneDatabase,
@@ -367,5 +368,44 @@ describe('final SQLite control-plane cutover', () => {
     expect(dualWriters.map((entry) => entry.path)).toEqual([]);
     const issueStorePath = join(process.cwd(), 'src/cli/controller/issue-store.ts');
     expect(source.filter(({ text }) => /function\s+writeIssue\s*\(/.test(text)).map((entry) => entry.path)).toEqual([issueStorePath]);
+  });
+});
+
+
+test('derived candidate index preserves conservative membership, write transitions and ordering without scanning terminal JSON', () => {
+  withHome((home) => {
+    const filter = { namespace: 'work_contract', field: 'status', excludedValues: ['completed', 'failed', 'cancelled'] };
+    initializeControlPlanePayloadTextExclusionIndex(home, filter);
+    let db = new Database(controlPlaneDatabasePath(home));
+    try {
+      const insert = db.prepare(`INSERT INTO control_plane_records VALUES ('work_contract', 'repo-index', ?, 1, 1, ?, '2026-01-01', '2026-01-01')`);
+      db.transaction(() => {
+        for (let i = 0; i < 1000; i++) insert.run(`terminal-${i}`, JSON.stringify({ status: 'completed', evidence: 'x'.repeat(20_000) }));
+        for (const [key, status] of [['a', null], ['b', 7], ['c', {}], ['d', 'unknown'], ['e', 'running'], ['f', undefined]] as const) {
+          insert.run(key, JSON.stringify({ status }));
+        }
+      })();
+      const list = () => listControlPlaneRecordsExcludingPayloadTextValues(home, { ...filter, scope: 'repo-index', limit: 20 }).map((r) => r.key);
+      expect(list()).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+      expect(listControlPlaneRecordsExcludingPayloadTextValues(home, { ...filter, scope: 'repo-index', limit: 2 }).map((r) => r.key)).toEqual(['a', 'b']);
+      writeControlPlaneRecord(home, { namespace: filter.namespace, scope: 'repo-index', key: 'e', schemaVersion: 1, value: { status: 'completed' }, expectedRevision: 1 });
+      expect(list()).toEqual(['a', 'b', 'c', 'd', 'f']);
+      writeControlPlaneRecord(home, { namespace: filter.namespace, scope: 'repo-index', key: 'terminal-1', schemaVersion: 1, value: { status: 'running' }, expectedRevision: 1 });
+      expect(list()).toContain('terminal-1');
+      const index = db.prepare("SELECT sql FROM sqlite_master WHERE name LIKE 'control_plane_candidate_%'").get() as { sql: string };
+      const predicate = index.sql.split(' WHERE ')[1]!;
+      const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT payload FROM control_plane_records WHERE ${predicate} AND scope = ? ORDER BY updated_at, record_key LIMIT 20`).all('repo-index') as Array<{ detail: string }>;
+      expect(plan.some((r) => r.detail.includes('USING INDEX control_plane_candidate_'))).toBe(true);
+      expect(plan.some((r) => r.detail.includes('TEMP B-TREE'))).toBe(false);
+      // Existing schemas acquire the index only through initialization, never a read.
+      const indexName = (db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'control_plane_candidate_%'").get() as { name: string }).name;
+      db.close();
+      db = new Database(controlPlaneDatabasePath(home));
+      db.exec(`DROP INDEX ${indexName}`);
+      expect(list()).toContain('terminal-1');
+      initializeControlPlanePayloadTextExclusionIndex(home, filter);
+      initializeControlPlanePayloadTextExclusionIndex(home, { ...filter, excludedValues: ['completed'] });
+      expect((db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE name LIKE 'control_plane_candidate_%'").get() as { count: number }).count).toBe(1);
+    } finally { db.close(); }
   });
 });

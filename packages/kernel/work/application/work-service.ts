@@ -82,6 +82,7 @@ export {
   acceptSubmittedWorkContract,
   listWorkContracts,
   readActiveWorkCandidates,
+  initializeWorkCandidateIndex,
   isCurrentWorkContract,
   supersedeWorkContract,
   getWorkContract,

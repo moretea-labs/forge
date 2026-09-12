@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
   activateRuntimeRelease,
-  attestKnownGood,
+  attestKnownGood as attestKnownGoodWithCpu,
   createRecoveryConfig,
   decideWatchdog,
   defaultPrimaryRuntimeServiceConfig,
@@ -85,6 +85,23 @@ import {
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+
+import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu } from '../../src/runtime/standalone-recovery/performance';
+
+function idleCpuDependencies() {
+  let elapsed = 0;
+  const base = Date.now() - 360_000;
+  return {
+    readCpu: () => ({ cpuMs: 0, processStartTime: 'fixture-process-start' }),
+    monotonicNow: () => elapsed,
+    wallNow: () => base + elapsed,
+    sleep: async (ms: number) => { elapsed += ms; },
+  };
+}
+
+function attestKnownGood(config: Parameters<typeof attestKnownGoodWithCpu>[0]) {
+  return attestKnownGoodWithCpu(config, idleCpuDependencies());
+}
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -1834,7 +1851,7 @@ describe('standalone recovery on canonical Runtime', () => {
     }, { platform: 'darwin' })).toThrow('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
   });
 
-  test('Watchdog full verification automatically attests a healthy active Runtime release', async () => {
+  test('Watchdog full verification does not attest release performance', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-watchdog-known-good', 'artifact-watchdog-known-good');
     ensureActiveRuntimeRelease(home, activeManifest);
@@ -1853,9 +1870,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(tick.decision.action).toBe('healthy');
     expect(tick.state.lastFullVerifyAt).toBeNumber();
     const knownGoodPath = join(home, 'recovery', 'state', 'known-good.json');
-    const stored = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as { releases: Array<{ revision: string; path: string }> };
-    expect(stored.releases).toHaveLength(1);
-    expect(stored.releases[0]).toMatchObject({ revision: 'release-watchdog-known-good', path: activeManifest });
+    expect(existsSync(knownGoodPath)).toBe(false);
   });
 
   test('Watchdog cheap healthy ticks do not create known-good evidence without a full verification', async () => {
@@ -4071,5 +4086,90 @@ describe('Recovery verifier OAuth registration lifecycle', () => {
       grant_types: ['authorization_code'],
       response_types: ['code'],
     })).toThrow('RECOVERY_OAUTH_VERIFIER_CLIENT_METADATA_INVALID');
+  });
+});
+
+
+describe('Recovery explicit performance acceptance', () => {
+  const identity = { releaseId: 'candidate', authorityRevision: 3, runtimeInstanceId: 'runtime', pid: 123, startedAt: 'start' };
+
+  test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
+    const deps = idleCpuDependencies();
+    const evidence = await measureRuntimePerformance(() => identity, deps);
+    expect(evidence).toMatchObject({ policy: 'idle-cpu-v1', sampleCount: 30, durationMs: 300_000, meanCpuPercent: 0 });
+    expect(() => assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, p95CpuPercent: 11 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    const busy = idleCpuDependencies();
+    await expect(measureRuntimePerformance(() => identity, {
+      ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
+    })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    let readings = 0;
+    await expect(measureRuntimePerformance(() => identity, {
+      ...idleCpuDependencies(), readCpu: () => ({ cpuMs: 0, processStartTime: String(readings++) }),
+    })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    const changed = idleCpuDependencies();
+    await expect(measureRuntimePerformance(() => ({ ...identity, authorityRevision: changed.monotonicNow() > 60_000 ? 4 : 3 }), changed))
+      .rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
+    await expect(measureRuntimePerformance(() => identity, {
+      ...idleCpuDependencies(), readCpu: () => { throw new Error('sample unavailable'); },
+    })).rejects.toThrow('sample unavailable');
+    expect(readRuntimeCpu(process.pid).cpuMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test('performance observation does not hold the Recovery mutation lock and final attestation still requires it', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-cpu-lock', 'artifact-cpu-lock');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-cpu-lock', 'artifact-cpu-lock');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    const deps = idleCpuDependencies();
+    let sleepCount = 0;
+    let heldFinalLock: ReturnType<typeof acquireRecoveryOperationLock> | undefined;
+    const pending = attestKnownGoodWithCpu(config, {
+      ...deps,
+      sleep: async (ms: number) => {
+        sleepCount += 1;
+        const probe = acquireRecoveryOperationLock({
+          controllerHome: home,
+          action: 'test_probe_during_performance_observation',
+          requestId: `test-probe-${sleepCount}`,
+        });
+        expect(probe.acquired).toBe(true);
+        if (sleepCount === 36) heldFinalLock = probe;
+        else if (probe.acquired) probe.handle.close();
+        await deps.sleep(ms);
+      },
+    });
+    await expect(pending).rejects.toThrow('Recovery mutation already in progress');
+    expect(sleepCount).toBe(36);
+    expect(heldFinalLock?.acquired).toBe(true);
+    if (heldFinalLock?.acquired) heldFinalLock.handle.close();
+    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
+
+    const attested = await attestKnownGood(config);
+    expect(attested.performance?.sampleCount).toBe(30);
+  });
+
+  test('functional health cannot attest a busy Runtime; explicit rollback of an attested live Runtime still requires stop', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-cpu', 'artifact-cpu');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-cpu', 'artifact-cpu');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    const busy = idleCpuDependencies();
+    await expect(attestKnownGoodWithCpu(config, {
+      ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
+    })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
+    const attested = await attestKnownGood(config);
+    expect(attested.performance?.sampleCount).toBe(30);
+    const result = await rollbackPrevious(config, 'explicit performance regression');
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('stop the complete Canonical Runtime');
   });
 });
