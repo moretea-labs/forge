@@ -306,6 +306,10 @@ export function buildSuperControllerInvocation(
       executable,
       args: [
         '--ask-for-approval', 'never',
+        // A launched Codex controller must use the reservation-scoped Forge MCP
+        // transport below, never a globally configured Codex App that happens to
+        // expose another Forge tool surface under a shared principal.
+        '--disable', 'apps',
         ...codexMcpConfigArgs(mcpBootstrap),
         'exec', '--sandbox', 'workspace-write',
         ...(request.args ?? []),

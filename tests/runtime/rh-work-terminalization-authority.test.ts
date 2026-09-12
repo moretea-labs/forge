@@ -38,6 +38,8 @@ import { updateScheduledContinuationDispatch } from '../../packages/kernel/sched
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { releaseExternalControllerLaunchReservation, reserveExternalControllerLaunch } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
+import { providerMcpReservationIdentity } from '../../src/runtime/control-plane/launcher/provider-mcp-bootstrap';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
@@ -70,6 +72,7 @@ function ctx(
   principalId: string,
   sessionId: string,
   controllerInstanceId: string,
+  controllerType: 'chatgpt' | 'codex' = 'chatgpt',
 ): MultiRepositoryMcpToolContext {
   return {
     repoRoot: repository.canonicalRoot,
@@ -81,7 +84,7 @@ function ctx(
     principalId,
     sessionId,
     controllerInstanceId,
-    controllerType: 'chatgpt',
+    controllerType,
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
 }
@@ -2965,6 +2968,48 @@ describe('rh_work terminalization authority', () => {
     expect(explicit.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('cancelled');
   }, 15_000);
+
+  test('active Codex launch reservation fences controller_claim to the reservation-scoped MCP identity', async () => {
+    const fx = fixture();
+    const workId = 'work-codex-launch-identity-fence';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const reservation = reserveExternalControllerLaunch({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerType: 'codex',
+      ttlMs: 5_000,
+    });
+    try {
+      const generic = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, fx.repository, 'mcp-bearer-client', 'generic-codex-session', 'runtime-codex', 'codex'),
+        'rh_work',
+        { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'codex' },
+      ));
+      expect(generic.status).toBe('blocked');
+      expect(generic.summary).toContain('WORK_CONTROLLER_LAUNCH_IDENTITY_MISMATCH');
+      expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+
+      const expected = providerMcpReservationIdentity('codex', reservation.reservationId);
+      const exact = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, fx.repository, expected.principalId, expected.sessionId, 'runtime-codex', 'codex'),
+        'rh_work',
+        { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'codex' },
+      ));
+      expect(exact.status).toBe('ok');
+      expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+        controllerType: 'codex',
+        controllerId: expected.principalId,
+        principalId: expected.principalId,
+        sessionId: expected.sessionId,
+      });
+    } finally {
+      releaseExternalControllerLaunchReservation(
+        { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+        workId,
+        reservation.reservationId,
+        'test_cleanup',
+      );
+    }
+  });
 
   test('already-terminal Work performs cleanup-only without reopening Controller ownership', async () => {
     const fx = fixture();

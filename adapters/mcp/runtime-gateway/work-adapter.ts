@@ -54,6 +54,8 @@ import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-p
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
 import { callExecutionTool } from "./execution-tools";
 import { launchSuperController } from "../../../src/runtime/control-plane/launcher/thin-launcher";
+import { getExternalControllerLaunchReservation } from "../../../src/runtime/control-plane/launcher/launch-reservation-store";
+import { providerMcpReservationIdentity } from "../../../src/runtime/control-plane/launcher/provider-mcp-bootstrap";
 import { runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from "../../../src/runtime/control-plane/launcher/chatgpt-work-continuation";
 import { chatgptControllerRoundBinding, chatgptControllerRoundRecoveryAuthorized, recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt, prepareControllerAssistantContext, prepareControllerAssistantContextBundle } from "../../../src/runtime/root/controller-round-composition";
 import { assertControllerOwnershipAuthority, bindControllerSessionToCurrentRuntime, controllerSessionAuthorityDigest, controllerSessionAuthorityMatches, controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseControllerSessionWithAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, finishControllerRoundRelayDispatch, getControllerRoundRelay, resolveRequirementControllerRoundRelayForWork, submitControllerRoundDisposition, type ControllerRoundRelayRecord, type ControllerRoundDisposition } from "../../../packages/kernel/controller/api/index";
@@ -1583,6 +1585,15 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               const work = getWorkContract(store, workId);
               if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const activeLaunchReservation = identity.controllerType === 'codex'
+                ? getExternalControllerLaunchReservation(store, workId)
+                : undefined;
+              if (activeLaunchReservation?.controllerType === 'codex') {
+                const expectedLaunchIdentity = providerMcpReservationIdentity('codex', activeLaunchReservation.reservationId);
+                if (identity.principalId !== expectedLaunchIdentity.principalId || identity.sessionId !== expectedLaunchIdentity.sessionId) {
+                  throw new Error(`WORK_CONTROLLER_LAUNCH_IDENTITY_MISMATCH: ${workId}; active Codex launch reservation requires its exact reservation-scoped MCP identity.`);
+                }
+              }
               let authorizedRelay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
               const observedOwner = getControllerSession(store, workId);
               const dispatchedRelay = getControllerRoundRelay(store, workId);

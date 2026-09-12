@@ -12,6 +12,23 @@ export interface ProviderMcpBootstrap {
   env: NodeJS.ProcessEnv;
 }
 
+export interface ProviderMcpReservationIdentity {
+  principalId: string;
+  sessionId: string;
+}
+
+export function providerMcpReservationIdentity(
+  provider: 'codex',
+  reservationId: string,
+): ProviderMcpReservationIdentity {
+  const suffix = reservationId.trim();
+  if (!suffix) throw new Error('LAUNCHER_RESERVATION_ID_REQUIRED');
+  return {
+    principalId: `external:${provider}:${suffix}`,
+    sessionId: `external-session:${provider}:${suffix}`,
+  };
+}
+
 function runtimeMcpUrl(controllerHome: string): string {
   const observed = observeRuntimeStatus(controllerHome);
   if (!observed.running || !observed.ready) {
@@ -33,13 +50,12 @@ export function resolveProviderMcpBootstrap(
   const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(controllerHome).configPath);
   const token = readFileSync(config.authTokenFile, 'utf8').trim();
   if (!token) throw new Error('LAUNCHER_RUNTIME_MCP_TOKEN_EMPTY');
-  const suffix = reservationId.trim();
-  if (!suffix) throw new Error('LAUNCHER_RESERVATION_ID_REQUIRED');
+  const identity = providerMcpReservationIdentity(provider, reservationId);
   return {
     url: runtimeMcpUrl(controllerHome),
     bearerTokenEnvVar: FORGE_RUNTIME_MCP_TOKEN_ENV,
-    principalId: `external:${provider}:${suffix}`,
-    sessionId: `external-session:${provider}:${suffix}`,
+    principalId: identity.principalId,
+    sessionId: identity.sessionId,
     env: {
       ...process.env,
       [FORGE_RUNTIME_MCP_TOKEN_ENV]: token,
