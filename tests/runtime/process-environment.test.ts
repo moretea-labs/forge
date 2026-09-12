@@ -43,11 +43,21 @@ describe('repository child process environment', () => {
       Path: 'C:\\Windows\\System32;C:\\Program Files\\Git\\cmd',
       PATH: '',
       FORGE_RUNTIME_PRIVATE_TEST: 'must-not-leak',
+      FORGE_RELEASE_PATH: 'C:\\private-runtime-release',
+      FORGE_RELEASE_ID: 'private-release-id',
+      FORGE_RELEASE_AUTHORITY_REVISION: '321',
+      FORGE_RELEASE_SOURCE_COMMIT: 'deadbeef',
+      REPOSITORY_VISIBLE_SETTING: 'preserve-me',
     }, 'win32');
 
     expect(normalized.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\cmd');
     expect(Object.keys(normalized).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
     expect(normalized.FORGE_RUNTIME_PRIVATE_TEST).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_PATH).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_ID).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_AUTHORITY_REVISION).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_SOURCE_COMMIT).toBeUndefined();
+    expect(normalized.REPOSITORY_VISIBLE_SETTING).toBe('preserve-me');
   });
 
   test('uses the last non-empty Windows PATH variant as the case-insensitive override', () => {

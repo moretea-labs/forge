@@ -500,9 +500,10 @@ function controllerCheckInputIntegrityChanged(
 ): boolean {
   if (!input.listingAvailable || !completed.listingAvailable || !input.fileDigests || !completed.fileDigests) return true;
   const writeScopes = check.effects?.writes ?? [];
-  for (const [relativePath, digest] of input.fileDigests) {
+  const observedPaths = new Set([...input.fileDigests.keys(), ...completed.fileDigests.keys()]);
+  for (const relativePath of observedPaths) {
     if (writeScopes.some((scope) => controllerCheckWriteScopeContainsPath(scope, relativePath))) continue;
-    if ((completed.fileDigests.get(relativePath) ?? 'missing') !== digest) return true;
+    if (input.fileDigests.get(relativePath) !== completed.fileDigests.get(relativePath)) return true;
   }
   return false;
 }

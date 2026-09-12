@@ -95,10 +95,38 @@ describe('controller check provenance and failure classification', () => {
     expect(existsSync(join(repoRoot, '.ai/harness/design-system-audit.json'))).toBe(true);
   });
 
-  test('still fails closed when a check changes repository source content', () => {
+  test('fails closed when a check adds repository source content', () => {
     const repoRoot = fixture({
       source_drift: {
         command: [process.execPath, '-e', "require('fs').writeFileSync('source.ts','export const changed = true;\\n');"],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'source_drift');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('repository revision changed while the check was running');
+  });
+
+  test('fails closed when a check removes repository source content', () => {
+    const repoRoot = fixture({
+      source_drift: {
+        command: [process.execPath, '-e', "require('fs').unlinkSync('package.json');"],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'source_drift');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('repository revision changed while the check was running');
+  });
+
+  test('fails closed when a check modifies existing repository source content', () => {
+    const repoRoot = fixture({
+      source_drift: {
+        command: [process.execPath, '-e', "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.name='mutated';fs.writeFileSync('package.json',JSON.stringify(p));"],
       },
     });
 
