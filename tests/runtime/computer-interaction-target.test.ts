@@ -9,7 +9,7 @@ import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock 
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
-import { executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
+import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 
@@ -628,6 +628,39 @@ describe('protected Computer console unlock composition', () => {
     expect(fixture.state.consoleUnlockCount).toBe(1);
     expect(fixture.state.lastConsoleHandle).toBe(String(prepared.credentialHandle));
     expect(fixture.state.lastConsoleAuthorization).toMatchObject({ kind: 'explicit_single_use', confirmed: true });
+    disposeRuntimeComputerComposition();
+  });
+
+  test('supports frozen client schema only as a non-secret prepare/opaque-handle carrier', async () => {
+    const fixture = await providerFixture();
+    const ctx = { controllerHome: fixture.controllerHome } as any;
+
+    const prepared = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
+      credential: 'prepare_provider_local',
+      confirm_authorization: true,
+      timeout_ms: 5_000,
+    });
+    expect(prepared?.structuredContent).toMatchObject({ accepted: true, action: 'prepare_unlock_console', prepared: true });
+    const preparedContent = prepared?.structuredContent as Record<string, unknown> | undefined;
+    const handle = String(preparedContent?.credentialHandle ?? '');
+    expect(handle).toMatch(/^[0-9a-f-]{36}$/i);
+
+    const unlocked = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
+      credential: handle,
+      confirm_authorization: true,
+      timeout_ms: 5_000,
+    });
+    expect(unlocked?.structuredContent).toMatchObject({ accepted: true, action: 'unlock_console', unlocked: true, verified: true });
+
+    const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
+      credential: 'not-an-opaque-handle',
+      confirm_authorization: true,
+      timeout_ms: 5_000,
+    });
+    expect(rejected?.structuredContent).toMatchObject({
+      accepted: false,
+      error: { code: 'COMPUTER_CONSOLE_UNLOCK_FROZEN_CLIENT_CARRIER_INVALID' },
+    });
     disposeRuntimeComputerComposition();
   });
 

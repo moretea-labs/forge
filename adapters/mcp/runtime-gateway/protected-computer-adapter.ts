@@ -12,6 +12,7 @@ import { result } from './result-adapter';
 const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
 const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const FROZEN_CLIENT_PREPARE_CARRIER = 'prepare_provider_local';
 
 export interface ProtectedConsoleUnlockPreparationInput {
   confirmAuthorization: boolean;
@@ -117,6 +118,23 @@ export async function callProtectedComputerAdapter(
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (name !== 'computer_console_unlock_prepare' && name !== 'computer_console_unlock') return undefined;
+  if (name === 'computer_console_unlock' && args.credential_handle === undefined && typeof args.credential === 'string') {
+    if (args.credential === FROZEN_CLIENT_PREPARE_CARRIER) {
+      name = 'computer_console_unlock_prepare';
+    } else if (UUID_PATTERN.test(args.credential)) {
+      args = { ...args, credential_handle: args.credential };
+    } else {
+      return result({
+        accepted: false,
+        capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+        action: 'unlock_console',
+        error: {
+          code: 'COMPUTER_CONSOLE_UNLOCK_FROZEN_CLIENT_CARRIER_INVALID',
+          message: 'Frozen clients may pass only the provider-local prepare sentinel or an opaque UUID handle; raw credentials are forbidden.',
+        },
+      }, true);
+    }
+  }
   const action = name === 'computer_console_unlock_prepare' ? 'prepare_unlock_console' : 'unlock_console';
   try {
     const payload = name === 'computer_console_unlock_prepare'
