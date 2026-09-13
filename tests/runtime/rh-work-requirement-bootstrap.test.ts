@@ -752,12 +752,28 @@ describe('rh_work verification registry', () => {
       },
     }, null, 2));
 
-    const verified = structured(await callRuntimeTool(mcpContext(controllerHome, repositoryWithCandidate), 'rh_work', {
+    const ctx = {
+      ...mcpContext(controllerHome, repositoryWithCandidate),
+      principalId: 'candidate-registry-test-principal',
+      controllerInstanceId: 'candidate-registry-test-runtime',
+      controllerType: 'chatgpt' as const,
+    } as MultiRepositoryMcpToolContext;
+    const claimed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+    }));
+    expect(claimed.status).toBe('ok');
+    const controllerAuthorityId = String(claimed.data?.controllerAuthorityId ?? '');
+    expect(controllerAuthorityId).toStartWith('ctrl_');
+
+    const verified = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'verify',
       work_id: workId,
       check_id: 'package:check:candidate',
       simulate_check: true,
+      controller_authority_id: controllerAuthorityId,
     }));
     expect(verified.status).toBe('ok');
     expect(verified.data.verification).toMatchObject({ checkId: 'package:check:candidate', outcome: 'valid_pass' });
