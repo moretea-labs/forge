@@ -47,6 +47,7 @@ describe('repository child process environment', () => {
       FORGE_RELEASE_ID: 'private-release-id',
       FORGE_RELEASE_AUTHORITY_REVISION: '321',
       FORGE_RELEASE_SOURCE_COMMIT: 'deadbeef',
+      FORGE_BUILD_VERSION: '1.7.2-host-runtime',
       REPOSITORY_VISIBLE_SETTING: 'preserve-me',
     }, 'win32');
 
@@ -57,6 +58,7 @@ describe('repository child process environment', () => {
     expect(normalized.FORGE_RELEASE_ID).toBeUndefined();
     expect(normalized.FORGE_RELEASE_AUTHORITY_REVISION).toBeUndefined();
     expect(normalized.FORGE_RELEASE_SOURCE_COMMIT).toBeUndefined();
+    expect(normalized.FORGE_BUILD_VERSION).toBeUndefined();
     expect(normalized.REPOSITORY_VISIBLE_SETTING).toBe('preserve-me');
   });
 

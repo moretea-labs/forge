@@ -18,6 +18,9 @@ export FORGE_CONTROLLER_HOME="$CONTROLLER_HOME"
 export XDG_STATE_HOME="$XDG_STATE_HOME_DIR"
 export npm_config_cache="$NPM_CACHE_DIR"
 unset BUN_INSTALL
+# The hosting immutable Runtime may be older than the package under test. Its
+# build identity must not override the installed tarball's package version.
+unset FORGE_BUILD_VERSION
 
 if [[ -e "$FORGE_CONTROLLER_HOME" ]]; then
   echo "[tarball-smoke] ERROR: isolated Controller Home must start empty: $FORGE_CONTROLLER_HOME" >&2
