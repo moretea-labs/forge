@@ -22,4 +22,6 @@ All accepted plan obligations are KEEP: indexed conservative query and domain ow
 
 ## Validation
 
-Results are appended after focused tests, exact-candidate review, governed gates, and actual post-activation CPU acceptance. A passing query microbenchmark or functional probe is insufficient to declare CPU fixed.
+The isolated production-data copy contained 749 Work rows. Across the measured call sources, 20 active-candidate reads fell from 164.53 ms aggregate to 0.33 ms, while three lifecycle-projection reads fell from 25.59 ms to 0.10 ms. Index construction took 13.19 ms. A separate Node SQLite process passed indexed status transitions plus backup/restore. No Work payload was recorded in this evidence.
+
+Focused SQLite/Recovery tests, type checking, Runtime architecture, architecture sync, bootstrap checks, affected tests, and the governed main gate passed on the candidate. Independent review identified and closed two timing gaps: functional verification is now fenced to the same process/release sampled afterward, and every warmup window rejects suspension beyond 15 seconds. Actual post-activation five-minute CPU acceptance remains the terminal evidence; the query benchmark and functional probes alone do not declare CPU fixed.
