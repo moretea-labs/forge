@@ -76,7 +76,9 @@ import {
   recoveryConnectorDescriptor,
   recoveryConnectorHasExternalTransport,
   recoveryOpenAiTunnelDefaultAlias,
+  verifyRecoveryConnector,
 } from '../../src/cli/commands/recovery';
+import { FORGE_VERSION } from '../../src/version';
 import {
   defaultUserControllerHomeForMigration,
   recoveryControllerHomeOwnerLabels,
@@ -3785,6 +3787,107 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(serialized).not.toContain('bearerToken');
     expect(serialized).not.toContain('gateway-token');
   });
+  test('Recovery Connector verifier carries one MCP session through SSE responses and closes it', async () => {
+    const home = controllerHome();
+    ensureMcpControllerHomeOAuthPassphrase(home);
+    initializeStandaloneRecovery(home, 8787, {
+      recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp',
+    });
+    const sessionId = 'recovery-verifier-session';
+    const sessionMethods: string[] = [];
+    let sessionDeleted = false;
+    const json = (value: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(value), {
+      status,
+      headers: { 'content-type': 'application/json', ...headers },
+    });
+    const sse = (value: unknown, headers: Record<string, string> = {}) => new Response(`event: message\ndata: ${JSON.stringify(value)}\n\n`, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream', ...headers },
+    });
+    const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      if (url === 'https://recovery.example.test/recovery/health') {
+        return json({ status: 'ok', version: FORGE_VERSION });
+      }
+      if (url === 'https://recovery.example.test/.well-known/oauth-authorization-server') {
+        return json({
+          issuer: 'https://recovery.example.test',
+          authorization_endpoint: 'https://recovery.example.test/recovery/oauth/authorize',
+          token_endpoint: 'https://recovery.example.test/recovery/oauth/token',
+          registration_endpoint: 'https://recovery.example.test/recovery/oauth/register',
+        });
+      }
+      if (url === 'https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp') {
+        return json({ resource: 'https://recovery.example.test/recovery/mcp', authorization_servers: ['https://recovery.example.test'] });
+      }
+      if (url === 'https://recovery.example.test/recovery/oauth/register') {
+        return json({ client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID, forge_client_owner: 'recovery_verifier', forge_client_reused: true }, 201);
+      }
+      if (url === 'https://recovery.example.test/recovery/oauth/authorize') {
+        const form = new URLSearchParams(String(init?.body ?? ''));
+        const state = form.get('state') ?? '';
+        return new Response(null, {
+          status: 302,
+          headers: { location: `${RECOVERY_VERIFIER_OAUTH_REDIRECT_URI}?code=recovery-test-code&state=${encodeURIComponent(state)}` },
+        });
+      }
+      if (url === 'https://recovery.example.test/recovery/oauth/token') {
+        return json({ access_token: 'recovery-test-token', token_type: 'Bearer' });
+      }
+      if (url !== 'https://recovery.example.test/recovery/mcp') throw new Error(`unexpected verifier URL: ${url}`);
+      if (!headers.has('authorization')) {
+        return json({ error: 'invalid_token' }, 401, {
+          'www-authenticate': 'Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"',
+        });
+      }
+      if (init?.method === 'DELETE') {
+        expect(headers.get('mcp-session-id')).toBe(sessionId);
+        sessionDeleted = true;
+        return new Response(null, { status: 200 });
+      }
+      const rpc = JSON.parse(String(init?.body ?? '{}')) as { id?: number; method?: string };
+      if (rpc.method === 'initialize') {
+        expect(headers.get('mcp-session-id')).toBeNull();
+        return sse({
+          jsonrpc: '2.0',
+          id: rpc.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            serverInfo: { name: 'forge-standalone-recovery', version: FORGE_VERSION },
+          },
+        }, { 'mcp-session-id': sessionId });
+      }
+      expect(headers.get('mcp-session-id')).toBe(sessionId);
+      sessionMethods.push(rpc.method ?? '');
+      if (rpc.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      if (rpc.method === 'tools/list') return sse({ jsonrpc: '2.0', id: rpc.id, result: { tools: RECOVERY_TOOLS } });
+      if (rpc.method === 'tools/call') return sse({ jsonrpc: '2.0', id: rpc.id, result: { content: [] } });
+      return json({ jsonrpc: '2.0', id: rpc.id ?? null, error: { code: -32601, message: 'unknown method' } }, 400);
+    }) as typeof fetch;
+
+    const result = await verifyRecoveryConnector(home, {
+      fetcher,
+      random: (size) => Buffer.alloc(size, 7),
+    });
+    expect(result.probes.oauthPkce.ok).toBe(true);
+    expect(result.probes.mcp).toMatchObject({
+      ok: true,
+      initializeStatus: 200,
+      initializedNotificationStatus: 202,
+      protocolVersion: '2025-06-18',
+      serverName: 'forge-standalone-recovery',
+      serverVersion: FORGE_VERSION,
+      tools: RECOVERY_TOOLS.map((tool) => tool.name),
+      runtimeStatusCall: true,
+      listReleasesCall: true,
+    });
+    expect(sessionMethods).toEqual(['notifications/initialized', 'tools/list', 'tools/call', 'tools/call']);
+    expect(sessionDeleted).toBe(true);
+    expect(result.failures.some((failure) => failure.startsWith('oauthPkce/mcp:'))).toBe(false);
+  });
+
   test('reports Linux Recovery Gateway and Watchdog installation through systemd-user ownership', () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
