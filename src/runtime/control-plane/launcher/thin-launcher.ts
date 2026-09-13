@@ -13,7 +13,12 @@ import {
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
-import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
+import {
+  beginControllerRoundRelayAfterRelease,
+  getControllerSession,
+  reconcileControllerRoundAfterAbandonedRelease,
+  releaseControllerSessionWithAuthority,
+} from '../../../../packages/kernel/controller/api/index';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
@@ -202,6 +207,43 @@ async function awaitExternalControllerStartup(
         });
       } catch {
         // Exit evidence is best-effort after another authority has already released the reservation.
+      }
+      if (claimExpectation) {
+        try {
+          const owner = getControllerSession(stores.work, workId);
+          const ownerPrincipal = owner ? (owner.principalId?.trim() || owner.controllerId) : '';
+          const ownerInstanceId = owner?.controllerInstanceId?.trim() || '';
+          const exactLaunchedOwner = Boolean(
+            owner
+            && owner.controllerType === claimExpectation.controllerType
+            && owner.controllerId === claimExpectation.controllerId
+            && ownerPrincipal === claimExpectation.principalId
+            && owner.sessionId === claimExpectation.sessionId
+            && ownerInstanceId
+            && typeof owner.claimGeneration === 'number'
+            && owner.claimGeneration >= 1,
+          );
+          if (owner && exactLaunchedOwner) {
+            const released = releaseControllerSessionWithAuthority(stores.work, {
+              workId,
+              actor: `external-controller-exit:${reservationId}`,
+              authority: {
+                controllerId: owner.controllerId,
+                controllerType: owner.controllerType,
+                principalId: ownerPrincipal,
+                controllerInstanceId: ownerInstanceId,
+                claimGeneration: owner.claimGeneration!,
+              },
+            });
+            if (released.allowed) {
+              const relay = beginControllerRoundRelayAfterRelease(stores.work, { workId, releasedSession: owner });
+              if (!relay) reconcileControllerRoundAfterAbandonedRelease(stores.work, { workId, releasedSession: owner });
+            }
+          }
+        } catch {
+          // The launcher may only retire the exact reservation-bound ownership epoch.
+          // A concurrent/new owner or relay transition is authoritative and must win.
+        }
       }
       if (startupSettled) return;
       startupSettled = true;
