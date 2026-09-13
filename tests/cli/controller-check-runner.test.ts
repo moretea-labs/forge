@@ -47,7 +47,7 @@ describe('Controller Check post-run input integrity', () => {
       generated: {
         command: command("const fs=require('fs');fs.mkdirSync('generated',{recursive:true});fs.writeFileSync('generated/report.json','ok\\n')"),
         timeoutMs: 10_000,
-        effects: { reads: ['.'] },
+        effects: { reads: ['.'], writes: ['generated'] },
       },
     });
 
@@ -96,7 +96,7 @@ describe('Controller Check post-run input integrity', () => {
       asyncGenerated: {
         command: command("const fs=require('fs');fs.mkdirSync('generated',{recursive:true});fs.writeFileSync('generated/report.json','ok\\n')"),
         timeoutMs: 10_000,
-        effects: { reads: ['.'] },
+        effects: { reads: ['.'], writes: ['generated'] },
       },
     });
 
