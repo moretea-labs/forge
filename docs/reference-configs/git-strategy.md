@@ -3,7 +3,7 @@
 
 > **Runtime Docs**: user-level forge reference
 > **Doc ID**: git-strategy
-> **Version**: 1.7.2
+> **Version**: 1.8.0
 > **Source Command**: `forge docs path git-strategy`
 
 This repo keeps workflow facts and runtime artifacts locally under `.ai/`.

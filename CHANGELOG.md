@@ -4,6 +4,32 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.8.0 - 2026-09-13
+
+### Controller and workflow authority
+
+- Converge Forge V2 onto explicit Failure, Tool Contract ABI, Work lifecycle, and ControllerRound authorities while keeping semantic acceptance with the external GPT controller.
+- Keep the default MCP contract at a stable 19-tool surface and preserve that schema across normal access-mode changes.
+- Advance eligible Controller rounds through explicit `continue_immediately` disposition, release, and successor dispatch without requiring a user `继续`, while preserving same-principal authority across Runtime or transport rotation.
+- Make Work delivery, review transfer, terminal cleanup, and stale-generation fencing atomic enough to avoid duplicate ownership, duplicate handoff, or newer-epoch cleanup.
+
+### Runtime and recovery
+
+- Strengthen immutable whole-release Runtime activation, rollback, readiness, and standalone Recovery identity checks so installed Runtime/Recovery evidence stays bound to one release artifact.
+- Repair Recovery MCP verification to carry the negotiated MCP session through initialization and SSE responses, and close the exact session after verification.
+- Reconcile external-controller launcher exit and terminal-cleanup paths so an already-claimed Work does not remain stranded after provider or launcher termination.
+
+### Context, execution, and performance
+
+- Reduce synchronous MCP diagnostic and control-plane hot-path overhead, reuse negotiated provider channels, and prefilter active Work candidates before heavier lifecycle reads.
+- Tighten Context Plane and Handoff boundaries so bounded evidence remains revision-identified without creating a second semantic or lifecycle authority.
+- Preserve Ephemeral/Lightweight execution for ordinary local work while reserving durable state for real continuity, release, scheduling, recovery, and external effects.
+
+### Release certification
+
+- Freeze cross-version evaluator, corpus, environment, and v1.7.2 baseline authority before V2 observation; fail closed on missing accounting metrics instead of inventing passes.
+- Add exact package, Runtime, Recovery, stable-MCP, portability, lifecycle, and automatic-progression evidence to the release path. The formal v1.7.2 comparison introduced no measured correctness failure or timeout, while incomplete execution-quality metrics remain explicitly inconclusive rather than being presented as superiority evidence.
+
 ## 1.7.2 - 2026-08-30
 
 ### Runtime lifecycle reliability
