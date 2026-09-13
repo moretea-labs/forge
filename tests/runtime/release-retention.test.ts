@@ -252,6 +252,7 @@ describe('runtime cleanup release integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
+      periodicSequence: 7,
       nowMs: NOW,
       maxEntries: 100,
       maxRemovals: 10,
@@ -269,13 +270,15 @@ describe('runtime cleanup release integration', () => {
     const home = controllerHome();
     runtimeRelease(home, 'active-release');
     runtimeRelease(home, 'previous-release');
-    const stale = runtimeRelease(home, 'stale-release');
+    const staleA = runtimeRelease(home, 'stale-release-a');
+    const staleB = runtimeRelease(home, 'stale-release-b');
     const backups = join(home, 'runtime', 'releases', 'backups');
     mkdirSync(backups, { recursive: true });
     const referencedBackup = join(backups, 'referenced.sqlite');
     writeFileSync(referencedBackup, 'referenced', 'utf8');
     writeRuntimeAuthority(home, 'active-release', 'previous-release', referencedBackup);
-    age(stale);
+    age(staleA);
+    age(staleB);
     const daemon = join(home, 'daemon');
     mkdirSync(daemon, { recursive: true });
     const staleTemp = join(daemon, 'always-stale.tmp');
@@ -284,7 +287,7 @@ describe('runtime cleanup release integration', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
-      periodicSequence: 3,
+      periodicSequence: 7,
       nowMs: NOW,
       maxEntries: 100,
       maxRemovals: 1,
@@ -292,9 +295,9 @@ describe('runtime cleanup release integration', () => {
       inspectProcess: () => ({ alive: false }),
     });
 
-    expect(existsSync(stale)).toBe(false);
+    expect([staleA, staleB].filter((path) => existsSync(path))).toHaveLength(1);
     expect(existsSync(staleTemp)).toBe(true);
-    expect(report.removedReleasePaths).toContain('runtime/releases/stale-release');
+    expect(report.removedReleasePaths).toHaveLength(1);
     expect(report.cycle.removed).toBe(1);
     expect(report.cycle.budgetExhausted).toBe(true);
   });
