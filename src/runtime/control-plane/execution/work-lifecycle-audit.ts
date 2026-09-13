@@ -223,11 +223,18 @@ export function collectWorkLifecycleAttention(
     const handle = handlesByWork.get(contract.workId);
     const terminal = isTerminalWorkContractStatus(contract.status);
     if (!terminal) {
-      findings.push(attention(
-        'work_active',
-        contract.workId,
-        `Work ${contract.workId} is ${contract.status} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
-      ));
+      // Repository lifecycle attention is release-facing. A source-neutral Work
+      // (for example local UI automation) may legitimately remain active while
+      // an unrelated clean source candidate is released. Only source-mutating
+      // repository Work should make its mere liveness a release blocker; real
+      // structural contradictions below remain attention regardless of kind.
+      if (contract.workKind === 'repository_change') {
+        findings.push(attention(
+          'work_active',
+          contract.workId,
+          `Work ${contract.workId} is ${contract.status} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
+        ));
+      }
       if (contract.workKind === 'repository_change' && !handle) {
         findings.push(attention(
           'active_work_handle_missing',

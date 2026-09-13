@@ -266,6 +266,80 @@ describe('runtime observability', () => {
     }
   });
 
+  test('does not make source-neutral active Work a release-blocking lifecycle attention', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-source-neutral-work-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-source-neutral-work-repo-'));
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const checkoutId = repository.checkouts[0]!.checkoutId;
+      const store = { controllerHome, repoId: repository.repoId };
+      const localEffectWorkId = 'work-local-effect-does-not-block-release';
+
+      createWorkContract(store, {
+        workId: localEffectWorkId,
+        repoId: repository.repoId,
+        checkoutId,
+        mode: 'goal_workloop',
+        workKind: 'local_effect',
+        objective: 'Perform an unrelated local UI effect.',
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'system',
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        status: 'running',
+      });
+
+      expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:work_active:${localEffectWorkId}`,
+      }));
+      rebuildRepositoryProjection(controllerHome, repository.repoId);
+      const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:work_active:${localEffectWorkId}`,
+      }));
+      const sourceNeutralHealth = evaluateRuntimeHealth(observations({
+        workers: {
+          queueDepth: projection.queueDepth,
+          runningWorkers: projection.runningWorkers,
+          activeLeases: projection.activeLeases,
+          activeAttentionCount: projection.currentAttention.length,
+        },
+      }));
+      expect(sourceNeutralHealth.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
+
+      const repositoryWorkId = 'work-repository-change-still-blocks-release';
+      createWorkContract(store, {
+        workId: repositoryWorkId,
+        repoId: repository.repoId,
+        checkoutId,
+        mode: 'goal_workloop',
+        workKind: 'repository_change',
+        objective: 'Mutate repository source.',
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'system',
+        allowedPaths: ['README.md'],
+        forbiddenPaths: [],
+        checks: [],
+        status: 'running',
+      });
+      expect(collectWorkLifecycleAttention(controllerHome, repository)).toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:work_active:${repositoryWorkId}`,
+      }));
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-audit-ch-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-audit-repo-'));
