@@ -5113,64 +5113,69 @@ describe('rh_work terminalization authority', () => {
       steps: [{ id: stepId, objective: 'certify already integrated behavior', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['same semantic contract'] }],
     });
     approvePlanContract(store, planId);
+    const principalId = 'principal-technical-retry';
+    const sessionId = 'terminal-technical-retry-session';
+    const runtimeInstanceId = 'runtime-technical-retry';
+    const branch = 'work/technical-retry-facade';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'technical retry facade lifecycle regression',
+      baseRef: sourceRevision,
+      branchName: branch,
+    });
     createWorkContract(store, {
-      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      workId, repoId: fx.repository.repoId, checkoutId: workspace.checkoutId!,
+      principalId, controllerInstanceId: runtimeInstanceId,
       baseRevision: sourceRevision, repositoryBaseState: 'revision', planId, planStepId: stepId, planSourceRevision: sourceRevision,
       mode: 'goal_workloop', workKind: 'repository_change', objective: 'certify already integrated behavior', acceptanceCriteria: ['same semantic contract'],
-      allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
-      status: 'cancelled', phase: 'cleanup', dispatchState: 'terminal', evidenceState: 'none',
+      allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], constraints: { requireWorktree: true, directMainProhibited: true, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
+      status: 'running', phase: 'implementation', evidenceState: 'none', worktreeRef: workspace.root,
       scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
     });
     claimPlanStepForWork(store, { planId, stepId, workId, sourceRevision });
-    const terminalWork = getWorkContract(store, workId)!;
-    const replanning = completePlanStepForWork(store, { planId, stepId, work: terminalWork });
-    expect(replanning).toMatchObject({ status: 'replanning', steps: [{ id: stepId, status: 'ready' }] });
-    expect(replanning.steps[0]?.workId).toBeUndefined();
-
-    const removedWorktree = join(fx.controllerHome, 'removed-worktree-for-technical-retry');
     writeWorkHandle(fx.controllerHome, {
       schemaVersion: 1,
       workId,
       workContractId: workId,
-      sessionId: 'terminal-technical-retry-session',
-      principalId: 'principal-technical-retry',
+      sessionId,
+      principalId,
       repositoryId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      worktreePath: removedWorktree,
-      branch: 'work/technical-retry-facade',
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      deliveryTargetBranch: 'main',
+      worktreePath: workspace.root!,
+      branch,
       managedWorktree: true,
       baseCommit: sourceRevision,
       expectedHead: sourceRevision,
       permissionSnapshotVersion: 1,
-      state: 'cleaned',
+      state: 'prepared',
       createdAt: now,
       updatedAt: now,
-      finalization: { validation: 'pending', commit: 'skipped', merge: 'skipped', branchCleanup: 'done', worktreeCleanup: 'done' },
-      cleanupReceipt: {
-        schemaVersion: 1,
-        receiptId: 'cleanup-technical-retry-facade',
-        repoId: fx.repository.repoId,
-        checkoutId: fx.repository.activeCheckoutId,
-        workId,
-        branch: 'work/technical-retry-facade',
-        targetBranch: 'main',
-        terminalOutcome: 'cancelled',
-        startedAt: now,
-        updatedAt: now,
-        completedAt: now,
-        verification: { mode: 'cleanup_only', checksRun: [] },
-        processes: { examined: [], terminated: [], blocking: [], allTerminal: true },
-        ownership: { controllerLease: 'already_released', processLeases: 'released' },
-        preservation: { status: 'not_needed' },
-        worktree: { path: removedWorktree, status: 'already_removed' },
-        branchCleanup: { branch: 'work/technical-retry-facade', status: 'already_deleted', uniqueCommits: 0 },
-        checkoutRegistry: { status: 'already_removed' },
-        prune: { status: 'done' },
-        complete: true,
-        partial: false,
-        blockers: [],
-      },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
     });
+    claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const stopped = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'technical classification retry', cleanup: true, delete_branch: true, target_branch: 'main' },
+    ));
+    expect(stopped.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
+    expect(existsSync(workspace.root!)).toBe(false);
+    const replanning = getPlanContract(store, planId)!;
+    expect(replanning).toMatchObject({ status: 'replanning', steps: [{ id: stepId, status: 'ready' }] });
+    expect(replanning.steps[0]?.workId).toBeUndefined();
 
     const mismatch = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-technical-retry', 'transport-technical-retry', 'runtime-technical-retry'),

@@ -2,7 +2,7 @@ import type { McpExecutionContext } from '../../../../packages/protocols/mcp/exe
 import { getRepository, listRepositories, RepositoryCheckoutSelectionError, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { assertControllerOwnershipAuthority, claimControllerSession, controllerSessionPrincipalId, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
-import { appendWorkEvidence, getWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, transitionWorkContractPhase } from '../../../../packages/kernel/work/api/index';
 import { resolveLegacyWorkContractIdentity } from './execution-identity';
 import type { ExecutionSessionContext, SessionIdentity } from './session-store';
 import { currentControllerInstanceId, requireExecutionSession, updateExecutionSession } from './session-store';
@@ -373,6 +373,25 @@ export async function reconcileTerminalCleanup(
         detailLevel: 'summary',
       },
     );
+  }
+  if (cleaned.receipt.complete) {
+    const terminalContract = getWorkContract(
+      { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
+      persisted.workContractId ?? persisted.workId,
+    );
+    if (terminalContract && (terminalContract.status === 'cancelled' || terminalContract.status === 'failed') && terminalContract.phase !== 'cleanup') {
+      transitionWorkContractPhase(
+        { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
+        terminalContract.workId,
+        {
+          phase: 'cleanup',
+          status: terminalContract.status,
+          state: 'satisfied',
+          summary: `Terminal cleanup ${cleaned.receipt.receiptId} completed; terminal Work status ${terminalContract.status} was preserved.`,
+          evidenceRefs: terminalContract.evidenceRefs,
+        },
+      );
+    }
   }
   return {
     work: compactHandle(persisted),
