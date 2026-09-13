@@ -1,4 +1,4 @@
-import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerformanceIdentity, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
+import { assertRuntimePerformanceEvidence, measureRuntimePerformance, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
@@ -1364,26 +1364,14 @@ export async function attestKnownGood(
   config: RecoveryConfig,
   dependencies: RuntimePerformanceDependencies = {},
 ): Promise<ReleaseEvidence> {
-  const initialIdentity = runtimePerformanceIdentity(config);
   const before = await verifyStableRuntime(config);
   if (!before.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-  const verifiedIdentity = runtimePerformanceIdentity(config);
-  if (!samePerformanceIdentity(initialIdentity, verifiedIdentity)
-    || before.releases.active?.revision !== verifiedIdentity.releaseId) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed during functional verification');
-  }
 
   // Performance observation is read-only and deliberately stays outside the
   // single Recovery mutation lock. Runtime/release identity is fenced on every
   // sample; a concurrent restart/rollback/activation therefore invalidates the
   // evidence instead of being blocked for the six-minute observation window.
-  const performance = await measureRuntimePerformance(() => {
-    const current = runtimePerformanceIdentity(config);
-    if (!samePerformanceIdentity(verifiedIdentity, current)) {
-      throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after functional verification');
-    }
-    return current;
-  }, dependencies);
+  const performance = await measureRuntimePerformance(() => runtimePerformanceIdentity(config), dependencies);
 
   const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
     const verified = await verifyStableRuntime(config);

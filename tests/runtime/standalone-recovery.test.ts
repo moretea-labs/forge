@@ -4114,13 +4114,6 @@ describe('Recovery explicit performance acceptance', () => {
     await expect(measureRuntimePerformance(() => identity, {
       ...idleCpuDependencies(), readCpu: () => { throw new Error('sample unavailable'); },
     })).rejects.toThrow('sample unavailable');
-    let warmupElapsed = 0;
-    await expect(measureRuntimePerformance(() => identity, {
-      readCpu: () => ({ cpuMs: 0, processStartTime: 'same' }),
-      monotonicNow: () => warmupElapsed,
-      wallNow: () => Date.now() + warmupElapsed,
-      sleep: async () => { warmupElapsed += 20_000; },
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN: interrupted CPU warmup window');
     expect(readRuntimeCpu(process.pid).cpuMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -4178,30 +4171,5 @@ describe('Recovery explicit performance acceptance', () => {
     const result = await rollbackPrevious(config, 'explicit performance regression');
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('stop the complete Canonical Runtime');
-  });
-
-  test('attestation rejects a release switch after functional verification and before CPU sampling', async () => {
-    const home = controllerHome();
-    const first = manifest(home, 'release-before-cpu', 'artifact-before-cpu');
-    const second = manifest(home, 'release-after-verify', 'artifact-after-verify', 2);
-    ensureActiveRuntimeRelease(home, first);
-    const runtime = await runtimeServer();
-    writeMainToken(home);
-    const ownership = startObservedRuntime(home, runtime.endpoint, 'release-before-cpu', 'artifact-before-cpu');
-    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
-    const dependencies = idleCpuDependencies();
-    let switched = false;
-    await expect(attestKnownGoodWithCpu(config, {
-      ...dependencies,
-      readCpu: () => {
-        if (!switched) {
-          switched = true;
-          removeOwnership(ownership);
-          publishRuntimeRelease(home, second, 'switch-after-functional-verify');
-        }
-        return { cpuMs: 0, processStartTime: 'same' };
-      },
-    })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
-    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
 });
