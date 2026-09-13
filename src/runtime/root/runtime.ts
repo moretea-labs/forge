@@ -27,6 +27,7 @@ import { ensureActiveRuntimeRelease, readRuntimeReleaseAuthority, type RuntimeRe
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
+import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
 import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
 import type {
   CanonicalRuntimeConfig,
@@ -50,6 +51,7 @@ export interface CanonicalRuntimeDependencies {
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
   startScheduler(input: Parameters<typeof startInProcessScheduler>[0]): RuntimeSchedulerHandle;
   startLocalBridge(input: { controllerHome: string; repositoryRoot?: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
+  startPowerAssertion(input: { controllerHome: string; runtimePid: number }): RuntimePowerAssertionHandle;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
   collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
@@ -108,6 +110,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   inspectDatabase: inspectControlPlaneDatabase,
   startScheduler: startInProcessScheduler,
   startLocalBridge: startConfiguredRuntimeLocalBridge,
+  startPowerAssertion: startActiveExecutionPowerAssertion,
   startTransport: startRuntimeMcpTransport,
   runMcpProbe: defaultMcpProbe,
   collectRuntimeSourceIdentity,
@@ -127,6 +130,7 @@ export class CanonicalForgeRuntime {
   private ownership?: RuntimeOwnershipHandle;
   private scheduler?: RuntimeSchedulerHandle;
   private localBridge?: RuntimeLocalBridgeHandle;
+  private powerAssertion?: RuntimePowerAssertionHandle;
   private toolSurfaceFingerprint?: string;
   private transport?: RuntimeMcpTransportHandle;
   private controller?: RuntimeControllerServices;
@@ -425,6 +429,10 @@ export class CanonicalForgeRuntime {
         () => this.failCore('SCHEDULER_STOPPED', 'Scheduler stopped while Runtime was active.'),
         (error) => this.failCore('SCHEDULER_STALLED', error instanceof Error ? error.message : String(error)),
       );
+      this.powerAssertion = this.dependencies.startPowerAssertion({
+        controllerHome: this.config.controllerHome,
+        runtimePid: this.ownership.record.pid,
+      });
 
       stage = 'localBridge';
       this.localBridge = await this.dependencies.startLocalBridge({
@@ -522,6 +530,8 @@ export class CanonicalForgeRuntime {
       await this.dependencies.stopContextReadHelpers().catch(() => undefined);
       await this.localBridge?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
+      try { this.powerAssertion?.stop(); } catch { /* power assertion cleanup is best effort */ }
+      this.powerAssertion = undefined;
       disableControlPlaneReadConnectionReuse(this.config.controllerHome);
       const ownerPid = this.ownership?.record.pid;
       this.ownership?.release();
