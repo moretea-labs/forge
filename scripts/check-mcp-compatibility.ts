@@ -36,11 +36,12 @@ const MAX_DEFAULT_TOOL_COUNT = 24;
 const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work',
   'repository_list', 'repository_get', 'repository_register', 'repository_command_execute',
-  'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
+  'read_repository_file', 'repository_safe_patch_apply', 'run_check',
+  'computer_console_unlock_prepare', 'computer_console_unlock', 'plugin_action_execute',
   'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
-const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'a6c8a8cb0af7f7d8';
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '95a3451f6fad8d16';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '57e34f23cfa681b4';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
