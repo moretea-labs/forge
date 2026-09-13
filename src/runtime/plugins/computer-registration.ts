@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type {
   ComputerApplicationTarget,
   ComputerApplicationStableIdentity,
@@ -6,16 +6,19 @@ import type {
 } from '../../../packages/plugin-runtime/computer/target-authority';
 import {
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
   COMPUTER_ELEMENT_ACTION_CAPABILITY,
   COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
+  type ComputerConsoleUnlockPrepareRequest,
+  type ComputerConsoleUnlockRequest,
   type ComputerElementSemanticAction,
   type ComputerElementTarget,
   type ComputerRuntimeExecutionRequest,
   type ComputerSemanticSelector,
 } from '../../../packages/protocols/computer/index';
-import { executeRuntimeComputer } from '../root/computer-composition';
+import { executeRuntimeComputer, executeRuntimeComputerConsoleUnlock } from '../root/computer-composition';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import {
@@ -43,6 +46,11 @@ const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
 const DESKTOP_TARGET_CLOSE_ACTION = 'desktop_target_close';
 const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
 const DESKTOP_ELEMENT_ACTION_ACTION = 'desktop_element_action';
+export const COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION = 'console_unlock_prepare';
+export const COMPUTER_CONSOLE_UNLOCK_ACTION = 'console_unlock';
+const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
+const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
+const CONSOLE_CREDENTIAL_HANDLE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] as const;
 const DESKTOP_SEMANTIC_ACTION_IDS = new Set([
   'desktop_observe',
@@ -59,6 +67,8 @@ const DESKTOP_PRODUCT_ACTION_IDS = new Set([
   ...DESKTOP_SEMANTIC_ACTION_IDS,
   DESKTOP_ELEMENT_OBSERVE_ACTION,
   DESKTOP_ELEMENT_ACTION_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_ACTION,
 ]);
 
 function providerActionDescriptor(actionId: string): AssistantPluginActionDescriptor {
@@ -84,6 +94,90 @@ function targetBoundDescriptor(actionId: string): AssistantPluginActionDescripto
   return { ...descriptor, argumentsSchema: schema };
 }
 
+export interface ProtectedConsoleUnlockPreparationInput {
+  confirmAuthorization: boolean;
+  timeoutMs?: number;
+}
+
+export interface ProtectedConsoleUnlockInvocationInput {
+  credentialHandle: string;
+  confirmAuthorization: boolean;
+  timeoutMs?: number;
+}
+
+function boundedConsoleUnlockTimeoutMs(value: number | undefined): number {
+  if (!Number.isFinite(value)) return DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS;
+  return Math.min(MAX_CONSOLE_UNLOCK_TIMEOUT_MS, Math.max(1_000, Math.trunc(value!)));
+}
+
+function requireConsoleUnlockAuthorization(confirmed: boolean): void {
+  if (confirmed !== true) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED: confirm_authorization=true is required for this one invocation.');
+  }
+}
+
+export async function executeProtectedConsoleUnlockPreparation(
+  input: ProtectedConsoleUnlockPreparationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireConsoleUnlockAuthorization(input.confirmAuthorization);
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockPrepareRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'prepare_unlock_console',
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedConsoleUnlockTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  const credentialHandle = typeof providerResult.credential_handle === 'string'
+    ? providerResult.credential_handle
+    : undefined;
+  if (!credentialHandle || !CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(credentialHandle)) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_PREPARATION_INVALID: provider did not return a valid opaque credential handle.');
+  }
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'prepare_unlock_console',
+    invocationId,
+    prepared: providerResult.prepared === true,
+    credentialHandle,
+    ...(typeof providerResult.expires_in_ms === 'number' ? { expiresInMs: providerResult.expires_in_ms } : {}),
+  };
+}
+
+export async function executeProtectedConsoleUnlockInvocation(
+  input: ProtectedConsoleUnlockInvocationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireConsoleUnlockAuthorization(input.confirmAuthorization);
+  if (!CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(input.credentialHandle)) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: a provider-local opaque credential handle is required.');
+  }
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'unlock_console',
+    credentialHandle: input.credentialHandle,
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedConsoleUnlockTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'unlock_console',
+    invocationId,
+    unlocked: providerResult.unlocked === true,
+    verified: providerResult.verified === true,
+    ...(typeof providerResult.postcondition === 'string' ? { postcondition: providerResult.postcondition } : {}),
+  };
+}
+
 function desktopProductActions(): AssistantPluginActionDescriptor[] {
   const open = providerActionDescriptor('desktop_session_open');
   const close = providerActionDescriptor('desktop_session_close');
@@ -107,6 +201,45 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       },
     },
     ...[...DESKTOP_SEMANTIC_ACTION_IDS].map(targetBoundDescriptor),
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION,
+      title: 'Prepare protected console unlock',
+      description: 'Ask the native Computer provider to collect a console credential locally and return only a short-lived opaque single-use handle.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_ACTION,
+      title: 'Unlock protected console',
+      description: 'Consume one provider-local opaque credential handle to perform and verify one console unlock without durable replay state.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          credential_handle: { type: 'string', minLength: 36, maxLength: 64, description: 'Opaque short-lived single-use handle returned by console_unlock_prepare.' },
+        },
+        required: ['credential_handle'],
+        additionalProperties: false,
+      },
+    },
     {
       actionId: DESKTOP_ELEMENT_OBSERVE_ACTION,
       title: 'Observe Computer elements',
@@ -185,6 +318,7 @@ function desktopProductPermissions(ready: boolean): AssistantPluginPermissionSco
     { scope: 'desktop.observe', mode: 'read', description: 'Observe bounded desktop accessibility state.', granted: ready, required: false },
     { scope: 'desktop.interact', mode: 'write', description: 'Perform bounded semantic desktop interaction.', granted: ready, required: false },
     { scope: 'desktop.capture', mode: 'read', description: 'Capture an authorized desktop target.', granted: ready, required: false },
+    { scope: 'console.unlock', mode: 'write', description: 'Prepare and consume a provider-local console unlock handle.', granted: ready, required: false },
   ];
 }
 
@@ -196,6 +330,7 @@ function desktopProductCapabilities(): AssistantPluginCapability[] {
     { capabilityId: 'computer.capture.v1', title: 'Computer capture', description: 'Capture authorized desktop state.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
     { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Observe exact provider-neutral semantic element snapshots for a Forge-owned target.', scopes: ['desktop.observe'], actions: [DESKTOP_ELEMENT_OBSERVE_ACTION] },
     { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer element action', description: 'Act on exact observed element refs with observation-epoch fencing.', scopes: ['desktop.interact'], actions: [DESKTOP_ELEMENT_ACTION_ACTION] },
+    { capabilityId: COMPUTER_CONSOLE_UNLOCK_CAPABILITY, title: 'Protected console unlock', description: 'Collect console credential material only inside the native provider and consume an opaque one-shot handle without durable replay state.', scopes: ['console.unlock'], actions: [COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION] },
   ];
 }
 
@@ -661,6 +796,7 @@ function targetAuthorization(identity: ComputerApplicationStableIdentity): Assis
 }
 
 async function resolveDesktopAuthorizationContext(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined> {
+  if (input.actionId === COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION || input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) return undefined;
   if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) return targetAuthorization(stableIdentityFromArgs(input.args));
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
   if (targetId) return targetAuthorization(computerTargetAuthority.require(input.controllerHome, targetId).stableIdentity);
@@ -681,6 +817,16 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
   async executeAction(input) {
     if (!isDesktopProductAction(input.actionId)) {
       return executeBrowserPluginAction({ ...input, pluginId: 'browser' });
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION) {
+      return executeProtectedConsoleUnlockPreparation({ confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) {
+      return executeProtectedConsoleUnlockInvocation({
+        credentialHandle: typeof input.args.credential_handle === 'string' ? input.args.credential_handle : '',
+        confirmAuthorization: true,
+        timeoutMs: input.timeoutMs,
+      }, input.controllerHome);
     }
     if (input.actionId === DESKTOP_TARGET_CLOSE_ACTION) return closeDesktopTarget(input, optionalDesktopProvider(input));
     const provider = desktopProvider(input);

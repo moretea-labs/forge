@@ -60,7 +60,7 @@ export interface AssistantPluginActionDescriptor {
    * for a bound remote_effect Work.
    */
   remoteEffectWorkCompletion?: 'intermediate' | 'terminal';
-  executionMode?: 'runtime' | 'lightweight_process';
+  executionMode?: 'runtime' | 'lightweight_process' | 'direct_non_persistent';
   foregroundEffect?: AssistantPluginForegroundEffect;
   scopes: string[];
   resourceClaims: AssistantPluginActionResourceClaim[];

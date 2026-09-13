@@ -2,8 +2,10 @@ import type { RepositoryRecord } from '../../cli/repositories/types';
 import type { ProcessHandle } from '../execution/process-runtime/types';
 import { startLightweightPluginAction, waitLightweightPluginAction } from './lightweight-action';
 import {
+  executeAssistantPluginDirectNonPersistent,
   executeAssistantPluginReadDirect,
   getAssistantPluginManifest,
+  isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
   submitAssistantPluginAction,
 } from './store';
@@ -16,6 +18,12 @@ import type {
 export type AssistantPluginActionApplicationResult =
   | {
       kind: 'direct_read';
+      manifest: AssistantPluginManifest;
+      action: AssistantPluginActionDescriptor;
+      result: Record<string, unknown>;
+    }
+  | {
+      kind: 'direct_non_persistent';
       manifest: AssistantPluginManifest;
       action: AssistantPluginActionDescriptor;
       result: Record<string, unknown>;
@@ -61,6 +69,19 @@ export async function executeAssistantPluginActionApplication(input: {
     const direct = await executeAssistantPluginReadDirect(input.controllerHome, input.repository, input.request);
     return {
       kind: 'direct_read',
+      manifest: direct.manifest,
+      action: direct.action,
+      result: direct.result,
+    };
+  }
+
+  if (action?.executionMode === 'direct_non_persistent') {
+    if (!isDirectNonPersistentPluginAction(action)) {
+      throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_CONTRACT_INVALID: ${input.request.pluginId}/${input.request.actionId}`);
+    }
+    const direct = await executeAssistantPluginDirectNonPersistent(input.controllerHome, input.repository, input.request);
+    return {
+      kind: 'direct_non_persistent',
       manifest: direct.manifest,
       action: direct.action,
       result: direct.result,

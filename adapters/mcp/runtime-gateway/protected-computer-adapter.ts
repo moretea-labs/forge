@@ -1,34 +1,14 @@
-import { randomUUID } from 'crypto';
+import { COMPUTER_CONSOLE_UNLOCK_CAPABILITY } from '../../../packages/protocols/computer/index';
 import {
-  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-  type ComputerConsoleUnlockPrepareRequest,
-  type ComputerConsoleUnlockRequest,
-} from '../../../packages/protocols/computer/index';
-import { executeRuntimeComputerConsoleUnlock } from '../../../src/runtime/root/computer-composition';
+  executeProtectedConsoleUnlockInvocation,
+  executeProtectedConsoleUnlockPreparation,
+} from '../../../src/runtime/plugins/computer-registration';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import { result } from './result-adapter';
 
-const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
-const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FROZEN_CLIENT_PREPARE_CARRIER = 'prepare_provider_local';
-
-export interface ProtectedConsoleUnlockPreparationInput {
-  confirmAuthorization: boolean;
-  timeoutMs?: number;
-}
-
-export interface ProtectedConsoleUnlockInvocationInput {
-  credentialHandle: string;
-  confirmAuthorization: boolean;
-  timeoutMs?: number;
-}
-
-function boundedTimeoutMs(value: number | undefined): number {
-  if (!Number.isFinite(value)) return DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS;
-  return Math.min(MAX_CONSOLE_UNLOCK_TIMEOUT_MS, Math.max(1_000, Math.trunc(value!)));
-}
 
 function protectedErrorCode(error: unknown): string {
   if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string') {
@@ -38,79 +18,11 @@ function protectedErrorCode(error: unknown): string {
   return /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message)?.[1] ?? 'COMPUTER_CONSOLE_UNLOCK_FAILED';
 }
 
-function requireAuthorization(confirmed: boolean): void {
-  if (confirmed !== true) {
-    throw new Error('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED: confirm_authorization=true is required for this one invocation.');
-  }
-}
-
-export async function executeProtectedConsoleUnlockPreparation(
-  input: ProtectedConsoleUnlockPreparationInput,
-  controllerHome: string,
-): Promise<Record<string, unknown>> {
-  requireAuthorization(input.confirmAuthorization);
-  const invocationId = randomUUID();
-  const request: ComputerConsoleUnlockPrepareRequest = {
-    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-    action: 'prepare_unlock_console',
-  };
-  const providerResult = await executeRuntimeComputerConsoleUnlock(
-    request,
-    { kind: 'explicit_single_use', confirmed: true, invocationId },
-    boundedTimeoutMs(input.timeoutMs),
-    controllerHome,
-  );
-  const credentialHandle = typeof providerResult.credential_handle === 'string'
-    ? providerResult.credential_handle
-    : undefined;
-  if (!credentialHandle || !UUID_PATTERN.test(credentialHandle)) {
-    throw new Error('COMPUTER_CONSOLE_UNLOCK_PREPARATION_INVALID: provider did not return a valid opaque credential handle.');
-  }
-  return {
-    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-    action: 'prepare_unlock_console',
-    invocationId,
-    prepared: providerResult.prepared === true,
-    credentialHandle,
-    ...(typeof providerResult.expires_in_ms === 'number'
-      ? { expiresInMs: providerResult.expires_in_ms }
-      : {}),
-  };
-}
-
-export async function executeProtectedConsoleUnlockInvocation(
-  input: ProtectedConsoleUnlockInvocationInput,
-  controllerHome: string,
-): Promise<Record<string, unknown>> {
-  requireAuthorization(input.confirmAuthorization);
-  if (typeof input.credentialHandle !== 'string' || !UUID_PATTERN.test(input.credentialHandle)) {
-    throw new Error('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: one provider-local opaque credential handle is required.');
-  }
-
-  const invocationId = randomUUID();
-  const request: ComputerConsoleUnlockRequest = {
-    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-    action: 'unlock_console',
-    credentialHandle: input.credentialHandle,
-  };
-  const providerResult = await executeRuntimeComputerConsoleUnlock(
-    request,
-    { kind: 'explicit_single_use', confirmed: true, invocationId },
-    boundedTimeoutMs(input.timeoutMs),
-    controllerHome,
-  );
-
-  return {
-    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-    action: 'unlock_console',
-    invocationId,
-    unlocked: providerResult.unlocked === true,
-    verified: providerResult.verified === true,
-    ...(typeof providerResult.postcondition === 'string'
-      ? { postcondition: providerResult.postcondition }
-      : {}),
-  };
-}
+export { executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation };
+export type {
+  ProtectedConsoleUnlockInvocationInput,
+  ProtectedConsoleUnlockPreparationInput,
+} from '../../../src/runtime/plugins/computer-registration';
 
 export async function callProtectedComputerAdapter(
   ctx: MultiRepositoryMcpToolContext,

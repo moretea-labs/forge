@@ -825,6 +825,76 @@ export function isDirectPluginReadAction(action: AssistantPluginActionDescriptor
     && action.idempotent === true;
 }
 
+export function isDirectNonPersistentPluginAction(action: AssistantPluginActionDescriptor): boolean {
+  return action.executionMode === 'direct_non_persistent'
+    && action.readOnly === false
+    && action.risk === 'workspace_write'
+    && action.confirmation === 'authorization'
+    && action.idempotent === false
+    && action.remoteEffectWorkCompletion === undefined
+    && action.resourceClaims.length === 0;
+}
+
+export async function executeAssistantPluginDirectNonPersistent(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  request: AssistantPluginActionRequest,
+): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown> }> {
+  const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
+  if (PLUGIN_ADAPTERS.get(request.pluginId) !== adapter) {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_FIRST_PARTY_REQUIRED: ${request.pluginId}/${request.actionId}`);
+  }
+  const manifestLookup = getAssistantPluginManifestForExecution(controllerHome, repository, request.pluginId, adapter);
+  const manifest = manifestLookup.manifest;
+  const action = actionForManifest(manifest, request.actionId);
+  if (!manifest.enabled && action.actionId !== 'configure') {
+    throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
+  }
+  if (action.executionMode !== 'direct_non_persistent') {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_NOT_ALLOWED: ${request.pluginId}/${request.actionId}`);
+  }
+  if (!isDirectNonPersistentPluginAction(action)) {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_CONTRACT_INVALID: ${request.pluginId}/${request.actionId}`);
+  }
+  if (request.workId || request.workRepoId) {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_WORK_ATTRIBUTION_FORBIDDEN: ${request.pluginId}/${request.actionId}`);
+  }
+  if (request.confirmAuthorization !== true) {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_AUTHORIZATION_REQUIRED: ${request.pluginId}/${request.actionId} requires confirm_authorization=true for this invocation`);
+  }
+  const normalizedArgs = validateActionArguments(action, request.args ?? {});
+  enforceConfirmation(action, { ...request, args: normalizedArgs });
+  if (requiresAutomatedWriteAuthorization(request.origin)) {
+    await resolveAutomatedWriteAuthorization({
+      controllerHome,
+      repository,
+      adapter,
+      manifest,
+      action,
+      args: normalizedArgs,
+      origin: request.origin,
+      requestId: request.requestId,
+      authorizationGrantRefs: request.authorizationGrantRefs,
+    });
+  }
+  const result = await adapter.executeAction({
+    controllerHome,
+    repoId: repository.repoId,
+    repoRoot: repository.canonicalRoot,
+    pluginId: request.pluginId,
+    actionId: request.actionId,
+    requestId: request.requestId,
+    args: normalizedArgs,
+    origin: request.origin,
+    timeoutMs: request.timeoutMs,
+    signal: request.signal,
+    authorizationGrantRefs: request.authorizationGrantRefs,
+    providerIdentityPrevalidated: manifestLookup.providerIdentityPrevalidated,
+  });
+  return { manifest, action, result };
+}
+
 export async function executeAssistantPluginReadDirect(
   controllerHome: string,
   repository: RepositoryRecord,
@@ -1236,6 +1306,9 @@ export async function submitAssistantPluginAction(
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
     throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
+  }
+  if (action.executionMode === 'direct_non_persistent') {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_RECEIPT_PATH_FORBIDDEN: ${request.pluginId}/${request.actionId}`);
   }
   const normalizedArgs = validateActionArguments(action, request.args ?? {});
   enforceConfirmation(action, { ...request, args: normalizedArgs });
@@ -1697,6 +1770,9 @@ export async function executeAssistantPluginAction(
   const manifestLookup = getAssistantPluginManifestForExecution(input.controllerHome, repository, input.pluginId, adapter);
   const manifest = manifestLookup.manifest;
   const action = actionForManifest(manifest, input.actionId);
+  if (action.executionMode === 'direct_non_persistent') {
+    throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_APPLICATION_PATH_REQUIRED: ${input.pluginId}/${input.actionId}`);
+  }
   const normalizedArgs = validateActionArguments(action, input.args);
   if (requiresAutomatedWriteAuthorization(input.origin)) {
     await resolveAutomatedWriteAuthorization({

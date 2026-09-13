@@ -181,6 +181,34 @@ export async function callPluginAdapter(
         return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, application.result);
       }
 
+      if (application.kind === 'direct_non_persistent') {
+        return result({
+          accepted: true,
+          direct: true,
+          durable: false,
+          replayable: false,
+          mode: 'direct_non_persistent',
+          plugin: summarizePluginActionReceipt(application.manifest),
+          action: {
+            actionId: application.action.actionId,
+            risk: application.action.risk,
+            confirmation: application.action.confirmation,
+          },
+          scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
+          requestId,
+          result: application.result,
+          detail: {
+            tool: 'rh_context',
+            arguments: {
+              ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
+              capability_id: `plugin.${pluginId}.${actionId}`,
+              detail_level: 'detail',
+            },
+          },
+          next: 'This protected action completed inline without durable replay state. Use the returned result only for the immediate next protected action.',
+        });
+      }
+
       if (application.kind === 'lightweight_running') {
         return result({
           accepted: true,

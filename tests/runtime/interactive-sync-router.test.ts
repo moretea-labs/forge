@@ -42,9 +42,12 @@ describe('interactive sync routing policy', () => {
 
   test('stable connector surface stays identical to the bounded default surface', () => {
     expect(STABLE_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toHaveLength(19);
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('computer_console_unlock_prepare');
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('computer_console_unlock');
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('plugin_action_execute');
+    const stableNames = new Set<string>(STABLE_CONTROLLER_TOOL_NAMES);
+    expect(stableNames.has('computer_console_unlock_prepare')).toBe(false);
+    expect(stableNames.has('computer_console_unlock')).toBe(false);
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('work_wait');
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain('git_commit_paths');

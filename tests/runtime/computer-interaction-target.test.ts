@@ -8,6 +8,7 @@ import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTar
 import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock } from '../../src/runtime/root/computer-composition';
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
+import { isDirectNonPersistentPluginAction } from '../../src/runtime/plugins/store';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
@@ -664,7 +665,7 @@ describe('protected Computer console unlock composition', () => {
     disposeRuntimeComputerComposition();
   });
 
-  test('keeps prepare/unlock out of generic plugin actions and routes only after explicit authorization', async () => {
+  test('keeps provider execution fenced by explicit single-use authorization', async () => {
     const fixture = await providerFixture();
     const request = {
       capability: 'computer.console.unlock.v1' as const,
@@ -690,5 +691,45 @@ describe('protected Computer console unlock composition', () => {
     expect(fixture.state.lastConsoleHandle).toBe(request.credentialHandle);
     expect(fixture.state.lastConsoleAuthorization).toMatchObject({ kind: 'explicit_single_use', confirmed: true });
     disposeRuntimeComputerComposition();
+  });
+});
+
+
+describe('protected Computer stable plugin transport', () => {
+  test('publishes console unlock only as strict direct non-persistent plugin actions', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-direct-manifest-'));
+    try {
+      const manifest = computerPluginAdapter.buildManifest(0, undefined, root);
+      const prepare = manifest.actions.find((action) => action.actionId === 'console_unlock_prepare');
+      const unlock = manifest.actions.find((action) => action.actionId === 'console_unlock');
+      expect(prepare).toBeDefined();
+      expect(unlock).toBeDefined();
+      if (!prepare || !unlock) throw new Error('protected console actions must be present');
+
+      for (const action of [prepare, unlock]) {
+        expect(isDirectNonPersistentPluginAction(action)).toBe(true);
+        expect(action.executionMode).toBe('direct_non_persistent');
+        expect(action.readOnly).toBe(false);
+        expect(action.risk).toBe('workspace_write');
+        expect(action.confirmation).toBe('authorization');
+        expect(action.idempotent).toBe(false);
+        expect(action.resourceClaims).toEqual([]);
+      }
+
+      expect(prepare.argumentsSchema).toMatchObject({
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      });
+      expect(unlock.argumentsSchema).toMatchObject({
+        type: 'object',
+        required: ['credential_handle'],
+        additionalProperties: false,
+      });
+      const unlockProperties = (unlock.argumentsSchema.properties ?? {}) as Record<string, unknown>;
+      expect(Object.keys(unlockProperties)).toEqual(['credential_handle']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
