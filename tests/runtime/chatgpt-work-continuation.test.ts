@@ -15,7 +15,7 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
@@ -45,6 +45,7 @@ import {
   isChatgptConversationUrl,
   reconciledNewChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
+  runStandaloneChatgptPrompt,
   runWorkChatgptContinuation,
   stableChatgptWorkBridgeSessionId,
   stableChatgptWorkBrowserSessionId,
@@ -191,6 +192,72 @@ describe('ChatGPT provider delivery classification', () => {
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_PERMISSION_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_BRIDGE_DISPATCH_FAILED')).toBe('failed');
+  });
+});
+
+describe('ChatGPT standalone provider routing', () => {
+  test('uses the same WSL bridge provider abstraction as Work continuation and preserves typed delivery status', async () => {
+    const calls: Array<{ provider: string; workId: string; prompt: string }> = [];
+    const browserHost: ChatgptProviderDeliveryHost = {
+      async dispatch() {
+        throw new Error('browser host must not be selected for a WSL runtime');
+      },
+    };
+    const wslHost: ChatgptProviderDeliveryHost = {
+      async dispatch(input) {
+        calls.push({ provider: 'chatgpt-bridge', workId: input.workId, prompt: input.prompt });
+        return {
+          status: 'dispatch_confirmed',
+          provider: 'chatgpt-bridge',
+          browserSessionId: input.browserSessionId,
+          conversationUrl: 'https://chatgpt.com/c/provider-recovery-probe',
+          executionPreferenceVerified: false,
+        };
+      },
+    };
+    const result = await runStandaloneChatgptPrompt({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-provider-recovery',
+      repoRoot: '/tmp/repo',
+      scopeId: 'provider-recovery',
+      prompt: 'provider health probe only',
+      tabPolicy: 'new',
+    }, { bridgeRuntime: true, browserHost, wslHost });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ provider: 'chatgpt-bridge', workId: 'standalone:provider-recovery', prompt: 'provider health probe only' });
+    expect(result).toMatchObject({
+      status: 'dispatched',
+      provider: 'chatgpt-bridge',
+      providerDeliveryStatus: 'dispatch_confirmed',
+      conversationUrl: 'https://chatgpt.com/c/provider-recovery-probe',
+    });
+  });
+
+  test('keeps non-confirmed provider dispositions typed instead of upgrading them to recovery success', async () => {
+    const wslHost: ChatgptProviderDeliveryHost = {
+      async dispatch(input) {
+        return {
+          status: 'wait_for_user',
+          provider: 'chatgpt-bridge',
+          browserSessionId: input.browserSessionId,
+          conversationUrl: input.targetUrl,
+          executionPreferenceVerified: false,
+          error: { code: 'CHATGPT_AUTH_REQUIRED', message: 'login required' },
+        };
+      },
+    };
+    const result = await runStandaloneChatgptPrompt({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-provider-recovery',
+      scopeId: 'provider-recovery-auth',
+      prompt: 'provider health probe only',
+    }, { bridgeRuntime: true, wslHost });
+    expect(result).toMatchObject({
+      status: 'failed',
+      provider: 'chatgpt-bridge',
+      providerDeliveryStatus: 'wait_for_user',
+      error: { code: 'CHATGPT_AUTH_REQUIRED' },
+    });
   });
 });
 

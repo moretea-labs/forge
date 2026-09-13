@@ -76,6 +76,8 @@ External layers submit events, never target statuses. The exact TypeScript names
 
 No generic `blocked -> dispatching` transition exists.
 
+For the ChatGPT Controller provider, `provider_environment_recovered` is admitted only through exact ControllerRound authority plus a fresh non-semantic provider probe. The probe must use the same runtime provider selection as ordinary Controller dispatch, must not replay the blocked Work prompt, and must produce a server-authored durable Recovery audit record only after dispatch is confirmed. The audit identity is recovery evidence, not a second lifecycle authority: the Kernel still performs the exact relay-scope/authority/CAS checks and the canonical `provider_environment_recovered` transition. Failed, ambiguous, user-action-required, stale, or mismatched probes cannot rearm the fuse. MCP compatibility may expose this as a bounded repair intent, but it must not duplicate `controller.authority.recover` or invent a provider-specific round state.
+
 ## Budget contract
 
 ControllerRound has three independent budget dimensions. No code path may use one to reset another.

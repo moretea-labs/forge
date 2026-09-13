@@ -43,6 +43,8 @@ import { providerMcpReservationIdentity } from '../../src/runtime/control-plane/
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
+import { recoverControllerRoundAfterVerifiedProviderRepair } from '../../adapters/mcp/runtime-gateway/work-adapter';
+import { listRecoveryAuditRecords } from '../../src/runtime/recovery/store';
 
 const roots: string[] = [];
 
@@ -2183,6 +2185,165 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(whileActive.status).toBe('blocked');
     expect(whileActive.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM');
+  }, 15_000);
+
+  test('provider recovery requires exact authority and fresh confirmed probe evidence before rearming the same blocked round', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+
+    const blockRound = (workId: string) => {
+      createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+      const opened = beginInitialControllerRoundDispatch(store, {
+        workId,
+        identity: { controllerId: 'provider-recovery-controller', controllerType: 'chatgpt', principalId: 'provider-recovery-principal', controllerInstanceId: 'provider-recovery-runtime', sessionId: `launcher-${workId}` },
+        maxFailures: 3,
+      });
+      finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+      finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+      const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' })!;
+      expect(blocked).toMatchObject({ status: 'blocked', consecutiveFailures: 3, providerFailureTotal: 3 });
+      return { opened, blocked };
+    };
+    const confirmedProbe = async () => ({
+      status: 'dispatched' as const,
+      provider: 'controller-browser' as const,
+      browserSessionId: 'provider-recovery-probe-session',
+      conversationUrl: 'https://chatgpt.com/c/provider-recovery-probe',
+      resumedFromBinding: false,
+      model: 'gpt-5.6',
+      reasoning: 'high' as const,
+      tabPolicy: 'new' as const,
+      executionPreferenceVerified: true,
+      providerDeliveryStatus: 'dispatch_confirmed' as const,
+    });
+
+    const workId = 'work-provider-recovery-success';
+    const { opened, blocked } = blockRound(workId);
+    let wrongAuthorityProbeCalls = 0;
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: opened.relayScopeId,
+      authorityId: 'cra_wrong',
+      probe: async () => { wrongAuthorityProbeCalls += 1; return confirmedProbe(); },
+      now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_MISMATCH');
+    expect(wrongAuthorityProbeCalls).toBe(0);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: 'goal:wrong-provider-recovery-scope',
+      authorityId: opened.authorityId!,
+      probe: async () => { wrongAuthorityProbeCalls += 1; return confirmedProbe(); },
+      now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_SCOPE_MISMATCH');
+    expect(wrongAuthorityProbeCalls).toBe(0);
+
+    const recovered = await recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: opened.relayScopeId,
+      authorityId: opened.authorityId!,
+      probe: confirmedProbe,
+      now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
+    });
+    expect(recovered.relay).toMatchObject({
+      status: 'dispatching',
+      relayScopeId: opened.relayScopeId,
+      authorityId: opened.authorityId,
+      consecutiveFailures: 0,
+      providerFailureTotal: 3,
+      providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: recovered.audit.id,
+    });
+    expect(recovered.audit.id.startsWith('REC-')).toBe(true);
+    expect(recovered.audit).toMatchObject({ result: 'succeeded', actionId: 'recovery.controller_provider_probe' });
+    expect(recovered.audit.evidence[0]).toMatchObject({ source: 'chatgpt_provider_recovery_probe', details: { workId, relayScopeId: opened.relayScopeId, controllerAuthorityId: opened.authorityId, blockedUpdatedAt: blocked.updatedAt, provider: 'controller-browser', providerDeliveryStatus: 'dispatch_confirmed' } });
+    expect(listRecoveryAuditRecords(fx.controllerHome, fx.repository.repoId).map((entry) => entry.id)).toContain(recovered.audit.id);
+
+    const nonBlockedWorkId = 'work-provider-recovery-non-blocked';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, nonBlockedWorkId);
+    const nonBlocked = beginInitialControllerRoundDispatch(store, {
+      workId: nonBlockedWorkId,
+      identity: { controllerId: 'provider-recovery-controller', controllerType: 'chatgpt', principalId: 'provider-recovery-principal', controllerInstanceId: 'provider-recovery-runtime', sessionId: 'launcher-non-blocked' },
+    });
+    let nonBlockedProbeCalls = 0;
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: nonBlockedWorkId,
+      relayScopeId: nonBlocked.relayScopeId,
+      authorityId: nonBlocked.authorityId!,
+      probe: async () => { nonBlockedProbeCalls += 1; return confirmedProbe(); },
+      now: () => new Date(Date.parse(nonBlocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_BLOCKER_MISMATCH');
+    expect(nonBlockedProbeCalls).toBe(0);
+
+    const staleEvidenceWorkId = 'work-provider-recovery-stale-evidence';
+    const staleEvidenceRound = blockRound(staleEvidenceWorkId);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: staleEvidenceWorkId,
+      relayScopeId: staleEvidenceRound.opened.relayScopeId,
+      authorityId: staleEvidenceRound.opened.authorityId!,
+      probe: confirmedProbe,
+      now: () => staleEvidenceRound.blocked.updatedAt,
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_EVIDENCE_NOT_FRESH');
+    const stillBlockedAfterStaleEvidence = getControllerRoundRelay(store, staleEvidenceWorkId)!;
+    expect(stillBlockedAfterStaleEvidence).toMatchObject({ status: 'blocked', consecutiveFailures: 3 });
+    expect(stillBlockedAfterStaleEvidence.providerRecoveryEpoch).toBeUndefined();
+    expect(stillBlockedAfterStaleEvidence.providerRecoveryEvidenceId).toBeUndefined();
+
+    const failedWorkId = 'work-provider-recovery-failed-probe';
+    const failedRound = blockRound(failedWorkId);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: failedWorkId,
+      relayScopeId: failedRound.opened.relayScopeId,
+      authorityId: failedRound.opened.authorityId!,
+      probe: async () => ({ status: 'failed', provider: 'controller-browser', browserSessionId: 'failed-probe', resumedFromBinding: false, model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'new', executionPreferenceVerified: false, providerDeliveryStatus: 'wait_for_user', error: { code: 'CHATGPT_AUTH_REQUIRED', message: 'login required' } }),
+      now: () => new Date(Date.parse(failedRound.blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_PROBE_FAILED');
+    const stillBlockedAfterFailedProbe = getControllerRoundRelay(store, failedWorkId)!;
+    expect(stillBlockedAfterFailedProbe).toMatchObject({ status: 'blocked', consecutiveFailures: 3 });
+    expect(stillBlockedAfterFailedProbe.providerRecoveryEpoch).toBeUndefined();
+    expect(stillBlockedAfterFailedProbe.providerRecoveryEvidenceId).toBeUndefined();
+
+    const staleWorkId = 'work-provider-recovery-cas-race';
+    const staleRound = blockRound(staleWorkId);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: staleWorkId,
+      relayScopeId: staleRound.opened.relayScopeId,
+      authorityId: staleRound.opened.authorityId!,
+      probe: async () => {
+        rearmControllerRoundAfterProviderRecovery(store, { workId: staleWorkId, relayScopeId: staleRound.opened.relayScopeId, authorityId: staleRound.opened.authorityId!, expectedUpdatedAt: staleRound.blocked.updatedAt, evidenceId: 'concurrent-provider-recovery' });
+        return confirmedProbe();
+      },
+      now: () => new Date(Date.parse(staleRound.blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow(/CONTROLLER_RELAY_PROVIDER_RECOVERY_(STALE|BLOCKER_MISMATCH)/);
+
+    const missingAuthority = structured(await callRuntimeTool(ctx(fx.controllerHome, fx.repository, 'provider-recovery-principal', 'transport-provider-recovery', 'runtime-provider-recovery'), 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: failedWorkId,
+      capability_id: `controller.provider.recover:${failedWorkId}`,
+    }));
+    expect(missingAuthority.status).toBe('blocked');
+    expect(missingAuthority.summary).toContain('CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_REQUIRED');
   }, 15_000);
 
   test('frozen rh_work compatibility maps explicit review intent to the canonical implementation-review handler', async () => {
