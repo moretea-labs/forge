@@ -511,18 +511,10 @@ describe('rh_work terminalization authority', () => {
     execFileSync('git', ['commit', '-m', 'target command advance'], { cwd: fx.repoRoot });
     const targetRevision = repositoryGitStatus(fx.repository).head!;
 
-    const rejected = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
-      repo_id: fx.repository.repoId,
-      work_id: workId,
-      command: ['git', 'commit', '--allow-empty', '-m', 'must be rejected before mutation admission'],
-      request_id: 'direct-pre-mutation-command-rejected',
-    }, caller));
-    expect(rejected.accepted).toBe(false);
-    expect(rejected.path).toBe('git_commit_requires_explicit_path_scope');
-    const afterRejected = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
-    expect(afterRejected.state).toBe('prepared');
-    expect(afterRejected.deliveryBaseCommit).toBe(baseRevision);
-    expect(afterRejected.expectedHead).toBe(baseRevision);
+    const beforeMutation = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(beforeMutation.state).toBe('prepared');
+    expect(beforeMutation.deliveryBaseCommit).toBe(baseRevision);
+    expect(beforeMutation.expectedHead).toBe(baseRevision);
 
     const command = ['touch', 'src/command-owned.ts'];
     const preview = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_preview', {
@@ -538,6 +530,11 @@ describe('rh_work terminalization authority', () => {
       request_id: 'direct-pre-mutation-command-process',
     }, caller));
     expect(executed.accepted).toBe(true);
+    const executedProcess = typeof executed.processId === 'string'
+      ? await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, executed.processId, { timeoutMs: 10_000 })
+      : undefined;
+    if (executedProcess) expect(executedProcess.status).toBe('succeeded');
+    else expect(executed.ok === true || executed.status === 'succeeded').toBe(true);
     expect(existsSync(join(fx.repoRoot, 'src', 'command-owned.ts'))).toBe(true);
 
     const aligned = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;

@@ -17,6 +17,7 @@ import { callRuntimeTool, runtimeToolDefinitions } from "../../src/runtime/gatew
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
+import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { createWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
@@ -866,6 +867,18 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["add", "direct-edit.txt"]);
       git(repoRoot, ["commit", "-m", "independent direct edit"]);
 
+      const merged = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        command: ["git", "merge", "feature/completed"],
+        request_id: "merge-completed-unrelated-work",
+      }, caller));
+      expect(merged.error?.code).not.toBe("WORK_DELIVERY_REQUIRES_FINALIZE");
+      if (typeof merged.processId === "string") {
+        const mergedProcess = await waitRepositoryCommandProcess(controllerHome, repository.repoId, merged.processId, { timeoutMs: 10_000 });
+        expect(mergedProcess.status).toBe("succeeded");
+      }
+      expect(readFileSync(join(repoRoot, "completed.txt"), "utf8")).toBe("done\n");
+
       const explicitlyBoundPatch = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
         repo_id: repository.repoId,
         work_id: unrelatedWorkId,
@@ -874,15 +887,6 @@ describe("repository MCP command tools", () => {
       }, caller));
       expect(explicitlyBoundPatch.status).toBe("applied");
       expect(explicitlyBoundPatch.session.workId).toBe(unrelatedWorkId);
-
-      const merged = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
-        repo_id: repository.repoId,
-        command: ["git", "merge", "feature/completed"],
-        request_id: "merge-completed-unrelated-work",
-      }, caller));
-      expect(merged.error?.code).not.toBe("WORK_DELIVERY_REQUIRES_FINALIZE");
-      expect(merged.exitCode).toBe(0);
-      expect(readFileSync(join(repoRoot, "completed.txt"), "utf8")).toBe("done\n");
 
       git(repoRoot, ["switch", "-c", "feature/explicit-work"]);
       writeFileSync(join(repoRoot, "explicit.txt"), "pending\n");
