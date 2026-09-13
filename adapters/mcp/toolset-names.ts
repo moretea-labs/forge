@@ -28,8 +28,9 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   // Focused checks through Process Runtime.
   'run_check',
 
-  // Protected Computer input is a dedicated direct Runtime boundary. It is not
-  // a Plugin action because credentials must never enter generic durable state.
+  // Protected Computer preparation/input are dedicated direct Runtime boundaries.
+  // Raw credentials remain provider-local and neither operation enters durable state.
+  'computer_console_unlock_prepare',
   'computer_console_unlock',
 
   // One typed plugin dispatcher. Plugin discovery/action schemas stay routed

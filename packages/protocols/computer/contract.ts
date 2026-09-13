@@ -102,12 +102,19 @@ export type ComputerInputRequest =
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'open_url'; url: string };
 
 
+export interface ComputerConsoleUnlockPrepareRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'prepare_unlock_console';
+}
+
 export interface ComputerConsoleUnlockRequest {
   capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
   action: 'unlock_console';
-  /** Ephemeral invocation input. It must never be copied into durable plugin/work/evidence state. */
-  credential: string;
+  /** Opaque provider-local handle. Raw console credential material never enters Forge Runtime. */
+  credentialHandle: string;
 }
+
+export type ComputerConsoleUnlockCommandRequest = ComputerConsoleUnlockPrepareRequest | ComputerConsoleUnlockRequest;
 
 export interface ComputerConsoleUnlockAuthorization {
   kind: 'explicit_single_use';
@@ -116,9 +123,9 @@ export interface ComputerConsoleUnlockAuthorization {
   invocationId: string;
 }
 
-export interface ComputerConsoleUnlockProviderRequest extends ComputerConsoleUnlockRequest {
+export type ComputerConsoleUnlockProviderRequest = ComputerConsoleUnlockCommandRequest & {
   authorization: ComputerConsoleUnlockAuthorization;
-}
+};
 
 export interface ComputerCaptureRequest {
   capability: typeof COMPUTER_CAPTURE_CAPABILITY;
@@ -174,7 +181,7 @@ export type ComputerExecutionRequest =
   | { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY; request: ComputerBrowserAutomationRequest }
   | ComputerObserveRequest
   | ComputerInputRequest
-  | ComputerConsoleUnlockRequest
+  | ComputerConsoleUnlockCommandRequest
   | ComputerCaptureRequest
   | ComputerElementObserveRequest
   | ComputerElementActionRequest;

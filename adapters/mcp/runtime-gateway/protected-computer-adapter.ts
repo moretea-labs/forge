@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import {
   COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  type ComputerConsoleUnlockPrepareRequest,
   type ComputerConsoleUnlockRequest,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputerConsoleUnlock } from '../../../src/runtime/root/computer-composition';
@@ -10,9 +11,15 @@ import { result } from './result-adapter';
 
 const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
 const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface ProtectedConsoleUnlockPreparationInput {
+  confirmAuthorization: boolean;
+  timeoutMs?: number;
+}
 
 export interface ProtectedConsoleUnlockInvocationInput {
-  credential: string;
+  credentialHandle: string;
   confirmAuthorization: boolean;
   timeoutMs?: number;
 }
@@ -30,26 +37,60 @@ function protectedErrorCode(error: unknown): string {
   return /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message)?.[1] ?? 'COMPUTER_CONSOLE_UNLOCK_FAILED';
 }
 
-/**
- * Protected one-shot invocation. Credential material remains request-local and is
- * never copied into Work, Process, Plugin action, receipt, audit, or result state.
- */
+function requireAuthorization(confirmed: boolean): void {
+  if (confirmed !== true) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED: confirm_authorization=true is required for this one invocation.');
+  }
+}
+
+export async function executeProtectedConsoleUnlockPreparation(
+  input: ProtectedConsoleUnlockPreparationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireAuthorization(input.confirmAuthorization);
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockPrepareRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'prepare_unlock_console',
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  const credentialHandle = typeof providerResult.credential_handle === 'string'
+    ? providerResult.credential_handle
+    : undefined;
+  if (!credentialHandle || !UUID_PATTERN.test(credentialHandle)) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_PREPARATION_INVALID: provider did not return a valid opaque credential handle.');
+  }
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'prepare_unlock_console',
+    invocationId,
+    prepared: providerResult.prepared === true,
+    credentialHandle,
+    ...(typeof providerResult.expires_in_ms === 'number'
+      ? { expiresInMs: providerResult.expires_in_ms }
+      : {}),
+  };
+}
+
 export async function executeProtectedConsoleUnlockInvocation(
   input: ProtectedConsoleUnlockInvocationInput,
   controllerHome: string,
 ): Promise<Record<string, unknown>> {
-  if (input.confirmAuthorization !== true) {
-    throw new Error('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED: confirm_authorization=true is required for this one invocation.');
-  }
-  if (typeof input.credential !== 'string' || input.credential.length === 0 || Buffer.byteLength(input.credential, 'utf8') > 1_024) {
-    throw new Error('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_REQUIRED: one bounded ephemeral credential is required.');
+  requireAuthorization(input.confirmAuthorization);
+  if (typeof input.credentialHandle !== 'string' || !UUID_PATTERN.test(input.credentialHandle)) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: one provider-local opaque credential handle is required.');
   }
 
   const invocationId = randomUUID();
   const request: ComputerConsoleUnlockRequest = {
     capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
     action: 'unlock_console',
-    credential: input.credential,
+    credentialHandle: input.credentialHandle,
   };
   const providerResult = await executeRuntimeComputerConsoleUnlock(
     request,
@@ -58,8 +99,6 @@ export async function executeProtectedConsoleUnlockInvocation(
     controllerHome,
   );
 
-  // Return an allowlisted postcondition projection. Provider payload growth can
-  // never accidentally echo credential material through the MCP result surface.
   return {
     capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
     action: 'unlock_console',
@@ -77,22 +116,30 @@ export async function callProtectedComputerAdapter(
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
-  if (name !== 'computer_console_unlock') return undefined;
+  if (name !== 'computer_console_unlock_prepare' && name !== 'computer_console_unlock') return undefined;
+  const action = name === 'computer_console_unlock_prepare' ? 'prepare_unlock_console' : 'unlock_console';
   try {
-    const payload = await executeProtectedConsoleUnlockInvocation({
-      credential: typeof args.credential === 'string' ? args.credential : '',
-      confirmAuthorization: args.confirm_authorization === true,
-      timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-    }, ctx.controllerHome);
+    const payload = name === 'computer_console_unlock_prepare'
+      ? await executeProtectedConsoleUnlockPreparation({
+          confirmAuthorization: args.confirm_authorization === true,
+          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        }, ctx.controllerHome)
+      : await executeProtectedConsoleUnlockInvocation({
+          credentialHandle: typeof args.credential_handle === 'string' ? args.credential_handle : '',
+          confirmAuthorization: args.confirm_authorization === true,
+          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        }, ctx.controllerHome);
     return result({ accepted: true, ...payload });
   } catch (error) {
     return result({
       accepted: false,
       capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-      action: 'unlock_console',
+      action,
       error: {
         code: protectedErrorCode(error),
-        message: 'Protected console unlock did not complete. Credential material was not retained.',
+        message: action === 'prepare_unlock_console'
+          ? 'Protected console-unlock credential preparation did not complete.'
+          : 'Protected console unlock did not complete. Provider-local credential material was not exposed.',
       },
     }, true);
   }

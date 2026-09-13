@@ -9,7 +9,7 @@ import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock 
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
-import { executeProtectedConsoleUnlockInvocation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
+import { executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 
@@ -28,8 +28,9 @@ interface ProviderFixture {
     pressCount: number;
     elementObserveCount: number;
     elementActionCount: number;
+    consolePrepareCount: number;
     consoleUnlockCount: number;
-    lastConsoleCredential?: string;
+    lastConsoleHandle?: string;
     lastConsoleAuthorization?: Record<string, unknown>;
     failNextPressAfterDispatch: boolean;
     nextOpenBundleId?: string;
@@ -80,8 +81,9 @@ async function providerFixture(): Promise<ProviderFixture> {
     pressCount: 0,
     elementObserveCount: 0,
     elementActionCount: 0,
+    consolePrepareCount: 0,
     consoleUnlockCount: 0,
-    lastConsoleCredential: undefined as string | undefined,
+    lastConsoleHandle: undefined as string | undefined,
     lastConsoleAuthorization: undefined as Record<string, unknown> | undefined,
     failNextPressAfterDispatch: false,
     nextOpenBundleId: undefined as string | undefined,
@@ -126,7 +128,7 @@ async function providerFixture(): Promise<ProviderFixture> {
             computerCapabilities: [
               { capabilityId: 'computer.observe.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_observe'] },
               { capabilityId: 'computer.input.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
-              { capabilityId: 'computer.console.unlock.v1', protocolVersion: 1, method: 'computer_execute', actions: ['unlock_console'] },
+              { capabilityId: 'computer.console.unlock.v1', protocolVersion: 1, method: 'computer_execute', actions: ['prepare_unlock_console', 'unlock_console'] },
               { capabilityId: 'computer.capture.v1', protocolVersion: 1, method: 'computer_execute', actions: ['desktop_screenshot'] },
               { capabilityId: 'computer.element.observe.v2', protocolVersion: 2, method: 'computer_execute', actions: ['observe_elements'] },
               { capabilityId: 'computer.element.action.v2', protocolVersion: 2, method: 'computer_execute', actions: ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] },
@@ -205,9 +207,13 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.elementActionCount += 1;
           session.snapshotRevision = Number(session.snapshotRevision ?? 0) + 1;
           result = { acted: true, action: params.action, ref: params.ref, interactionId };
+        } else if (actionId === 'prepare_unlock_console') {
+          state.consolePrepareCount += 1;
+          state.lastConsoleAuthorization = params.authorization && typeof params.authorization === 'object' ? params.authorization as Record<string, unknown> : undefined;
+          result = { prepared: true, credential_handle: '11111111-1111-4111-8111-111111111111', expires_in_ms: 120_000 };
         } else if (actionId === 'unlock_console') {
           state.consoleUnlockCount += 1;
-          state.lastConsoleCredential = typeof params.credential === 'string' ? params.credential : undefined;
+          state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : undefined;
           state.lastConsoleAuthorization = params.authorization && typeof params.authorization === 'object' ? params.authorization as Record<string, unknown> : undefined;
           result = { unlocked: true, verified: true, postcondition: 'console_unlocked' };
         } else if (actionId === 'desktop_press') {
@@ -584,19 +590,30 @@ describe('Computer durable InteractionTarget authority', () => {
 
 
 describe('protected Computer console unlock composition', () => {
-  test('protected MCP invocation requires explicit authorization and never returns credential material', async () => {
+  test('protected MCP prepare/unlock require explicit authorization and expose only an opaque handle', async () => {
     const fixture = await providerFixture();
-    const fixtureCredential = 'fixture-protected-console-credential';
 
-    await expect(executeProtectedConsoleUnlockInvocation({
-      credential: fixtureCredential,
+    await expect(executeProtectedConsoleUnlockPreparation({
       confirmAuthorization: false,
       timeoutMs: 5_000,
     }, fixture.controllerHome)).rejects.toThrow('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED');
-    expect(fixture.state.consoleUnlockCount).toBe(0);
+    expect(fixture.state.consolePrepareCount).toBe(0);
+
+    const prepared = await executeProtectedConsoleUnlockPreparation({
+      confirmAuthorization: true,
+      timeoutMs: 5_000,
+    }, fixture.controllerHome);
+    expect(prepared).toMatchObject({
+      capability: 'computer.console.unlock.v1',
+      action: 'prepare_unlock_console',
+      prepared: true,
+      credentialHandle: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(typeof prepared.invocationId).toBe('string');
+    expect(fixture.state.consolePrepareCount).toBe(1);
 
     const result = await executeProtectedConsoleUnlockInvocation({
-      credential: fixtureCredential,
+      credentialHandle: String(prepared.credentialHandle),
       confirmAuthorization: true,
       timeoutMs: 5_000,
     }, fixture.controllerHome);
@@ -609,16 +626,18 @@ describe('protected Computer console unlock composition', () => {
     });
     expect(typeof result.invocationId).toBe('string');
     expect(fixture.state.consoleUnlockCount).toBe(1);
-    expect(fixture.state.lastConsoleCredential).toBe(fixtureCredential);
+    expect(fixture.state.lastConsoleHandle).toBe(String(prepared.credentialHandle));
     expect(fixture.state.lastConsoleAuthorization).toMatchObject({ kind: 'explicit_single_use', confirmed: true });
-    expect(JSON.stringify(result)).not.toContain(fixtureCredential);
     disposeRuntimeComputerComposition();
   });
 
-  test('keeps unlock out of generic plugin actions and routes only after explicit ephemeral authorization', async () => {
+  test('keeps prepare/unlock out of generic plugin actions and routes only after explicit authorization', async () => {
     const fixture = await providerFixture();
-    const fixtureCredential = 'fixture-ephemeral-never-persist';
-    const request = { capability: 'computer.console.unlock.v1' as const, action: 'unlock_console' as const, credential: fixtureCredential };
+    const request = {
+      capability: 'computer.console.unlock.v1' as const,
+      action: 'unlock_console' as const,
+      credentialHandle: '11111111-1111-4111-8111-111111111111',
+    };
     await expect(executeRuntimeComputerConsoleUnlock(
       request,
       { kind: 'explicit_single_use', confirmed: true, invocationId: 'not-a-uuid' },
@@ -635,9 +654,8 @@ describe('protected Computer console unlock composition', () => {
     );
     expect(result).toMatchObject({ unlocked: true, verified: true, postcondition: 'console_unlocked' });
     expect(fixture.state.consoleUnlockCount).toBe(1);
-    expect(fixture.state.lastConsoleCredential).toBe(fixtureCredential);
+    expect(fixture.state.lastConsoleHandle).toBe(request.credentialHandle);
     expect(fixture.state.lastConsoleAuthorization).toMatchObject({ kind: 'explicit_single_use', confirmed: true });
-    expect(JSON.stringify(result)).not.toContain(fixtureCredential);
     disposeRuntimeComputerComposition();
   });
 });

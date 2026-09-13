@@ -8,8 +8,8 @@ import {
   COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
   type ComputerBrowserAutomationRequest,
   type ComputerBrowserProduct,
+  type ComputerConsoleUnlockCommandRequest,
   type ComputerConsoleUnlockProviderRequest,
-  type ComputerConsoleUnlockRequest,
   type ComputerRuntimeExecutionRequest,
   type ComputerRuntimeProviderExecutionRequest,
 } from '../../../packages/protocols/computer/index';
@@ -100,32 +100,30 @@ export interface RuntimeComputerConsoleUnlockAuthorization {
 }
 
 /**
- * Protected Computer path. The caller must obtain explicit authorization and an ephemeral
- * credential without using the generic Assistant Plugin action/Job/receipt pipeline.
+ * Protected Computer path. The caller must obtain explicit authorization for either
+ * provider-local credential preparation or one handle-bound unlock attempt. Raw console
+ * credential material never enters Runtime, generic Plugin actions, Jobs, or receipts.
  */
 export async function executeRuntimeComputerConsoleUnlock(
-  request: ComputerConsoleUnlockRequest,
+  request: ComputerConsoleUnlockCommandRequest,
   authorization: RuntimeComputerConsoleUnlockAuthorization,
   timeoutMs: number,
   controllerHome: string = resolveControllerHome(),
 ): Promise<Record<string, unknown>> {
-  if (request.capability !== COMPUTER_CONSOLE_UNLOCK_CAPABILITY || request.action !== 'unlock_console') {
-    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID', 'Protected console unlock accepts only computer.console.unlock.v1 / unlock_console.', { retryable: false });
-  }
-  if (!request.credential || Buffer.byteLength(request.credential, 'utf8') > 1_024) {
-    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_REQUIRED', 'Protected console unlock requires one bounded ephemeral credential.', { retryable: false });
+  if (request.capability !== COMPUTER_CONSOLE_UNLOCK_CAPABILITY
+    || !['prepare_unlock_console', 'unlock_console'].includes(request.action)) {
+    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID', 'Protected console unlock accepts only computer.console.unlock.v1 prepare/unlock commands.', { retryable: false });
   }
   if (authorization.kind !== 'explicit_single_use'
     || authorization.confirmed !== true
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(authorization.invocationId)) {
     throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED', 'Protected console unlock requires one explicit single-use authorization bound to this invocation.', { retryable: false });
   }
-  const providerRequest: ComputerConsoleUnlockProviderRequest = {
-    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
-    action: 'unlock_console',
-    credential: request.credential,
-    authorization,
-  };
+  if (request.action === 'unlock_console'
+    && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.credentialHandle)) {
+    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED', 'Protected console unlock requires one provider-local opaque credential handle.', { retryable: false });
+  }
+  const providerRequest: ComputerConsoleUnlockProviderRequest = { ...request, authorization };
   return await executeComputerProviderRequest(providerRequest, timeoutMs, controllerHome);
 }
 

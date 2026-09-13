@@ -91,9 +91,9 @@ export function desktopOperatorActionForComputerRequest(
   }
   if (request.capability === COMPUTER_CONSOLE_UNLOCK_CAPABILITY) {
     return {
-      actionId: 'unlock_console',
+      actionId: request.action,
       args: {
-        credential: request.credential,
+        ...(request.action === 'unlock_console' ? { credential_handle: request.credentialHandle } : {}),
         authorization: {
           kind: request.authorization.kind,
           confirmed: request.authorization.confirmed,

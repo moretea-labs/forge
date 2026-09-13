@@ -56,7 +56,8 @@ export function assertRuntimePerformanceEvidence(
   const age = now - Date.parse(evidence.measuredUntil);
   if (evidence.policy !== 'idle-cpu-v1' || !samePerformanceIdentity(evidence, identity)
     || !Number.isFinite(age) || age < 0 || age > 60_000
-    || evidence.warmupMs < 60_000 || evidence.durationMs < 300_000 || evidence.sampleCount !== 30
+    || evidence.warmupMs < 60_000 || evidence.warmupMs > 90_000
+    || evidence.durationMs < 300_000 || evidence.durationMs > 450_000 || evidence.sampleCount !== 30
     || !Number.isFinite(evidence.meanCpuPercent) || evidence.meanCpuPercent < 0
     || !Number.isFinite(evidence.p95CpuPercent) || evidence.p95CpuPercent < 0) {
     throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: incomplete, stale or mismatched performance evidence');
@@ -88,7 +89,17 @@ export async function measureRuntimePerformance(
     return cpu;
   };
   const warmingAt = monotonicNow();
-  for (let i = 0; i < 6; i++) { await sleep(10_000); observe(); }
+  let previousWarmupAt = warmingAt;
+  for (let i = 0; i < 6; i++) {
+    await sleep(10_000);
+    observe();
+    const nextWarmupAt = monotonicNow();
+    const elapsed = nextWarmupAt - previousWarmupAt;
+    if (elapsed < 10_000 || elapsed > 15_000) {
+      throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: interrupted CPU warmup window');
+    }
+    previousWarmupAt = nextWarmupAt;
+  }
   const warmupMs = monotonicNow() - warmingAt;
   const measuredFrom = new Date(wallNow()).toISOString();
   let previousCpu = observe().cpuMs;

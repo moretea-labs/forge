@@ -461,11 +461,15 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     plugin_id: { type: 'string' },
   }, ['plugin_id']),
-  definition('computer_console_unlock', 'Protected one-shot console unlock through computer.console.unlock.v1. Credential material is request-local: this tool executes directly in the canonical Runtime and must never enter Plugin actions, Process/Work state, receipts, audit hashes, or replayable jobs. Requires confirm_authorization=true for every invocation.', {
-    credential: { type: 'string', minLength: 1, maxLength: 1024, description: 'Ephemeral console credential for this invocation only. Forge does not persist or echo this value.' },
+  definition('computer_console_unlock_prepare', 'Prepare one protected console unlock without transporting a password through ChatGPT or Forge Runtime. Forge Desktop Operator displays a provider-local secure password field while the console is unlocked and returns only a short-lived opaque single-use handle. Requires confirm_authorization=true for every invocation.', {
+    confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot local credential preparation.' },
+    timeout_ms: { type: 'number', description: 'Bounded provider/prompt timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
+  }, ['confirm_authorization'], false),
+  definition('computer_console_unlock', 'Protected one-shot console unlock through computer.console.unlock.v1 using only a provider-local opaque credential handle. Raw macOS credentials never enter MCP arguments, Forge Runtime, Plugin actions, Process/Work state, receipts, audit hashes, or replayable jobs. Requires confirm_authorization=true for every invocation.', {
+    credential_handle: { type: 'string', minLength: 36, maxLength: 64, description: 'Opaque short-lived single-use handle returned by computer_console_unlock_prepare. It is not a credential.' },
     confirm_authorization: { type: 'boolean', description: 'Must be true to authorize this exact one-shot console unlock invocation.' },
     timeout_ms: { type: 'number', description: 'Bounded provider/postcondition timeout in milliseconds. Defaults to 15000 and is capped at 30000.' },
-  }, ['credential', 'confirm_authorization'], false),
+  }, ['credential_handle', 'confirm_authorization'], false),
   definition('plugin_action_execute', 'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
     repo_id: repoId,
     plugin_id: { type: 'string' },
