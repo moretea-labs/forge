@@ -135,6 +135,8 @@ export interface RecoveryConfig {
   primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   primaryRuntimeSourceRoot?: string;
+  /** Repository Registry authority paired with primaryRuntimeSourceRoot. */
+  primaryRuntimeSourceRepositoryId?: string;
   primaryConnectorService?: PrimaryConnectorServiceConfig;
   mainMcpTokenFile?: string;
   expectedToolFingerprint?: string;
@@ -492,6 +494,7 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
     ...(loaded.primaryPublicTunnelService ? { primaryPublicTunnelService: loaded.primaryPublicTunnelService } : {}),
     ...(loaded.primaryRuntimeService ? { primaryRuntimeService: loaded.primaryRuntimeService } : {}),
     ...(typeof loaded.primaryRuntimeSourceRoot === 'string' ? { primaryRuntimeSourceRoot: resolve(loaded.primaryRuntimeSourceRoot) } : {}),
+    ...(typeof loaded.primaryRuntimeSourceRepositoryId === 'string' && loaded.primaryRuntimeSourceRepositoryId.trim() ? { primaryRuntimeSourceRepositoryId: loaded.primaryRuntimeSourceRepositoryId.trim() } : {}),
     ...(loaded.primaryConnectorService ? { primaryConnectorService: loaded.primaryConnectorService } : {}),
     ...(typeof loaded.mainMcpTokenFile === 'string' ? { mainMcpTokenFile: loaded.mainMcpTokenFile } : {}),
     ...(typeof loaded.expectedToolFingerprint === 'string' ? { expectedToolFingerprint: loaded.expectedToolFingerprint } : {}),
@@ -3182,6 +3185,10 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   if (!sourceRoot) {
     return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
   }
+  const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (!sourceRepositoryId) {
+    return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source repository id is not configured in standalone Recovery' };
+  }
   // Capture the base before staging. Staging can take long enough for another
   // activation to win; the later publish must prove this base is still current.
   const expectedAuthority = releaseAuthority(config);
@@ -3190,7 +3197,7 @@ export async function stageAndActivateConfiguredRuntimeRelease(
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
   }, async () => {
     try {
-      const staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot });
+      const staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot, sourceRepositoryId });
       assertRuntimeReleaseFiles(staged);
       return { ok: true as const, staged };
     } catch (error) {
@@ -3558,7 +3565,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryRuntimeSourceRepositoryId' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');

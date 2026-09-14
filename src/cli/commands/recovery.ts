@@ -11,6 +11,7 @@ import {
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
 } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import {
   resolveControllerHome,
   rollbackStoppedControllerHomeAuthorityRelocation,
@@ -1068,12 +1069,17 @@ export function buildRecoveryCommand(): Command {
 
       const packageRoot = resolve(import.meta.dir, '..', '..', '..');
       const primaryRuntimeSourceRoot = opts.primaryRuntimeSourceRoot ? resolve(opts.primaryRuntimeSourceRoot) : packageRoot;
+      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(primaryRuntimeSourceRoot, home);
+      if (!opts.stageOnly && !primaryRuntimeSourceRepository) {
+        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${primaryRuntimeSourceRoot}`);
+      }
       if (!opts.stageOnly && /[\\/]\.forge[\\/]managed-worktrees[\\/]/.test(primaryRuntimeSourceRoot)) {
         throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
       }
       const result = await installStandaloneRecovery({
         controllerHome: home,
         repoRoot: primaryRuntimeSourceRoot,
+        ...(primaryRuntimeSourceRepository ? { primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId } : {}),
         sourceRoot: packageRoot,
         port,
         stageOnly: opts.stageOnly === true,

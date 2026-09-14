@@ -23,6 +23,8 @@ export interface RuntimeSourceIdentity {
   commit?: string;
   /** Exact immutable release identity when the runtime executes from a staged release. */
   releaseRevision?: string;
+  /** Repository Registry identity of the source repository that produced an immutable release. */
+  sourceRepositoryId?: string;
   defaultBranch: string;
   defaultBranchCommit?: string;
   dirty: boolean;
@@ -90,6 +92,7 @@ function gitOk(root: string, args: string[]): boolean {
 interface ImmutableRuntimeReleaseIdentity {
   sourceCommit: string;
   releaseRevision: string;
+  sourceRepositoryId?: string;
   cleanWorkspace: boolean;
 }
 
@@ -114,12 +117,14 @@ function readImmutableRuntimeReleaseIdentity(root: string): ImmutableRuntimeRele
   }
   const sourceCommit = typeof manifest.sourceCommit === 'string' ? manifest.sourceCommit.trim() : '';
   const releaseRevision = typeof manifest.releaseRevision === 'string' ? manifest.releaseRevision.trim() : '';
+  const sourceRepositoryId = typeof manifest.sourceRepositoryId === 'string' ? manifest.sourceRepositoryId.trim() : '';
   if (!sourceCommit || !releaseRevision || typeof manifest.cleanWorkspace !== 'boolean') {
     throw new Error(`RUNTIME_RELEASE_MANIFEST_INCOMPLETE: ${manifestPath}`);
   }
   return {
     sourceCommit,
     releaseRevision,
+    ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
     cleanWorkspace: manifest.cleanWorkspace,
   };
 }
@@ -271,6 +276,7 @@ export function collectRuntimeSourceIdentity(repoRoot: string): RuntimeSourceIde
         branch: null,
         commit: release.sourceCommit,
         releaseRevision: release.releaseRevision,
+        ...(release.sourceRepositoryId ? { sourceRepositoryId: release.sourceRepositoryId } : {}),
         defaultBranch: 'main',
         defaultBranchCommit: release.sourceCommit,
         dirty: !release.cleanWorkspace,

@@ -224,6 +224,7 @@ test('standalone Recovery non-stage install persists a durable canonical source 
   const result = await installStandaloneRecovery({
     controllerHome: home,
     repoRoot: durableSource,
+    primaryRuntimeSourceRepositoryId: 'repo_durable_source',
     sourceRoot: durableSource,
   }, {
     ...recoveryInstallerStubs(),
@@ -243,7 +244,9 @@ test('standalone Recovery non-stage install persists a durable canonical source 
   });
 
   expect(result.config.primaryRuntimeSourceRoot).toBe(resolve(durableSource));
+  expect(result.config.primaryRuntimeSourceRepositoryId).toBe('repo_durable_source');
   expect(loadRecoveryConfig(home).primaryRuntimeSourceRoot).toBe(resolve(durableSource));
+  expect(loadRecoveryConfig(home).primaryRuntimeSourceRepositoryId).toBe('repo_durable_source');
   expect(result.staged.release.sourceCommit).toBe(sourceCommit);
   expect(result.staged.release.productVersion).toBe('1.7.2');
   expect(result.activated?.release.sourceCommit).toBe(sourceCommit);
@@ -1384,12 +1387,16 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
   const baseline = verifiedManifest(home, 'release-baseline');
   ensureActiveRuntimeRelease(home, baseline.path);
   const expectedAuthority = readRuntimeReleaseAuthority(home)!;
-  const config = createRecoveryConfig(home, { primaryRuntimeSourceRoot: sourceRoot });
+  const config = createRecoveryConfig(home, {
+    primaryRuntimeSourceRoot: sourceRoot,
+    primaryRuntimeSourceRepositoryId: 'repo_source_fixture',
+  });
   let stagedFrom = '';
   let activatedManifest = '';
   const result = await stageAndActivateConfiguredRuntimeRelease(config, {
     stage: (input) => {
       stagedFrom = input.sourceRoot;
+      expect(input.sourceRepositoryId).toBe('repo_source_fixture');
       const operationLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
       expect(operationLock).toMatchObject({
         pid: process.pid,

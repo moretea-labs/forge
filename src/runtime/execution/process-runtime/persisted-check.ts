@@ -329,7 +329,7 @@ export async function runPersistedCheckViaProcessRuntime(
     : undefined;
   const candidateRunner = shouldUseCandidatePersistedCheckRunner({
     repoId: input.repoId,
-    runtimeSourceRepoId: runtimeGeneration?.source.repoId,
+    runtimeSourceRepoId: runtimeGeneration?.source.sourceRepositoryId,
     verificationSnapshot: Boolean(verificationSnapshot),
     liveCertification,
   })

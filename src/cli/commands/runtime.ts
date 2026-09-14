@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
-import { getRepository, listRepositories } from '../repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories } from '../repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runtime/diagnostics/read-only-tool';
 import { readRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
@@ -136,7 +136,9 @@ export function buildRuntimeCommand(): Command {
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_SERVICE_PORT_INVALID');
 
-      const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome: home, sourceRoot: repoRoot });
+      const sourceRepository = findRegisteredRepositoryByCheckoutRoot(repoRoot, home);
+      if (!sourceRepository) throw new Error(`RUNTIME_SERVICE_REPOSITORY_NOT_REGISTERED: ${repoRoot}`);
+      const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome: home, sourceRoot: repoRoot, sourceRepositoryId: sourceRepository.repoId });
       assertRuntimeReleaseFiles(staged);
       if (opts.stageOnly === true) {
         output({

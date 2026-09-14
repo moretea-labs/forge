@@ -1113,8 +1113,9 @@ describe('run_check Process Runtime facade', () => {
     const repository = registerRepository({ path: selfHostRoot, controllerHome: fx.controllerHome, displayName: 'self-host-forge' });
     const head = spawnSync('git', ['-C', selfHostRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
     rotateRuntimeGeneration(fx.controllerHome, {
-      repoId: repository.repoId,
+      repoId: 'repo_immutable_release_fixture',
       checkoutId: repository.activeCheckoutId,
+      sourceRepositoryId: repository.repoId,
       repoRoot: selfHostRoot,
       canonicalRoot: selfHostRoot,
       branch: 'main',

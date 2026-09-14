@@ -788,6 +788,7 @@ function assertDurablePrimaryRuntimeSourceRoot(controllerHome: string, sourceRoo
 export async function installStandaloneRecovery(input: {
   controllerHome: string;
   repoRoot: string;
+  primaryRuntimeSourceRepositoryId?: string;
   sourceRoot?: string;
   port?: number;
   publicMcpUrl?: string;
@@ -801,7 +802,11 @@ export async function installStandaloneRecovery(input: {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot ?? input.repoRoot);
   const primaryRuntimeSourceRoot = resolve(input.repoRoot);
-  if (!input.stageOnly) assertDurablePrimaryRuntimeSourceRoot(controllerHome, primaryRuntimeSourceRoot);
+  const primaryRuntimeSourceRepositoryId = input.primaryRuntimeSourceRepositoryId?.trim();
+  if (!input.stageOnly) {
+    assertDurablePrimaryRuntimeSourceRoot(controllerHome, primaryRuntimeSourceRoot);
+    if (!primaryRuntimeSourceRepositoryId) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_REQUIRED');
+  }
   if (input.recoveryTunnelService?.platform === 'launchd') {
     const tunnelContract = inspectRecoveryTunnelLaunchdContract(input.recoveryTunnelService);
     if (!tunnelContract.plistInstalled) {
@@ -840,6 +845,7 @@ export async function installStandaloneRecovery(input: {
     ...(input.primaryPublicTunnelService ? { primaryPublicTunnelService: input.primaryPublicTunnelService } : {}),
     ...(input.primaryRuntimeService ? { primaryRuntimeService: input.primaryRuntimeService } : {}),
     primaryRuntimeSourceRoot,
+    ...(primaryRuntimeSourceRepositoryId ? { primaryRuntimeSourceRepositoryId } : {}),
     ...(input.primaryConnectorService ? { primaryConnectorService: input.primaryConnectorService } : {}),
   });
   const activated = await activateRecoveryRelease({ controllerHome, config, candidate: staged.release }, dependencies);

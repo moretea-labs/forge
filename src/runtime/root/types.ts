@@ -77,6 +77,8 @@ export interface RuntimeReleaseManifest {
     maximum: number;
   };
   workerProtocolVersion: number;
+  /** Repository Registry identity of the source repository that produced this immutable release. */
+  sourceRepositoryId?: string;
   sourceCommit?: string;
   releaseRevision?: string;
   cleanWorkspace?: boolean;

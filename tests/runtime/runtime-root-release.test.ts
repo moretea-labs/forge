@@ -282,9 +282,9 @@ describe('runtime release materialization', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
     const canaries: string[] = [];
-    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: (request) => {
+    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: (request) => {
       expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         now: () => 1_700_000_000_100,
         uuid: () => 'future-candidate',
@@ -307,6 +307,7 @@ describe('runtime release materialization', () => {
         artifactIdentity: candidate.artifactIdentity,
         manifestSha256: sha256Text(manifestText),
         sourceCommit,
+        sourceRepositoryId: 'repo_source_fixture',
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
     }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
@@ -318,8 +319,8 @@ describe('runtime release materialization', () => {
   test('rejects a compiled candidate whose manifest omits the Process Runner authority pair', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: () => {
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: () => {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
         bundleRuntime: bundleFakeRuntime,
@@ -335,7 +336,7 @@ describe('runtime release materialization', () => {
       return { ok: true, stdout: JSON.stringify({
         schemaVersion: 1, releasePath: candidate.releasePath, manifestPath: candidate.manifestPath,
         releaseId: candidate.releaseId, artifactIdentity: candidate.artifactIdentity,
-        manifestSha256: sha256Text(manifestText), sourceCommit,
+        manifestSha256: sha256Text(manifestText), sourceCommit, sourceRepositoryId: 'repo_source_fixture',
       }) };
     } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: processRunnerEntrypoint');
   });
@@ -343,8 +344,8 @@ describe('runtime release materialization', () => {
   test('rejects a compiled candidate whose manifest omits standalone Process Runner execution authority', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: () => {
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: () => {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
         bundleRuntime: bundleFakeRuntime,
@@ -359,7 +360,7 @@ describe('runtime release materialization', () => {
       return { ok: true, stdout: JSON.stringify({
         schemaVersion: 1, releasePath: candidate.releasePath, manifestPath: candidate.manifestPath,
         releaseId: candidate.releaseId, artifactIdentity: candidate.artifactIdentity,
-        manifestSha256: sha256Text(manifestText), sourceCommit,
+        manifestSha256: sha256Text(manifestText), sourceCommit, sourceRepositoryId: 'repo_source_fixture',
       }) };
     } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: executionMode');
   });
@@ -373,12 +374,12 @@ describe('runtime release materialization', () => {
     const releaseId = wrongHead ? 'wrong-head' : 'outside-release';
     const releasePath = wrongHead ? join(controllerHome, 'runtime', 'releases', releaseId) : mkdtempSync(join(tmpdir(), 'forge-runtime-release-outside-'));
     if (!wrongHead) roots.push(releasePath);
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath: join(releasePath, 'manifest.json'), releaseId, artifactIdentity: `sha256:${'a'.repeat(64)}`, manifestSha256: 'c'.repeat(64), sourceCommit: wrongHead ? 'b'.repeat(40) : head }) }) })).toThrow(error);
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath: join(releasePath, 'manifest.json'), releaseId, artifactIdentity: `sha256:${'a'.repeat(64)}`, manifestSha256: 'c'.repeat(64), sourceCommit: wrongHead ? 'b'.repeat(40) : head, sourceRepositoryId: 'repo_source_fixture' }) }) })).toThrow(error);
   });
 
   test('stages and hashes browser/runtime sidecar artifacts beside immutable runtime executables', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       now: () => 1_700_000_000_000,
       uuid: () => 'release-test',
@@ -492,7 +493,7 @@ describe('runtime release materialization', () => {
   test('signs macOS Runtime before hashing and preserves one stable code identity across changed releases', () => {
     const { root, controllerHome } = sourceFixture();
     let runtimeBuild = 0;
-    const materialize = (now: number) => stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const materialize = (now: number) => stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'darwin',
       now: () => now,
       uuid: () => `signed-${now}`,
@@ -532,7 +533,7 @@ describe('runtime release materialization', () => {
   test('rejects a complete macOS candidate that omits the stable signing contract', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       now: () => 1_700_000_000_200,
       uuid: () => 'unsigned-candidate',
@@ -542,7 +543,7 @@ describe('runtime release materialization', () => {
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-process-runner'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, {
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'darwin',
       runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({
         schemaVersion: 1,
@@ -552,6 +553,7 @@ describe('runtime release materialization', () => {
         artifactIdentity: candidate.artifactIdentity,
         manifestSha256: candidate.manifestSha256,
         sourceCommit,
+        sourceRepositoryId: 'repo_source_fixture',
       }) }),
     })).toThrow('RUNTIME_RELEASE_CANDIDATE_MACOS_SIGNING_REQUIRED');
   });
@@ -614,7 +616,7 @@ describe('runtime release materialization', () => {
 
   test('release assertion fails closed when the declared Browser Node bridge host is missing', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => {
         writeFileSync(outputPath, 'binary');
@@ -637,7 +639,7 @@ describe('runtime release materialization', () => {
 
   test('release assertion fails closed when the declared Browser handoff host is missing', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => {
         writeFileSync(outputPath, 'binary');
@@ -660,7 +662,7 @@ describe('runtime release materialization', () => {
 
   test('compiled loader and release assertion reject a tampered Runtime bundle before execution', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
@@ -676,7 +678,7 @@ describe('runtime release materialization', () => {
 
   test('release assertion rejects a package snapshot whose bytes no longer match its manifest identity', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
@@ -690,7 +692,7 @@ describe('runtime release materialization', () => {
 
   test('release assertion rejects a component whose bytes no longer match its manifest identity', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
@@ -704,7 +706,7 @@ describe('runtime release materialization', () => {
 
   test('release assertion rejects a declared executable component without an execute bit', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,

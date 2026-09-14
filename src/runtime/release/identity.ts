@@ -8,6 +8,7 @@ export interface ReleaseIdentityBinding {
   releaseId?: string;
   releaseRevision?: string;
   sourceCommit?: string;
+  sourceRepositoryId?: string;
   cleanWorkspace: boolean;
 }
 
@@ -15,6 +16,7 @@ interface ReleaseManifestIdentity {
   releaseId?: string;
   releaseRevision?: string;
   sourceCommit?: string;
+  sourceRepositoryId?: string;
   cleanWorkspace?: boolean;
 }
 
@@ -31,6 +33,7 @@ function readManifest(releasePath: string): ReleaseManifestIdentity | undefined 
       releaseId: text(manifest.releaseId),
       releaseRevision: text(manifest.releaseRevision),
       sourceCommit: text(manifest.sourceCommit),
+      sourceRepositoryId: text(manifest.sourceRepositoryId),
       cleanWorkspace: typeof manifest.cleanWorkspace === 'boolean' ? manifest.cleanWorkspace : undefined,
     };
   } catch {
@@ -48,6 +51,7 @@ export function readReleaseIdentityBindingFromEnv(env: NodeJS.ProcessEnv = proce
     releaseId: env.FORGE_RELEASE_ID?.trim() || manifest?.releaseId,
     releaseRevision: env.FORGE_RELEASE_REVISION?.trim() || manifest?.releaseRevision || env.FORGE_RELEASE_ID?.trim(),
     sourceCommit: env.FORGE_RELEASE_SOURCE_COMMIT?.trim() || manifest?.sourceCommit,
+    sourceRepositoryId: manifest?.sourceRepositoryId,
     cleanWorkspace: env.FORGE_RELEASE_CLEAN_WORKSPACE
       ? env.FORGE_RELEASE_CLEAN_WORKSPACE !== 'false'
       : manifest?.cleanWorkspace !== false,
@@ -65,6 +69,7 @@ export function resolveManagedRuntimeSourceIdentity(options: {
   branch: null;
   commit?: string;
   releaseRevision?: string;
+  sourceRepositoryId?: string;
   defaultBranch: string;
   defaultBranchCommit?: string;
   dirty: boolean;
@@ -93,6 +98,7 @@ export function resolveManagedRuntimeSourceIdentity(options: {
     branch: null,
     commit: binding.sourceCommit,
     releaseRevision: binding.releaseRevision,
+    ...(binding.sourceRepositoryId ? { sourceRepositoryId: binding.sourceRepositoryId } : {}),
     defaultBranch: 'main',
     defaultBranchCommit: binding.sourceCommit,
     dirty: !binding.cleanWorkspace,

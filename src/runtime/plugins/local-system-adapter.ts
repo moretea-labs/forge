@@ -51,7 +51,7 @@ import {
   assertRepositoryCommandInputAllowed,
 } from '../../cli/repositories/command-scope';
 import { runCanonicalCommand } from '../../cli/repositories/command-executor';
-import { listRepositories, repositoryCheckoutLifecycle } from '../../cli/repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot, listRepositories, repositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 
 const PLUGIN_ID = 'local_system';
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -652,10 +652,15 @@ interface RecoveryUpgradeSourceRepair {
 
 function resolveRecoveryUpgradeSource(controllerHome: string, configuredSourceRoot: string): {
   sourceRoot: string;
+  repositoryId: string;
   repair?: RecoveryUpgradeSourceRepair;
 } {
   const configured = resolve(configuredSourceRoot);
-  if (existsSync(configured)) return { sourceRoot: configured };
+  if (existsSync(configured)) {
+    const owner = findRegisteredRepositoryByCheckoutRoot(configured, controllerHome);
+    if (!owner) throw new Error(`RECOVERY_SOURCE_REPOSITORY_NOT_REGISTERED: ${configured}`);
+    return { sourceRoot: configured, repositoryId: owner.repoId };
+  }
 
   const owners = listRepositories(controllerHome)
     .filter((repository) => repository.enabled !== false)
@@ -678,6 +683,7 @@ function resolveRecoveryUpgradeSource(controllerHome: string, configuredSourceRo
   }
   return {
     sourceRoot: canonical,
+    repositoryId: owner.repoId,
     repair: {
       performed: true,
       repositoryId: owner.repoId,
@@ -716,12 +722,16 @@ async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record
         throw new Error('RECOVERY_RELEASE_SOURCE_IDENTITY_DRIFT');
       }
     }
-    const activationConfig = sourceRepair
-      ? { ...config, primaryRuntimeSourceRoot: source.sourceRoot }
+    const sourceAuthorityChanged = sourceRepair || config.primaryRuntimeSourceRepositoryId !== resolvedSource.repositoryId;
+    const activationConfig = sourceAuthorityChanged
+      ? { ...config, primaryRuntimeSourceRoot: source.sourceRoot, primaryRuntimeSourceRepositoryId: resolvedSource.repositoryId }
       : config;
     const activated = await (hooks.activateRecoveryRelease ?? activateRecoveryRelease)({ controllerHome, config: activationConfig, candidate });
-    if (sourceRepair) {
-      createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: source.sourceRoot });
+    if (sourceAuthorityChanged) {
+      createRecoveryConfig(controllerHome, {
+        primaryRuntimeSourceRoot: source.sourceRoot,
+        primaryRuntimeSourceRepositoryId: resolvedSource.repositoryId,
+      });
     }
     return {
       upgraded: activated.noOp !== true,

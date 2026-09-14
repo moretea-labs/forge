@@ -51,6 +51,7 @@ export interface StagedRuntimeRelease {
   macosCodeSigning?: MacOSRuntimeCodeSigning;
   manifestSha256: string;
   sourceCommit: string;
+  sourceRepositoryId?: string;
 }
 
 export interface RuntimeReleaseMaterializerDependencies {
@@ -78,6 +79,7 @@ export interface CandidateRuntimeStageReceiptV1 {
   artifactIdentity: string;
   manifestSha256: string;
   sourceCommit: string;
+  sourceRepositoryId: string;
 }
 
 export interface CandidateRuntimeReleaseStagerDependencies {
@@ -89,6 +91,7 @@ export interface CandidateRuntimeReleaseStagerDependencies {
     sourceRoot: string;
     controllerHome: string;
     expectedHead: string;
+    sourceRepositoryId: string;
   }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   runExecutionEntryCanary?: (input: RuntimeReleaseExecutionCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
@@ -231,6 +234,7 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
     artifactIdentity: requireCandidateStageString(value.artifactIdentity, 'artifactIdentity'),
     manifestSha256: requireCandidateStageString(value.manifestSha256, 'manifestSha256'),
     sourceCommit: requireCandidateStageString(value.sourceCommit, 'sourceCommit'),
+    sourceRepositoryId: requireCandidateStageString(value.sourceRepositoryId, 'sourceRepositoryId'),
   };
   if (!/^sha256:[a-f0-9]{64}$/i.test(receipt.artifactIdentity)) {
     throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: artifactIdentity must be sha256:<64 hex>');
@@ -254,9 +258,12 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
 export function stageRuntimeReleaseFromCandidateSource(input: {
   controllerHome: string;
   sourceRoot: string;
+  sourceRepositoryId: string;
 }, dependencies: CandidateRuntimeReleaseStagerDependencies = {}): StagedRuntimeRelease {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot);
+  const sourceRepositoryId = input.sourceRepositoryId.trim();
+  if (!sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_REQUIRED');
   const expectedHead = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(expectedHead)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
   const dirtyBefore = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
@@ -273,14 +280,18 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     '--controller-home', request.controllerHome,
     '--source-root', request.sourceRoot,
     '--expected-head', request.expectedHead,
+    '--source-repository-id', request.sourceRepositoryId,
   ], { cwd: request.sourceRoot, timeoutMs: 600_000, maxOutputBytes: 512 * 1024 }));
-  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, controllerHome, expectedHead });
+  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, controllerHome, expectedHead, sourceRepositoryId });
   if (!executed.ok) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGE_FAILED: ${executed.stderr || executed.stdout || executed.error}`.slice(0, 2_000));
   }
   const receipt = parseCandidateStageReceipt(executed.stdout ?? '');
   if (receipt.sourceCommit !== expectedHead) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_MISMATCH: expected ${expectedHead}, got ${receipt.sourceCommit}`);
+  }
+  if (receipt.sourceRepositoryId !== sourceRepositoryId) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_REPOSITORY_MISMATCH: expected ${sourceRepositoryId}, got ${receipt.sourceRepositoryId}`);
   }
 
   const headAfter = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
@@ -324,7 +335,9 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
   requireCompleteCompiledRuntimeReleaseManifest(manifest);
   if (manifest.releaseId !== receipt.releaseId
     || manifest.artifactIdentity !== receipt.artifactIdentity
-    || manifest.sourceCommit !== receipt.sourceCommit) {
+    || manifest.sourceCommit !== receipt.sourceCommit
+    || manifest.sourceRepositoryId !== sourceRepositoryId
+    || receipt.sourceRepositoryId !== sourceRepositoryId) {
     throw new Error('RUNTIME_RELEASE_CANDIDATE_MANIFEST_RECEIPT_MISMATCH');
   }
   const platform = dependencies.platform ?? process.platform;
@@ -364,6 +377,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     ...(macosCodeSigning ? { macosCodeSigning } : {}),
     manifestSha256: receipt.manifestSha256,
     sourceCommit: receipt.sourceCommit,
+    sourceRepositoryId,
   };
   assertRuntimeReleaseFiles(staged, dependencies);
   assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome, dependencies);
@@ -435,8 +449,11 @@ function defaultMaterializeCodeGraphRuntime(input: {
 export function stageRuntimeRelease(input: {
   controllerHome: string;
   sourceRoot: string;
+  sourceRepositoryId?: string;
 }, dependencies: RuntimeReleaseMaterializerDependencies = {}): StagedRuntimeRelease {
   const sourceRoot = resolve(input.sourceRoot);
+  const sourceRepositoryId = input.sourceRepositoryId?.trim();
+  if (input.sourceRepositoryId !== undefined && !sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_INVALID');
   const sourceCommit = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(sourceCommit)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
   // Immutable release source is the tracked working tree. Untracked files are
@@ -695,6 +712,7 @@ export function stageRuntimeRelease(input: {
         maximum: CONTROL_PLANE_SCHEMA_VERSION,
       },
       workerProtocolVersion: 1,
+      ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
       sourceCommit,
       releaseRevision: releaseId,
       cleanWorkspace: true,
@@ -727,6 +745,7 @@ export function stageRuntimeRelease(input: {
       controllerUiArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
+      ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
     };
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });

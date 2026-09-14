@@ -92,6 +92,7 @@ export async function executeCapabilityRecoveryAction(
       const staged = stageRuntimeReleaseFromCandidateSource({
         controllerHome: input.controllerHome,
         sourceRoot: input.repository.canonicalRoot,
+        sourceRepositoryId: input.repository.repoId,
       });
       assertRuntimeReleaseFiles(staged);
       payload = {
