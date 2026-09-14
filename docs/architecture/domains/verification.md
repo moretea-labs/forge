@@ -18,6 +18,9 @@ repos, command facades, hooks, migration helpers, and installed runtime copies.
 - Self-host and generated behavior must be checked together when shared assets change.
 - `bun test` is the broad regression gate.
 - Governed tests preserve typed per-file failure evidence (`source`, `fixture`, `infrastructure`, `interrupted`) in bounded receipts; Check/Work verification may collapse that evidence only to the existing acceptance-vs-infrastructure authority, never by reparsing human stderr.
+- The active Runtime always owns Process admission, leases, terminal Process state, and Work verification receipts. For ordinary repositories, persisted checks execute through that Runtime's immutable Check Runner.
+- Self-hosting Forge Work verification is the bounded exception to runner location, not to lifecycle authority: when the verified repository has the same durable `repoId` as the Runtime Source authority, a non-live verification snapshot executes the Check Runner from that exact candidate snapshot. Candidate runner/content identity is folded into the existing Check execution fingerprint so evidence cannot cross runner revisions.
+- `live_controller_home` certification never uses the candidate snapshot runner because it is explicitly verifying the installed Runtime. A candidate snapshot missing its Forge-owned sidecar fails closed; no arbitrary executable override or second scheduler/store is introduced.
 - `check-task-sync.sh` enforces that substantive repo changes update `tasks/`.
 - `check-task-workflow.sh --strict` is the repo-local harness readiness gate.
 - `sync-brain-docs.sh --check` verifies manifest-controlled repo-to-brain mirrors without making gbrain or MCP part of hook correctness.

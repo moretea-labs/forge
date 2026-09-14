@@ -17,6 +17,7 @@ import {
 } from '../../../cli/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
 import { cleanupWorkVerificationSnapshot, materializeWorkVerificationSnapshot } from '../../control-plane/execution/work-verification-snapshot';
+import { resolveBunExecutable } from '../../shared/process-environment';
 import {
   checkRequiresDurableWorkflow,
   processCheckSemanticScopeKey,
@@ -80,6 +81,52 @@ export function resolveRuntimeCliEntry(controllerHome?: string): string {
   return resolveRuntimeCliTarget(controllerHome).entry;
 }
 
+export function shouldUseCandidatePersistedCheckRunner(input: {
+  repoId: string;
+  runtimeSourceRepoId?: string;
+  verificationSnapshot: boolean;
+  liveCertification: boolean;
+}): boolean {
+  return input.verificationSnapshot
+    && !input.liveCertification
+    && Boolean(input.runtimeSourceRepoId && input.runtimeSourceRepoId === input.repoId);
+}
+
+export function resolveCandidatePersistedCheckRunnerTarget(
+  candidateRoot: string,
+  sourceRevision: string,
+  options: { bunExecutable?: string; entryExists?: (path: string) => boolean } = {},
+): { cliTarget: CliRuntimeTarget; runtimeExecutable: string; executionStateFingerprint: string } {
+  const root = resolve(candidateRoot);
+  const revision = sourceRevision.trim();
+  if (!revision) throw new Error('PERSISTED_CHECK_CANDIDATE_REVISION_REQUIRED');
+  const entryExists = options.entryExists ?? existsSync;
+  const sourceEntry = resolve(root, PERSISTED_CHECK_SOURCE_ENTRY);
+  if (!entryExists(sourceEntry)) {
+    throw new Error(`PERSISTED_CHECK_CANDIDATE_RUNNER_MISSING: ${sourceEntry}`);
+  }
+  const runtimeExecutable = options.bunExecutable?.trim() || resolveBunExecutable();
+  const cliTarget: CliRuntimeTarget = {
+    entry: sourceEntry,
+    cwd: root,
+    runtimeKind: 'bun_source',
+    sourceRevision: revision,
+    immutable: false,
+    explanation: 'self-hosting Work verification snapshot candidate Check Runner',
+  };
+  const executionStateFingerprint = createHash('sha256')
+    .update(JSON.stringify({
+      schemaVersion: 1,
+      authority: 'self_hosting_work_verification_candidate',
+      runnerEntry: PERSISTED_CHECK_SOURCE_ENTRY,
+      runtimeKind: cliTarget.runtimeKind,
+      sourceRevision: revision,
+    }))
+    .digest('hex')
+    .slice(0, 24);
+  return { cliTarget, runtimeExecutable, executionStateFingerprint };
+}
+
 export function persistedCheckSemanticScopeKey(
   input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
   reuseScope: 'repository' | 'checkout',
@@ -134,10 +181,11 @@ export function resolvePersistedCheckProcessInvocation(
 
 /**
  * Run a registered check through Process Runtime while keeping check-runner
- * evidence authoritative. The managed OS process invokes the same immutable
- * forge CLI bundle with a hidden internal subcommand; that subcommand
- * executes runControllerCheck, writes the Artifact atomically, mirrors bounded
- * stdout/stderr, and exits with the exact check status.
+ * evidence authoritative. Ordinary repositories and live-runtime certification
+ * use the active immutable Runtime runner. Self-hosting Forge Work verification
+ * instead executes the exact candidate snapshot sidecar so pre-cutover evidence
+ * cannot be interpreted by an older Runtime release. Process/lease/receipt
+ * authority remains in the active Runtime in both cases.
  */
 export async function runPersistedCheckViaProcessRuntime(
   input: RunCheckFacadeInput,
@@ -266,16 +314,38 @@ export async function runPersistedCheckViaProcessRuntime(
     cleanupVerificationSnapshot();
     throw new Error('LIVE_CHECK_CONTROLLER_OWNERSHIP_REQUIRED');
   }
-  const executionStateFingerprint = liveCertification
+  const liveExecutionStateFingerprint = liveCertification
     ? controllerCheckLiveExecutionStateFingerprint(input.controllerHome)
     : undefined;
-  const semanticCheck = controllerCheckExecutionIdentity(
+  const preliminarySemanticCheck = controllerCheckExecutionIdentity(
     executionRoot,
     input.checkId,
     timeoutMs,
     checkSnapshot,
-    executionStateFingerprint,
+    liveExecutionStateFingerprint,
   );
+  const runtimeGeneration = verificationSnapshot && !liveCertification
+    ? readRuntimeGeneration(input.controllerHome)
+    : undefined;
+  const candidateRunner = shouldUseCandidatePersistedCheckRunner({
+    repoId: input.repoId,
+    runtimeSourceRepoId: runtimeGeneration?.source.repoId,
+    verificationSnapshot: Boolean(verificationSnapshot),
+    liveCertification,
+  })
+    ? resolveCandidatePersistedCheckRunnerTarget(executionRoot, preliminarySemanticCheck.revision)
+    : undefined;
+  const executionStateFingerprint = candidateRunner?.executionStateFingerprint
+    ?? liveExecutionStateFingerprint;
+  const semanticCheck = candidateRunner
+    ? controllerCheckExecutionIdentity(
+        executionRoot,
+        input.checkId,
+        timeoutMs,
+        checkSnapshot,
+        executionStateFingerprint,
+      )
+    : preliminarySemanticCheck;
   const processCheckExecution = {
     schemaVersion: 1 as const,
     checkId: semanticCheck.checkId,
@@ -287,7 +357,7 @@ export async function runPersistedCheckViaProcessRuntime(
     reuseScope: semanticCheck.reuseScope,
     scopeKey: persistedCheckSemanticScopeKey(input, semanticCheck.reuseScope),
   };
-  const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
+  const cliTarget = candidateRunner?.cliTarget ?? resolveRuntimeCliTarget(input.controllerHome);
   const checkResultReceiptPath = allocatePersistedCheckResultReceiptPath(
     input.controllerHome,
     input.repoId,
@@ -316,7 +386,9 @@ export async function runPersistedCheckViaProcessRuntime(
       '--cleanup-root', verificationSnapshot.root,
     ] : []),
   ];
-  const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs);
+  const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs, candidateRunner
+    ? { runtimeExecutable: candidateRunner.runtimeExecutable }
+    : {});
   let handle;
   try {
     handle = await spawnManagedProcess({

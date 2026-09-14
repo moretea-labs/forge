@@ -398,6 +398,7 @@ if (capabilityPrefixFixture) {
 
 const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
   'adapters/mcp/runtime-gateway/work-adapter.ts::controller.authority.recover:',
+  'adapters/mcp/runtime-gateway/work-adapter.ts::controller.provider.recover:',
   'adapters/mcp/runtime-gateway/work-adapter.ts::plan.step.retry:',
   'adapters/mcp/runtime-gateway/work-adapter.ts::schedule.delete:',
   'adapters/mcp/runtime-gateway/work-adapter.ts::work.review:',

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -63,7 +63,7 @@ import {
 } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
-import { classifyPersistedCheckTerminalEvidence } from '../../src/runtime/execution/process-runtime/check-result';
+import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
@@ -83,8 +83,10 @@ import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefi
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 
 const roots: string[] = [];
+const FORGE_ROOT = join(import.meta.dir, '../..');
 
 afterEach(() => {
   __resetLiveMonitorsForTests();
@@ -1086,6 +1088,100 @@ describe('run_check Process Runtime facade', () => {
     expect(edit.process?.completed).toBe(true); expect(work.process?.completed).toBe(true);
     expect(work.process?.processId).toBe(edit.process?.processId); expect(work.process?.semanticDeduplicated).toBe(true);
     expect(repeat.process?.processId).toBe(work.process?.processId); expect(repeat.process?.semanticDeduplicated).toBe(true);
+  });
+
+  test('self-hosting Work verification executes candidate snapshot Check Runner semantics and preserves structured failure evidence', async () => {
+    const fx = fixture();
+    const selfHostRoot = join(fx.root, 'self-host-forge');
+    const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--', FORGE_ROOT, selfHostRoot], { encoding: 'utf8' });
+    expect(clone.status).toBe(0);
+    spawnSync('git', ['-C', selfHostRoot, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', selfHostRoot, 'config', 'user.email', 'test@example.com'], { encoding: 'utf8' });
+    if (existsSync(join(FORGE_ROOT, 'node_modules'))) {
+      symlinkSync(join(FORGE_ROOT, 'node_modules'), join(selfHostRoot, 'node_modules'), 'dir');
+    }
+    const packagePath = join(selfHostRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { scripts?: Record<string, string> };
+    packageJson.scripts = { ...(packageJson.scripts ?? {}), 'test:full': 'node scripts/forge216-candidate-check.mjs' };
+    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const fixtureScript = join(selfHostRoot, 'scripts', 'forge216-candidate-check.mjs');
+    writeFileSync(fixtureScript, `import { writeFileSync } from 'node:fs';\nconst path = process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;\nif (!path) process.exit(12);\nwriteFileSync(path, JSON.stringify({ schemaVersion: 1, producer: 'test-governance', gate: 'full', status: 'failed', failures: 1, failureClasses: ['source'], failureDetails: [{ file: 'tests/candidate-only.test.ts', failureClass: 'source', failureCode: 'TEST_SOURCE_ASSERTION_FAILED', attempts: 1, durationMs: 1 }], failureDetailsTruncated: false, contaminated: false }, null, 2));\nprocess.exit(1);\n`);
+    spawnSync('git', ['-C', selfHostRoot, 'add', 'package.json', 'scripts/forge216-candidate-check.mjs'], { encoding: 'utf8' });
+    const commit = spawnSync('git', ['-C', selfHostRoot, 'commit', '-m', 'candidate check semantics'], { encoding: 'utf8' });
+    expect(commit.status).toBe(0);
+
+    const repository = registerRepository({ path: selfHostRoot, controllerHome: fx.controllerHome, displayName: 'self-host-forge' });
+    const head = spawnSync('git', ['-C', selfHostRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    rotateRuntimeGeneration(fx.controllerHome, {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot: selfHostRoot,
+      canonicalRoot: selfHostRoot,
+      branch: 'main',
+      commit: head,
+      defaultBranch: 'main',
+      defaultBranchCommit: head,
+      dirty: false,
+      observedAt: new Date().toISOString(),
+    });
+    const workId = 'work-self-host-candidate-runner';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      workKind: 'repository_change',
+      objective: 'Prove candidate snapshot Check Runner semantics.',
+      acceptanceCriteria: [],
+      allowedPaths: ['**'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const result = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      repoRoot: selfHostRoot,
+      executionIdentity: executionIdentityForRepository(repository),
+      checkId: 'package:test:full',
+      requestId: 'self-host-candidate-runner',
+      commandId: 'self-host-candidate-runner',
+      workId,
+      verificationBinding: { executionSessionId: 'session-self-host-candidate-runner' },
+      verificationSnapshot: { workId, allowedPaths: [], forbiddenPaths: [] },
+      interactiveWaitMs: 10_000,
+    });
+    expect(result.process).toMatchObject({ completed: true, ok: false, status: 'failed' });
+    const record = getProcessRecord(fx.controllerHome, repository.repoId, result.process!.processId);
+    expect(record).toBeDefined();
+    expect(record?.command.kind).toBe('argv');
+    if (record?.command.kind === 'argv') {
+      const args = record.command.args ?? [];
+      expect(args[0]).toContain('/verification-snapshots/');
+      expect(args[0]).toEndWith('/src/runtime/execution/process-runtime/check-runner-sidecar.ts');
+      expect(record.command.executable).not.toContain('/runtime/releases/');
+    }
+    const receipt = readPersistedCheckResultReceipt(record?.origin?.checkResultReceiptPath);
+    expect(receipt).toMatchObject({
+      checkId: 'package:test:full',
+      failureClass: 'acceptance_failure',
+      failureEvidence: {
+        gate: 'full',
+        failureClasses: ['source'],
+        failureDetails: [{ file: 'tests/candidate-only.test.ts', failureCode: 'TEST_SOURCE_ASSERTION_FAILED' }],
+      },
+    });
+    expect(classifyPersistedCheckTerminalEvidence(record!, 'package:test:full')).toMatchObject({
+      state: 'matched',
+      failureClass: 'acceptance_failure',
+      failureEvidence: {
+        failureDetails: [{ file: 'tests/candidate-only.test.ts', failureCode: 'TEST_SOURCE_ASSERTION_FAILED' }],
+      },
+    });
   });
 
   test('structured check failure remains acceptance failure evidence', async () => {
