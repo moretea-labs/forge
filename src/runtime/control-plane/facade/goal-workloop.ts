@@ -1623,7 +1623,13 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         nextStep: blocker.action,
       },
       suggestedNextActions: returnToDesign
-        ? [{ label: 'Refresh design evidence', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly' }]
+        ? [{
+            label: 'Refresh design evidence',
+            tool: 'rh_context',
+            operation: 'search',
+            payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
+            risk: 'readonly',
+          }]
         : linkedWork
           ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
           : [],

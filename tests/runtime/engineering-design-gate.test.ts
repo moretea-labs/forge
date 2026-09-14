@@ -256,6 +256,12 @@ describe('Stage7C upstream engineering authority', () => {
       },
     });
     expect(blocked.status).toBe('blocked');
+    expect(blocked.suggestedNextActions).toContainEqual(expect.objectContaining({
+      label: 'Refresh design evidence',
+      tool: 'rh_context',
+      operation: 'search',
+      payload: expect.objectContaining({ work_id: workId!, query: expect.any(String) }),
+    }));
     expect(getWorkContract(context.workStore, workId!)?.engineeringContext?.designState).toBe('revisit_required');
 
     const withoutSupersession = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a') });

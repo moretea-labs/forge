@@ -463,6 +463,11 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         detailLevel: 'summary',
         rawAvailable: true,
       });
+      // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
+      // and reason codes. Generic facade depth bounding is appropriate for exploratory context,
+      // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
+      // the exact full receipt digest supplied by the Controller during engineering re-entry.
+      (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
       return result(facade as unknown as Record<string, unknown>);
     }
     const startedAt = performance.now();

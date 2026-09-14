@@ -8,6 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
   collectRuntimeSourceIdentity,
   CONTROLLER_RUNTIME_SOURCE_ROOT_ENV,
@@ -62,6 +63,23 @@ function initGitRepo(repoRoot: string, name: string): void {
 
 function pinRuntimeSource(root: string): void {
   process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV] = root;
+}
+
+function writeProjectEngineeringContract(root: string): void {
+  mkdirSync(join(root, '.forge'), { recursive: true });
+  writeFileSync(join(root, '.forge', 'project-engineering.json'), JSON.stringify({
+    schemaVersion: 1,
+    contractId: 'context-roundtrip-engineering',
+    contractVersion: '1',
+    projectId: 'context-roundtrip',
+    authority: {},
+    quality: {},
+    checks: [],
+    journeys: [],
+    platforms: [],
+    skillRefs: ['typescript-engineering@1'],
+    tooling: [],
+  }, null, 2));
 }
 
 function mcpContext(controllerHome: string, repository: ReturnType<typeof registerRepository>): MultiRepositoryMcpToolContext {
@@ -718,6 +736,76 @@ printf 'BUILD SUCCEEDED\\n'
     expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(true);
     expect(data.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false, semantic: { status: 'error' } });
     expect(data.readiness?.unresolvedReasonCodes).toContain('semantic.semantic_navigation_request_invalid');
+  });
+
+  test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
+    const business = tempRoot('forge-context-roundtrip-facade-');
+    const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
+    initGitRepo(business, 'context-roundtrip-facade');
+    writeProjectEngineeringContract(business);
+    git(business, 'add', '.forge/project-engineering.json');
+    git(business, 'commit', '-m', 'add engineering contract');
+    const sourceRevision = git(business, 'rev-parse', 'HEAD');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    const contextPayload = structured(await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'search',
+      query: 'ENTRY_MARKER',
+      known_paths: ['src/index.ts'],
+      retrieval_mode: 'implementation',
+      structural_context: 'off',
+      max_files: 2,
+      max_snippets: 4,
+    }));
+    const contextData = contextPayload.data as { contextClosure?: Record<string, unknown> };
+    const closure = contextData.contextClosure;
+    expect(closure).toBeTruthy();
+    expect(JSON.stringify(closure)).not.toContain('[bounded-depth]');
+    expect((closure?.readiness as { status?: string } | undefined)?.status).toBe('ready');
+
+    const neutralDecisions = {
+      ownership: 'No ownership change.', single_writer: 'One Work writer.', transaction: 'No transaction change.', lifecycle: 'No lifecycle change.',
+      concurrency: 'No concurrency change.', persistence: 'No persistence change.', failure: 'Fail closed.', projection_cache: 'No projection change.',
+      time: 'No time change.', performance: 'No performance change.', compatibility: 'Backward compatible.',
+      semantic_scope_identity: 'Exact Work scope.', authorization_trust: 'Existing controller authority.', resource_fencing: 'Existing Work fencing.',
+      deployment_topology: 'No topology change.', schema_evolution_durability: 'No schema change.', idempotency_replay: 'Existing request identity.',
+      retention_gc: 'No retention change.', observability_evidence: 'Work receipts remain authoritative.', recovery_failure_domain: 'No recovery change.',
+      capacity_backpressure: 'No capacity change.', release_upgrade_rollback: 'No release change.', security_privacy: 'No security change.',
+      portability: 'No portability change.', migration_retirement: 'No migration change.',
+    };
+    const engineeringPreconditions = {
+      context_closure: closure,
+      product_dod: {
+        user_outcome: 'Round-trip the exact Context Closure.',
+        completion_conditions: ['Receipt is accepted.'], non_regression: ['Digest validation remains strict.'],
+        performance_expectations: ['No hot-path expansion.'], non_goals: ['No lifecycle changes.'],
+      },
+      design_decision: {
+        semantic_scope_keys: ['context-closure-roundtrip'], mutation_class: 'isolated_write', decisions: neutralDecisions,
+        complexity_budget: { added_writers: 0, added_durable_mechanisms: 0, projection_paths: 0, global_invalidations: 0, lifecycle_hooks: 0, synchronous_critical_path_work: 0, notes: [] },
+      },
+      independent_critique: { decision: 'approved', findings: [] },
+    };
+
+    const minted = mintEngineeringAdmissionEvidence({
+      repoRoot: business,
+      sourceRevision,
+      draft: engineeringPreconditions,
+      requirementContext: { objective: 'Prove runtime-issued Context Closure round-trip.', acceptanceCriteria: ['Context Closure round-trips intact.'] },
+    });
+    expect(minted.contextClosureReceiptId).toBe(closure?.receiptId as string | undefined);
+
+    expect(() => mintEngineeringAdmissionEvidence({
+      repoRoot: business,
+      sourceRevision,
+      draft: {
+        ...engineeringPreconditions,
+        context_closure: { ...closure, generatedAt: '2099-01-01T00:00:00.000Z' },
+      },
+      requirementContext: { objective: 'Reject forged Context Closure.', acceptanceCriteria: ['Mutated receipts fail closed.'] },
+    })).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
   });
 
   test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {
