@@ -68,6 +68,36 @@ function fixture() {
   return { repoRoot, controllerHome, repository };
 }
 
+function installBatchVerificationChecks(repoRoot: string): void {
+  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
+  writeFileSync(join(repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+    checks: {
+      'check:batch-a': {
+        command: ['node', '-e', "setTimeout(() => console.log('batch-a'), 40)"],
+        effects: { reads: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] },
+      },
+      'check:batch-b': {
+        command: ['node', '-e', "setTimeout(() => console.log('batch-b'), 40)"],
+        effects: { reads: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] },
+      },
+      'check:conflict-write': {
+        command: ['node', '-e', "console.log('conflict')"],
+        effects: { writes: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] },
+      },
+      'check:release-only': {
+        command: ['node', '-e', "console.log('release')"],
+        effects: { reads: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L4', riskFloor: 'high', phases: ['release'] },
+      },
+    },
+  }, null, 2));
+  execFileSync('git', ['add', '.repo-harness/checks.json'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-m', 'add batch verification checks'], { cwd: repoRoot });
+}
+
 function ctx(
   controllerHome: string,
   repository: ReturnType<typeof registerRepository>,
@@ -188,6 +218,104 @@ function exactVerification(input: {
 }
 
 describe('rh_work terminalization authority', () => {
+  test('rh_work verify honors check_ids as one resource-compatible Work verification wave', async () => {
+    const fx = fixture();
+    installBatchVerificationChecks(fx.repoRoot);
+    const caller = {
+      principalId: 'principal-batch-verify',
+      sessionId: 'transport-batch-verify',
+      controllerInstanceId: 'runtime-batch-verify',
+    };
+    const callerContext = ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    const started = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'start',
+      repo_id: fx.repository.repoId,
+      requested_by: 'chatgpt',
+      objective: 'Verify two compatible checks through the public rh_work batch ABI.',
+      work_kind: 'repository_change',
+      scope_clear: true,
+      allowed_paths: ['src/index.ts'],
+      check_ids: ['check:batch-a', 'check:batch-b'],
+      acceptance_criteria: ['Both compatible checks retain Work verification authority.'],
+      constraints: { workspace_mode: 'isolated', require_worktree: true, direct_main_prohibited: true, allow_commit: false, allow_merge: false, allow_cleanup: true },
+      request_id: 'batch-verify-start',
+    }));
+    expect(started.status).toBe('ok');
+    const workId = String(started.data?.work?.workId ?? '');
+    const checkoutId = String(started.data?.executionHandle?.checkoutId ?? '');
+    expect(workId).toBeTruthy();
+    expect(checkoutId).toBeTruthy();
+
+    const conflict = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_id: 'check:batch-a', check_ids: ['check:batch-b'], requested_by: 'chatgpt', request_id: 'batch-verify-input-conflict',
+    }));
+    expect(conflict.status).toBe('blocked');
+    expect(conflict.warnings).toContain('WORK_VERIFY_CHECK_INPUT_CONFLICT');
+    expect(conflict.data?.verificationStarted).toBe(false);
+
+    const invalid = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:missing'], requested_by: 'chatgpt', request_id: 'batch-verify-invalid',
+    }));
+    expect(invalid.status).toBe('blocked');
+    expect(invalid.warnings).toContain('INVALID_CHECK_IDS');
+    expect(invalid.data?.verificationStarted).toBe(false);
+
+    const crossWave = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:conflict-write'], requested_by: 'chatgpt', request_id: 'batch-verify-cross-wave',
+    }));
+    expect(crossWave.status).toBe('blocked');
+    expect(crossWave.warnings).toContain('BATCH_SPANS_MULTIPLE_CHECK_WAVES');
+    expect(crossWave.data?.checkScheduling?.waveCount).toBeGreaterThan(1);
+    expect(crossWave.data?.verificationStarted).toBe(false);
+
+    const durable = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:release-only'], requested_by: 'chatgpt', request_id: 'batch-verify-durable',
+    }));
+    expect(durable.status).toBe('blocked');
+    expect(durable.warnings).toContain('BATCH_CONTAINS_DURABLE_CHECK');
+    expect(durable.data?.durableCheckIds).toEqual(['check:release-only']);
+    expect(durable.data?.verificationStarted).toBe(false);
+
+    let batch: Record<string, any> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      batch = structured(await callRuntimeTool(callerContext, 'rh_work', {
+        operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+        check_ids: ['check:batch-a', 'check:batch-b'], requested_by: 'chatgpt', request_id: 'batch-verify-compatible',
+      }));
+      if (batch.data?.completed === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(batch?.status).toBe('ok');
+    expect(batch?.data).toMatchObject({
+      batch: true,
+      checkIds: ['check:batch-a', 'check:batch-b'],
+      completed: true,
+      ok: true,
+      checkScheduling: { waveCount: 1, maxParallel: 2 },
+    });
+    expect(batch?.data?.verifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ checkId: 'check:batch-a', completed: true, outcome: 'valid_pass' }),
+      expect.objectContaining({ checkId: 'check:batch-b', completed: true, outcome: 'valid_pass' }),
+    ]));
+    expect(new Set(batch?.data?.processIds ?? []).size).toBe(2);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(2);
+
+    let single: Record<string, any> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      single = structured(await callRuntimeTool(callerContext, 'rh_work', {
+        operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+        check_id: 'check:batch-a', requested_by: 'chatgpt', request_id: 'batch-verify-single-nonregression',
+      }));
+      if (single.data?.verification?.completed === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(single?.status).toBe('ok');
+    expect(single?.data?.verification).toMatchObject({ checkId: 'check:batch-a', completed: true, outcome: 'valid_pass' });
+  }, 20_000);
   test('materializes a canonical WorkHandle for isolated completed_no_change Work', () => {
     const fx = fixture();
     const workId = 'work-completed-no-change-handle';

@@ -27,7 +27,7 @@ import { assertControllerInvocationAuthority, assertControllerRoundInvocationAut
 import { reconcileSingleTerminalWorkCleanup, recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from "../../../src/runtime/control-plane/execution/verification-evidence";
 import { resolveWorkVerificationContext } from "../../../src/runtime/control-plane/execution/work-verification-context";
-import { executeWorkVerification } from "../../../src/runtime/control-plane/execution/work-verification-service";
+import { executeWorkVerification, executeWorkVerificationBatch } from "../../../src/runtime/control-plane/execution/work-verification-service";
 import { implementationReviewContentFingerprint } from "../../../src/runtime/control-plane/execution/implementation-review-content";
 import { implementationReviewCommittedBaseRevision, reconcileDirectCanonicalTargetAdvanceCommand } from "../../../src/runtime/control-plane/execution/work-finalization-service";
 import { acceptReviewedDirectEditWorkReconciliation } from "../../../src/runtime/control-plane/execution/direct-edit-work-completion";
@@ -42,7 +42,7 @@ import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workf
 import { applyRuntimeMaintenance, buildRecoveryAuditRecord, buildRuntimeMaintenanceStatus, writeRecoveryAuditRecord, type RecoveryActionDescriptor } from "../../../src/runtime/recovery";
 import { callStandaloneRecoveryTool } from "./recovery-client-adapter";
 import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, normalizeCheckIds, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, admitPlanContractAsync, approvePlanContractAsync, getPlanContract, listPlanContracts, resolvePlanAdmission, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, repairPlanStepForTechnicalRetry, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, supersedePlanContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
-import { getWorkContract, listWorkContracts } from "../../../packages/kernel/work/api/index";
+import { getWorkContract, listWorkContracts, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
 import { readRequirement } from "../../../src/runtime/control-plane/persistence/requirement-store";
@@ -1179,11 +1179,30 @@ export async function runFacadeVerify(
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  const verification = await executeWorkVerification({
+  const checkId = String(args.check_id ?? args.checkId ?? '').trim();
+  const hasBatchInput = Object.prototype.hasOwnProperty.call(args, 'check_ids');
+  if (checkId && hasBatchInput) {
+    const blocked = buildFacadeResult({
+      status: 'blocked',
+      summary: 'rh_work verify accepts either check_id or check_ids, not both.',
+      data: { workId: workId || undefined, verificationStarted: false },
+      warnings: ['WORK_VERIFY_CHECK_INPUT_CONFLICT'],
+    });
+    return result(blocked as unknown as Record<string, unknown>, true);
+  }
+  if (hasBatchInput && !Array.isArray(args.check_ids)) {
+    const blocked = buildFacadeResult({
+      status: 'blocked',
+      summary: 'rh_work verify check_ids must be an array.',
+      data: { workId: workId || undefined, verificationStarted: false },
+      warnings: ['WORK_VERIFY_CHECK_IDS_INVALID'],
+    });
+    return result(blocked as unknown as Record<string, unknown>, true);
+  }
+  const commonVerificationInput = {
     controllerHome: ctx.controllerHome,
     repository,
     workId: workId || undefined,
-    checkId: String(args.check_id ?? args.checkId ?? '').trim(),
     requestId: typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : undefined,
     timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     interactiveWaitMs: 0,
@@ -1195,7 +1214,7 @@ export async function runFacadeVerify(
           skipped: args.skipped === true,
         }
       : undefined,
-    allowDurableCheckExecution: workId ? ({ work }) => {
+    allowDurableCheckExecution: workId ? ({ work }: { work: WorkContract }) => {
       try {
         const identity = authenticatedFacadeControllerIdentity(ctx, args);
         const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, work.workId);
@@ -1210,7 +1229,13 @@ export async function runFacadeVerify(
         return false;
       }
     } : undefined,
-  });
+  };
+  const verification = hasBatchInput
+    ? await executeWorkVerificationBatch({
+        ...commonVerificationInput,
+        checkIds: (args.check_ids as unknown[]).map(String),
+      })
+    : await executeWorkVerification({ ...commonVerificationInput, checkId });
   return result(verification.facade as unknown as Record<string, unknown>, verification.isError);
 }
 

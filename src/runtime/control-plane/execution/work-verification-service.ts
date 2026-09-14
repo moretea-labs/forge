@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { controllerCheckExecutionIdentity, listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
@@ -10,6 +11,7 @@ import {
   runPersistedCheckViaProcessRuntime,
 } from '../../execution/process-runtime';
 import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
+import { buildCheckExecutionSchedule } from '../../execution/process-runtime/check-scheduling';
 import { ingestCheckCompletionGraceProcess } from '../persistence/operational-prior-store';
 import { buildFacadeResult } from '../facade/facade-result';
 import { classifyVerificationOutcome, normalizeCheckIds } from '../facade/check-normalization';
@@ -137,6 +139,151 @@ export function planWorkVerificationAcrossContentEquivalentCommit(input: {
   }
 
   return { transferredRecords, reusableCheckIds, invalidatedCheckIds };
+}
+
+const MAX_WORK_VERIFY_BATCH_CHECKS = 32;
+
+export interface ExecuteWorkVerificationBatchInput extends Omit<ExecuteWorkVerificationInput, 'checkId'> {
+  checkIds: string[];
+}
+
+function boundedCheckSchedulingPayload(schedule: ReturnType<typeof buildCheckExecutionSchedule>) {
+  return {
+    waveCount: schedule.waves.length,
+    maxParallel: schedule.maxParallel,
+    waves: schedule.waves,
+    conflicts: schedule.conflicts,
+    invalidCheckIds: schedule.invalidCheckIds,
+    guidance: schedule.guidance,
+  };
+}
+
+/**
+ * Canonical batch wrapper for rh_work verification. Scheduling remains advisory
+ * and Process Runtime resource claims remain the execution/lease authority.
+ * Every member still executes through executeWorkVerification so Work snapshot,
+ * Failure Contract, VerificationRecord, and lifecycle semantics stay singular.
+ */
+export async function executeWorkVerificationBatch(input: ExecuteWorkVerificationBatchInput): Promise<ExecuteWorkVerificationResult> {
+  const workId = input.workId?.trim() ?? '';
+  const requestedCheckIds = [...new Set(input.checkIds.map((value) => value.trim()).filter(Boolean))];
+  if (requestedCheckIds.length === 0) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: 'Work batch verification requires a non-empty check_ids array.',
+      data: { batch: true, checkIds: [], verificationStarted: false },
+      warnings: ['CHECK_IDS_REQUIRED: pass between 1 and 32 registered check ids.'],
+    }), true);
+  }
+  if (requestedCheckIds.length > MAX_WORK_VERIFY_BATCH_CHECKS) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: `Work batch verification accepts at most ${MAX_WORK_VERIFY_BATCH_CHECKS} distinct check ids.`,
+      data: { batch: true, checkIds: requestedCheckIds.slice(0, MAX_WORK_VERIFY_BATCH_CHECKS), verificationStarted: false },
+      warnings: ['CHECK_IDS_LIMIT_EXCEEDED'],
+    }), true);
+  }
+
+  const resolvedVerification = resolveWorkVerificationContext({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId,
+  });
+  if (!resolvedVerification.ok) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: `${resolvedVerification.code}: ${resolvedVerification.detail}`,
+      data: { batch: true, checkIds: requestedCheckIds, verificationStarted: false },
+      warnings: ['Work batch verification never falls back to a different checkout or check registry.'],
+    }), true);
+  }
+
+  const { repository: verificationRepository, checks } = resolvedVerification.context;
+  const checksById = new Map(checks.map((check) => [check.id, check] as const));
+  const schedule = buildCheckExecutionSchedule({
+    checks,
+    requestedCheckIds,
+    repoId: verificationRepository.repoId,
+    checkoutId: verificationRepository.activeCheckoutId,
+  });
+  const checkScheduling = boundedCheckSchedulingPayload(schedule);
+  if (schedule.invalidCheckIds.length > 0) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: `Work batch verification contains unregistered checks: ${schedule.invalidCheckIds.join(', ')}`,
+      data: { batch: true, checkIds: requestedCheckIds, checkScheduling, verificationStarted: false },
+      warnings: ['INVALID_CHECK_IDS'],
+    }), true);
+  }
+  const durableCheckIds = requestedCheckIds.filter((checkId) => checkRequiresDurableWorkflow(checksById.get(checkId)));
+  if (durableCheckIds.length > 0) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: 'Work batch verification only launches ordinary focused checks; durable release or multi-phase checks must be verified individually.',
+      data: { batch: true, checkIds: requestedCheckIds, durableCheckIds, checkScheduling, verificationStarted: false },
+      warnings: ['BATCH_CONTAINS_DURABLE_CHECK'],
+    }), true);
+  }
+  if (schedule.waves.length !== 1 || schedule.waves[0]?.checkIds.length !== requestedCheckIds.length) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: 'Requested Work checks span multiple resource-conflicting waves; submit one returned wave per verify call.',
+      data: { batch: true, checkIds: requestedCheckIds, checkScheduling, verificationStarted: false },
+      warnings: ['BATCH_SPANS_MULTIPLE_CHECK_WAVES'],
+    }), true);
+  }
+
+  const baseRequestId = input.requestId?.trim() ?? '';
+  const batchDigest = createHash('sha256').update(JSON.stringify(requestedCheckIds)).digest('hex').slice(0, 8);
+  const executions = await Promise.all(requestedCheckIds.map((checkId, index) => executeWorkVerification({
+    ...input,
+    checkId,
+    requestId: baseRequestId ? `${baseRequestId}:batch:${index + 1}:${batchDigest}` : undefined,
+  })));
+  const verifications: Array<Record<string, unknown> & { checkId: string; facadeStatus: FacadeResult['status']; isError: boolean }> = executions.map((execution, index) => {
+    const data = execution.facade.data as Record<string, unknown>;
+    const verification = data.verification && typeof data.verification === 'object' && !Array.isArray(data.verification)
+      ? data.verification as Record<string, unknown>
+      : {};
+    return {
+      checkId: requestedCheckIds[index],
+      ...verification,
+      facadeStatus: execution.facade.status,
+      isError: execution.isError,
+    };
+  });
+  const completed = verifications.every((verification) => verification.completed === true);
+  const allPassed = completed && verifications.every((verification) => verification.outcome === 'valid_pass');
+  const anyAcceptanceFailure = verifications.some((verification) => verification.outcome === 'valid_fail');
+  const anyInfrastructureFailure = verifications.some((verification) => verification.outcome === 'infrastructure_failure');
+  const anyBlocked = executions.some((execution) => execution.facade.status === 'blocked');
+  const processIds = verifications
+    .map((verification) => typeof verification.processId === 'string' ? verification.processId : '')
+    .filter(Boolean);
+  const facade = buildFacadeResult({
+    status: anyAcceptanceFailure ? 'failed' : anyBlocked ? 'blocked' : 'ok',
+    summary: completed
+      ? allPassed
+        ? `Work verification batch passed ${requestedCheckIds.length} checks.`
+        : anyAcceptanceFailure
+          ? 'Work verification batch completed with an acceptance failure.'
+          : anyInfrastructureFailure
+            ? 'Work verification batch completed with an infrastructure failure.'
+            : 'Work verification batch completed.'
+      : `Work verification batch launched ${requestedCheckIds.length} resource-compatible checks through Process Runtime.`,
+    data: {
+      batch: true,
+      checkIds: requestedCheckIds,
+      checkScheduling,
+      verifications,
+      processIds,
+      completed,
+      ...(completed ? { ok: allPassed } : {}),
+    },
+    warnings: anyInfrastructureFailure ? ['infrastructure_failure is distinct from acceptance failure'] : [],
+    rawAvailable: false,
+  });
+  return result(facade, anyAcceptanceFailure || executions.some((execution) => execution.isError && execution.facade.status !== 'ok'));
 }
 
 /**
