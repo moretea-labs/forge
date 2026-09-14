@@ -235,6 +235,8 @@ export function applyEngineeringBlockerDisposition(
   return {
     ...receipt,
     blockerDispositions: [...existing, validated].slice(-64),
-    ...(validated.action === 'return_to_design' ? { designState: 'revisit_required' as const } : {}),
+    ...(validated.action === 'return_to_design' && receipt.evidence.designDecisionReceipt
+      ? { designState: 'revisit_required' as const }
+      : {}),
   };
 }

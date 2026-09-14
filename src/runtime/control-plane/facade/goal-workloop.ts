@@ -1545,8 +1545,30 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId },
         });
       }
+      if (refreshedEngineeringContext.evidence.independentCritiqueReceipt?.decision !== 'approved') {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: 'ENGINEERING_DESIGN_CRITIQUE_APPROVAL_REQUIRED: same-root-cause re-entry requires an independently approved critique of the superseding design.',
+          data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId, nextDesignReceiptId: nextDesign.receiptId },
+        });
+      }
     }
     work = updateWorkContract(ctx.workStore, work.workId, { engineeringContext: refreshedEngineeringContext });
+  }
+
+  if (work.engineeringContext?.designState === 'revisit_required') {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'ENGINEERING_DESIGN_REVISIT_REQUIRED: same-root-cause design authority must be explicitly superseded and independently approved before further Work mutation.',
+      data: { work: summarizeWorkContract(work) },
+      suggestedNextActions: [{
+        label: 'Refresh design evidence',
+        tool: 'rh_context',
+        operation: 'search',
+        payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
+        risk: 'readonly',
+      }],
+    });
   }
 
   if (input.engineeringBlocker) {
