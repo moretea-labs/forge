@@ -53,6 +53,7 @@ import {
   settleWorkChatgptAutomationTab,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
+import { chatgptAutomationModelFamilyMenuTrigger } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
 import {
   createWorkContinuationSchedule,
@@ -647,6 +648,15 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationReasoningLevelFromLabel('Thinking: Extra High')).toBe('xhigh');
     expect(chatgptAutomationReasoningLevelFromLabel('Medium reasoning')).toBe('medium');
     expect(chatgptAutomationReasoningLevelFromLabel('High contrast')).toBeUndefined();
+  });
+
+  test('recognizes version-agnostic ChatGPT model-family menu triggers without accepting unrelated GPT UI', () => {
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT-6 Astra\n轻度', 'menu')).toBe(true);
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT-5.6 Sol\nHigh', 'menu')).toBe(true);
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT-6 Astra\n轻度', undefined)).toBe(false);
+    expect(chatgptAutomationModelFamilyMenuTrigger('Try GPT-6', 'menu')).toBe(false);
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT Store', 'menu')).toBe(false);
+    expect(chatgptAutomationModelFamilyMenuTrigger('Project', 'menu')).toBe(false);
   });
 
   test('keeps ChatGPT control readiness probes repeatable within a bounded hydration window', () => {

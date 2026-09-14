@@ -248,6 +248,18 @@ function modelLabelMatches(label: string | undefined, model: string): boolean {
   return normalized.includes('5.6sol') || normalized.includes('gpt5.6sol');
 }
 
+export function chatgptAutomationModelFamilyMenuTrigger(
+  label: string | undefined,
+  ariaHasPopup: string | undefined,
+): boolean {
+  if (ariaHasPopup !== 'menu') return false;
+  const normalized = normalizeExecutionControlLabel(label);
+  // ChatGPT's composer can rotate model names independently of Forge releases.
+  // Locate the combined intelligence control by a bounded model-family prefix
+  // plus its menu-trigger role; do not treat arbitrary GPT prose/buttons as authority.
+  return /^gpt\d/.test(normalized);
+}
+
 function reasoningLabelMatches(label: string | undefined, reasoning: ChatgptAutomationReasoning): boolean {
   return chatgptAutomationReasoningLevelFromLabel(label) === reasoning;
 }
@@ -280,11 +292,23 @@ async function findChatgptIntelligenceControl(
       limit: chatgptAutomationControlQueryLimit(selector),
       timeout_ms: timeoutMs ?? 60_000,
     }, timeoutMs);
-    const match = queryMatches(result).find((candidate) => {
+    const candidates = queryMatches(result);
+    const exactMatch = candidates.find((candidate) => {
       const label = matchText(candidate);
       return modelLabelMatches(label, DEFAULT_CHATGPT_AUTOMATION_MODEL) || isReasoningControlLabel(label);
     });
-    if (match) return match;
+    if (exactMatch) return exactMatch;
+    for (const candidate of candidates) {
+      const candidateSelector = matchSelector(candidate);
+      if (!candidateSelector || !/^gpt\d/.test(normalizeExecutionControlLabel(matchText(candidate)))) continue;
+      const popup = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
+        session_id: browserSessionId,
+        selector: candidateSelector,
+        attribute: 'aria-haspopup',
+        timeout_ms: timeoutMs ?? 60_000,
+      }, timeoutMs).catch(() => undefined);
+      if (chatgptAutomationModelFamilyMenuTrigger(matchText(candidate), stringField(popup?.value))) return candidate;
+    }
   }
   return undefined;
 }
