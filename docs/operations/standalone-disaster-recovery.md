@@ -151,3 +151,11 @@ forge recovery activate-runtime --controller-home /absolute/controller-home --re
 ```
 
 `forge runtime status --controller-home /absolute/controller-home` reads the canonical Runtime status projection. `forge runtime service install --stage-only` builds and validates an immutable Runtime release without publishing it; the staged manifest can then be activated through `forge recovery activate-runtime` when the primary Runtime is fenced or unavailable.
+
+## Local Recovery transport adapter
+
+The controller may install the `local_recovery` external Assistant Plugin when the independently configured ChatGPT Recovery Connector is unavailable or bound to a stale external transport while the primary Runtime is still healthy enough to host plugins. This adapter is a transport client only; it is not another Runtime lifecycle authority.
+
+The managed helper is `scripts/forge-local-recovery-helper.mjs`. Its provider configuration contains only the absolute installed `controllerHome`. The helper loads the installed Recovery configuration and scoped Gateway token from that Controller Home, requires the Recovery Gateway endpoint to remain loopback, and invokes only allowlisted Recovery MCP tools. The initial action surface is `runtime_status`, `list_releases`, and `stage_and_activate_runtime_release`; every action has an empty caller argument schema. In particular, callers cannot supply a source root, release path, endpoint, token path, executable, command, tunnel identity, or mutation request id.
+
+`stage_and_activate_runtime_release` delegates to the existing standalone Recovery MCP tool of the same name. Staging source authority, Repository Registry provenance, Recovery mutation locking, active/previous whole-release authority, SQLite backup/rollback, launch-service ownership, and post-activation verification therefore remain entirely owned by standalone Recovery. The adapter is useful for in-band maintenance while the primary Runtime is alive; it does not replace the independent Recovery Connector for disaster recovery when the primary Runtime itself is unavailable.
