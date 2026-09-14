@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
-import { executeAction, validateProviderConfig } from '../../scripts/forge-local-recovery-helper.mjs';
+import { ensureSourceRepositoryProvenance, executeAction, validateProviderConfig } from '../../scripts/forge-local-recovery-helper.mjs';
 
 describe('local_recovery managed transport provider', () => {
   test('accepts only an absolute Controller Home and no provider endpoint overrides', () => {
@@ -32,12 +32,39 @@ describe('local_recovery managed transport provider', () => {
     };
     const result = await executeAction('stage_and_activate_runtime_release', {}, { controllerHome: '/tmp/controller' }, {
       callRecoveryTool,
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
       requestId: 'bootstrap-cutover-1',
     });
     expect(result).toEqual({ ok: true, staged: { releaseId: 'candidate' } });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'stage_and_activate_runtime_release' });
     expect((calls[0] as any).args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
+  });
+
+  test('backfills only missing source repository provenance from the registered source-root owner', () => {
+    const writes: unknown[] = [];
+    const result = ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/workspace/source' }),
+      findRegisteredRepositoryByCheckoutRoot: (root: string, controllerHome: string) => {
+        expect(root).toBe('/workspace/source');
+        expect(controllerHome).toBe('/tmp/controller');
+        return { repoId: 'repo_fixture' };
+      },
+      createRecoveryConfig: (controllerHome: string, patch: object) => {
+        writes.push({ controllerHome, patch });
+        return { controllerHome, primaryRuntimeSourceRoot: '/workspace/source', primaryRuntimeSourceRepositoryId: 'repo_fixture' };
+      },
+    });
+    expect(result.primaryRuntimeSourceRepositoryId).toBe('repo_fixture');
+    expect(writes).toEqual([{ controllerHome: '/tmp/controller', patch: { primaryRuntimeSourceRoot: '/workspace/source', primaryRuntimeSourceRepositoryId: 'repo_fixture' } }]);
+
+    let persisted = false;
+    const existing = ensureSourceRepositoryProvenance('/tmp/controller', {
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/workspace/source', primaryRuntimeSourceRepositoryId: 'repo_existing' }),
+      createRecoveryConfig: () => { persisted = true; return {}; },
+    });
+    expect(existing.primaryRuntimeSourceRepositoryId).toBe('repo_existing');
+    expect(persisted).toBe(false);
   });
 
   test('rejects every caller-controlled mutation parameter before Recovery dispatch', async () => {

@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { resolveControllerHome } from '../src/cli/repositories/controller-home.ts';
-import { gatewayToken, loadRecoveryConfig } from '../src/runtime/standalone-recovery/core.ts';
+import { findRegisteredRepositoryByCheckoutRoot } from '../src/cli/repositories/registry.ts';
+import { createRecoveryConfig, gatewayToken, loadRecoveryConfig } from '../src/runtime/standalone-recovery/core.ts';
 
 export const PLUGIN_ID = 'local_recovery';
 export const PLUGIN_VERSION = '0.1.0';
@@ -122,11 +123,28 @@ function mutationRequestId(requestId) {
   return `local-recovery:${createHash('sha256').update(String(requestId)).digest('hex').slice(0, 32)}`;
 }
 
+export function ensureSourceRepositoryProvenance(controllerHome, injected = {}) {
+  const loadConfig = injected.loadRecoveryConfig ?? loadRecoveryConfig;
+  const persistConfig = injected.createRecoveryConfig ?? createRecoveryConfig;
+  const findRepository = injected.findRegisteredRepositoryByCheckoutRoot ?? findRegisteredRepositoryByCheckoutRoot;
+  const recoveryConfig = loadConfig(controllerHome);
+  if (typeof recoveryConfig.primaryRuntimeSourceRepositoryId === 'string' && recoveryConfig.primaryRuntimeSourceRepositoryId.trim()) return recoveryConfig;
+  const sourceRoot = typeof recoveryConfig.primaryRuntimeSourceRoot === 'string' ? recoveryConfig.primaryRuntimeSourceRoot.trim() : '';
+  if (!sourceRoot) throw providerError('LOCAL_RECOVERY_SOURCE_ROOT_UNAVAILABLE', 'Installed Recovery config does not identify the primary Runtime source root.');
+  const repository = findRepository(sourceRoot, controllerHome);
+  if (!repository?.repoId) throw providerError('LOCAL_RECOVERY_SOURCE_REPOSITORY_UNRESOLVED', 'Configured primary Runtime source root is not owned by one registered repository.');
+  return persistConfig(controllerHome, {
+    primaryRuntimeSourceRoot: sourceRoot,
+    primaryRuntimeSourceRepositoryId: repository.repoId,
+  });
+}
+
 export async function executeAction(actionId, input, providerConfig, injected = {}) {
   const config = validateProviderConfig(providerConfig);
   if (!ACTIONS.includes(actionId)) throw providerError('LOCAL_RECOVERY_ACTION_UNSUPPORTED', 'Unsupported Local Recovery action.');
   assertEmptyInput(input);
   const callTool = injected.callRecoveryTool ?? callRecoveryTool;
+  if (actionId === 'stage_and_activate_runtime_release') ensureSourceRepositoryProvenance(config.controllerHome, injected);
   const args = MUTATING_ACTIONS.has(actionId) ? { request_id: mutationRequestId(injected.requestId ?? actionId) } : {};
   return await callTool(config.controllerHome, actionId, args, injected);
 }
