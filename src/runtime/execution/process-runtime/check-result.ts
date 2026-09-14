@@ -4,6 +4,68 @@ import { dirname, join } from 'path';
 import { processLogDir } from './store';
 import type { ManagedProcessRecord } from './types';
 
+export const STRUCTURED_CHECK_RESULT_PATH_ENV = 'FORGE_CHECK_STRUCTURED_RESULT_PATH';
+export const MAX_STRUCTURED_CHECK_FAILURE_DETAILS = 32;
+
+export type StructuredCheckFailureDetailClass = 'source' | 'fixture' | 'infrastructure' | 'interrupted';
+
+export interface StructuredCheckFailureDetail {
+  file: string;
+  failureClass: StructuredCheckFailureDetailClass;
+  failureCode: string;
+  attempts: number;
+  durationMs: number;
+  signal?: string;
+}
+
+export interface StructuredCheckFailureEvidence {
+  schemaVersion: 1;
+  producer: 'test-governance';
+  gate: string;
+  status: 'passed' | 'failed';
+  failures: number;
+  failureClasses: StructuredCheckFailureDetailClass[];
+  failureDetails: StructuredCheckFailureDetail[];
+  failureDetailsTruncated: boolean;
+  contaminated: boolean;
+}
+
+const STRUCTURED_FAILURE_CLASSES = new Set<StructuredCheckFailureDetailClass>(['source', 'fixture', 'infrastructure', 'interrupted']);
+
+export function isStructuredCheckFailureEvidence(value: unknown): value is StructuredCheckFailureEvidence {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as StructuredCheckFailureEvidence;
+  if (candidate.schemaVersion !== 1 || candidate.producer !== 'test-governance') return false;
+  if (typeof candidate.gate !== 'string' || !candidate.gate.trim() || candidate.gate.length > 64) return false;
+  if (candidate.status !== 'passed' && candidate.status !== 'failed') return false;
+  if (!Number.isInteger(candidate.failures) || candidate.failures < 0 || candidate.failures > 1_000_000) return false;
+  if (!Array.isArray(candidate.failureClasses) || candidate.failureClasses.length > STRUCTURED_FAILURE_CLASSES.size) return false;
+  if (candidate.failureClasses.some((entry) => !STRUCTURED_FAILURE_CLASSES.has(entry))) return false;
+  if (new Set(candidate.failureClasses).size !== candidate.failureClasses.length) return false;
+  if (!Array.isArray(candidate.failureDetails) || candidate.failureDetails.length > MAX_STRUCTURED_CHECK_FAILURE_DETAILS) return false;
+  if (typeof candidate.failureDetailsTruncated !== 'boolean' || typeof candidate.contaminated !== 'boolean') return false;
+  for (const detail of candidate.failureDetails) {
+    if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return false;
+    if (typeof detail.file !== 'string' || !detail.file.startsWith('tests/') || detail.file.length > 512) return false;
+    if (!STRUCTURED_FAILURE_CLASSES.has(detail.failureClass)) return false;
+    if (typeof detail.failureCode !== 'string' || !/^TEST_[A-Z0-9_]+$/.test(detail.failureCode) || detail.failureCode.length > 128) return false;
+    if (!Number.isInteger(detail.attempts) || detail.attempts < 1 || detail.attempts > 100) return false;
+    if (!Number.isFinite(detail.durationMs) || detail.durationMs < 0 || detail.durationMs > 24 * 60 * 60_000) return false;
+    if (detail.signal !== undefined && (typeof detail.signal !== 'string' || detail.signal.length > 32)) return false;
+    if (!candidate.failureClasses.includes(detail.failureClass)) return false;
+  }
+  if (candidate.failureDetails.length > candidate.failures) return false;
+  if (candidate.failureDetailsTruncated !== (candidate.failures > candidate.failureDetails.length)) return false;
+  if (candidate.status === 'passed') {
+    return candidate.failures === 0
+      && candidate.failureClasses.length === 0
+      && candidate.failureDetails.length === 0
+      && candidate.failureDetailsTruncated === false
+      && candidate.contaminated === false;
+  }
+  return (candidate.failures > 0 || candidate.contaminated) && candidate.failureClasses.length > 0;
+}
+
 export interface PersistedCheckResultReceipt {
   schemaVersion: 1;
   receiptId: string;
@@ -13,6 +75,7 @@ export interface PersistedCheckResultReceipt {
   status: number;
   timedOut: boolean;
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
   validatedRevision?: string;
   executedAt: string;
   originalExecutedAt?: string;
@@ -47,7 +110,9 @@ export function readPersistedCheckResultReceipt(path: string | undefined): Persi
   if (!path || !existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as PersistedCheckResultReceipt;
-    return value?.schemaVersion === 1 && typeof value.receiptId === 'string' && typeof value.cacheKey === 'string' ? value : undefined;
+    if (value?.schemaVersion !== 1 || typeof value.receiptId !== 'string' || typeof value.cacheKey !== 'string') return undefined;
+    if (value.failureEvidence !== undefined && !isStructuredCheckFailureEvidence(value.failureEvidence)) return undefined;
+    return value;
   } catch {
     return undefined;
   }
@@ -62,6 +127,7 @@ export type PersistedCheckTerminalEvidenceState =
 export interface PersistedCheckTerminalEvidence {
   state: PersistedCheckTerminalEvidenceState;
   failureClass?: PersistedCheckResultReceipt['failureClass'];
+  failureEvidence?: StructuredCheckFailureEvidence;
   warning?: string;
   infrastructureReason?: string;
 }
@@ -108,6 +174,7 @@ export function classifyTerminalCheckEvidence(
 export interface LegacyCheckEvidenceLike {
   cacheKey?: string;
   failureClass?: PersistedCheckResultReceipt['failureClass'];
+  failureEvidence?: StructuredCheckFailureEvidence;
 }
 
 export function classifyPersistedCheckTerminalEvidence(
@@ -136,6 +203,10 @@ export function classifyPersistedCheckTerminalEvidence(
     legacyMatches,
   });
   return classified.state === 'matched'
-    ? { ...classified, failureClass: structuredMatches ? structured?.failureClass : legacy?.failureClass }
+    ? {
+      ...classified,
+      failureClass: structuredMatches ? structured?.failureClass : legacy?.failureClass,
+      failureEvidence: structuredMatches ? structured?.failureEvidence : legacy?.failureEvidence,
+    }
     : classified;
 }

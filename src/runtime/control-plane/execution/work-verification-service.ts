@@ -410,6 +410,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       evidenceArtifactPath: record.origin?.workVerificationSnapshot ? undefined : receipt.artifactPath,
       evidenceReceiptId: receipt.receiptId,
       checkResultReceiptId: structuredCheckResult?.receiptId,
+      ...(evidenceState.failureEvidence ? { failureEvidence: evidenceState.failureEvidence } : {}),
       verificationIsolation: record.origin?.workVerificationSnapshot ? 'work_snapshot' : 'shared_checkout',
       boundedStatus: receipt.ok ? 'pass' : infrastructureFailed ? 'infrastructure_failure' : 'fail',
       evidenceState: evidenceState.state,

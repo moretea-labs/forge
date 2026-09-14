@@ -1113,6 +1113,124 @@ describe('run_check Process Runtime facade', () => {
     });
   });
 
+  test('preserves governed-test file evidence through the persisted Check receipt', async () => {
+    const fx = fixture();
+    const checksPath = join(fx.repoRoot, '.forge', 'checks.json');
+    const checks = JSON.parse(readFileSync(checksPath, 'utf8')) as { version: number; checks: Record<string, unknown> };
+    const evidence = {
+      schemaVersion: 1,
+      producer: 'test-governance',
+      gate: 'full',
+      status: 'failed',
+      failures: 1,
+      failureClasses: ['infrastructure'],
+      failureDetails: [{
+        file: 'tests/failure-contract.test.ts',
+        failureClass: 'infrastructure',
+        failureCode: 'TEST_INFRA_FILE_WALL_TIMEOUT',
+        attempts: 2,
+        durationMs: 25,
+      }],
+      failureDetailsTruncated: false,
+      contaminated: false,
+    };
+    const encodedEvidence = JSON.stringify(evidence);
+    checks.checks['package:test:full'] = {
+      description: 'structured governed-test failure',
+      command: ['node', '-e', `const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)});process.exit(1)`],
+      timeoutMs: 30_000,
+    };
+    writeFileSync(checksPath, JSON.stringify(checks, null, 2));
+    spawnSync('git', ['-C', fx.repoRoot, 'add', '.forge/checks.json'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'add structured governed check'], { encoding: 'utf8' });
+    createFixtureWork(fx, 'work-structured-governed-fail');
+
+    const result = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      checkId: 'package:test:full',
+      requestId: 'structured-governed-fail',
+      commandId: 'structured-governed-fail',
+      workId: 'work-structured-governed-fail',
+      verificationBinding: { executionSessionId: 'session-structured-governed-fail' },
+      interactiveWaitMs: 5_000,
+    });
+    expect(result.process).toMatchObject({ completed: true, ok: false, status: 'failed' });
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, result.process!.processId);
+    expect(record).toBeDefined();
+    expect(classifyPersistedCheckTerminalEvidence(record!, 'package:test:full')).toMatchObject({
+      state: 'matched',
+      failureClass: 'infrastructure_failure',
+      failureEvidence: {
+        gate: 'full',
+        failureClasses: ['infrastructure'],
+        failureDetails: [{ file: 'tests/failure-contract.test.ts', failureCode: 'TEST_INFRA_FILE_WALL_TIMEOUT', attempts: 2 }],
+      },
+    });
+  });
+
+  test('keeps a post-receipt signal as infrastructure failure instead of source acceptance', async () => {
+    const fx = fixture();
+    const checksPath = join(fx.repoRoot, '.forge', 'checks.json');
+    const checks = JSON.parse(readFileSync(checksPath, 'utf8')) as { version: number; checks: Record<string, unknown> };
+    const evidence = {
+      schemaVersion: 1,
+      producer: 'test-governance',
+      gate: 'full',
+      status: 'failed',
+      failures: 1,
+      failureClasses: ['source'],
+      failureDetails: [{
+        file: 'tests/failure-contract.test.ts',
+        failureClass: 'source',
+        failureCode: 'TEST_SOURCE_ASSERTION_FAILED',
+        attempts: 1,
+        durationMs: 1,
+      }],
+      failureDetailsTruncated: false,
+      contaminated: false,
+    };
+    const encodedEvidence = JSON.stringify(evidence);
+    checks.checks['package:test:full'] = {
+      description: 'structured source failure followed by signal',
+      command: ['node', '-e', `const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)});process.kill(process.pid,'SIGTERM')`],
+      timeoutMs: 30_000,
+    };
+    writeFileSync(checksPath, JSON.stringify(checks, null, 2));
+    spawnSync('git', ['-C', fx.repoRoot, 'add', '.forge/checks.json'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'add signalled structured check'], { encoding: 'utf8' });
+    createFixtureWork(fx, 'work-structured-signal-fail');
+
+    const result = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      checkId: 'package:test:full',
+      requestId: 'structured-signal-fail',
+      commandId: 'structured-signal-fail',
+      workId: 'work-structured-signal-fail',
+      verificationBinding: { executionSessionId: 'session-structured-signal-fail' },
+      interactiveWaitMs: 5_000,
+    });
+    expect(result.process).toMatchObject({ completed: true, ok: false, status: 'failed' });
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, result.process!.processId);
+    expect(record).toBeDefined();
+    expect(classifyPersistedCheckTerminalEvidence(record!, 'package:test:full')).toMatchObject({
+      state: 'matched',
+      failureClass: 'infrastructure_failure',
+      failureEvidence: {
+        gate: 'full',
+        failureClasses: ['source'],
+        failureDetails: [{ file: 'tests/failure-contract.test.ts', failureCode: 'TEST_SOURCE_ASSERTION_FAILED' }],
+      },
+    });
+  });
+
   test('short check completes without ExecutionJob path', async () => {
     const fx = fixture();
     const result = await runCheckViaProcessRuntime({

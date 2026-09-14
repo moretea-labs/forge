@@ -10,9 +10,20 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
-import { runBunTestFile, TEST_FAILURE_CODES, type BunTestFileRunResult } from '../../scripts/run-bun-test-file';
-import { runBoundedChild } from '../runtime/shared/bounded-child-supervisor';
+import {
+  classifyTestSignal,
+  mapTestSupervisorFailure,
+  runBunTestFile,
+  TEST_FAILURE_CODES,
+  type BunTestFileRunResult,
+  type TestFailureClass,
+} from '../../scripts/run-bun-test-file';
+import { runBoundedChild, type BoundedChildRunResult } from '../runtime/shared/bounded-child-supervisor';
 import { ensureRepositoryCheckStorage, type RepositoryCheckStorageAuthority } from '../runtime/execution/process-runtime/check-storage';
+import {
+  MAX_STRUCTURED_CHECK_FAILURE_DETAILS,
+  type StructuredCheckFailureEvidence,
+} from '../runtime/execution/process-runtime/check-result';
 
 export const TEST_MODULES = [
   'core', 'controller', 'process-runtime', 'routing', 'repository',
@@ -376,11 +387,40 @@ async function runPool<T>(items: T[], concurrency: number, run: (item: T) => Pro
   }));
 }
 
+export interface TestRunReceipt {
+  version: 1;
+  gate: TestGate;
+  contentDigest: string;
+  runnerDigest: string;
+  status: 'passed' | 'failed';
+  selected: number;
+  cacheHits: number;
+  cacheProvenance: Array<Record<string, unknown>>;
+  failures: number;
+  failureEvidence: StructuredCheckFailureEvidence;
+  modules: TestModule[];
+  durationMs: number;
+  serialEquivalentMs: number;
+  serialReduction: number;
+  lanes: Record<string, number>;
+  completedAt: string;
+}
+
 export interface RunTestSelectionOptions {
   useCache?: boolean;
   storageAuthority?: RepositoryCheckStorageAuthority;
   pureConcurrency?: number;
   tempConcurrency?: number;
+  onReceipt?: (receipt: TestRunReceipt) => void;
+}
+
+function classifyIndependentTestChild(result: BoundedChildRunResult): Pick<BunTestFileRunResult, 'failureClass' | 'failureCode' | 'signal'> {
+  const infrastructureFailure = mapTestSupervisorFailure(result.failureCode);
+  if (infrastructureFailure) return { failureClass: 'infrastructure', failureCode: infrastructureFailure };
+  const interrupted = classifyTestSignal(result.signal);
+  if (interrupted) return { ...interrupted, signal: result.signal ?? undefined };
+  if (result.status !== 0) return { failureClass: 'source', failureCode: TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED };
+  return {};
 }
 
 export async function runTestSelection(
@@ -405,6 +445,8 @@ export async function runTestSelection(
   const capability = capabilitySignature();
   let failures = 0;
   let cacheHits = 0;
+  const failureClasses = new Set<TestFailureClass>();
+  const failureDetails: StructuredCheckFailureEvidence['failureDetails'] = [];
   const cacheProvenance: Array<{
     file: string;
     checkpointKey: string;
@@ -468,15 +510,7 @@ export async function runTestSelection(
           lingeringPids: independent.residualPids,
           remainingPids: independent.remainingPids,
           pidReuseFenced: independent.pidReuseFenced,
-          ...(independent.failureCode ? {
-            failureClass: 'infrastructure' as const,
-            failureCode: independent.timedOut
-              ? TEST_FAILURE_CODES.INFRA_FILE_WALL_TIMEOUT
-              : TEST_FAILURE_CODES.INFRA_RUNNER_DID_NOT_CONVERGE,
-          } : independent.status === 0 ? {} : {
-            failureClass: 'source' as const,
-            failureCode: TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED,
-          }),
+          ...classifyIndependentTestChild(independent),
         };
       } else if (file.startsWith('tests/infrastructure/')) {
         const independent = await runBoundedChild(process.execPath, [
@@ -493,15 +527,7 @@ export async function runTestSelection(
           lingeringPids: independent.residualPids,
           remainingPids: independent.remainingPids,
           pidReuseFenced: independent.pidReuseFenced,
-          ...(independent.failureCode ? {
-            failureClass: 'infrastructure' as const,
-            failureCode: independent.timedOut
-              ? TEST_FAILURE_CODES.INFRA_FILE_WALL_TIMEOUT
-              : TEST_FAILURE_CODES.INFRA_RUNNER_DID_NOT_CONVERGE,
-          } : independent.status === 0 ? {} : {
-            failureClass: 'source' as const,
-            failureCode: TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED,
-          }),
+          ...classifyIndependentTestChild(independent),
         };
       } else {
         result = await runBunTestFile([
@@ -543,7 +569,22 @@ export async function runTestSelection(
     };
     atomicJson(checkpointPath, checkpoint);
     serialEquivalentMs += checkpoint.durationMs;
-    if (result.exitCode !== 0) failures += 1;
+    if (result.exitCode !== 0) {
+      failures += 1;
+      const failureClass = result.failureClass ?? 'infrastructure';
+      const failureCode = result.failureCode ?? TEST_FAILURE_CODES.INFRA_UNCLASSIFIED_NONZERO;
+      failureClasses.add(failureClass);
+      failureDetails.push({
+        file,
+        failureClass,
+        failureCode,
+        attempts,
+        durationMs: checkpoint.durationMs,
+        ...(result.signal ? { signal: result.signal } : {}),
+      });
+      failureDetails.sort((left, right) => left.file.localeCompare(right.file));
+      if (failureDetails.length > MAX_STRUCTURED_CHECK_FAILURE_DETAILS) failureDetails.pop();
+    }
   };
 
   const pure = selection.files.filter((file) => manifest.tests[file]!.resource === 'pure');
@@ -563,23 +604,39 @@ export async function runTestSelection(
     for (const file of files) await runOne(file);
   }));
 
-  if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) contaminated = true;
+  if (workspaceMutationDigest(repoRoot) !== baselineWorkspace) {
+    contaminated = true;
+    failureClasses.add('infrastructure');
+  }
 
   const durationMs = Math.round(performance.now() - runStartedAt);
   const serialReduction = serialEquivalentMs > 0
     ? Math.max(0, 1 - (durationMs / serialEquivalentMs))
     : 0;
 
-  const receipt = {
+  const status = failures === 0 && !contaminated ? 'passed' as const : 'failed' as const;
+  const failureEvidence: StructuredCheckFailureEvidence = {
+    schemaVersion: 1,
+    producer: 'test-governance',
+    gate: selection.gate,
+    status,
+    failures,
+    failureClasses: [...failureClasses].sort(),
+    failureDetails: [...failureDetails],
+    failureDetailsTruncated: failures > failureDetails.length,
+    contaminated,
+  };
+  const receipt: TestRunReceipt = {
     version: 1,
     gate: selection.gate,
     contentDigest,
     runnerDigest,
-    status: failures === 0 && !contaminated ? 'passed' : 'failed',
+    status,
     selected: selection.files.length,
     cacheHits,
     cacheProvenance: cacheProvenance.sort((left, right) => left.file.localeCompare(right.file)),
     failures,
+    failureEvidence,
     modules: selection.modules,
     durationMs,
     serialEquivalentMs,
@@ -592,6 +649,7 @@ export async function runTestSelection(
     completedAt: new Date().toISOString(),
   };
   atomicJson(join(storage.physicalRoot, RECEIPT_SUBDIR, `${contentDigest}-${selection.gate}.json`), receipt);
+  options.onReceipt?.(receipt);
   console.error(`[tests] ${receipt.status}: ${selection.files.length} selected, ${cacheHits} checkpoint hit(s), ${failures} failure(s), ${(serialReduction * 100).toFixed(1)}% vs serial`);
   return receipt.status === 'passed' ? 0 : 1;
 }

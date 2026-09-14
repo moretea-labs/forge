@@ -1,5 +1,6 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { basename, dirname, join, normalize, relative, resolve } from 'path';
 import {
   capProcessOutput,
@@ -12,6 +13,11 @@ import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
 import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
+import {
+  isStructuredCheckFailureEvidence,
+  STRUCTURED_CHECK_RESULT_PATH_ENV,
+  type StructuredCheckFailureEvidence,
+} from '../../runtime/execution/process-runtime/check-result';
 import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readCurrentRecoveryRelease } from '../../runtime/standalone-recovery/release';
@@ -366,6 +372,7 @@ export interface ControllerCheckResult {
   originalExecutedAt?: string;
   /** Non-zero repository failures are acceptance failures unless bounded infrastructure evidence proves otherwise. */
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
 }
 
 export interface ControllerCheckEvidence {
@@ -389,6 +396,7 @@ export interface ControllerCheckEvidence {
   validatedRevision?: string;
   originalExecutedAt?: string;
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
 }
 
 const STRONG_TRANSPORT_FAILURE_PATTERNS = [
@@ -413,6 +421,72 @@ function classifyControllerCheckFailure(input: {
   const output = `${input.stdout}\n${input.stderr}`;
   if (STRONG_TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(output))) return 'infrastructure_failure';
   return 'acceptance_failure';
+}
+
+const GOVERNED_TEST_GATES = new Map<string, string>([
+  ['package:test', 'affected'],
+  ['package:test:core', 'core'],
+  ['package:test:integration', 'integration'],
+  ['package:test:infrastructure', 'infrastructure'],
+  ['package:test:fault', 'fault'],
+  ['package:test:full', 'full'],
+  ['package:test:bun', 'full'],
+]);
+const MAX_STRUCTURED_CHECK_RESULT_BYTES = 64 * 1024;
+
+interface StructuredCheckObservation {
+  evidence?: StructuredCheckFailureEvidence;
+  error?: string;
+}
+
+function structuredCheckResultPath(check: ControllerCheck): string | undefined {
+  if (!GOVERNED_TEST_GATES.has(check.id)) return undefined;
+  return join(tmpdir(), `forge-check-result-${process.pid}-${randomUUID()}.json`);
+}
+
+function readStructuredCheckObservation(check: ControllerCheck, path: string | undefined): StructuredCheckObservation {
+  const expectedGate = GOVERNED_TEST_GATES.get(check.id);
+  if (!expectedGate) return {};
+  if (!path || !existsSync(path)) return { error: 'CHECK_STRUCTURED_RESULT_MISSING' };
+  try {
+    const bytes = readFileSync(path);
+    if (bytes.byteLength > MAX_STRUCTURED_CHECK_RESULT_BYTES) return { error: 'CHECK_STRUCTURED_RESULT_TOO_LARGE' };
+    const value = JSON.parse(bytes.toString('utf8')) as unknown;
+    if (!isStructuredCheckFailureEvidence(value) || value.gate !== expectedGate) return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
+    return { evidence: value };
+  } catch {
+    return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
+  }
+}
+
+function consumeStructuredCheckObservation(check: ControllerCheck, path: string | undefined): StructuredCheckObservation {
+  try {
+    return readStructuredCheckObservation(check, path);
+  } finally {
+    if (path) rmSync(path, { force: true });
+  }
+}
+
+function applyStructuredCheckObservation(processOk: boolean, observation: StructuredCheckObservation): {
+  ok: boolean;
+  failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
+  error?: string;
+} {
+  if (!observation.error && !observation.evidence) return { ok: processOk };
+  if (observation.error) return { ok: false, failureClass: 'infrastructure_failure', error: observation.error };
+  const evidence = observation.evidence!;
+  const reportOk = evidence.status === 'passed';
+  if (reportOk !== processOk) {
+    return { ok: false, failureClass: 'infrastructure_failure', failureEvidence: evidence, error: 'CHECK_STRUCTURED_RESULT_STATUS_MISMATCH' };
+  }
+  if (reportOk) return { ok: true, failureEvidence: evidence };
+  const sourceOnly = evidence.failureClasses.length > 0 && evidence.failureClasses.every((entry) => entry === 'source');
+  return {
+    ok: false,
+    failureClass: sourceOnly ? 'acceptance_failure' : 'infrastructure_failure',
+    failureEvidence: evidence,
+  };
 }
 
 function artifactSlug(id: string): string {
@@ -780,6 +854,7 @@ function persistCheckEvidence(
     validatedRevision: meta.validatedRevision,
     originalExecutedAt: result.originalExecutedAt ?? result.executedAt,
     failureClass: result.failureClass,
+    failureEvidence: result.failureEvidence,
   };
   const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
   atomicWriteFileSync(path, serialized);
@@ -803,7 +878,9 @@ export function readLatestControllerCheckEvidence(
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
-    return value.schemaVersion === 2 && value.checkId === id ? value : undefined;
+    if (value.schemaVersion !== 2 || value.checkId !== id) return undefined;
+    if (value.failureEvidence !== undefined && !isStructuredCheckFailureEvidence(value.failureEvidence)) return undefined;
+    return value;
   } catch (_error) {
     return undefined;
   }
@@ -861,15 +938,18 @@ export function runControllerCheck(
       validatedRevision: cached.validatedRevision ?? cached.completedRevision ?? cached.revision ?? revision,
       originalExecutedAt: cached.originalExecutedAt ?? cached.executedAt,
       failureClass: cached.failureClass,
+      failureEvidence: cached.failureEvidence,
     };
   }
   const heavy = controllerCheckConcurrencyClass(id) === 'heavy';
   const lease = heavy ? tryAcquireHeavyCheckLock(storage, id) : undefined;
   if (heavy && !lease) throw new Error(`heavy check already running for repository: ${id}`);
+  const structuredResultPath = structuredCheckResultPath(check);
   let result: ProcessRunResult;
   try {
     const bridgeRuntime = resolveSyncSupervisorBridgeRuntime();
     const childEnvironment = repositoryChildProcessEnvironment();
+    if (structuredResultPath) childEnvironment[STRUCTURED_CHECK_RESULT_PATH_ENV] = structuredResultPath;
     delete childEnvironment[CHECK_BRIDGE_RUNTIME_ENV];
     childEnvironment.FORGE_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
       command: check.command[0],
@@ -934,18 +1014,23 @@ export function runControllerCheck(
   } finally {
     lease?.release();
   }
+  const structuredObservation = consumeStructuredCheckObservation(check, structuredResultPath);
+  const structuredDecision = applyStructuredCheckObservation(result.ok, structuredObservation);
   const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
   const completedRevision = completedContent.revision;
   const stale = controllerCheckInputIntegrityChanged(check, inputIntegrity, completedContent);
   const executedAt = new Date().toISOString();
+  const effectiveOk = structuredDecision.ok && !stale;
+  const hardInfrastructureFailure = stale || result.timedOut || Boolean(result.error) || Boolean(result.signal);
   const withoutPath = {
     check,
-    ok: result.ok && !stale,
-    status: stale ? 1 : result.status,
+    ok: effectiveOk,
+    status: stale || (!structuredDecision.ok && result.status === 0) ? 1 : result.status,
     timedOut: result.timedOut,
     stdout: result.stdout,
     stderr: [
       result.stderr || result.error,
+      structuredDecision.error,
       stale ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun' : '',
     ].filter(Boolean).join('\n'),
     command: result.command,
@@ -953,14 +1038,17 @@ export function runControllerCheck(
     cacheHit: false,
     validatedRevision: stale ? completedRevision : revision,
     originalExecutedAt: executedAt,
-    failureClass: classifyControllerCheckFailure({
-      ok: result.ok && !stale,
-      stale,
-      timedOut: result.timedOut,
-      runtimeFailure: Boolean(result.error) || Boolean(result.signal),
-      stdout: result.stdout,
-      stderr: [result.stderr, result.error].filter(Boolean).join('\n'),
-    }),
+    failureClass: hardInfrastructureFailure
+      ? 'infrastructure_failure' as const
+      : structuredDecision.failureClass ?? classifyControllerCheckFailure({
+        ok: effectiveOk,
+        stale,
+        timedOut: result.timedOut,
+        runtimeFailure: Boolean(result.error) || Boolean(result.signal),
+        stdout: result.stdout,
+        stderr: [result.stderr, result.error, structuredDecision.error].filter(Boolean).join('\n'),
+      }),
+    failureEvidence: structuredDecision.failureEvidence,
   };
   return {
     ...withoutPath,
@@ -1130,6 +1218,8 @@ async function executeControllerCheckAsync(
   const maxOutputBytes = 256 * 1024;
   const command = [check.command[0], ...check.command.slice(1)];
   const childEnvironment = repositoryChildProcessEnvironment();
+  const structuredResultPath = structuredCheckResultPath(check);
+  if (structuredResultPath) childEnvironment[STRUCTURED_CHECK_RESULT_PATH_ENV] = structuredResultPath;
   if (isolatedControllerHome?.trim() && liveControllerHome?.trim()) throw new Error('CHECK_CONTROLLER_HOME_AUTHORITY_CONFLICT');
   if (liveControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(liveControllerHome);
   else if (isolatedControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(isolatedControllerHome);
@@ -1148,23 +1238,34 @@ async function executeControllerCheckAsync(
   const timeoutMessage = supervised.timedOut
     ? `process timed out after ${timeoutMs}ms: ${command.join(' ')}`
     : '';
+  const processOk = supervised.status === 0 && !supervised.failureCode;
+  const structuredObservation = consumeStructuredCheckObservation(check, structuredResultPath);
+  const structuredDecision = applyStructuredCheckObservation(processOk, structuredObservation);
+  const hardInfrastructureFailure = supervised.timedOut
+    || Boolean(supervised.failureCode)
+    || Boolean(supervised.error)
+    || Boolean(supervised.signal);
   const result = {
-    ok: supervised.status === 0 && !supervised.failureCode,
-    status: supervised.status,
+    ok: structuredDecision.ok,
+    status: !structuredDecision.ok && supervised.status === 0 ? 1 : supervised.status,
     timedOut: supervised.timedOut,
     stdout: capProcessOutput(redactProcessOutput(supervised.stdout), maxOutputBytes),
     stderr: capProcessOutput(redactProcessOutput([
       supervised.stderr,
       timeoutMessage || supervised.error || '',
       processTreeError,
+      structuredDecision.error,
     ].filter(Boolean).join('\n')), maxOutputBytes),
-    failureClass: classifyControllerCheckFailure({
-      ok: supervised.status === 0 && !supervised.failureCode,
+    failureClass: hardInfrastructureFailure
+      ? 'infrastructure_failure' as const
+      : structuredDecision.failureClass ?? classifyControllerCheckFailure({
+      ok: structuredDecision.ok,
       timedOut: supervised.timedOut,
-      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error),
+      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error) || Boolean(supervised.signal),
       stdout: supervised.stdout,
-      stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError].filter(Boolean).join('\n'),
+      stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError, structuredDecision.error].filter(Boolean).join('\n'),
     }),
+    failureEvidence: structuredDecision.failureEvidence,
   };
 
   const executedAt = new Date().toISOString();
@@ -1181,6 +1282,7 @@ async function executeControllerCheckAsync(
     validatedRevision: undefined,
     originalExecutedAt: executedAt,
     failureClass: result.failureClass,
+    failureEvidence: result.failureEvidence,
   };
   return { ...withoutPath, artifactPath: logicalEvidenceArtifactPath(check.id) };
 }

@@ -17,6 +17,7 @@ repos, command facades, hooks, migration helpers, and installed runtime copies.
 
 - Self-host and generated behavior must be checked together when shared assets change.
 - `bun test` is the broad regression gate.
+- Governed tests preserve typed per-file failure evidence (`source`, `fixture`, `infrastructure`, `interrupted`) in bounded receipts; Check/Work verification may collapse that evidence only to the existing acceptance-vs-infrastructure authority, never by reparsing human stderr.
 - `check-task-sync.sh` enforces that substantive repo changes update `tasks/`.
 - `check-task-workflow.sh --strict` is the repo-local harness readiness gate.
 - `sync-brain-docs.sh --check` verifies manifest-controlled repo-to-brain mirrors without making gbrain or MCP part of hook correctness.

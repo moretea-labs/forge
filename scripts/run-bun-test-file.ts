@@ -8,6 +8,7 @@ import {
 
 export const TEST_FAILURE_CODES = {
   SOURCE_ASSERTION_FAILED: 'TEST_SOURCE_ASSERTION_FAILED',
+  SOURCE_MANIFEST_INVALID: 'TEST_SOURCE_MANIFEST_INVALID',
   FIXTURE_OR_FLAKY_FAILED: 'TEST_FIXTURE_OR_FLAKY_FAILED',
   INFRA_CHILD_START_FAILED: 'TEST_INFRA_CHILD_START_FAILED',
   INFRA_FILE_WALL_TIMEOUT: 'TEST_INFRA_FILE_WALL_TIMEOUT',
@@ -15,10 +16,12 @@ export const TEST_FAILURE_CODES = {
   INFRA_RESIDUAL_PROCESS: 'TEST_INFRA_RESIDUAL_PROCESS',
   INFRA_RUNNER_DID_NOT_CONVERGE: 'TEST_INFRA_RUNNER_DID_NOT_CONVERGE',
   INFRA_WORKTREE_MUTATION: 'TEST_INFRA_WORKTREE_MUTATION',
+  INFRA_UNCLASSIFIED_NONZERO: 'TEST_INFRA_UNCLASSIFIED_NONZERO',
+  INTERRUPTED_SIGNAL: 'TEST_INTERRUPTED_SIGNAL',
 } as const;
 
 export type TestFailureCode = (typeof TEST_FAILURE_CODES)[keyof typeof TEST_FAILURE_CODES];
-export type TestFailureClass = 'source' | 'fixture' | 'infrastructure';
+export type TestFailureClass = 'source' | 'fixture' | 'infrastructure' | 'interrupted';
 
 export interface BunTestFileRunResult {
   exitCode: number;
@@ -28,6 +31,7 @@ export interface BunTestFileRunResult {
   durationMs?: number;
   failureClass?: TestFailureClass;
   failureCode?: TestFailureCode;
+  signal?: NodeJS.Signals;
 }
 
 export const DEFAULT_FILE_WALL_TIMEOUT_MS = 120_000;
@@ -55,7 +59,15 @@ export function classifyBunTestExit(exitCode: number, output = ''): {
   return { failureClass: 'source', failureCode: TEST_FAILURE_CODES.SOURCE_ASSERTION_FAILED };
 }
 
-function mapSupervisorFailure(code: string | undefined): TestFailureCode | undefined {
+export function classifyTestSignal(signal: NodeJS.Signals | null | undefined): {
+  failureClass: 'interrupted';
+  failureCode: typeof TEST_FAILURE_CODES.INTERRUPTED_SIGNAL;
+} | undefined {
+  if (!signal) return undefined;
+  return { failureClass: 'interrupted', failureCode: TEST_FAILURE_CODES.INTERRUPTED_SIGNAL };
+}
+
+export function mapTestSupervisorFailure(code: string | undefined): TestFailureCode | undefined {
   switch (code) {
     case CHILD_SUPERVISOR_FAILURE_CODES.CHILD_START_FAILED:
       return TEST_FAILURE_CODES.INFRA_CHILD_START_FAILED;
@@ -79,7 +91,7 @@ export async function cleanupClosedChildProcessGroup(
   operations?: ClosedChildProcessGroupOperations,
 ): Promise<BunTestFileRunResult> {
   const cleanup = await cleanupOwnedProcessGroup(pid, operations);
-  const failureCode = mapSupervisorFailure(cleanup.failureCode);
+  const failureCode = mapTestSupervisorFailure(cleanup.failureCode);
   return {
     exitCode: failureCode ? 1 : exitCode,
     lingeringPids: cleanup.residualPids,
@@ -115,7 +127,7 @@ export async function runBunTestFile(
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
 
-  const infrastructureFailure = mapSupervisorFailure(result.failureCode);
+  const infrastructureFailure = mapTestSupervisorFailure(result.failureCode);
   if (result.pidReuseFenced) {
     console.error(`[tests] ownership fence skipped cleanup for reused PID after ${label}`);
   }
@@ -136,13 +148,17 @@ export async function runBunTestFile(
     };
   }
 
-  if (result.signal === 'SIGINT' || result.signal === 'SIGTERM') {
+  const interrupted = classifyTestSignal(result.signal);
+  if (interrupted) {
+    console.error(`[tests] ${interrupted.failureCode}: ${label} terminated by ${result.signal}`);
     return {
-      exitCode: result.signal === 'SIGINT' ? 130 : 143,
+      exitCode: result.signal === 'SIGINT' ? 130 : result.signal === 'SIGTERM' ? 143 : Math.max(1, result.status),
       lingeringPids: [],
       remainingPids: [],
       pidReuseFenced: result.pidReuseFenced,
       durationMs: Math.round(performance.now() - startedAt),
+      signal: result.signal ?? undefined,
+      ...interrupted,
     };
   }
 

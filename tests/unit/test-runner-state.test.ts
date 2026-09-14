@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   classifyBunTestExit,
+  classifyTestSignal,
   cleanupClosedChildProcessGroup,
   TEST_FAILURE_CODES,
   type ClosedChildProcessGroupOperations,
@@ -17,6 +18,18 @@ describe('test runner state', () => {
       failureClass: 'fixture',
       failureCode: TEST_FAILURE_CODES.FIXTURE_OR_FLAKY_FAILED,
     });
+  });
+
+  test('classifies process signals as typed interrupted failures', () => {
+    expect(classifyTestSignal('SIGTERM')).toEqual({
+      failureClass: 'interrupted',
+      failureCode: TEST_FAILURE_CODES.INTERRUPTED_SIGNAL,
+    });
+    expect(classifyTestSignal('SIGINT')).toEqual({
+      failureClass: 'interrupted',
+      failureCode: TEST_FAILURE_CODES.INTERRUPTED_SIGNAL,
+    });
+    expect(classifyTestSignal(undefined)).toBeUndefined();
   });
 
   test('does not inspect or signal a reused PID', async () => {

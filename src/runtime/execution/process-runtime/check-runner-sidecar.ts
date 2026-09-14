@@ -104,6 +104,7 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
         status: result.status,
         timedOut: result.timedOut,
         failureClass: result.failureClass,
+        failureEvidence: result.failureEvidence,
         validatedRevision: result.validatedRevision,
         executedAt: result.executedAt,
         originalExecutedAt: result.originalExecutedAt,
