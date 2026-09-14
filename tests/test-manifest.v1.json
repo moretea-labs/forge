@@ -573,6 +573,10 @@
       "module": "ios",
       "resource": "pure"
     },
+    "tests/runtime/local-recovery-plugin.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
     "tests/runtime/local-system-target-grant.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -668,6 +672,10 @@
     "tests/runtime/rh-work-requirement-bootstrap.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
+    },
+    "tests/runtime/rh-work-scheduler-adapter.test.ts": {
+      "module": "controller",
+      "resource": "git-worktree"
     },
     "tests/runtime/rh-work-terminalization-authority.test.ts": {
       "module": "controller",
@@ -893,6 +901,10 @@
     "tests/runtime/windows-host-discovery.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
+    },
+    "tests/runtime/work-contract-store-atomicity.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
     },
     "tests/runtime/work-execution-concurrency.test.ts": {
       "module": "controller",
