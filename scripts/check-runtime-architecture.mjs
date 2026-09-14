@@ -259,8 +259,8 @@ function requireExactShrinkingInventory(label, actual, allowed) {
 // ownership stays in Kernel/application services and physical WorkHandle state
 // may not be persisted from the MCP adapter.
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "if (name === 'rh_work') return callWorkAdapter(ctx, args);");
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'assertControllerRoundInvocationAuthority');
+requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
+requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'assertControllerRoundInvocationAuthority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');

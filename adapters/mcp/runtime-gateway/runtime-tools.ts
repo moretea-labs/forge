@@ -63,5 +63,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
   }
 }
 
-export { RH_WORK_VERIFY_LEASE_WAIT_MS, runtimeIdentitySnapshot, dispatchedChatgptRelayAuthorizesStaleControllerRecovery, sessionlessFacadeControllerAuthorityMatches } from './work-adapter';
-export type { RuntimeIdentitySnapshot } from './work-adapter';
+export { RH_WORK_VERIFY_LEASE_WAIT_MS } from './work-adapter';
+export { runtimeIdentitySnapshot, dispatchedChatgptRelayAuthorizesStaleControllerRecovery, sessionlessFacadeControllerAuthorityMatches } from './controller-authority-adapter';
+export type { RuntimeIdentitySnapshot } from './controller-authority-adapter';

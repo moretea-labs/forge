@@ -91,7 +91,8 @@ describe('runtime command surface', () => {
     const recoveryAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/recovery-adapter.ts'), 'utf8');
     const statusInboxAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/status-inbox-adapter.ts'), 'utf8');
     const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
-    const runtimeGatewaySurface = [runtimeTools, runtimeObservation, recoveryAdapter, statusInboxAdapter, workAdapter].join('\n');
+    const controllerAuthorityAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'), 'utf8');
+    const runtimeGatewaySurface = [runtimeTools, runtimeObservation, recoveryAdapter, statusInboxAdapter, controllerAuthorityAdapter, workAdapter].join('\n');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
     const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
     const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
@@ -203,9 +204,9 @@ describe('runtime command surface', () => {
     expect(statusHandlerBlock).toContain('new Date(repositoryIdentity.sampledAt).toISOString()');
     expect(statusHandlerBlock).toContain("observationPolicy: 'bounded_sample_with_mutation_invalidation'");
     expect(contextHandlerBlock).toContain('sourceObservation: gitIdentityObservation');
-    const runtimeIdentityStart = workAdapter.indexOf('export function runtimeIdentitySnapshot');
-    const runtimeIdentityEnd = workAdapter.indexOf('export function contextRecord', runtimeIdentityStart);
-    const runtimeIdentityBlock = workAdapter.slice(runtimeIdentityStart, runtimeIdentityEnd);
+    const runtimeIdentityStart = controllerAuthorityAdapter.indexOf('export function runtimeIdentitySnapshot');
+    const runtimeIdentityEnd = controllerAuthorityAdapter.indexOf('export function authenticatedFacadeControllerIdentity', runtimeIdentityStart);
+    const runtimeIdentityBlock = controllerAuthorityAdapter.slice(runtimeIdentityStart, runtimeIdentityEnd);
     expect(runtimeIdentityBlock).toContain('observeRuntimeStatus(ctx.controllerHome)');
     expect(runtimeIdentityBlock).toContain('runtimeInstanceId: snapshot?.runtimeInstanceId');
     expect(runtimeIdentityBlock).not.toContain('readSupervisorState');
