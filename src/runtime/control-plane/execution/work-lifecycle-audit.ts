@@ -20,6 +20,7 @@ export interface WorkLifecycleAttention {
 
 interface LinkedWorktree {
   path: string;
+  head?: string;
   branch?: string;
 }
 
@@ -61,6 +62,8 @@ function linkedWorktrees(repositoryRoot: string): LinkedWorktree[] {
     if (line.startsWith('worktree ')) {
       if (current) worktrees.push(current);
       current = { path: line.slice('worktree '.length) };
+    } else if (current && line.startsWith('HEAD ')) {
+      current.head = line.slice('HEAD '.length).trim() || undefined;
     } else if (current && line.startsWith('branch refs/heads/')) {
       current.branch = line.slice('branch refs/heads/'.length);
     }
@@ -210,7 +213,8 @@ export function collectWorkLifecycleAttention(
     entry.workId,
     `Work ${entry.workId} is unreadable by Kernel semantics and is excluded from valid lifecycle authority: ${entry.error.slice(0, 180)}`,
   ));
-  const targetBranch = repository.defaultBranch || 'main';
+  const canonicalBranch = git(repository.canonicalRoot, ['branch', '--show-current'])?.trim();
+  const targetBranch = canonicalBranch || repository.defaultBranch || 'main';
   const targetReachability = new Map<string, ReadonlySet<string> | undefined>();
   const reachableFrom = (branch: string): ReadonlySet<string> | undefined => {
     if (!targetReachability.has(branch)) {
@@ -336,6 +340,14 @@ export function collectWorkLifecycleAttention(
     if (activeRegistryRoots.has(root)) continue;
     const isDirty = dirty(root);
     const handle = handleRoots.get(root);
+    if (isDirty === false) {
+      const integrated = worktree.branch
+        ? branchIntegrated(repository.canonicalRoot, worktree.branch, targetBranch, reachableFrom(targetBranch), worktree.head)
+        : worktree.head
+          ? exactCommitReachableFromTarget(repository.canonicalRoot, worktree.head, targetBranch, reachableFrom(targetBranch))
+          : undefined;
+      if (integrated === true) continue;
+    }
     const code = isDirty === true ? 'dirty_linked_worktree_unregistered' : 'linked_worktree_unregistered';
     findings.push(attention(
       code,

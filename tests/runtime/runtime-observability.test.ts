@@ -632,7 +632,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('treats patch-equivalent orphan Work branches as integrated while keeping unique patches blocking', () => {
+  test('uses the active canonical release branch for patch-equivalence instead of repository.defaultBranch', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-ch-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-repo-'));
     try {
@@ -643,20 +643,21 @@ describe('runtime observability', () => {
       spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      expect(repository.defaultBranch).toBe('main');
 
       spawnSync('git', ['switch', '-c', 'work/patch-equivalent'], { cwd: repoRoot, stdio: 'ignore' });
       writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
       spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
       const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
-      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', '-c', 'release/v2', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
 
-      spawnSync('git', ['switch', '-c', 'work/unique-patch'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', '-c', 'work/unique-patch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       writeFileSync(join(repoRoot, 'unique.txt'), 'unique\n');
       spawnSync('git', ['add', 'unique.txt'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'unique patch'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', 'release/v2'], { cwd: repoRoot, stdio: 'ignore' });
 
       const findings = collectWorkLifecycleAttention(controllerHome, repository);
       expect(findings).not.toContainEqual(expect.objectContaining({
@@ -666,6 +667,62 @@ describe('runtime observability', () => {
         jobId: 'lifecycle:work_branch_not_integrated:work/unique-patch',
       }));
     } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores clean integrated unregistered worktrees while keeping dirty or unique worktrees blocking', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-linked-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-linked-repo-'));
+    const equivalentRoot = join(tmpdir(), `forge-lifecycle-linked-equivalent-${process.pid}-${Date.now()}`);
+    const detachedRoot = join(tmpdir(), `forge-lifecycle-linked-detached-${process.pid}-${Date.now()}`);
+    const uniqueRoot = join(tmpdir(), `forge-lifecycle-linked-unique-${process.pid}-${Date.now()}`);
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const baseCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+
+      spawnSync('git', ['switch', '-c', 'work/linked-equivalent'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
+      spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
+      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      spawnSync('git', ['switch', '-c', 'release/v2', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
+      expect(spawnSync('git', ['worktree', 'add', equivalentRoot, 'work/linked-equivalent'], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync('git', ['worktree', 'add', '--detach', detachedRoot, baseCommit], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync('git', ['worktree', 'add', '-b', 'work/linked-unique', uniqueRoot, 'main'], { cwd: repoRoot }).status).toBe(0);
+      writeFileSync(join(uniqueRoot, 'unique.txt'), 'unique\n');
+      spawnSync('git', ['add', 'unique.txt'], { cwd: uniqueRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'unique linked patch'], { cwd: uniqueRoot, stdio: 'ignore' });
+
+      const cleanFindings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(cleanFindings).not.toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:linked_worktree_unregistered:work/linked-equivalent',
+      }));
+      expect(cleanFindings.some((finding) => finding.status === 'linked_worktree_unregistered' && finding.message.includes(detachedRoot))).toBe(false);
+      expect(cleanFindings).toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:linked_worktree_unregistered:work/linked-unique',
+      }));
+
+      writeFileSync(join(equivalentRoot, 'unfinished.txt'), 'dirty\n');
+      const dirtyFindings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(dirtyFindings).toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:dirty_linked_worktree_unregistered:work/linked-equivalent',
+      }));
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', equivalentRoot], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['worktree', 'remove', '--force', detachedRoot], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['worktree', 'remove', '--force', uniqueRoot], { cwd: repoRoot, stdio: 'ignore' });
+      rmSync(equivalentRoot, { recursive: true, force: true });
+      rmSync(detachedRoot, { recursive: true, force: true });
+      rmSync(uniqueRoot, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     }
