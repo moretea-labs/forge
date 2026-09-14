@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
+import { resolveControllerHome } from '../src/cli/repositories/controller-home.ts';
 import { gatewayToken, loadRecoveryConfig } from '../src/runtime/standalone-recovery/core.ts';
 
 export const PLUGIN_ID = 'local_recovery';
@@ -35,9 +36,9 @@ export function validateProviderConfig(value) {
   return { controllerHome: resolve(value.controllerHome.trim()) };
 }
 
-function loadProviderConfig() {
+export function loadProviderConfig() {
   const path = join(process.cwd(), 'config.json');
-  if (!existsSync(path)) throw providerError('LOCAL_RECOVERY_CONFIG_MISSING', 'Local Recovery provider config is missing.');
+  if (!existsSync(path)) return { controllerHome: resolveControllerHome() };
   return validateProviderConfig(parseJson(readFileSync(path, 'utf8'), 'LOCAL_RECOVERY_CONFIG_INVALID'));
 }
 
