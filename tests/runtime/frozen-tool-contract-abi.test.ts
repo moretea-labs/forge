@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import { resolve } from 'path';
 import {
   buildFrozenSemanticCompatibilityCapability,
+  FROZEN_WORK_START_KINDS,
   parseFrozenSemanticCompatibilityCapability,
 } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import {
@@ -135,6 +136,25 @@ describe('Tool Contract ABI authority', () => {
     expect(derived.expected_recovery_release).toBe('none');
     expect(derived).not.toHaveProperty('expected_active_release_id');
     expect(derived).not.toHaveProperty('expected_authority_revision');
+  });
+
+  test('semantic.v1 preserves every frozen start WorkKind with exact Controller authority identity', () => {
+    const authorityId = `cra_${'c'.repeat(32)}`;
+    const relayScopeId = 'goal:frozen-tool-contract-start';
+    for (const workKind of FROZEN_WORK_START_KINDS) {
+      const capability = buildFrozenSemanticCompatibilityCapability({
+        operation: 'start',
+        args: { work_kind: workKind, controller_authority_id: authorityId, relay_scope_id: relayScopeId },
+      });
+      expect(parseFrozenSemanticCompatibilityCapability('repair', capability)).toEqual({
+        operation: 'start',
+        args: { work_kind: workKind, controller_authority_id: authorityId, relay_scope_id: relayScopeId },
+      });
+    }
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'start',
+      args: { work_kind: 'local_effect', controller_authority_id: authorityId } as any,
+    })).toThrow('controller_authority_id and relay_scope_id must be paired');
   });
 
   test('semantic.v1 carries frozen work review without inventing another capability prefix', () => {

@@ -1,6 +1,11 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context-pack';
 import { RH_WORK_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { ENGINEERING_DECISION_INPUT_FIELDS } from './engineering-tool-contract';
+
+const engineeringDecisionProperties = Object.fromEntries(
+  ENGINEERING_DECISION_INPUT_FIELDS.map((field) => [field, { type: 'string' }]),
+);
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnly = true): McpToolDefinition {
   return {
@@ -216,9 +221,12 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
           semantic_scope_keys: { type: 'array', items: { type: 'string' } },
           mutation_class: { type: 'string', enum: ['readonly', 'isolated_write', 'integration_write', 'external_effect'] },
           supersedes_receipt_id: { type: 'string' },
-          decisions: { type: 'object', properties: {
-            ownership: { type: 'string' }, single_writer: { type: 'string' }, transaction: { type: 'string' }, lifecycle: { type: 'string' }, concurrency: { type: 'string' }, persistence: { type: 'string' }, failure: { type: 'string' }, projection_cache: { type: 'string' }, time: { type: 'string' }, performance: { type: 'string' }, compatibility: { type: 'string' },
-          }, required: ['ownership', 'single_writer', 'transaction', 'lifecycle', 'concurrency', 'persistence', 'failure', 'projection_cache', 'time', 'performance', 'compatibility'], additionalProperties: false },
+          decisions: {
+            type: 'object',
+            properties: engineeringDecisionProperties,
+            required: [...ENGINEERING_DECISION_INPUT_FIELDS],
+            additionalProperties: false,
+          },
           complexity_budget: { type: 'object', properties: {
             added_writers: { type: 'number' }, added_durable_mechanisms: { type: 'number' }, projection_paths: { type: 'number' }, global_invalidations: { type: 'number' }, lifecycle_hooks: { type: 'number' }, synchronous_critical_path_work: { type: 'number' }, notes: { type: 'array', items: { type: 'string' } },
           }, additionalProperties: false },

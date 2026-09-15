@@ -5,11 +5,13 @@ import {
   engineeringRequirementContextDigest,
   type ContextClosureReceipt,
   type EngineeringAdmissionEvidence,
+  type EngineeringDecisionArea,
   type IndependentCritiqueFinding,
   type ProjectEngineeringContractReceipt,
 } from '../../../packages/kernel/work/api/index';
 import { loadProjectEngineeringContract } from '../../../src/runtime/context/project-engineering-contract';
 import { validateRuntimeIssuedContextClosureReceipt } from '../../../src/runtime/context/context-closure';
+import { ENGINEERING_DECISION_INPUT_ENTRIES, engineeringDecisionInputKey } from './engineering-tool-contract';
 
 type RecordValue = Record<string, unknown>;
 function object(value: unknown, code: string): RecordValue {
@@ -23,6 +25,10 @@ function text(value: unknown, code: string): string {
 function strings(value: unknown, code: string): string[] {
   if (!Array.isArray(value)) throw new Error(code);
   return value.map((entry) => text(entry, code));
+}
+
+function engineeringDecisionErrorCode(area: EngineeringDecisionArea): string {
+  return `ENGINEERING_DESIGN_${engineeringDecisionInputKey(area).toUpperCase()}_REQUIRED`;
 }
 
 export function mintEngineeringAdmissionEvidence(input: {
@@ -60,33 +66,10 @@ export function mintEngineeringAdmissionEvidence(input: {
 
   const design = object(draft.design_decision, 'ENGINEERING_DESIGN_DECISION_REQUIRED');
   const decisionsInput = object(design.decisions, 'ENGINEERING_DESIGN_DECISIONS_REQUIRED');
-  const decisions = {
-    ownership: text(decisionsInput.ownership, 'ENGINEERING_DESIGN_OWNERSHIP_REQUIRED'),
-    singleWriter: text(decisionsInput.single_writer, 'ENGINEERING_DESIGN_SINGLE_WRITER_REQUIRED'),
-    transaction: text(decisionsInput.transaction, 'ENGINEERING_DESIGN_TRANSACTION_REQUIRED'),
-    lifecycle: text(decisionsInput.lifecycle, 'ENGINEERING_DESIGN_LIFECYCLE_REQUIRED'),
-    concurrency: text(decisionsInput.concurrency, 'ENGINEERING_DESIGN_CONCURRENCY_REQUIRED'),
-    persistence: text(decisionsInput.persistence, 'ENGINEERING_DESIGN_PERSISTENCE_REQUIRED'),
-    failure: text(decisionsInput.failure, 'ENGINEERING_DESIGN_FAILURE_REQUIRED'),
-    projectionCache: text(decisionsInput.projection_cache, 'ENGINEERING_DESIGN_PROJECTION_CACHE_REQUIRED'),
-    time: text(decisionsInput.time, 'ENGINEERING_DESIGN_TIME_REQUIRED'),
-    performance: text(decisionsInput.performance, 'ENGINEERING_DESIGN_PERFORMANCE_REQUIRED'),
-    compatibility: text(decisionsInput.compatibility, 'ENGINEERING_DESIGN_COMPATIBILITY_REQUIRED'),
-    semanticScopeIdentity: text(decisionsInput.semantic_scope_identity, 'ENGINEERING_DESIGN_SEMANTIC_SCOPE_IDENTITY_REQUIRED'),
-    authorizationTrust: text(decisionsInput.authorization_trust, 'ENGINEERING_DESIGN_AUTHORIZATION_TRUST_REQUIRED'),
-    resourceFencing: text(decisionsInput.resource_fencing, 'ENGINEERING_DESIGN_RESOURCE_FENCING_REQUIRED'),
-    deploymentTopology: text(decisionsInput.deployment_topology, 'ENGINEERING_DESIGN_DEPLOYMENT_TOPOLOGY_REQUIRED'),
-    schemaEvolutionDurability: text(decisionsInput.schema_evolution_durability, 'ENGINEERING_DESIGN_SCHEMA_EVOLUTION_DURABILITY_REQUIRED'),
-    idempotencyReplay: text(decisionsInput.idempotency_replay, 'ENGINEERING_DESIGN_IDEMPOTENCY_REPLAY_REQUIRED'),
-    retentionGc: text(decisionsInput.retention_gc, 'ENGINEERING_DESIGN_RETENTION_GC_REQUIRED'),
-    observabilityEvidence: text(decisionsInput.observability_evidence, 'ENGINEERING_DESIGN_OBSERVABILITY_EVIDENCE_REQUIRED'),
-    recoveryFailureDomain: text(decisionsInput.recovery_failure_domain, 'ENGINEERING_DESIGN_RECOVERY_FAILURE_DOMAIN_REQUIRED'),
-    capacityBackpressure: text(decisionsInput.capacity_backpressure, 'ENGINEERING_DESIGN_CAPACITY_BACKPRESSURE_REQUIRED'),
-    releaseUpgradeRollback: text(decisionsInput.release_upgrade_rollback, 'ENGINEERING_DESIGN_RELEASE_UPGRADE_ROLLBACK_REQUIRED'),
-    securityPrivacy: text(decisionsInput.security_privacy, 'ENGINEERING_DESIGN_SECURITY_PRIVACY_REQUIRED'),
-    portability: text(decisionsInput.portability, 'ENGINEERING_DESIGN_PORTABILITY_REQUIRED'),
-    migrationRetirement: text(decisionsInput.migration_retirement, 'ENGINEERING_DESIGN_MIGRATION_RETIREMENT_REQUIRED'),
-  };
+  const decisions = Object.fromEntries(ENGINEERING_DECISION_INPUT_ENTRIES.map(({ area, field }) => [
+    area,
+    text(decisionsInput[field], engineeringDecisionErrorCode(area)),
+  ])) as Record<EngineeringDecisionArea, string>;
   const budgetInput = object(design.complexity_budget, 'ENGINEERING_COMPLEXITY_BUDGET_REQUIRED');
   const complexityBudget = {
     addedWriters: Number(budgetInput.added_writers ?? 0),

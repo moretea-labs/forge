@@ -14,8 +14,10 @@ import {
 } from '../adapters/mcp/controller-round-compatibility';
 import {
   buildFrozenSemanticCompatibilityCapability,
+  FROZEN_WORK_START_KINDS,
   parseFrozenSemanticCompatibilityCapability,
 } from '../adapters/mcp/frozen-client-semantic-compatibility';
+import { ENGINEERING_DECISION_INPUT_FIELDS } from '../adapters/mcp/runtime-gateway/engineering-tool-contract';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   CORE_CONTROLLER_TOOL_NAMES,
@@ -40,7 +42,7 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'a6c8a8cb0af7f7d8';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '63ccd0e9340e55fd';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -127,6 +129,23 @@ const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh
 const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
 if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
 if (!('obligation_dispositions' in rhWorkProperties)) failures.push('rh_work native obligation_dispositions schema is missing');
+for (const field of ['controller_authority_id', 'relay_scope_id', 'engineering_preconditions']) {
+  if (!(field in rhWorkProperties)) failures.push(`rh_work native ${field} schema is missing`);
+}
+const workKindSchema = rhWorkProperties.work_kind as { enum?: unknown[] } | undefined;
+if (JSON.stringify(workKindSchema?.enum ?? []) !== JSON.stringify(FROZEN_WORK_START_KINDS)) {
+  failures.push('rh_work native work_kind enum diverged from frozen start compatibility authority');
+}
+const engineeringPreconditionsSchema = rhWorkProperties.engineering_preconditions as { properties?: Record<string, unknown> } | undefined;
+const designDecisionSchema = engineeringPreconditionsSchema?.properties?.design_decision as { properties?: Record<string, unknown> } | undefined;
+const decisionsSchema = designDecisionSchema?.properties?.decisions as { properties?: Record<string, unknown>; required?: unknown[] } | undefined;
+const decisionPropertyKeys = Object.keys(decisionsSchema?.properties ?? {});
+if (JSON.stringify(decisionPropertyKeys) !== JSON.stringify(ENGINEERING_DECISION_INPUT_FIELDS)) {
+  failures.push('rh_work Engineering Design decision schema diverged from Kernel decision-area authority');
+}
+if (JSON.stringify(decisionsSchema?.required ?? []) !== JSON.stringify(ENGINEERING_DECISION_INPUT_FIELDS)) {
+  failures.push('rh_work Engineering Design required decisions diverged from Kernel decision-area authority');
+}
 
 const planCompatibilityFixture = [
   {
@@ -195,6 +214,20 @@ try {
 }
 
 try {
+  const authorityId = `cra_${'b'.repeat(32)}`;
+  const relayScopeId = 'goal:frozen-start-abi';
+  for (const workKind of FROZEN_WORK_START_KINDS) {
+    const startFixture = {
+      operation: 'start' as const,
+      args: { work_kind: workKind, controller_authority_id: authorityId, relay_scope_id: relayScopeId },
+    };
+    const startCapability = buildFrozenSemanticCompatibilityCapability(startFixture);
+    const parsedStart = parseFrozenSemanticCompatibilityCapability('repair', startCapability);
+    if (JSON.stringify(parsedStart) !== JSON.stringify(startFixture)) {
+      failures.push(`frozen semantic start compatibility changed ${workKind} or Controller authority identity`);
+    }
+  }
+
   const semanticFixture = {
     operation: 'requirement_create' as const,
     args: {
