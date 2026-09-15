@@ -42,7 +42,7 @@ import {
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
 import { completeWorkWithReceipt } from '../execution/work-completion-authority';
-import { evaluateReadOnlyReviewSourceIdentity, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence, verificationRecordAppliesToCurrentWorkspace } from '../execution/work-evidence-policy';
+import { effectiveCurrentWorkVerificationRecords, evaluateReadOnlyReviewSourceIdentity, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
 import { readRequirement } from '../persistence/requirement-store';
 import {
   classifyVerificationOutcome,
@@ -1817,8 +1817,11 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     }
   }
 
-  const currentCheckRefs = work.checkRefs.filter((record) =>
-    verificationRecordAppliesToCurrentWorkspace(record, ctx.sourceRevision, ctx.workspaceFingerprint));
+  const currentCheckRefs = effectiveCurrentWorkVerificationRecords(
+    work,
+    ctx.sourceRevision,
+    ctx.workspaceFingerprint,
+  );
   const history = reconcileVerificationHistory(
     currentCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );

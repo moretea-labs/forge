@@ -218,6 +218,101 @@ function exactVerification(input: {
 }
 
 describe('rh_work terminalization authority', () => {
+  test('an exact current valid pass survives a later identityless infrastructure observation while standalone infrastructure failure remains actionable', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const caller = {
+      principalId: 'principal-verification-failure-contract',
+      sessionId: 'transport-verification-failure-contract',
+      controllerInstanceId: 'runtime-verification-failure-contract',
+    };
+    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, repositoryGitStatus(fx.repository));
+    const checkId = 'failure-contract-check';
+    const create = (workId: string) => createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Keep verification authority separate from infrastructure observation order.',
+      acceptanceCriteria: ['The exact successful verification remains authoritative.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [checkId],
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+      phase: 'verification',
+    });
+    const identitylessInfrastructureFailure: VerificationRecord = {
+      checkId,
+      outcome: 'infrastructure_failure',
+      summary: 'transport request id conflict after successful verification',
+      recordedAt: '2026-09-05T00:00:01.000Z',
+    };
+
+    const protectedWorkId = 'work-verification-pass-survives-identityless-infra';
+    create(protectedWorkId);
+    const validPass = exactVerification({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceRevision,
+      workspaceFingerprint,
+      checkId,
+    });
+    validPass.receipt = { ...validPass.receipt!, workId: protectedWorkId };
+    updateWorkContract(store, protectedWorkId, { checkRefs: [validPass, identitylessInfrastructureFailure] });
+    claimControllerSession(store, {
+      workId: protectedWorkId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const protectedResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: protectedWorkId },
+    ));
+    expect(protectedResult.status).toBe('ok');
+    expect(protectedResult.data?.nextStep).toBe('review');
+    expect(protectedResult.data?.remainingChecks).toBeUndefined();
+
+    const infrastructureOnlyWorkId = 'work-verification-infra-remains-actionable';
+    create(infrastructureOnlyWorkId);
+    updateWorkContract(store, infrastructureOnlyWorkId, { checkRefs: [identitylessInfrastructureFailure] });
+    claimControllerSession(store, {
+      workId: infrastructureOnlyWorkId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: `${caller.sessionId}-infra`,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const infrastructureOnlyResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, `${caller.sessionId}-infra`, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: infrastructureOnlyWorkId },
+    ));
+    expect(infrastructureOnlyResult.status).toBe('ok');
+    expect(infrastructureOnlyResult.data?.nextStep).toBe('repair_or_reverify');
+    expect(infrastructureOnlyResult.data?.infrastructureIssues).toEqual([checkId]);
+    const identityBoundWorkId = 'work-verification-exact-infra-remains-actionable';
+    create(identityBoundWorkId);
+    const identityBoundFailure: VerificationRecord = { ...identitylessInfrastructureFailure, recordedAt: '2026-09-05T00:00:02.000Z', sourceRevision, workspaceFingerprint, verificationInputFingerprint: validPass.verificationInputFingerprint };
+    updateWorkContract(store, identityBoundWorkId, { checkRefs: [{ ...validPass, receipt: { ...validPass.receipt!, workId: identityBoundWorkId } }, identityBoundFailure] });
+    const identityBoundSession = `${caller.sessionId}-exact-infra`;
+    claimControllerSession(store, { workId: identityBoundWorkId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: identityBoundSession, principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000 });
+    const identityBoundResult = structured(await callRuntimeTool(ctx(fx.controllerHome, fx.repository, caller.principalId, identityBoundSession, caller.controllerInstanceId), 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: identityBoundWorkId }));
+    expect(identityBoundResult.data?.nextStep).toBe('repair_or_reverify');
+  });
   test('rh_work verify honors check_ids as one resource-compatible Work verification wave', async () => {
     const fx = fixture();
     installBatchVerificationChecks(fx.repoRoot);
