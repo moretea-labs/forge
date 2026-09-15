@@ -742,6 +742,53 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("running managed effect command without repository delta does not promote WorkKind", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-running-no-delta-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    const longCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setTimeout(() => {}, 3000);")}`;
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-EFFECT-RUNNING-NO-DELTA";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
+        workKind: "local_effect", objective: "Run a conservative write-risk Process without changing repository source.",
+        acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-effect-running", principalId: "principal-effect-running", controllerInstanceId: "runtime-effect-running" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const running = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: longCommand,
+        request_id: "effect-running-no-delta",
+        interactive_wait_ms: 0,
+      }, caller));
+      expect(running.accepted).toBe(true);
+      expect(running.status).toBe("running");
+      expect(typeof running.processId).toBe("string");
+      expect(repositoryGitStatus(getRepository(repository.repoId, controllerHome)).clean).toBe(true);
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("local_effect");
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({ state: "prepared" });
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal Work ids remain usable only as explicit read-only historical context", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-readonly-context-"));
     const controllerHome = join(workspace, "controller");

@@ -1305,8 +1305,7 @@ export async function callRepositoryTool(
                 const processHandle = processResult.process;
                 const postStatus = repositoryGitStatus(repository);
                 const expectedHead = mutationAuthority.handle.expectedHead;
-                const mutationObserved = (processHandle !== undefined && processHandle.completed !== true)
-                  || !postStatus.clean
+                const mutationObserved = !postStatus.clean
                   || (Boolean(postStatus.head) && postStatus.head !== expectedHead);
                 if (mutationObserved) {
                   withControllerLock(
