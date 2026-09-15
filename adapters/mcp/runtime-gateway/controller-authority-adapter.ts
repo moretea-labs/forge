@@ -146,12 +146,13 @@ export function bindFacadeControllerOwnership(
   store: { controllerHome: string; repoId: string },
   workId: string,
   identity: ReturnType<typeof authenticatedFacadeControllerIdentity>,
-  options: { allowClaimIfMissing?: boolean; leaseMs?: number } = {},
+  options: { allowClaimIfMissing?: boolean; leaseMs?: number; relayScopeId?: string } = {},
 ) {
   return bindControllerOwnershipForInvocation({
     ...store,
     workId,
     identity,
+    relayScopeId: options.relayScopeId,
     runtime: runtimeIdentitySnapshot(ctx),
     allowClaimIfMissing: options.allowClaimIfMissing,
     leaseMs: options.leaseMs,

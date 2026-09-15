@@ -239,6 +239,25 @@ export function assertControllerRoundInvocationAuthority(
   throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UPGRADE_REQUIRED: ${workId}`);
 }
 
+/**
+ * Validate the one durable authority that owns this invocation before changing
+ * only its observed transport/runtime binding. ControllerRound relay authority
+ * supersedes the replaceable Work-session transport binding for relay-bound
+ * lifecycle calls; ordinary Work keeps its Work-bound controller capability.
+ */
+function assertControllerLifecycleInvocationAuthority(
+  input: ControllerInvocationAuthorityContext,
+  owner: ControllerSession | undefined,
+): ControllerRoundRelayRecord | undefined {
+  const relay = getControllerRoundRelay(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    input.workId.trim(),
+  );
+  if (relay) return assertControllerRoundInvocationAuthority(input);
+  assertControllerInvocationAuthority(owner, input.identity, input.workId.trim());
+  return undefined;
+}
+
 /** Bind one exact Work owner to the current transport/runtime without changing semantic ownership. */
 export function bindControllerOwnershipForInvocation(input: ControllerInvocationAuthorityContext & {
   runtime: { running?: boolean; runtimeInstanceId?: string };
@@ -248,7 +267,7 @@ export function bindControllerOwnershipForInvocation(input: ControllerInvocation
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const workId = input.workId.trim();
   const existingOwner = getControllerSession(store, workId);
-  assertControllerInvocationAuthority(existingOwner, input.identity, workId);
+  assertControllerLifecycleInvocationAuthority(input, existingOwner);
   return bindControllerSessionToCurrentRuntime(store, {
     workId,
     controllerId: input.identity.controllerId,
@@ -315,7 +334,7 @@ export function terminalCleanupAuthorityForInvocation(
   const workId = input.workId.trim();
   const owner = getControllerSession(store, workId);
   if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
-  assertControllerInvocationAuthority(owner, input.identity, workId);
+  const relay = assertControllerLifecycleInvocationAuthority(input, owner);
   const authority = assertControllerOwnershipAuthority(owner, {
     workId,
     controllerId: input.identity.controllerId,
@@ -323,12 +342,8 @@ export function terminalCleanupAuthorityForInvocation(
     principalId: input.identity.principalId,
     controllerInstanceId: input.identity.controllerInstanceId,
   });
-  if (getControllerRoundRelay(store, workId)) {
-    assertControllerRoundInvocationAuthority(input);
-  } else if (
-    input.identity.controllerAuthorityId
-    && !controllerSessionAuthorityMatches(owner, input.identity.controllerAuthorityId)
-  ) {
+  if (!relay && input.identity.controllerAuthorityId
+    && !controllerSessionAuthorityMatches(owner, input.identity.controllerAuthorityId)) {
     throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
   }
   return authority;

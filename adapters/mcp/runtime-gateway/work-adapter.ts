@@ -1631,7 +1631,9 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 // rewrite a terminal Work lease here; terminal authorization is fenced
                 // by the already-claimed relay lineage in submitControllerRoundDisposition.
                 if (!terminalRoundClosure) {
-                  bindFacadeControllerOwnership(ctx, store, workId, { ...identity, controllerType: 'chatgpt' });
+                  bindFacadeControllerOwnership(ctx, store, workId, { ...identity, controllerType: 'chatgpt' }, {
+                    relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
+                  });
                 }
               }
               const explicitRequirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
@@ -1774,7 +1776,9 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                       }
                       return observedOwner;
                     })()
-                  : bindFacadeControllerOwnership(ctx, store, workId, identity)
+                  : bindFacadeControllerOwnership(ctx, store, workId, identity, {
+                      relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
+                    })
                 : undefined;
               if (owner) {
                 const ownerPrincipal = controllerSessionPrincipalId(owner);
@@ -2979,6 +2983,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 resumedControllerSession = bindFacadeControllerOwnership(ctx, store, workId, identity, {
                   allowClaimIfMissing: true,
                   leaseMs: 3_600_000,
+                  relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
                 });
                 rebindRepositoryWorkHandleControllerIdentity({
                   controllerHome: ctx.controllerHome,
