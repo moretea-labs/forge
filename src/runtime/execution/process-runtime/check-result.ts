@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'path';
 import { processLogDir } from './store';
 import type { ManagedProcessRecord } from './types';
+import type { ProcessCheckCompletionReceipt } from './check-receipt';
 
 export const STRUCTURED_CHECK_RESULT_PATH_ENV = 'FORGE_CHECK_STRUCTURED_RESULT_PATH';
 export const MAX_STRUCTURED_CHECK_FAILURE_DETAILS = 32;
@@ -110,7 +111,17 @@ export function readPersistedCheckResultReceipt(path: string | undefined): Persi
   if (!path || !existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as PersistedCheckResultReceipt;
-    if (value?.schemaVersion !== 1 || typeof value.receiptId !== 'string' || typeof value.cacheKey !== 'string') return undefined;
+    if (
+      value?.schemaVersion !== 1
+      || typeof value.receiptId !== 'string'
+      || typeof value.checkId !== 'string'
+      || typeof value.cacheKey !== 'string'
+      || typeof value.ok !== 'boolean'
+      || typeof value.status !== 'number'
+      || typeof value.timedOut !== 'boolean'
+      || typeof value.executedAt !== 'string'
+      || (value.failureClass !== undefined && value.failureClass !== 'acceptance_failure' && value.failureClass !== 'infrastructure_failure')
+    ) return undefined;
     if (value.failureEvidence !== undefined && !isStructuredCheckFailureEvidence(value.failureEvidence)) return undefined;
     return value;
   } catch {
@@ -128,6 +139,9 @@ export interface PersistedCheckTerminalEvidence {
   state: PersistedCheckTerminalEvidenceState;
   failureClass?: PersistedCheckResultReceipt['failureClass'];
   failureEvidence?: StructuredCheckFailureEvidence;
+  semanticOk?: boolean;
+  semanticStatus?: number;
+  semanticTimedOut?: boolean;
   warning?: string;
   infrastructureReason?: string;
 }
@@ -173,6 +187,9 @@ export function classifyTerminalCheckEvidence(
  */
 export interface LegacyCheckEvidenceLike {
   cacheKey?: string;
+  ok?: boolean;
+  status?: number;
+  timedOut?: boolean;
   failureClass?: PersistedCheckResultReceipt['failureClass'];
   failureEvidence?: StructuredCheckFailureEvidence;
 }
@@ -207,6 +224,93 @@ export function classifyPersistedCheckTerminalEvidence(
       ...classified,
       failureClass: structuredMatches ? structured?.failureClass : legacy?.failureClass,
       failureEvidence: structuredMatches ? structured?.failureEvidence : legacy?.failureEvidence,
+      semanticOk: structuredMatches ? structured?.ok : legacy?.ok,
+      semanticStatus: structuredMatches ? structured?.status : legacy?.status,
+      semanticTimedOut: structuredMatches ? structured?.timedOut : legacy?.timedOut,
     }
     : classified;
+}
+
+export type TerminalCheckVerificationOutcome = 'valid_pass' | 'valid_fail' | 'infrastructure_failure';
+
+export interface TerminalCheckVerificationProjection {
+  outcome: TerminalCheckVerificationOutcome;
+  failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  isAcceptanceFailure: boolean;
+  isInfrastructureIssue: boolean;
+  boundedStatus: 'pass' | 'fail' | 'infrastructure_failure';
+  evidence: PersistedCheckTerminalEvidence;
+  infrastructureReason?: string;
+}
+
+/**
+ * Canonical Failure Contract projection from one exact terminal Check Process
+ * plus its semantic Check-result evidence into Work verification truth.
+ * Process exit state is necessary evidence, but never acceptance authority by
+ * itself. Missing, mismatched, interrupted, infrastructure, or contradictory
+ * evidence fails closed as infrastructure_failure.
+ */
+export function projectTerminalCheckVerification(
+  record: ManagedProcessRecord,
+  expectedCheckId: string,
+  receipt: ProcessCheckCompletionReceipt,
+  options: { legacyEvidence?: LegacyCheckEvidenceLike } = {},
+): TerminalCheckVerificationProjection {
+  const evidence = classifyPersistedCheckTerminalEvidence(record, expectedCheckId, options);
+  const semanticContradiction = evidence.state === 'matched' && Boolean(
+    (evidence.semanticOk !== undefined && evidence.semanticOk !== receipt.ok)
+    || (evidence.semanticTimedOut !== undefined && evidence.semanticTimedOut !== receipt.timedOut)
+    || (evidence.semanticOk === true && evidence.semanticStatus !== undefined && evidence.semanticStatus !== 0)
+    || (evidence.semanticOk === false && evidence.semanticStatus === 0)
+    || (receipt.ok && evidence.failureClass !== undefined)
+    || (evidence.semanticOk === true && evidence.failureClass !== undefined)
+    || (!receipt.ok && evidence.failureClass === undefined)
+    || (evidence.semanticOk === false && evidence.failureClass === undefined)
+  );
+  const infrastructureReason = evidence.infrastructureReason
+    ?? (semanticContradiction ? 'terminal Check Process and semantic result evidence contradict each other' : undefined);
+  const infrastructure = receipt.timedOut
+    || receipt.cancelled
+    || evidence.state !== 'matched'
+    || semanticContradiction
+    || evidence.failureClass === 'infrastructure_failure';
+  if (infrastructure) {
+    return {
+      outcome: 'infrastructure_failure',
+      failureClass: 'infrastructure_failure',
+      isAcceptanceFailure: false,
+      isInfrastructureIssue: true,
+      boundedStatus: 'infrastructure_failure',
+      evidence,
+      ...(infrastructureReason ? { infrastructureReason } : {}),
+    };
+  }
+  if (receipt.ok) {
+    return {
+      outcome: 'valid_pass',
+      isAcceptanceFailure: false,
+      isInfrastructureIssue: false,
+      boundedStatus: 'pass',
+      evidence,
+    };
+  }
+  if (evidence.failureClass === 'acceptance_failure') {
+    return {
+      outcome: 'valid_fail',
+      failureClass: 'acceptance_failure',
+      isAcceptanceFailure: true,
+      isInfrastructureIssue: false,
+      boundedStatus: 'fail',
+      evidence,
+    };
+  }
+  return {
+    outcome: 'infrastructure_failure',
+    failureClass: 'infrastructure_failure',
+    isAcceptanceFailure: false,
+    isInfrastructureIssue: true,
+    boundedStatus: 'infrastructure_failure',
+    evidence,
+    infrastructureReason: 'terminal Check failure lacks explicit acceptance-failure evidence',
+  };
 }

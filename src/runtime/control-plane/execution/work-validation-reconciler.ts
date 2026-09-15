@@ -16,7 +16,8 @@ import {
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
 import { processCheckSemanticScopeKey } from '../../execution/process-runtime/check-facade';
 import { getProcessRecord } from '../../execution/process-runtime/store';
-import { controllerCheckExecutionIdentity } from '../../../cli/controller/check-runner';
+import { controllerCheckExecutionIdentity, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
+import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 
 export type WorkValidationOutcome =
   | 'not_validating'
@@ -268,10 +269,18 @@ export function reconcileWorkValidation(
           },
         } : {}),
       });
-      if (!receipt.ok) {
-        if (receipt.status === 'timed_out' || receipt.status === 'cancelled') {
-          return settleInfrastructureFailure(controllerHome, handle, receipt.summary);
-        }
+      const legacyEvidence = record.origin?.checkResultReceiptPath
+        ? undefined
+        : readLatestControllerCheckEvidence(handle.worktreePath, checkId);
+      const projection = projectTerminalCheckVerification(record, checkId, receipt, { legacyEvidence });
+      if (projection.outcome === 'infrastructure_failure') {
+        return settleInfrastructureFailure(
+          controllerHome,
+          handle,
+          projection.infrastructureReason ?? projection.evidence.warning ?? receipt.summary,
+        );
+      }
+      if (projection.outcome === 'valid_fail') {
         const next = transitionWorkHandle(controllerHome, handle, 'failed', {
           finalization: { ...handle.finalization, validation: 'failed', failureCode: undefined, lastError: receipt.summary },
           validationRun: undefined,

@@ -10,7 +10,7 @@ import {
   readPersistedCheckResultReceipt,
   runPersistedCheckViaProcessRuntime,
 } from '../../execution/process-runtime';
-import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
+import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 import { buildCheckExecutionSchedule } from '../../execution/process-runtime/check-scheduling';
 import { ingestCheckCompletionGraceProcess } from '../persistence/operational-prior-store';
 import { buildFacadeResult } from '../facade/facade-result';
@@ -517,14 +517,10 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
     const legacyEvidence = record.origin?.checkResultReceiptPath
       ? undefined
       : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
-    const evidenceState = classifyPersistedCheckTerminalEvidence(record, normalizedCheckId, { legacyEvidence });
-    const failureClass = evidenceState.failureClass;
-    const infrastructureFailed = receipt.timedOut
-      || receipt.cancelled
-      || evidenceState.state !== 'matched'
-      || (!receipt.ok && failureClass !== 'acceptance_failure');
-    const checkFailed = !receipt.ok && !infrastructureFailed;
-    if (receipt.ok && evidenceState.state === 'matched') {
+    const projection = projectTerminalCheckVerification(record, normalizedCheckId, receipt, { legacyEvidence });
+    const infrastructureFailed = projection.isInfrastructureIssue;
+    const checkFailed = projection.isAcceptanceFailure;
+    if (projection.outcome === 'valid_pass') {
       try {
         ingestCheckCompletionGraceProcess({
           controllerHome: input.controllerHome,
@@ -538,17 +534,18 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
     }
     const commonVerification = {
       checkId: normalizedCheckId,
-      outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',
-      isAcceptanceFailure: checkFailed,
-      isInfrastructureIssue: infrastructureFailed,
+      outcome: projection.outcome,
+      isAcceptanceFailure: projection.isAcceptanceFailure,
+      isInfrastructureIssue: projection.isInfrastructureIssue,
       executed: true,
       completed: true,
       processId: receipt.processId,
       processStatus: receipt.runtimeStatus,
-      ok: receipt.ok,
+      ok: projection.outcome === 'valid_pass',
+      processOk: receipt.ok,
       timedOut: receipt.timedOut,
       cancelled: receipt.cancelled,
-      failureClass: infrastructureFailed ? 'infrastructure_failure' : failureClass,
+      failureClass: projection.failureClass,
       deduplicated: handle.deduplicated === true,
       semanticDeduplicated: handle.semanticDeduplicated === true,
       checkContentRevision: receipt.checkRevision,
@@ -557,11 +554,11 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       evidenceArtifactPath: record.origin?.workVerificationSnapshot ? undefined : receipt.artifactPath,
       evidenceReceiptId: receipt.receiptId,
       checkResultReceiptId: structuredCheckResult?.receiptId,
-      ...(evidenceState.failureEvidence ? { failureEvidence: evidenceState.failureEvidence } : {}),
+      ...(projection.evidence.failureEvidence ? { failureEvidence: projection.evidence.failureEvidence } : {}),
       verificationIsolation: record.origin?.workVerificationSnapshot ? 'work_snapshot' : 'shared_checkout',
-      boundedStatus: receipt.ok ? 'pass' : infrastructureFailed ? 'infrastructure_failure' : 'fail',
-      evidenceState: evidenceState.state,
-      ...(evidenceState.infrastructureReason ? { infrastructureReason: evidenceState.infrastructureReason } : {}),
+      boundedStatus: projection.boundedStatus,
+      evidenceState: projection.evidence.state,
+      ...(projection.infrastructureReason ? { infrastructureReason: projection.infrastructureReason } : {}),
       ...(record.error?.code ? { processErrorCode: record.error.code } : {}),
     };
 
@@ -588,7 +585,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
           },
         },
         warnings: infrastructureFailed
-          ? [...facade.warnings, evidenceState.warning ?? 'infrastructure_failure is distinct from acceptance failure']
+          ? [...facade.warnings, projection.evidence.warning ?? 'infrastructure_failure is distinct from acceptance failure']
           : facade.warnings,
       }, facade.status === 'failed');
     }
@@ -601,7 +598,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
           ? `Check ${normalizedCheckId} passed with persisted Process evidence.`
           : `Check ${normalizedCheckId} failed acceptance.`,
       data: { verification: commonVerification },
-      warnings: infrastructureFailed ? [evidenceState.warning ?? 'infrastructure_failure is distinct from acceptance failure'] : [],
+      warnings: infrastructureFailed ? [projection.evidence.warning ?? 'infrastructure_failure is distinct from acceptance failure'] : [],
       rawAvailable: false,
     }), checkFailed);
   } catch (error) {

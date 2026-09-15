@@ -12,7 +12,7 @@ import { freshGitIdentity } from "../../../src/cli/repository/inspector";
 import { repositoryCheckoutLifecycle, selectRepositoryCheckout } from "../../../src/cli/repositories/registry";
 import { repositoryGitStatus } from "../../../src/cli/repositories/structured-git";
 import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
-import { classifyPersistedCheckTerminalEvidence } from "../../../src/runtime/execution/process-runtime/check-result";
+import { projectTerminalCheckVerification } from "../../../src/runtime/execution/process-runtime/check-result";
 import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
 import { completeRemoteEffectWorkFromProcessReceipt } from "../../../packages/kernel/work/api/index";
 import { executionIdentityForRepository } from "../../../src/runtime/control-plane/execution/execution-identity";
@@ -936,13 +936,9 @@ export function reconcileTerminalFacadeWorkVerifications(
       const legacyEvidence = record.origin?.checkResultReceiptPath
         ? undefined
         : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
-      const evidenceState = classifyPersistedCheckTerminalEvidence(record, normalizedCheckId, { legacyEvidence });
-      const failureClass = evidenceState.failureClass;
-      const infrastructureFailed = receipt.timedOut
-        || receipt.cancelled
-        || evidenceState.state !== 'matched'
-        || (!receipt.ok && failureClass !== 'acceptance_failure');
-      const checkFailed = !receipt.ok && !infrastructureFailed;
+      const projection = projectTerminalCheckVerification(record, normalizedCheckId, receipt, { legacyEvidence });
+      const infrastructureFailed = projection.isInfrastructureIssue;
+      const checkFailed = projection.isAcceptanceFailure;
       verifyGoalWorkloop(workloopCtx, {
         workId,
         checkId: normalizedCheckId,
