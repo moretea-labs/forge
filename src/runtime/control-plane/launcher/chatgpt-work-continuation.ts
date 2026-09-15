@@ -170,6 +170,12 @@ function normalizeReasoning(value?: ChatgptAutomationReasoning): ChatgptAutomati
   return value ?? DEFAULT_CHATGPT_AUTOMATION_REASONING;
 }
 
+const DEFAULT_CHATGPT_CONTROLLER_REASONING: ChatgptAutomationReasoning = 'xhigh';
+
+function normalizeControllerReasoning(value?: ChatgptAutomationReasoning): ChatgptAutomationReasoning {
+  return value ?? DEFAULT_CHATGPT_CONTROLLER_REASONING;
+}
+
 function normalizeTabPolicy(value?: ChatgptAutomationTabPolicy): ChatgptAutomationTabPolicy {
   return value ?? DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY;
 }
@@ -342,7 +348,7 @@ export async function runWorkChatgptContinuation(
   const transportConversation = input.transportConversation ?? 'bound';
   const seedUrl = transportConversation === 'fresh' ? undefined : input.conversationUrl?.trim() || existing?.conversationUrl;
   const model = normalizeModel(input.model);
-  const reasoning = normalizeReasoning(input.reasoning);
+  const reasoning = normalizeControllerReasoning(input.reasoning);
   const tabPolicy = transportConversation === 'fresh' ? 'new' : normalizeTabPolicy(input.tabPolicy);
   const { bridgeRuntime, host } = resolveChatgptProviderDeliveryHost(dependencies);
   const authorityInputError = controllerRoundAuthorityInputError(input);

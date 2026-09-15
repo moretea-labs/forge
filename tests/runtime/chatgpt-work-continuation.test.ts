@@ -734,6 +734,62 @@ describe('ChatGPT Work conversation binding', () => {
 
 
 
+  test('uses maximum reasoning for Work continuation without changing standalone defaults or explicit overrides', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-controller-reasoning-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'reasoning@example.test'], ['config', 'user.name', 'Reasoning Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'reasoning fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-controller-reasoning' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const, status: 'running' as const,
+    };
+    createWorkContract(store, { ...workInput, workId: 'WORK-REASONING-DEFAULT', objective: 'Use maximum controller reasoning.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-REASONING-OVERRIDE', objective: 'Honor explicit controller reasoning.' });
+
+    const observed: Array<{ workId: string; reasoning: string }> = [];
+    const browserHost: ChatgptProviderDeliveryHost = {
+      dispatch: async (input) => {
+        observed.push({ workId: input.workId, reasoning: input.reasoning });
+        return {
+          status: 'dispatch_confirmed' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: input.browserSessionId,
+          conversationUrl: `https://chatgpt.com/c/reasoning-${observed.length}`,
+          executionPreferenceVerified: true,
+        };
+      },
+    };
+
+    const controllerDefault = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-REASONING-DEFAULT', prompt: 'continue',
+      controllerAuthorityId: 'cra_11111111111111111111111111111111', relayScopeId: 'goal:WORK-REASONING-DEFAULT',
+    }, { bridgeRuntime: false, browserHost });
+    const standaloneDefault = await runStandaloneChatgptPrompt({
+      controllerHome, repoId: repository.repoId, repoRoot, scopeId: 'reasoning-standalone', prompt: 'probe',
+    }, { bridgeRuntime: false, browserHost });
+    const controllerOverride = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-REASONING-OVERRIDE', prompt: 'continue', reasoning: 'medium',
+      controllerAuthorityId: 'cra_22222222222222222222222222222222', relayScopeId: 'goal:WORK-REASONING-OVERRIDE',
+    }, { bridgeRuntime: false, browserHost });
+
+    expect(controllerDefault.reasoning).toBe('xhigh');
+    expect(standaloneDefault.reasoning).toBe('high');
+    expect(controllerOverride.reasoning).toBe('medium');
+    expect(observed.map(({ reasoning }) => reasoning)).toEqual(['xhigh', 'high', 'medium']);
+  });
+
   test('fails closed when the explicit controller home does not contain the requested WorkContract', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-authority-'));
     roots.push(root);
