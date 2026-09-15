@@ -26,6 +26,7 @@ import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/pers
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
 import { recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -431,4 +432,46 @@ describe('connected assistant learning loops', () => {
       kind: 'experience', itemId: experience.id, decision: 'used',
     }));
   });
+  test('ControllerRound context excludes unbound handoff noise but retains Work-bound and explicit user handoffs', () => {
+    const fx = fixture('handoff-context-scope', { knowledge: false });
+    const round = claimInitialRound(fx, 1);
+    const baselineFingerprint = readControllerRoundSemanticStateFingerprint(fx.store, fx.workId);
+
+    createHandoffItem(fx.store, {
+      id: 'HND-UNBOUND-NOISE', repoId: fx.repository.repoId,
+      title: 'old repository-level attention', severity: 'needs_review', reason: 'legacy unrelated attention',
+      summary: 'This repository-level handoff is not part of the current Work lineage.',
+      currentState: { repoId: fx.repository.repoId, statusSummary: 'unrelated repository attention' },
+      evidenceRefs: [], recommendedDecision: 'review elsewhere', recommendedPrompt: 'review elsewhere', suggestedNextActions: [],
+    });
+    expect(readControllerRoundSemanticStateFingerprint(fx.store, fx.workId)).toBe(baselineFingerprint);
+    expect(readControllerRoundContextSnapshot(fx.store, round.relay).handoffs.map((handoff) => handoff.id)).not.toContain('HND-UNBOUND-NOISE');
+
+    createHandoffItem(fx.store, {
+      id: 'HND-CURRENT-WORK', repoId: fx.repository.repoId, workId: fx.workId,
+      title: 'current Work attention', severity: 'needs_review', reason: 'current Work needs a bounded decision',
+      summary: 'This handoff belongs to the current Work.',
+      currentState: { repoId: fx.repository.repoId, workId: fx.workId, statusSummary: 'current Work attention' },
+      evidenceRefs: [], recommendedDecision: 'review current Work', recommendedPrompt: 'review current Work', suggestedNextActions: [],
+    });
+    expect(readControllerRoundSemanticStateFingerprint(fx.store, fx.workId)).not.toBe(baselineFingerprint);
+    expect(readControllerRoundContextSnapshot(fx.store, round.relay).handoffs.map((handoff) => handoff.id)).toContain('HND-CURRENT-WORK');
+
+    createHandoffItem(fx.store, {
+      id: 'HND-EXPLICIT-USER', repoId: fx.repository.repoId,
+      title: 'explicit user decision', severity: 'needs_review', reason: 'current round explicitly waits for this user decision',
+      summary: 'Unbound handoff is relevant only because the current round explicitly references it.',
+      currentState: { repoId: fx.repository.repoId, statusSummary: 'waiting for explicit user decision' },
+      evidenceRefs: [], recommendedDecision: 'decide', recommendedPrompt: 'decide and resume', suggestedNextActions: [],
+    });
+    const waiting = submitControllerRoundDisposition(fx.store, {
+      workId: fx.workId, identity: relayIdentity(round.owner), disposition: 'wait_for_user',
+      relayScopeId: round.relay.relayScopeId, handoffId: 'HND-EXPLICIT-USER',
+    });
+    const waitingHandoffs = readControllerRoundContextSnapshot(fx.store, waiting).handoffs.map((handoff) => handoff.id);
+    expect(waitingHandoffs).toContain('HND-CURRENT-WORK');
+    expect(waitingHandoffs).toContain('HND-EXPLICIT-USER');
+    expect(waitingHandoffs).not.toContain('HND-UNBOUND-NOISE');
+  });
+
 });

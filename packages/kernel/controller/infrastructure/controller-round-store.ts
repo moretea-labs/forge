@@ -264,6 +264,16 @@ function relevantWork(options: ControllerRoundRelayStoreOptions, record: Pick<Co
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+function relevantHandoffs(
+  options: ControllerRoundRelayStoreOptions,
+  works: readonly Pick<WorkContract, 'workId'>[],
+  explicitHandoffId?: string,
+) {
+  const linkedWorkIds = new Set(works.map((work) => work.workId));
+  return listHandoffItems({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
+    .filter((handoff) => handoff.workId ? linkedWorkIds.has(handoff.workId) : handoff.id === explicitHandoffId);
+}
+
 function semanticVerificationFacts(work: WorkContract): Array<{
   checkId: string; verificationInputFingerprint: string; checkDefinitionDigest: string;
   checkEnvironmentFingerprint: string; checkCacheKey: string; outcome: string; status: string;
@@ -297,6 +307,7 @@ function mechanicalStateFingerprint(
   work: WorkContract,
   requirementId: string | undefined,
   relayScopeId: string,
+  explicitHandoffId?: string,
 ): string {
   const requirement = requirementForRelay(options, requirementId);
   const works = relevantWork(options, { relayScopeId, originWorkId: work.workId, requirementId })
@@ -322,9 +333,7 @@ function mechanicalStateFingerprint(
       } : undefined,
     }))
     .sort((left, right) => left.workId.localeCompare(right.workId));
-  const linkedWorkIds = new Set(works.map((entry) => entry.workId));
-  const handoffs = listHandoffItems({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
-    .filter((handoff) => !handoff.workId || linkedWorkIds.has(handoff.workId))
+  const handoffs = relevantHandoffs(options, works, explicitHandoffId)
     .map((handoff) => ({
       id: handoff.id,
       workId: handoff.workId,
@@ -355,7 +364,7 @@ export function readControllerRoundSemanticStateFingerprint(
   const work = getWorkContract(options, workId);
   const current = readRelayRecord(options, workId)?.value;
   if (!work || !current) return undefined;
-  return mechanicalStateFingerprint(options, work, current.requirementId, current.relayScopeId);
+  return mechanicalStateFingerprint(options, work, current.requirementId, current.relayScopeId, current.handoffId);
 }
 
 function resolveRequirementId(
@@ -730,9 +739,10 @@ export function submitControllerRoundDisposition(
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
     const requestedMaxRepeatedState = boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8);
     const requestedMaxFailures = boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8);
-    const stateFingerprint = bounded(input.stateFingerprint, 256) ?? mechanicalStateFingerprint(options, terminalSuccessor ?? work, requirementId, relayScopeId);
-    const bindingId = bounded(input.bindingId, 500) ?? existing.value.bindingId;
     const handoffId = bounded(input.handoffId, 200);
+    const stateFingerprint = bounded(input.stateFingerprint, 256)
+      ?? mechanicalStateFingerprint(options, terminalSuccessor ?? work, requirementId, relayScopeId, handoffId ?? existing.value.handoffId);
+    const bindingId = bounded(input.bindingId, 500) ?? existing.value.bindingId;
     if (input.disposition === 'wait_for_user') {
       if (!handoffId) throw new Error('CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED');
       const handoff = getHandoffItem(options, handoffId);
@@ -817,7 +827,7 @@ export function beginControllerRoundRelayAfterRelease(
         throw new Error(`CONTROLLER_RELAY_SUCCESSOR_PREDECESSOR_NOT_COMPLETED: ${input.workId}:${predecessor?.status ?? 'missing'}`);
       }
       const successor = assertControllerRoundSuccessorLineage(options, predecessor, record.successorWorkId);
-      const successorStateFingerprint = mechanicalStateFingerprint(options, successor, record.requirementId, record.relayScopeId);
+      const successorStateFingerprint = mechanicalStateFingerprint(options, successor, record.requirementId, record.relayScopeId, record.handoffId);
       return withControlPlaneTransaction(options.controllerHome, (database) => {
         const predecessorRelay = readControlPlaneRecordWithinTransaction<ControllerRoundRelayRecord>(
           database, NAMESPACE, options.repoId, input.workId,
@@ -1025,7 +1035,7 @@ export function acknowledgeControllerRoundClaim(
     if (blocker === 'repeated_state') {
       const work = getWorkContract(options, input.workId);
       if (!work || isTerminalWorkContractStatus(work.status)) return current.value;
-      const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId);
+      const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId, current.value.handoffId);
       const transitioned = applyControllerRoundTransition(options, current, {
         type: 'semantic_state_changed', at, stateFingerprint, session, principalId: ownerPrincipal!, controllerInstanceId,
       });
@@ -1226,7 +1236,7 @@ export function claimStalledControllerRoundRelays(
     if (repeatedStateBlocked) {
       const fingerprintWork = activeCandidateWorks[0] ?? getWorkContract(options, candidate.originWorkId);
       const currentFingerprint = fingerprintWork
-        ? mechanicalStateFingerprint(options, fingerprintWork, candidate.requirementId, candidate.relayScopeId)
+        ? mechanicalStateFingerprint(options, fingerprintWork, candidate.requirementId, candidate.relayScopeId, candidate.handoffId)
         : candidate.stateFingerprint;
       if (currentFingerprint === candidate.stateFingerprint) continue;
     }
@@ -1255,7 +1265,7 @@ export function claimStalledControllerRoundRelays(
       if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;
       const fingerprintWork = activeWorks[0] ?? getWorkContract(options, latest.originWorkId);
       const stateFingerprint = fingerprintWork
-        ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId)
+        ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId, latest.handoffId)
         : latest.stateFingerprint;
       const at = new Date(nowMs).toISOString();
       const lastError = latestRepeatedStateBlocked
@@ -1328,10 +1338,7 @@ export function readControllerRoundContextSnapshot(
   const requirement = requirementForRelay(options, record.requirementId);
   const relevantWorks = relevantWork(options, record);
   const works = relevantWorks.slice(0, 8);
-  const workIds = new Set(relevantWorks.map((work) => work.workId));
-  const handoffs = listHandoffItems({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
-    .filter((handoff) => !handoff.workId || workIds.has(handoff.workId))
-    .slice(0, 8);
+  const handoffs = relevantHandoffs(options, relevantWorks, record.handoffId).slice(0, 8);
   return {
     repoId: record.repoId,
     relayScopeId: record.relayScopeId,
