@@ -768,6 +768,42 @@ export function submitControllerRoundDisposition(
   });
 }
 
+/**
+ * Observe that the exact provider Controller turn has settled. If the Work is
+ * still nonterminal and the Controller did not explicitly close the round,
+ * canonical Kernel policy creates the continuation obligation. Provider
+ * adapters supply only completion evidence; they do not choose the disposition.
+ */
+export function settleControllerRoundAfterTurn(
+  options: ControllerRoundRelayStoreOptions,
+  input: { workId: string; completionEvidenceId: string },
+): ControllerRoundRelayRecord | undefined {
+  const initial = readRelayRecord(options, input.workId);
+  if (!initial) return undefined;
+  return relayLock(options, initial.value.relayScopeId, `controller-turn-settled:${input.workId}`, () => {
+    const current = readRelayRecord(options, input.workId);
+    if (!current) return undefined;
+    const completionEvidenceId = bounded(input.completionEvidenceId, 500);
+    if (!completionEvidenceId) throw new Error('CONTROLLER_RELAY_TURN_COMPLETION_EVIDENCE_REQUIRED');
+    const work = getWorkContract(options, input.workId);
+    if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
+    const at = nowIso(options);
+    if (isTerminalWorkContractStatus(work.status)) {
+      return applyControllerRoundTransition(options, current, {
+        type: 'terminal_work_observed', at, error: `Controller turn settled after terminal Work ${work.status}`,
+      });
+    }
+    const blockingHandoff = relevantHandoffs(options, relevantWork(options, current.value), current.value.handoffId)
+      .find((handoff) => Boolean(handoff.blockingDecision?.trim())
+        && (handoff.workId === input.workId || handoff.id === current.value.handoffId));
+    const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId, current.value.handoffId);
+    return applyControllerRoundTransition(options, current, {
+      type: 'controller_turn_settled', at, stateFingerprint, completionEvidenceId,
+      ...(blockingHandoff ? { blockingHandoffId: blockingHandoff.id } : {}),
+    });
+  });
+}
+
 export function beginInitialControllerRoundDispatch(
   options: ControllerRoundRelayStoreOptions,
   input: BeginInitialControllerRoundDispatchInput,

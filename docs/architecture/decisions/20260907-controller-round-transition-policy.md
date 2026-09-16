@@ -294,3 +294,12 @@ Current outer composition demonstrates why this is necessary:
 ### Completion assertion
 
 A static regression should fail if Scheduler, Launcher, MCP compatibility or provider adapters acquire a new direct ControllerRound status/blocker mutation table or write ControllerRound relay records outside the canonical apply executor. This is an architecture boundary, not a code-style preference.
+
+
+## 2026-09-16 amendment: settled Controller turns cannot silently strand nonterminal Work
+
+User-free continuation is a P0 lifecycle invariant. A provider may submit a typed `controller_turn_settled` fact only after the exact assistant turn is observably complete; prompt submission itself is not completion evidence. The provider supplies bounded completion evidence, never a disposition.
+
+The canonical ControllerRound transition policy decides the consequence. If the current round is still `claimed`, its Work is nonterminal, and no explicit stop state exists, the policy records the existing `continue_immediately -> pending_release` lifecycle while preserving round/repeated/failure budgets. If an active control-plane Handoff proves a user decision is required, the same policy closes as `wait_for_user`. If `wait`, `wait_for_user`, `goal_complete`, `blocked`, `failed`, or another already-closed state won the race first, settled-turn replay is idempotent and changes nothing. Terminal Work is retired through the existing terminal-work transition.
+
+This amendment does not create a second Scheduler or semantic Controller. It changes the default for one previously ambiguous state only: **a completed Controller turn may not leave a still-running Work silently claimed merely because the model failed to call the explicit continue helper.** The provider-specific observation and same-conversation dispatch mechanics remain adapter responsibilities, while all durable lifecycle mutation continues through this provider-neutral policy.

@@ -61,6 +61,9 @@ export interface ControllerRoundRelayRecord {
   qualityAdjustmentResults?: ExecutionQualityAdjustmentResult[];
   /** Exact bounded assistant context identity delivered for the currently claimed round. */
   assistantContextSnapshot?: AssistantContextSnapshot;
+  /** Provider-neutral evidence that the exact Controller turn visibly settled. Never a semantic disposition by itself. */
+  controllerTurnCompletionEvidenceId?: string;
+  controllerTurnSettledAt?: string;
   roundCount: number;
   repeatedStateCount: number;
   consecutiveFailures: number;

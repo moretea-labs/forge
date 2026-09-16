@@ -31,6 +31,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'provider_dispatch_outcome_unknown'; at: string; error: string; providerDispatchEffectId: string }
   | { type: 'provider_user_action_required'; at: string; error: string; handoffId: string }
   | { type: 'controller_claim_observed'; at: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
+  | { type: 'controller_turn_settled'; at: string; stateFingerprint: string; completionEvidenceId: string; blockingHandoffId?: string }
   | { type: 'semantic_state_changed'; at: string; stateFingerprint: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
   | { type: 'stalled_round_observed'; at: string; stateFingerprint: string; proposedAuthorityId: string; lastError?: string }
   | { type: 'provider_environment_recovered'; at: string; evidenceId: string }
@@ -198,6 +199,40 @@ export function decideControllerRoundTransition(
       if (!['dispatching', 'dispatched'].includes(current.status)) return { kind: 'reject', code: `CONTROLLER_RELAY_CLAIM_STATE_INVALID:${current.status}` };
       return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, claimedAt: event.at, updatedAt: event.at, failureClass: undefined, lastError: undefined }, 'controller_round_relay_claim_acknowledged');
     }
+    case 'controller_turn_settled': {
+      if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (current.status !== 'claimed') {
+        if (['pending_release', 'waiting', 'waiting_for_user', 'goal_complete', 'handed_off', 'blocked', 'failed'].includes(current.status)) {
+          return { kind: 'no_op', current, reason: `controller_turn_already_closed:${current.status}` };
+        }
+        return { kind: 'reject', code: `CONTROLLER_RELAY_TURN_SETTLED_STATE_INVALID:${current.status}` };
+      }
+      const completionEvidenceId = event.completionEvidenceId.trim();
+      if (!completionEvidenceId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_TURN_COMPLETION_EVIDENCE_REQUIRED' };
+      const blockingHandoffId = event.blockingHandoffId?.trim();
+      if (blockingHandoffId) {
+        return accept(current, {
+          disposition: 'wait_for_user', status: 'waiting_for_user', lifecycleStage: 'semantic_round_closed',
+          stateFingerprint: event.stateFingerprint, handoffId: blockingHandoffId,
+          controllerTurnCompletionEvidenceId: completionEvidenceId, controllerTurnSettledAt: event.at,
+          reason: current.reason ?? 'controller_turn_settled_with_blocking_handoff',
+          submittedAt: event.at, updatedAt: event.at,
+        }, 'controller_round_turn_settled_wait_for_user');
+      }
+      const roundCount = current.roundCount + 1;
+      const repeatedStateCount = current.stateFingerprint === event.stateFingerprint ? current.repeatedStateCount + 1 : 0;
+      let blockedReason: string | undefined;
+      if (roundCount > current.maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${current.maxRounds}`;
+      else if (repeatedStateCount >= current.maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${current.maxRepeatedState}`;
+      else if (current.consecutiveFailures >= current.maxFailures) blockedReason = `consecutive_failures:${current.consecutiveFailures}>=${current.maxFailures}`;
+      return accept(current, {
+        disposition: 'continue_immediately', status: blockedReason ? 'blocked' : 'pending_release', lifecycleStage: 'semantic_round_closed',
+        stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, blockedReason,
+        controllerTurnCompletionEvidenceId: completionEvidenceId, controllerTurnSettledAt: event.at,
+        reason: current.reason ?? 'controller_turn_settled_nonterminal_work',
+        submittedAt: event.at, updatedAt: event.at,
+      }, blockedReason ? 'controller_round_turn_settled_blocked' : 'controller_round_turn_settled_autocontinue');
+    }
     case 'semantic_state_changed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (controllerRoundBlockerClass(current) !== 'repeated_state') return { kind: 'reject', code: 'CONTROLLER_RELAY_SEMANTIC_PROGRESS_BLOCKER_MISMATCH' };
@@ -219,7 +254,7 @@ export function decideControllerRoundTransition(
       else if (repeatedStateCount >= current.maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${current.maxRepeatedState}`;
       if (blockedReason) return accept(current, { status: 'blocked', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, blockedReason, updatedAt: event.at }, 'controller_round_relay_stalled_blocked');
       const authorityId = current.status === 'dispatching' && current.authorityId ? current.authorityId : event.proposedAuthorityId;
-      return accept(current, { authorityId, status: 'dispatching', lifecycleStage: 'dispatching', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, failureClass: undefined, lastError: blocker === 'repeated_state' ? undefined : event.lastError, reason: blocker === 'repeated_state' ? 'semantic_state_changed_after_repeated_state_block' : current.reason, nextRecoveryAt: undefined, claimedAt: undefined, blockedReason: undefined, updatedAt: event.at }, 'controller_round_relay_stalled_recovery_begin');
+      return accept(current, { authorityId, status: 'dispatching', lifecycleStage: 'dispatching', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, failureClass: undefined, lastError: blocker === 'repeated_state' ? undefined : event.lastError, reason: blocker === 'repeated_state' ? 'semantic_state_changed_after_repeated_state_block' : current.reason, nextRecoveryAt: undefined, claimedAt: undefined, blockedReason: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined, updatedAt: event.at }, 'controller_round_relay_stalled_recovery_begin');
     }
     case 'semantic_disposition_submitted': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
@@ -281,7 +316,7 @@ export function decideControllerRoundTransition(
         ...current, originWorkId: event.successorWorkId, predecessorWorkId: current.originWorkId, successorWorkId: undefined,
         status: 'dispatching', lifecycleStage: 'dispatching', authorityId: event.proposedAuthorityId,
         stateFingerprint: event.successorStateFingerprint, repeatedStateCount: 0, controllerInstanceId: '', sessionId: '', claimGeneration: 0,
-        assistantContextSnapshot: undefined,
+        assistantContextSnapshot: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined,
         bindingId: undefined, providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
         blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined, dispatchedAt: undefined, claimedAt: undefined, updatedAt: event.at,
       };
@@ -290,7 +325,7 @@ export function decideControllerRoundTransition(
     case 'controller_release_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status !== 'pending_release') return { kind: 'no_op', current, reason: 'release_not_pending' };
-      return accept(current, { authorityId: event.proposedAuthorityId, status: 'dispatching', lifecycleStage: 'dispatching', assistantContextSnapshot: undefined, updatedAt: event.at }, 'controller_round_relay_dispatch_begin');
+      return accept(current, { authorityId: event.proposedAuthorityId, status: 'dispatching', lifecycleStage: 'dispatching', assistantContextSnapshot: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined, updatedAt: event.at }, 'controller_round_relay_dispatch_begin');
     }
     case 'terminal_work_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };

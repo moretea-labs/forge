@@ -18,6 +18,7 @@ export {
   reconcileControllerRoundAfterTerminalWork,
   recoverControllerRoundRelayAuthority,
   resolveRequirementControllerRoundRelayForWork,
+  settleControllerRoundAfterTurn,
   submitControllerRoundDisposition,
   type BeginInitialControllerRoundDispatchInput,
   type BindLegacyControllerRoundOccurrenceInput,

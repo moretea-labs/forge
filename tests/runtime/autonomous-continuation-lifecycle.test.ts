@@ -15,6 +15,7 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   reconcileControllerRoundAfterAbandonedRelease,
+  settleControllerRoundAfterTurn,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
@@ -27,6 +28,7 @@ import { implementationReviewChangedPathDigest } from '../../src/runtime/control
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import { launchSuperController } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 
 const roots: string[] = [];
 const launchedPids: number[] = [];
@@ -83,6 +85,82 @@ function mcpContext(
 }
 
 describe('autonomous continuation lifecycle', () => {
+  test('a settled Controller turn defaults a nonterminal Work to exactly one continuation obligation without user input', () => {
+    const root = temp('forge-autonomous-turn-settled-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-turn-settled' });
+    const store = { controllerHome, repoId: repository.repoId };
+
+    const openClaimed = (workId: string) => {
+      createWorkContract(store, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+        objective: `Autonomously continue ${workId} without a user continue message.`,
+        acceptanceCriteria: ['the settled Controller turn either continues automatically or stops only on explicit blocking state'],
+        allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt', status: 'running',
+      });
+      const identity = {
+        controllerId: `chatgpt-${workId}`, controllerType: 'chatgpt' as const, principalId: `chatgpt-${workId}`,
+        controllerInstanceId: 'runtime-turn-settled', sessionId: `session-${workId}`,
+      };
+      beginInitialControllerRoundDispatch(store, { workId, identity });
+      finishControllerRoundRelayDispatch(store, { workId, ok: true });
+      const owner = claimControllerSession(store, { ...identity, workId, leaseMs: 60_000 });
+      const claimed = acknowledgeControllerRoundClaim(store, { workId, session: owner });
+      expect(claimed?.status).toBe('claimed');
+      return { owner, claimed: claimed! };
+    };
+
+    const automaticWorkId = 'WORK-AUTONOMOUS-TURN-SETTLED';
+    const automatic = openClaimed(automaticWorkId);
+    const settled = settleControllerRoundAfterTurn(store, { workId: automaticWorkId, completionEvidenceId: 'assistant-turn:1:settled' });
+    expect(settled).toMatchObject({
+      status: 'pending_release', disposition: 'continue_immediately', lifecycleStage: 'semantic_round_closed',
+      roundCount: automatic.claimed.roundCount + 1, controllerTurnCompletionEvidenceId: 'assistant-turn:1:settled',
+    });
+    const replay = settleControllerRoundAfterTurn(store, { workId: automaticWorkId, completionEvidenceId: 'assistant-turn:1:settled' });
+    expect(replay).toMatchObject({ status: 'pending_release', roundCount: settled!.roundCount });
+    releaseControllerSession(store, automaticWorkId, automatic.owner.controllerId);
+    expect(beginControllerRoundRelayAfterRelease(store, { workId: automaticWorkId, releasedSession: automatic.owner })).toMatchObject({
+      status: 'dispatching', controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined,
+    });
+
+    const explicitWaitWorkId = 'WORK-AUTONOMOUS-TURN-EXPLICIT-WAIT';
+    const explicitWait = openClaimed(explicitWaitWorkId);
+    const waited = submitControllerRoundDisposition(store, {
+      workId: explicitWaitWorkId,
+      identity: {
+        controllerId: explicitWait.owner.controllerId, controllerType: 'chatgpt',
+        principalId: explicitWait.owner.principalId!, controllerInstanceId: explicitWait.owner.controllerInstanceId!,
+        sessionId: explicitWait.owner.sessionId,
+      },
+      disposition: 'wait', relayScopeId: explicitWait.claimed.relayScopeId,
+    });
+    expect(waited.status).toBe('waiting');
+    expect(settleControllerRoundAfterTurn(store, { workId: explicitWaitWorkId, completionEvidenceId: 'assistant-turn:wait:settled' }))
+      .toMatchObject({ status: 'waiting', disposition: 'wait', roundCount: waited.roundCount });
+
+    const blockedWorkId = 'WORK-AUTONOMOUS-TURN-BLOCKED';
+    openClaimed(blockedWorkId);
+    createHandoffItem(store, {
+      id: 'handoff-autonomous-user-action', repoId: repository.repoId, workId: blockedWorkId,
+      title: 'User decision required', severity: 'blocked', reason: 'A user-owned approval decision is required.',
+      creationReason: 'policy_approval_required', summary: 'Do not autonomously continue through the approval boundary.',
+      currentState: { repoId: repository.repoId, workId: blockedWorkId, statusSummary: 'approval required' },
+      evidenceRefs: [], blockingDecision: 'Approve or reject the requested action.',
+      recommendedDecision: 'Wait for the user decision.', recommendedPrompt: 'Review the pending approval.',
+      suggestedNextActions: [],
+    });
+    expect(settleControllerRoundAfterTurn(store, { workId: blockedWorkId, completionEvidenceId: 'assistant-turn:block:settled' })).toMatchObject({
+      status: 'waiting_for_user', disposition: 'wait_for_user', handoffId: 'handoff-autonomous-user-action',
+      controllerTurnCompletionEvidenceId: 'assistant-turn:block:settled',
+    });
+  });
+
   test('a dispatched ChatGPT relay reclaims a stale prior controller without weakening ordinary ownership fencing', async () => {
     const root = temp('forge-autonomous-stale-owner-recovery-');
     const controllerHome = join(root, 'controller');
