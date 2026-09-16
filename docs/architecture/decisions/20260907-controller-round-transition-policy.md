@@ -210,13 +210,15 @@ The implementation step must add focused failures at least at:
 
 Assertions must cover status, lifecycleStage, `roundCount`, `repeatedStateCount`, provider-failure epoch/history, `authorityId`, `claimGeneration`, provider dispatch/effect receipt identity, duplicate-effect count and durable revision/CAS behavior.
 
-## Real Supervisor acceptance sequence
+## ControllerRound validation Supervisor Work acceptance sequence
 
-Production validation uses the existing Supervisor lineage. It may not manufacture a new Work/Requirement/relay to make the test pass.
+Here, “Supervisor” is the historical name of the existing long-lived **ControllerRound validation Work lineage**. It is not the cross-assistant-turn Workflow Supervisor defined by `20260916-workflow-supervisor-authority.md` and owns no outer WorkflowRun scheduling authority.
+
+Production validation uses that existing ControllerRound validation Work lineage. It may not manufacture a new Work/Requirement/relay to make the test pass.
 
 1. Build and activate one exact candidate Runtime containing the transition policy.
 2. Verify required provider/plugin capability on that installed Runtime before relay mutation.
-3. Re-read the exact existing Supervisor Work, Requirement, relay scope, authority, blocked class, budgets and current record revision.
+3. Re-read the exact existing ControllerRound validation Supervisor Work, Requirement, relay scope, authority, blocked class, budgets and current record revision.
 4. Submit verified provider/environment recovery evidence for the existing `consecutive_failures` block.
 5. Prove the same semantic round is rearmed without changing `roundCount`, `repeatedStateCount`, relay scope or per-round authority, and without erasing historical failure evidence.
 6. Prove provider dispatch occurs at most once and exact Controller claim succeeds.
@@ -252,7 +254,7 @@ Do not:
 - treat Browser/ChatGPT registration as Kernel-specific lifecycle logic,
 - infer successful dispatch from a transport session id,
 - reopen semantic terminal states from stalled recovery,
-- create another Supervisor/relay to avoid the blocked lineage, or
+- create another ControllerRound validation Supervisor Work/relay to avoid the blocked lineage, or
 - keep parallel mutation tables in Scheduler/Launcher/MCP while claiming a central policy exists.
 
 This ADR is the acceptance authority for the r3 ControllerRound recovery-convergence implementation.
@@ -295,6 +297,10 @@ Current outer composition demonstrates why this is necessary:
 
 A static regression should fail if Scheduler, Launcher, MCP compatibility or provider adapters acquire a new direct ControllerRound status/blocker mutation table or write ControllerRound relay records outside the canonical apply executor. This is an architecture boundary, not a code-style preference.
 
+
+## Workflow Supervisor boundary clarification
+
+ControllerRound transition authority remains lower-layer execution authority. Any provider-observed `controller_turn_settled` event in this ADR is a mechanical liveness fallback for an exact claimed round. It must not be reused as the outer Workflow Supervisor's assistant-message commit event or next-turn scheduling authority. The latter requires the completed `FORGE_WORKFLOW_SUPERVISOR_V1` block, exact END marker, conversation identity and causal submission-effect evidence defined in [`20260916-workflow-supervisor-authority.md`](20260916-workflow-supervisor-authority.md).
 
 ## 2026-09-16 amendment: settled Controller turns cannot silently strand nonterminal Work
 

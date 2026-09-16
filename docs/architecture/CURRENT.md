@@ -6,14 +6,17 @@ This file is the sole maintained architecture authority for the current Forge ru
 
 ## Product model
 
-Forge is an executable AI harness for a semantic controller. The controller owns requirement interpretation, repository understanding, implementation decisions, review, and the decision to keep exploring. Forge supplies fast context retrieval, deterministic local execution, provider actions, bounded verification, evidence, and optional durable continuity. Forge verification and evidence are factual inputs, not semantic acceptance rules: only the semantic Controller decides whether acceptance criteria are satisfied, whether another round is needed, or whether a Goal is complete.
+Forge is an executable AI harness for a semantic controller. The controller owns requirement interpretation, repository understanding, implementation decisions and review. Forge supplies fast context retrieval, deterministic local execution, provider actions, bounded verification, evidence, and durable lower-layer continuity. Forge verification and evidence are factual inputs, not semantic acceptance rules.
+
+Long-running autonomous operation adds one higher lifecycle authority: **Workflow Supervisor** owns cross-assistant-turn scheduling for an original Goal after the current ChatGPT/MCP call stack has ended. ChatGPT still owns semantic reasoning and emits a bounded `CONTINUE | DONE | NEEDS_USER` proposal; `DONE` and `NEEDS_USER` become terminal only after the configured completion/blocker contracts validate authoritative evidence. Work, ControllerRound, Scheduler and MCP/session recovery remain lower-layer authorities and must not impersonate this outer turn scheduler. See [Workflow Supervisor authority](decisions/20260916-workflow-supervisor-authority.md).
 
 ```text
-Semantic Controller
-  -> Context Engine
-  -> Thin Execution Harness
+Original Goal / logical WorkflowRun
+  -> Workflow Supervisor (cross-turn durable authority)
+  -> Semantic Controller / ChatGPT turn
+  -> Context + Thin Execution Harness / Forge Work
   -> Verification / Evidence
-  -> Optional Durable Workflow / External Effect boundary
+  -> Provider / External Effect boundary
 ```
 
 Quality is prioritized over interactive performance; performance is prioritized over durability machinery that does not materially improve ordinary coding.
@@ -107,9 +110,9 @@ For material high/critical mutation, Runtime composition accepts semantic precon
 
 Independent critique is bound to the fresh Requirement digest, current-source Context Closure, Project Contract digest, Product DoD and exact Design receipt and only an `approved` critique satisfies high/critical admission. A same-root-cause blocker always persists `return_to_design`; when the Work already has a formal Design receipt, it marks that design `revisit_required` and mutation cannot resume until a new design explicitly supersedes the prior receipt and receives an independently `approved` critique. Observe-only low/normal Work with no prior Design receipt records the blocker without fabricating an impossible supersession authority or `revisit_required` state; it remains governed by its existing risk profile. An unrelated blocker deterministically creates or reuses one parallel investigation Work, persists its exact `linkedWorkId` in the `linked_work` disposition, and does not widen the current Work semantic scope. These receipts live inside existing Work authority; they do not create another persistence writer, lease, scheduler or lifecycle.
 
-### Persistent autonomous continuation
+### Lower-layer scheduled Controller continuation
 
-A scheduled unattended workflow follows one durable **Requirement/Plan/Step/Work/ControllerRound semantic lineage**. Provider conversations, browser tabs, ControllerSession transport ids, and schedule occurrences are replaceable delivery or wake state; none of them is the durable goal identity. The authorities compose into one lifecycle:
+This section describes the durable **Requirement/Plan/Step/Work/ControllerRound execution lineage**, not the upper cross-assistant-turn Workflow Supervisor. Provider conversations, browser tabs, ControllerSession transport ids, and schedule occurrences are replaceable delivery or wake state; none of them is the outer WorkflowRun scheduling authority. The lower-layer authorities compose as follows:
 
 1. A Schedule occurrence mechanically selects an already-bound active Work and requests `external_controller_wake`; it never invents semantic work. The occurrence fences replay of that wake, not the goal itself.
 2. Scheduler resolves the Work-scoped durable `ControllerBinding` (interaction target) and the currently retained Controller delivery session. A changed MCP/provider session updates delivery binding without changing Work, binding, Requirement, Plan, or ControllerRound identity.
@@ -118,7 +121,7 @@ A scheduled unattended workflow follows one durable **Requirement/Plan/Step/Work
 5. The Controller performs semantic reasoning while Forge performs deterministic context, edit, process, provider, verification, and finalize operations. Forge may automatically execute explicitly requested checks or lifecycle mechanics, but it never infers that acceptance is satisfied.
 6. Before a Controller round ends, the Controller records exactly one semantic disposition: `continue_immediately`, `wait`, `wait_for_user` with an active Handoff, or `goal_complete`. ControllerRound authority and claim generation fence this transition independently of transport replacement.
 7. Round-owned delivery resources are cleaned only after the round reaches its settlement boundary. User-owned browser tabs are preserved; Forge-owned ephemeral tabs or provider sessions may be replaced without losing durable continuation authority.
-8. `wait` keeps the semantic goal resumable but quiescent. Scheduler computes the current ControllerRound semantic fingerprint from stable Requirement revision/state, Work lifecycle/evidence facts, and active Handoff semantics; persistence timestamps and record ordering are excluded. Interval/manual wakes with an unchanged fingerprint are recorded as `semantic_wait` and stop before provider dispatch. One meaningful semantic change may admit one successor round for the exact active Work. When the previous Work is terminal, only semantic Controller admission may create a successor Work; Scheduler never invents one. The successor records `predecessorWorkId` and preserves Requirement/Plan lineage. One already-approved dependency-satisfied next Plan step may be mechanically resolved, but multiple executable successors require an explicit Controller choice. `goal_complete` terminates the semantic goal and its continuation lane without creating another Work.
+8. `wait` keeps the lower Controller semantic lane resumable but quiescent. Scheduler computes the current ControllerRound semantic fingerprint from stable Requirement revision/state, Work lifecycle/evidence facts, and active Handoff semantics; persistence timestamps and record ordering are excluded. Interval/manual wakes with an unchanged fingerprint are recorded as `semantic_wait` and stop before provider dispatch. One meaningful semantic change may admit one successor round for the exact active Work. When the previous Work is terminal, only semantic Controller admission may create a successor Work; Scheduler never invents one. The successor records `predecessorWorkId` and preserves Requirement/Plan lineage. One already-approved dependency-satisfied next Plan step may be mechanically resolved, but multiple executable successors require an explicit Controller choice. `goal_complete` closes this lower Controller continuation lane; it is not, by itself, an outer Workflow Supervisor `DONE`, which still requires the configured completion contract and authoritative Goal evidence.
 
 `ControllerHost` is the provider-neutral delivery port. ChatGPT Browser and Windows/WSL bridge implementations live in `adapters/chatgpt` behind one delivery contract; they own provider navigation/mutation/confirmation but never Work or ControllerRound semantics. Provider-specific prompt rendering may treat instructions explicitly scoped to a different Controller host/runtime as non-gating for the current host, but it must preserve the underlying repository engineering, acceptance, safety, permission, and authority constraints. The owning `ControllerRound` is the sole durable provider-dispatch receipt authority. Schedule occurrences may project the same dispatch receipt id for replay/debug evidence, while Browser/tab settlement records are resource-cleanup evidence only and cannot overrule the ControllerRound dispatch outcome.
 
