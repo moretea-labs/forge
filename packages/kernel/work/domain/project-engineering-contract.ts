@@ -22,6 +22,12 @@ export interface ProjectEngineeringContractToolingRequirement {
   requiredFor?: EngineeringRiskClass[];
 }
 
+export interface ProjectEngineeringContractSkillBinding {
+  id: string;
+  version?: string;
+  kinds: string[];
+}
+
 export interface ProjectEngineeringContractException {
   id: string;
   scope: string;
@@ -87,6 +93,7 @@ export interface ProjectEngineeringContract {
   platforms?: string[];
   tooling?: ProjectEngineeringContractToolingRequirement[];
   skillRefs?: string[];
+  skillBindings?: ProjectEngineeringContractSkillBinding[];
   exceptions?: ProjectEngineeringContractException[];
   knowledgeSources?: ProjectKnowledgeSource[];
 }
@@ -167,12 +174,26 @@ export function validateProjectEngineeringContract(value: unknown): ProjectEngin
     ...(item.purpose === undefined ? {} : { purpose: text(item.purpose, 'PROJECT_ENGINEERING_CONTRACT_TOOLING_PURPOSE_INVALID') }),
     ...(item.requiredFor === undefined ? {} : { requiredFor: riskClasses(item.requiredFor, 'PROJECT_ENGINEERING_CONTRACT_TOOLING_RISK_INVALID') }),
   }));
+  const skillBindings = root.skillBindings === undefined
+    ? []
+    : objectList(root.skillBindings, 'PROJECT_ENGINEERING_CONTRACT_SKILL_BINDINGS_INVALID').map((item) => {
+      const kinds = stringList(item.kinds, 'PROJECT_ENGINEERING_CONTRACT_SKILL_KINDS_INVALID')
+        .map((kind) => kind.toLowerCase());
+      if (kinds.length === 0 || new Set(kinds).size !== kinds.length) {
+        throw new Error('PROJECT_ENGINEERING_CONTRACT_SKILL_KINDS_INVALID');
+      }
+      return {
+        id: text(item.id, 'PROJECT_ENGINEERING_CONTRACT_SKILL_BINDING_ID_INVALID'),
+        ...(item.version === undefined ? {} : { version: text(item.version, 'PROJECT_ENGINEERING_CONTRACT_SKILL_BINDING_VERSION_INVALID') }),
+        kinds,
+      };
+    });
   const exceptions = root.exceptions === undefined ? [] : objectList(root.exceptions, 'PROJECT_ENGINEERING_CONTRACT_EXCEPTIONS_INVALID').map((item) => ({
     id: text(item.id, 'PROJECT_ENGINEERING_CONTRACT_EXCEPTION_ID_INVALID'),
     scope: text(item.scope, 'PROJECT_ENGINEERING_CONTRACT_EXCEPTION_SCOPE_INVALID'),
     rationale: text(item.rationale, 'PROJECT_ENGINEERING_CONTRACT_EXCEPTION_RATIONALE_INVALID'),
   }));
-  for (const [kind, items] of [['check', checks], ['journey', journeys], ['tooling', tooling], ['exception', exceptions]] as const) {
+  for (const [kind, items] of [['check', checks], ['journey', journeys], ['tooling', tooling], ['skill_binding', skillBindings], ['exception', exceptions]] as const) {
     const ids = items.map((item) => item.id);
     if (new Set(ids).size !== ids.length) throw new Error(`PROJECT_ENGINEERING_CONTRACT_${kind.toUpperCase()}_ID_DUPLICATE`);
   }
@@ -196,6 +217,7 @@ export function validateProjectEngineeringContract(value: unknown): ProjectEngin
     platforms: stringList(root.platforms, 'PROJECT_ENGINEERING_CONTRACT_PLATFORMS_INVALID'),
     tooling,
     skillRefs: stringList(root.skillRefs, 'PROJECT_ENGINEERING_CONTRACT_SKILLS_INVALID'),
+    skillBindings,
     exceptions,
     ...(root.knowledgeSources === undefined ? {} : { knowledgeSources: validateProjectKnowledgeSources(root.knowledgeSources) }),
   };

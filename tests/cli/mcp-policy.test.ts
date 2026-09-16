@@ -30,6 +30,32 @@ describe('mcp policy and paths', () => {
     expect(normalizeMcpRelativePath('/tmp/outside').ok).toBe(false);
   });
 
+  test('controller can manage only the source-controlled project engineering contract under .forge', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-project-engineering-'));
+    try {
+      mkdirSync(join(tmp, '.forge'), { recursive: true });
+      writeFileSync(join(tmp, '.forge/mcp.policy.json'), '{}');
+      writeFileSync(join(tmp, '.forge/mcp.oauth.json'), '{"token":"secret"}');
+
+      const policy = getMcpPolicy('controller');
+      expect(resolveMcpPath(tmp, '.forge/project-engineering.json', policy, 'write')).toMatchObject({
+        ok: true,
+        relativePath: '.forge/project-engineering.json',
+      });
+      writeFileSync(join(tmp, '.forge/project-engineering.json'), '{}');
+      expect(resolveMcpPath(tmp, '.forge/project-engineering.json', policy, 'read')).toMatchObject({
+        ok: true,
+        relativePath: '.forge/project-engineering.json',
+      });
+      expect(resolveMcpPath(tmp, '.forge/mcp.policy.json', policy, 'read')).toMatchObject({ ok: false });
+      expect(resolveMcpPath(tmp, '.forge/mcp.policy.json', policy, 'write')).toMatchObject({ ok: false });
+      expect(resolveMcpPath(tmp, '.forge/mcp.oauth.json', policy, 'read')).toMatchObject({ ok: false });
+      expect(resolveMcpPath(tmp, '.forge/mcp.oauth.json', policy, 'write')).toMatchObject({ ok: false });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('planner profile permits workflow reads and blocks denied or source writes', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-policy-'));
     try {

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildContextClosureReceipt, validateRuntimeIssuedContextClosureReceipt } from '../../src/runtime/context/context-closure';
+import { validateProjectEngineeringContract } from '../../packages/kernel/work/domain/project-engineering-contract';
 
 const roots: string[] = [];
 function temp(prefix: string): string {
@@ -25,7 +26,13 @@ function pack(sourceRevision: string, files: string[], tests: string[] = []) {
   };
 }
 
-function projectContract(root: string, input: { projectId: string; platforms?: string[]; skillRefs: string[]; tooling?: Array<{ id: string; purpose?: string }> }) {
+function projectContract(root: string, input: {
+  projectId: string;
+  platforms?: string[];
+  skillRefs?: string[];
+  skillBindings?: Array<{ id: string; version?: string; kinds: string[] }>;
+  tooling?: Array<{ id: string; purpose?: string }>;
+}) {
   mkdirSync(join(root, '.forge'), { recursive: true });
   writeFileSync(join(root, '.forge/project-engineering.json'), JSON.stringify({
     schemaVersion: 1,
@@ -34,7 +41,8 @@ function projectContract(root: string, input: { projectId: string; platforms?: s
     projectId: input.projectId,
     authority: {}, quality: {}, checks: [], journeys: [],
     platforms: input.platforms ?? [],
-    skillRefs: input.skillRefs,
+    skillRefs: input.skillRefs ?? [],
+    skillBindings: input.skillBindings ?? [],
     tooling: input.tooling ?? [],
   }));
 }
@@ -69,7 +77,12 @@ describe('Context Closure', () => {
     mkdirSync(join(root, 'Example.xcodeproj'));
     mkdirSync(join(root, 'Sources'));
     writeFileSync(join(root, 'Sources/App.swift'), 'struct App {}');
-    projectContract(root, { projectId: 'ios-app', platforms: ['ios'], skillRefs: ['ios-engineering@1', 'swift-engineering@3'], tooling: [{ id: 'sourcekit-lsp' }] });
+    projectContract(root, {
+      projectId: 'ios-app',
+      platforms: ['ios'],
+      skillBindings: [{ id: 'ios-engineering', version: '1', kinds: ['swift', 'ios'] }],
+      tooling: [{ id: 'sourcekit-lsp' }],
+    });
     const receipt = buildContextClosureReceipt({
       repoRoot: root,
       query: 'Change cross-file ownership safely',
@@ -80,10 +93,38 @@ describe('Context Closure', () => {
     expect(receipt.detected).toMatchObject({ languages: ['swift'] });
     expect(receipt.detected.platforms).toContain('ios');
     expect(receipt.skills.status).toBe('ready');
-    expect(receipt.skills.resolved.map((skill) => skill.id).sort()).toEqual(['ios-engineering', 'swift-engineering']);
+    expect(receipt.skills.unresolvedKinds).toEqual([]);
+    expect(receipt.skills.resolved).toEqual([
+      expect.objectContaining({ id: 'ios-engineering', version: '1', matchedKinds: ['ios', 'swift'] }),
+    ]);
     expect(receipt.semanticTools).toMatchObject({ required: true, status: 'degraded', compilerEvidenceRequired: true });
     expect(receipt.semanticTools.reasonCodes).toContain('semantic.navigation_not_requested');
     expect(receipt.readiness.status).toBe('degraded');
+  });
+
+  test('validates explicit project skill bindings as unambiguous kind authority', () => {
+    const base = {
+      schemaVersion: 1,
+      contractId: 'skill-binding-contract',
+      contractVersion: '1',
+      projectId: 'skill-binding-project',
+      authority: {}, quality: {}, checks: [], journeys: [],
+    };
+    expect(() => validateProjectEngineeringContract({
+      ...base,
+      skillBindings: [{ id: 'ios-engineering', kinds: [] }],
+    })).toThrow('PROJECT_ENGINEERING_CONTRACT_SKILL_KINDS_INVALID');
+    expect(() => validateProjectEngineeringContract({
+      ...base,
+      skillBindings: [
+        { id: 'ios-engineering', kinds: ['swift'] },
+        { id: 'ios-engineering', kinds: ['ios'] },
+      ],
+    })).toThrow('PROJECT_ENGINEERING_CONTRACT_SKILL_BINDING_ID_DUPLICATE');
+    expect(validateProjectEngineeringContract({
+      ...base,
+      skillBindings: [{ id: 'ios-engineering', kinds: ['Swift', 'IOS'] }],
+    }).skillBindings).toEqual([{ id: 'ios-engineering', kinds: ['swift', 'ios'] }]);
   });
 
   test('keeps missing project/skill facts explicit instead of inventing defaults', () => {

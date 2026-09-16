@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, realpathSync } from 'fs';
 import { dirname, isAbsolute, resolve, sep } from 'path';
+import { DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH } from '../../packages/kernel/work/api/index';
 import type { McpPathDecision, McpPathIntent, McpPolicy } from './types';
 
 function toPosixPath(value: string): string {
@@ -104,7 +105,9 @@ export function resolveMcpPath(
   if (!normalized.ok || !normalized.relativePath) return normalized;
 
   const relativePath = normalized.relativePath;
-  if (anyDenyGlobMatches(policy.denyGlobs, relativePath)) {
+  const isControllerProjectEngineeringContract = policy.profile === 'controller'
+    && relativePath === DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH;
+  if (!isControllerProjectEngineeringContract && anyDenyGlobMatches(policy.denyGlobs, relativePath)) {
     return { ok: false, relativePath, reason: `path is denied by MCP policy: ${relativePath}` };
   }
 
