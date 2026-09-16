@@ -42,6 +42,7 @@ import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workf
 import { applyRuntimeMaintenance, buildRecoveryAuditRecord, buildRuntimeMaintenanceStatus, writeRecoveryAuditRecord, type RecoveryActionDescriptor } from "../../../src/runtime/recovery";
 import { callStandaloneRecoveryTool } from "./recovery-client-adapter";
 import { callRhWorkControllerOperation } from './work-controller-operations';
+import { callRhWorkRequirementOperation } from './work-requirement-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
 import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, normalizeCheckIds, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, admitPlanContractAsync, approvePlanContractAsync, getPlanContract, listPlanContracts, resolvePlanAdmission, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, repairPlanStepForTechnicalRetry, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, supersedePlanContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
@@ -49,7 +50,6 @@ import { getWorkContract, listWorkContracts, type WorkContract } from "../../../
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
 import { readRequirement } from "../../../src/runtime/control-plane/persistence/requirement-store";
-import { admitRequirement, continueRequirement } from "../../../src/runtime/control-plane/facade/requirement-authority";
 import { ensureManagedWorkspace } from "../../../src/runtime/execution/managed-workspace";
 import { materializeRepositoryWorkPlacement } from "../../../src/runtime/control-plane/facade/repository-work-admission";
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from "../../../src/runtime/control-plane/execution/retained-work-resume";
@@ -1109,6 +1109,11 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
   
           const controllerOperationResult = await callRhWorkControllerOperation(ctx, repository, operation, args);
           if (controllerOperationResult) return controllerOperationResult;
+          const requirementOperationArgs = frozenSemanticOperation?.operation === 'requirement_create'
+            ? { ...args, ...frozenSemanticOperation.args }
+            : args;
+          const requirementOperationResult = await callRhWorkRequirementOperation(ctx, operation, requirementOperationArgs);
+          if (requirementOperationResult) return requirementOperationResult;
           if (operation === 'plan_list') {
             const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
             const facade = buildFacadeResult({
@@ -1157,87 +1162,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               return { checkoutId: workspace.checkoutId, root: workspace.root, baseRevision: workspace.baseRevision, managed: true as const };
             },
           };
-  
-          if (operation === 'requirement_continue') {
-            const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
-            if (!requirementId) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: 'REQUIREMENT_CONTINUE_INPUT_REQUIRED: requirement_id is required.',
-                data: { requirementResumed: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            try {
-              const continued = continueRequirement({ controllerHome: ctx.controllerHome }, requirementId);
-              return result(buildFacadeResult({
-                summary: continued.resumed
-                  ? `Requirement ${continued.requirement.requirementId} resumed from waiting_for_user to active by explicit semantic continue.`
-                  : `REQUIREMENT_ALREADY_ACTIVE: ${continued.requirement.requirementId}. Explicit continue is idempotent.`,
-                data: {
-                  requirement: continued.requirement,
-                  requirementResumed: continued.resumed,
-                  semanticDecision: 'continue',
-                },
-                suggestedNextActions: [],
-              }) as unknown as Record<string, unknown>);
-            } catch (error) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : String(error),
-                data: { requirementResumed: false },
-                suggestedNextActions: [],
-              }) as unknown as Record<string, unknown>, true);
-            }
-          }
-  
-          if (operation === 'requirement_create') {
-            const compatibilityArgs = frozenSemanticOperation?.operation === 'requirement_create' ? frozenSemanticOperation.args : undefined;
-            const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id : '';
-            const title = compatibilityArgs?.requirement_title ?? (typeof args.requirement_title === 'string' ? args.requirement_title : '');
-            const outcomeStatement = compatibilityArgs?.requirement_outcome ?? (typeof args.requirement_outcome === 'string' ? args.requirement_outcome : '');
-            if (!requirementId.trim() || !title.trim() || !outcomeStatement.trim()) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: 'REQUIREMENT_CREATE_INPUT_REQUIRED: requirement_id, requirement_title, and requirement_outcome are required.',
-                data: { requirementCreated: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            let admission;
-            try {
-              admission = admitRequirement({ controllerHome: ctx.controllerHome }, {
-                requirementId,
-                title,
-                outcomeStatement,
-                acceptanceCriteria: compatibilityArgs?.requirement_acceptance_criteria
-                  ?? (Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : []),
-                requiredDeliveryReferences: compatibilityArgs?.requirement_delivery_references
-                  ?? (Array.isArray(args.requirement_delivery_references) ? args.requirement_delivery_references.map(String) : []),
-                legacyAliases: compatibilityArgs?.requirement_legacy_aliases
-                  ?? (Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : []),
-              });
-            } catch (error) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : String(error),
-                data: { requirementCreated: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            if (admission.decision === 'existing_conflict') {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: `REQUIREMENT_ALREADY_EXISTS_CONFLICT: ${admission.requirement.requirementId}. Existing Requirement authority was not changed.`,
-                data: { requirement: admission.requirement, requirementCreated: false, admissionDecision: admission.decision },
-                suggestedNextActions: [],
-              }) as unknown as Record<string, unknown>, true);
-            }
-            return result(buildFacadeResult({
-              summary: admission.decision === 'created'
-                ? `Requirement ${admission.requirement.requirementId} created. Requirement authority does not imply a Plan; Controller chooses the next action.`
-                : `REQUIREMENT_AUTHORITY_REUSED: ${admission.requirement.requirementId}. Requirement authority does not imply a Plan; Controller chooses the next action.`,
-              data: { requirement: admission.requirement, requirementCreated: admission.created, admissionDecision: admission.decision },
-              suggestedNextActions: [],
-            }) as unknown as Record<string, unknown>);
-          }
   
           if (operation.startsWith('plan_')) {
             try {

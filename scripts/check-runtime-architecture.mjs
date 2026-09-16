@@ -264,6 +264,11 @@ requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'ass
 requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'export async function callRhWorkControllerOperation');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkControllerOperation(ctx, repository, operation, args)');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:controller_get_owner|controller_claim|controller_disposition|controller_release|launcher_start)['"]/, 'rh_work compatibility adapter must delegate ControllerRound/Launcher operation orchestration to work-controller-operations');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'export async function callRhWorkRequirementOperation');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'admitRequirement');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'continueRequirement');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, operation, requirementOperationArgs)');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
