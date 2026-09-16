@@ -43,14 +43,13 @@ import { applyRuntimeMaintenance, buildRecoveryAuditRecord, buildRuntimeMaintena
 import { callStandaloneRecoveryTool } from "./recovery-client-adapter";
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation } from './work-requirement-operations';
-import { callRhWorkPlanOperation } from './work-plan-operations';
+import { callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, normalizeCheckIds, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, admitPlanContractAsync, getPlanContract, listPlanContracts, resolvePlanAdmission, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, repairPlanStepForTechnicalRetry, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, getPlanContract, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, repairPlanStepForTechnicalRetry, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, listWorkContracts, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
-import { readRequirement } from "../../../src/runtime/control-plane/persistence/requirement-store";
 import { ensureManagedWorkspace } from "../../../src/runtime/execution/managed-workspace";
 import { materializeRepositoryWorkPlacement } from "../../../src/runtime/control-plane/facade/repository-work-admission";
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from "../../../src/runtime/control-plane/execution/retained-work-resume";
@@ -426,19 +425,6 @@ export async function finalizeFacadeWorkHandle(
     physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
   }
   return physical;
-}
-
-export function planObligationDispositionsFromArgs(value: unknown) {
-  if (!Array.isArray(value)) return undefined;
-  return value
-    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
-    .map((entry) => ({
-      predecessorPlanId: String(entry.predecessor_plan_id ?? ''),
-      obligationId: String(entry.obligation_id ?? ''),
-      disposition: String(entry.disposition ?? '') as 'keep' | 'change' | 'defer' | 'drop',
-      successorRefs: Array.isArray(entry.successor_refs) ? entry.successor_refs.map(String) : [],
-      rationale: typeof entry.rationale === 'string' ? entry.rationale : undefined,
-    }));
 }
 
 export function repositoryWorkHandleHasSourceDelta(
@@ -1151,165 +1137,15 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             },
           };
   
+          const planCreateOperationResult = await callRhWorkPlanCreateOperation(store, operation, args, {
+            controllerHome: ctx.controllerHome,
+            repoId: repository.repoId,
+            checks,
+          });
+          if (planCreateOperationResult) return planCreateOperationResult;
+
           if (operation.startsWith('plan_')) {
             try {
-              if (operation === 'plan_create') {
-                const rawSteps = Array.isArray(args.plan_steps) ? args.plan_steps : [];
-                const requestedPlanId = String(args.plan_id ?? '').trim();
-                const requestedRequirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
-                const requestedPlanRelation: 'extend' | 'parallel' | undefined = args.plan_relation === 'extend' || args.plan_relation === 'parallel'
-                  ? args.plan_relation
-                  : undefined;
-                const relatedPlanId = typeof args.related_plan_id === 'string' && args.related_plan_id.trim() ? args.related_plan_id.trim() : undefined;
-                if (requestedRequirementId && !readRequirement({ controllerHome: ctx.controllerHome }, requestedRequirementId)) {
-                  const facade = buildFacadeResult({
-                    status: 'failed',
-                    summary: `PLAN_REQUIREMENT_NOT_FOUND: ${requestedRequirementId}. Plan was not persisted; create or reconcile the Requirement authority first.`,
-                    data: { executionStarted: false, planContractCreated: false, admissionDecision: 'missing_requirement', requirementId: requestedRequirementId },
-                  });
-                  return result(facade as unknown as Record<string, unknown>, true);
-                }
-                const admissionInput = {
-                  requirementId: requestedRequirementId,
-                  scopeKey: String(args.scope_key ?? ''),
-                  planRelation: requestedPlanRelation,
-                  relatedPlanId,
-                };
-                const renderPlanAdmission = (admission: ReturnType<typeof resolvePlanAdmission>): CallToolResult | undefined => {
-                  if (admission.admissionDecision === 'create_new') return undefined;
-                  if (admission.reason === 'exact_scope_authority' && admission.plan) {
-                    const exactDraftRepair = admission.plan.status === 'draft' && requestedPlanId === admission.plan.planId;
-                    const facade = buildFacadeResult({
-                      summary: exactDraftRepair
-                        ? `PLAN_DRAFT_REPAIR_REQUIRED: draft Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; preserve that authority and amend it through rh_work repair.`
-                        : `PLAN_AUTHORITY_REUSED: active Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; no duplicate draft was created.`,
-                      data: {
-                        plan: summarizePlanContract(admission.plan),
-                        executionStarted: false,
-                        planContractCreated: false,
-                        admissionDecision: 'reuse_existing',
-                        resolutionRequired: false,
-                        ...(exactDraftRepair ? { repairRequired: true } : {}),
-                      },
-                      suggestedNextActions: exactDraftRepair
-                        ? [{
-                            label: 'Repair this exact draft Plan',
-                            tool: 'rh_work',
-                            operation: 'repair',
-                            payload: {
-                              plan_id: admission.plan.planId,
-                              repair_operation: 'repair',
-                              dry_run: false,
-                              scope_key: args.scope_key,
-                              source_revision: args.source_revision,
-                              objective: args.objective,
-                              plan_steps: args.plan_steps,
-                              non_goals: args.non_goals,
-                              assumptions: args.assumptions,
-                              resolved_decisions: args.resolved_decisions,
-                              stop_conditions: args.stop_conditions,
-                              replan_conditions: args.replan_conditions,
-                              integration_strategy: args.integration_strategy,
-                            },
-                            risk: 'workspace_write',
-                            confidence: 'high',
-                          }]
-                        : [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
-                    });
-                    return result(facade as unknown as Record<string, unknown>);
-                  }
-                  if (admission.reason === 'extension_target_required') {
-                    const facade = buildFacadeResult({
-                      summary: `PLAN_EXTENSION_TARGET_REQUIRED: select related_plan_id from the active Plan slices for Requirement ${requestedRequirementId}.`,
-                      data: { executionStarted: false, planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, candidates: admission.candidates.map(summarizePlanContract) },
-                    });
-                    return result(facade as unknown as Record<string, unknown>);
-                  }
-                  if (admission.reason === 'extend_existing' && admission.plan) {
-                    // plan_create + plan_relation=extend is a compatibility transport
-                    // for revising the explicitly related stable Plan identity. Preflight
-                    // must continue into atomic admission; no successor Plan is minted.
-                    return undefined;
-                  }
-                  throw new Error(`PLAN_ADMISSION_RESULT_INVALID: ${admission.admissionDecision}:${admission.reason}`);
-                };
-                const plans = listPlanContracts({ ...store, status: 'all', limit: 100 });
-                const preflightAdmission = resolvePlanAdmission(plans, admissionInput);
-                const preflightResult = renderPlanAdmission(preflightAdmission);
-                if (preflightResult) return preflightResult;
-                const requestedPlanCheckIds = rawSteps
-                  .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
-                  .flatMap((step) => Array.isArray(step.check_ids) ? step.check_ids.map(String) : []);
-                const normalizedPlanChecks = normalizeCheckIds(requestedPlanCheckIds, checks);
-                if (normalizedPlanChecks.invalidCheckIds.length > 0) {
-                  const facade = buildFacadeResult({
-                    status: 'failed',
-                    summary: `PLAN_CHECKS_INVALID: ${normalizedPlanChecks.invalidCheckIds.join(', ')}. Plan was not persisted; select replacement IDs from registeredCheckIds in this response, then request readiness only for the checks you choose.`,
-                    data: {
-                      executionStarted: false,
-                      planContractCreated: false,
-                      admissionDecision: 'invalid_checks',
-                      normalizedChecks: normalizedPlanChecks,
-                      registeredCheckIds: checks.map((check) => check.id).slice(0, 80),
-                    },
-                    suggestedNextActions: [],
-                  });
-                  return result(facade as unknown as Record<string, unknown>, true);
-                }
-                const admitted = await admitPlanContractAsync(store, {
-                  planId: String(args.plan_id ?? ''),
-                  repoId: repository.repoId,
-                  requirementId: requestedRequirementId,
-                  scopeKey: String(args.scope_key ?? ''),
-                  planRelation: requestedPlanRelation,
-                  relatedPlanId,
-                  sourceRevision: String(args.source_revision ?? ''),
-                  goal: String(args.objective ?? ''),
-                  nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : undefined,
-                  assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : undefined,
-                  resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : undefined,
-                  stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
-                  replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : undefined,
-                  integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : undefined,
-                  obligationDispositions: planObligationDispositionsFromArgs(args.obligation_dispositions),
-                  steps: rawSteps.filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step)).map((step) => ({
-                    id: String(step.id ?? ''),
-                    objective: String(step.objective ?? ''),
-                    dependencies: Array.isArray(step.dependencies) ? step.dependencies.map(String) : [],
-                    authoritativeFiles: Array.isArray(step.authoritative_files) ? step.authoritative_files.map(String) : [],
-                    allowedPaths: Array.isArray(step.allowed_paths) ? step.allowed_paths.map(String) : [],
-                    forbiddenPaths: Array.isArray(step.forbidden_paths) ? step.forbidden_paths.map(String) : [],
-                    checks: Array.isArray(step.check_ids) ? step.check_ids.map(String) : [],
-                    acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
-                  })),
-                });
-                if (admitted.reason === 'extend_existing' && admitted.plan) {
-                  const plan = admitted.plan;
-                  const requestedLabel = requestedPlanId && requestedPlanId !== plan.planId ? ` Requested compatibility plan_id ${requestedPlanId} was retained only as revision audit metadata.` : '';
-                  const facade = buildFacadeResult({
-                    summary: `PLAN_REVISION_REUSED_AUTHORITY: Plan ${plan.planId} was revised in place; no successor PlanContract was created.${requestedLabel}`,
-                    data: {
-                      plan: summarizePlanContract(plan),
-                      executionStarted: false,
-                      planContractCreated: false,
-                      admissionDecision: 'reuse_existing',
-                      resolutionRequired: false,
-                    },
-                    suggestedNextActions: [{ label: 'Approve revised Plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'high' }],
-                  });
-                  return result(facade as unknown as Record<string, unknown>);
-                }
-                const racedAdmissionResult = renderPlanAdmission(admitted);
-                if (racedAdmissionResult) return racedAdmissionResult;
-                if (!admitted.plan) throw new Error('PLAN_ADMISSION_CREATE_MISSING_PLAN');
-                const plan = admitted.plan;
-                const facade = buildFacadeResult({
-                  summary: `PlanContract ${plan.planId} created as draft after atomic authority admission; no execution was started.`,
-                  data: { plan: summarizePlanContract(plan), executionStarted: false, planContractCreated: true, admissionDecision: 'create_new' },
-                  suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
-                });
-                return result(facade as unknown as Record<string, unknown>);
-              }
               if (operation === 'plan_accept_step') {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
                 const planId = String(args.plan_id ?? '').trim();
