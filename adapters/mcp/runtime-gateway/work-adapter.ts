@@ -43,9 +43,10 @@ import { applyRuntimeMaintenance, buildRecoveryAuditRecord, buildRuntimeMaintena
 import { callStandaloneRecoveryTool } from "./recovery-client-adapter";
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation } from './work-requirement-operations';
+import { callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, normalizeCheckIds, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, admitPlanContractAsync, approvePlanContractAsync, getPlanContract, listPlanContracts, resolvePlanAdmission, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, repairPlanStepForTechnicalRetry, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, supersedePlanContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, normalizeCheckIds, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, admitPlanContractAsync, getPlanContract, listPlanContracts, resolvePlanAdmission, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, repairPlanStepForTechnicalRetry, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, listWorkContracts, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
@@ -1114,21 +1115,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             : args;
           const requirementOperationResult = await callRhWorkRequirementOperation(ctx, operation, requirementOperationArgs);
           if (requirementOperationResult) return requirementOperationResult;
-          if (operation === 'plan_list') {
-            const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
-            const facade = buildFacadeResult({
-              summary: `${plans.length} active PlanContract(s) in this repository.`,
-              data: { plans: plans.map(summarizePlanContract), bounded: true },
-            });
-            return result(facade as unknown as Record<string, unknown>);
-          }
-          if (operation === 'plan_get') {
-            const plan = getPlanContract(store, String(args.plan_id ?? ''));
-            const facade = plan
-              ? buildFacadeResult({ summary: `PlanContract ${plan.planId} retrieved.`, data: { plan: args.detail_level === 'detail' ? plan : summarizePlanContract(plan) }, detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary' })
-              : buildFacadeResult({ status: 'not_found', summary: `PlanContract ${String(args.plan_id ?? '')} not found.`, data: { planId: String(args.plan_id ?? '') } });
-            return result(facade as unknown as Record<string, unknown>, !plan);
-          }
+          const planOperationResult = await callRhWorkPlanOperation(store, operation, args);
+          if (planOperationResult) return planOperationResult;
   
           const checks = listControllerChecks(repository.canonicalRoot);
           const workloopSource = freshGitIdentity(repository.canonicalRoot);
@@ -1322,14 +1310,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 });
                 return result(facade as unknown as Record<string, unknown>);
               }
-              if (operation === 'plan_approve') {
-                const plan = await approvePlanContractAsync(store, String(args.plan_id ?? ''));
-                const facade = buildFacadeResult({
-                  summary: `PlanContract ${plan.planId} approved at source revision ${plan.sourceRevision}; execution remains explicit.`,
-                  data: { plan: summarizePlanContract(plan), executionStarted: false },
-                });
-                return result(facade as unknown as Record<string, unknown>);
-              }
               if (operation === 'plan_accept_step') {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
                 const planId = String(args.plan_id ?? '').trim();
@@ -1379,9 +1359,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 });
                 return result(facade as unknown as Record<string, unknown>);
               }
-              const plan = supersedePlanContract(store, String(args.plan_id ?? ''), String(args.superseded_by ?? ''));
-              const facade = buildFacadeResult({ summary: `PlanContract ${plan.planId} superseded by ${plan.supersededBy}.`, data: { plan: summarizePlanContract(plan) } });
-              return result(facade as unknown as Record<string, unknown>);
+              throw new Error(`PLAN_OPERATION_NOT_ROUTED: ${operation}`);
             } catch (error) {
               const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PlanContract operation failed.', data: { operation, executionStarted: false } });
               return result(facade as unknown as Record<string, unknown>, true);

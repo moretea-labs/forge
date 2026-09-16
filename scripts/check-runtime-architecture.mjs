@@ -269,6 +269,11 @@ requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'admi
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'continueRequirement');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, operation, requirementOperationArgs)');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'approvePlanContractAsync');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'supersedePlanContract');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:plan_list|plan_get|plan_approve|plan_supersede)['"]/, 'rh_work compatibility adapter must delegate lightweight Plan operation orchestration to work-plan-operations');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
