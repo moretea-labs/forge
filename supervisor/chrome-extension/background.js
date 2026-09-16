@@ -21,7 +21,8 @@ function tabMessage(tabId, message) {
   }));
 }
 async function recordOutcome(identity, command, result) {
-  await nativeRpc('browser_observe_effect', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, effect_id: command.effectId, observation_id: randomId(), outcome: result?.outcome === 'applied' ? 'applied' : 'unknown', evidence: result?.evidence ?? {} });
+  const outcome = result?.outcome === 'applied' ? 'applied' : result?.outcome === 'not_applied' ? 'not_applied' : 'unknown';
+  await nativeRpc('browser_observe_effect', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, effect_id: command.effectId, observation_id: randomId(), outcome, evidence: result?.evidence ?? {} });
 }
 async function act(tabId, identity, command) {
   if (!command || inflight.has(command.effectId)) return;
@@ -29,7 +30,11 @@ async function act(tabId, identity, command) {
   try {
     let mode = command.mode;
     if (mode === 'send') {
-      const begin = await nativeRpc('browser_begin_effect', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, effect_id: command.effectId, dispatch_id: randomId(), evidence: { surface: 'chrome-extension' } });
+      let baseline;
+      try { baseline = await tabMessage(tabId, { type: 'forge-workflow-supervisor-snapshot', effectId: command.effectId }); }
+      catch { baseline = undefined; }
+      if (!baseline) return;
+      const begin = await nativeRpc('browser_begin_effect', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, effect_id: command.effectId, dispatch_id: randomId(), dispatch_generation: command.dispatchGeneration, evidence: { surface: 'chrome-extension', ...baseline } });
       if (begin.started !== true) mode = 'reconcile';
     }
     let result;

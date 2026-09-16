@@ -223,3 +223,14 @@ P0 is not complete when Forge can send one automatic `continue`. It is complete 
 - Exactly-once is treated as an external-effect reconciliation problem, not as a SQLite uniqueness problem pretending the network does not exist.
 - ChatGPT remains the semantic reasoner, but model assertions do not bypass durable Goal or blocker evidence.
 - The system can later add execution targets without making Chrome Extension behavior part of the kernel.
+
+
+## Restart-safe remote effect generations
+
+The remote ChatGPT send boundary is recovered from the Supervisor journal, never from browser-local shadow state. Each reserved effect keeps one stable `submission_effect_id`; retries do **not** mint a replacement effect. Instead, every authorized send attempt appends an `effect_dispatch_started` event carrying a monotonically increasing dispatch generation. Generation 1 is allowed before any prior dispatch. A later generation is allowed only when a canonical `effect_not_applied` event was committed after the previous dispatch. `effect_unknown` never authorizes a resend.
+
+`not_applied` is a daemon-validated fact, not a caller assertion. The generic observation RPC may record only `applied` or `unknown`. The browser reconciliation path may commit `effect_not_applied` only when the exact conversation remains on the preserved dispatch baseline, the target effect marker is absent, and, for continuation/correction effects, the latest complete assistant response hashes to the exact source completion while the latest user message is the exact applied source-effect prompt. Any drift, partial response, conflicting message, missing baseline, or other ambiguity is recorded as `unknown` and remains reconciliation-only.
+
+Raw ChatGPT page bodies are ephemeral verifier input. The Supervisor persists bounded hashes and a fixed allowlist of small browser evidence fields, not arbitrary `latest_user_text` or `latest_assistant_response` payloads. This keeps restart evidence durable without turning the event journal into a conversation mirror.
+
+Daemon restart, Native Messaging respawn, extension reload, Chrome tab reopen/discard recovery, and Forge/MCP session replacement therefore reconstruct the same task/effect chain from `supervisor.sqlite`. The relay and extension may disappear and return freely; neither owns retry generations, terminal state, or durable recovery policy. Verified `DONE` and `NEEDS_USER` remain quiescent because terminal tasks expose no browser continuation command.

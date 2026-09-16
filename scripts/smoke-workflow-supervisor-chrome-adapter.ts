@@ -18,7 +18,7 @@ try {
   assert.equal(control.browserTasks().length, 1);
   let poll = control.browserPoll({ conversationId, conversationUrl });
   assert.equal(poll.command?.mode, 'send'); assert.equal(poll.command?.effectId, enrollment.effectId);
-  assert.equal(control.browserBeginEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, dispatchId: 'dispatch-1' }).started, true);
+  assert.equal(control.browserBeginEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, dispatchId: 'dispatch-1', dispatchGeneration: poll.command!.dispatchGeneration, evidence: { latest_user_text: '', latest_assistant_response: '' } }).started, true);
   poll = control.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile');
   control.browserObserveEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, observationId: 'observed-1', outcome: 'applied', evidence: { exact: true } });
   const response = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', source_effect_id: enrollment.effectId, checkpoint: 'step 4', reason: 'more work', evidence: ['receipt'] })}\n${SUPERVISOR_BLOCK_END}`;
@@ -31,7 +31,8 @@ try {
   const doneConversationUrl = `https://chatgpt.com/c/${doneConversationId}`;
   control.registerTask({ taskId: 'task-done', conversationId: doneConversationId, conversationUrl: doneConversationUrl, objective: 'Finish once.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const doneEffect = control.reserveEnrollment('task-done');
-  control.browserBeginEffect({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, effectId: doneEffect.effectId, dispatchId: 'dispatch-done' });
+  const donePoll = control.browserPoll({ conversationId: doneConversationId, conversationUrl: doneConversationUrl });
+  control.browserBeginEffect({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, effectId: doneEffect.effectId, dispatchId: 'dispatch-done', dispatchGeneration: donePoll.command!.dispatchGeneration, evidence: { latest_user_text: '', latest_assistant_response: '' } });
   control.browserObserveEffect({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, effectId: doneEffect.effectId, observationId: 'observed-done', outcome: 'applied' });
   const doneResponse = `${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'DONE', source_effect_id: doneEffect.effectId, checkpoint: 'done', reason: 'complete', evidence: ['receipt'] })}\n${SUPERVISOR_BLOCK_END}`;
   assert.equal((await control.browserObserveAssistant({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, responseText: doneResponse })).terminal, true);

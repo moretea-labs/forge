@@ -85,6 +85,22 @@ function effectFromRow(row: Record<string, unknown>): WorkflowSupervisorEffect {
     ...(row.source_completion_fingerprint ? { sourceCompletionFingerprint: String(row.source_completion_fingerprint) } : {}), prompt: String(row.prompt_text), createdAt: String(row.created_at) };
 }
 
+function completionFromRow(row: Record<string, unknown>): WorkflowSupervisorCompletion {
+  return {
+    completionFingerprint: String(row.completion_fingerprint), taskId: String(row.task_id), sourceEffectId: String(row.source_effect_id),
+    action: String(row.action) as WorkflowSupervisorCompletion['action'], responseSha256: String(row.response_sha256), controlBlockSha256: String(row.control_block_sha256),
+    proposal: JSON.parse(String(row.proposal_json)) as WorkflowSupervisorCompletion['proposal'], committedAt: String(row.committed_at),
+  };
+}
+function parsedObject(value: unknown): Record<string, unknown> {
+  try { const parsed = JSON.parse(String(value)); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; }
+  catch { return {}; }
+}
+function storedGeneration(value: unknown): number {
+  const generation = Number(parsedObject(value).generation);
+  return Number.isInteger(generation) && generation > 0 ? generation : 1;
+}
+
 export class WorkflowSupervisorStore {
   constructor(readonly forgeHome?: string) {}
   private transaction<T>(fn: (db: Database) => T): T {
@@ -115,7 +131,15 @@ export class WorkflowSupervisorStore {
   getTaskByConversationId(conversationId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(conversationId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
   listTasks(): WorkflowSupervisorTask[] { return this.read((db) => statement(db, 'SELECT * FROM tasks ORDER BY created_at, task_id', (s) => s.all()).map((row) => taskFromRow(row as Record<string, unknown>))); }
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
-  nextBrowserEffect(taskId: string): { effect: WorkflowSupervisorEffect; mode: 'send' | 'reconcile' } | undefined {
+  getCompletion(completionFingerprint: string): WorkflowSupervisorCompletion | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM completions WHERE completion_fingerprint = ?', (s) => s.get(completionFingerprint)); return row ? completionFromRow(row as Record<string, unknown>) : undefined; }); }
+  latestEffectDispatch(effectId: string): { eventId: number; generation: number; evidence: Record<string, unknown> } | undefined {
+    return this.read((db) => {
+      const row = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
+      if (!row?.event_id) return undefined;
+      return { eventId: Number(row.event_id), generation: storedGeneration(row.payload_json), evidence: parsedObject(row.payload_json) };
+    });
+  }
+  nextBrowserEffect(taskId: string): { effect: WorkflowSupervisorEffect; mode: 'send' | 'reconcile'; generation: number } | undefined {
     return this.read((db) => {
       const row = statement(db, `SELECT e.* FROM effects e
         WHERE e.task_id = ? AND NOT EXISTS (
@@ -123,10 +147,12 @@ export class WorkflowSupervisorStore {
         ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
       if (!row) return undefined;
       const effect = effectFromRow(row);
-      const prior = statement(db, `SELECT kind FROM events WHERE effect_id = ?
-        AND kind IN ('effect_dispatch_started','effect_unknown','effect_not_applied')
-        ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effect.effectId));
-      return { effect, mode: prior ? 'reconcile' : 'send' };
+      const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effect.effectId)) as { event_id?: number; payload_json?: string } | undefined;
+      if (!dispatch?.event_id) return { effect, mode: 'send', generation: 1 };
+      const currentGeneration = storedGeneration(dispatch.payload_json);
+      const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effect.effectId)) as { event_id?: number } | undefined;
+      const retryAuthorized = Number(notApplied?.event_id ?? 0) > Number(dispatch.event_id);
+      return { effect, mode: retryAuthorized ? 'send' : 'reconcile', generation: retryAuthorized ? currentGeneration + 1 : currentGeneration };
     });
   }
   terminalAction(taskId: string): 'DONE' | 'NEEDS_USER' | undefined { return this.read((db) => { const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined; return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : undefined; }); }
@@ -142,20 +168,25 @@ export class WorkflowSupervisorStore {
     return effectFromRow(row);
   }
 
-  recordEffectDispatchStarted(effectId: string, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {
+  recordEffectDispatchStarted(effectId: string, generation: number, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {
+    if (!Number.isInteger(generation) || generation < 1 || generation > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_INVALID');
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
-      const prior = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' LIMIT 1", (s) => s.get(effectId));
-      if (prior) return false;
-      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}`, 'effect_dispatch_started', effectId, json({ dispatchId, ...evidence }), now()));
+      const prior = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
+      const currentGeneration = prior?.event_id ? storedGeneration(prior.payload_json) : 0;
+      const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
+      const retryAuthorized = !prior?.event_id || Number(notApplied?.event_id ?? 0) > Number(prior.event_id);
+      if (!retryAuthorized || generation !== currentGeneration + 1) return false;
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}:${generation}`, 'effect_dispatch_started', effectId, json({ dispatchId, generation, ...evidence }), now()));
       return true;
     });
   }
 
   recordEffectObservation(effectId: string, observationId: string, outcome: WorkflowEffectOutcome, evidence: Record<string, unknown> = {}): void {
+    if (outcome === 'not_applied') throw new Error('WORKFLOW_SUPERVISOR_NOT_APPLIED_PROOF_REQUIRED');
     this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
@@ -165,6 +196,20 @@ export class WorkflowSupervisorStore {
       const payload = json(evidence);
       if (existing && (existing.kind !== kind || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, kind, effectId, payload, now()));
+    });
+  }
+
+  recordEffectNotAppliedProof(effectId: string, observationId: string, proof: Record<string, unknown>): void {
+    this.transaction((db) => {
+      const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
+      if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
+      if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
+      const key = `effect-observation:${effectId}:${observationId}`;
+      const payload = json(proof);
+      const existing = statement(db, 'SELECT kind,payload_json FROM events WHERE event_key = ?', (s) => s.get(key)) as { kind?: string; payload_json?: string } | undefined;
+      if (existing && (existing.kind !== 'effect_not_applied' || existing.payload_json !== payload)) throw new Error('WORKFLOW_SUPERVISOR_OBSERVATION_ID_CONFLICT');
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, key, 'effect_not_applied', effectId, payload, now()));
     });
   }
 

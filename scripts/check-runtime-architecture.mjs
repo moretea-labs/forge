@@ -1146,6 +1146,13 @@ requireText('supervisor/chrome-extension/background.js', 'browser_begin_effect')
 requireText('supervisor/chrome-extension/content.js', 'FORGE_WORKFLOW_SUPERVISOR');
 requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
 requireText('supervisor/native-messaging/host.ts', 'browser_observe_assistant');
+requireText('supervisor/store.ts', 'recordEffectNotAppliedProof');
+requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
+requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
+requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
+requireText('supervisor/server.ts', "if (!['applied','unknown'].includes(outcome))");
+forbid('supervisor/chrome-extension/background.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Chrome recovery must reconstruct from daemon journal state rather than durable browser shadow state');
+forbid('supervisor/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Chrome content reconciliation must remain an observation surface rather than durable recovery authority');
 forbid('supervisor/native-messaging/host.ts', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|bun:sqlite|node:sqlite|from ['"][^'"]*(?:store|control-plane)['"]/, 'Chrome Native Messaging host must remain a stateless browser-method relay and never own Supervisor persistence/lifecycle');
 forbid('supervisor/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome extension background must consume daemon-authorized browser commands and never become durable workflow authority');
 forbid('supervisor/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome content script must observe/execute one exact page only and never own durable workflow state');

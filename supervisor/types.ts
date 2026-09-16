@@ -81,6 +81,7 @@ export interface WorkflowSupervisorBrowserCommand {
   effectId: string;
   kind: WorkflowEffectKind;
   prompt: string;
+  dispatchGeneration: number;
   conversationId: string;
   conversationUrl: string;
 }

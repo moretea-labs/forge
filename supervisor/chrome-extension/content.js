@@ -13,6 +13,7 @@
   };
   const latestAssistant = () => { const text = latestText(ASSISTANT); return core.isCommittedAssistantResponse(text) ? text : undefined; };
   const exactLatestUser = (prompt) => core.normalizeText(latestText(USER)) === core.normalizeText(prompt);
+  const reconciliationSnapshot = (effectId) => ({ latest_user_text: latestText(USER), latest_assistant_response: latestText(ASSISTANT), target_marker_present: core.promptHasEffect(latestText(USER), effectId) });
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   async function fillAndSend(prompt) {
@@ -41,13 +42,14 @@
     if (!core.promptHasEffect(message.prompt, message.effectId)) return { outcome: 'unknown', evidence: { reason: 'effect_marker_missing' } };
     if (message.mode === 'reconcile') return exactLatestUser(message.prompt)
       ? { outcome: 'applied', evidence: { exact_user_message: true, reconciliation: true } }
-      : { outcome: 'unknown', evidence: { reconciliation: true, reason: 'not_proven_applied' } };
+      : { outcome: 'not_applied', evidence: { reconciliation: true, ...reconciliationSnapshot(message.effectId) } };
     if (message.mode !== 'send') return { outcome: 'unknown', evidence: { reason: 'mode_invalid' } };
     return await fillAndSend(message.prompt);
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-workflow-supervisor-scan') { notify(); return false; }
+    if (message.type === 'forge-workflow-supervisor-snapshot') { sendResponse(reconciliationSnapshot(String(message.effectId ?? ''))); return false; }
     if (message.type !== 'forge-workflow-supervisor-effect') return false;
     execute(message).then(sendResponse, (error) => sendResponse({ outcome: 'unknown', evidence: { reason: String(error?.message ?? error) } }));
     return true;
