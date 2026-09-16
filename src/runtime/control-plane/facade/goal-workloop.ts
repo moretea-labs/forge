@@ -1633,28 +1633,36 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       return buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'ENGINEERING_BLOCKER_INVALID', data: { work: summarizeWorkContract(work) } });
     }
     const returnToDesign = blocker.action === 'return_to_design';
+    const formalDesignReentryRequired = returnToDesign && work.engineeringContext?.designState === 'revisit_required';
+    const observeProfileWithoutPriorDesign = returnToDesign
+      && !formalDesignReentryRequired
+      && (work.engineeringContext?.riskClass === 'low' || work.engineeringContext?.riskClass === 'normal');
     return buildFacadeResult({
       status: 'blocked',
-      summary: returnToDesign
-        ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
-        : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
+      summary: observeProfileWithoutPriorDesign
+        ? `Same-root-cause blocker ${blocker.blockerId} was recorded. This observe-profile Work has no formal Design authority to supersede, so it remains governed by its existing engineering risk profile.`
+        : returnToDesign
+          ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
+          : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
       data: {
         work: summarizeWorkContract(work),
         engineeringBlocker: blocker,
         ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
-        nextStep: blocker.action,
+        nextStep: observeProfileWithoutPriorDesign ? 'continue' : blocker.action,
       },
-      suggestedNextActions: returnToDesign
-        ? [{
-            label: 'Refresh design evidence',
-            tool: 'rh_context',
-            operation: 'search',
-            payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
-            risk: 'readonly',
-          }]
-        : linkedWork
-          ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
-          : [],
+      suggestedNextActions: observeProfileWithoutPriorDesign
+        ? [{ label: 'Continue Work under existing engineering profile', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write' }]
+        : returnToDesign
+          ? [{
+              label: 'Refresh design evidence',
+              tool: 'rh_context',
+              operation: 'search',
+              payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
+              risk: 'readonly',
+            }]
+          : linkedWork
+            ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
+            : [],
     });
   }
 
