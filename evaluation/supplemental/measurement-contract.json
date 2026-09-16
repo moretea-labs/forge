@@ -1,0 +1,828 @@
+{
+  "schemaVersion": "forge-supplemental-measurement-contract/v1",
+  "sourceProtocolDigest": "sha256:b383b97aacc5995ba69525d1aac5f031046c8708db3c32011e484444818d2700",
+  "scenarios": {
+    "shared-discovery-agents-contract": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "agents-direct-edit-contract"
+      ],
+      "regressionGuardValidatorIds": [
+        "agents-direct-edit-contract"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "repository discovery",
+          "validatorIds": [
+            "agents-direct-edit-contract"
+          ]
+        },
+        {
+          "domain": "execution guidance",
+          "validatorIds": [
+            "agents-direct-edit-contract"
+          ]
+        }
+      ]
+    },
+    "shared-discovery-context-summary": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "bounded-context"
+      ],
+      "regressionGuardValidatorIds": [
+        "bounded-context"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "context plane",
+          "validatorIds": [
+            "bounded-context"
+          ]
+        },
+        {
+          "domain": "repository discovery",
+          "validatorIds": [
+            "bounded-context"
+          ]
+        }
+      ]
+    },
+    "shared-discovery-readme": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "readme-product-boundary"
+      ],
+      "regressionGuardValidatorIds": [
+        "readme-product-boundary"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "repository discovery",
+          "validatorIds": [
+            "readme-product-boundary"
+          ]
+        },
+        {
+          "domain": "product context",
+          "validatorIds": [
+            "readme-product-boundary"
+          ]
+        }
+      ]
+    },
+    "shared-discovery-repository-summary": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "primary-local-git"
+      ],
+      "regressionGuardValidatorIds": [
+        "primary-local-git"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "repository registry",
+          "validatorIds": [
+            "primary-local-git"
+          ]
+        },
+        {
+          "domain": "discovery",
+          "validatorIds": [
+            "primary-local-git"
+          ]
+        }
+      ]
+    },
+    "shared-failure-create-target-exists": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "existing-target-rejected"
+      ],
+      "regressionGuardValidatorIds": [
+        "existing-target-rejected"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "failure classification",
+          "validatorIds": [
+            "existing-target-rejected"
+          ]
+        },
+        {
+          "domain": "bounded mutation",
+          "validatorIds": [
+            "existing-target-rejected"
+          ]
+        }
+      ]
+    },
+    "shared-failure-missing-file": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "missing-path-classified"
+      ],
+      "regressionGuardValidatorIds": [
+        "missing-path-classified"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "failure classification",
+          "validatorIds": [
+            "missing-path-classified"
+          ]
+        },
+        {
+          "domain": "repository reads",
+          "validatorIds": [
+            "missing-path-classified"
+          ]
+        }
+      ]
+    },
+    "shared-failure-runtime-not-running": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "runtime-missing-codes"
+      ],
+      "regressionGuardValidatorIds": [
+        "runtime-missing-codes"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "failure classification",
+          "validatorIds": [
+            "runtime-missing-codes"
+          ]
+        },
+        {
+          "domain": "runtime readiness",
+          "validatorIds": [
+            "runtime-missing-codes"
+          ]
+        }
+      ]
+    },
+    "shared-failure-unknown-tool": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "tool-not-found"
+      ],
+      "regressionGuardValidatorIds": [
+        "tool-not-found"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "failure classification",
+          "validatorIds": [
+            "tool-not-found"
+          ]
+        },
+        {
+          "domain": "public MCP capability surface",
+          "validatorIds": [
+            "tool-not-found"
+          ]
+        }
+      ]
+    },
+    "shared-multirepo-parallel-mutation": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "change_precision",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "primary-write-succeeds",
+        "secondary-write-succeeds",
+        "writes-stay-separated"
+      ],
+      "regressionGuardValidatorIds": [
+        "primary-write-succeeds",
+        "secondary-write-succeeds",
+        "writes-stay-separated"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "multi-repository",
+          "validatorIds": [
+            "primary-write-succeeds",
+            "secondary-write-succeeds",
+            "writes-stay-separated"
+          ]
+        },
+        {
+          "domain": "concurrency",
+          "validatorIds": [
+            "primary-write-succeeds",
+            "secondary-write-succeeds",
+            "writes-stay-separated"
+          ]
+        },
+        {
+          "domain": "bounded mutation",
+          "validatorIds": [
+            "primary-write-succeeds",
+            "secondary-write-succeeds",
+            "writes-stay-separated"
+          ]
+        }
+      ]
+    },
+    "shared-multirepo-parallel-read": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "primary-read",
+        "secondary-read"
+      ],
+      "regressionGuardValidatorIds": [
+        "primary-read",
+        "secondary-read"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "multi-repository",
+          "validatorIds": [
+            "primary-read",
+            "secondary-read"
+          ]
+        },
+        {
+          "domain": "concurrency",
+          "validatorIds": [
+            "primary-read",
+            "secondary-read"
+          ]
+        },
+        {
+          "domain": "repository reads",
+          "validatorIds": [
+            "primary-read",
+            "secondary-read"
+          ]
+        }
+      ]
+    },
+    "shared-multirepo-register-list": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "secondary-registered",
+        "two-repositories-listed"
+      ],
+      "regressionGuardValidatorIds": [
+        "secondary-registered",
+        "two-repositories-listed"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "multi-repository",
+          "validatorIds": [
+            "secondary-registered",
+            "two-repositories-listed"
+          ]
+        },
+        {
+          "domain": "repository registry",
+          "validatorIds": [
+            "secondary-registered",
+            "two-repositories-listed"
+          ]
+        }
+      ]
+    },
+    "shared-multirepo-three-registry": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "three-identities"
+      ],
+      "regressionGuardValidatorIds": [
+        "three-identities"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "multi-repository",
+          "validatorIds": [
+            "three-identities"
+          ]
+        },
+        {
+          "domain": "registry scale",
+          "validatorIds": [
+            "three-identities"
+          ]
+        }
+      ]
+    },
+    "shared-mutation-coherent-batch": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "change_precision",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "both-created"
+      ],
+      "regressionGuardValidatorIds": [
+        "both-created"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "bounded repository mutation",
+          "validatorIds": [
+            "both-created"
+          ]
+        },
+        {
+          "domain": "edit batching",
+          "validatorIds": [
+            "both-created"
+          ]
+        }
+      ]
+    },
+    "shared-mutation-create-file": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "change_precision",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "created-only-target"
+      ],
+      "regressionGuardValidatorIds": [
+        "created-only-target"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "bounded repository mutation",
+          "validatorIds": [
+            "created-only-target"
+          ]
+        }
+      ]
+    },
+    "shared-mutation-guidance-only": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "change_precision",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "guidance-only"
+      ],
+      "regressionGuardValidatorIds": [
+        "guidance-only"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "bounded repository mutation",
+          "validatorIds": [
+            "guidance-only"
+          ]
+        },
+        {
+          "domain": "scope precision",
+          "validatorIds": [
+            "guidance-only"
+          ]
+        }
+      ]
+    },
+    "shared-mutation-replace-readme": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "change_precision",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "readme-only"
+      ],
+      "regressionGuardValidatorIds": [
+        "readme-only"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "bounded repository mutation",
+          "validatorIds": [
+            "readme-only"
+          ]
+        }
+      ]
+    },
+    "shared-restart-durable-work-visible": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "work-visible-after-restart"
+      ],
+      "regressionGuardValidatorIds": [
+        "work-visible-after-restart"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "restart recovery",
+          "validatorIds": [
+            "work-visible-after-restart"
+          ]
+        },
+        {
+          "domain": "Work persistence",
+          "validatorIds": [
+            "work-visible-after-restart"
+          ]
+        },
+        {
+          "domain": "controller authentication",
+          "validatorIds": [
+            "work-visible-after-restart"
+          ]
+        }
+      ]
+    },
+    "shared-restart-edit-session-continuation": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "change_precision",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "continuation-succeeds",
+        "both-session-files-exist"
+      ],
+      "regressionGuardValidatorIds": [
+        "continuation-succeeds",
+        "both-session-files-exist"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "restart recovery",
+          "validatorIds": [
+            "continuation-succeeds",
+            "both-session-files-exist"
+          ]
+        },
+        {
+          "domain": "bounded mutation",
+          "validatorIds": [
+            "continuation-succeeds",
+            "both-session-files-exist"
+          ]
+        },
+        {
+          "domain": "edit-session persistence",
+          "validatorIds": [
+            "continuation-succeeds",
+            "both-session-files-exist"
+          ]
+        }
+      ]
+    },
+    "shared-restart-repository-list-projection": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "registry-projection-restored"
+      ],
+      "regressionGuardValidatorIds": [
+        "registry-projection-restored"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "restart recovery",
+          "validatorIds": [
+            "registry-projection-restored"
+          ]
+        },
+        {
+          "domain": "repository projection",
+          "validatorIds": [
+            "registry-projection-restored"
+          ]
+        }
+      ]
+    },
+    "shared-restart-repository-registration": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "secondary-recovered"
+      ],
+      "regressionGuardValidatorIds": [
+        "secondary-recovered"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "restart recovery",
+          "validatorIds": [
+            "secondary-recovered"
+          ]
+        },
+        {
+          "domain": "repository registry",
+          "validatorIds": [
+            "secondary-recovered"
+          ]
+        }
+      ]
+    },
+    "shared-work-dependency-durable-admission": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "durable-work-retained"
+      ],
+      "regressionGuardValidatorIds": [
+        "durable-work-retained"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "Work lifecycle",
+          "validatorIds": [
+            "durable-work-retained"
+          ]
+        },
+        {
+          "domain": "durable admission",
+          "validatorIds": [
+            "durable-work-retained"
+          ]
+        },
+        {
+          "domain": "controller authentication",
+          "validatorIds": [
+            "durable-work-retained"
+          ]
+        }
+      ]
+    },
+    "shared-work-direct-no-contract": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "direct-without-work"
+      ],
+      "regressionGuardValidatorIds": [
+        "direct-without-work"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "Work routing",
+          "validatorIds": [
+            "direct-without-work"
+          ]
+        },
+        {
+          "domain": "lifecycle admission",
+          "validatorIds": [
+            "direct-without-work"
+          ]
+        }
+      ]
+    },
+    "shared-work-investigation-stays-direct": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "investigation-direct"
+      ],
+      "regressionGuardValidatorIds": [
+        "investigation-direct"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "Work routing",
+          "validatorIds": [
+            "investigation-direct"
+          ]
+        },
+        {
+          "domain": "investigation lifecycle",
+          "validatorIds": [
+            "investigation-direct"
+          ]
+        }
+      ]
+    },
+    "shared-work-recovery-durable-admission": {
+      "applicableMetrics": [
+        "task_correctness",
+        "behavioral_invariant_success",
+        "regression_reintroduction_rate",
+        "impact_coverage",
+        "tool_interaction_count",
+        "latency_ms",
+        "cpu_ms",
+        "peak_rss_bytes"
+      ],
+      "behavioralInvariantValidatorIds": [
+        "recovery-work-retained"
+      ],
+      "regressionGuardValidatorIds": [
+        "recovery-work-retained"
+      ],
+      "domainCoverage": [
+        {
+          "domain": "Work lifecycle",
+          "validatorIds": [
+            "recovery-work-retained"
+          ]
+        },
+        {
+          "domain": "recovery",
+          "validatorIds": [
+            "recovery-work-retained"
+          ]
+        },
+        {
+          "domain": "controller authentication",
+          "validatorIds": [
+            "recovery-work-retained"
+          ]
+        }
+      ]
+    }
+  }
+}
