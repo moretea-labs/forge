@@ -261,6 +261,9 @@ function requireExactShrinkingInventory(label, actual, allowed) {
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "if (name === 'rh_work') return callWorkAdapter(ctx, args);");
 requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
 requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'assertControllerRoundInvocationAuthority');
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'export async function callRhWorkControllerOperation');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkControllerOperation(ctx, repository, operation, args)');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:controller_get_owner|controller_claim|controller_disposition|controller_release|launcher_start)['"]/, 'rh_work compatibility adapter must delegate ControllerRound/Launcher operation orchestration to work-controller-operations');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
@@ -975,9 +978,9 @@ requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'REQUIR
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'withPlanAdmissionLock');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'completeRequirementGoal');
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'completeRequirementGoal');
 forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must delegate Requirement-bound goal completion to the canonical Goal application boundary');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "disposition === 'goal_complete' && work.requirementId");
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', "disposition === 'goal_complete' && work.requirementId");
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');
