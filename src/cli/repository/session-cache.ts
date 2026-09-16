@@ -11,12 +11,31 @@ export interface SessionCacheMetrics {
   invalidations: number;
 }
 
+export interface SessionCacheEntryCounts {
+  ranges: number;
+  searches: number;
+  structural: number;
+  gitSnapshots: number;
+  checks: number;
+  total: number;
+}
+
+export interface SessionCacheEntryLimits {
+  ranges: number;
+  searches: number;
+  structural: number;
+  gitSnapshots: number;
+  checks: number;
+}
+
 export interface SessionCacheGlobalDiagnostics {
   activeEntries: number;
   maxEntries: number;
   ttlMs: number;
   evictions: number;
   sessionIds: string[];
+  derivedEntries: SessionCacheEntryCounts;
+  derivedEntryLimitsPerSession: SessionCacheEntryLimits;
 }
 
 export interface SessionIdentity {
@@ -99,6 +118,32 @@ function rangeKey(path: string, start: number, end: number): string {
   return `${path}:${start}-${end}`;
 }
 
+// One Context Plane request materializes at most ~30 files and one aggregate
+// lexical/structural result. Keep several progressive waves hot without letting
+// one long-lived MCP session retain an unbounded history of derived object graphs.
+const SESSION_CACHE_ENTRY_LIMITS: SessionCacheEntryLimits = {
+  ranges: 96,
+  searches: 48,
+  structural: 24,
+  gitSnapshots: 4,
+  checks: 32,
+};
+
+function putBoundedLru<K, V>(map: Map<K, V>, key: K, value: V, maxEntries: number): void {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > maxEntries) {
+    const oldest = map.keys().next().value as K | undefined;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
+function promoteLruHit<K, V>(map: Map<K, V>, key: K, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+}
+
 export class RepositorySessionCache {
   private identity: SessionIdentity;
   private readonly repoRoot: string;
@@ -143,6 +188,22 @@ export class RepositorySessionCache {
       fileCount: this.ranges.size,
       searchCount: this.searches.size,
       structuralCount: this.structural.size,
+    };
+  }
+
+  entryCounts(): SessionCacheEntryCounts {
+    const ranges = this.ranges.size;
+    const searches = this.searches.size;
+    const structural = this.structural.size;
+    const gitSnapshots = this.gitSnapshots.size;
+    const checks = this.checks.size;
+    return {
+      ranges,
+      searches,
+      structural,
+      gitSnapshots,
+      checks,
+      total: ranges + searches + structural + gitSnapshots + checks,
     };
   }
 
@@ -205,18 +266,20 @@ export class RepositorySessionCache {
     const key = rangeKey(relativePath, startLine, endLine);
     const exact = this.ranges.get(key);
     if (exact && exact.fileSha === sha) {
+      promoteLruHit(this.ranges, key, exact);
       this.metrics.cacheHit += 1;
       this.metrics.bytesAvoided += exact.bytes;
       return exact;
     }
     // Try covering supersets: same path/sha with wider range.
-    for (const entry of this.ranges.values()) {
+    for (const [coveringKey, entry] of this.ranges) {
       if (
         entry.path === relativePath
         && entry.fileSha === sha
         && entry.startLine <= startLine
         && (entry.endLine >= endLine || entry.endLine >= entry.totalLines)
       ) {
+        promoteLruHit(this.ranges, coveringKey, entry);
         this.metrics.cacheHit += 1;
         this.metrics.bytesAvoided += Math.max(0, entry.bytes);
         const resolvedEndLine = Math.min(endLine, entry.totalLines);
@@ -233,13 +296,14 @@ export class RepositorySessionCache {
   }
 
   putRange(entry: FileRangeCacheEntry): void {
-    this.ranges.set(rangeKey(entry.path, entry.startLine, entry.endLine), entry);
+    putBoundedLru(this.ranges, rangeKey(entry.path, entry.startLine, entry.endLine), entry, SESSION_CACHE_ENTRY_LIMITS.ranges);
   }
 
   getSearch(query: string, includeKey: string): SearchCacheEntry | null {
     const key = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${includeKey}|${query}`;
     const hit = this.searches.get(key);
     if (hit) {
+      promoteLruHit(this.searches, key, hit);
       this.metrics.cacheHit += 1;
       this.metrics.scanAvoided += 1;
       return hit;
@@ -250,13 +314,14 @@ export class RepositorySessionCache {
 
   putSearch(entry: SearchCacheEntry): void {
     const key = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${entry.includeKey}|${entry.query}`;
-    this.searches.set(key, entry);
+    putBoundedLru(this.searches, key, entry, SESSION_CACHE_ENTRY_LIMITS.searches);
   }
 
   getStructural(key: string, ttlMs = 30_000): unknown | null {
     const scopedKey = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${key}`;
     const hit = this.structural.get(scopedKey);
     if (hit && Date.now() - hit.at <= ttlMs) {
+      promoteLruHit(this.structural, scopedKey, hit);
       this.metrics.cacheHit += 1;
       this.metrics.scanAvoided += 1;
       return hit.value;
@@ -277,13 +342,14 @@ export class RepositorySessionCache {
 
   putStructural(key: string, value: unknown): void {
     const scopedKey = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${key}`;
-    this.structural.set(scopedKey, { at: Date.now(), value });
+    putBoundedLru(this.structural, scopedKey, { at: Date.now(), value }, SESSION_CACHE_ENTRY_LIMITS.structural);
   }
 
   getGitSnapshot(): unknown | null {
     const key = `${this.identity.head}|${this.identity.workingTreeFingerprint}`;
     const hit = this.gitSnapshots.get(key);
     if (hit) {
+      promoteLruHit(this.gitSnapshots, key, hit);
       this.metrics.cacheHit += 1;
       return hit.value;
     }
@@ -293,13 +359,14 @@ export class RepositorySessionCache {
 
   putGitSnapshot(value: unknown): void {
     const key = `${this.identity.head}|${this.identity.workingTreeFingerprint}`;
-    this.gitSnapshots.set(key, { at: Date.now(), value });
+    putBoundedLru(this.gitSnapshots, key, { at: Date.now(), value }, SESSION_CACHE_ENTRY_LIMITS.gitSnapshots);
   }
 
   getCheck(checkId: string): unknown | null {
     const key = `${this.identity.workingTreeFingerprint}|${checkId}`;
     const hit = this.checks.get(key);
     if (hit !== undefined) {
+      promoteLruHit(this.checks, key, hit);
       this.metrics.cacheHit += 1;
       return hit;
     }
@@ -308,7 +375,7 @@ export class RepositorySessionCache {
   }
 
   putCheck(checkId: string, value: unknown): void {
-    this.checks.set(`${this.identity.workingTreeFingerprint}|${checkId}`, value);
+    putBoundedLru(this.checks, `${this.identity.workingTreeFingerprint}|${checkId}`, value, SESSION_CACHE_ENTRY_LIMITS.checks);
   }
 
   /** Precise invalidation when one file changes. */
@@ -460,12 +527,31 @@ export function clearSessionCachesForSession(sessionId: string): number {
 
 export function sessionCacheGlobalDiagnostics(): SessionCacheGlobalDiagnostics {
   pruneSessionCaches();
+  const derivedEntries: SessionCacheEntryCounts = {
+    ranges: 0,
+    searches: 0,
+    structural: 0,
+    gitSnapshots: 0,
+    checks: 0,
+    total: 0,
+  };
+  for (const cache of globalSessions.values()) {
+    const counts = cache.entryCounts();
+    derivedEntries.ranges += counts.ranges;
+    derivedEntries.searches += counts.searches;
+    derivedEntries.structural += counts.structural;
+    derivedEntries.gitSnapshots += counts.gitSnapshots;
+    derivedEntries.checks += counts.checks;
+    derivedEntries.total += counts.total;
+  }
   return {
     activeEntries: globalSessions.size,
     maxEntries: SESSION_CACHE_MAX_ENTRIES,
     ttlMs: SESSION_CACHE_TTL_MS,
     evictions: sessionCacheEvictions,
     sessionIds: [...new Set([...globalSessions.keys()].map((key) => key.split('|', 1)[0]))],
+    derivedEntries,
+    derivedEntryLimitsPerSession: { ...SESSION_CACHE_ENTRY_LIMITS },
   };
 }
 
