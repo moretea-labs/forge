@@ -1131,8 +1131,9 @@ requireMissing('src/runtime/supervisor');
 requireText('supervisor/store.ts', 'BEGIN IMMEDIATE');
 requireText('supervisor/store.ts', 'completions_one_per_source_effect');
 requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_SOURCE_EFFECT_COMPLETION_CONFLICT');
-requireText('supervisor/store.ts', 'process.env.FORGE_HOME');
-requireText('supervisor/store.ts', "join(resolveWorkflowSupervisorForgeHome(forgeHome), 'supervisor')");
+requireText('supervisor/paths.ts', 'process.env.FORGE_HOME');
+requireText('supervisor/paths.ts', "join(resolveWorkflowSupervisorForgeHome(forgeHome), 'supervisor')");
+forbid('supervisor/paths.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor path authority must stay under Forge user data and outside Controller Home/lower lifecycle authorities');
 forbid('supervisor/store.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor persistence must stay under Forge user data and outside Controller Home/lower lifecycle authorities');
 forbid('supervisor/service.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|--controller-home/, 'Workflow Supervisor service must bind Forge user-data authority, not Controller Home');
 forbid('supervisor/entry.ts', /FORGE_CONTROLLER_HOME|--controller-home/, 'Workflow Supervisor daemon must bind FORGE_HOME, not Controller Home');
@@ -1140,6 +1141,14 @@ requireText('supervisor/control-plane.ts', 'await validator(task, parsed.proposa
 requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
 requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
 forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Supervisor transport must relay typed commands through the control plane and never own persistence');
+requireText('supervisor/chrome-extension/manifest.json', 'nativeMessaging');
+requireText('supervisor/chrome-extension/background.js', 'browser_begin_effect');
+requireText('supervisor/chrome-extension/content.js', 'FORGE_WORKFLOW_SUPERVISOR');
+requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
+requireText('supervisor/native-messaging/host.ts', 'browser_observe_assistant');
+forbid('supervisor/native-messaging/host.ts', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|bun:sqlite|node:sqlite|from ['"][^'"]*(?:store|control-plane)['"]/, 'Chrome Native Messaging host must remain a stateless browser-method relay and never own Supervisor persistence/lifecycle');
+forbid('supervisor/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome extension background must consume daemon-authorized browser commands and never become durable workflow authority');
+forbid('supervisor/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome content script must observe/execute one exact page only and never own durable workflow state');
 
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');

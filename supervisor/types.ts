@@ -69,3 +69,25 @@ export interface WorkflowAssistantObservationResult {
   validation?: WorkflowContractValidation;
   deduplicated: boolean;
 }
+
+export interface WorkflowSupervisorBrowserTask {
+  taskId: string;
+  conversationId: string;
+  conversationUrl: string;
+}
+
+export interface WorkflowSupervisorBrowserCommand {
+  mode: 'send' | 'reconcile';
+  effectId: string;
+  kind: WorkflowEffectKind;
+  prompt: string;
+  conversationId: string;
+  conversationUrl: string;
+}
+
+export interface WorkflowSupervisorBrowserPollResult {
+  authorized: true;
+  task: WorkflowSupervisorBrowserTask;
+  terminal?: 'DONE' | 'NEEDS_USER';
+  command?: WorkflowSupervisorBrowserCommand;
+}

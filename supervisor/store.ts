@@ -1,7 +1,6 @@
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
 import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
@@ -29,15 +28,16 @@ function json(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function resolveWorkflowSupervisorForgeHome(forgeHome?: string): string {
-  return resolve(forgeHome ?? process.env.FORGE_HOME ?? join(homedir(), '.forge'));
-}
+export { resolveWorkflowSupervisorForgeHome } from './paths';
 export function workflowSupervisorRoot(forgeHome?: string): string {
-  const root = join(resolveWorkflowSupervisorForgeHome(forgeHome), 'supervisor');
+  const root = workflowSupervisorRootPath(forgeHome);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return root;
 }
-export function workflowSupervisorDatabasePath(forgeHome?: string): string { return join(workflowSupervisorRoot(forgeHome), 'supervisor.sqlite'); }
+export function workflowSupervisorDatabasePath(forgeHome?: string): string {
+  workflowSupervisorRoot(forgeHome);
+  return workflowSupervisorDatabasePathValue(forgeHome);
+}
 
 function openDatabase(forgeHome?: string): Database {
   const Constructor = databaseConstructor();
@@ -112,7 +112,23 @@ export class WorkflowSupervisorStore {
     });
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
+  getTaskByConversationId(conversationId: string): WorkflowSupervisorTask | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(conversationId)); return row ? taskFromRow(row as Record<string, unknown>) : undefined; }); }
+  listTasks(): WorkflowSupervisorTask[] { return this.read((db) => statement(db, 'SELECT * FROM tasks ORDER BY created_at, task_id', (s) => s.all()).map((row) => taskFromRow(row as Record<string, unknown>))); }
   getEffect(effectId: string): WorkflowSupervisorEffect | undefined { return this.read((db) => { const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(effectId)); return row ? effectFromRow(row as Record<string, unknown>) : undefined; }); }
+  nextBrowserEffect(taskId: string): { effect: WorkflowSupervisorEffect; mode: 'send' | 'reconcile' } | undefined {
+    return this.read((db) => {
+      const row = statement(db, `SELECT e.* FROM effects e
+        WHERE e.task_id = ? AND NOT EXISTS (
+          SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied'
+        ) ORDER BY e.created_at, e.effect_id LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      if (!row) return undefined;
+      const effect = effectFromRow(row);
+      const prior = statement(db, `SELECT kind FROM events WHERE effect_id = ?
+        AND kind IN ('effect_dispatch_started','effect_unknown','effect_not_applied')
+        ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effect.effectId));
+      return { effect, mode: prior ? 'reconcile' : 'send' };
+    });
+  }
   terminalAction(taskId: string): 'DONE' | 'NEEDS_USER' | undefined { return this.read((db) => { const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined; return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : undefined; }); }
   effectApplied(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId)))); }
 
@@ -124,6 +140,19 @@ export class WorkflowSupervisorStore {
     const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(input.originKey)) as Record<string, unknown> | undefined;
     if (!row) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_RESERVE_FAILED');
     return effectFromRow(row);
+  }
+
+  recordEffectDispatchStarted(effectId: string, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {
+    return this.transaction((db) => {
+      const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
+      if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId));
+      if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
+      const prior = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' LIMIT 1", (s) => s.get(effectId));
+      if (prior) return false;
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}`, 'effect_dispatch_started', effectId, json({ dispatchId, ...evidence }), now()));
+      return true;
+    });
   }
 
   recordEffectObservation(effectId: string, observationId: string, outcome: WorkflowEffectOutcome, evidence: Record<string, unknown> = {}): void {
