@@ -5,7 +5,7 @@ import {
 import { tickSchedules } from '../../workflow/schedules/engine';
 import type { ExecutionJob } from '../../execution/jobs/types';
 
-const SCHEDULE_TICK_INTERVAL_MS = 30_000;
+export const SCHEDULE_TICK_INTERVAL_MS = 30_000;
 
 export function schedulerDurableAdmissionRequiresPolicy(input: {
   activeJobs: readonly ExecutionJob[];

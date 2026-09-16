@@ -32,6 +32,7 @@ import {
 import { planSchedulerSourceSampling } from './source-scan';
 import {
   runSchedulerDurableAdmission,
+  SCHEDULE_TICK_INTERVAL_MS,
   schedulerDurableAdmissionRequiresPolicy,
 } from './durable-admission';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
@@ -98,7 +99,30 @@ export type { SchedulerWorkerCommand, SchedulerWorkerLaunchDescriptor } from './
 export { selectSchedulerSourceScanRepositories } from './source-scan';
 
 const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
+export const SCHEDULER_RECONCILIATION_INTERVAL_MS = 5_000;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.FORGE_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
+
+function remainingRecurringDeadlineMs(nowMs: number, lastRanAt: number, intervalMs: number): number {
+  if (lastRanAt <= 0) return intervalMs;
+  const elapsed = Math.max(0, nowMs - lastRanAt);
+  return elapsed < intervalMs ? intervalMs - elapsed : intervalMs;
+}
+
+export function schedulerIdleWaitDelayMs(input: {
+  nowMs: number;
+  lastScheduleTickAt: number;
+}): number {
+  // Idle execution is event-driven. ExecutionJob/lease/policy mutations and
+  // check Process terminal persistence wake the scheduler immediately through
+  // the existing notification revision. Five-second reconciliation remains the
+  // active/event-driven cadence, not an unconditional idle full-tick deadline.
+  // The 30-second schedule cadence is the bounded lost-event safety deadline.
+  return remainingRecurringDeadlineMs(
+    input.nowMs,
+    input.lastScheduleTickAt,
+    SCHEDULE_TICK_INTERVAL_MS,
+  );
+}
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
   'Pages free',
   'Pages inactive',
@@ -533,7 +557,7 @@ export class GlobalScheduler {
       }
       periodicCleanupRan = true;
     }
-    if (now - this.lastReconcile >= 5_000) {
+    if (now - this.lastReconcile >= SCHEDULER_RECONCILIATION_INTERVAL_MS) {
       await reconcileExecutionJobsAsync(this.controllerHome);
       for (const repository of repositories) {
         try {
@@ -731,30 +755,33 @@ export class GlobalScheduler {
       this.persistState(true);
     }, this.config.heartbeatIntervalMs);
     heartbeatTimer.unref?.();
-    let idleStreak = 0;
     let activeJobs = 0;
     try {
       while (!signal?.aborted) {
+        let tickFailed = false;
         try {
           activeJobs = (await this.tick()).activeJobs;
-          idleStreak = activeJobs === 0 ? idleStreak + 1 : 0;
         } catch (error) {
           if (this.fatalOnTickError) throw error;
-          idleStreak = 0;
+          tickFailed = true;
           this.lastHeartbeatAt = new Date().toISOString();
           this.lastTickAt = this.lastHeartbeatAt;
           this.persistState(true);
           console.error('[forge scheduler] tick failed:', error);
         }
-        const delayMs = idleStreak > 0
-          ? Math.min(
-            this.config.idleBackoffMaxMs,
-            this.config.pollIntervalMs * (2 ** Math.min(idleStreak, 6)),
-          )
-          : this.config.pollIntervalMs;
+        const now = Date.now();
+        const delayMs = tickFailed || activeJobs > 0
+          ? this.config.pollIntervalMs
+          : schedulerIdleWaitDelayMs({
+            nowMs: now,
+            lastScheduleTickAt: this.lastScheduleTick,
+          });
         const wakeRevision = readSchedulerWakeSignal(this.controllerHome).revision;
         const waitResult = await waitForSchedulerWakeSignal(this.controllerHome, wakeRevision, delayMs, signal, {
-          fallbackPollMs: activeJobs > 0 ? 250 : Math.min(1_000, Math.max(500, delayMs)),
+          // fs.watch is authoritative for ordinary wakeups. Polling is only a
+          // lost-event safety net, so idle Runtime should not parse wake JSON
+          // every second while waiting for the next real maintenance deadline.
+          fallbackPollMs: activeJobs > 0 ? 250 : Math.min(5_000, Math.max(1_000, delayMs)),
         });
         if (waitResult === 'aborted') break;
       }

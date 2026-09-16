@@ -19,6 +19,7 @@ import { basename, dirname, join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
+import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 import {
   isManagedProcessActive,
   isManagedProcessTerminal,
@@ -559,6 +560,21 @@ export function tryCompleteProcessRecord(
   const sanitized = sanitizeProcessRecord(next).record;
   atomicWrite(path, sanitized);
   updateRecoveryIndexMembership(controllerHome, repoId, processId, processRecoveryMembership(sanitized));
+  // Terminal Process persistence remains the lifecycle authority. The scheduler
+  // notification is emitted only after durable terminal state exists, and only
+  // for Check-backed Processes whose receipts can unblock Work/Edit validation.
+  // Notification failure must never reinterpret or roll back the terminal CAS;
+  // the explicit schedule deadline still provides a bounded observation path.
+  if (sanitized.checkExecution || sanitized.origin?.surface === 'check' || sanitized.origin?.checkId) {
+    try {
+      touchSchedulerWakeSignal(controllerHome, `check-process-terminal:${processId}`);
+    } catch (error) {
+      console.error(
+        `[forge scheduler] Check Process terminal wake failed for ${processId}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   return { ok: true, record: sanitized };
 }
 
