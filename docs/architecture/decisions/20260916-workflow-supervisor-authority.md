@@ -46,7 +46,7 @@ Original Goal / logical WorkflowRun
        repository execution
 ```
 
-The first implementation may live outside the existing Forge execution process, but the protocol, persistence and recovery rules are Forge architecture contracts. ChatGPT Web is the first execution target, not the definition of the Supervisor.
+V1 runs as an independent **TypeScript/Bun Supervisor daemon** outside the existing Forge execution process. It reuses Forge's existing Bun/Node SQLite boundary and platform service-manager/launchd conventions, but it has its own process identity and dedicated Supervisor persistence. Those process, persistence and single-writer boundaries establish the authority separation; changing implementation language does not. Go or another runtime is reconsidered only if later packaging, restart-recovery or operability evidence proves a material benefit without changing this protocol or authority contract. ChatGPT Web is the first execution target, not the definition of the Supervisor.
 
 ### Authority matrix
 
@@ -98,6 +98,7 @@ Every supervised ChatGPT turn ends with exactly one machine-readable terminal bl
 <<<FORGE_WORKFLOW_SUPERVISOR_V1>>>
 {
   "action": "CONTINUE",
+  "source_effect_id": "fx_...",
   "checkpoint": "...",
   "reason": "...",
   "evidence": ["..."]
@@ -112,6 +113,8 @@ Every supervised ChatGPT turn ends with exactly one machine-readable terminal bl
 - `NEEDS_USER`: a blocker **proposal** that requires `userBlockerPolicy` validation.
 
 The exact `<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>` marker is required before the Supervisor accepts the turn as committed. Prompt delivery, `Stop generating`, spinner/loading state, button state, DOM stability, a text-stability timer, Work completion, ControllerRound closure, or transport disconnection are not assistant-turn commit authority.
+
+Every Supervisor-rendered enrollment or continuation message also carries a machine-readable marker containing its daemon-minted `submission_effect_id`. The assistant may only echo that immutable causal identity as `source_effect_id` in the terminal block; it does not mint, rewrite or interpret the id as executable prompt authority. A completion is commit-eligible only when `source_effect_id` matches the exact applied outbound effect for the exact task and conversation.
 
 The Supervisor never executes arbitrary model-provided `next_prompt`. Enrollment, normal continuation, recovery correction and stagnation correction use Supervisor-owned fixed templates. The normal continuation semantics are:
 
@@ -137,7 +140,9 @@ For `NEEDS_USER`, the Supervisor validates `userBlockerPolicy`. Test failures, t
 
 The long-lived Supervisor daemon is the **only durable writer** for Supervisor task/run state. Chrome Extension, Native Messaging transport, Forge execution, and lower schedulers submit observations or execute authorized effects; they never independently mutate Supervisor state.
 
-V1 persists a compact SQLite task/event journal instead of a collection of mutable status JSON files. Durable events include at least:
+V1 owns a dedicated `supervisor.sqlite` authority under the Forge user-data root instead of reusing `control-plane.sqlite`, generic `control_plane_records`, the declarative `workflow_run` namespace, or a collection of mutable status JSON files. It reuses only the runtime-neutral SQLite mechanics already proven by Forge: Bun/Node driver adaptation, WAL, foreign keys, bounded busy waiting, lifecycle integrity checks, statement finalization and short `BEGIN IMMEDIATE` write transactions.
+
+The core schema keeps the exactly-once invariants relational rather than burying them in opaque JSON payloads. It has explicit task, append-oriented event and outbound-effect facts (`tasks`, `events`, `effects` or schema-equivalent names), with database-level uniqueness for committed completion fingerprints and for the one successor effect derived from a committed completion. Durable journal facts include at least:
 
 - enrollment / turn submission intent;
 - assistant turn committed;
@@ -147,29 +152,31 @@ V1 persists a compact SQLite task/event journal instead of a collection of mutab
 - recovery/correction decisions;
 - verified terminalization.
 
-Current state is derived from the durable task identity and journal. Native Messaging host processes are thin relays and must not open the Supervisor database. On macOS, launchd owns the one long-lived daemon; relay processes may reconnect or respawn without becoming writers.
+Current state is derived from those durable facts. On macOS, launchd owns the one long-lived Supervisor daemon. The Chrome Native Messaging host is only a bounded stdin/stdout-to-**Unix-JSONL socket** relay to that daemon, following Forge's existing external Unix transport pattern; it does not open `supervisor.sqlite`, make continuation/terminal decisions, or become a second writer. Relay processes may reconnect or respawn without changing WorkflowRun identity.
 
 ## Exactly-once continuation and external-effect reconciliation
 
-Each supervised outbound turn is assigned a daemon-minted `submission_effect_id`. The completion of that turn is causally tied to that effect. When a stable provider message id is unavailable, the completion fingerprint is derived from:
+Each supervised outbound turn is assigned a daemon-minted `submission_effect_id`, and the exact fixed outbound message embeds that id in its machine-readable marker. The completion of that turn is causally tied to that applied effect and must echo it as `source_effect_id`. When a stable provider message id is unavailable, the completion fingerprint is derived from:
 
 ```text
 task identity
 + exact conversation identity
-+ source submission_effect_id
++ source_effect_id
 + canonical full assistant-response hash
 + control-block hash
 ```
 
 This prevents two different turns with identical assistant text from colliding.
 
-One committed assistant completion may produce at most one logical next-turn effect. The local transaction reserves the next `submission_effect_id`, but local commit does **not** prove that the external ChatGPT send committed.
+For a valid `CONTINUE`, one short SQLite transaction consumes/idempotently records the committed assistant completion and reserves the one successor `submission_effect_id`. Database uniqueness makes duplicate observations converge on the same logical successor effect. The transaction does not claim that the external ChatGPT send committed.
+
+`DONE` and `NEEDS_USER` proposals have a different boundary because their contracts may read Forge or other authoritative evidence. The daemon first journals the proposal idempotently, releases the SQLite write transaction, performs the required read-only completion/blocker validation, then uses another short transaction either to record validated terminalization or to reserve a correction/continuation effect. No SQLite write lock is held across Forge, browser or other external evidence reads.
 
 External send outcome uses the same three-way rule as Forge's non-idempotent effect reconciliation:
 
-- `applied`: the exact fixed outbound effect is observed in the exact conversation; acknowledge it and never resend.
-- `not_applied`: absence is positively established under the adapter contract; retry may use the same reserved effect identity.
-- `unknown`: evidence is insufficient; keep reconciling and do not blindly resend.
+- `applied`: the exact effect marker/fixed outbound message is observed in the exact conversation; acknowledge it and never resend.
+- `not_applied`: affirmative preserved-baseline proof establishes that the exact source completion is still the latest committed assistant turn, the latest user message is still the previously applied source/baseline message, and the target `submission_effect_id` marker is absent; only then may retry reuse the same reserved effect identity.
+- `unknown`: any conflicting, newer, partial or otherwise insufficient observation stays reconciliation-only; do not blindly resend.
 
 The crash windows before reservation, after reservation/before send, after send/before acknowledgement, and after acknowledgement must all converge through this journal plus remote observation. Daemon restart, extension reload, Chrome restart, tab close/reopen/discard/freeze, Native Messaging reconnect and Forge/MCP session replacement never create a new original Goal or a second continuation for the same committed completion.
 
@@ -178,9 +185,9 @@ The crash windows before reservation, after reservation/before send, after send/
 The Chrome Extension is an execution adapter, not a state authority. It may:
 
 - locate or open only an allowlisted exact conversation id/URL;
-- read the final complete assistant response and forward bounded evidence;
-- submit a daemon-authorized fixed prompt for one exact `submission_effect_id`;
-- observe whether that exact outbound effect is present for reconciliation;
+- read the final complete assistant response, its echoed `source_effect_id`, and forward bounded evidence;
+- submit only a daemon-authorized fixed prompt containing the marker for one exact `submission_effect_id`;
+- observe whether that exact effect marker/fixed outbound message is present for reconciliation;
 - rediscover a closed/discarded tab without changing durable task identity.
 
 It must not select durable tasks by mutable title, open the Supervisor database, decide `CONTINUE/DONE/NEEDS_USER`, invent prompts, weaken Forge gates, or depend on private ChatGPT APIs. Transient generation UI may help avoid pointless reads but is never commit evidence.
