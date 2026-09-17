@@ -2782,6 +2782,9 @@ describe('standalone recovery on canonical Runtime', () => {
         repairPrimaryConnectorBinding: async () => {
           connectorBindings += 1;
           activationOrder.push('connector-bind');
+          if (!serviceActive) {
+            return { ok: false, attempted: true, detail: 'candidate Connector cannot become ready before the Runtime starts' };
+          }
           return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
         },
         verifyLocal: async () => {
@@ -2805,7 +2808,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
       expect(connectorBindings).toBe(1);
-      expect(activationOrder).toEqual(['connector-bind', 'runtime-start']);
+      expect(activationOrder).toEqual(['runtime-start', 'connector-bind']);
       const reboundUnit = readFileSync(unitPath, 'utf8');
       expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
       expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
@@ -3543,6 +3546,7 @@ describe('standalone recovery on canonical Runtime', () => {
       writeFileSync(paths.installedPlistPath, '<plist/>');
 
       const commands: string[][] = [];
+      const connectorBindingStates: string[] = [];
       let probes = 0;
       let launchdLoaded = true;
       const result = await activateRuntimeRelease(config, candidateManifestPath, {
@@ -3558,6 +3562,13 @@ describe('standalone recovery on canonical Runtime', () => {
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
+        repairPrimaryConnectorBinding: async () => {
+          const activeRelease = readRuntimeReleaseAuthority(home)?.active.releaseId ?? 'none';
+          connectorBindingStates.push(`${activeRelease}:${launchdLoaded ? 'runtime-started' : 'runtime-stopped'}`);
+          return launchdLoaded
+            ? { ok: true, attempted: true, detail: `Connector rebound for ${activeRelease}` }
+            : { ok: false, attempted: true, detail: `Connector bind attempted while ${activeRelease} Runtime was stopped` };
+        },
         verifyLocal: async () => ++probes > 12
           ? healthyVerify()
           : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
@@ -3571,6 +3582,7 @@ describe('standalone recovery on canonical Runtime', () => {
         previous: { releaseId: candidateReleaseId, artifactIdentity },
       });
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
+      expect(connectorBindingStates).toEqual(['release-a:runtime-started']);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
