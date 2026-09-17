@@ -319,11 +319,6 @@ function runtimeToolSwitchCaseInventory(source) {
 }
 
 const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/command-classifier',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/diagnostics/process-facade',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/jobs/types',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/process-runtime',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/thin-harness',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-result',
 ]);
 
@@ -380,6 +375,7 @@ requireExactShrinkingDebt(
 const FROZEN_CAPABILITY_PREFIX_FILES = [
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
 ];
@@ -417,8 +413,8 @@ const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
   'adapters/mcp/runtime-gateway/work-adapter.ts::controller.authority.recover:',
   'adapters/mcp/runtime-gateway/work-adapter.ts::controller.provider.recover:',
   'adapters/mcp/runtime-gateway/work-adapter.ts::plan.step.retry:',
-  'adapters/mcp/runtime-gateway/work-adapter.ts::schedule.delete:',
-  'adapters/mcp/runtime-gateway/work-adapter.ts::work.review:',
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts::schedule.delete:',
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts::work.review:',
   'adapters/mcp/controller-round-compatibility.ts::controller.disposition:',
   'adapters/mcp/controller-round-compatibility.ts::controller.round:',
   'adapters/mcp/controller-round-compatibility.ts::plan.obligations.v1:',
@@ -1445,7 +1441,7 @@ forbid(
 );
 forbid('adapters/mcp/runtime-gateway/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
-  'adapters/mcp/runtime-gateway/router.ts',
+  'adapters/mcp/runtime-gateway/routing-policy.ts',
   /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
   'declare DIRECT_REPOSITORY_TOOLS with repository_list, repository_get, and repository_workbench',
 );
@@ -1619,8 +1615,8 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpo
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
 requireText('src/runtime/release/release-gate.ts', 'releaseReady');
-requireText('adapters/mcp/transports/http.ts', "'/ready'");
-requireText('adapters/mcp/transports/http.ts', "'/repos/:repoId/health'");
+requireText('adapters/mcp/transports/http-observation.ts', "'/ready'");
+requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'AUTOMATED_REQUIREMENT_REQUIRES_CANDIDATE');
 requireText('adapters/mcp/tool-mapping/tools.ts', "export * from './legacy-tool-service'");
@@ -1860,7 +1856,7 @@ requireText('src/runtime/root/runtime.ts', 'readonly forgeInstanceId: string');
 requireText('src/runtime/root/runtime.ts', 'ensureForgeInstanceIdentity');
 requireText('src/runtime/root/entry.ts', 'forgeInstanceId: runtime.forgeInstanceId');
 requireText('adapters/mcp/transports/http.ts', 'forgeInstanceId: forgeInstance.instanceId');
-requireText('adapters/mcp/transports/http.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
+requireText('adapters/mcp/transports/http-observation.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
 forbid('adapters/mcp/transports/http.ts', /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/, 'MCP process identity must not be exposed as semantic Forge instanceId');
 requireText('adapters/mcp/transports/http.ts', "adapterId: 'mcp-http'");
 requireText('adapters/mcp/transports/session-registry.ts', 'connectionId: string');
