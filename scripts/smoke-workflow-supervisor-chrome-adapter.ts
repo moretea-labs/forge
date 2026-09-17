@@ -7,6 +7,8 @@ import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/prot
 import { WorkflowSupervisorStore } from '../supervisor/store';
 import { NativeMessageDecoder, encodeNativeMessage } from '../supervisor/native-messaging/protocol';
 import { renderWorkflowSupervisorNativeManifest } from '../supervisor/native-messaging/manifest';
+import { ALLOWED_BROWSER_METHODS } from '../supervisor/native-messaging/host';
+import { WorkflowSupervisorEphemeralDiscovery } from '../supervisor/server';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-chrome-'));
 try {
@@ -43,6 +45,20 @@ try {
   const manifest = JSON.parse(renderWorkflowSupervisorNativeManifest({ executablePath: '/tmp/forge-workflow-supervisor-host', extensionId: 'a'.repeat(32) }));
   assert.equal(manifest.allowed_origins[0], `chrome-extension://${'a'.repeat(32)}/`);
 
+  const discovery = new WorkflowSupervisorEphemeralDiscovery();
+  const discovered = discovery.update([
+    { conversation_id: conversationId, canonical_url: conversationUrl, title: ' Avela development ' },
+    { conversation_id: conversationId, canonical_url: conversationUrl, title: 'duplicate tab' },
+    { conversation_id: doneConversationId, canonical_url: doneConversationUrl },
+  ]);
+  assert.equal(discovered.conversations.length, 2);
+  assert.deepEqual(discovered.conversations[0], { conversationId, canonicalUrl: conversationUrl, title: 'Avela development' });
+  assert.equal(discovery.get().conversations[1]?.canonicalUrl, doneConversationUrl);
+  assert.equal(control.browserTasks().length, 1);
+  assert.equal(ALLOWED_BROWSER_METHODS.has('browser_discovery'), true);
+  assert.equal(ALLOWED_BROWSER_METHODS.has('browser_discovery_update'), true);
+  assert.throws(() => discovery.update([{ conversation_id: conversationId, canonical_url: 'https://example.com/c/not-chatgpt' }]), /CHATGPT_URL_INVALID/);
+
   const coreSource = readFileSync(resolve('supervisor/chrome-extension/core.js'), 'utf8');
   new Function(coreSource)();
   const browserCore = (globalThis as unknown as { ForgeWorkflowSupervisorChromeCore: { parseConversation(value: string): { conversationId: string; canonicalUrl: string } | null; isCommittedAssistantResponse(value: string): boolean; promptHasEffect(prompt: string, effectId: string): boolean } }).ForgeWorkflowSupervisorChromeCore;
@@ -50,5 +66,9 @@ try {
   assert.equal(browserCore.parseConversation(`https://example.com/c/${conversationId}`), null);
   assert.equal(browserCore.isCommittedAssistantResponse(response), true);
   assert.equal(browserCore.promptHasEffect(enrollment.prompt, enrollment.effectId), true);
+  const backgroundSource = readFileSync(resolve('supervisor/chrome-extension/background.js'), 'utf8');
+  const discoverySource = backgroundSource.slice(backgroundSource.indexOf('async function publishDiscovery'), backgroundSource.indexOf('async function refreshAuthorizedTabs'));
+  assert.ok(discoverySource.includes("browser_discovery_update"));
+  for (const forbidden of ['task_register', 'reserve_enrollment', 'browser_begin_effect', 'forge-workflow-supervisor-effect']) assert.equal(discoverySource.includes(forbidden), false);
   console.log('[workflow-supervisor-chrome-smoke] OK');
 } finally { rmSync(home, { recursive: true, force: true }); }

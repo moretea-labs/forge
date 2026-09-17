@@ -54,10 +54,23 @@ async function handlePage(message, sender) {
   const poll = await nativeRpc('browser_poll', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl });
   if (poll?.command) await act(tabId, identity, poll.command);
 }
+async function publishDiscovery(tabs) {
+  const seen = new Set();
+  const conversations = [];
+  for (const tab of tabs) {
+    const identity = core.parseConversation(tab.url ?? '');
+    if (!identity || seen.has(identity.conversationId) || conversations.length >= 64) continue;
+    seen.add(identity.conversationId);
+    const title = String(tab.title ?? '').trim();
+    conversations.push({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}) });
+  }
+  return nativeRpc('browser_discovery_update', { conversations });
+}
 async function refreshAuthorizedTabs() {
+  const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  await publishDiscovery(tabs).catch(() => undefined);
   const result = await nativeRpc('browser_tasks');
   const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
-  const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
   for (const task of tasks) {
     const target = core.parseConversation(task.conversationUrl);
     if (!target || target.conversationId !== task.conversationId) continue;

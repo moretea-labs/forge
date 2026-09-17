@@ -3,9 +3,43 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
+import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 
 interface RpcRequest { id: string; method: string; params: Record<string, unknown> }
 const MAX_REQUEST_BYTES = 1024 * 1024;
+const MAX_DISCOVERED_CONVERSATIONS = 64;
+const MAX_DISCOVERY_TITLE_CHARS = 512;
+
+export interface WorkflowSupervisorDiscoveredConversation {
+  conversationId: string;
+  canonicalUrl: string;
+  title?: string;
+}
+export interface WorkflowSupervisorDiscoverySnapshot {
+  observedAt: string;
+  conversations: WorkflowSupervisorDiscoveredConversation[];
+}
+export class WorkflowSupervisorEphemeralDiscovery {
+  private snapshot: WorkflowSupervisorDiscoverySnapshot = { observedAt: '', conversations: [] };
+  update(value: unknown): WorkflowSupervisorDiscoverySnapshot {
+    if (!Array.isArray(value) || value.length > MAX_DISCOVERED_CONVERSATIONS) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_INVALID');
+    const seen = new Set<string>();
+    const conversations: WorkflowSupervisorDiscoveredConversation[] = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_INVALID');
+      const record = entry as Record<string, unknown>;
+      const identity = parseChatgptConversationIdentity(String(record.canonical_url ?? ''));
+      if (String(record.conversation_id ?? '') !== identity.conversationId) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_IDENTITY_MISMATCH');
+      if (seen.has(identity.conversationId)) continue;
+      seen.add(identity.conversationId);
+      const rawTitle = typeof record.title === 'string' ? record.title.trim() : '';
+      conversations.push({ conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl, ...(rawTitle ? { title: rawTitle.slice(0, MAX_DISCOVERY_TITLE_CHARS) } : {}) });
+    }
+    this.snapshot = { observedAt: new Date().toISOString(), conversations };
+    return this.get();
+  }
+  get(): WorkflowSupervisorDiscoverySnapshot { return structuredClone(this.snapshot); }
+}
 
 function request(value: unknown): RpcRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('WORKFLOW_SUPERVISOR_RPC_INVALID');
@@ -18,6 +52,7 @@ function reply(socket: Socket, id: string, result: unknown): void { socket.write
 function fail(socket: Socket, id: string, error: unknown): void { const message = error instanceof Error ? error.message : String(error); socket.write(`${JSON.stringify({ id, ok: false, error: { code: message.split(':')[0], message } })}\n`); }
 
 export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string }): Server {
+  const discovery = new WorkflowSupervisorEphemeralDiscovery();
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0); let chain = Promise.resolve();
     socket.on('data', (chunk: Buffer) => {
@@ -28,7 +63,7 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
         const raw = buffer.subarray(0, newline).toString('utf8'); buffer = buffer.subarray(newline + 1);
         chain = chain.then(async () => {
           let id = 'invalid';
-          try { const req = request(JSON.parse(raw)); id = req.id; reply(socket, id, await dispatch(input.controlPlane, req)); } catch (error) { fail(socket, id, error); }
+          try { const req = request(JSON.parse(raw)); id = req.id; reply(socket, id, await dispatch(input.controlPlane, discovery, req)); } catch (error) { fail(socket, id, error); }
         });
         newline = buffer.indexOf(0x0a);
       }
@@ -48,9 +83,11 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
   return server;
 }
 
-async function dispatch(control: WorkflowSupervisorControlPlane, req: RpcRequest): Promise<unknown> {
+async function dispatch(control: WorkflowSupervisorControlPlane, discovery: WorkflowSupervisorEphemeralDiscovery, req: RpcRequest): Promise<unknown> {
   const p = req.params;
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
+  if (req.method === 'browser_discovery') return discovery.get();
+  if (req.method === 'browser_discovery_update') return discovery.update(p.conversations);
   if (req.method === 'browser_tasks') return { tasks: control.browserTasks() };
   if (req.method === 'browser_poll') return control.browserPoll({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url') });
   if (req.method === 'browser_begin_effect') return control.browserBeginEffect({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), effectId: text(p, 'effect_id'), dispatchId: text(p, 'dispatch_id'), dispatchGeneration: positiveInteger(p, 'dispatch_generation'), evidence: object(p.evidence) });
