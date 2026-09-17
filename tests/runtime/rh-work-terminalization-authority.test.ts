@@ -4420,6 +4420,23 @@ describe('rh_work terminalization authority', () => {
     execFileSync('git', ['commit', '-m', 'target advance before managed review'], { cwd: fx.repoRoot });
     const targetBeforeReview = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
 
+    const retainedBeforeReview = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        commit: true,
+        merge: false,
+        cleanup: false,
+      },
+    ));
+    expect(JSON.stringify(retainedBeforeReview)).toContain('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetBeforeReview);
+
     const firstReviewResult = structured(await callRuntimeTool(
       ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
       'rh_work',

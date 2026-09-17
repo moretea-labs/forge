@@ -1375,6 +1375,14 @@ export function resetFinalizationStagesForRequest(
     next.merge = 'pending';
     reset = true;
   }
+  // A prior explicit merge=false may intentionally retain a committed Work
+  // candidate for later delivery. A subsequent explicit merge=true is a new
+  // delivery request, so re-arm that skipped merge once a materialized commit
+  // exists. Cleanup-only requests keep the earlier retained delivery semantics.
+  if (wants.merge && next.merge === 'skipped' && next.commit === 'done') {
+    next.merge = 'pending';
+    reset = true;
+  }
   if (wants.cleanup && next.worktreeCleanup === 'failed') {
     next.worktreeCleanup = 'pending';
     reset = true;
