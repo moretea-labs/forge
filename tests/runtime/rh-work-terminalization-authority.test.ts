@@ -4363,6 +4363,135 @@ describe('rh_work terminalization authority', () => {
     expect(implementationReviewCommittedBaseRevision(selectedWorktree, handle, baseRevision, candidateHead, 'main')).toBe(baseRevision);
   }, 15_000);
 
+  test('managed review prepares the exact target-reconciled candidate and finalize never rewrites it after a later target advance', async () => {
+    const fx = fixture();
+    const workId = 'work-managed-review-exact-delivery-candidate';
+    const caller = {
+      principalId: 'principal-managed-review-exact-candidate',
+      sessionId: 'transport-managed-review-exact-candidate',
+      controllerInstanceId: 'runtime-managed-review-exact-candidate',
+    };
+    const branch = 'work/managed-review-exact-delivery-candidate';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'managed-review-exact-delivery-candidate',
+      title: 'Managed Review Exact Delivery Candidate',
+      branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Review and deliver only an exact immutable managed Work candidate.',
+      acceptanceCriteria: ['Review sourceRevision is the exact delivery candidate and post-review target advancement cannot rewrite it.'],
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'review',
+      worktreeRef: workspace.root,
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      workId,
+      identity: { sessionId: caller.sessionId, principalId: caller.principalId },
+    });
+
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "managed-review-exact-candidate";\n');
+    writeFileSync(join(fx.repoRoot, 'target-before-review.txt'), 'target before review\n');
+    execFileSync('git', ['add', 'target-before-review.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance before managed review'], { cwd: fx.repoRoot });
+    const targetBeforeReview = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    const firstReviewResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'The exact committed candidate includes the current canonical target and only the Work-owned source delta.',
+      },
+    ));
+    expect(firstReviewResult.status).toBe('ok');
+    const reviewedCandidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(reviewedCandidate).not.toBe(workspace.baseRevision ?? undefined);
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetBeforeReview);
+    execFileSync('git', ['merge-base', '--is-ancestor', targetBeforeReview, reviewedCandidate], { cwd: workspace.root! });
+    const firstReviewedContract = getWorkContract(store, workId);
+    expect(firstReviewedContract?.implementationReviews.at(-1)?.sourceRevision).toBe(reviewedCandidate);
+    expect(firstReviewedContract).toMatchObject({ phase: 'delivery', phaseEvidence: { review: { state: 'satisfied' } } });
+
+    writeFileSync(join(fx.repoRoot, 'target-after-review.txt'), 'target after review\n');
+    execFileSync('git', ['add', 'target-after-review.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance after managed review'], { cwd: fx.repoRoot });
+    const targetAfterReview = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    const finalizeAfterAdvance = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: false },
+    ));
+    expect(finalizeAfterAdvance.error?.code).toBe('WORK_TARGET_ADVANCE_REVIEW_CANDIDATE_REQUIRED');
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim()).toBe(reviewedCandidate);
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetAfterReview);
+    expect(getWorkContract(store, workId)).toMatchObject({ phase: 'review', status: 'running' });
+
+    const secondReviewResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'Fresh review is bound to the new exact candidate prepared after the later target advance.',
+      },
+    ));
+    expect(secondReviewResult.status).toBe('ok');
+    const finalCandidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(finalCandidate).not.toBe(reviewedCandidate);
+    execFileSync('git', ['merge-base', '--is-ancestor', targetAfterReview, finalCandidate], { cwd: workspace.root! });
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetAfterReview);
+    expect(getWorkContract(store, workId)?.implementationReviews.at(-1)?.sourceRevision).toBe(finalCandidate);
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: true },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'completed',
+      workKind: 'repository_change',
+      completionOutcome: 'completed_changed',
+    });
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(finalCandidate);
+    expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
+
   test('isolated WorkHandle preserves approved review when physical validation only reuses exact current check evidence', async () => {
     const fx = fixture();
     const checkId = 'package:check:successor-finalize';
