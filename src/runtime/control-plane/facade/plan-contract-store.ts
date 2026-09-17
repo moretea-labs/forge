@@ -124,6 +124,21 @@ interface PlanRevisionRecordStore {
   revisions: PlanRevisionRecord[];
 }
 
+interface PlanExecutionBaselineRecord {
+  schemaVersion: 1;
+  repoId: string;
+  planId: string;
+  semanticSourceRevision: string;
+  executionBaselineRevision: string;
+  updatedAt: string;
+}
+
+interface PlanExecutionBaselineStore {
+  schemaVersion: 1;
+  updatedAt: string;
+  baselines: PlanExecutionBaselineRecord[];
+}
+
 function planRevisionRecordKey(planId: string, revision: number): string {
   return `${sanitizeFileComponent(planId)}:r${revision}`;
 }
@@ -307,6 +322,61 @@ function updatePlanContract(
   );
 }
 
+function updatePlanContractWithExecutionBaseline(
+  options: PlanContractStoreOptions,
+  planId: string,
+  mutate: (current: PlanContract, executionBaselineRevision: string) => { plan: PlanContract; executionBaselineRevision: string },
+): PlanContract {
+  const key = sanitizeFileComponent(planId);
+  const apply = (): PlanContract => {
+    const store = readPlanContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.planId === key);
+    if (index < 0) throw new Error(`plan contract not found: ${key}`);
+    const current = store.contracts[index]!;
+    const currentBaseline = getPlanExecutionBaselineRevision(options, current);
+    const next = mutate(current, currentBaseline);
+    const baseline: PlanExecutionBaselineRecord = {
+      schemaVersion: 1, repoId: current.repoId, planId: current.planId, semanticSourceRevision: next.plan.sourceRevision,
+      executionBaselineRevision: next.executionBaselineRevision.trim() || next.plan.sourceRevision, updatedAt: next.plan.updatedAt,
+    };
+    if (!sqliteBacked(options)) {
+      const baselineStore = readJsonFile<PlanExecutionBaselineStore>(planExecutionBaselineStorePath(options), {
+        schemaVersion: 1, updatedAt: baseline.updatedAt, baselines: [],
+      });
+      const baselineIndex = baselineStore.baselines.findIndex((record) => record.planId === key);
+      const baselines = [...baselineStore.baselines];
+      if (baselineIndex >= 0) baselines[baselineIndex] = baseline; else baselines.unshift(baseline);
+      writeJsonAtomic(planExecutionBaselineStorePath(options), { schemaVersion: 1, updatedAt: baseline.updatedAt, baselines });
+      const contracts = [...store.contracts];
+      contracts[index] = next.plan;
+      writePlanContractStore(options, { schemaVersion: 1, updatedAt: next.plan.updatedAt, contracts });
+      return next.plan;
+    }
+    return withControlPlaneTransaction(options.controllerHome!, (database) => {
+      const planRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId!, key);
+      if (!planRecord || JSON.stringify(planRecord.value) !== JSON.stringify(current)) throw new Error(`PLAN_EXECUTION_BASELINE_STALE: ${key}`);
+      const baselineRecord = readControlPlaneRecordWithinTransaction<PlanExecutionBaselineRecord>(database, 'plan_execution_baseline', options.repoId!, key);
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract', scope: options.repoId!, key, schemaVersion: 1, value: next.plan,
+        action: 'plan_contract_execution_claim', expectedRevision: planRecord.revision,
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_execution_baseline', scope: options.repoId!, key, schemaVersion: 1, value: baseline,
+        action: 'plan_execution_baseline_write', expectedRevision: baselineRecord?.revision ?? null,
+      });
+      return next.plan;
+    });
+  };
+  if (!options.controllerHome || !options.repoId) return apply();
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `plan-${key}` },
+    'plan-contract-execution-baseline',
+    apply,
+    15_000,
+  );
+}
+
 function assertRequirementReference(options: PlanContractStoreOptions, requirementId: string | undefined): void {
   const normalized = requirementId?.trim();
   if (!normalized || !options.controllerHome) return;
@@ -332,6 +402,42 @@ export function planContractRoot(location: PlanContractStoreLocation): string {
 
 export function planContractStorePath(location: PlanContractStoreLocation): string {
   return join(planContractRoot(location), 'index.json');
+}
+
+function planExecutionBaselineStorePath(location: PlanContractStoreLocation): string {
+  return join(planContractRoot(location), 'execution-baselines.json');
+}
+
+function readPlanExecutionBaselineRecord(options: PlanContractStoreOptions, planId: string): PlanExecutionBaselineRecord | undefined {
+  const key = sanitizeFileComponent(planId);
+  if (sqliteBacked(options)) {
+    return listControlPlaneRecords<PlanExecutionBaselineRecord>(options.controllerHome!, {
+      namespace: 'plan_execution_baseline', scope: options.repoId!, limit: 5_000,
+    }).map((record) => record.value).find((record) => record.planId === key);
+  }
+  const store = readJsonFile<PlanExecutionBaselineStore>(planExecutionBaselineStorePath(options), {
+    schemaVersion: 1, updatedAt: nowIso(options), baselines: [],
+  });
+  return store.baselines.find((record) => record.planId === key);
+}
+
+function persistedPlanExecutionBaselineRevision(options: PlanContractStoreOptions, plan: PlanContract): string {
+  const record = readPlanExecutionBaselineRecord(options, plan.planId);
+  return record?.semanticSourceRevision === plan.sourceRevision && record.executionBaselineRevision.trim()
+    ? record.executionBaselineRevision.trim()
+    : plan.sourceRevision;
+}
+
+export function getPlanExecutionBaselineRevision(options: PlanContractStoreOptions, planOrId: PlanContract | string): string {
+  const plan = typeof planOrId === 'string' ? getPlanContract(options, planOrId) : planOrId;
+  if (!plan) throw new Error(`plan contract not found: ${sanitizeFileComponent(String(planOrId))}`);
+  const activeStep = plan.steps.find((step) => (step.status === 'executing' || step.status === 'validating') && step.workId);
+  if (options.controllerHome && options.repoId && activeStep?.workId) {
+    const work = getWorkContract(options, activeStep.workId);
+    const frozenBase = work?.baseRevision?.trim();
+    if (frozenBase && work?.planId === plan.planId && work.planStepId === activeStep.id) return frozenBase;
+  }
+  return persistedPlanExecutionBaselineRevision(options, plan);
 }
 
 export function planRevisionStorePath(location: PlanContractStoreLocation): string {
@@ -1432,25 +1538,30 @@ export function claimPlanStepForWork(
   options: PlanContractStoreOptions,
   input: { planId: string; stepId: string; workId: string; sourceRevision: string },
 ): PlanContract {
-  return updatePlanContract(options, input.planId, (current) => {
+  return updatePlanContractWithExecutionBaseline(options, input.planId, (current, executionBaselineRevision) => {
     assertRequirementReference(options, current.requirementId);
     if (current.status !== 'approved' && current.status !== 'executing') {
       throw new Error(`PLAN_NOT_EXECUTABLE: ${current.planId} is ${current.status}`);
     }
-    if (current.sourceRevision !== input.sourceRevision) {
-      return { ...current, status: 'invalidated_by_drift', updatedAt: nowIso(options) };
+    let nextExecutionBaseline = executionBaselineRevision;
+    if (executionBaselineRevision !== input.sourceRevision) {
+      const activeStep = current.steps.find((candidate) => candidate.status === 'executing' || candidate.status === 'validating');
+      if (activeStep) {
+        throw new Error(`PLAN_EXECUTION_BASELINE_LOCKED: ${current.planId}:${activeStep.id}:${executionBaselineRevision}`);
+      }
+      nextExecutionBaseline = input.sourceRevision;
     }
     const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
     if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
     const step = current.steps[stepIndex];
-    if (step.status === 'executing' || step.workId) throw new Error(`PLAN_STEP_ALREADY_ACTIVE: ${step.id}`);
+    if (step.status === 'executing' || step.status === 'validating') throw new Error(`PLAN_STEP_ALREADY_ACTIVE: ${step.id}`);
     if (step.status === 'completed') throw new Error(`PLAN_STEP_ALREADY_COMPLETED: ${step.id}`);
     const unresolved = step.dependencies.filter((dependency) => current.steps.find((candidate) => candidate.id === dependency)?.status !== 'completed');
     if (unresolved.length > 0) throw new Error(`PLAN_STEP_DEPENDENCIES_PENDING: ${unresolved.join(', ')}`);
     const at = nowIso(options);
     const steps = [...current.steps];
     steps[stepIndex] = { ...step, status: 'executing', workId: input.workId };
-    return { ...current, status: 'executing', steps, updatedAt: at };
+    return { plan: { ...current, status: 'executing', steps, updatedAt: at }, executionBaselineRevision: nextExecutionBaseline };
   });
 }
 
@@ -1519,7 +1630,7 @@ export function repairPlanStepForTechnicalRetry(
   return updatePlanContract(options, work.planId, (current) => {
     if (current.status !== 'replanning') throw new Error(`PLAN_STEP_TECHNICAL_RETRY_PLAN_STATUS_INVALID: ${current.planId}:${current.status}`);
     if (current.sourceRevision !== work.planSourceRevision) {
-      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_SOURCE_MISMATCH: ${current.planId}:plan=${current.sourceRevision}:work=${work.planSourceRevision}`);
+      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_SEMANTIC_SOURCE_MISMATCH: ${current.planId}:plan=${current.sourceRevision}:work=${work.planSourceRevision}`);
     }
     if (work.requirementId !== current.requirementId) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_REQUIREMENT_MISMATCH: ${work.workId}`);
     const stepIndex = current.steps.findIndex((step) => step.id === work.planStepId);
@@ -1596,11 +1707,11 @@ export function acceptPlanStepEvidence(
   const reviewer = input.reviewer.trim();
   const rationale = input.rationale.trim();
   if (!reviewer || !rationale) throw new Error('PLAN_STEP_SEMANTIC_ACCEPTANCE_METADATA_REQUIRED');
-  return updatePlanContract(options, input.planId, (current) => {
+  return updatePlanContractWithExecutionBaseline(options, input.planId, (current, executionBaselineRevision) => {
     const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
     if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
     const step = current.steps[stepIndex];
-    if (step.status === 'completed') return current;
+    if (step.status === 'completed') return { plan: current, executionBaselineRevision };
     if (step.status !== 'validating') throw new Error(`PLAN_STEP_NOT_READY_FOR_SEMANTIC_ACCEPTANCE: ${step.id} is ${step.status}`);
     const steps = [...current.steps];
     steps[stepIndex] = {
@@ -1611,12 +1722,15 @@ export function acceptPlanStepEvidence(
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
     const projectedSteps = allCompleted ? steps : projectDependencyReadySteps(steps);
     const acceptedSourceRevision = input.acceptedSourceRevision?.trim();
+    const updatedAt = nowIso(options);
     return {
-      ...current,
-      ...(acceptedSourceRevision ? { sourceRevision: acceptedSourceRevision } : {}),
-      status: current.pendingRevision ? 'replanning' : allCompleted ? 'finalized' : 'executing',
-      steps: projectedSteps,
-      updatedAt: nowIso(options),
+      plan: {
+        ...current,
+        status: current.pendingRevision ? 'replanning' : allCompleted ? 'finalized' : 'executing',
+        steps: projectedSteps,
+        updatedAt,
+      },
+      executionBaselineRevision: acceptedSourceRevision || executionBaselineRevision,
     };
   });
 }

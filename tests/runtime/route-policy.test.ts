@@ -10,7 +10,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, runGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { runGoalWorkloop as runGoalWorkloopWithAccess } from '../../src/runtime/control-plane/facade/goal-workloop-access';
-import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract, getPlanExecutionBaselineRevision } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
@@ -961,7 +961,7 @@ describe('single Route Policy authority', () => {
     expect(getWorkContract(context.workStore, firstWorkId!)).toBeTruthy();
   });
 
-  test('preserves the Direct fast path with unrelated active Work while retaining explicit ownership metadata', () => { const root = temp('route-direct-admission-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a', materializeIsolatedWorkspace: ({ workId }: { workId: string }) => ({ checkoutId: `isolated-${workId}`, root: join(root, workId), baseRevision: 'revision-a', managed: true as const }) }; const durable = routeWorkStart(context, { objective: 'Own the long-running repository change', modeInput: { scopeClear: true, mutation: true, expectedFiles: 5, expectedChangedLines: 250, requiresRecovery: true, risk: 'local_repo_write' }, }); const workId = (durable.data as { work?: { workId?: string } }).work?.workId; expect(workId).toBeTruthy(); const independentSmallEdit = routeWorkStart(context, { objective: 'Make one tiny independent edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(independentSmallEdit.status).toBe('ok'); expect(independentSmallEdit.summary).toContain('Direct control recommended'); expect(independentSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); const ownedSmallEdit = routeWorkStart(context, { objective: 'Make one tiny edit owned by the existing Work', relatedWorkId: workId, workRelation: 'continue', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(ownedSmallEdit.summary).toContain('Direct control recommended'); expect(ownedSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false, ownership: { workId, relation: 'continue', executionDepthPreserved: true } }); });
+  test('preserves the Direct fast path with unrelated active Work while retaining explicit ownership metadata', () => { const root = temp('route-direct-admission-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a', availableChecks: [{ id: 'package:check:type' }], materializeIsolatedWorkspace: ({ workId }: { workId: string }) => ({ checkoutId: `isolated-${workId}`, root: join(root, workId), baseRevision: 'revision-a', managed: true as const }) }; const durable = routeWorkStart(context, { objective: 'Own the long-running repository change', modeInput: { scopeClear: true, mutation: true, expectedFiles: 5, expectedChangedLines: 250, requiresRecovery: true, risk: 'local_repo_write' }, }); const workId = (durable.data as { work?: { workId?: string } }).work?.workId; expect(workId).toBeTruthy(); const independentSmallEdit = routeWorkStart(context, { objective: 'Make one tiny independent edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(independentSmallEdit.status).toBe('ok'); expect(independentSmallEdit.summary).toContain('Direct control recommended'); expect(independentSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); const ownedSmallEdit = routeWorkStart(context, { objective: 'Make one tiny edit owned by the existing Work', relatedWorkId: workId, workRelation: 'continue', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(ownedSmallEdit.summary).toContain('Direct control recommended'); expect(ownedSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false, ownership: { workId, relation: 'continue', executionDepthPreserved: true } }); });
   test('Requirement membership alone never aliases unrelated Work authorities', () => {
     const root = temp('route-semantic-admission-requirement-siblings-');
     const workStore = { root: join(root, 'work') };
@@ -1051,6 +1051,54 @@ describe('single Route Policy authority', () => {
     expect(resumed.summary).toContain('PLAN_STEP_REUSES_ACTIVE_WORK');
     expect(resumed.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId } });
   });
+  test('adopts the current execution baseline after a completed predecessor retains its Work link', () => {
+    const root = temp('route-plan-baseline-advance-');
+    const planStore = { root: join(root, 'plan') };
+    const workStore = { root: join(root, 'work') };
+    createPlanContract(planStore, {
+      planId: 'plan-baseline-advance', repoId: 'repo-a', scopeKey: 'baseline-advance', sourceRevision: 'revision-a', goal: 'Keep semantic Plan authority while execution baseline advances',
+      steps: [
+        { id: 'step-a', objective: 'Complete the first slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['First slice is accepted'] },
+        { id: 'step-b', objective: 'Implement on the current integrated source', dependencies: ['step-a'], authoritativeFiles: [], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Current source is frozen into the Work'] },
+      ],
+    });
+    approvePlanContract(planStore, 'plan-baseline-advance');
+
+    const first = routeWorkStart({
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a',
+    }, {
+      objective: 'Complete the first slice', planId: 'plan-baseline-advance', planStepId: 'step-a', workKind: 'completed_no_change',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId;
+    expect(firstWorkId).toBeTruthy();
+    completeNoChangePlanWork(workStore, firstWorkId!, 'revision-a');
+    completePlanStepForWork(planStore, { planId: 'plan-baseline-advance', stepId: 'step-a', work: getWorkContract(workStore, firstWorkId!)! });
+    acceptPlanStepEvidence(planStore, {
+      planId: 'plan-baseline-advance', stepId: 'step-a', reviewer: 'principal-a', rationale: 'First slice evidence satisfies the approved Plan step.', acceptedSourceRevision: 'revision-a',
+    });
+    expect(getPlanContract(planStore, 'plan-baseline-advance')?.steps[0]).toMatchObject({ status: 'completed', workId: firstWorkId });
+
+    const result = routeWorkStart({
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-b', principalId: 'principal-a', controllerInstanceId: 'controller-b',
+      sourceRevision: 'revision-b', availableChecks: [{ id: 'package:check:type' }],
+    }, {
+      objective: 'Implement on the current integrated source', planId: 'plan-baseline-advance', planStepId: 'step-b',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 2, expectedChangedLines: 80, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+
+    const workId = (result.data as { work?: { workId?: string } }).work?.workId;
+    expect(result.status).toBe('ok');
+    expect(workId).toBeTruthy();
+    expect(getPlanContract(planStore, 'plan-baseline-advance')).toMatchObject({ revision: 1, sourceRevision: 'revision-a', status: 'executing' });
+    expect(getPlanExecutionBaselineRevision(planStore, 'plan-baseline-advance')).toBe('revision-b');
+    expect(getWorkContract(workStore, workId!)).toMatchObject({
+      baseRevision: 'revision-b', planSourceRevision: 'revision-a', planId: 'plan-baseline-advance', planStepId: 'step-b',
+    });
+  });
+
   test('continues an accepted Plan goal into one explicit successor Work without inheriting transport identity', () => {
     const root = temp('route-plan-successor-work-');
     const planStore = { root: join(root, 'plan') };

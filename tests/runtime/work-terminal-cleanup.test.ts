@@ -168,6 +168,24 @@ describe('terminal Work cleanup', () => {
       branchCleanup: 'pending',
       worktreeCleanup: 'pending',
     });
+
+    expect(resetFinalizationStagesForRequest(
+      {
+        validation: 'done',
+        commit: 'skipped',
+        merge: 'skipped',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+      { commit: true, merge: true, cleanup: false },
+      { managedWorktree: true, workspaceDirty: true },
+    )).toEqual({
+      validation: 'done',
+      commit: 'pending',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
   });
   test('periodic reconciler retires a preserved branch residue from a cleaned complete terminal Work', async () => {
     const fx = fixture('cleaned-branch-residue');

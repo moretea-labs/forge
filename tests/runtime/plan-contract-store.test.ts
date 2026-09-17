@@ -10,6 +10,7 @@ import {
   completePlanStepForWork,
   createPlanContract,
   getPlanContract,
+  getPlanExecutionBaselineRevision,
   listPlanContracts,
   listUnresolvedPlanObligations,
   repairDraftPlanContract,
@@ -432,45 +433,47 @@ test('repeated committed replans advance one stable Plan while revision history 
   ]);
 });
 
-test('revises an explicitly invalidated Plan without hijacking an unrelated Requirement scope', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-invalidated-successor-'));
+test('advances the Plan execution baseline without semantic replanning when no step is active', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-execution-baseline-'));
   homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-invalidated-successor' };
-  createRequirement({ controllerHome: home }, {
-    requirementId: 'REQ-invalidated-successor',
-    title: 'Recover drifted Plan lineage',
-    outcomeStatement: 'A drifted Plan can revise its exact authority without replacing an unrelated Plan slice.',
-  });
-  const base = {
-    repoId: options.repoId,
-    requirementId: 'REQ-invalidated-successor',
-    sourceRevision: 'revision-a',
-    goal: 'Deliver one Plan slice',
+  const options = { controllerHome: home, repoId: 'repo-plan-execution-baseline' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-baseline-r1', repoId: options.repoId, scopeKey: 'release-scope', sourceRevision: 'revision-a', goal: 'Deliver one Plan slice',
     steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
-  };
-  expect(admitPlanContract(options, { ...base, planId: 'plan-r1', scopeKey: 'release-scope' }).plan?.planId).toBe('plan-r1');
-  approvePlanContract(options, 'plan-r1');
-  const invalidated = claimPlanStepForWork(options, {
-    planId: 'plan-r1', stepId: 'step-a', workId: 'work-never-created', sourceRevision: 'revision-b',
   });
-  expect(invalidated.status).toBe('invalidated_by_drift');
+  approvePlanContract(options, plan.planId);
 
-  const unrelated = admitPlanContract(options, { ...base, planId: 'plan-post-v2', scopeKey: 'post-v2-scope' });
-  expect(unrelated).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-post-v2', status: 'draft' } });
-
-  const staged = admitPlanContract(options, {
-    ...base,
-    planId: 'plan-r2',
-    scopeKey: 'release-scope',
-    sourceRevision: 'revision-b',
-    planRelation: 'extend',
-    relatedPlanId: 'plan-r1',
-    obligationDispositions: keepAllPlanObligations(invalidated),
+  const claimed = claimPlanStepForWork(options, {
+    planId: plan.planId, stepId: 'step-a', workId: 'work-baseline-b', sourceRevision: 'revision-b',
   });
-  expect(staged).toMatchObject({ admissionDecision: 'reuse_existing', reason: 'extend_existing', plan: { planId: 'plan-r1', status: 'replanning', pendingRevision: { revision: 2 } } });
-  expect(getPlanContract(options, 'plan-r2')).toBeUndefined();
-  expect(getPlanContract(options, 'plan-post-v2')?.status).toBe('draft');
-  expect(approvePlanContract(options, 'plan-r1')).toMatchObject({ planId: 'plan-r1', revision: 2, sourceRevision: 'revision-b' });
+  expect(claimed).toMatchObject({
+    revision: 1,
+    sourceRevision: 'revision-a',
+    status: 'executing',
+    steps: [{ id: 'step-a', status: 'executing', workId: 'work-baseline-b' }],
+  });
+  expect(getPlanExecutionBaselineRevision(options, plan.planId)).toBe('revision-b');
+});
+
+test('keeps the Plan execution baseline frozen while any step is active', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-execution-baseline-fence-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-plan-execution-baseline-fence' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-baseline-fence', repoId: options.repoId, scopeKey: 'release-scope', sourceRevision: 'revision-a', goal: 'Deliver independent slices',
+    steps: [
+      { id: 'step-a', objective: 'first', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['first done'] },
+      { id: 'step-b', objective: 'second', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['second done'] },
+    ],
+  });
+  approvePlanContract(options, plan.planId);
+  claimPlanStepForWork(options, { planId: plan.planId, stepId: 'step-a', workId: 'work-a', sourceRevision: 'revision-a' });
+
+  expect(() => claimPlanStepForWork(options, {
+    planId: plan.planId, stepId: 'step-b', workId: 'work-b', sourceRevision: 'revision-b',
+  })).toThrow(/PLAN_EXECUTION_BASELINE_LOCKED/);
+  expect(getPlanContract(options, plan.planId)).toMatchObject({ sourceRevision: 'revision-a', steps: [{ id: 'step-a', workId: 'work-a' }, { id: 'step-b' }] });
+  expect(getPlanExecutionBaselineRevision(options, plan.planId)).toBe('revision-a');
 });
 
 test('does not allow cancelled Plans to become extension predecessors', () => {

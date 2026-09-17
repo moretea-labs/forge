@@ -38,6 +38,7 @@ import {
   claimPlanStepForWork,
   completePlanStepForWork,
   getPlanContract,
+  getPlanExecutionBaselineRevision,
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
@@ -1304,22 +1305,23 @@ export function startGoalWorkloop(
     if (plan.status !== 'approved' && plan.status !== 'executing') {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_NOT_EXECUTABLE: ${plan.planId} is ${plan.status}`, data: { executionStarted: false, planId: plan.planId } });
     }
-    if (plan.sourceRevision !== ctx.sourceRevision) {
-      const invalidated = claimPlanStepForWork(ctx.planStore, {
-        planId: resolvedPlanId,
-        stepId: resolvedPlanStepId,
-        workId: generatedWorkId,
-        sourceRevision: ctx.sourceRevision,
-      });
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_SOURCE_DRIFT: ${invalidated.planId} was invalidated because its source revision no longer matches. Replan before execution.`,
-        data: { planId: invalidated.planId, executionStarted: false, workContractCreated: false, replanRequired: true },
-      });
+    const executionBaselineRevision = getPlanExecutionBaselineRevision(ctx.planStore, plan);
+    if (executionBaselineRevision !== ctx.sourceRevision) {
+      const activeStep = plan.steps.find((candidate) => candidate.status === 'executing' || candidate.status === 'validating');
+      if (activeStep) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_EXECUTION_BASELINE_LOCKED: ${plan.planId}:${activeStep.id}:${executionBaselineRevision}`,
+          data: { planId: plan.planId, planStepId: planStep.id, executionStarted: false, workContractCreated: false },
+        });
+      }
     }
     const unresolved = planStep.dependencies.filter((dependency) => plan.steps.find((candidate) => candidate.id === dependency)?.status !== 'completed');
     if (unresolved.length > 0) {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_DEPENDENCIES_PENDING: ${unresolved.join(', ')}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
+    }
+    if (planStep.status === 'executing' || planStep.status === 'validating') {
+      return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_ALREADY_ACTIVE: ${planStep.id}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
     }
     if (planStep.status === 'completed') {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_ALREADY_COMPLETED: ${planStep.id}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
@@ -1384,7 +1386,7 @@ export function startGoalWorkloop(
     predecessorWorkId: terminalContinuationSource?.workId,
     planId: resolvedPlanId,
     planStepId: resolvedPlanStepId,
-    planSourceRevision: resolvedPlanId ? ctx.sourceRevision : undefined,
+    planSourceRevision: resolvedPlanId ? plan?.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
     scopeEvidence: {
       initialLikelyPaths: [...new Set(input.initialLikelyPaths ?? effectiveAllowedPaths)].slice(0, 100),
@@ -1432,19 +1434,12 @@ export function startGoalWorkloop(
 
   if (resolvedPlanId && resolvedPlanStepId && ctx.planStore && ctx.sourceRevision) {
     try {
-      const claimed = claimPlanStepForWork(ctx.planStore, {
+      claimPlanStepForWork(ctx.planStore, {
         planId: resolvedPlanId,
         stepId: resolvedPlanStepId,
         workId: work.workId,
         sourceRevision: ctx.sourceRevision,
       });
-      if (claimed.status === 'invalidated_by_drift') {
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: `PLAN_SOURCE_DRIFT: ${claimed.planId} was invalidated because its source revision no longer matches. Repair or replan before execution.`,
-          data: { executionStarted: false, workContractCreated: true, work: summarizeWorkContract(work), planId: claimed.planId, canonicalWorkRetained: true, replanRequired: true },
-        });
-      }
     } catch (error) {
       return buildFacadeResult({
         status: 'blocked',
