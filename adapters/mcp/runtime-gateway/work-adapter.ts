@@ -33,10 +33,10 @@ import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workf
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation } from './work-requirement-operations';
-import { callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
+import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, acceptPlanStepEvidence, getPlanContract, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
@@ -681,62 +681,12 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           });
           if (planCreateOperationResult) return planCreateOperationResult;
 
+          const planAcceptStepOperationResult = callRhWorkPlanAcceptStepOperation(ctx, store, operation, args, { sourceRevision: workloopCtx.sourceRevision });
+          if (planAcceptStepOperationResult) return planAcceptStepOperationResult;
+
           if (operation.startsWith('plan_')) {
-            try {
-              if (operation === 'plan_accept_step') {
-                const identity = authenticatedFacadeControllerIdentity(ctx, args);
-                const planId = String(args.plan_id ?? '').trim();
-                const stepId = String(args.plan_step_id ?? '').trim();
-                const rationale = String(args.acceptance_rationale ?? '').trim();
-                const before = getPlanContract(store, planId);
-                const beforeStep = before?.steps.find((candidate) => candidate.id === stepId);
-                const predecessorWorkId = beforeStep?.workId?.trim();
-                const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
-                const claimedRelay = predecessorWorkId ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
-                const currentOwner = predecessorWorkId ? getControllerSession(store, predecessorWorkId) : undefined;
-                const claimedTerminalRound = Boolean(
-                  predecessorWork
-                  && predecessorWork.status === 'completed'
-                  && claimedRelay?.status === 'claimed'
-                );
-                if (claimedTerminalRound && predecessorWorkId) {
-                  // Semantic acceptance may occur after MCP/Runtime replacement or
-                  // physical Work-lease release, but a still-open terminal round is
-                  // fenced by its exact opaque capability. Never reclaim the Work.
-                  assertFacadeControllerRoundAuthority(ctx, store, predecessorWorkId, args);
-                  if (currentOwner) {
-                    if (currentOwner.controllerType !== identity.controllerType) throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${predecessorWorkId}`);
-                    if (currentOwner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${predecessorWorkId}`);
-                    if (controllerSessionPrincipalId(currentOwner) !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${predecessorWorkId}`);
-                  }
-                }
-                const plan = acceptPlanStepEvidence(store, {
-                  planId,
-                  stepId,
-                  reviewer: identity.principalId,
-                  rationale,
-                  acceptedSourceRevision: workloopCtx.sourceRevision,
-                });
-                const facade = buildFacadeResult({
-                  summary: `Plan step ${stepId} semantically accepted by the current Controller. Successor execution remains an explicit Controller start.`,
-                  data: {
-                    plan: summarizePlanContract(plan),
-                    semanticAcceptanceRecorded: true,
-                    reviewer: identity.principalId,
-                    ...(predecessorWorkId ? { predecessorWorkId } : {}),
-                    successorAdmissionRequired: plan.status !== 'finalized',
-                  },
-                  suggestedNextActions: plan.status === 'finalized'
-                    ? []
-                    : [{ label: 'Read the next approved Plan step', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
-                });
-                return result(facade as unknown as Record<string, unknown>);
-              }
-              throw new Error(`PLAN_OPERATION_NOT_ROUTED: ${operation}`);
-            } catch (error) {
-              const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PlanContract operation failed.', data: { operation, executionStarted: false } });
-              return result(facade as unknown as Record<string, unknown>, true);
-            }
+            const facade = buildFacadeResult({ status: 'blocked', summary: `PLAN_OPERATION_NOT_ROUTED: ${operation}`, data: { operation, executionStarted: false } });
+            return result(facade as unknown as Record<string, unknown>, true);
           }
   
           if (operation === 'repair') {

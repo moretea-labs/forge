@@ -1,7 +1,11 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import type { MultiRepositoryMcpToolContext } from '../multi-repository';
+import { controllerSessionPrincipalId, getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import {
   admitPlanContractAsync,
   approvePlanContractAsync,
+  acceptPlanStepEvidence,
   buildFacadeResult,
   getPlanContract,
   listPlanContracts,
@@ -13,6 +17,7 @@ import {
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { assertFacadeControllerRoundAuthority, authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
 import { result } from './result-adapter';
 
 const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([
@@ -270,6 +275,80 @@ export async function callRhWorkPlanCreateOperation(
       summary: `PlanContract ${plan.planId} created as draft after atomic authority admission; no execution was started.`,
       data: { plan: summarizePlanContract(plan), executionStarted: false, planContractCreated: true, admissionDecision: 'create_new' },
       suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
+    });
+    return result(facade as unknown as Record<string, unknown>);
+  } catch (error) {
+    const facade = buildFacadeResult({
+      status: 'blocked',
+      summary: error instanceof Error ? error.message : 'PlanContract operation failed.',
+      data: { operation, executionStarted: false },
+    });
+    return result(facade as unknown as Record<string, unknown>, true);
+  }
+}
+
+
+export interface RhWorkPlanAcceptStepContext {
+  sourceRevision?: string;
+}
+
+type RhWorkPlanAcceptStepStore = PlanContractStoreOptions & { controllerHome: string; repoId: string };
+
+/**
+ * Semantic PlanStep acceptance stays in the Plan adapter while exact terminal
+ * ControllerRound authority is proven through the canonical authority adapter.
+ */
+export function callRhWorkPlanAcceptStepOperation(
+  ctx: MultiRepositoryMcpToolContext,
+  store: RhWorkPlanAcceptStepStore,
+  operation: string,
+  args: Record<string, unknown>,
+  context: RhWorkPlanAcceptStepContext,
+): CallToolResult | undefined {
+  if (operation !== 'plan_accept_step') return undefined;
+  try {
+    const identity = authenticatedFacadeControllerIdentity(ctx, args);
+    const planId = String(args.plan_id ?? '').trim();
+    const stepId = String(args.plan_step_id ?? '').trim();
+    const rationale = String(args.acceptance_rationale ?? '').trim();
+    const before = getPlanContract(store, planId);
+    const beforeStep = before?.steps.find((candidate) => candidate.id === stepId);
+    const predecessorWorkId = beforeStep?.workId?.trim();
+    const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
+    const claimedRelay = predecessorWorkId ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
+    const currentOwner = predecessorWorkId ? getControllerSession(store, predecessorWorkId) : undefined;
+    const claimedTerminalRound = Boolean(
+      predecessorWork
+      && predecessorWork.status === 'completed'
+      && claimedRelay?.status === 'claimed'
+    );
+    if (claimedTerminalRound && predecessorWorkId) {
+      assertFacadeControllerRoundAuthority(ctx, store, predecessorWorkId, args);
+      if (currentOwner) {
+        if (currentOwner.controllerType !== identity.controllerType) throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${predecessorWorkId}`);
+        if (currentOwner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${predecessorWorkId}`);
+        if (controllerSessionPrincipalId(currentOwner) !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${predecessorWorkId}`);
+      }
+    }
+    const plan = acceptPlanStepEvidence(store, {
+      planId,
+      stepId,
+      reviewer: identity.principalId,
+      rationale,
+      acceptedSourceRevision: context.sourceRevision,
+    });
+    const facade = buildFacadeResult({
+      summary: `Plan step ${stepId} semantically accepted by the current Controller. Successor execution remains an explicit Controller start.`,
+      data: {
+        plan: summarizePlanContract(plan),
+        semanticAcceptanceRecorded: true,
+        reviewer: identity.principalId,
+        ...(predecessorWorkId ? { predecessorWorkId } : {}),
+        successorAdmissionRequired: plan.status !== 'finalized',
+      },
+      suggestedNextActions: plan.status === 'finalized'
+        ? []
+        : [{ label: 'Read the next approved Plan step', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
     });
     return result(facade as unknown as Record<string, unknown>);
   } catch (error) {
