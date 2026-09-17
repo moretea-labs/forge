@@ -3,7 +3,7 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync } from 'fs';
 import { relative, resolve, sep } from 'path';
 import { performance } from 'perf_hooks';
 import type { ProjectKnowledgeSource } from '../../../packages/kernel/work/api/index';
-import { matchesExperienceApplicability, type ExperienceApplicability, type ExperienceRecord } from '../../../packages/kernel/memory/api/index';
+import { matchesExperienceApplicability, memoryAddressKey, memoryAddressLabel, type ActivationPack, type ExperienceApplicability, type ExperienceRecord } from '../../../packages/kernel/memory/api/index';
 import { assertControlPlaneMetadataPayload } from '../control-plane/persistence/metadata-payload-policy';
 import { DEFAULT_CONTEXT_MAX_BYTES, DEFAULT_CONTEXT_MAX_ITEMS, DEFAULT_CONTEXT_MAX_TOKENS, MAX_CONTEXT_MAX_BYTES, MAX_CONTEXT_MAX_ITEMS, MAX_CONTEXT_MAX_TOKENS } from './context-plane';
 
@@ -16,6 +16,7 @@ export interface AssistantContextItem {
   kind: 'knowledge' | 'experience'; id: string; text: string; rank: number;
   sourceCoverage?: Array<{ sourceId: string; uri: string; digest: string; sourceRevision: string; modifiedAt: string }>;
   provenance: { uri: string; digest?: string; revision?: number; sourceRevision?: string; modifiedAt: string; startLine?: number; endLine?: number; evidenceRefs?: string[] };
+  activation?: { score: number; reasons: string[]; path: string[]; facets: string[]; concepts: string[] };
 }
 export interface AssistantContextResolution {
   schemaVersion: 1; projectId: string; items: AssistantContextItem[];
@@ -77,7 +78,7 @@ function budget(value: number | undefined, fallback: number, max: number): numbe
 
 export function resolveAssistantContext(input: {
   projectId: string; query: string; sources: readonly ProjectKnowledgeSource[]; knowledge: KnowledgeSourcePort;
-  experiences?: readonly ExperienceRecord[]; applicability?: ExperienceApplicability; now?: string;
+  experiences?: readonly ExperienceRecord[]; activation?: ActivationPack; applicability?: ExperienceApplicability; now?: string;
   maxItems?: number; maxBytes?: number; maxTokens?: number; maxReadBytes?: number; maxReadMs?: number; gaps?: readonly string[];
 }): AssistantContextResolution {
   if (!input.projectId.trim()) throw new Error('ASSISTANT_CONTEXT_PROJECT_REQUIRED');
@@ -120,7 +121,17 @@ export function resolveAssistantContext(input: {
       if (source.required) missing.add(source.id);
     }
   }
+  const activatedAddresses = new Set<string>();
+  for (const activated of input.activation?.items ?? []) {
+    const memory = activated.memory;
+    const address = { scope: memory.scope, id: memory.id };
+    const kind: AssistantContextItem['kind'] = ['experience', 'outcome'].includes(memory.provenance.sourceKind) ? 'experience' : 'knowledge';
+    candidates.push({ kind, id: memory.id, text: `[memory:${memory.facets.join(',')}] ${memory.canonicalText}${memory.counterEvidenceRefs.length ? '\nCounterevidence: ' + memory.counterEvidenceRefs.join(', ') : ''}`, rank: Math.round(activated.score * 1000), activation: { score: activated.score, reasons: activated.reasons.map(reason => `${reason.signal}:${reason.detail}`), path: activated.activationPath, facets: memory.facets, concepts: memory.concepts }, provenance: { uri: memoryAddressLabel(address), revision: memory.revision, modifiedAt: memory.provenance.recordedAt, evidenceRefs: memory.provenance.evidenceRefs } });
+    activatedAddresses.add(memoryAddressKey(address));
+  }
+  if (input.activation) gaps.push(...input.activation.gaps.map(gap => `cognition:${gap}`));
   for (const record of (input.experiences ?? []).slice(0, 32)) {
+    if (activatedAddresses.has(memoryAddressKey({ scope: record.scope, id: record.id }))) continue;
     if (record.retractedAt || record.expiresAt && Date.parse(record.expiresAt) <= now || !matchesExperienceApplicability(record.applicability, input.applicability ?? {})) continue;
     // The caller supplies lineage-filtered records; explicit foreign projects are never admitted.
     if (record.scope.kind === 'project' && record.scope.id !== input.projectId) continue;

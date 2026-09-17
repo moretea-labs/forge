@@ -3,8 +3,9 @@ import { configuredBrainRoot } from '../../cli/commands/brain-root';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
-import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
-import { controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
+import { memoryUnitFromExperience, recordCognitiveMemory, recordCognitiveMemoryEdge, recordExperience, recordOutcomeObservation, queryExperiences, type CognitiveWriteAuthorityPort, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
+import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
+import { activateCognitiveMemory, cognitionMemoryStore } from '../control-plane/persistence/cognition-store';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
@@ -76,10 +77,12 @@ export function prepareAssistantWorkContext(input: {
     published: publicationApplicability(input.controllerHome, work.workId),
   });
   const experiences = queryExperiences(controllerExperienceStore({ controllerHome: input.controllerHome, repoId: input.repoId, ...(input.now ? { now: () => input.now! } : {}) }), { scopes, applicability: applicability.value, now });
-  return resolveAssistantContext({ projectId: boundProject, query: input.query ?? work.objective,
+  const query = input.query ?? work.objective;
+  const activation = activateCognitiveMemory(input.controllerHome, scopes, query, { now, transientMemories: experiences.records.map(memoryUnitFromExperience) });
+  return resolveAssistantContext({ projectId: boundProject, query,
     sources,
     knowledge: fileKnowledgeSourcePort({ repoRoot, brainRoot: configuredBrainRoot(), sourceRevision: 'working-tree' }),
-    experiences: experiences.records, gaps: [...experiences.gaps, ...(applicability.conflict ? ['assistant_context_applicability_conflict'] : [])], applicability: applicability.value, now });
+    experiences: experiences.records, activation, gaps: [...experiences.gaps, ...(applicability.conflict ? ['assistant_context_applicability_conflict'] : [])], applicability: applicability.value, now });
 }
 
 export function renderAssistantWorkContext(input: Parameters<typeof prepareAssistantWorkContext>[0]): string | undefined {
@@ -94,6 +97,11 @@ export function renderAssistantWorkContext(input: Parameters<typeof prepareAssis
 
 export type ControllerOutcomeObservationDraft = Omit<OutcomeObservation, 'schemaVersion' | 'sourceWorkId' | 'sourceRoundId'>;
 export type ControllerExperienceDraft = Omit<ExperienceDraft, 'sourceWorkId' | 'sourceRoundId'>;
+export type ControllerMemoryDraft = Omit<MemoryUnitDraft, 'provenance' | 'validFrom'> & {
+  provenance: Omit<MemoryProvenance, 'sourceWorkId' | 'sourceRoundId' | 'recordedAt'>;
+  validFrom?: string;
+};
+export type ControllerMemoryEdgeDraft = Omit<MemoryEdgeDraft, 'sourceWorkId' | 'sourceRoundId' | 'recordedAt'> & { recordedAt?: string };
 
 function learningStoreOptions(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; now?: string }) {
   return { controllerHome: input.controllerHome, repoId: input.repoId, identity: input.identity, ...(input.now ? { now: () => input.now! } : {}) };
@@ -109,6 +117,39 @@ function currentLearningRound(input: { controllerHome: string; repoId: string; i
   const owner = getControllerSession(store, input.identity.workId);
   if (!owner || owner.controllerId !== input.identity.controllerId || !owner.claimGeneration) throw new Error('LEARNING_LOOP_CONTROLLER_CLAIM_REQUIRED');
   return { sourceWorkId: input.identity.workId, sourceRoundId: `${input.identity.workId}:${owner.claimGeneration}` };
+}
+
+function controllerCognitionAuthority(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; now?: string }): CognitiveWriteAuthorityPort {
+  const options = learningStoreOptions(input);
+  const requireLineage = (sourceWorkId: string | undefined, sourceRoundId: string | undefined, scope: ScopeRef) => {
+    if (!sourceWorkId || !sourceRoundId) throw new Error('COGNITION_CONTROLLER_LINEAGE_REQUIRED');
+    assertMemoryWriteAuthority(options, scope, sourceWorkId, sourceRoundId);
+  };
+  return {
+    assertMemoryWrite(memory) { requireLineage(memory.provenance.sourceWorkId, memory.provenance.sourceRoundId, memory.scope); },
+    assertEdgeWrite(edge) { requireLineage(edge.sourceWorkId, edge.sourceRoundId, edge.scope); },
+    evidenceAvailable(ref, scope, sourceWorkId) { return Boolean(sourceWorkId && canonicalWorkflowEvidenceAvailable(options, ref, scope, sourceWorkId)); },
+  };
+}
+
+export function recordControllerMemory(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerMemoryDraft; now?: string }): MemoryUnit {
+  const lineage = currentLearningRound(input);
+  const recordedAt = input.now ?? new Date().toISOString();
+  return recordCognitiveMemory(cognitionMemoryStore(input.controllerHome), controllerCognitionAuthority(input), {
+    ...input.draft,
+    provenance: { ...input.draft.provenance, sourceWorkId: lineage.sourceWorkId, sourceRoundId: lineage.sourceRoundId, recordedAt },
+    validFrom: input.draft.validFrom ?? recordedAt,
+  });
+}
+
+export function recordControllerMemoryEdge(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerMemoryEdgeDraft; now?: string }) {
+  const lineage = currentLearningRound(input);
+  return recordCognitiveMemoryEdge(cognitionMemoryStore(input.controllerHome), controllerCognitionAuthority(input), {
+    ...input.draft,
+    sourceWorkId: lineage.sourceWorkId,
+    sourceRoundId: lineage.sourceRoundId,
+    recordedAt: input.draft.recordedAt ?? input.now ?? new Date().toISOString(),
+  });
 }
 
 export function recordControllerOutcome(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerOutcomeObservationDraft; now?: string }): OutcomeObservation {

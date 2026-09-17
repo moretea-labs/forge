@@ -382,6 +382,11 @@ function withDatabaseForRead<T>(controllerHome: string, operation: (database: Sq
   }
 }
 
+/** Read-only snapshot boundary for domain stores that need several indexed lookups in one hot-path operation. */
+export function withControlPlaneReadDatabase<T>(controllerHome: string, operation: (database: SqliteDatabase) => T): T {
+  return withDatabaseForRead(controllerHome, operation);
+}
+
 function rowToRecord<T>(row: StoredRecordRow): ControlPlaneRecord<T> {
   let value: T;
   try {
