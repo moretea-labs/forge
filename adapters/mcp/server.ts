@@ -45,9 +45,11 @@ function isMultiRepositoryContext(ctx: ServerToolContext): ctx is MultiRepositor
   return 'controllerHome' in ctx;
 }
 
-function recordRequestId(args: Record<string, unknown>, rpcId: string | number | undefined): string {
+function recordRequestId(args: Record<string, unknown>, _rpcId: string | number | undefined): string {
   const explicit = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  return explicit || `mcp-rpc:${rpcId === undefined ? randomUUID() : String(rpcId)}`;
+  // Transport RPC ids are connection-local correlation only. They are not a
+  // semantic idempotency authority and may be recycled across unrelated calls.
+  return explicit || `mcp-call:${randomUUID()}`;
 }
 
 function firstTimingString(...values: unknown[]): string | undefined {
@@ -1013,9 +1015,9 @@ export function createForgeMcpServerFromContext(
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
-          const forwardedArgs = typeof args.request_id === 'string' && args.request_id.trim()
-            ? args
-            : { ...args, request_id: requestId };
+          // Keep trace correlation separate from Tool Contract idempotency. Only
+          // a caller-supplied request_id may authorize semantic replay/dedup.
+          const forwardedArgs = args;
           if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
           if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
         }

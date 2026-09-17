@@ -202,14 +202,12 @@ describe('repository command execution lifecycle', () => {
         timeoutMs: 10_000,
         executionIdentity: executionIdentityForRepository(repository),
       });
-      expect(shellForm.process).toBeDefined();
-      expect(shellForm.process?.processId).toStartWith('lightweight:');
-      expect(shellForm.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
-      const shellTerminal = shellForm.process!.completed
-        ? shellForm.process!
-        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, shellForm.process!.processId, { timeoutMs: 10_000 });
-      expect(shellTerminal).toMatchObject({ completed: true, ok: true });
-      expect(shellTerminal.stderr).not.toContain('runtime-authority@runtime-fence');
+      expect(shellForm.route).toBe('process_direct');
+      expect(shellForm.reason).toBe('readonly_fast_path');
+      expect(shellForm.ok).toBe(true);
+      expect(shellForm.process).toBeUndefined();
+      expect(shellForm.executionMetrics).toMatchObject({ lane: 'ephemeral_direct', durableWrites: 0, leaseOperations: 0 });
+      expect(shellForm.stderr).not.toContain('runtime-authority@runtime-fence');
       expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
     } finally {
       owner.release();

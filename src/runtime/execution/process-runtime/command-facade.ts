@@ -376,7 +376,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
   // immutable repository identity first, then execute through the authorized
   // non-persistent repository executor. Runtime/release durability is not a
   // command-execution tax.
-  const canonicalCommand = normalizeRepositoryCommand(input.command);
   if (decision.route === 'process_direct') {
     assertExecutionIdentity({
       controllerHome: input.controllerHome,
@@ -395,8 +394,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       allowOpaqueLocalScript: decision.reason === 'lightweight_local_shell_wrapper'
         || decision.reason === 'lightweight_local_inline_interpreter',
     };
-    const readonly = canonicalCommand.kind === 'argv'
-      && classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
+    const readonly = classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
     if (!readonly) {
       const deferLongPreparation = decision.reason === 'ephemeral_local_build_or_test';
       const interactiveWaitMs = deferLongPreparation

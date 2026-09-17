@@ -198,11 +198,13 @@ describe('MCP canonical Runtime proxy routing', () => {
       fingerprint: 'fixture-runtime-schema',
     };
     const observedSessions: string[] = [];
+    const observedRequestIds: Array<unknown> = [];
     let closeCalls = 0;
     const sharedProxy: CanonicalRuntimeProxy = {
       listTools: async () => ({ tools: runtimeSchema.definitions.map(mcpToolDefinitionToSdk) }),
-      callTool: async (ctx) => {
+      callTool: async (ctx, _name, args) => {
         observedSessions.push(ctx.sessionId ?? 'missing');
+        observedRequestIds.push(args.request_id);
         return {
           content: [{ type: 'text', text: '{"ok":true}' }],
           structuredContent: { ok: true },
@@ -210,7 +212,7 @@ describe('MCP canonical Runtime proxy routing', () => {
       },
       close: async () => { closeCalls += 1; },
     };
-    const invoke = async (sessionId: string): Promise<void> => {
+    const invoke = async (sessionId: string, requestId?: string): Promise<void> => {
       const context = {
         ...createMcpToolContext({ controllerHome, profile: 'controller' }),
         principalId: 'oauth-client:fixture',
@@ -223,16 +225,18 @@ describe('MCP canonical Runtime proxy routing', () => {
       const client = new Client({ name: `proxy-client-${sessionId}`, version: '1.0.0' }, { capabilities: {} });
       await client.connect(clientTransport);
       try {
-        await client.callTool({ name: 'rh_status', arguments: { request_id: `req-${sessionId}` } });
+        await client.callTool({ name: 'rh_status', arguments: requestId ? { request_id: requestId } : {} });
       } finally {
         await client.close();
         await server.close();
       }
     };
     try {
-      await invoke('outer-session-a');
+      await invoke('outer-session-a', 'explicit-request-a');
       await invoke('outer-session-b');
-      expect(observedSessions).toEqual(['outer-session-a', 'outer-session-b']);
+      await invoke('outer-session-c');
+      expect(observedSessions).toEqual(['outer-session-a', 'outer-session-b', 'outer-session-c']);
+      expect(observedRequestIds).toEqual(['explicit-request-a', undefined, undefined]);
       expect(closeCalls).toBe(0);
     } finally {
       await sharedProxy.close();
