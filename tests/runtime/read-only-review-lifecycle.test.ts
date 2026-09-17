@@ -142,7 +142,10 @@ describe('recoverable read-only review lifecycle', () => {
       modeInput: { scopeClear: true, mutation: false, requiresInvestigation: true, requiresRecovery: true, risk: 'readonly' },
     });
     const originalId = (original.data as { work?: { workId?: string } }).work?.workId!;
-    expect(stopGoalWorkloop(context, { workId: originalId, reason: 'Relay recovery requires a replacement review Work.' }).status).toBe('ok');
+    const stopped = stopGoalWorkloop(context, { workId: originalId, reason: 'Relay recovery requires a replacement review Work.' });
+    expect(stopped.status).toBe('ok');
+    expect(stopped.data).not.toHaveProperty('cleanupPending');
+    expect(stopped.data).not.toHaveProperty('worktreeDeleted');
     expect(getWorkContract(context.workStore, originalId)?.status).toBe('cancelled');
 
     const replacement = routeWorkStart(context, {

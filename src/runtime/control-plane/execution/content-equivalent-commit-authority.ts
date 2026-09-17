@@ -3,6 +3,7 @@ import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
   authoritativeImplementationReviewVerificationEvidence,
   deriveImplementationReviewAcrossCommit,
+  deriveImplementationReviewAcrossContentEquivalentRevision,
   getWorkContract,
   implementationReviewChangedPathDigest,
   implementationReviewEvidenceDigest,
@@ -39,14 +40,22 @@ export interface ReviewedContentEquivalentCommitTransferResult {
   recordedAt: string;
 }
 
-function existingTransferMatches(input: ReviewedContentEquivalentCommitTransferInput, work: WorkContract): WorkImplementationReviewRecord | undefined {
+interface PostRevisionReviewIdentity {
+  sourceRevision: string;
+  contentDigest: string;
+  verificationWorkspaceFingerprint: string;
+  changedPaths: readonly string[];
+  architectureEvidence: ImplementationReviewCandidateIdentity['architectureEvidence'];
+}
+
+function existingTransferMatches(input: PostRevisionReviewIdentity, work: WorkContract): WorkImplementationReviewRecord | undefined {
   const review = latestImplementationReview(work.implementationReviews);
   if (!review || review.derivation !== 'content_equivalent_commit' || review.decision !== 'approved') return undefined;
-  if (review.sourceRevision !== input.postCommitSourceRevision
-    || review.workspaceFingerprint !== input.postCommitContentDigest
-    || review.verificationWorkspaceFingerprint !== input.postCommitVerificationWorkspaceFingerprint
-    || review.changedPathDigest !== implementationReviewChangedPathDigest(input.postCommitChangedPaths)
-    || implementationReviewEvidenceDigest(review.architectureEvidence) !== implementationReviewEvidenceDigest(input.preCommitCandidate.architectureEvidence ?? [])) {
+  if (review.sourceRevision !== input.sourceRevision
+    || review.workspaceFingerprint !== input.contentDigest
+    || review.verificationWorkspaceFingerprint !== input.verificationWorkspaceFingerprint
+    || review.changedPathDigest !== implementationReviewChangedPathDigest(input.changedPaths)
+    || implementationReviewEvidenceDigest(review.architectureEvidence) !== implementationReviewEvidenceDigest(input.architectureEvidence ?? [])) {
     return undefined;
   }
   const verification = authoritativeImplementationReviewVerificationEvidence({
@@ -54,14 +63,117 @@ function existingTransferMatches(input: ReviewedContentEquivalentCommitTransferI
     workId: work.workId,
     requiredCheckIds: work.checks,
     records: work.checkRefs,
-    sourceRevision: input.postCommitSourceRevision,
-    workspaceFingerprint: input.postCommitVerificationWorkspaceFingerprint,
+    sourceRevision: input.sourceRevision,
+    workspaceFingerprint: input.verificationWorkspaceFingerprint,
   });
   if (verification.missingCheckIds.length > 0
     || implementationReviewEvidenceDigest(verification.evidence) !== implementationReviewEvidenceDigest(review.verificationEvidence)) {
     return undefined;
   }
   return review;
+}
+
+export interface ReviewedContentEquivalentRevisionTransferInput {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  preRevisionCandidate: ImplementationReviewCandidateIdentity;
+  transferredVerificationRecords: Readonly<WorkContract['checkRefs']>;
+  postRevisionSourceRevision: string;
+  postRevisionContentDigest: string;
+  postRevisionVerificationWorkspaceFingerprint: string;
+  postRevisionChangedPaths: readonly string[];
+  recordedAt?: string;
+}
+
+/**
+ * Re-bind exact review authority after delivery-time revision reconciliation.
+ * The caller owns the Git mutation and supplies only verification records whose
+ * authority has already been proven transferable. This helper atomically binds
+ * those records and a derived review to the same immutable post-revision candidate.
+ */
+export function transferReviewedWorkAuthorityAcrossContentEquivalentRevision(
+  input: ReviewedContentEquivalentRevisionTransferInput,
+): ReviewedContentEquivalentCommitTransferResult {
+  const recordedAt = input.recordedAt ?? new Date().toISOString();
+  const current = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.workId);
+  if (!current || current.completionReceipt) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${input.workId}`);
+
+  const postIdentity: PostRevisionReviewIdentity = {
+    sourceRevision: input.postRevisionSourceRevision,
+    contentDigest: input.postRevisionContentDigest,
+    verificationWorkspaceFingerprint: input.postRevisionVerificationWorkspaceFingerprint,
+    changedPaths: input.postRevisionChangedPaths,
+    architectureEvidence: input.preRevisionCandidate.architectureEvidence ?? [],
+  };
+  const existing = existingTransferMatches(postIdentity, current);
+  if (existing) {
+    return {
+      transferred: true,
+      reusedExistingTransfer: true,
+      reusableCheckIds: [...current.checks],
+      invalidatedCheckIds: [],
+      derivedReview: existing,
+      contract: current,
+      recordedAt,
+    };
+  }
+
+  const plannedRecords = [...input.transferredVerificationRecords, ...current.checkRefs];
+  const postVerification = authoritativeImplementationReviewVerificationEvidence({
+    repoId: current.repoId,
+    workId: current.workId,
+    requiredCheckIds: current.checks,
+    records: plannedRecords,
+    sourceRevision: input.postRevisionSourceRevision,
+    workspaceFingerprint: input.postRevisionVerificationWorkspaceFingerprint,
+  });
+  if (postVerification.missingCheckIds.length > 0) {
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
+  }
+  const postCandidate: ImplementationReviewCandidateIdentity = {
+    sourceRevision: input.postRevisionSourceRevision,
+    workspaceFingerprint: input.postRevisionContentDigest,
+    verificationWorkspaceFingerprint: input.postRevisionVerificationWorkspaceFingerprint,
+    changedPaths: input.postRevisionChangedPaths,
+    verificationEvidence: postVerification.evidence,
+    architectureEvidence: input.preRevisionCandidate.architectureEvidence ?? [],
+  };
+  const derivedReview = deriveImplementationReviewAcrossContentEquivalentRevision({
+    workId: current.workId,
+    reviews: current.implementationReviews,
+    proof: {
+      preRevisionCandidate: input.preRevisionCandidate,
+      postRevisionCandidate: postCandidate,
+      preRevisionContentDigest: input.preRevisionCandidate.workspaceFingerprint,
+      postRevisionContentDigest: input.postRevisionContentDigest,
+      postRevisionVerificationAuthority: {
+        repoId: current.repoId,
+        workId: current.workId,
+        requiredCheckIds: current.checks,
+        records: plannedRecords,
+      },
+    },
+    derivedReviewId: `REV-revision-${createHash('sha256').update(`${current.workId}\0${input.postRevisionSourceRevision}\0${input.postRevisionContentDigest}`).digest('hex').slice(0, 20)}`,
+    recordedAt,
+  });
+  const contract = recordContentEquivalentCommitAuthorityTransfer(
+    { controllerHome: input.controllerHome, repoId: input.repository.repoId },
+    input.workId,
+    {
+      transferredVerificationRecords: [...input.transferredVerificationRecords],
+      derivedReview,
+    },
+  );
+  return {
+    transferred: true,
+    reusedExistingTransfer: false,
+    reusableCheckIds: [...current.checks],
+    invalidatedCheckIds: [],
+    derivedReview,
+    contract,
+    recordedAt,
+  };
 }
 
 /**
@@ -76,7 +188,13 @@ export function transferReviewedWorkAuthorityAcrossContentEquivalentCommit(
   const current = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.workId);
   if (!current || current.completionReceipt) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${input.workId}`);
 
-  const existing = existingTransferMatches(input, current);
+  const existing = existingTransferMatches({
+    sourceRevision: input.postCommitSourceRevision,
+    contentDigest: input.postCommitContentDigest,
+    verificationWorkspaceFingerprint: input.postCommitVerificationWorkspaceFingerprint,
+    changedPaths: input.postCommitChangedPaths,
+    architectureEvidence: input.preCommitCandidate.architectureEvidence ?? [],
+  }, current);
   if (existing) {
     return {
       transferred: true,

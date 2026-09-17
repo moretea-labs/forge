@@ -22,6 +22,7 @@ import {
 } from '../../packages/kernel/work/api/index';
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import { transferReviewedWorkAuthorityAcrossContentEquivalentRevision } from '../../src/runtime/control-plane/execution/content-equivalent-commit-authority';
 import type { VerificationRecord } from '../../packages/kernel/work/api/index';
 
 const roots: string[] = [];
@@ -188,5 +189,179 @@ describe('content-equivalent commit authority transfer', () => {
     expect(after.implementationReviews).toEqual(before.implementationReviews);
     expect(after.phase).toBe(before.phase);
     expect(after.evidenceState).toBe(before.evidenceState);
+  });
+});
+
+
+describe('content-equivalent revision authority transfer', () => {
+  test('rebinds exact review authority when revision identity changes but reviewed content and scope do not', () => {
+    const fx = fixture();
+    writeFileSync(join(fx.repoRoot, 'example.ts'), 'export const value = 2;\n');
+    const preStatus = repositoryGitStatus(fx.repository);
+    const preWorkspace = workspaceValidationFingerprint(fx.repoRoot, preStatus);
+    const contentDigest = implementationReviewContentFingerprint(fx.repoRoot, ['example.ts']);
+    const preRecord = verificationRecord({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: fx.workId,
+      checkId: fx.checkId,
+      sourceRevision: fx.sourceRevision,
+      workspaceFingerprint: preWorkspace,
+      receiptId: 'receipt-revision-pre',
+    });
+    appendVerificationRecord({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, preRecord);
+    transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Pre-revision verification passed.',
+    });
+    recordWorkEvidenceState({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, 'valid');
+    requestWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, 'Review exact pre-revision candidate.');
+    const parent: WorkImplementationReviewRecord = {
+      schemaVersion: 1,
+      reviewId: 'review-revision-parent',
+      workId: fx.workId,
+      reviewerPrincipalId: 'test-reviewer',
+      decision: 'approved',
+      rationale: 'Exact pre-revision candidate approved.',
+      findings: [],
+      sourceRevision: fx.sourceRevision,
+      workspaceFingerprint: contentDigest,
+      verificationWorkspaceFingerprint: preWorkspace,
+      changedPaths: ['example.ts'],
+      changedPathDigest: implementationReviewChangedPathDigest(['example.ts']),
+      acceptanceCriteriaSummary: 'Exact pre-revision candidate approved.',
+      verificationEvidence: [{ evidenceId: 'receipt-revision-pre', digest: 'digest-receipt-revision-pre' }],
+      architectureEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
+    recordWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, parent);
+
+    execFileSync('git', ['add', 'example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'materialize reviewed content'], { cwd: fx.repoRoot });
+    const postRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const postWorkspace = workspaceValidationFingerprint(fx.repoRoot, repositoryGitStatus(fx.repository));
+    expect(implementationReviewContentFingerprint(fx.repoRoot, ['example.ts'])).toBe(contentDigest);
+    const postRecord = verificationRecord({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: fx.workId,
+      checkId: fx.checkId,
+      sourceRevision: postRevision,
+      workspaceFingerprint: postWorkspace,
+      receiptId: 'receipt-revision-post',
+    });
+
+    const transferred = transferReviewedWorkAuthorityAcrossContentEquivalentRevision({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: fx.workId,
+      preRevisionCandidate: {
+        sourceRevision: parent.sourceRevision,
+        workspaceFingerprint: parent.workspaceFingerprint,
+        verificationWorkspaceFingerprint: parent.verificationWorkspaceFingerprint,
+        changedPaths: parent.changedPaths,
+        verificationEvidence: parent.verificationEvidence,
+        architectureEvidence: parent.architectureEvidence,
+      },
+      transferredVerificationRecords: [postRecord],
+      postRevisionSourceRevision: postRevision,
+      postRevisionContentDigest: contentDigest,
+      postRevisionVerificationWorkspaceFingerprint: postWorkspace,
+      postRevisionChangedPaths: ['example.ts'],
+    });
+
+    expect(transferred.transferred).toBe(true);
+    expect(transferred.reusedExistingTransfer).toBe(false);
+    expect(transferred.invalidatedCheckIds).toEqual([]);
+    const derivedReview = transferred.derivedReview;
+    expect(derivedReview).toBeDefined();
+    if (!derivedReview) throw new Error('Expected a derived review for a successful content-equivalent revision transfer.');
+    expect(derivedReview.sourceRevision).toBe(postRevision);
+    expect(derivedReview.workspaceFingerprint).toBe(contentDigest);
+    expect(derivedReview.changedPaths).toEqual(['example.ts']);
+    expect(derivedReview.derivedFromReviewId).toBe(parent.reviewId);
+    const after = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId)!;
+    expect(after.checkRefs.some((record) => record.receipt?.receiptId === 'receipt-revision-post')).toBe(true);
+    expect(after.implementationReviews.at(-1)?.reviewId).toBe(derivedReview.reviewId);
+  });
+
+  test('rejects revision transfer when reviewed content digest changes', () => {
+    const fx = fixture();
+    const preStatus = repositoryGitStatus(fx.repository);
+    const preWorkspace = workspaceValidationFingerprint(fx.repoRoot, preStatus);
+    const preContent = implementationReviewContentFingerprint(fx.repoRoot, ['example.ts']);
+    const preRecord = verificationRecord({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: fx.workId,
+      checkId: fx.checkId,
+      sourceRevision: fx.sourceRevision,
+      workspaceFingerprint: preWorkspace,
+      receiptId: 'receipt-content-change-pre',
+    });
+    appendVerificationRecord({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, preRecord);
+    transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Pre-change verification passed.',
+    });
+    recordWorkEvidenceState({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, 'valid');
+    requestWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, 'Review pre-change candidate.');
+    const parent: WorkImplementationReviewRecord = {
+      schemaVersion: 1,
+      reviewId: 'review-content-change-parent',
+      workId: fx.workId,
+      reviewerPrincipalId: 'test-reviewer',
+      decision: 'approved',
+      rationale: 'Pre-change candidate approved.',
+      findings: [],
+      sourceRevision: fx.sourceRevision,
+      workspaceFingerprint: preContent,
+      verificationWorkspaceFingerprint: preWorkspace,
+      changedPaths: ['example.ts'],
+      changedPathDigest: implementationReviewChangedPathDigest(['example.ts']),
+      acceptanceCriteriaSummary: 'Pre-change candidate approved.',
+      verificationEvidence: [{ evidenceId: 'receipt-content-change-pre', digest: 'digest-receipt-content-change-pre' }],
+      architectureEvidence: [],
+      recordedAt: new Date().toISOString(),
+    };
+    recordWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, parent);
+
+    writeFileSync(join(fx.repoRoot, 'example.ts'), 'export const value = 99;\n');
+    execFileSync('git', ['add', 'example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'change reviewed content'], { cwd: fx.repoRoot });
+    const postRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const postWorkspace = workspaceValidationFingerprint(fx.repoRoot, repositoryGitStatus(fx.repository));
+    const postContent = implementationReviewContentFingerprint(fx.repoRoot, ['example.ts']);
+    const postRecord = verificationRecord({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: fx.workId,
+      checkId: fx.checkId,
+      sourceRevision: postRevision,
+      workspaceFingerprint: postWorkspace,
+      receiptId: 'receipt-content-change-post',
+    });
+    const before = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId)!;
+
+    expect(() => transferReviewedWorkAuthorityAcrossContentEquivalentRevision({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: fx.workId,
+      preRevisionCandidate: {
+        sourceRevision: parent.sourceRevision,
+        workspaceFingerprint: parent.workspaceFingerprint,
+        verificationWorkspaceFingerprint: parent.verificationWorkspaceFingerprint,
+        changedPaths: parent.changedPaths,
+        verificationEvidence: parent.verificationEvidence,
+        architectureEvidence: parent.architectureEvidence,
+      },
+      transferredVerificationRecords: [postRecord],
+      postRevisionSourceRevision: postRevision,
+      postRevisionContentDigest: postContent,
+      postRevisionVerificationWorkspaceFingerprint: postWorkspace,
+      postRevisionChangedPaths: ['example.ts'],
+    })).toThrow('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_CHANGED');
+
+    const after = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId)!;
+    expect(after.checkRefs).toEqual(before.checkRefs);
+    expect(after.implementationReviews).toEqual(before.implementationReviews);
   });
 });

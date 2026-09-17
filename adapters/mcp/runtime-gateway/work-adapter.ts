@@ -15,7 +15,7 @@ import { listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src
 import { completeRemoteEffectWorkFromProcessReceipt } from "../../../packages/kernel/work/api/index";
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, workDeliveryBaseRevision, type WorkHandleState } from "../../../src/runtime/control-plane/execution/work-handle-store";
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from "../../../src/runtime/control-plane/execution/work-handle-authority";
-import { reconcileSingleTerminalWorkCleanup, recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
+import { recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
 import { executeWorkVerification, executeWorkVerificationBatch, reconcileTerminalWorkVerifications } from "../../../src/runtime/control-plane/execution/work-verification-service";
 import { implementationReviewContentFingerprint } from "../../../src/runtime/control-plane/execution/implementation-review-content";
 import { implementationReviewCommittedBaseRevision, prepareWorkImplementationReviewCandidate, reconcileDirectCanonicalTargetAdvanceCommand } from "../../../src/runtime/control-plane/execution/work-finalization-service";
@@ -701,13 +701,12 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               // Terminal resource cleanup is not semantic terminalization. Never
               // reacquire/reopen Controller ownership merely to settle an outcome
               // that is already durable. Active ownership/rounds still fence the
-              // cleanup path, while the lower terminal cleanup authority preserves
-              // dirty/unique source before removing Work-owned resources.
+              // request, then the canonical Work finalizer consumes explicit retention
+              // provenance and performs the physical cleanup transaction.
               const owner = getControllerSession(store, workId);
-              let cleanupAuthority: ControllerTerminalizationAuthority | undefined;
               if (owner) {
                 try {
-                  cleanupAuthority = currentTerminalCleanupAuthority(ctx, store, workId, args);
+                  currentTerminalCleanupAuthority(ctx, store, workId, args);
                 } catch (error) {
                   return result(buildFacadeResult({
                     status: 'blocked',
@@ -725,39 +724,45 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 }) as unknown as Record<string, unknown>, true);
               }
               try {
-                const cleanup = await reconcileSingleTerminalWorkCleanup(
-                  ctx.controllerHome,
-                  repository.repoId,
-                  workId,
-                  {
-                    targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined,
-                    deleteBranch: args.delete_branch !== false,
-                    controllerAuthority: cleanupAuthority,
-                  },
+                const physical = await finalizeFacadeWorkHandle(
+                  ctx,
+                  repository,
+                  { ...args, commit: false, merge: false, cleanup: true },
+                  'stop',
                 );
-                const cleanupCompleted = cleanup.status === 'cleaned';
-                const cleanupRetained = cleanup.status === 'retained';
-                const cleanupSettled = cleanupCompleted || cleanupRetained || cleanup.status === 'no_handle';
+                if (!physical) {
+                  return result(buildFacadeResult({
+                    status: 'ok',
+                    summary: `Terminal Work ${workId} has no managed repository resources requiring cleanup.`,
+                    data: {
+                      work: summarizeWorkContract(existingWork),
+                      finalStatus: existingWork.status,
+                      terminalizationApplied: false,
+                      cleanupOnly: true,
+                      worktreeDeleted: false,
+                      cleanupPending: false,
+                    },
+                  }) as unknown as Record<string, unknown>);
+                }
+                if (physical.isError === true) return physical;
+                const cleanup = contextRecord(physical.structuredContent);
+                const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
                 return result(buildFacadeResult({
-                  status: cleanupSettled ? 'ok' : 'blocked',
+                  status: cleanupCompleted ? 'ok' : 'blocked',
                   summary: cleanupCompleted
-                    ? `Terminal Work ${workId} outcome was preserved; managed repository cleanup completed without reopening Controller ownership.`
-                    : cleanupRetained
-                      ? `Terminal Work ${workId} outcome was preserved; managed repository retention was recorded durably.`
-                      : cleanup.status === 'no_handle'
-                        ? `Terminal Work ${workId} has no managed repository resources requiring cleanup.`
-                        : `Terminal Work ${workId} outcome was preserved; managed repository cleanup remains incomplete and visible for retry.`,
+                    ? `Terminal Work ${workId} outcome was preserved; explicit managed repository cleanup completed through canonical Work finalization authority.`
+                    : `Terminal Work ${workId} outcome was preserved; explicit managed repository cleanup remains incomplete and visible for retry.`,
                   data: {
                     work: summarizeWorkContract(existingWork),
                     finalStatus: existingWork.status,
                     terminalizationApplied: false,
                     cleanupOnly: true,
                     worktreeDeleted: cleanupCompleted,
-                    cleanupPending: !cleanupSettled,
-                    cleanupRetained,
+                    cleanupPending: !cleanupCompleted,
+                    cleanupRetained: false,
                     lifecycleCleanup: cleanup,
                   },
-                }) as unknown as Record<string, unknown>, !cleanupSettled);
+                }) as unknown as Record<string, unknown>, !cleanupCompleted);
               } catch (error) {
                 return result(buildFacadeResult({
                   status: 'blocked',

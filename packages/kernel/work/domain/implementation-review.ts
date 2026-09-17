@@ -398,6 +398,109 @@ export function implementationReviewDecisionTarget(
   return { phase: 'review', status: 'blocked' };
 }
 
+export interface ContentEquivalentRevisionTransferProof {
+  preRevisionCandidate: ImplementationReviewCandidateIdentity;
+  postRevisionCandidate: ImplementationReviewCandidateIdentity;
+  /** Digest over the complete reviewed Work changed-path content before/after the revision identity change. */
+  preRevisionContentDigest: string;
+  postRevisionContentDigest: string;
+  /** Exact post-revision verification authority. The derivation re-checks it; callers cannot self-certify with a boolean. */
+  postRevisionVerificationAuthority: {
+    repoId: string;
+    workId: string;
+    requiredCheckIds: readonly string[];
+    records: readonly ImplementationReviewVerificationRecord[];
+  };
+}
+
+function deriveImplementationReviewAcrossContentEquivalentRevisionCore(input: {
+  workId: string;
+  reviews: readonly WorkImplementationReviewRecord[];
+  proof: ContentEquivalentRevisionTransferProof;
+  derivedReviewId: string;
+  recordedAt: string;
+}): { derived: WorkImplementationReviewRecord; reviewedPaths: string[] } {
+  const gate = evaluateImplementationReviewGate({
+    workKind: 'repository_change',
+    reviews: input.reviews,
+    candidate: input.proof.preRevisionCandidate,
+  });
+  if (!gate.approved || !gate.review) {
+    throw new Error(`${gate.code ?? 'WORK_IMPLEMENTATION_REVIEW_REQUIRED'}: ${gate.reason}`);
+  }
+  if (gate.review.workId !== input.workId) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_WORK_MISMATCH');
+  }
+  const postVerification = authoritativeImplementationReviewVerificationEvidence({
+    repoId: input.proof.postRevisionVerificationAuthority.repoId,
+    workId: input.proof.postRevisionVerificationAuthority.workId,
+    requiredCheckIds: input.proof.postRevisionVerificationAuthority.requiredCheckIds,
+    records: input.proof.postRevisionVerificationAuthority.records,
+    sourceRevision: input.proof.postRevisionCandidate.sourceRevision,
+    workspaceFingerprint: input.proof.postRevisionCandidate.verificationWorkspaceFingerprint,
+  });
+  if (postVerification.missingCheckIds.length > 0
+    || !sameEvidenceIdentity(postVerification.evidence, input.proof.postRevisionCandidate.verificationEvidence)) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED');
+  }
+  if (input.proof.postRevisionVerificationAuthority.workId !== input.workId) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_WORK_MISMATCH');
+  }
+  if (!input.proof.preRevisionContentDigest.trim() || !input.proof.postRevisionContentDigest.trim()) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_IDENTITY_REQUIRED');
+  }
+  if (input.proof.preRevisionContentDigest !== input.proof.preRevisionCandidate.workspaceFingerprint
+    || input.proof.postRevisionContentDigest !== input.proof.postRevisionCandidate.workspaceFingerprint) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_IDENTITY_MISMATCH');
+  }
+  if (input.proof.preRevisionContentDigest !== input.proof.postRevisionContentDigest) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_CHANGED');
+  }
+
+  const reviewedPaths = normalizeImplementationReviewChangedPaths(gate.review.changedPaths);
+  const postPaths = normalizeImplementationReviewChangedPaths(input.proof.postRevisionCandidate.changedPaths);
+  if (!sameStringSet(reviewedPaths, postPaths)) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CHANGED_PATHS_MISMATCH');
+  }
+  if (!sameEvidenceIdentity(gate.review.architectureEvidence, input.proof.postRevisionCandidate.architectureEvidence ?? [])) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_ARCHITECTURE_EVIDENCE_CHANGED');
+  }
+
+  const derived: WorkImplementationReviewRecord = {
+    ...gate.review,
+    reviewId: input.derivedReviewId,
+    sourceRevision: input.proof.postRevisionCandidate.sourceRevision,
+    workspaceFingerprint: input.proof.postRevisionCandidate.workspaceFingerprint,
+    verificationWorkspaceFingerprint: input.proof.postRevisionCandidate.verificationWorkspaceFingerprint,
+    changedPaths: postPaths,
+    changedPathDigest: implementationReviewChangedPathDigest(postPaths),
+    verificationEvidence: normalizeImplementationReviewEvidence(input.proof.postRevisionCandidate.verificationEvidence),
+    architectureEvidence: normalizeImplementationReviewEvidence(input.proof.postRevisionCandidate.architectureEvidence ?? []),
+    recordedAt: input.recordedAt,
+    derivedFromReviewId: gate.review.reviewId,
+    derivation: 'content_equivalent_commit',
+  };
+  validateImplementationReviewRecord(derived);
+  return { derived, reviewedPaths };
+}
+
+/**
+ * Preserve an approved review across an immutable revision identity change only
+ * when Work-owned content, changed-path scope, architecture evidence, and exact
+ * verification authority are all unchanged. This is the generic authority
+ * boundary used by delivery-time target reconciliation; it does not itself
+ * authorize any Git mutation.
+ */
+export function deriveImplementationReviewAcrossContentEquivalentRevision(input: {
+  workId: string;
+  reviews: readonly WorkImplementationReviewRecord[];
+  proof: ContentEquivalentRevisionTransferProof;
+  derivedReviewId: string;
+  recordedAt: string;
+}): WorkImplementationReviewRecord {
+  return deriveImplementationReviewAcrossContentEquivalentRevisionCore(input).derived;
+}
+
 export interface ContentEquivalentCommitTransferProof {
   preCommitCandidate: ImplementationReviewCandidateIdentity;
   postCommitCandidate: ImplementationReviewCandidateIdentity;
@@ -418,8 +521,9 @@ export interface ContentEquivalentCommitTransferProof {
 }
 
 /**
- * Derive approval across a Forge-owned commit only. The caller must prove that
- * the commit changed representation, not reviewed Work content or scope.
+ * Derive approval across a Forge-owned commit only. The generic content-equivalent
+ * proof is necessary but not sufficient: this wrapper additionally proves that
+ * the commit materialized the complete reviewed dirty path set and nothing else.
  */
 export function deriveImplementationReviewAcrossCommit(input: {
   workId: string;
@@ -428,83 +532,28 @@ export function deriveImplementationReviewAcrossCommit(input: {
   derivedReviewId: string;
   recordedAt: string;
 }): WorkImplementationReviewRecord {
-  const gate = evaluateImplementationReviewGate({
-    workKind: 'repository_change',
+  const { derived, reviewedPaths } = deriveImplementationReviewAcrossContentEquivalentRevisionCore({
+    workId: input.workId,
     reviews: input.reviews,
-    candidate: input.proof.preCommitCandidate,
+    proof: {
+      preRevisionCandidate: input.proof.preCommitCandidate,
+      postRevisionCandidate: input.proof.postCommitCandidate,
+      preRevisionContentDigest: input.proof.preCommitContentDigest,
+      postRevisionContentDigest: input.proof.postCommitContentDigest,
+      postRevisionVerificationAuthority: input.proof.postCommitVerificationAuthority,
+    },
+    derivedReviewId: input.derivedReviewId,
+    recordedAt: input.recordedAt,
   });
-  if (!gate.approved || !gate.review) {
-    throw new Error(`${gate.code ?? 'WORK_IMPLEMENTATION_REVIEW_REQUIRED'}: ${gate.reason}`);
-  }
-  if (gate.review.workId !== input.workId) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_WORK_MISMATCH');
-  }
-  const postVerification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.proof.postCommitVerificationAuthority.repoId,
-    workId: input.proof.postCommitVerificationAuthority.workId,
-    requiredCheckIds: input.proof.postCommitVerificationAuthority.requiredCheckIds,
-    records: input.proof.postCommitVerificationAuthority.records,
-    sourceRevision: input.proof.postCommitCandidate.sourceRevision,
-    workspaceFingerprint: input.proof.postCommitCandidate.verificationWorkspaceFingerprint,
-  });
-  if (postVerification.missingCheckIds.length > 0
-    || !sameEvidenceIdentity(postVerification.evidence, input.proof.postCommitCandidate.verificationEvidence)) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED');
-  }
-  if (input.proof.postCommitVerificationAuthority.workId !== input.workId) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_WORK_MISMATCH');
-  }
-  if (!input.proof.preCommitContentDigest.trim() || !input.proof.postCommitContentDigest.trim()) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_IDENTITY_REQUIRED');
-  }
-  if (input.proof.preCommitContentDigest !== input.proof.preCommitCandidate.workspaceFingerprint
-    || input.proof.postCommitContentDigest !== input.proof.postCommitCandidate.workspaceFingerprint) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_IDENTITY_MISMATCH');
-  }
-  if (input.proof.preCommitContentDigest !== input.proof.postCommitContentDigest) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CONTENT_CHANGED');
-  }
-
-  const reviewedPaths = normalizeImplementationReviewChangedPaths(gate.review.changedPaths);
-  const postPaths = normalizeImplementationReviewChangedPaths(input.proof.postCommitCandidate.changedPaths);
   const dirtyPaths = normalizeImplementationReviewChangedPaths(input.proof.preCommitDirtyPaths);
   const committedPaths = normalizeImplementationReviewChangedPaths(input.proof.committedPaths);
-  if (!sameStringSet(reviewedPaths, postPaths)) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_CHANGED_PATHS_MISMATCH');
-  }
-  if (!sameEvidenceIdentity(gate.review.architectureEvidence, input.proof.postCommitCandidate.architectureEvidence ?? [])) {
-    // A representation-only commit may transfer existing architecture review
-    // evidence, but it cannot add/drop architecture evidence without a new review.
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_ARCHITECTURE_EVIDENCE_CHANGED');
-  }
   const reviewedSet = new Set(reviewedPaths);
   const dirtyOutsideReview = dirtyPaths.filter((path) => !reviewedSet.has(path));
   if (dirtyOutsideReview.length > 0) {
     throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_UNREVIEWED_DIRTY_PATH: ${dirtyOutsideReview.join(', ')}`);
   }
-  // A controlled representation-only commit must materialize the complete
-  // reviewed changed-path set. Allowing a caller-supplied dirty subset would
-  // leave reviewed content in the workspace while moving sourceRevision,
-  // creating a mixed committed/dirty candidate that the original approval did
-  // not authorize.
   if (!sameStringSet(dirtyPaths, reviewedPaths) || !sameStringSet(committedPaths, reviewedPaths)) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_COMMIT_SCOPE_MISMATCH');
   }
-
-  const derived: WorkImplementationReviewRecord = {
-    ...gate.review,
-    reviewId: input.derivedReviewId,
-    sourceRevision: input.proof.postCommitCandidate.sourceRevision,
-    workspaceFingerprint: input.proof.postCommitCandidate.workspaceFingerprint,
-    verificationWorkspaceFingerprint: input.proof.postCommitCandidate.verificationWorkspaceFingerprint,
-    changedPaths: postPaths,
-    changedPathDigest: implementationReviewChangedPathDigest(postPaths),
-    verificationEvidence: normalizeImplementationReviewEvidence(input.proof.postCommitCandidate.verificationEvidence),
-    architectureEvidence: normalizeImplementationReviewEvidence(input.proof.postCommitCandidate.architectureEvidence ?? []),
-    recordedAt: input.recordedAt,
-    derivedFromReviewId: gate.review.reviewId,
-    derivation: 'content_equivalent_commit',
-  };
-  validateImplementationReviewRecord(derived);
   return derived;
 }

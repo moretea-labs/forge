@@ -2831,13 +2831,11 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
 
   return buildFacadeResult({
     status: 'ok',
-    summary: `WorkContract ${work.workId} cancelled/stopped. Evidence retained. Worktree cleanup ${destructiveCleanup ? 'authorized but pending verification' : 'not performed'}.`,
+    summary: `WorkContract ${work.workId} cancelled/stopped. Evidence retained. Managed resource cleanup/retention is settled by the canonical Work finalization service.`,
     data: {
       work: summarizeWorkContract(updated),
       finalStatus: 'cancelled',
       evidenceRetained: true,
-      worktreeDeleted: false,
-      cleanupPending: destructiveCleanup && Boolean(work.worktreeRef),
       destructiveCleanupAuthorized: destructiveCleanup,
       ...(plan ? { plan } : {}),
     },

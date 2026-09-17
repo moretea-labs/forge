@@ -4484,48 +4484,43 @@ describe('rh_work terminalization authority', () => {
     execFileSync('git', ['commit', '-m', 'target advance after managed review'], { cwd: fx.repoRoot });
     const targetAfterReview = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
 
+    const firstReviewId = firstReviewedContract?.implementationReviews.at(-1)?.reviewId;
     const finalizeAfterAdvance = structured(await callRuntimeTool(
       ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
       'rh_work',
       { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: false },
     ));
-    expect(finalizeAfterAdvance.error?.code).toBe('WORK_TARGET_ADVANCE_REVIEW_CANDIDATE_REQUIRED');
-    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim()).toBe(reviewedCandidate);
-    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetAfterReview);
-    expect(getWorkContract(store, workId)).toMatchObject({ phase: 'review', status: 'running' });
-
-    const secondReviewResult = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
-      'rh_work',
-      {
-        repo_id: repository.repoId,
-        checkout_id: workspace.checkoutId,
-        operation: 'review',
-        work_id: workId,
-        requested_by: 'chatgpt',
-        review_decision: 'approved',
-        review_rationale: 'Fresh review is bound to the new exact candidate prepared after the later target advance.',
-      },
-    ));
-    expect(secondReviewResult.status).toBe('ok');
+    expect(finalizeAfterAdvance.status).toBe('ok');
     const finalCandidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
     expect(finalCandidate).not.toBe(reviewedCandidate);
     execFileSync('git', ['merge-base', '--is-ancestor', targetAfterReview, finalCandidate], { cwd: workspace.root! });
-    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetAfterReview);
-    expect(getWorkContract(store, workId)?.implementationReviews.at(-1)?.sourceRevision).toBe(finalCandidate);
-
-    const finalized = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
-      'rh_work',
-      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: true },
-    ));
-    expect(finalized.status).toBe('ok');
-    expect(getWorkContract(store, workId)).toMatchObject({
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(finalCandidate);
+    const finalizedContract = getWorkContract(store, workId);
+    expect(finalizedContract).toMatchObject({
       status: 'completed',
       workKind: 'repository_change',
       completionOutcome: 'completed_changed',
     });
-    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(finalCandidate);
+    expect(finalizedContract?.implementationReviews.at(-1)).toMatchObject({
+      sourceRevision: finalCandidate,
+      derivedFromReviewId: firstReviewId,
+      derivation: 'content_equivalent_commit',
+    });
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.terminalResourceDisposition).toMatchObject({
+      mode: 'retained_by_request',
+      retainWorktree: true,
+    });
+    expect(existsSync(workspace.root!)).toBe(true);
+
+    const cleaned = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', cleanup: true },
+    ));
+    expect(cleaned.status).toBe('ok');
+    expect(cleaned.data.cleanupOnly).toBe(true);
+    expect(cleaned.data.cleanupPending).toBe(false);
+    expect(cleaned.data.worktreeDeleted).toBe(true);
     expect(existsSync(workspace.root!)).toBe(false);
   }, 20_000);
 

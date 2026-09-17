@@ -345,9 +345,33 @@ export async function reconcileTerminalCleanup(
   outcome: WorkTerminalOutcome,
 ): Promise<Record<string, unknown>> {
   const wasComplete = handle.cleanupReceipt?.complete === true;
+  let cleanupHandle = handle;
+  const retained = handle.terminalResourceDisposition?.mode === 'retained_by_request'
+    ? handle.terminalResourceDisposition
+    : undefined;
+  if (retained) {
+    cleanupHandle = writeWorkHandle(ctx.controllerHome, {
+      ...handle,
+      terminalResourceDisposition: undefined,
+      finalization: {
+        ...handle.finalization,
+        branchCleanup: retained.retainBranch === true && args.delete_branch !== false ? 'pending' : handle.finalization.branchCleanup,
+        worktreeCleanup: retained.retainWorktree === true ? 'pending' : handle.finalization.worktreeCleanup,
+      },
+    });
+    appendWorkEvidence(
+      { controllerHome: ctx.controllerHome, repoId: cleanupHandle.repositoryId },
+      cleanupHandle.workContractId ?? cleanupHandle.workId,
+      {
+        title: 'terminal retention consumed by explicit cleanup request',
+        summary: 'An explicit cleanup=true request consumed the durable retained_by_request resource disposition; automatic maintenance did not infer this authorization from skipped cleanup stages.',
+        detailLevel: 'summary',
+      },
+    );
+  }
   const cleaned = await cleanupTerminalWork({
     controllerHome: ctx.controllerHome,
-    handle,
+    handle: cleanupHandle,
     targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined,
     deleteBranch: args.delete_branch !== false,
     terminalOutcome: outcome,
