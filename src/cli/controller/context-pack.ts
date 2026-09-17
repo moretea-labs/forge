@@ -451,8 +451,7 @@ export function buildControllerContextPack(
   // implementation mode a permanent evidence-closure blind spot.
   const multiWaveEligible = retrievalMode !== "implementation"
     || structuralMode !== "off"
-    || impactDomains.length > 0
-    || explicitKnownPaths.length > 1;
+    || impactDomains.length > 0;
   timingsMs.expansionBudgetMax = multiWaveEligible ? Math.min(6, Math.max(2, Math.ceil(maxFiles / 2))) : 0;
   const rankedExactKnownCount = rankedCandidates.filter(isExactKnownCandidate).length;
   const initialCandidateLimit = multiWaveEligible
@@ -812,16 +811,19 @@ export function buildControllerContextPack(
     .map((file) => file.path);
   const materializedExactKnownSet = new Set(materializedExactKnownPaths);
   const omittedCandidateCount = rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length;
-  const exactKnownFilesFullyMaterialized = scopedExactKnownFileSearch
+  const exactKnownFilesLosslesslyMaterialized = scopedExactKnownFileSearch
     && exactKnownFiles.length > 0
     && exactKnownFiles.every((path) => files.some((file) => file.path === path
-      && file.snippets.some((snippet) => snippet.materialization === "complete_file" && !snippet.truncated)));
+      && file.snippets.length > 0
+      && file.snippets.every((snippet) => !snippet.truncated)));
   // `search.truncated` records that lexical hit collection reached a result cap.
   // That is not automatically an evidence gap. For an exact-known implementation
-  // scope, if every requested file is fully materialized and there are no omitted
-  // or denied candidates, the cap only discarded redundant hit lines.
+  // scope, bounded symbol/window materialization is still authoritative raw-source
+  // evidence as long as every requested file was materialized without snippet loss
+  // and no candidate was omitted or denied. Actual raw snippet truncation remains a
+  // separate readiness failure through `rawSnippetTruncated`.
   const evidenceSearchTruncated = searchTruncated
-    && !(exactKnownFilesFullyMaterialized
+    && !(exactKnownFilesLosslesslyMaterialized
       && omittedCandidateCount === 0
       && policyDeniedFiles === 0
       && deniedPaths.length === 0

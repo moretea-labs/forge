@@ -806,6 +806,25 @@ describe('CodeGraph read provider', () => {
     expect(pack.readiness.structural).toMatchObject({ requested: 'off', status: 'disabled', requiredSatisfied: true });
   });
 
+  test('does not add an adaptive wave solely because multiple exact known paths were supplied', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/helper.ts'), 'export function helper() { return 42; }\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      knownPaths: ['src/service.ts', 'src/helper.ts'],
+      retrievalMode: 'implementation',
+      structuralContext: 'off',
+      maxFiles: 2,
+      maxSnippets: 4,
+    });
+    expect(pack.coverage.exactKnownPaths).toEqual({
+      requested: ['src/service.ts', 'src/helper.ts'],
+      materialized: ['src/helper.ts', 'src/service.ts'],
+      missing: [],
+    });
+    expect(pack.expansion).toMatchObject({ waveCount: 1, expansionPerformed: false, expansionBudgetUsed: 0 });
+    expect(pack.timingsMs.expansionBudgetMax).toBe(0);
+  });
+
   test('allows default implementation retrieval to close concrete source relationships in the same request', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/service.ts'), "import { helper } from './helper';\nexport function runService() { return helper(); }\n");
