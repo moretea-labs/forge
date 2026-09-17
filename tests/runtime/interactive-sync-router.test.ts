@@ -7,16 +7,17 @@ import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runti
 
 describe('interactive sync routing policy', () => {
   test('router marks interactive write tools as sync-by-default and supports wait', () => {
-    const source = readFileSync(join(import.meta.dir, '../../adapters/mcp/runtime-gateway/router.ts'), 'utf8');
-    expect(source).toContain('INTERACTIVE_SYNC_WRITE_TOOLS');
-    expect(source).toContain('repository_safe_patch_apply');
-    expect(source).toContain('begin_edit_session');
-    expect(source).toContain('apply_patch');
-    expect(source).toContain('wantsAsyncExecution');
-    expect(source).toContain('EXECUTION_JOB_RETIRED');
-    expect(source).not.toContain('createExecutionJob');
-    expect(source).not.toContain('waitForExecutionJob');
-    expect(source).not.toContain('buildAcceptedQueuedDigest');
+    const routerSource = readFileSync(join(import.meta.dir, '../../adapters/mcp/runtime-gateway/router.ts'), 'utf8');
+    const policySource = readFileSync(join(import.meta.dir, '../../adapters/mcp/runtime-gateway/routing-policy.ts'), 'utf8');
+    expect(policySource).toContain('INTERACTIVE_SYNC_WRITE_TOOLS');
+    expect(policySource).toContain('repository_safe_patch_apply');
+    expect(policySource).toContain('begin_edit_session');
+    expect(policySource).toContain('apply_patch');
+    expect(policySource).toContain('wantsAsyncExecution');
+    expect(routerSource).toContain('EXECUTION_JOB_RETIRED');
+    expect(routerSource).not.toContain('createExecutionJob');
+    expect(routerSource).not.toContain('waitForExecutionJob');
+    expect(routerSource).not.toContain('buildAcceptedQueuedDigest');
   });
 
   test('legacy Run terminalization remains synchronous while relocation is blocked', () => {
