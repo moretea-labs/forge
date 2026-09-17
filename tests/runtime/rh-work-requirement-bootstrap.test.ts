@@ -372,6 +372,40 @@ describe('rh_work Requirement bootstrap', () => {
       status: 'running',
     });
 
+    const continueCapability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'continue',
+      args: { engineering_preconditions: { context_closure: { receipt_id: 'intentionally-invalid-runtime-receipt' } } },
+    });
+    const frozenContinue = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: continueCapability,
+      work_id: workId,
+    }));
+    expect(frozenContinue.status).toBe('blocked');
+    expect(frozenContinue.summary).toBe('CONTEXT_CLOSURE_RECEIPT_SCHEMA_INVALID');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      workId,
+      status: 'running',
+    });
+
+    const continueConflict = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: continueCapability,
+      work_id: workId,
+      engineering_preconditions: { context_closure: { receipt_id: 'native-conflict' } },
+    }));
+    expect(continueConflict.status).toBe('blocked');
+    expect(continueConflict.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
+
+    const continueMissingScope = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: continueCapability,
+    }));
+    expect(continueMissingScope.status).toBe('blocked');
+    expect(continueMissingScope.summary).toContain('work_id must remain explicit outside the continue envelope');
 
     const authorityId = `cra_${'a'.repeat(32)}`;
     const terminalCarrier = buildFrozenSemanticCompatibilityCapability({

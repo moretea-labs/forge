@@ -6,7 +6,7 @@ const MAX_FROZEN_PLAN_OBLIGATION_DISPOSITIONS = 512;
 const MAX_FROZEN_PLAN_SUCCESSOR_REFS = 32;
 const MAX_FROZEN_SEMANTIC_STRING_CHARS = 16 * 1024;
 
-export const FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS = ['requirement_create', 'plan_create', 'start', 'work_review'] as const;
+export const FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS = ['requirement_create', 'plan_create', 'start', 'continue', 'work_review'] as const;
 export type FrozenSemanticCompatibilityOperation = (typeof FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS)[number];
 
 export interface FrozenRequirementCreateCompatibilityArgs {
@@ -62,6 +62,15 @@ export interface FrozenWorkStartCompatibilityEnvelope {
   args: FrozenWorkStartCompatibilityArgs;
 }
 
+export interface FrozenWorkContinueCompatibilityArgs {
+  engineering_preconditions: Record<string, unknown>;
+}
+
+export interface FrozenWorkContinueCompatibilityEnvelope {
+  operation: 'continue';
+  args: FrozenWorkContinueCompatibilityArgs;
+}
+
 export interface FrozenWorkReviewCompatibilityArgs {
   decision: 'approved' | 'changes_required' | 'blocked';
 }
@@ -75,6 +84,7 @@ export type FrozenSemanticCompatibilityEnvelope =
   | FrozenRequirementCreateCompatibilityEnvelope
   | FrozenPlanCreateCompatibilityEnvelope
   | FrozenWorkStartCompatibilityEnvelope
+  | FrozenWorkContinueCompatibilityEnvelope
   | FrozenWorkReviewCompatibilityEnvelope;
 
 const REQUIREMENT_CREATE_KEYS = new Set([
@@ -169,6 +179,7 @@ function normalizePlanCreateArgs(value: unknown): FrozenPlanCreateCompatibilityA
 // bounded transport carrier only; canonical GoalWorkloop/ControllerRound handlers
 // still own validation, admission and mutation.
 const WORK_START_KEYS = new Set(['work_kind', 'engineering_preconditions', 'controller_authority_id', 'relay_scope_id']);
+const WORK_CONTINUE_KEYS = new Set(['engineering_preconditions']);
 
 function boundedObject(value: unknown, field: string): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
@@ -203,6 +214,15 @@ function normalizeWorkStartArgs(value: unknown): FrozenWorkStartCompatibilityArg
 }
 
 
+function normalizeWorkContinueArgs(value: unknown): FrozenWorkContinueCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('continue args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, WORK_CONTINUE_KEYS, 'continue args');
+  const engineeringPreconditions = boundedObject(args.engineering_preconditions, 'engineering_preconditions');
+  if (engineeringPreconditions === undefined) fail('engineering_preconditions is required');
+  return { engineering_preconditions: engineeringPreconditions };
+}
+
 function normalizeWorkReviewArgs(value: unknown): FrozenWorkReviewCompatibilityArgs {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('work_review args must be an object');
   const args = value as Record<string, unknown>;
@@ -216,6 +236,7 @@ function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): Froz
   if (input.operation === 'requirement_create') return normalizeRequirementCreateArgs(input.args);
   if (input.operation === 'plan_create') return normalizePlanCreateArgs(input.args);
   if (input.operation === 'start') return normalizeWorkStartArgs(input.args);
+  if (input.operation === 'continue') return normalizeWorkContinueArgs(input.args);
   if (input.operation === 'work_review') return normalizeWorkReviewArgs(input.args);
   return fail('operation is not allowlisted');
 }
@@ -280,6 +301,12 @@ export function parseFrozenSemanticCompatibilityCapability(
     return {
       operation: 'start',
       args: normalizeWorkStartArgs(payload.a),
+    };
+  }
+  if (payload.op === 'continue') {
+    return {
+      operation: 'continue',
+      args: normalizeWorkContinueArgs(payload.a),
     };
   }
   if (payload.op === 'work_review') {

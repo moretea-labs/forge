@@ -157,6 +157,26 @@ describe('Tool Contract ABI authority', () => {
     })).toThrow('controller_authority_id and relay_scope_id must be paired');
   });
 
+  test('semantic.v1 carries frozen continue Engineering admission without Work authority', () => {
+    const engineeringPreconditions = {
+      context_closure: { receipt_id: 'runtime-issued-context' },
+      design_decision: { decisions: { semantic_scope_identity: 'newer-field' } },
+    };
+    const capability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'continue',
+      args: { engineering_preconditions: engineeringPreconditions },
+    });
+    expect(capability).toStartWith('semantic.v1:');
+    expect(parseFrozenSemanticCompatibilityCapability('repair', capability)).toEqual({
+      operation: 'continue',
+      args: { engineering_preconditions: engineeringPreconditions },
+    });
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'continue',
+      args: { engineering_preconditions: engineeringPreconditions, work_id: 'must-stay-native' } as any,
+    })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID: continue args contains unsupported field work_id');
+  });
+
   test('semantic.v1 carries frozen work review without inventing another capability prefix', () => {
     const capability = buildFrozenSemanticCompatibilityCapability({
       operation: 'work_review',

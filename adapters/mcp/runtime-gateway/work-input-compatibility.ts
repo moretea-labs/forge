@@ -59,10 +59,15 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
       throw new Error('PLAN_OBLIGATION_COMPATIBILITY_CONFLICT');
     }
     if (frozenSemanticOperation) {
-      const requirementScoped = frozenSemanticOperation.operation !== 'work_review';
+      const requirementScoped = frozenSemanticOperation.operation !== 'work_review'
+        && frozenSemanticOperation.operation !== 'continue';
       if (requirementScoped) {
         const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
         if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
+      }
+      if (frozenSemanticOperation.operation === 'continue') {
+        const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+        if (!explicitWorkId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: work_id must remain explicit outside the continue envelope');
       }
       for (const key of Object.keys(frozenSemanticOperation.args)) {
         if (args[key] !== undefined) throw new Error(`FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT: native field ${key} is also present`);
@@ -101,6 +106,9 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     args.obligation_dispositions = frozenSemanticOperation.args.obligation_dispositions;
   }
   if (frozenSemanticOperation?.operation === 'start') Object.assign(args, frozenSemanticOperation.args);
+  if (frozenSemanticOperation?.operation === 'continue') {
+    args.engineering_preconditions = frozenSemanticOperation.args.engineering_preconditions;
+  }
   if (frozenSemanticOperation?.operation === 'work_review') {
     args.review_decision = frozenSemanticOperation.args.decision;
     args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
