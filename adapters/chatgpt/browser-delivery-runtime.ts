@@ -4,6 +4,7 @@ import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types'
 import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
 import { controllerPluginRepository, executeControllerScopedPluginAction, getControllerPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import {
+  CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT,
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   ChatgptProviderDeliveryError,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
@@ -38,6 +39,8 @@ function withForgePluginMention(prompt: string): string {
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
 const CHATGPT_USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
+const CHATGPT_ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
+const CHATGPT_STOP_GENERATING_SELECTOR = '[data-testid="stop-button"], button[aria-label*="Stop"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTORS = [
   'main button, main [role="button"]',
   'button, [role="button"]',
@@ -155,6 +158,8 @@ function normalizeChatgptOutboundText(value: string): string {
 const CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES = ['收起', 'Collapse', 'Show less'] as const;
 const MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS = 100_000;
 const MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS = 256;
+const MAX_CHATGPT_DELIVERY_FAILURE_SCAN_CHARS = 250_000;
+const CHATGPT_DELIVERY_FAILURE_PROBE_INTERVAL_MS = 500;
 
 export function chatgptOutboundMessageMatchesPrompt(
   messageText: string,
@@ -174,6 +179,30 @@ export function chatgptOutboundMessageMatchesPrompt(
   return options.truncated === true
     && message.length >= MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS
     && normalizedPrompt.startsWith(message);
+}
+
+export function chatgptAutomationDeliveryFailure(
+  bodyText: string | undefined,
+): typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined {
+  const normalized = normalizeChatgptOutboundText(bodyText ?? '').toLowerCase();
+  return normalized.includes('message delivery timed out') && normalized.includes('please try again')
+    ? CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
+    : undefined;
+}
+
+export function chatgptSubmissionSettlementWaitBudget(timeoutMs?: number): number {
+  return Math.min(Math.max(timeoutMs ?? 30_000, 3_000), 30_000);
+}
+
+export function chatgptSubmissionAcceptanceObserved(input: {
+  outboundConfirmed: boolean;
+  hasConversationIdentity: boolean;
+  assistantResponseObserved: boolean;
+  generationInProgress: boolean;
+}): boolean {
+  return input.outboundConfirmed
+    && input.hasConversationIdentity
+    && (input.assistantResponseObserved || input.generationInProgress);
 }
 
 async function latestChatgptUserMessage(
@@ -211,6 +240,64 @@ async function fullChatgptMessageText(
     text: stringField(result?.text) ?? message.preview,
     truncated: result?.truncated === true,
   };
+}
+
+async function latestChatgptAssistantMessage(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<{ selector?: string; preview: string }> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_ASSISTANT_MESSAGE_SELECTOR,
+    limit: 1,
+    from_end: true,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs);
+  const latest = queryMatches(result).at(-1);
+  return { selector: matchSelector(latest), preview: latest ? matchText(latest) : '' };
+}
+
+function chatgptMessageObservationChanged(
+  before: { selector?: string; preview: string },
+  latest: { selector?: string; preview: string },
+): boolean {
+  return Boolean(
+    (latest.selector && latest.selector !== before.selector)
+    || (!before.preview && latest.preview)
+    || latest.preview !== before.preview,
+  );
+}
+
+async function chatgptGenerationInProgress(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<boolean> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_STOP_GENERATING_SELECTOR,
+    limit: 1,
+    timeout_ms: Math.min(timeoutMs ?? 1_000, 1_000),
+  }, timeoutMs).catch(() => undefined);
+  return queryMatches(result).length > 0;
+}
+
+async function chatgptDeliveryFailureOnPage(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
+    session_id: browserSessionId,
+    selector: 'body',
+    max_chars: MAX_CHATGPT_DELIVERY_FAILURE_SCAN_CHARS,
+    timeout_ms: Math.min(timeoutMs ?? 2_000, 2_000),
+  }, timeoutMs).catch(() => undefined);
+  return chatgptAutomationDeliveryFailure(stringField(result?.text));
 }
 
 function chatgptSendControlUnavailable(error: unknown): boolean {
@@ -712,6 +799,8 @@ export async function submitChatgptPrompt(
   const renderedPrompt = withForgePluginMention(prompt);
   const before = await latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs)
     .catch((): { selector?: string; preview: string; url?: string } => ({ selector: undefined, preview: '', url: targetUrl }));
+  const beforeAssistant = await latestChatgptAssistantMessage(controllerHome, workId, browserSessionId, timeoutMs)
+    .catch((): { selector?: string; preview: string } => ({ selector: undefined, preview: '' }));
   await controllerBrowserAction(controllerHome, workId, 'fill', {
     session_id: browserSessionId,
     selector: CHATGPT_PROMPT_SELECTOR,
@@ -750,21 +839,46 @@ export async function submitChatgptPrompt(
     }
   }
 
-  const deadline = Date.now() + Math.min(Math.max(timeoutMs ?? 10_000, 3_000), 10_000);
+  const deadline = Date.now() + chatgptSubmissionSettlementWaitBudget(timeoutMs);
+  let nextFailureProbeAt = 0;
   do {
     const latest = await latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs).catch(() => undefined);
     if (latest) {
       observedUrl = latest.url ?? observedUrl;
-      const isNewOutbound = Boolean(
-        (latest.selector && latest.selector !== before.selector)
-        || (!before.preview && latest.preview)
-        || latest.preview !== before.preview,
-      );
+      const isNewOutbound = chatgptMessageObservationChanged(before, latest);
       if (isNewOutbound) {
         observedNewOutbound = true;
         const fullText = await fullChatgptMessageText(controllerHome, workId, browserSessionId, latest, timeoutMs);
-        if (chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated }) && /\/c\/[^/?#]+/.test(observedUrl)) {
-          return observedUrl;
+        const outboundConfirmed = chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated });
+        const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
+        if (outboundConfirmed && hasConversationIdentity) {
+          const [latestAssistant, generationInProgress] = await Promise.all([
+            latestChatgptAssistantMessage(controllerHome, workId, browserSessionId, timeoutMs).catch(() => undefined),
+            chatgptGenerationInProgress(controllerHome, workId, browserSessionId, timeoutMs),
+          ]);
+          const assistantResponseObserved = Boolean(
+            latestAssistant?.preview
+            && chatgptMessageObservationChanged(beforeAssistant, latestAssistant),
+          );
+          if (chatgptSubmissionAcceptanceObserved({
+            outboundConfirmed,
+            hasConversationIdentity,
+            assistantResponseObserved,
+            generationInProgress,
+          })) {
+            return observedUrl;
+          }
+          if (Date.now() >= nextFailureProbeAt) {
+            const deliveryFailure = await chatgptDeliveryFailureOnPage(controllerHome, workId, browserSessionId, timeoutMs);
+            if (deliveryFailure) {
+              throw new ChatgptProviderDeliveryError(
+                deliveryFailure,
+                `${deliveryFailure}:${observedUrl}`,
+                { conversationUrl: observedUrl },
+              );
+            }
+            nextFailureProbeAt = Date.now() + CHATGPT_DELIVERY_FAILURE_PROBE_INTERVAL_MS;
+          }
         }
       }
     }

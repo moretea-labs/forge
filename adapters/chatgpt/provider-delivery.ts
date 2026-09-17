@@ -4,6 +4,7 @@ export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';
 export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN = 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN';
+export const CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT = 'CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT';
 
 export type ChatgptAutomationReasoning = 'medium' | 'high' | 'xhigh';
 export type ChatgptAutomationTabPolicy = 'auto' | 'reuse' | 'new';
@@ -73,7 +74,11 @@ export function classifyChatgptProviderFailure(
   message?: string,
 ): ChatgptProviderFailureDisposition {
   const normalized = `${code ?? ''}\n${message ?? ''}`.toUpperCase();
-  if (normalized.includes('OUTCOME_UNKNOWN') || normalized.includes('SUBMISSION_NOT_CONFIRMED')) return 'outcome_unknown';
+  if (
+    normalized.includes('OUTCOME_UNKNOWN')
+    || normalized.includes('SUBMISSION_NOT_CONFIRMED')
+    || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT')
+  ) return 'outcome_unknown';
   if (CHATGPT_WAIT_FOR_USER_MARKERS.some((marker) => normalized.includes(marker))) return 'wait_for_user';
   return 'failed';
 }

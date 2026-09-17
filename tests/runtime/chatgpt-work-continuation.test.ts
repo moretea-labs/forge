@@ -15,9 +15,9 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
-import { ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptAutomationDeliveryFailure, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { controllerPluginRepository } from '../../src/runtime/plugins/store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -673,6 +673,33 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationPageFailure('登录  注册  使用 Apple 继续', false)).toBe('CHATGPT_AUTOMATION_LOGIN_REQUIRED');
     expect(chatgptAutomationPageFailure('Something went wrong', false)).toBe('CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE');
     expect(chatgptAutomationPageFailure('ChatGPT', true)).toBeUndefined();
+  });
+
+  test('requires provider acceptance beyond a local outbound ChatGPT echo and recognizes delivery timeout UI', () => {
+    expect(chatgptSubmissionSettlementWaitBudget()).toBe(30_000);
+    expect(chatgptSubmissionSettlementWaitBudget(8_000)).toBe(8_000);
+    expect(chatgptSubmissionSettlementWaitBudget(60_000)).toBe(30_000);
+    expect(chatgptSubmissionAcceptanceObserved({
+      outboundConfirmed: true,
+      hasConversationIdentity: true,
+      assistantResponseObserved: false,
+      generationInProgress: false,
+    })).toBe(false);
+    expect(chatgptSubmissionAcceptanceObserved({
+      outboundConfirmed: true,
+      hasConversationIdentity: true,
+      assistantResponseObserved: true,
+      generationInProgress: false,
+    })).toBe(true);
+    expect(chatgptSubmissionAcceptanceObserved({
+      outboundConfirmed: true,
+      hasConversationIdentity: true,
+      assistantResponseObserved: false,
+      generationInProgress: true,
+    })).toBe(true);
+    expect(chatgptAutomationDeliveryFailure('Message delivery timed out. Please try again.')).toBe(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT);
+    expect(chatgptAutomationDeliveryFailure('ChatGPT')).toBeUndefined();
+    expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT)).toBe('outcome_unknown');
   });
 
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
