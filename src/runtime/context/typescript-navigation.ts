@@ -38,11 +38,13 @@ export interface TypeScriptNavigationAccess {
 interface CachedProject {
   repoRoot: string;
   configPath: string;
+  configVersion: string;
+  sourceIdentity: string;
   service: ts.LanguageService;
 }
 
 const projects = new Map<string, CachedProject>();
-const MAX_CACHED_TYPESCRIPT_PROJECTS = 32;
+const MAX_CACHED_TYPESCRIPT_PROJECTS = 1;
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -71,12 +73,18 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
   if (access && !access.allowRepositoryPath(configRelative)) {
     throw new Error(`TypeScript navigation tsconfig is denied by read policy: ${configRelative}.`);
   }
-  const cacheKey = `${root}\0${configPath}\0${scriptVersion(configPath)}\0${access?.cacheScope ?? 'unrestricted'}\0${access?.sourceIdentity ?? 'unbound-source'}`;
+  const configVersion = scriptVersion(configPath);
+  const sourceIdentity = access?.sourceIdentity ?? 'unbound-source';
+  const cacheKey = `${root}\0${configPath}\0${access?.cacheScope ?? 'unrestricted'}`;
   const cached = projects.get(cacheKey);
-  if (cached) {
+  if (cached && cached.configVersion === configVersion && cached.sourceIdentity === sourceIdentity) {
     projects.delete(cacheKey);
     projects.set(cacheKey, cached);
     return cached;
+  }
+  if (cached) {
+    projects.delete(cacheKey);
+    cached.service.dispose();
   }
 
   const canReadAbsolute = (fileName: string): boolean => {
@@ -129,6 +137,8 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
   const project = {
     repoRoot: root,
     configPath,
+    configVersion,
+    sourceIdentity,
     service: ts.createLanguageService(host, ts.createDocumentRegistry()),
   };
   projects.set(cacheKey, project);
