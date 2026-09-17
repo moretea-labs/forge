@@ -102,6 +102,39 @@ describe('Context Closure', () => {
     expect(receipt.readiness.status).toBe('degraded');
   });
 
+  test('accepts the runtime-emitted semantic provider field as compiler evidence', () => {
+    const root = temp('context-closure-ios-evidence-');
+    mkdirSync(join(root, 'Example.xcodeproj'));
+    mkdirSync(join(root, 'Sources'));
+    writeFileSync(join(root, 'Sources/App.swift'), 'struct App {}');
+    projectContract(root, {
+      projectId: 'ios-evidence-app',
+      platforms: ['ios'],
+      skillBindings: [{ id: 'ios-engineering', version: '1', kinds: ['swift', 'ios'] }],
+      tooling: [{ id: 'sourcekit-lsp' }],
+    });
+    const receipt = buildContextClosureReceipt({
+      repoRoot: root,
+      query: 'Change cross-file ownership safely',
+      pack: pack('rev-ios-evidence', ['Sources/App.swift']),
+      semanticProviders: [{ id: 'sourcekit-lsp', languages: ['swift'] }],
+      semanticNavigation: {
+        requested: 1,
+        results: [{ provider: 'sourcekit-lsp' }],
+        errors: [],
+        freshness: 'current',
+      },
+    });
+    expect(receipt.semanticTools).toMatchObject({
+      required: true,
+      status: 'ready',
+      compilerEvidenceRequired: false,
+      providers: [expect.objectContaining({ providerId: 'sourcekit-lsp', status: 'ready', evidenceCount: 1 })],
+    });
+    expect(receipt.semanticTools.reasonCodes).not.toContain('semantic.swift_unproven');
+    expect(receipt.readiness.status).toBe('ready');
+  });
+
   test('validates explicit project skill bindings as unambiguous kind authority', () => {
     const base = {
       schemaVersion: 1,

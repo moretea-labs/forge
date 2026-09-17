@@ -162,7 +162,15 @@ function semanticResultProviderIds(results: unknown[]): string[] {
     if (!value || typeof value !== 'object') continue;
     const record = value as Record<string, unknown>;
     const nested = record.result && typeof record.result === 'object' ? record.result as Record<string, unknown> : undefined;
-    const id = typeof record.providerId === 'string' ? record.providerId : typeof nested?.providerId === 'string' ? nested.providerId : undefined;
+    const id = typeof record.provider === 'string'
+      ? record.provider
+      : typeof record.providerId === 'string'
+        ? record.providerId
+        : typeof nested?.provider === 'string'
+          ? nested.provider
+          : typeof nested?.providerId === 'string'
+            ? nested.providerId
+            : undefined;
     if (id) ids.push(id);
   }
   return unique(ids);
