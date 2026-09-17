@@ -28,7 +28,8 @@ import {
 } from '../../src/runtime/plugins/lightweight-action';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
-import { createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
@@ -676,6 +677,61 @@ printf 'BUILD SUCCEEDED\\n'
     expect(detail.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
     expect(detail.counts?.invalidActiveWork).toBe(1);
     expect(detail.invalidActiveWork?.[0]).toMatchObject({ workId: malformed.workId });
+  });
+
+  test('rh_context excludes pending Handoffs whose owning Work is canonically terminal', async () => {
+    const business = tempRoot('forge-context-terminal-handoff-');
+    const controllerHome = tempRoot('forge-home-context-terminal-handoff-');
+    initGitRepo(business, 'context-terminal-handoff');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Terminal Handoff' });
+    const terminalWork = createProjectionWork(controllerHome, repository, 'work-context-terminal-handoff');
+    const store = { controllerHome, repoId: repository.repoId };
+    const stale = createHandoffItem(store, {
+      id: 'handoff-terminal-work',
+      repoId: repository.repoId,
+      workId: terminalWork.workId,
+      title: 'Historical terminal Work decision',
+      severity: 'needs_review',
+      reason: 'This recent pending record must become historical attention once its Work is terminal.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Terminal Work handoff.',
+      currentState: { repoId: repository.repoId, workId: terminalWork.workId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'No current action.',
+      recommendedPrompt: 'Inspect history only.',
+      suggestedNextActions: [],
+    });
+    const current = createHandoffItem(store, {
+      id: 'handoff-current-decision',
+      repoId: repository.repoId,
+      title: 'Current repository decision',
+      severity: 'needs_review',
+      reason: 'This unresolved repository decision remains current.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Current decision.',
+      currentState: { repoId: repository.repoId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'Review current decision.',
+      recommendedPrompt: 'Review current decision.',
+      suggestedNextActions: [],
+    });
+    cancelWorkContract(store, terminalWork.workId, { summary: 'Terminalize Work for Handoff projection regression.' });
+
+    const summaryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'summary',
+    }));
+    const summary = summaryPayload.data as { activeAttention?: Array<{ id?: string }>; counts?: { currentAttention?: number } };
+    expect(summary.activeAttention?.some((item) => item.id === stale.id)).toBe(false);
+    expect(summary.activeAttention?.some((item) => item.id === current.id)).toBe(true);
+
+    const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'list', detail_level: 'detail',
+    }));
+    const detail = detailPayload.data as { activeAttention?: Array<{ id?: string }> };
+    expect(detail.activeAttention?.some((item) => item.id === stale.id)).toBe(false);
+    expect(detail.activeAttention?.some((item) => item.id === current.id)).toBe(true);
+    expect(getHandoffItem(store, stale.id)?.status).toBe('pending');
   });
 
   test('rh_context Work summary defers plugin capability and historical process hydration', async () => {

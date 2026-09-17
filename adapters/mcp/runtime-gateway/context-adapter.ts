@@ -15,7 +15,7 @@ import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecor
 import { buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context-pack";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { controllerPluginRepository, getAssistantPluginManifest, listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
-import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, readActiveWorkCandidates, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { currentControllerInstanceId } from "../../../src/runtime/control-plane/execution/session-store";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
@@ -636,17 +636,11 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       .filter((check): check is (typeof checks)[number] => Boolean(check))
       .map((check) => ({ id: check.id, description: check.description, source: check.source }));
     const pendingAttention = listHandoffItems({ ...store, status: 'pending', limit: isSummary ? 20 : 5 });
-    const currentWorkIds = new Set(currentContractScan.map((entry) => entry.workId));
-    const currentAttentionScan = isSummary
-      ? pendingAttention.filter((item) => (
-        Boolean(item.workId && currentWorkIds.has(item.workId))
-        || timestampIsCurrent(item.updatedAt, currentCutoffMs)
-      ))
-      : pendingAttention;
+    const currentAttentionScan = listHandoffAttentionItems(store, isSummary ? 20 : 5);
     const workAttention = work ? currentAttentionScan.find((item) => item.workId === work.workId) : undefined;
     const currentAttentionItems = isSummary
       ? currentAttentionScan.slice(0, 3)
-      : pendingAttention;
+      : currentAttentionScan;
     const attention = isSummary
       ? currentAttentionItems.map((item) => ({
         id: item.id,
