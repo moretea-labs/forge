@@ -3,11 +3,14 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import {
   controllerRoundBlockerClass,
+  controllerSessionPrincipalId,
   getControllerRoundRelay,
   getControllerSession,
   rearmControllerRoundAfterProviderRecovery,
 } from '../../../packages/kernel/controller/api/index';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
+import { gitSnapshot } from '../../../src/cli/repository/inspector';
 import { runStandaloneChatgptPrompt } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import {
   buildRecoveryAuditRecord,
@@ -20,6 +23,7 @@ import {
   runtimeIdentitySnapshot,
 } from './controller-authority-adapter';
 import { result } from './result-adapter';
+import { callStandaloneRecoveryTool } from './recovery-client-adapter';
 
 const CONTROLLER_PROVIDER_RECOVERY_CAPABILITY_PREFIX = 'controller.provider.recover:';
 const CONTROLLER_AUTHORITY_RECOVERY_CAPABILITY_PREFIX = 'controller.authority.recover:';
@@ -123,6 +127,44 @@ export async function callRhWorkControllerRecoveryOperation(
   if (operation !== 'repair' || typeof args.capability_id !== 'string') return undefined;
 
   const capability = args.capability_id.trim();
+  if (capability === 'recovery.migrate_controller_home') {
+    const workId = String(args.work_id ?? '').trim();
+    if (!workId) {
+      return result(buildFacadeResult({ status: 'blocked', summary: 'RECOVERY_CONTROLLER_HOME_MIGRATION_WORK_REQUIRED', data: { executionStarted: false } }) as unknown as Record<string, unknown>, true);
+    }
+    try {
+      const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+      const work = getWorkContract(store, workId);
+      if (!work || ['completed', 'failed', 'cancelled'].includes(work.status)) {
+        throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_ACTIVE_WORK_REQUIRED: ${workId}`);
+      }
+      const identity = authenticatedFacadeControllerIdentity(ctx, args);
+      const owner = getControllerSession(store, workId);
+      if (!owner || controllerSessionPrincipalId(owner) !== identity.principalId || owner.sessionId !== identity.sessionId) {
+        throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
+      }
+      const liveGit = gitSnapshot(repository.canonicalRoot);
+      if (!liveGit.head) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
+      const migrationRequestId = typeof args.request_id === 'string' && args.request_id.trim()
+        ? args.request_id.trim()
+        : `controller-home-migration:${workId}`;
+      const scheduled = await callStandaloneRecoveryTool(ctx.controllerHome, 'migrate_controller_home', {
+        request_id: migrationRequestId,
+        canonical_source_root: repository.canonicalRoot,
+        expected_source_revision: liveGit.head,
+      });
+      return result(buildFacadeResult({
+        summary: `Standalone Recovery accepted the Controller Home migration transaction for Work ${workId}.`,
+        data: { workId, migration: scheduled, executionStarted: true },
+      }) as unknown as Record<string, unknown>);
+    } catch (error) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'Controller Home migration scheduling failed.',
+        data: { workId, executionStarted: false },
+      }) as unknown as Record<string, unknown>, true);
+    }
+  }
   if (capability.startsWith(CONTROLLER_PROVIDER_RECOVERY_CAPABILITY_PREFIX)) {
     const workId = capability.slice(CONTROLLER_PROVIDER_RECOVERY_CAPABILITY_PREFIX.length).trim();
     if (!workId) return undefined;
