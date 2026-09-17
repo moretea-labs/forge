@@ -10,16 +10,13 @@ import { controllerReadinessEvidence, invalidFacadeOperation, repositoryRevision
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
 import { repositoryCheckoutLifecycle, selectRepositoryCheckout } from "../../../src/cli/repositories/registry";
 import { repositoryGitStatus } from "../../../src/cli/repositories/structured-git";
-import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
-import { projectTerminalCheckVerification } from "../../../src/runtime/execution/process-runtime/check-result";
-import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
+import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
+import { listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
 import { completeRemoteEffectWorkFromProcessReceipt } from "../../../packages/kernel/work/api/index";
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, workDeliveryBaseRevision, type WorkHandleState } from "../../../src/runtime/control-plane/execution/work-handle-store";
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from "../../../src/runtime/control-plane/execution/work-handle-authority";
 import { reconcileSingleTerminalWorkCleanup, recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
-import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from "../../../src/runtime/control-plane/execution/verification-evidence";
-import { resolveWorkVerificationContext } from "../../../src/runtime/control-plane/execution/work-verification-context";
-import { executeWorkVerification, executeWorkVerificationBatch } from "../../../src/runtime/control-plane/execution/work-verification-service";
+import { executeWorkVerification, executeWorkVerificationBatch, reconcileTerminalWorkVerifications } from "../../../src/runtime/control-plane/execution/work-verification-service";
 import { implementationReviewContentFingerprint } from "../../../src/runtime/control-plane/execution/implementation-review-content";
 import { implementationReviewCommittedBaseRevision, prepareWorkImplementationReviewCandidate, reconcileDirectCanonicalTargetAdvanceCommand } from "../../../src/runtime/control-plane/execution/work-finalization-service";
 import { acceptReviewedDirectEditWorkReconciliation } from "../../../src/runtime/control-plane/execution/direct-edit-work-completion";
@@ -27,7 +24,7 @@ import { readForgeRuntimeStatus } from "../../../src/runtime/control-plane/runti
 import { ensureControllerDispositionContinuation, repositoryCleanContinuationEventName, triggerWorkContinuationRepositoryEvent } from "../../../src/runtime/workflow/schedules/work-continuation";
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from "./scheduler-adapter";
 import { assertAutomatedOperationAllowed } from "../../../src/runtime/control-plane/governance/external-effects";
-import { listControllerChecks, readLatestControllerCheckEvidence } from "../../../src/cli/controller/check-runner";
+import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { finalizeRemoteEffectWorkFromActionReceipt } from "../../../src/runtime/plugins/store";
 import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workflow-watchdog";
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
@@ -36,7 +33,7 @@ import { callRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
@@ -376,113 +373,33 @@ export function reconcileTerminalFacadeWorkVerifications(
   repository: ReturnType<typeof selected>,
   workId: string,
 ): { sourceRevision?: string; workspaceFingerprint?: string; implementationReviewWorkspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[]; workBoundProcessEvidenceIds: string[] } {
-  const resolvedVerification = resolveWorkVerificationContext({ controllerHome: ctx.controllerHome, repository, workId });
-  if (!resolvedVerification.ok) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
-  const { store, workContract, repository: verificationRepository, checks: availableChecks } = resolvedVerification.context;
-  if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
-  const verificationStatus = repositoryGitStatus(verificationRepository);
-  const sourceRevision = verificationStatus.head ?? undefined;
-  if (!sourceRevision) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
-  let verificationHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-  const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
-  // Work-bound repository Process evidence remains semantic/result evidence,
-  // never a typed check receipt. repository_change may use it only when no
-  // checks are declared. local_effect may bind the same exact durable Process
-  // ids for Controller semantic review even when checks are declared; the
-  // normal missing-check gate below still requires typed verification receipts.
-  const workBoundProcessEvidenceIds = (
-    workContract.workKind === 'local_effect'
-    || (workContract.workKind === 'repository_change' && workContract.checks.length === 0)
-  )
-    ? listWorkBoundRepositoryProcessEvidence({
-        controllerHome: ctx.controllerHome,
-        repoId: repository.repoId,
-        checkoutId: verificationRepository.activeCheckoutId,
-        workId,
-      }).map((evidence) => evidence.processId)
-    : [];
-  const workloopCtx = {
-    workStore: store,
-    handoffStore: store,
-    repoId: repository.repoId,
-    availableChecks,
-  };
-  const seenChecks = new Set<string>();
-  const reconciledProcessIds: string[] = [];
-  const candidates = listProcessRecords(ctx.controllerHome, repository.repoId, 500)
-    .filter((record) => (
-      record.workId === workId
-      && record.checkoutId === verificationRepository.activeCheckoutId
-      && !isManagedProcessActive(record)
-      && record.origin?.workVerificationSnapshot === true
-      && typeof record.origin?.checkId === 'string'
-      && typeof record.origin?.requestSemanticFingerprint === 'string'
-    ));
-
-  for (const record of candidates) {
-    const checkId = record.origin?.checkId?.trim() ?? '';
-    if (!checkId || seenChecks.has(checkId)) continue;
-    seenChecks.add(checkId);
-    const classified = classifyVerificationOutcome({ checkId, available: availableChecks });
-    if (classified.outcome === 'invalid_check_id' || !classified.normalizedCheckId) continue;
-    const normalizedCheckId = classified.normalizedCheckId;
-    const requestedChecks = workContract.checks.length ? workContract.checks : [normalizedCheckId];
-    const currentFingerprint = verificationInputFingerprint({
-      sourceRevision,
-      workspaceFingerprint,
-      checkId: normalizedCheckId,
-      requestedChecks,
-    });
-    if (record.origin?.requestSemanticFingerprint !== currentFingerprint || !record.checkExecution) continue;
-
-    try {
-      const receipt = processCheckCompletionReceipt(record, {
-        repoId: verificationRepository.repoId,
-        checkoutId: verificationRepository.activeCheckoutId,
-        workId,
-        checkId: normalizedCheckId,
-        processId: record.processId,
-        requestId: record.origin?.requestId,
-        checkExecution: {
-          cacheKey: record.checkExecution.cacheKey,
-          revision: record.checkExecution.revision,
-          definitionDigest: record.checkExecution.definitionDigest,
-          environmentFingerprint: record.checkExecution.environmentFingerprint,
-          timeoutMs: record.checkExecution.timeoutMs,
-          scopeKey: record.checkExecution.scopeKey,
-        },
-      });
-      const latestContract = getWorkContract(store, workId);
-      if (latestContract?.checkRefs.some((entry) => entry.receipt?.receiptId === receipt.receiptId)) continue;
-
-      const legacyEvidence = record.origin?.checkResultReceiptPath
-        ? undefined
-        : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
-      const projection = projectTerminalCheckVerification(record, normalizedCheckId, receipt, { legacyEvidence });
-      const infrastructureFailed = projection.isInfrastructureIssue;
-      const checkFailed = projection.isAcceptanceFailure;
-      verifyGoalWorkloop(workloopCtx, {
-        workId,
-        checkId: normalizedCheckId,
-        sourceRevision,
-        workspaceFingerprint,
-        verificationInputFingerprint: currentFingerprint,
-        commandFingerprint: commandFingerprint(normalizedCheckId, receipt.commandId),
-        receipt,
-        infrastructureFailed,
-        checkFailed,
-      });
-      reconciledProcessIds.push(record.processId);
-    } catch {
-      // Exact receipt/process identity is mandatory. Any malformed, stale, or
-      // mismatched terminal Process remains non-authoritative and is ignored.
-    }
+  const terminalVerification = reconcileTerminalWorkVerifications({
+    controllerHome: ctx.controllerHome,
+    repository,
+    workId,
+  });
+  const {
+    repository: verificationRepository,
+    verificationStatus,
+    sourceRevision,
+    workspaceFingerprint,
+    reconciledProcessIds,
+    workBoundProcessEvidenceIds,
+  } = terminalVerification;
+  if (!verificationRepository || !verificationStatus || !sourceRevision) {
+    return { reconciledProcessIds, workBoundProcessEvidenceIds };
+  }
+  const workStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const workContract = getWorkContract(workStore, workId);
+  if (!workContract || workContract.completionReceipt) {
+    return { sourceRevision, workspaceFingerprint, reconciledProcessIds, workBoundProcessEvidenceIds };
   }
 
+  let verificationHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
   let deliveryBaseRevision = verificationHandle
     ? workDeliveryBaseRevision(verificationHandle)
     : workContract.baseRevision;
-  const latestContract = getWorkContract(store, workId) ?? workContract;
+  const latestContract = getWorkContract(workStore, workId) ?? workContract;
   if (latestContract.phase === 'review' && verificationHandle && !verificationHandle.managedWorktree && verificationHandle.expectedHead) {
     const targetBranch = resolveWorkDeliveryTargetBranch(verificationHandle, verificationRepository.defaultBranch);
     const reconciliation = reconcileDirectCanonicalTargetAdvanceCommand({
@@ -528,7 +445,14 @@ export function reconcileTerminalFacadeWorkVerifications(
     workspaceChangedPaths,
   );
 
-  return { sourceRevision, workspaceFingerprint, implementationReviewWorkspaceFingerprint, workspaceChangedPaths, reconciledProcessIds, workBoundProcessEvidenceIds };
+  return {
+    sourceRevision,
+    workspaceFingerprint,
+    implementationReviewWorkspaceFingerprint,
+    workspaceChangedPaths,
+    reconciledProcessIds,
+    workBoundProcessEvidenceIds,
+  };
 }
 
 export async function runFacadeVerify(

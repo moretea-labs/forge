@@ -6,6 +6,8 @@ import {
   DEFAULT_WORK_CHECK_LEASE_WAIT_MS,
   checkRequiresDurableWorkflow,
   getProcessRecord,
+  isManagedProcessActive,
+  listProcessRecords,
   processCheckCompletionReceipt,
   readPersistedCheckResultReceipt,
   runPersistedCheckViaProcessRuntime,
@@ -20,6 +22,7 @@ import type { FacadeResult, VerificationRecord, WorkContract } from '../facade/t
 import { executionIdentityForRepository } from './execution-identity';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import { resolveWorkVerificationContext } from './work-verification-context';
+import { listWorkBoundRepositoryProcessEvidence } from './work-process-evidence';
 
 export interface ExecuteWorkVerificationInput {
   controllerHome: string;
@@ -164,6 +167,136 @@ function boundedCheckSchedulingPayload(schedule: ReturnType<typeof buildCheckExe
  * Every member still executes through executeWorkVerification so Work snapshot,
  * Failure Contract, VerificationRecord, and lifecycle semantics stay singular.
  */
+export interface ReconcileTerminalWorkVerificationsResult {
+  repository?: RepositoryRecord;
+  verificationStatus?: ReturnType<typeof repositoryGitStatus>;
+  sourceRevision?: string;
+  workspaceFingerprint?: string;
+  reconciledProcessIds: string[];
+  workBoundProcessEvidenceIds: string[];
+}
+
+/**
+ * Reconcile terminal Work-bound verification Processes into canonical Work
+ * verification authority. MCP/other adapters may consume the resulting exact
+ * repository/content identity, but Process scanning, semantic fingerprint
+ * matching, receipt construction, terminal projection, and Work verification
+ * mutation remain owned here.
+ */
+export function reconcileTerminalWorkVerifications(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+}): ReconcileTerminalWorkVerificationsResult {
+  const resolved = resolveWorkVerificationContext({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.workId,
+  });
+  if (!resolved.ok) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
+  const { store, workContract, repository, checks: availableChecks } = resolved.context;
+  if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
+
+  const verificationStatus = repositoryGitStatus(repository);
+  const sourceRevision = verificationStatus.head ?? undefined;
+  if (!sourceRevision) return { repository, verificationStatus, reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
+  const workspaceFingerprint = workspaceValidationFingerprint(repository.canonicalRoot, verificationStatus);
+  const workBoundProcessEvidenceIds = (
+    workContract.workKind === 'local_effect'
+    || (workContract.workKind === 'repository_change' && workContract.checks.length === 0)
+  )
+    ? listWorkBoundRepositoryProcessEvidence({
+        controllerHome: input.controllerHome,
+        repoId: input.repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        workId: input.workId,
+      }).map((evidence) => evidence.processId)
+    : [];
+  const workloopCtx = {
+    workStore: store,
+    handoffStore: store,
+    repoId: input.repository.repoId,
+    availableChecks,
+  };
+  const seenChecks = new Set<string>();
+  const reconciledProcessIds: string[] = [];
+  const candidates = listProcessRecords(input.controllerHome, input.repository.repoId, 500)
+    .filter((record) => (
+      record.workId === input.workId
+      && record.checkoutId === repository.activeCheckoutId
+      && !isManagedProcessActive(record)
+      && record.origin?.workVerificationSnapshot === true
+      && typeof record.origin?.checkId === 'string'
+      && typeof record.origin?.requestSemanticFingerprint === 'string'
+    ));
+
+  for (const record of candidates) {
+    const checkId = record.origin?.checkId?.trim() ?? '';
+    if (!checkId || seenChecks.has(checkId)) continue;
+    seenChecks.add(checkId);
+    const classified = classifyVerificationOutcome({ checkId, available: availableChecks });
+    if (classified.outcome === 'invalid_check_id' || !classified.normalizedCheckId) continue;
+    const normalizedCheckId = classified.normalizedCheckId;
+    const requestedChecks = workContract.checks.length ? workContract.checks : [normalizedCheckId];
+    const currentFingerprint = verificationInputFingerprint({
+      sourceRevision,
+      workspaceFingerprint,
+      checkId: normalizedCheckId,
+      requestedChecks,
+    });
+    if (record.origin?.requestSemanticFingerprint !== currentFingerprint || !record.checkExecution) continue;
+
+    try {
+      const receipt = processCheckCompletionReceipt(record, {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        workId: input.workId,
+        checkId: normalizedCheckId,
+        processId: record.processId,
+        requestId: record.origin?.requestId,
+        checkExecution: {
+          cacheKey: record.checkExecution.cacheKey,
+          revision: record.checkExecution.revision,
+          definitionDigest: record.checkExecution.definitionDigest,
+          environmentFingerprint: record.checkExecution.environmentFingerprint,
+          timeoutMs: record.checkExecution.timeoutMs,
+          scopeKey: record.checkExecution.scopeKey,
+        },
+      });
+      if (workContract.checkRefs.some((entry) => entry.receipt?.receiptId === receipt.receiptId)) continue;
+
+      const legacyEvidence = record.origin?.checkResultReceiptPath
+        ? undefined
+        : readLatestControllerCheckEvidence(repository.canonicalRoot, normalizedCheckId);
+      const projection = projectTerminalCheckVerification(record, normalizedCheckId, receipt, { legacyEvidence });
+      verifyGoalWorkloop(workloopCtx, {
+        workId: input.workId,
+        checkId: normalizedCheckId,
+        sourceRevision,
+        workspaceFingerprint,
+        verificationInputFingerprint: currentFingerprint,
+        commandFingerprint: commandFingerprint(normalizedCheckId, receipt.commandId),
+        receipt,
+        infrastructureFailed: projection.isInfrastructureIssue,
+        checkFailed: projection.isAcceptanceFailure,
+      });
+      reconciledProcessIds.push(record.processId);
+    } catch {
+      // Exact receipt/process identity is mandatory. Any malformed, stale, or
+      // mismatched terminal Process remains non-authoritative and is ignored.
+    }
+  }
+
+  return {
+    repository,
+    verificationStatus,
+    sourceRevision,
+    workspaceFingerprint,
+    reconciledProcessIds,
+    workBoundProcessEvidenceIds,
+  };
+}
+
 export async function executeWorkVerificationBatch(input: ExecuteWorkVerificationBatchInput): Promise<ExecuteWorkVerificationResult> {
   const workId = input.workId?.trim() ?? '';
   const requestedCheckIds = [...new Set(input.checkIds.map((value) => value.trim()).filter(Boolean))];
