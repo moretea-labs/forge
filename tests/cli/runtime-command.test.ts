@@ -86,13 +86,15 @@ describe('runtime command surface', () => {
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'adapters/mcp/transports/http.ts'), 'utf8');
+    const httpObservation = readFileSync(join(ROOT, 'adapters/mcp/transports/http-observation.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
     const runtimeObservation = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts'), 'utf8');
+    const runtimeReadinessObservation = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-readiness-observation.ts'), 'utf8');
     const recoveryAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/recovery-adapter.ts'), 'utf8');
     const statusInboxAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/status-inbox-adapter.ts'), 'utf8');
     const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
     const controllerAuthorityAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'), 'utf8');
-    const runtimeGatewaySurface = [runtimeTools, runtimeObservation, recoveryAdapter, statusInboxAdapter, controllerAuthorityAdapter, workAdapter].join('\n');
+    const runtimeGatewaySurface = [runtimeTools, runtimeObservation, runtimeReadinessObservation, recoveryAdapter, statusInboxAdapter, controllerAuthorityAdapter, workAdapter].join('\n');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
     const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
     const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
@@ -146,7 +148,8 @@ describe('runtime command surface', () => {
       'scripts/restart-forge.sh',
     ]) expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
     expect(httpTransport).not.toContain('ensureControllerDaemon');
-    expect(httpTransport).toContain('readForgeRuntimeStatus');
+    expect(httpTransport).not.toContain('readForgeRuntimeStatus');
+    expect(httpObservation).toContain('readForgeRuntimeStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
@@ -223,9 +226,9 @@ describe('runtime command surface', () => {
     expect(localBridgeBlock).not.toContain('generationMatches');
     expect(localBridgeBlock).not.toContain('health: health.components.localBridge.state');
     expect(localBridgeBlock).not.toContain('state: health.state');
-    const readinessEvidenceStart = statusInboxAdapter.indexOf('export async function controllerReadinessEvidence');
-    const readinessEvidenceEnd = statusInboxAdapter.indexOf('export function runtimeSourceSnapshotStatus', readinessEvidenceStart);
-    const readinessEvidenceBlock = statusInboxAdapter.slice(readinessEvidenceStart, readinessEvidenceEnd);
+    const readinessEvidenceStart = runtimeReadinessObservation.indexOf('export async function controllerReadinessEvidence');
+    const readinessEvidenceEnd = runtimeReadinessObservation.indexOf('export function runtimeSourceSnapshotStatus', readinessEvidenceStart);
+    const readinessEvidenceBlock = runtimeReadinessObservation.slice(readinessEvidenceStart, readinessEvidenceEnd);
     expect(readinessEvidenceBlock).toContain('expectedSurface: localBridgeExpectedSurface');
     expect(readinessEvidenceBlock).toContain('generation: localBridgeSurface?.generation');
     expect(readinessEvidenceBlock).not.toContain('repoRoot: repository?.canonicalRoot');
