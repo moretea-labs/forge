@@ -34,7 +34,7 @@ Derived concept/term indexes are rebuildable projections. Future vector/ANN, com
 
 One bounded associative activation path combines stable-id seeds, exact concepts, lexical candidates, optional semantic/vector candidates, graph spreading, recency and utility. Graph traversal is bounded by candidate, depth, item and byte budgets. Returned items include reasons and activation paths so recall is explainable.
 
-The normal Controller hot path receives one compact `ActivationPack`; it does not simulate association with repeated MCP `memory.search` calls. Legacy Experience is admitted as transient candidates and de-duplicated by id. Model-facing projection stays semantic typed JSON/text because ChatGPT consumes semantics, while machine-native binary/index encodings remain internal.
+The normal Controller hot path receives one compact `ActivationPack`; it does not simulate association with repeated MCP `memory.search` calls. Legacy Experience is admitted as transient candidates and de-duplicated by scope-qualified memory identity, never by bare id. Model-facing projection stays semantic typed JSON/text because ChatGPT consumes semantics, while machine-native binary/index encodings remain internal.
 
 ## Consolidation and compression
 

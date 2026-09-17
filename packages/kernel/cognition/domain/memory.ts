@@ -52,6 +52,8 @@ export interface MemoryUnit {
   retractionReason?: string;
 }
 
+export type MemoryUnitDraft = Omit<MemoryUnit, 'schemaVersion' | 'revision'>;
+
 export interface MemoryEdge {
   schemaVersion: typeof COGNITIVE_MEMORY_SCHEMA_VERSION;
   id: string;
