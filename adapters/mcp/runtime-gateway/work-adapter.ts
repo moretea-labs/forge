@@ -36,7 +36,7 @@ import { callRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, delegateToCodexCerebellum, buildWorkContinuationSnapshot, acceptPlanStepEvidence, getPlanContract, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, classifyVerificationOutcome, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, acceptPlanStepEvidence, getPlanContract, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract, verifyGoalWorkloop } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
@@ -51,6 +51,7 @@ import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
 import { callRhWorkControllerRecoveryOperation } from './work-controller-recovery-operations';
 import { callRhWorkPlanRepairOperation } from './work-plan-repair-operations';
+import { callRhWorkDelegationOperation } from './work-delegation-operation';
 export { recoverControllerRoundAfterVerifiedProviderRepair } from './work-controller-recovery-operations';
 import {
   assertFacadeControllerRoundAuthority,
@@ -801,25 +802,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             }
           }
   
-          if (operation === 'delegate') {
-            const facade = delegateToCodexCerebellum(
-              { repoId: repository.repoId },
-              {
-                workId: typeof args.work_id === 'string' ? args.work_id : undefined,
-                target: args.target === 'grok' || args.target === 'claude' || args.target === 'codex' ? args.target : 'codex',
-                objective: typeof args.objective === 'string' ? args.objective : 'Delegated cerebellum work',
-                acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : undefined,
-                allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
-                forbiddenPaths: Array.isArray(args.forbidden_paths) ? args.forbidden_paths.map(String) : undefined,
-                available: typeof args.available === 'boolean' ? args.available : undefined,
-                codexAvailable: args.codex_available !== false,
-                workerOutput: args.worker_output && typeof args.worker_output === 'object' && !Array.isArray(args.worker_output)
-                  ? args.worker_output as { uncertain?: boolean; summary?: string; patchProposal?: string; evidenceSummary?: string }
-                  : undefined,
-              },
-            );
-            return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked');
-          }
+          const delegationOperationResult = callRhWorkDelegationOperation(repository, operation, args);
+          if (delegationOperationResult) return delegationOperationResult;
   
           if (operation === 'stop') {
             const workId = String(args.work_id ?? '').trim();
