@@ -652,17 +652,16 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                   throw new Error(String(preparedReviewCandidate.continuation ?? `WORK_IMPLEMENTATION_REVIEW_CANDIDATE_PREPARATION_REQUIRED: ${workId}`));
                 }
               }
-              const preparedIdentity = preparedReviewCandidate?.candidatePrepared === true
-                ? {
-                    sourceRevision: preparedReviewCandidate.sourceRevision,
-                    workspaceFingerprint: preparedReviewCandidate.workspaceFingerprint,
-                    implementationReviewWorkspaceFingerprint: preparedReviewCandidate.implementationReviewWorkspaceFingerprint,
-                    workspaceChangedPaths: preparedReviewCandidate.workspaceChangedPaths,
-                    reconciledProcessIds: preparedReviewCandidate.reconciledProcessIds ?? [],
-                    workBoundProcessEvidenceIds: preparedReviewCandidate.workBoundProcessEvidenceIds ?? [],
-                  }
+              // Candidate preparation commits/integrates the exact review
+              // candidate, but deliberately returns only finalization state.
+              // Reconcile the resulting Work-bound verification evidence after
+              // preparation instead of treating that status record as review
+              // identity.  This both preserves the source/fingerprint boundary
+              // and prevents a prepared managed Work from reaching a review
+              // with untyped or absent identity fields.
+              const reconciled = workId
+                ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
                 : undefined;
-              const reconciled = preparedIdentity ?? (workId ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId) : undefined);
               if (!workId || !reconciled?.sourceRevision || !reconciled.workspaceFingerprint || !reconciled.implementationReviewWorkspaceFingerprint) {
                 throw new Error(`WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED: ${workId || 'work_id_missing'}`);
               }

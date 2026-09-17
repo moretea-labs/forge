@@ -1088,9 +1088,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
     const runtimeTools = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
-    const workAdapter = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
-    const launcherStartIndex = workAdapter.indexOf("if (operation === 'launcher_start')");
-    const launcherStart = workAdapter.slice(launcherStartIndex, workAdapter.indexOf('const checks = listControllerChecks', launcherStartIndex));
+    const controllerOperations = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-controller-operations.ts'), 'utf8');
+    const launcherStartIndex = controllerOperations.indexOf("if (operation === 'launcher_start')");
+    const launcherStart = controllerOperations.slice(launcherStartIndex);
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
     expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
@@ -1099,8 +1099,8 @@ describe('ChatGPT Work conversation binding', () => {
     expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
-    const controllerReleaseStart = workAdapter.indexOf("if (operation === 'controller_release')");
-    const controllerRelease = workAdapter.slice(controllerReleaseStart, launcherStartIndex);
+    const controllerReleaseStart = controllerOperations.indexOf("if (operation === 'controller_release')");
+    const controllerRelease = controllerOperations.slice(controllerReleaseStart, launcherStartIndex);
     expect(controllerRelease).toContain('await runWorkChatgptContinuation({');
     expect(controllerRelease).toContain('controllerAuthorityId: relay.authorityId');
     expect(controllerRelease).toContain('relayScopeId: relay.relayScopeId');
