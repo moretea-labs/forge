@@ -377,6 +377,7 @@ const FROZEN_CAPABILITY_PREFIX_FILES = [
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
+  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
 ];
@@ -413,7 +414,7 @@ if (capabilityPrefixFixture) {
 const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts::controller.authority.recover:',
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts::controller.provider.recover:',
-  'adapters/mcp/runtime-gateway/work-adapter.ts::plan.step.retry:',
+  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts::plan.step.retry:',
   'adapters/mcp/runtime-gateway/work-input-compatibility.ts::schedule.delete:',
   'adapters/mcp/runtime-gateway/work-input-compatibility.ts::work.review:',
   'adapters/mcp/controller-round-compatibility.ts::controller.disposition:',
