@@ -639,19 +639,30 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const reviewContract = workId ? getWorkContract(store, workId) : undefined;
               const reviewHandle = workId ? readWorkHandle(ctx.controllerHome, repository.repoId, workId) : undefined;
+              let preparedReviewCandidate: Awaited<ReturnType<typeof prepareWorkImplementationReviewCandidate>> | undefined;
               if (reviewContract?.workKind === 'repository_change' && reviewHandle?.managedWorktree) {
                 const reviewSession = bindFacadeExecutionSession(ctx, repository, reviewHandle, args);
-                const prepared = await prepareWorkImplementationReviewCandidate(ctx, {
+                preparedReviewCandidate = await prepareWorkImplementationReviewCandidate(ctx, {
                   ...args,
                   repo_id: repository.repoId,
                   work_id: workId,
                   session_id: reviewSession.sessionId,
                 });
-                if (prepared.candidatePrepared !== true) {
-                  throw new Error(String(prepared.continuation ?? `WORK_IMPLEMENTATION_REVIEW_CANDIDATE_PREPARATION_REQUIRED: ${workId}`));
+                if (preparedReviewCandidate.candidatePrepared !== true) {
+                  throw new Error(String(preparedReviewCandidate.continuation ?? `WORK_IMPLEMENTATION_REVIEW_CANDIDATE_PREPARATION_REQUIRED: ${workId}`));
                 }
               }
-              const reconciled = workId ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId) : undefined;
+              const preparedIdentity = preparedReviewCandidate?.candidatePrepared === true
+                ? {
+                    sourceRevision: preparedReviewCandidate.sourceRevision,
+                    workspaceFingerprint: preparedReviewCandidate.workspaceFingerprint,
+                    implementationReviewWorkspaceFingerprint: preparedReviewCandidate.implementationReviewWorkspaceFingerprint,
+                    workspaceChangedPaths: preparedReviewCandidate.workspaceChangedPaths,
+                    reconciledProcessIds: preparedReviewCandidate.reconciledProcessIds ?? [],
+                    workBoundProcessEvidenceIds: preparedReviewCandidate.workBoundProcessEvidenceIds ?? [],
+                  }
+                : undefined;
+              const reconciled = preparedIdentity ?? (workId ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId) : undefined);
               if (!workId || !reconciled?.sourceRevision || !reconciled.workspaceFingerprint || !reconciled.implementationReviewWorkspaceFingerprint) {
                 throw new Error(`WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED: ${workId || 'work_id_missing'}`);
               }
