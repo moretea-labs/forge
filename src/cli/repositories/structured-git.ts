@@ -98,6 +98,16 @@ function gitText(repository: RepositoryRecord, args: string[]): string | null {
   return result.ok && result.stdout.trim() ? result.stdout.trim() : null;
 }
 
+function stashSelectorForOid(repository: RepositoryRecord, oid: string): string | null {
+  const result = runGit(repository, ['stash', 'list', '--format=%H%x00%gd'], 64 * 1024);
+  if (!result.ok) return null;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const [candidateOid, selector] = line.split('\0');
+    if (candidateOid === oid && selector) return selector;
+  }
+  return null;
+}
+
 function assertSafeBranchName(raw: unknown): string {
   try {
     return validateBranchName(raw, { purpose: 'GIT_BRANCH' });
@@ -414,6 +424,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   const requestedPreservedDirtyPaths = normalizePaths(input.preserveDirtyTargetPaths);
   const currentDirtyPaths = [...new Set([...before.staged, ...before.unstaged, ...before.untracked])].sort();
   const preserveDirtyTargetInPlace = alreadyOnTarget && requestedPreservedDirtyPaths.length > 0;
+  let equivalentOverlappingDirtyPaths: string[] = [];
   if (preserveDirtyTargetInPlace) {
     const requested = new Set(requestedPreservedDirtyPaths);
     if (requested.size !== currentDirtyPaths.length || currentDirtyPaths.some((path) => !requested.has(path))) {
@@ -426,7 +437,19 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
     const candidatePaths = new Set(candidateDiff.stdout.split(/\r?\n/).map((path) => path.trim()).filter(Boolean));
     const overlapping = currentDirtyPaths.filter((path) => candidatePaths.has(path));
     if (overlapping.length > 0) {
-      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Work-owned dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
+      const staged = new Set(before.staged);
+      const unstaged = new Set(before.unstaged);
+      const untracked = new Set(before.untracked);
+      const equivalent = overlapping.every((path) => {
+        if (untracked.has(path) || (!staged.has(path) && !unstaged.has(path))) return false;
+        if (staged.has(path) && !runGit(repository, ['diff', '--cached', '--quiet', featureBranch, '--', path], 8 * 1024).ok) return false;
+        if (unstaged.has(path) && !runGit(repository, ['diff', '--quiet', featureBranch, '--', path], 8 * 1024).ok) return false;
+        return true;
+      });
+      if (!equivalent) {
+        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Work-owned dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
+      }
+      equivalentOverlappingDirtyPaths = overlapping;
     }
   }
   if (!before.clean && !alreadyOnTarget) {
@@ -442,6 +465,30 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   }
   const protectTrackedChanges = alreadyOnTarget && !preserveDirtyTargetInPlace && (before.staged.length > 0 || before.unstaged.length > 0);
   const finishAuthorization = 'explicit_user_request' as const;
+  let equivalentOverlapStashRef: string | null = null;
+  if (equivalentOverlappingDirtyPaths.length > 0) {
+    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish-equivalent:${input.workId ?? featureBranch}`, '--', ...equivalentOverlappingDirtyPaths], authorization: finishAuthorization, ...input });
+    steps.push({ name: 'stash_equivalent_target_overlap', execution: stash });
+    if (stash.status !== 'executed' || stash.ok !== true) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_EQUIVALENT_TARGET_STASH_FAILED', message: stash.stderr || 'Unable to preserve candidate-equivalent dirty target paths before integration.' } };
+    }
+    equivalentOverlapStashRef = gitText(repository, ['rev-parse', 'refs/stash']);
+    if (!equivalentOverlapStashRef) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_EQUIVALENT_TARGET_STASH_REFERENCE_MISSING', message: 'Candidate-equivalent target paths were stashed but the recovery stash reference could not be resolved.' } };
+    }
+  }
+  const restoreEquivalentOverlap = (name: string): RepositoryGitExecution | undefined => {
+    if (!equivalentOverlapStashRef) return undefined;
+    const execution = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'apply', '--index', equivalentOverlapStashRef], authorization: finishAuthorization, ...input });
+    steps.push({ name, execution });
+    return execution;
+  };
+  const dropEquivalentOverlapStash = (): void => {
+    if (!equivalentOverlapStashRef) return;
+    const selector = stashSelectorForOid(repository, equivalentOverlapStashRef) ?? equivalentOverlapStashRef;
+    const execution = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'drop', selector], authorization: finishAuthorization, ...input });
+    steps.push({ name: 'drop_equivalent_target_stash', execution });
+  };
   let stashRef: string | null = null;
   if (protectTrackedChanges) {
     const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish:${input.workId ?? featureBranch}`], authorization: finishAuthorization, ...input });
@@ -468,16 +515,29 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   };
   const dropTrackedStash = (): void => {
     if (!stashRef) return;
-    const execution = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'drop', stashRef], authorization: finishAuthorization, ...input });
+    const selector = stashSelectorForOid(repository, stashRef) ?? stashRef;
+    const execution = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'drop', selector], authorization: finishAuthorization, ...input });
     steps.push({ name: 'drop_target_stash', execution });
   };
   const merge = executeRepositoryGitCommand(controllerHome, repository, { args: ['merge', ...(input.noFf === true ? ['--no-ff'] : ['--ff-only']), featureBranch], authorization: finishAuthorization, ...input });
   steps.push({ name: 'merge_feature', execution: merge });
   if (merge.status !== 'executed' || merge.ok !== true) {
+    const restoreEquivalent = restoreEquivalentOverlap('restore_equivalent_target_overlap_after_merge_failure');
+    if (restoreEquivalent && (restoreEquivalent.status !== 'executed' || restoreEquivalent.ok !== true)) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_EQUIVALENT_TARGET_RESTORE_FAILED', message: restoreEquivalent.stderr || 'Candidate-equivalent target paths could not be restored after merge failure; recovery stash was retained.' } };
+    dropEquivalentOverlapStash();
     const restore = applyTrackedStash('restore_target_changes_after_merge_failure');
     if (restore && (restore.status !== 'executed' || restore.ok !== true)) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_LOCAL_CHANGES_RESTORE_FAILED', message: restore.stderr || 'git stash apply failed while restoring the pre-merge target state' } };
     dropTrackedStash();
     return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_MERGE_FAILED', message: merge.stderr || 'git merge failed' } };
+  }
+  if (equivalentOverlappingDirtyPaths.length > 0) {
+    const afterMerge = repositoryGitStatus(repository);
+    const remainingDirty = new Set([...afterMerge.staged, ...afterMerge.unstaged, ...afterMerge.untracked]);
+    const contentMatchesCandidate = runGit(repository, ['diff', '--quiet', featureBranch, '--', ...equivalentOverlappingDirtyPaths], 32 * 1024).ok;
+    if (!contentMatchesCandidate || equivalentOverlappingDirtyPaths.some((path) => remainingDirty.has(path))) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: afterMerge, completed: false, error: { code: 'GIT_EQUIVALENT_TARGET_POSTCONDITION_FAILED', message: 'Integrated target did not retain the exact candidate content for a reconciled dirty overlap; recovery stash was retained.' } };
+    }
+    dropEquivalentOverlapStash();
   }
   const reapply = applyTrackedStash('reapply_target_changes');
   if (reapply && (reapply.status !== 'executed' || reapply.ok !== true)) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_LOCAL_CHANGES_RESTORE_FAILED', message: reapply.stderr || 'Tracked target changes passed merge-tree preflight but could not be reapplied after merge; recovery stash was retained.' } };

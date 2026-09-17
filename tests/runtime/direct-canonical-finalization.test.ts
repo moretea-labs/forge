@@ -340,6 +340,60 @@ describe('direct canonical Work target advancement reconciliation', () => {
     expect(result.error?.code).toBe('GIT_DIRTY_TARGET_PATH_CONFLICT');
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
   });
+
+  test('integrates when preserved tracked dirty overlap is exactly candidate-equivalent', () => {
+    const fx = fixture('dirty-target-equivalent-overlap');
+    git(fx.repoRoot, ['switch', '-c', 'feature/equivalent-overlap']);
+    writeFileSync(join(fx.repoRoot, 'owned.txt'), 'feature-owned\n');
+    git(fx.repoRoot, ['add', 'owned.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'feature owns path']);
+    const featureHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['switch', 'main']);
+    writeFileSync(join(fx.repoRoot, 'owned.txt'), 'feature-owned\n');
+
+    const result = repositoryGitFinishWorkflow(fx.controllerHome, fx.repository, {
+      featureBranch: 'feature/equivalent-overlap',
+      targetBranch: 'main',
+      deleteBranch: false,
+      preserveDirtyTargetPaths: ['owned.txt'],
+      authorizationDecision: { decision: 'allow', source: 'policy', reason: 'test-scoped local Git integration' },
+    });
+
+    expect(result.completed).toBe(true);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(featureHead);
+    expect(repositoryGitStatus(fx.repository).clean).toBe(true);
+    expect(git(fx.repoRoot, ['show', 'HEAD:owned.txt'])).toBe('feature-owned');
+    expect(git(fx.repoRoot, ['stash', 'list'])).toBe('');
+  });
+
+  test('restores candidate-equivalent dirty overlap when integration itself fails', () => {
+    const fx = fixture('dirty-target-equivalent-restore');
+    git(fx.repoRoot, ['switch', '-c', 'feature/equivalent-restore']);
+    writeFileSync(join(fx.repoRoot, 'owned.txt'), 'feature-owned\n');
+    git(fx.repoRoot, ['add', 'owned.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'feature owns path']);
+    git(fx.repoRoot, ['switch', 'main']);
+    writeFileSync(join(fx.repoRoot, 'target.txt'), 'target-advanced\n');
+    git(fx.repoRoot, ['add', 'target.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'advance target']);
+    const targetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(fx.repoRoot, 'owned.txt'), 'feature-owned\n');
+
+    const result = repositoryGitFinishWorkflow(fx.controllerHome, fx.repository, {
+      featureBranch: 'feature/equivalent-restore',
+      targetBranch: 'main',
+      deleteBranch: false,
+      preserveDirtyTargetPaths: ['owned.txt'],
+      authorizationDecision: { decision: 'allow', source: 'policy', reason: 'test-scoped local Git integration' },
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.error?.code).toBe('GIT_MERGE_FAILED');
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(targetHead);
+    expect(repositoryGitStatus(fx.repository)).toMatchObject({ staged: [], unstaged: ['owned.txt'], untracked: [] });
+    expect(git(fx.repoRoot, ['diff', '--', 'owned.txt'])).toContain('+feature-owned');
+    expect(git(fx.repoRoot, ['stash', 'list'])).toBe('');
+  });
   test('reconciles only a linear target advance disjoint from preserved Work-owned dirty paths with fresh exact verification', () => {
     const fx = fixture('safe');
     writeFileSync(join(fx.repoRoot, 'owned.txt'), 'owned-work-delta\n');
