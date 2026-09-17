@@ -4459,6 +4459,26 @@ describe('rh_work terminalization authority', () => {
     expect(firstReviewedContract?.implementationReviews.at(-1)?.sourceRevision).toBe(reviewedCandidate);
     expect(firstReviewedContract).toMatchObject({ phase: 'delivery', phaseEvidence: { review: { state: 'satisfied' } } });
 
+    const retainedAfterReview = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        completion_outcome: 'completed_changed',
+        commit: false,
+        merge: false,
+        cleanup: false,
+      },
+    ));
+    expect(retainedAfterReview.error?.code).toBe('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.finalization).toMatchObject({
+      merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped',
+    });
+
     writeFileSync(join(fx.repoRoot, 'target-after-review.txt'), 'target after review\n');
     execFileSync('git', ['add', 'target-after-review.txt'], { cwd: fx.repoRoot });
     execFileSync('git', ['commit', '-m', 'target advance after managed review'], { cwd: fx.repoRoot });

@@ -1402,14 +1402,14 @@ export function resetFinalizationStagesForRequest(
   }
   // A prior finalize(cleanup=false) intentionally records managed resources as
   // skipped/retained. A later explicit cleanup=true is a new resource-disposal
-  // request, not an idempotent replay of the earlier retention decision. Re-arm
-  // only cleanup stages that are applicable to this managed Work; commit/merge
-  // skipped states keep their original delivery semantics.
-  if (wants.cleanup && options.retainedByRequest === true && options.managedWorktree === true && next.worktreeCleanup === 'skipped') {
+  // request even when semantic completion has not yet persisted a terminal
+  // retained_by_request marker. Re-arm only cleanup stages that are applicable
+  // to this managed Work; branch disposal still requires delete_branch=true.
+  if (wants.cleanup && options.managedWorktree === true && next.worktreeCleanup === 'skipped') {
     next.worktreeCleanup = 'pending';
     reset = true;
   }
-  if (wants.cleanup && options.retainedByRequest === true && options.managedWorktree === true && options.deleteBranchRequested === true && next.branchCleanup === 'skipped') {
+  if (wants.cleanup && options.managedWorktree === true && options.deleteBranchRequested === true && next.branchCleanup === 'skipped') {
     next.branchCleanup = 'pending';
     reset = true;
   }
