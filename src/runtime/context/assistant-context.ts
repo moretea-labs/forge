@@ -3,7 +3,8 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync } from 'fs';
 import { relative, resolve, sep } from 'path';
 import { performance } from 'perf_hooks';
 import type { ProjectKnowledgeSource } from '../../../packages/kernel/work/api/index';
-import { matchesExperienceApplicability, memoryAddressKey, memoryAddressLabel, type ActivationPack, type ExperienceApplicability, type ExperienceRecord } from '../../../packages/kernel/memory/api/index';
+import { matchesExperienceApplicability, type ExperienceApplicability, type ExperienceRecord } from '../../../packages/kernel/memory/api/index';
+import { memoryAddressKey, memoryAddressLabel, type ActivationPack } from '../../../packages/kernel/cognition/api/index';
 import { assertControlPlaneMetadataPayload } from '../control-plane/persistence/metadata-payload-policy';
 import { DEFAULT_CONTEXT_MAX_BYTES, DEFAULT_CONTEXT_MAX_ITEMS, DEFAULT_CONTEXT_MAX_TOKENS, MAX_CONTEXT_MAX_BYTES, MAX_CONTEXT_MAX_ITEMS, MAX_CONTEXT_MAX_TOKENS } from './context-plane';
 

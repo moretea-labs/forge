@@ -3,4 +3,3 @@ export * from '../domain/operational-prior';
 export * from '../domain/experience';
 export * from '../application/experience-service';
 export * from '../application/outcome-service';
-export * from '../../cognition/api/index';

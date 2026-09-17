@@ -1,5 +1,5 @@
 import { cognitiveTerms, validateMemoryUnit, type MemoryUnit } from '../domain/memory';
-import type { ExperienceRecord, OutcomeObservation } from '../../memory/domain/experience';
+import type { ExperienceRecord, OutcomeObservation } from '../../memory/api/index';
 
 function stableConcepts(prefix: string, scopeKind: string, scopeId: string, text: string): string[] {
   const lexical = [...cognitiveTerms(text)].filter(term => /^[a-z0-9][a-z0-9._:/-]{0,255}$/i.test(term)).slice(0, 24);
