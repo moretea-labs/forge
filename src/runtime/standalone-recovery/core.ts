@@ -1,7 +1,7 @@
 import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerformanceIdentity, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
@@ -220,9 +220,11 @@ interface ReleaseEvidence {
   manifestSha256: string;
   workerProtocolVersion: number;
   controllerHome?: string;
+  sourceRepositoryId?: string;
   releaseAuthorityRevision?: number;
   releaseFencingTokenSha256?: string;
   attestedAt?: string;
+  pinnedAt?: string;
   performance?: RuntimePerformanceEvidence;
 }
 
@@ -232,12 +234,21 @@ interface KnownGoodStore {
   updatedAt: string;
 }
 
+interface RuntimePinStore {
+  schemaVersion: 1;
+  release: ReleaseEvidence;
+  updatedAt: string;
+}
+
 export type RecoveryMutationAction =
   | 'attest_known_good'
   | 'rollback_previous'
   | 'restart_primary_runtime'
   | 'recover_primary_runtime'
   | 'activate_runtime_release'
+  | 'pin_runtime_release'
+  | 'unpin_runtime_release'
+  | 'activate_pinned_runtime_release'
   | 'stage_and_activate_runtime_release'
   | 'restart_primary_connector'
   | 'restart_recovery_gateway'
@@ -439,6 +450,7 @@ function writeJson(path: string, value: unknown): void {
 
 function recoveryRoot(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'recovery'); }
 function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
+function runtimePinPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'runtime-pin.json'); }
 function lockPath(config: RecoveryConfig): string { return recoveryOperationLockPath(config.controllerHome); }
 function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
 function watchdogDiagnosticPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json'); }
@@ -577,6 +589,81 @@ function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | un
   return knownGoodEvidence(config, knownGood(config).releases.find((entry) =>
     entry.revision === release.revision && entry.manifestSha256 === release.manifestSha256 && entry.path === release.path,
   ));
+}
+
+function runtimePin(config: RecoveryConfig): RuntimePinStore | undefined {
+  const path = runtimePinPath(config);
+  if (!existsSync(path)) return undefined;
+  let parsed: RuntimePinStore;
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')) as RuntimePinStore; }
+  catch (error) { throw new Error(`RUNTIME_PIN_AUTHORITY_INVALID: ${error instanceof Error ? error.message : String(error)}`); }
+  const release = parsed?.release;
+  if (parsed?.schemaVersion !== 1 || !release || !release.revision?.trim() || !release.path?.trim() || !release.artifactIdentity?.trim() || !release.manifestSha256?.trim() || !Number.isInteger(release.workerProtocolVersion)) {
+    throw new Error('RUNTIME_PIN_AUTHORITY_INVALID');
+  }
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  const manifestPath = resolve(release.path);
+  const releaseRoot = dirname(manifestPath);
+  if (basename(manifestPath) !== 'manifest.json' || basename(releaseRoot) !== release.revision || dirname(releaseRoot) !== releasesRoot) {
+    throw new Error('RUNTIME_PIN_AUTHORITY_PATH_INVALID');
+  }
+  return parsed;
+}
+
+function releaseEvidenceForPin(
+  config: RecoveryConfig,
+  candidate: { manifest: RuntimeReleaseManifest; manifestPath: string },
+): ReleaseEvidence {
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  const releaseRoot = dirname(resolve(candidate.manifestPath));
+  if (!existsSync(releasesRoot) || dirname(realpathSync(releaseRoot)) !== realpathSync(releasesRoot)) {
+    throw new Error('RUNTIME_PIN_RELEASE_OUTSIDE_CONTROLLER_RUNTIME_ROOT');
+  }
+  const expectedRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (expectedRepositoryId && candidate.manifest.sourceRepositoryId !== expectedRepositoryId) {
+    throw new Error(`RUNTIME_PIN_SOURCE_REPOSITORY_MISMATCH: expected ${expectedRepositoryId}, got ${candidate.manifest.sourceRepositoryId ?? 'missing'}`);
+  }
+  return {
+    path: candidate.manifestPath,
+    revision: candidate.manifest.releaseId,
+    artifactIdentity: candidate.manifest.artifactIdentity,
+    manifestSha256: createHash('sha256').update(readFileSync(candidate.manifestPath)).digest('hex'),
+    workerProtocolVersion: candidate.manifest.workerProtocolVersion,
+    controllerHome: resolve(config.controllerHome),
+    ...(candidate.manifest.sourceRepositoryId ? { sourceRepositoryId: candidate.manifest.sourceRepositoryId } : {}),
+    pinnedAt: new Date().toISOString(),
+  };
+}
+
+export async function pinRuntimeRelease(config: RecoveryConfig, candidateManifestPath: string, requestId?: string): Promise<Record<string, unknown>> {
+  let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
+  try { candidate = validateRuntimeReleaseCandidate(config, candidateManifestPath); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  let evidence: ReleaseEvidence;
+  try { evidence = releaseEvidenceForPin(config, candidate); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  const locked = await withLock(config, { action: 'pin_runtime_release', requestId }, async () => {
+    const current = runtimePin(config);
+    if (current?.release.revision === evidence.revision && current.release.manifestSha256 === evidence.manifestSha256) {
+      return { ok: true, attempted: false, noOp: true, detail: 'requested Runtime release is already pinned', pinned: current.release };
+    }
+    const store: RuntimePinStore = { schemaVersion: 1, release: evidence, updatedAt: new Date().toISOString() };
+    writeJson(runtimePinPath(config), store);
+    audit(config, 'runtime_release_pinned', { requestId, revision: evidence.revision, artifactIdentity: evidence.artifactIdentity });
+    return { ok: true, attempted: true, detail: 'Runtime release pinned for retention and explicit Runtime-only activation', pinned: evidence };
+  });
+  return locked.acquired ? locked.value : { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+}
+
+export async function unpinRuntimeRelease(config: RecoveryConfig, requestId?: string): Promise<Record<string, unknown>> {
+  const locked = await withLock(config, { action: 'unpin_runtime_release', requestId }, async () => {
+    const current = runtimePin(config);
+    if (!current) return { ok: true, attempted: false, noOp: true, detail: 'no Runtime release is pinned' };
+    rmSync(runtimePinPath(config), { force: true });
+    audit(config, 'runtime_release_unpinned', { requestId, revision: current.release.revision, artifactIdentity: current.release.artifactIdentity });
+    return { ok: true, attempted: true, detail: 'Runtime release pin removed', unpinned: current.release };
+  });
+  return locked.acquired ? locked.value : { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
 }
 
 
@@ -1734,6 +1821,7 @@ export async function listReleases(config: RecoveryConfig): Promise<Record<strin
     active: activeAuthorityRelease(config),
     previous: previousAuthorityRelease(config),
     knownGood: knownGood(config).releases,
+    pinned: runtimePin(config)?.release,
   };
 }
 
@@ -1868,6 +1956,12 @@ export interface PrimaryRuntimeRecoveryDependencies {
 export interface RuntimeReleaseActivationGuard {
   /** External caller identity for audit/lock attribution. */
   requestId?: string;
+  /** Internal Recovery-only mode: allow explicit activation of current.previous when it is durably pinned. */
+  allowPreviousRelease?: boolean;
+  /** Internal Recovery-only mode: restore Runtime authority without restoring an older SQLite backup on activation failure. */
+  preserveDatabaseOnFailure?: boolean;
+  /** Internal Recovery-only pin fence checked after acquiring the mutation lock. */
+  requiredPinnedReleaseRevision?: string;
   /** Authority snapshot observed when the caller decided to activate; null means the caller observed no authority. */
   expectedAuthorityRevision?: number | null;
   /** Active release observed when the caller decided to activate; null means the caller observed no active release. */
@@ -2871,6 +2965,13 @@ export async function activateRuntimeRelease(
     // active release.
     const current = releaseAuthority(config);
     const previousActive = current?.active;
+    if (guard.requiredPinnedReleaseRevision) {
+      const pinned = runtimePin(config)?.release;
+      if (!pinned || pinned.revision !== guard.requiredPinnedReleaseRevision || pinned.revision !== candidate.manifest.releaseId) {
+        const detail = `RUNTIME_PIN_AUTHORITY_CHANGED: expected ${guard.requiredPinnedReleaseRevision}, observed ${pinned?.revision ?? 'none'}`;
+        return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+      }
+    }
     const expectedRevision = guard.expectedAuthorityRevision;
     const expectedActiveReleaseId = typeof guard.expectedActiveReleaseId === 'string' ? guard.expectedActiveReleaseId.trim() : guard.expectedActiveReleaseId;
     if (expectedRevision !== undefined && (expectedRevision === null ? current !== undefined : current?.revision !== expectedRevision)) {
@@ -2958,7 +3059,7 @@ export async function activateRuntimeRelease(
         } satisfies RuntimeReleaseActivationResult;
       }
     }
-    if (current?.previous?.releaseId === candidate.manifest.releaseId) {
+    if (!guard.allowPreviousRelease && current?.previous?.releaseId === candidate.manifest.releaseId) {
       const detail = 'RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK: activate_runtime_release cannot replace the active release with current.previous; use rollback_previous or recover_primary_runtime';
       audit(config, 'runtime_release_reverse_activation_rejected', {
         operationId,
@@ -3093,7 +3194,9 @@ export async function activateRuntimeRelease(
     } else {
       try {
         const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
-        const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+        const restored = guard.preserveDatabaseOnFailure && previousActive
+          ? publishRuntimeRelease(config.controllerHome, previousActive.manifestPath, rollbackOperationId)
+          : rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
         if (storageMigration?.migrated) {
           rollbackStoppedRepoLocalControllerHomeStorage(storageMigration);
           audit(config, 'runtime_controller_home_noindex_migration_rolled_back', {
@@ -3121,7 +3224,9 @@ export async function activateRuntimeRelease(
           verifyLocal,
           contractFailureContext: 'after rollback',
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-          successDetail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified',
+          successDetail: guard.preserveDatabaseOnFailure
+            ? 'previous Runtime release restored without SQLite rollback, restarted, and verified'
+            : 'previous whole-Runtime release and SQLite backup restored, restarted, and verified',
         });
         const connectorBinding = restarted.ok ? await repairConnectorBinding(config) : undefined;
         if (connectorBinding && !connectorBinding.ok) {
@@ -3169,6 +3274,32 @@ export async function activateRuntimeRelease(
     return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: await verifyStableRuntime(config) };
   }
   return locked.value;
+}
+
+export async function activatePinnedRuntimeRelease(
+  config: RecoveryConfig,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  guard: RuntimeReleaseActivationGuard = {},
+): Promise<RuntimeReleaseActivationResult> {
+  let pin: RuntimePinStore | undefined;
+  try { pin = runtimePin(config); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  if (!pin) return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_PIN_REQUIRED: no Runtime release is pinned' };
+  let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
+  try { candidate = validateRuntimeReleaseCandidate(config, pin.release.path); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  let observed: ReleaseEvidence;
+  try { observed = releaseEvidenceForPin(config, candidate); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  if (observed.revision !== pin.release.revision || observed.artifactIdentity !== pin.release.artifactIdentity || observed.manifestSha256 !== pin.release.manifestSha256) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_PIN_IDENTITY_MISMATCH: pinned immutable release changed on disk' };
+  }
+  return activateRuntimeRelease(config, pin.release.path, dependencies, {
+    ...guard,
+    allowPreviousRelease: true,
+    preserveDatabaseOnFailure: true,
+    requiredPinnedReleaseRevision: pin.release.revision,
+  });
 }
 
 export interface ConfiguredRuntimeActivationDependencies {

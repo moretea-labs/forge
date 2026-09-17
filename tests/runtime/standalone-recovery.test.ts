@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import {
   activateRuntimeRelease,
+  activatePinnedRuntimeRelease,
   attestKnownGood as attestKnownGoodWithCpu,
   createRecoveryConfig,
   decideWatchdog,
@@ -19,6 +20,7 @@ import {
   recoveryCommandPath,
   resolveRecoveryPackageConnectorExecutable,
   listReleases,
+  pinRuntimeRelease,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
   repairPublicTunnel,
@@ -28,6 +30,7 @@ import {
   restartRecoveryWatchdog,
   scopeWatchdogStateToRuntimeRelease,
   stageAndActivateConfiguredRuntimeRelease,
+  unpinRuntimeRelease,
   rollbackPrevious,
   runtimeStatus,
   runtimeWithinWatchdogStartupGrace,
@@ -52,6 +55,7 @@ import {
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
 import { RecoveryMcpSessionServer } from '../../src/runtime/standalone-recovery/mcp-server';
+import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../src/runtime/standalone-recovery/mutation-identity-contract';
 import {
   evaluateRecoveryWatchdogHealth,
@@ -1740,6 +1744,9 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('pin_runtime_release');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('unpin_runtime_release');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_pinned_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('migrate_controller_home');
     const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
     expect(migrateTool?.inputSchema.required).toEqual(expect.arrayContaining([
@@ -1771,6 +1778,9 @@ describe('standalone recovery on canonical Runtime', () => {
       'restart_primary_connector',
       'recover_primary_runtime',
       'activate_runtime_release',
+      'pin_runtime_release',
+      'unpin_runtime_release',
+      'activate_pinned_runtime_release',
       'stage_and_activate_runtime_release',
       'migrate_controller_home',
       'restart_public_tunnel',
@@ -3170,6 +3180,162 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result.detail).toContain('RUNTIME_RELEASE_ACTIVATION_STALE_BASE');
       expect(commands).toEqual([]);
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('pins, lists, and explicitly unpins one immutable Runtime release', async () => {
+    const home = controllerHome();
+    const candidate = verifiedManifest(home, 'release-pinned');
+    const config = createRecoveryConfig(home);
+
+    const pinned = await pinRuntimeRelease(config, candidate.path, 'pin-release-pinned');
+    expect(pinned).toMatchObject({ ok: true, attempted: true });
+    expect(await listReleases(config)).toMatchObject({
+      pinned: { revision: 'release-pinned', artifactIdentity: candidate.artifactIdentity },
+    });
+
+    const unpinned = await unpinRuntimeRelease(config, 'unpin-release-pinned');
+    expect(unpinned).toMatchObject({ ok: true, attempted: true });
+    expect((await listReleases(config)).pinned).toBeUndefined();
+  });
+
+  test('refuses to pin a Runtime release whose source repository identity does not match Recovery configuration', async () => {
+    const home = controllerHome();
+    const candidate = verifiedManifest(home, 'release-wrong-source');
+    const config = createRecoveryConfig(home, { primaryRuntimeSourceRepositoryId: 'repo_expected' });
+
+    const result = await pinRuntimeRelease(config, candidate.path, 'pin-wrong-source');
+
+    expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(String(result.detail)).toContain('RUNTIME_PIN_SOURCE_REPOSITORY_MISMATCH');
+    expect((await listReleases(config)).pinned).toBeUndefined();
+  });
+
+  test('activates an explicitly pinned current.previous Runtime without using the ordinary reverse-activation path', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const releaseA = verifiedManifest(home, 'release-a');
+      const releaseB = verifiedManifest(home, 'release-b');
+      ensureActiveRuntimeRelease(home, releaseA.path);
+      publishRuntimeRelease(home, releaseB.path, 'activate-b');
+      const observed = readRuntimeReleaseAuthority(home)!;
+      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 } });
+      await pinRuntimeRelease(config, releaseA.path, 'pin-release-a');
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let localProbes = 0;
+      let launchdLoaded = true;
+      const result = await activatePinnedRuntimeRelease(config, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        ensureRuntimeLaunchContract: () => undefined,
+        runCommand: async (_name, args) => {
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'kickstart') return { ok: false, status: 37, stdout: '', stderr: '' };
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => ++localProbes >= 2
+          ? {
+              ...healthyVerify(),
+              releases: {
+                active: { path: releaseA.path, revision: 'release-a', artifactIdentity: releaseA.artifactIdentity, manifestSha256: 'release-a-sha', workerProtocolVersion: 1 },
+                coherent: true,
+              },
+            }
+          : { ...healthyVerify(), releases: { active: { path: releaseB.path, revision: 'release-b', artifactIdentity: releaseB.artifactIdentity, manifestSha256: 'release-b-sha', workerProtocolVersion: 1 }, coherent: true } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      }, {
+        requestId: 'recovery-gateway:activate-pinned-a',
+        expectedAuthorityRevision: observed.revision,
+        expectedActiveReleaseId: observed.active.releaseId,
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(result.detail).not.toContain('RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('restores the pre-activation Runtime artifact without rolling back current SQLite when pinned activation fails', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const releaseA = verifiedManifest(home, 'release-a');
+      const releaseB = verifiedManifest(home, 'release-b');
+      ensureActiveRuntimeRelease(home, releaseA.path);
+      publishRuntimeRelease(home, releaseB.path, 'activate-b');
+      writeControlPlaneRecord(home, {
+        namespace: 'runtime_pin_probe', scope: 'controller', key: 'latest-state', schemaVersion: 1,
+        value: { marker: 'must-survive-runtime-only-fallback' }, expectedRevision: null, action: 'seed_runtime_pin_probe',
+      });
+      const observed = readRuntimeReleaseAuthority(home)!;
+      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 5_000 } });
+      await pinRuntimeRelease(config, releaseA.path, 'pin-release-a-for-failure');
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let launchdLoaded = true;
+      let kickstarts = 0;
+      const result = await activatePinnedRuntimeRelease(config, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        ensureRuntimeLaunchContract: () => undefined,
+        runCommand: async (_name, args) => {
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => {
+          const authority = readRuntimeReleaseAuthority(home)!;
+          if (kickstarts === 0 || kickstarts >= 2) {
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: authority.active.manifestSha256, workerProtocolVersion: 1 },
+                coherent: true,
+              },
+            };
+          }
+          return { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } };
+        },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      }, {
+        requestId: 'recovery-gateway:activate-pinned-a-fails',
+        expectedAuthorityRevision: observed.revision,
+        expectedActiveReleaseId: observed.active.releaseId,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.rollback).toMatchObject({ ok: true });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      expect(readControlPlaneRecord<{ marker: string }>(home, 'runtime_pin_probe', 'controller', 'latest-state')?.value.marker).toBe('must-survive-runtime-only-fallback');
+      expect(kickstarts).toBeGreaterThanOrEqual(2);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

@@ -187,6 +187,40 @@ describe('controller release retention', () => {
     expect(report.skippedByReason.release_authority).toBe(2);
   });
 
+  test('preserves an explicitly pinned Runtime release while known-good history remains non-owning', () => {
+    const home = controllerHome();
+    const active = runtimeRelease(home, 'active-release');
+    const previous = runtimeRelease(home, 'previous-release');
+    const pinned = runtimeRelease(home, 'pinned-release');
+    const stale = runtimeRelease(home, 'stale-release');
+    writeRuntimeAuthority(home, 'active-release', 'previous-release');
+    mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
+    writeFileSync(join(home, 'recovery', 'state', 'runtime-pin.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      release: {
+        revision: 'pinned-release',
+        path: join(pinned, 'manifest.json'),
+        artifactIdentity: `sha256:${'a'.repeat(64)}`,
+        manifestSha256: 'b'.repeat(64),
+        workerProtocolVersion: 1,
+      },
+      updatedAt: new Date(NOW).toISOString(),
+    }, null, 2)}\n`, 'utf8');
+    age(pinned);
+    age(stale);
+
+    const report = cleanupControllerReleaseHistory(home, { nowMs: NOW, graceMs: 0, maxRemovals: 20 });
+
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(previous)).toBe(true);
+    expect(existsSync(pinned)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.errors).toEqual([]);
+    expect(report.removedPaths).toContain('runtime/releases/stale-release');
+    expect(report.removedPaths).not.toContain('runtime/releases/pinned-release');
+    expect(report.skippedByReason.release_authority).toBeGreaterThanOrEqual(3);
+  });
+
   test('fails closed when runtime release authority is malformed', () => {
     const home = controllerHome();
     const stale = runtimeRelease(home, 'stale-release');

@@ -178,6 +178,33 @@ function validateRecoveryKnownGoodHistory(controllerHome: string, releasesRoot: 
   }
 }
 
+function loadPinnedRuntimeReleaseProtection(controllerHome: string, releasesRoot: string): string | undefined {
+  const pinPath = join(controllerHome, 'recovery', 'state', 'runtime-pin.json');
+  if (!existsSync(pinPath)) return undefined;
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(readFileSync(pinPath, 'utf8')) as Record<string, unknown>; }
+  catch (error) { throw new Error(`runtime pin authority is invalid: ${error instanceof Error ? error.message : String(error)}`); }
+  const release = parsed.release;
+  if (parsed.schemaVersion !== 1 || !release || typeof release !== 'object' || Array.isArray(release)) {
+    throw new Error('runtime pin authority is invalid');
+  }
+  const record = release as Record<string, unknown>;
+  const releaseId = typeof record.revision === 'string' ? record.revision.trim() : '';
+  const manifestPathValue = typeof record.path === 'string' ? record.path.trim() : '';
+  if (!releaseId || !manifestPathValue) throw new Error('runtime pin release identity is incomplete');
+  const manifestPath = resolve(manifestPathValue);
+  const releaseRoot = dirname(manifestPath);
+  if (
+    basename(manifestPath) !== 'manifest.json'
+    || basename(releaseRoot) !== releaseId
+    || !directChild(releasesRoot, releaseRoot)
+    || !existsSync(releaseRoot)
+  ) {
+    throw new Error('runtime pin release is outside runtime release authority or missing');
+  }
+  return canonical(releaseRoot);
+}
+
 function loadRuntimeProtection(controllerHome: string): RuntimeProtection | undefined {
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   if (!existsSync(releasesRoot)) return undefined;
@@ -198,6 +225,8 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   }
   const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);
   if (connectorRelease) releasePaths.add(connectorRelease);
+  const pinnedRelease = loadPinnedRuntimeReleaseProtection(controllerHome, releasesRoot);
+  if (pinnedRelease) releasePaths.add(pinnedRelease);
   // Recovery known-good is append-only attestation evidence, not a storage
   // ownership authority. Recovery itself only accepts a known-good entry when
   // it still matches the current active/previous release authority, both of
