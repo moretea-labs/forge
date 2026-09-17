@@ -13,6 +13,7 @@ import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import {
+  beginControllerRoundProviderDispatch,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
 } from '../../../../packages/kernel/controller/api/index';
@@ -20,6 +21,7 @@ import { assertAutomatedOperationAllowed } from '../governance/external-effects'
 import { runWorkChatgptContinuation } from '../launcher/chatgpt-work-continuation';
 import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
 import { renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
+import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
@@ -175,13 +177,27 @@ export async function runSchedulerControllerRoundRecovery(input: {
           relay_scope_id: record.relayScopeId,
           recovery_reason: 'unclosed_dispatched_round',
         });
+        const boundary = workflowSupervisorBoundaryForWork(store, record.originWorkId);
+        if (boundary.status === 'outer_turn') {
+          await ensureWorkflowSupervisorEnrollmentForWork(store, record.originWorkId);
+          continue;
+        }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
+        if (!record.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${record.relayScopeId}`);
+        const dispatchingRecord = beginControllerRoundProviderDispatch(store, {
+          workId: record.originWorkId,
+          authorityId: record.authorityId,
+          expectedUpdatedAt: record.updatedAt,
+          bindingId: binding?.bindingId,
+        });
         const result = await dispatchPrompt({
           controllerHome: input.controllerHome,
           repoId: repository.repoId,
           repoRoot: repository.canonicalRoot ?? repository.localRoot,
           workId: record.originWorkId,
-          prompt: renderChatgptControllerRoundPrompt(store, record, { exactOriginWork: !record.requirementId }),
+          prompt: renderChatgptControllerRoundPrompt(store, dispatchingRecord, { exactOriginWork: !dispatchingRecord.requirementId }),
+          controllerAuthorityId: dispatchingRecord.authorityId,
+          relayScopeId: dispatchingRecord.relayScopeId,
           browserSessionId: binding?.latestBrowserSessionId,
           conversationUrl: binding?.conversationUrl,
           model: 'gpt-5.6',

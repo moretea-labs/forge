@@ -1,0 +1,53 @@
+import { randomUUID } from 'node:crypto';
+import { createConnection } from 'node:net';
+import { workflowSupervisorSocketPath } from './paths';
+import type { WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+
+interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
+
+async function rpc<T>(forgeHome: string, method: string, params: Record<string, unknown>, timeoutMs = 2_000): Promise<T> {
+  const socketPath = workflowSupervisorSocketPath(forgeHome);
+  return await new Promise<T>((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    const id = `forge-${randomUUID()}`;
+    let buffer = '';
+    let settled = false;
+    const finish = (error?: Error, value?: T): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error); else resolve(value as T);
+    };
+    const timer = setTimeout(() => finish(new Error(`WORKFLOW_SUPERVISOR_RPC_TIMEOUT:${method}`)), timeoutMs);
+    socket.once('error', (error) => finish(error instanceof Error ? error : new Error(String(error))));
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      let response: RpcResponse<T>;
+      try { response = JSON.parse(buffer.slice(0, newline)) as RpcResponse<T>; }
+      catch { finish(new Error('WORKFLOW_SUPERVISOR_RPC_RESPONSE_INVALID')); return; }
+      if (response.id !== id) { finish(new Error('WORKFLOW_SUPERVISOR_RPC_RESPONSE_ID_MISMATCH')); return; }
+      if (!response.ok) { finish(new Error(response.error?.message ?? response.error?.code ?? 'WORKFLOW_SUPERVISOR_RPC_FAILED')); return; }
+      finish(undefined, response.result as T);
+    });
+    socket.once('connect', () => socket.write(`${JSON.stringify({ id, method, params })}\n`));
+  });
+}
+
+export async function registerWorkflowSupervisorTask(forgeHome: string, input: WorkflowSupervisorTaskInput): Promise<WorkflowSupervisorTask> {
+  return await rpc<WorkflowSupervisorTask>(forgeHome, 'task_register', {
+    task_id: input.taskId,
+    conversation_id: input.conversationId,
+    conversation_url: input.conversationUrl,
+    objective: input.objective,
+    completion_contract: input.completionContract,
+    continuation_policy: input.continuationPolicy,
+    user_blocker_policy: input.userBlockerPolicy,
+  });
+}
+
+export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, taskId: string): Promise<WorkflowSupervisorEffect> {
+  return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', { task_id: taskId });
+}

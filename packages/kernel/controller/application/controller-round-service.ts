@@ -4,6 +4,7 @@ export * from '../domain/controller-round-transition-policy';
 export * from '../domain/execution-quality';
 export {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundProviderDispatch,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   bindLegacyControllerRoundOccurrence,

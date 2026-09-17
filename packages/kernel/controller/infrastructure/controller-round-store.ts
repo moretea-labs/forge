@@ -974,6 +974,30 @@ export function reconcileControllerRoundAfterTerminalWork(
   });
 }
 
+export function beginControllerRoundProviderDispatch(
+  options: ControllerRoundRelayStoreOptions,
+  input: { workId: string; authorityId: string; expectedUpdatedAt: string; bindingId?: string },
+): ControllerRoundRelayRecord {
+  const initial = readRelayRecord(options, input.workId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_RELAY_REQUIRED: ${input.workId}`);
+  return relayLock(options, initial.value.relayScopeId, `controller-provider-dispatch-start:${input.workId}`, () => {
+    const current = readRelayRecord(options, input.workId);
+    if (!current) throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_RELAY_REQUIRED: ${input.workId}`);
+    if (current.value.status !== 'dispatching') throw new Error(`CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.value.status}`);
+    if (current.value.authorityId !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_AUTHORITY_MISMATCH: ${input.workId}`);
+    if (current.value.updatedAt !== input.expectedUpdatedAt.trim()) {
+      if (current.value.providerDispatchStartedAt) throw new Error(`CONTROLLER_CONTINUATION_ALREADY_DISPATCHING:${input.workId}`);
+      throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_STALE: ${input.workId}`);
+    }
+    if (current.value.providerDispatchStartedAt) throw new Error(`CONTROLLER_CONTINUATION_ALREADY_DISPATCHING:${input.workId}`);
+    const providerDispatchEffectId = controllerRoundProviderEffectId(current.value.relayScopeId, input.authorityId);
+    return applyControllerRoundTransition(options, current, {
+      type: 'provider_dispatch_started', at: nowIso(options), providerDispatchEffectId,
+      ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}),
+    });
+  });
+}
+
 export function finishControllerRoundRelayDispatch(
   options: ControllerRoundRelayStoreOptions,
   input: { workId: string; ok: boolean; bindingId?: string; providerDispatchEffectId?: string; providerDispatchReceiptId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; waitForUser?: boolean; handoffId?: string; nowMs?: number },
@@ -1313,6 +1337,15 @@ export function claimStalledControllerRoundRelays(
             : latest.status === 'dispatching'
               ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
               : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED';
+      if (latest.status === 'dispatching' && latest.providerDispatchStartedAt && latest.providerDispatchEffectId) {
+        applyControllerRoundTransition(options, currentRecord, {
+          type: 'provider_dispatch_outcome_unknown',
+          at,
+          error: 'CONTROLLER_RELAY_PROVIDER_DISPATCH_STALLED_AFTER_EFFECT_START',
+          providerDispatchEffectId: latest.providerDispatchEffectId,
+        });
+        return undefined;
+      }
       const recovered = applyControllerRoundTransition(options, currentRecord, {
         type: 'stalled_round_observed', at, stateFingerprint, proposedAuthorityId: newControllerRoundAuthorityId(),
         ...(lastError ? { lastError } : {}),

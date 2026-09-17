@@ -26,6 +26,7 @@ export function controllerRoundBlockerClass(record: Pick<ControllerRoundRelayRec
 
 export type ControllerRoundTransitionEvent =
   | { type: 'occurrence_requested'; at: string; repoId: string; relayScopeId: string; originWorkId: string; requirementId?: string; identity: ControllerRoundRelayIdentity; stateFingerprint: string; proposedAuthorityId: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; bindingId?: string; occurrenceId?: string; abandonedReleaseRecovery: boolean }
+  | { type: 'provider_dispatch_started'; at: string; providerDispatchEffectId: string; bindingId?: string }
   | { type: 'provider_dispatch_succeeded'; at: string; providerDispatchEffectId: string; bindingId?: string; providerDispatchReceiptId?: string }
   | { type: 'provider_dispatch_failed'; at: string; error: string; recovery: boolean; nextRecoveryAt?: string }
   | { type: 'provider_dispatch_outcome_unknown'; at: string; error: string; providerDispatchEffectId: string }
@@ -115,12 +116,31 @@ export function decideControllerRoundTransition(
       };
       return { kind: 'accept', next: record, action: blockedReason ? 'controller_round_initial_launch_blocked' : 'controller_round_initial_launch_begin' };
     }
+    case 'provider_dispatch_started': {
+      if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
+      const providerDispatchEffectId = event.providerDispatchEffectId.trim();
+      if (!providerDispatchEffectId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED' };
+      if (current.providerDispatchStartedAt) {
+        if (current.providerDispatchEffectId === providerDispatchEffectId) return { kind: 'no_op', current, reason: 'provider_dispatch_already_started' };
+        return { kind: 'reject', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_MISMATCH' };
+      }
+      return accept(current, {
+        providerDispatchEffectId,
+        providerDispatchAttempt: (current.providerDispatchAttempt ?? 0) + 1,
+        providerDispatchStartedAt: event.at,
+        ...(event.bindingId ? { bindingId: event.bindingId } : {}),
+        updatedAt: event.at,
+      }, 'controller_round_provider_dispatch_started');
+    }
     case 'provider_dispatch_succeeded': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status === 'dispatched') return { kind: 'no_op', current, reason: 'dispatch_already_confirmed' };
       if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
+      if (current.providerDispatchEffectId && current.providerDispatchEffectId !== event.providerDispatchEffectId) return { kind: 'reject', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_MISMATCH' };
       return accept(current, {
         status: 'dispatched', lifecycleStage: 'dispatch_confirmed', consecutiveFailures: 0, providerDispatchEffectId: event.providerDispatchEffectId,
+        providerDispatchAttempt: current.providerDispatchAttempt ?? 1, providerDispatchStartedAt: current.providerDispatchStartedAt ?? event.at,
         failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined, blockedReason: undefined,
         ...(event.bindingId ? { bindingId: event.bindingId } : {}),
         ...(event.providerDispatchReceiptId ? { providerDispatchReceiptId: event.providerDispatchReceiptId } : {}),
@@ -131,10 +151,12 @@ export function decideControllerRoundTransition(
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
       if (!event.providerDispatchEffectId.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED' };
+      if (current.providerDispatchEffectId && current.providerDispatchEffectId !== event.providerDispatchEffectId) return { kind: 'reject', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_MISMATCH' };
       return accept(current, {
         status: 'blocked', consecutiveFailures: current.consecutiveFailures + 1, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, nextRecoveryAt: undefined,
         failureClass: undefined, lastError: event.error, blockedReason: 'provider_dispatch_outcome_unknown',
-        providerDispatchEffectId: event.providerDispatchEffectId, updatedAt: event.at,
+        providerDispatchEffectId: event.providerDispatchEffectId, providerDispatchAttempt: current.providerDispatchAttempt ?? 1,
+        providerDispatchStartedAt: current.providerDispatchStartedAt ?? event.at, updatedAt: event.at,
       }, 'controller_round_relay_dispatch_outcome_unknown');
     }
     case 'provider_user_action_required': {
@@ -157,6 +179,7 @@ export function decideControllerRoundTransition(
       return accept(current, {
         status: blocked ? 'blocked' : 'dispatching', consecutiveFailures: failures, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, failureClass: undefined, lastError: event.error,
         blockedReason: blocked ? `consecutive_failures:${failures}>=${current.maxFailures}` : undefined,
+        ...(blocked ? {} : { providerDispatchEffectId: undefined, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }),
         nextRecoveryAt: blocked ? undefined : event.nextRecoveryAt, updatedAt: event.at,
       }, blocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled');
     }
@@ -167,6 +190,7 @@ export function decideControllerRoundTransition(
       return accept(current, {
         status: 'dispatching', lifecycleStage: 'dispatching', consecutiveFailures: 0,
         providerRecoveryEpoch: (current.providerRecoveryEpoch ?? 0) + 1, providerRecoveryEvidenceId: event.evidenceId.slice(0, 500),
+        providerDispatchEffectId: undefined, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
         blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined,
         reason: `provider_environment_recovered:${event.evidenceId.slice(0, 240)}`, updatedAt: event.at,
       }, 'controller_round_relay_provider_environment_recovered');
@@ -253,8 +277,9 @@ export function decideControllerRoundTransition(
       if (roundCount > current.maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${current.maxRounds}`;
       else if (repeatedStateCount >= current.maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${current.maxRepeatedState}`;
       if (blockedReason) return accept(current, { status: 'blocked', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, blockedReason, updatedAt: event.at }, 'controller_round_relay_stalled_blocked');
-      const authorityId = current.status === 'dispatching' && current.authorityId ? current.authorityId : event.proposedAuthorityId;
-      return accept(current, { authorityId, status: 'dispatching', lifecycleStage: 'dispatching', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, failureClass: undefined, lastError: blocker === 'repeated_state' ? undefined : event.lastError, reason: blocker === 'repeated_state' ? 'semantic_state_changed_after_repeated_state_block' : current.reason, nextRecoveryAt: undefined, claimedAt: undefined, blockedReason: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined, updatedAt: event.at }, 'controller_round_relay_stalled_recovery_begin');
+      const resumesSameDispatch = current.status === 'dispatching';
+      const authorityId = resumesSameDispatch && current.authorityId ? current.authorityId : event.proposedAuthorityId;
+      return accept(current, { authorityId, status: 'dispatching', lifecycleStage: 'dispatching', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, failureClass: undefined, lastError: blocker === 'repeated_state' ? undefined : event.lastError, reason: blocker === 'repeated_state' ? 'semantic_state_changed_after_repeated_state_block' : current.reason, nextRecoveryAt: undefined, claimedAt: undefined, blockedReason: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined, ...(resumesSameDispatch ? {} : { providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }), updatedAt: event.at }, 'controller_round_relay_stalled_recovery_begin');
     }
     case 'semantic_disposition_submitted': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
@@ -325,7 +350,7 @@ export function decideControllerRoundTransition(
     case 'controller_release_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status !== 'pending_release') return { kind: 'no_op', current, reason: 'release_not_pending' };
-      return accept(current, { authorityId: event.proposedAuthorityId, status: 'dispatching', lifecycleStage: 'dispatching', assistantContextSnapshot: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined, updatedAt: event.at }, 'controller_round_relay_dispatch_begin');
+      return accept(current, { authorityId: event.proposedAuthorityId, status: 'dispatching', lifecycleStage: 'dispatching', assistantContextSnapshot: undefined, controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined, providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined, updatedAt: event.at }, 'controller_round_relay_dispatch_begin');
     }
     case 'terminal_work_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
@@ -337,7 +362,7 @@ export function decideControllerRoundTransition(
     }
     case 'authority_recovery_requested': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
-      return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, claimedAt: undefined, nextRecoveryAt: undefined, updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
+      return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, claimedAt: undefined, nextRecoveryAt: undefined, ...(event.keepsConfirmedDispatch ? {} : { providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }), updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
     }
   }
 }

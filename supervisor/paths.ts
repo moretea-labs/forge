@@ -1,18 +1,18 @@
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { resolveControllerHome } from '../src/cli/repositories/controller-home';
 
-export function resolveWorkflowSupervisorForgeHome(forgeHome?: string): string {
-  return resolve(forgeHome ?? process.env.FORGE_HOME ?? join(homedir(), '.forge'));
+export function resolveWorkflowSupervisorForgeHome(controllerHome?: string): string {
+  return resolveControllerHome(controllerHome);
 }
 
-export function workflowSupervisorRootPath(forgeHome?: string): string {
-  return join(resolveWorkflowSupervisorForgeHome(forgeHome), 'supervisor');
+export function workflowSupervisorRootPath(controllerHome?: string): string {
+  return join(resolveWorkflowSupervisorForgeHome(controllerHome), 'supervisor');
 }
 
-export function workflowSupervisorDatabasePathValue(forgeHome?: string): string {
-  return join(workflowSupervisorRootPath(forgeHome), 'supervisor.sqlite');
+export function workflowSupervisorDatabasePathValue(controllerHome?: string): string {
+  return join(workflowSupervisorRootPath(controllerHome), 'supervisor.sqlite');
 }
 
-export function workflowSupervisorSocketPath(forgeHome?: string): string {
-  return join(workflowSupervisorRootPath(forgeHome), 'supervisor.sock');
+export function workflowSupervisorSocketPath(controllerHome?: string): string {
+  return join(workflowSupervisorRootPath(controllerHome), 'supervisor.sock');
 }

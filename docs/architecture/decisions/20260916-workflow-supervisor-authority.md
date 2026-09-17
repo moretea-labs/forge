@@ -1,6 +1,6 @@
 # Workflow Supervisor authority above the ChatGPT-turn / Forge execution boundary
 
-Status: **Accepted architecture contract; implementation and live canary proof remain pending.**
+Status: **Accepted architecture contract; production Runtime integration implemented, live unattended canary proof remains pending.**
 
 Date: 2026-09-16
 
@@ -46,7 +46,7 @@ Original Goal / logical WorkflowRun
        repository execution
 ```
 
-V1 runs as an independent **TypeScript/Bun Supervisor daemon** outside the existing Forge execution process. It reuses Forge's existing Bun/Node SQLite boundary and platform service-manager/launchd conventions, but it has its own process identity and dedicated Supervisor persistence. Those process, persistence and single-writer boundaries establish the authority separation; changing implementation language does not. Go or another runtime is reconsidered only if later packaging, restart-recovery or operability evidence proves a material benefit without changing this protocol or authority contract. ChatGPT Web is the first execution target, not the definition of the Supervisor.
+V1 is a **TypeScript/Bun Supervisor authority co-hosted inside the Canonical Forge Runtime process**. It has its own dedicated Supervisor persistence and Unix socket under the exact configured Controller Home, and only the Supervisor composition opens/writes that database. Authority separation is therefore defined by persistence/protocol/single-writer boundaries, not by inventing a second OS daemon. The existing Canonical Runtime launchd/systemd/portable lifecycle starts and stops Supervisor with the rest of the Runtime. Go or another runtime is reconsidered only if later packaging, restart-recovery or operability evidence proves a material benefit without changing this protocol or authority contract. ChatGPT Web is the first execution target, not the definition of the Supervisor.
 
 ### Authority matrix
 
@@ -138,7 +138,7 @@ For `NEEDS_USER`, the Supervisor validates `userBlockerPolicy`. Test failures, t
 
 ## Single writer and event journal
 
-The long-lived Supervisor daemon is the **only durable writer** for Supervisor task/run state. Chrome Extension, Native Messaging transport, Forge execution, and lower schedulers submit observations or execute authorized effects; they never independently mutate Supervisor state.
+The long-lived Supervisor authority hosted by Canonical Runtime is the **only durable writer** for Supervisor task/run state. Chrome Extension, Native Messaging transport, Forge execution, and lower schedulers submit observations or execute authorized effects; they never independently mutate Supervisor state.
 
 V1 owns a dedicated `supervisor.sqlite` authority under the Forge user-data root instead of reusing `control-plane.sqlite`, generic `control_plane_records`, the declarative `workflow_run` namespace, or a collection of mutable status JSON files. It reuses only the runtime-neutral SQLite mechanics already proven by Forge: Bun/Node driver adaptation, WAL, foreign keys, bounded busy waiting, lifecycle integrity checks, statement finalization and short `BEGIN IMMEDIATE` write transactions.
 
@@ -152,7 +152,7 @@ The core schema keeps the exactly-once invariants relational rather than burying
 - recovery/correction decisions;
 - verified terminalization.
 
-Current state is derived from those durable facts. On macOS, launchd owns the one long-lived Supervisor daemon. The Chrome Native Messaging host is only a bounded stdin/stdout-to-**Unix-JSONL socket** relay to that daemon, following Forge's existing external Unix transport pattern; it does not open `supervisor.sqlite`, make continuation/terminal decisions, or become a second writer. Relay processes may reconnect or respawn without changing WorkflowRun identity.
+Current state is derived from those durable facts. The Canonical Forge Runtime owns the one long-lived process lifecycle and starts the Supervisor server in-process; Supervisor still owns its separate SQLite and Unix-JSONL socket authority. The Chrome Native Messaging host is only a bounded stdin/stdout-to-socket relay; it does not open `supervisor.sqlite`, make continuation/terminal decisions, or become a second writer. Relay processes may reconnect or respawn without changing WorkflowRun identity.
 
 ## Exactly-once continuation and external-effect reconciliation
 
@@ -196,9 +196,9 @@ Existing conversations require an explicit enrollment handshake. The Supervisor 
 
 ## Relationship to existing Forge continuation
 
-The ControllerRound turn-settled continuation contract integrated at `7cd81cf7` remains valid as lower-layer execution compatibility and evidence. It is not the authority that reactivates ChatGPT after the outer assistant call stack is gone, and it is not proof that the long-lived WorkflowRun progressed or completed.
+ControllerRound remains the sole lower-layer semantic continuation/provider-effect authority. Schedule occurrences hand exact trigger identity into ControllerRound; Scheduler-owned continuation-dispatch persistence has been removed. ControllerRound is not the authority that reactivates ChatGPT after the outer assistant call stack is gone, and it is not proof that the long-lived WorkflowRun progressed or completed.
 
-The existing Scheduler likewise remains an execution/occurrence scheduler. It does not become the Workflow Supervisor merely because both systems schedule something.
+The existing Scheduler remains only an execution/occurrence scheduler. Once an exact Requirement-backed ChatGPT conversation binding exists, lower Scheduler/maintenance/direct-continuation paths must not submit the next outer ChatGPT turn; Workflow Supervisor is the single outer writer.
 
 No Supervisor state is added to Work, ControllerRound, relay, MCP session or existing declarative Workflow asset records in V1. Integration is through typed observations/read-only completion evidence and authorized execution effects.
 

@@ -32,9 +32,7 @@ import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-work
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession } from '../../packages/kernel/controller/api/index';
-import { resumeScheduledControllerContinuation } from '../../packages/kernel/scheduler/api/index';
-import { updateScheduledContinuationDispatch } from '../../packages/kernel/scheduler/infrastructure/continuation-dispatch-store';
+import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -1810,8 +1808,7 @@ describe('rh_work terminalization authority', () => {
       binding: { bindingId: adapterA.binding.bindingId, hostKind: 'chatgpt' },
     });
 
-    const dispatched = await resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId,
+    const dispatched = await resumeControllerRoundOccurrence(store, {
       occurrenceId: 'occ-binding-rollover',
       workId,
       controllerBindingId: adapterA.binding.bindingId,
@@ -1821,13 +1818,12 @@ describe('rh_work terminalization authority', () => {
         dispatchId: 'provider-dispatch-after-session-rollover',
       }),
     });
-    expect(dispatched.dispatch).toMatchObject({
-      status: 'dispatched',
-      workId,
-      controllerSessionId: ownerB.sessionId,
-      controllerBindingId: adapterA.binding.bindingId,
-      hostDispatchId: 'provider-dispatch-after-session-rollover',
+    expect(dispatched).toMatchObject({
+      outcome: 'dispatched',
+      reused: false,
+      providerDispatchReceiptId: 'provider-dispatch-after-session-rollover',
     });
+    expect(dispatched.relay).toMatchObject({ originWorkId: workId, bindingId: adapterA.binding.bindingId });
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       lifecycleStage: 'dispatch_confirmed',
       providerDispatchReceiptId: 'provider-dispatch-after-session-rollover',
@@ -1857,9 +1853,6 @@ describe('rh_work terminalization authority', () => {
       tabPolicy: 'auto',
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: currentBinding.binding });
-    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
-      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
-    });
     const occurrenceId = 'occ-legacy-binding-adoption';
     const relayScopeId = `goal:${workId}`;
     const legacyBindingId = `chatgpt:legacy:${fx.repository.repoId}:${workId}`;
@@ -1912,22 +1905,8 @@ describe('rh_work terminalization authority', () => {
     });
     expect(recoveredBinding.binding.bindingId).toBe(currentBinding.binding.bindingId);
     bindControllerSessionBinding(store, { workId, sessionId: recoveredOwner.sessionId, binding: recoveredBinding.binding });
-    updateScheduledContinuationDispatch(store, occurrenceId, 'test-legacy-binding-prepare', (_current, at) => ({
-      schemaVersion: 1,
-      repoId: fx.repository.repoId,
-      scheduleId: schedule.scheduleId,
-      occurrenceId,
-      workId,
-      controllerSessionId: recoveredOwner.sessionId,
-      controllerBindingId: recoveredBinding.binding.bindingId,
-      relayScopeId,
-      status: 'prepared',
-      createdAt: at,
-      updatedAt: at,
-    }));
-
     let resumeCalls = 0;
-    const input = { scheduleId: schedule.scheduleId, occurrenceId, workId, controllerBindingId: recoveredBinding.binding.bindingId };
+    const input = { occurrenceId, workId, controllerBindingId: recoveredBinding.binding.bindingId };
     const host = {
       resume: async (binding: typeof recoveredBinding.binding, context: { authorityId: string }) => {
         resumeCalls += 1;
@@ -1936,20 +1915,18 @@ describe('rh_work terminalization authority', () => {
         return { accepted: true, dispatchId: 'provider-dispatch-after-binding-migration' };
       },
     };
-    const first = await resumeScheduledControllerContinuation(store, input, host);
+    const first = await resumeControllerRoundOccurrence(store, input, host);
     expect(first.reused).toBe(false);
-    expect(first.dispatch).toMatchObject({
-      status: 'dispatched', occurrenceId, controllerBindingId: recoveredBinding.binding.bindingId,
-      hostDispatchId: 'provider-dispatch-after-binding-migration',
-    });
+    expect(first).toMatchObject({ outcome: 'dispatched', providerDispatchReceiptId: 'provider-dispatch-after-binding-migration' });
+    expect(first.relay).toMatchObject({ status: 'dispatched', occurrenceId, bindingId: recoveredBinding.binding.bindingId });
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       status: 'dispatched', occurrenceId, bindingId: recoveredBinding.binding.bindingId,
       providerDispatchReceiptId: 'provider-dispatch-after-binding-migration',
     });
 
-    const replay = await resumeScheduledControllerContinuation(store, input, host);
+    const replay = await resumeControllerRoundOccurrence(store, input, host);
     expect(replay.reused).toBe(true);
-    expect(replay.dispatch.status).toBe('dispatched');
+    expect(replay.outcome).toBe('dispatched');
     expect(resumeCalls).toBe(1);
   }, 15_000);
 
@@ -1971,9 +1948,6 @@ describe('rh_work terminalization authority', () => {
       workId, sessionId: owner.sessionId, title: 'matching provider projection', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
-    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
-      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
-    });
     const reservedOccurrenceId = 'occ-reserved-after-crash';
     const otherOccurrenceId = 'occ-other-open-round';
     const relayScopeId = `goal:${workId}`;
@@ -1990,28 +1964,15 @@ describe('rh_work terminalization authority', () => {
         sessionId: owner.sessionId,
       },
     });
-    updateScheduledContinuationDispatch(store, reservedOccurrenceId, 'test-occurrence-mismatch-prepare', (_current, at) => ({
-      schemaVersion: 1,
-      repoId: fx.repository.repoId,
-      scheduleId: schedule.scheduleId,
-      occurrenceId: reservedOccurrenceId,
-      workId,
-      controllerSessionId: owner.sessionId,
-      controllerBindingId: binding.binding.bindingId,
-      relayScopeId,
-      status: 'prepared',
-      createdAt: at,
-      updatedAt: at,
-    }));
     let resumeCalls = 0;
-    await expect(resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId, occurrenceId: reservedOccurrenceId, workId, controllerBindingId: binding.binding.bindingId,
+    await expect(resumeControllerRoundOccurrence(store, {
+      occurrenceId: reservedOccurrenceId, workId, controllerBindingId: binding.binding.bindingId,
     }, {
       resume: async () => {
         resumeCalls += 1;
         return { accepted: true, dispatchId: 'must-not-dispatch' };
       },
-    })).rejects.toThrow(`SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN: ${reservedOccurrenceId}:${relayScopeId}`);
+    })).rejects.toThrow(`CONTROLLER_CONTINUATION_ROUND_ALREADY_OPEN:${reservedOccurrenceId}:${relayScopeId}`);
     expect(resumeCalls).toBe(0);
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       status: 'dispatching', occurrenceId: otherOccurrenceId, bindingId: binding.binding.bindingId,
@@ -2041,9 +2002,6 @@ describe('rh_work terminalization authority', () => {
       tabPolicy: 'auto',
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
-    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
-      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
-    });
     let resumeCalls = 0;
     const host = {
       resume: async () => {
@@ -2068,19 +2026,20 @@ describe('rh_work terminalization authority', () => {
       },
     };
     const input = {
-      scheduleId: schedule.scheduleId, occurrenceId: 'occ-provider-wait-for-user', workId, controllerBindingId: adapter.binding.bindingId,
+      occurrenceId: 'occ-provider-wait-for-user', workId, controllerBindingId: adapter.binding.bindingId,
     };
-    const first = await resumeScheduledControllerContinuation(store, input, host);
-    expect(first.dispatch).toMatchObject({ status: 'wait_for_user', handoffId: 'hnd-provider-login-required', reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' });
+    const first = await resumeControllerRoundOccurrence(store, input, host);
+    expect(first).toMatchObject({ outcome: 'wait_for_user', reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' });
+    expect(first.relay).toMatchObject({ handoffId: 'hnd-provider-login-required' });
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       status: 'waiting_for_user',
       blockedReason: 'provider_user_action_required',
       handoffId: 'hnd-provider-login-required',
       lastError: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
     });
-    const replay = await resumeScheduledControllerContinuation(store, input, host);
+    const replay = await resumeControllerRoundOccurrence(store, input, host);
     expect(replay.reused).toBe(true);
-    expect(replay.dispatch.status).toBe('wait_for_user');
+    expect(replay.outcome).toBe('wait_for_user');
     expect(resumeCalls).toBe(1);
   }, 15_000);
 
@@ -2107,9 +2066,6 @@ describe('rh_work terminalization authority', () => {
       tabPolicy: 'auto',
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
-    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
-      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
-    });
     const relayScopeId = `goal:${workId}`;
     beginInitialControllerRoundDispatch(store, {
       workId,
@@ -2151,28 +2107,27 @@ describe('rh_work terminalization authority', () => {
         return { accepted: true, dispatchId: `dispatch-${resumeCalls}` };
       },
     };
-    const unchanged = await resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId,
+    const unchanged = await resumeControllerRoundOccurrence(store, {
       occurrenceId: 'occ-semantic-wait-unchanged',
       workId,
       controllerBindingId: adapter.binding.bindingId,
       relayScopeId,
     }, host);
-    expect(unchanged.dispatch).toMatchObject({ status: 'semantic_wait', workId, relayScopeId });
+    expect(unchanged).toMatchObject({ outcome: 'semantic_wait' });
+    expect(unchanged.relay).toMatchObject({ originWorkId: workId, relayScopeId });
     expect(resumeCalls).toBe(0);
     expect(getControllerRoundRelay(store, workId)?.status).toBe('waiting');
 
     // A meaningful Work state change opens exactly one successor round.
     recordWorkEvidenceState(store, workId, 'partial');
     expect(readControllerRoundSemanticStateFingerprint(store, workId)).not.toBe(baselineFingerprint);
-    const changed = await resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId,
+    const changed = await resumeControllerRoundOccurrence(store, {
       occurrenceId: 'occ-semantic-wait-changed',
       workId,
       controllerBindingId: adapter.binding.bindingId,
       relayScopeId,
     }, host);
-    expect(changed.dispatch).toMatchObject({ status: 'dispatched', hostDispatchId: 'dispatch-1' });
+    expect(changed).toMatchObject({ outcome: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
     expect(resumeCalls).toBe(1);
     expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
   }, 15_000);

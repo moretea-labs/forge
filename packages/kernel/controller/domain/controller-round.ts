@@ -86,7 +86,7 @@ export interface ControllerRoundRelayRecord {
   providerFailureEvidenceId?: string;
   providerEffectReconciliationEvidenceId?: string;
   providerDispatchStartedAt?: string;
-  /** Canonical provider-dispatch receipt for this semantic round. Scheduler occurrence copies it only as a replay projection. */
+  /** Canonical provider-dispatch receipt for this semantic round. Trigger occurrences never duplicate this lifecycle truth. */
   providerDispatchReceiptId?: string;
   /** Explicit schedule/manual/replan occurrence identity when a prior lineage exists. */
   occurrenceId?: string;

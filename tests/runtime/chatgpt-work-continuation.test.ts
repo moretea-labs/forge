@@ -1085,7 +1085,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(browserRuntime).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(browserRuntime).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(browserRuntime).not.toContain(':has-text(');
-    expect(browserRuntime).toContain('waitForChatgptIntelligenceControl'); expect(browserRuntime).toContain('reasoningLabelMatches'); expect(browserRuntime).toContain("'main button, main [role=\"button\"]'"); expect(browserRuntime).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(browserRuntime).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(browserRuntime).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeScheduledControllerContinuation'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
+    expect(browserRuntime).toContain('waitForChatgptIntelligenceControl'); expect(browserRuntime).toContain('reasoningLabelMatches'); expect(browserRuntime).toContain("'main button, main [role=\"button\"]'"); expect(browserRuntime).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(browserRuntime).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(browserRuntime).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeControllerRoundOccurrence'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
     expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
     expect(browserRuntime).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute 和 repository_safe_patch_apply');
     expect(source).toContain("relayScopeId?.startsWith('requirement:') === true");
@@ -1093,7 +1093,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('不得把只读/编排 Supervisor Work 的 work_id 用来归属 child Work 的源码修改');
     expect(source).toContain('本轮每一次 repository_command_execute 和 repository_safe_patch_apply 都必须显式传 work_id=${workId}');
     const maintenance = readFileSync(join(process.cwd(), 'src/runtime/control-plane/global-scheduler/maintenance.ts'), 'utf8');
-    expect(maintenance).toContain('exactOriginWork: !record.requirementId');
+    expect(maintenance).toContain('exactOriginWork: !dispatchingRecord.requirementId');
     expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated })');
     expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
@@ -1110,7 +1110,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(standaloneSource).not.toContain('getWorkContract(');
     expect(standaloneSource).not.toContain('bindChatgptWorkConversation(');
     expect(engine).toContain('runStandaloneChatgptPrompt');
-    expect(engine).toContain('resumeScheduledControllerContinuation(');
+    expect(engine).toContain('resumeControllerRoundOccurrence(');
     expect(engine).not.toContain('controllerAuthorityId: relay.authorityId');
     expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
@@ -1517,12 +1517,12 @@ describe('provider dispatch outcome-unknown fence', () => {
     const browserRuntime = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
     const providerDelivery = readFileSync(join(process.cwd(), 'adapters/chatgpt/provider-delivery.ts'), 'utf8');
     const host = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');
-    const scheduler = readFileSync(join(process.cwd(), 'packages/kernel/scheduler/application/continuation-service.ts'), 'utf8');
+    const continuation = readFileSync(join(process.cwd(), 'packages/kernel/controller/application/continuation-service.ts'), 'utf8');
     expect(providerDelivery).toContain("CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN");
     expect(browserRuntime).toContain('submitOutcomeUnknown = true');
     expect(browserRuntime).toContain("'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'");
     expect(host).toContain('CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
-    expect(scheduler).toContain('providerDispatchOutcomeUnknown');
-    expect(scheduler).toContain('outcomeUnknown: providerDispatchOutcomeUnknown');
+    expect(continuation).toContain('const outcomeUnknown =');
+    expect(continuation).toContain('outcomeUnknown });');
   });
 });

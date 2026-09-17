@@ -16,10 +16,8 @@ import {
   readControllerRoundSemanticStateFingerprint,
   submitControllerRoundDisposition,
 } from '../src/runtime/control-plane/facade/controller-round-relay';
-import { bindControllerSessionBinding } from '../packages/kernel/controller/api/index';
-import { resumeScheduledControllerContinuation } from '../packages/kernel/scheduler/api/index';
+import { bindControllerSessionBinding, resumeControllerRoundOccurrence } from '../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../adapters/chatgpt/controller-binding-store';
-import { createWorkContinuationSchedule } from '../src/runtime/workflow/schedules/work-continuation';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-stage3c-semantic-wait-canary-'));
 const controllerHome = join(root, 'controller');
@@ -88,13 +86,6 @@ try {
     tabPolicy: 'auto',
   });
   bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
-  const { schedule } = createWorkContinuationSchedule(controllerHome, repository.repoId, {
-    workId,
-    scheduleMode: 'continuation',
-    controllerType: 'chatgpt',
-    triggerType: 'manual',
-    shadowMode: false,
-  });
   const relayScopeId = `requirement:${requirementId}`;
   beginInitialControllerRoundDispatch(store, {
     workId,
@@ -146,29 +137,27 @@ try {
       return { accepted: true, dispatchId: `stage3c-canary-provider-${providerCalls}` };
     },
   };
-  const unchanged = await resumeScheduledControllerContinuation(store, {
-    scheduleId: schedule.scheduleId,
+  const unchanged = await resumeControllerRoundOccurrence(store, {
     occurrenceId: 'stage3c-canary-unchanged',
     workId,
     controllerBindingId: adapter.binding.bindingId,
     relayScopeId,
   }, host);
-  if (unchanged.dispatch.status !== 'semantic_wait' || providerCallCount() !== 0) {
-    throw new Error(`CANARY_UNCHANGED_WAIT_DISPATCHED:${unchanged.dispatch.status}:calls=${providerCallCount()}`);
+  if (unchanged.outcome !== 'semantic_wait' || providerCallCount() !== 0) {
+    throw new Error(`CANARY_UNCHANGED_WAIT_DISPATCHED:${unchanged.outcome}:calls=${providerCallCount()}`);
   }
 
   recordWorkEvidenceState(store, workId, 'partial');
   const changedFingerprint = readControllerRoundSemanticStateFingerprint(store, workId);
   if (!changedFingerprint || changedFingerprint === baselineFingerprint) throw new Error('CANARY_MEANINGFUL_CHANGE_NOT_DETECTED');
-  const changed = await resumeScheduledControllerContinuation(store, {
-    scheduleId: schedule.scheduleId,
+  const changed = await resumeControllerRoundOccurrence(store, {
     occurrenceId: 'stage3c-canary-changed',
     workId,
     controllerBindingId: adapter.binding.bindingId,
     relayScopeId,
   }, host);
-  if (changed.dispatch.status !== 'dispatched' || providerCallCount() !== 1) {
-    throw new Error(`CANARY_CHANGED_STATE_DISPATCH_COUNT:${changed.dispatch.status}:calls=${providerCallCount()}`);
+  if (changed.outcome !== 'dispatched' || providerCallCount() !== 1) {
+    throw new Error(`CANARY_CHANGED_STATE_DISPATCH_COUNT:${changed.outcome}:calls=${providerCallCount()}`);
   }
   const finalRelay = getControllerRoundRelay(store, workId);
   if (finalRelay?.providerDispatchReceiptId !== 'stage3c-canary-provider-1') {
@@ -185,8 +174,8 @@ try {
     baselineFingerprint,
     timestampChurnFingerprint,
     changedFingerprint,
-    unchangedDispatchStatus: unchanged.dispatch.status,
-    changedDispatchStatus: changed.dispatch.status,
+    unchangedDispatchStatus: unchanged.outcome,
+    changedDispatchStatus: changed.outcome,
     providerCalls: providerCallCount(),
     providerDispatchReceiptId: finalRelay.providerDispatchReceiptId,
   }, null, 2));

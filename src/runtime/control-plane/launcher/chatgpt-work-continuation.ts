@@ -23,6 +23,7 @@ import {
 } from '../../../../adapters/chatgpt/browser-delivery-runtime';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
+import { ensureWorkflowSupervisorEnrollmentForWork } from '../../root/workflow-supervisor-composition';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
@@ -471,6 +472,12 @@ export async function runWorkChatgptContinuation(
         providerDeliveryStatus: delivery.status,
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
+    }
+    // A confirmed Work-bound delivery may establish the exact conversation that
+    // hands outer-turn ownership to Workflow Supervisor. Enrollment is idempotent
+    // and must never rewrite the already-confirmed provider fact into failure.
+    if (binding) {
+      try { await ensureWorkflowSupervisorEnrollmentForWork(store, input.workId); } catch {}
     }
     return {
       status: 'dispatched',

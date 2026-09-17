@@ -548,7 +548,7 @@ const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('consecutive_failures:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('repeated_state:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('round_budget_exhausted:')`,
-  `packages/kernel/scheduler/application/continuation-service.ts::error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')`,
+  `packages/kernel/controller/application/continuation-service.ts::error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')`,
   `src/cli/local-bridge/facade-api.ts::selection.reason.includes('Small')`,
   `src/cli/local-bridge/facade-api.ts::selection.reason.includes('small')`,
   `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
@@ -900,7 +900,8 @@ if (existsSync(resolve(root, controllerRoundTransitionPolicyPath))) {
 }
 requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN');
 requireText('adapters/chatgpt/controller-host.ts', 'CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'outcomeUnknown: providerDispatchOutcomeUnknown');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'const outcomeUnknown =');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'outcomeUnknown });');
 requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
 requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
 forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');
@@ -1020,20 +1021,38 @@ requireText('packages/kernel/scheduler/application/settlement.ts', 'applySchedul
 requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleRetryableFailure');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'settleScheduledExecution');
 requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel V2 compatibility shim');
-requireText('packages/kernel/scheduler/domain/continuation.ts', 'export interface ScheduledContinuationDispatch');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'resumeScheduledControllerContinuation');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getRetainedControllerSession');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getControllerWorkBinding');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
-forbid('packages/kernel/scheduler/application/continuation-service.ts', /SCHEDULE_CONTINUATION_SESSION_DRIFT/, 'Scheduler continuation must not treat replaceable ControllerSession transport ids as durable continuation identity');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_prepare');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_bind_round');
+requireMissing('packages/kernel/scheduler/domain/continuation.ts');
+requireMissing('packages/kernel/scheduler/application/continuation-service.ts');
+requireMissing('packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'resumeControllerRoundOccurrence');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'getRetainedControllerSession');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'getControllerWorkBinding');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'beginControllerRoundProviderDispatch');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
+requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'controller-provider-dispatch-start');
+requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "type: 'provider_dispatch_started'");
+forbid('packages/kernel/controller/application/continuation-service.ts', /scheduler_continuation_dispatch|ScheduledContinuationDispatch/, 'Controller continuation must not recreate Scheduler-owned continuation lifecycle persistence');
+requireText('src/runtime/control-plane/launcher/chatgpt-round-continuation.ts', 'beginControllerRoundProviderDispatch');
+requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'beginControllerRoundProviderDispatch');
 requireText('src/runtime/root/scheduled-controller-composition.ts', 'controllerHostForScheduledBinding');
 requireMissing('adapters/scheduler/controller-binding.ts');
 requireText('adapters/chatgpt/controller-host.ts', 'createChatgptControllerHost');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
-requireText('src/runtime/workflow/schedules/engine.ts', 'resumeScheduledControllerContinuation');
+requireText('src/runtime/workflow/schedules/engine.ts', 'resumeControllerRoundOccurrence');
+requireText('src/runtime/workflow/schedules/engine.ts', 'workflowSupervisorBoundaryForWork');
+requireText('src/runtime/workflow/schedules/engine.ts', 'workflow_supervisor_owns_outer_turn');
+requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
+requireText('src/runtime/control-plane/launcher/chatgpt-round-continuation.ts', "outerTurnOwner: 'workflow_supervisor'");
+requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'workflowSupervisorBoundaryForWork');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
+requireText('supervisor/entry.ts', 'forgeWorkflowSupervisorValidators()');
+requireText('supervisor/forge-validators.ts', "requirement.state !== 'done'");
+requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
+forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:requirement:${requirementId}`');
+forbid('supervisor/client.ts', /task_has_effect|taskHasAnyEffect/, 'Supervisor boundary is derived from canonical Work+conversation facts; do not add a second ownership projection RPC');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
 requireText('src/runtime/workflow/schedules/engine.ts', 'controller_session_id');
@@ -1129,12 +1148,20 @@ requireMissing('src/runtime/supervisor');
 requireText('supervisor/store.ts', 'BEGIN IMMEDIATE');
 requireText('supervisor/store.ts', 'completions_one_per_source_effect');
 requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_SOURCE_EFFECT_COMPLETION_CONFLICT');
-requireText('supervisor/paths.ts', 'process.env.FORGE_HOME');
-requireText('supervisor/paths.ts', "join(resolveWorkflowSupervisorForgeHome(forgeHome), 'supervisor')");
-forbid('supervisor/paths.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor path authority must stay under Forge user data and outside Controller Home/lower lifecycle authorities');
-forbid('supervisor/store.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor persistence must stay under Forge user data and outside Controller Home/lower lifecycle authorities');
-forbid('supervisor/service.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|--controller-home/, 'Workflow Supervisor service must bind Forge user-data authority, not Controller Home');
-forbid('supervisor/entry.ts', /FORGE_CONTROLLER_HOME|--controller-home/, 'Workflow Supervisor daemon must bind FORGE_HOME, not Controller Home');
+requireText('supervisor/paths.ts', 'resolveControllerHome');
+requireText('supervisor/paths.ts', "join(resolveWorkflowSupervisorForgeHome(controllerHome), 'supervisor')");
+forbid('supervisor/paths.ts', /control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor path authority may share the canonical Controller Home root but must not depend on lower lifecycle persistence or Kernel authorities');
+forbid('supervisor/store.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor persistence must resolve its root only through supervisor/paths and remain a separate database authority');
+requireMissing('supervisor/service.ts');
+requireText('src/runtime/root/runtime.ts', 'startWorkflowSupervisorRuntime');
+requireText('src/runtime/root/runtime.ts', 'WORKFLOW_SUPERVISOR_STOPPED');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorRuntime(controllerHome: string)');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'new WorkflowSupervisorStore(forgeHome)');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'createWorkflowSupervisorServer');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'resolveWorkflowSupervisorForgeHome(options.controllerHome)');
+forbid('src/runtime/root/workflow-supervisor-runtime.ts', /createPlatformServiceManagerHost|launchd|systemd|startDetached/, 'Workflow Supervisor reuses the Canonical Runtime process lifecycle and must not own a second OS service');
+requireText('supervisor/entry.ts', "argument('--controller-home')");
+forbid('supervisor/entry.ts', /FORGE_HOME|--forge-home/, 'Workflow Supervisor foreground entry must use the canonical Controller Home authority rather than a second Forge-home root');
 requireText('supervisor/control-plane.ts', 'await validator(task, parsed.proposal)');
 requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
 requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
@@ -1742,8 +1769,6 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/evidence/event-ledger.ts',
-  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/cli/repositories/locks.ts',
-  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));

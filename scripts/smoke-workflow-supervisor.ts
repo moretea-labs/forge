@@ -3,11 +3,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strict as assert } from 'node:assert';
 import { createConnection } from 'node:net';
+import { createRequirement, updateRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
+import {
+  registerWorkflowSupervisorTask,
+  reserveWorkflowSupervisorEnrollment,
+} from '../supervisor/client';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
+import { forgeWorkflowSupervisorValidators } from '../supervisor/forge-validators';
+import { workflowSupervisorSocketPath } from '../supervisor/paths';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
 import { WorkflowSupervisorStore, workflowSupervisorDatabasePath } from '../supervisor/store';
 import { createWorkflowSupervisorServer } from '../supervisor/server';
-import { renderWorkflowSupervisorLaunchd } from '../supervisor/service';
 
 const home = mkdtempSync(join(tmpdir(), 'forge-workflow-supervisor-'));
 try {
@@ -36,7 +42,7 @@ try {
   const done = await control.observeAssistantTurn({ taskId: 'task-smoke', conversationId: 'conv-smoke', responseText: response(rejected.successorEffect.effectId, 'DONE', ['goal-complete']) });
   assert.equal(done.terminal, true); assert.equal(done.successorEffect, undefined);
 
-  const socketPath = join(home, 'supervisor-smoke.sock');
+  const socketPath = workflowSupervisorSocketPath(home);
   const server = createWorkflowSupervisorServer({ controlPlane: control, socketPath });
   await new Promise<void>((resolve) => server.once('listening', resolve));
   const health = await new Promise<Record<string, any>>((resolve, reject) => {
@@ -53,8 +59,44 @@ try {
     socket.once('connect', () => socket.write(`${JSON.stringify({ id: 'health-1', method: 'health', params: {} })}\n`));
   });
   assert.equal(health.ok, true); assert.equal(health.result.status, 'ready');
+
+  const rpcTaskInput = {
+    taskId: 'task-rpc-smoke', conversationId: 'conv-rpc-smoke', conversationUrl: 'https://chatgpt.com/c/conv-rpc-smoke', objective: 'rpc enrollment smoke',
+    completionContract: { kind: 'smoke' }, continuationPolicy: { kind: 'smoke' }, userBlockerPolicy: { kind: 'smoke' },
+  };
+  const rpcTask = await registerWorkflowSupervisorTask(home, rpcTaskInput);
+  assert.equal(rpcTask.taskId, rpcTaskInput.taskId);
+  const rpcEnrollment = await reserveWorkflowSupervisorEnrollment(home, rpcTask.taskId);
+  const rpcEnrollmentReplay = await reserveWorkflowSupervisorEnrollment(home, rpcTask.taskId);
+  assert.equal(rpcEnrollmentReplay.effectId, rpcEnrollment.effectId);
+
+  const controllerHome = join(home, 'controller');
+  const validators = forgeWorkflowSupervisorValidators();
+  createRequirement({ controllerHome }, { requirementId: 'REQ-SUPERVISOR-DONE', title: 'Supervisor done validator', outcomeStatement: 'Validate canonical semantic completion.' });
+  updateRequirement({ controllerHome }, { requirementId: 'REQ-SUPERVISOR-DONE', action: 'smoke_activate', mutate: (current) => ({ ...current, state: 'active' }) });
+  const doneTask = {
+    ...rpcTaskInput,
+    taskId: 'task-validator-done',
+    completionContract: { kind: 'forge_requirement_done', controller_home: controllerHome, requirement_id: 'REQ-SUPERVISOR-DONE' },
+    userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', controller_home: controllerHome, requirement_id: 'REQ-SUPERVISOR-DONE' },
+    createdAt: new Date().toISOString(),
+  };
+  assert.equal((await validators.completionContract(doneTask, { action: 'DONE', sourceEffectId: 'fx_smokevalidator', checkpoint: 'done', reason: 'done', evidence: [] })).valid, false);
+  updateRequirement({ controllerHome }, {
+    requirementId: 'REQ-SUPERVISOR-DONE', action: 'smoke_semantic_acceptance',
+    mutate: (current) => ({ ...current, state: 'done', semanticAcceptance: { reviewer: 'smoke', rationale: 'validated', planIds: [], acceptedAt: new Date().toISOString() } }),
+  });
+  assert.equal((await validators.completionContract(doneTask, { action: 'DONE', sourceEffectId: 'fx_smokevalidator', checkpoint: 'done', reason: 'done', evidence: [] })).valid, true);
+
+  createRequirement({ controllerHome }, { requirementId: 'REQ-SUPERVISOR-USER', title: 'Supervisor user validator', outcomeStatement: 'Validate genuine user-only wait.' });
+  updateRequirement({ controllerHome }, { requirementId: 'REQ-SUPERVISOR-USER', action: 'smoke_activate', mutate: (current) => ({ ...current, state: 'active' }) });
+  updateRequirement({ controllerHome }, {
+    requirementId: 'REQ-SUPERVISOR-USER', action: 'smoke_user_wait',
+    mutate: (current) => ({ ...current, state: 'waiting_for_user', needsAttention: true, attentionSummary: 'User authorization is required.' }),
+  });
+  const userTask = { ...doneTask, taskId: 'task-validator-user', completionContract: { kind: 'forge_requirement_done', controller_home: controllerHome, requirement_id: 'REQ-SUPERVISOR-USER' }, userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', controller_home: controllerHome, requirement_id: 'REQ-SUPERVISOR-USER' } };
+  assert.equal((await validators.userBlockerPolicy(userTask, { action: 'NEEDS_USER', sourceEffectId: 'fx_smokevalidator', checkpoint: 'user', reason: 'user action', evidence: [] })).valid, true);
+
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  const plist = renderWorkflowSupervisorLaunchd({ label: 'com.moretea.forge.workflow-supervisor.smoke', bunExecutable: '/usr/bin/bun', entryPath: '/tmp/supervisor-entry.ts', forgeHome: home, stdoutPath: join(home, 'out.log'), stderrPath: join(home, 'err.log') });
-  assert.match(plist, /<key>RunAtLoad<\/key><true\/>/); assert.match(plist, /<key>KeepAlive<\/key><true\/>/);
   console.log('[workflow-supervisor-smoke] OK');
 } finally { rmSync(home, { recursive: true, force: true }); }

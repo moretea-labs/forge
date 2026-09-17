@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { realpathSync } from 'fs';
 import {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundProviderDispatch,
   beginInitialControllerRoundDispatch,
   beginControllerRoundRelayAfterRelease,
   finishControllerRoundRelayDispatch,
@@ -13,6 +14,7 @@ import {
   type ControllerRoundDisposition,
 } from '../../../../packages/kernel/controller/api/index';
 import { chatgptControllerRoundBinding, recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
+import { ensureWorkflowSupervisorEnrollmentForWork, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 import { readExecutionSession, updateExecutionSession } from '../execution/session-store';
 import { runWorkChatgptContinuation, type WorkChatgptContinuationResult } from './chatgpt-work-continuation';
 import { getRepository } from '../../../cli/repositories/registry';
@@ -128,6 +130,12 @@ export async function openChatgptControllerRoundFromSource(
     }),
     input.continuationPrompt?.trim() ? `Continuation: ${input.continuationPrompt.trim()}` : '',
   ].filter(Boolean).join('\n\n');
+  const dispatchingRelay = beginControllerRoundProviderDispatch(store, {
+    workId: input.workId,
+    authorityId: relay.authorityId,
+    expectedUpdatedAt: relay.updatedAt,
+    bindingId: binding?.bindingId,
+  });
   const dispatch = dependencies.dispatch ?? runWorkChatgptContinuation;
   const dispatched = await dispatch({
     controllerHome: input.controllerHome,
@@ -135,8 +143,8 @@ export async function openChatgptControllerRoundFromSource(
     repoRoot: input.repoRoot,
     workId: input.workId,
     prompt,
-    controllerAuthorityId: relay.authorityId,
-    relayScopeId: relay.relayScopeId,
+    controllerAuthorityId: dispatchingRelay.authorityId!,
+    relayScopeId: dispatchingRelay.relayScopeId,
     browserSessionId: binding?.browserSessionId,
     conversationUrl: binding?.conversationUrl,
     tabPolicy: 'reuse',
@@ -308,7 +316,9 @@ export interface SourceChatgptRoundContinueResult {
   dispositionStatus: string;
   relayStatus: string;
   relayWorkId: string;
-  dispatch: WorkChatgptContinuationResult;
+  outerTurnOwner: 'controller_round_provider' | 'workflow_supervisor';
+  dispatch?: WorkChatgptContinuationResult;
+  supervisorEnrollment?: { status: 'not_eligible' | 'conversation_pending' | 'daemon_unavailable' | 'enrolled'; taskId?: string; effectId?: string };
 }
 
 export async function continueChatgptControllerRoundFromSource(
@@ -345,6 +355,18 @@ export async function continueChatgptControllerRoundFromSource(
     throw new Error(`CONTROLLER_RELAY_IMMEDIATE_DISPATCH_NOT_READY: ${nextRelay?.status ?? 'missing'}`);
   }
   const relayWorkId = nextRelay.originWorkId;
+  inheritWorkflowSupervisorConversationBinding(store, input.workId, relayWorkId);
+  const supervisorBoundary = workflowSupervisorBoundaryForWork(store, relayWorkId);
+  if (supervisorBoundary.status === 'outer_turn') {
+    const supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, relayWorkId);
+    return {
+      dispositionStatus: disposition.status,
+      relayStatus: nextRelay.status,
+      relayWorkId,
+      outerTurnOwner: 'workflow_supervisor',
+      supervisorEnrollment,
+    };
+  }
   const prompt = `${renderChatgptControllerRoundPrompt(store, nextRelay)}\n\n${renderSourceRoundContinuationInstruction({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
@@ -353,6 +375,12 @@ export async function continueChatgptControllerRoundFromSource(
     controllerAuthorityId: nextRelay.authorityId,
     relayScopeId: nextRelay.relayScopeId,
   })}`;
+  const dispatchingNextRelay = beginControllerRoundProviderDispatch(store, {
+    workId: relayWorkId,
+    authorityId: nextRelay.authorityId,
+    expectedUpdatedAt: nextRelay.updatedAt,
+    bindingId: chatgptControllerRoundBinding(store, relayWorkId)?.bindingId,
+  });
   const dispatch = dependencies.dispatch ?? runWorkChatgptContinuation;
   const dispatched = await dispatch({
     controllerHome: input.controllerHome,
@@ -360,8 +388,8 @@ export async function continueChatgptControllerRoundFromSource(
     repoRoot: input.repoRoot,
     workId: relayWorkId,
     prompt,
-    controllerAuthorityId: nextRelay.authorityId,
-    relayScopeId: nextRelay.relayScopeId,
+    controllerAuthorityId: dispatchingNextRelay.authorityId!,
+    relayScopeId: dispatchingNextRelay.relayScopeId,
     tabPolicy: 'new',
     transportConversation: 'fresh',
     timeoutMs: input.timeoutMs,
@@ -379,7 +407,7 @@ export async function continueChatgptControllerRoundFromSource(
 
   recordChatgptControllerRoundTabSettlement(store, {
     workId: relayWorkId,
-    relayScopeId: nextRelay.relayScopeId,
+    relayScopeId: dispatchingNextRelay.relayScopeId,
     status: 'retained_for_immediate_continuation',
   });
   const updatedBinding = chatgptControllerRoundBinding(store, relayWorkId);
@@ -392,6 +420,7 @@ export async function continueChatgptControllerRoundFromSource(
     dispositionStatus: disposition.status,
     relayStatus: completed?.status ?? 'missing',
     relayWorkId,
+    outerTurnOwner: 'controller_round_provider',
     dispatch: dispatched,
   };
 }
