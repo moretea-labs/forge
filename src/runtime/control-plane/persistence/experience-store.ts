@@ -32,7 +32,7 @@ function matchesScope(work: WorkContract, scope: ScopeRef, controllerHome: strin
   return experienceScopesForWork(work, controllerHome).some(candidate => candidate.kind === scope.kind && candidate.id === scope.id);
 }
 
-function canonicalWorkflowEvidenceAvailable(input: { controllerHome: string; repoId: string }, ref: string, scope: ScopeRef, sourceWorkId: string): boolean {
+export function canonicalWorkflowEvidenceAvailable(input: { controllerHome: string; repoId: string }, ref: string, scope: ScopeRef, sourceWorkId: string): boolean {
   try {
     const source = getWorkContract(input, sourceWorkId);
     if (!source || !matchesScope(source, scope, input.controllerHome)) return false;
@@ -57,7 +57,7 @@ function canonicalWorkflowEvidenceAvailable(input: { controllerHome: string; rep
   } catch { return false; }
 }
 
-function assertMemoryWriteAuthority(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity }, scope: ScopeRef, sourceWorkId: string, sourceRoundId: string): void {
+export function assertMemoryWriteAuthority(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity }, scope: ScopeRef, sourceWorkId: string, sourceRoundId: string): void {
   const identity = input.identity;
   if (!identity) throw new Error('EXPERIENCE_CONTROLLER_REQUIRED');
   const current = getWorkContract(input, identity.workId), source = getWorkContract(input, sourceWorkId);
