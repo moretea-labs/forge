@@ -1,6 +1,6 @@
 import { listControllerSessions } from '../../../../packages/kernel/controller/api/index';
 import { listSchedules, listActiveOccurrences } from '../../../../packages/kernel/scheduler/api/index';
-import { listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { cancelWorkContract, listWorkContracts, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { listActiveLeases } from '../../resources/leases/store';
 import { listProcessRecords } from '../../execution/process-runtime/store';
 import { isManagedProcessActive } from '../../execution/process-runtime/types';
@@ -85,14 +85,10 @@ export function reconcileOwnerlessWorkAuthorities(
     const reason = terminalHandleMismatch
       ? `WorkHandle is already ${handle!.state} while Work remained ${work.status}.`
       : `Work has no current Plan, Controller session, Work-bound lease, Schedule/occurrence, or active Process after ${Math.round(graceMs / 60_000)} minutes.`;
-    transitionWorkContractPhase(
+    cancelWorkContract(
       { controllerHome: options.controllerHome, repoId: options.repoId },
       work.workId,
       {
-        phase: 'cleanup',
-        status: 'cancelled',
-        state: 'skipped',
-        dispatchState: 'terminal',
         summary: reason,
         evidenceRefs: [{
           title: 'ownerless Work authority retired',

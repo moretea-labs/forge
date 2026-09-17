@@ -93,6 +93,7 @@ export {
   activateWorkContract,
   failWorkContract,
   cancelWorkContract,
+  recordCancelledWorkCleanupCompleted,
   resumeRetainedCancelledWorkContract,
   recordWorkScopeEvidence,
   transitionWorkContractPhase,

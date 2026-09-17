@@ -53,10 +53,25 @@ function planInput(planId: string) {
 describe('exact Work authority reconciliation', () => {
   test('retires stale ownerless non-Plan Work while preserving its history row', () => {
     const controllerHome = home();
-    work(controllerHome, 'WORK-OLD', '2026-09-04T00:00:00.000Z');
+    work(controllerHome, 'WORK-OLD', '2026-09-04T00:00:00.000Z', {
+      evidenceRefs: [{ title: 'prior implementation evidence', summary: 'Existing evidence must survive authority retirement.', detailLevel: 'summary' }],
+    });
     const result = reconcileOwnerlessWorkAuthorities({ controllerHome, repoId: 'repo-a', nowMs: Date.parse('2026-09-04T04:00:00.000Z'), graceMs: 60 * 60_000 });
     expect(result.workIds).toEqual(['WORK-OLD']);
-    expect(getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-OLD')).toMatchObject({ status: 'cancelled', dispatchState: 'terminal', phase: 'cleanup' });
+    const retired = getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-OLD');
+    expect(retired?.evidenceRefs.map((entry) => entry.title)).toEqual(['ownerless Work authority retired', 'prior implementation evidence']);
+    expect(retired).toMatchObject({
+      status: 'cancelled',
+      dispatchState: 'terminal',
+      phase: 'implementation',
+      phaseEvidence: {
+        implementation: { state: 'skipped' },
+        verification: { state: 'pending' },
+        review: { state: 'pending' },
+        delivery: { state: 'pending' },
+        cleanup: { state: 'pending' },
+      },
+    });
     expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'active', limit: 20 }).map((entry) => entry.workId)).not.toContain('WORK-OLD');
     expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'all', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
   });

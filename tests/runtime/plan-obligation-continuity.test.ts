@@ -243,7 +243,7 @@ describe('Plan obligation continuity', () => {
 
     const approved = approvePlanContract(options, staged.planId);
     expect(approved).toMatchObject({ planId: executing.planId, revision: 2, status: 'approved', steps: [{ status: 'ready' }] });
-    expect(getWorkContract(options, 'WORK-R1')).toMatchObject({ status: 'cancelled', phase: 'cleanup', dispatchState: 'terminal', planId: executing.planId });
+    expect(getWorkContract(options, 'WORK-R1')).toMatchObject({ status: 'cancelled', phase: 'implementation', dispatchState: 'terminal', planId: executing.planId, phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
     expect(listWorkContracts({ ...options, status: 'active', limit: 20 }).map((work) => work.workId)).not.toContain('WORK-R1');
     expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).map((work) => work.workId)).toContain('WORK-R1');
     expect(getPlanContract(options, 'PLAN-R2')).toBeUndefined();
@@ -293,13 +293,13 @@ describe('Plan obligation continuity', () => {
       expect(approved.revision).toBe(2);
       if (changed) {
         expect(approved).toMatchObject({ status: 'approved', steps: [{ status: 'ready' }] });
-        expect(getWorkContract(options, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup', planId: executing.planId });
+        expect(getWorkContract(options, workId)).toMatchObject({ status: 'cancelled', phase: 'implementation', planId: executing.planId, phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
       } else {
         expect(approved).toMatchObject({ status: 'executing', steps: [{ status: 'executing', workId }] });
         expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId, planStepId: step.id, planSourceRevision: 'revision-c' });
       }
       expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).filter((work) => work.workId === workId)).toHaveLength(1);
-      if (lateWorkId) expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'cancelled', phase: 'cleanup', planId: executing.planId });
+      if (lateWorkId) expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'cancelled', phase: 'implementation', planId: executing.planId, phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
     }
   });
 
@@ -624,7 +624,7 @@ describe('Plan obligation continuity', () => {
     });
 
     expect(retireTerminalPlanBoundWorkAuthorities(options)).toEqual(['WORK-LEGACY']);
-    expect(getWorkContract(options, 'WORK-LEGACY')).toMatchObject({ status: 'cancelled', dispatchState: 'terminal', phase: 'cleanup' });
+    expect(getWorkContract(options, 'WORK-LEGACY')).toMatchObject({ status: 'cancelled', dispatchState: 'terminal', phase: 'implementation', phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
     expect(retireTerminalPlanBoundWorkAuthorities(options)).toEqual([]);
   });
 });

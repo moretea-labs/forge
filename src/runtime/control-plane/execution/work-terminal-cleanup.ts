@@ -19,7 +19,7 @@ import {
 import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repositories/worktree-storage';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
-import { getWorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, recordCancelledWorkCleanupCompleted } from '../../../../packages/kernel/work/api/index';
 import {
   controllerTerminalizationAuthorityFromSession,
   getControllerSession,
@@ -1120,6 +1120,30 @@ export interface SingleTerminalWorkCleanupResult {
  * Controller ownership or unsafe branch drift. A caller proving the exact
  * leftover owner epoch may release it before physical cleanup.
  */
+function reconcileCancelledCleanupProjection(
+  controllerHome: string,
+  repoId: string,
+  contract: WorkContract,
+  receipt: WorkCleanupReceipt,
+): void {
+  if (contract.status !== 'cancelled' || receipt.complete !== true) return;
+  if (contract.phase === 'cleanup' && contract.phaseEvidence.cleanup.state === 'satisfied'
+    && contract.phaseEvidence.cleanup.receiptId === receipt.receiptId) return;
+  recordCancelledWorkCleanupCompleted(
+    { controllerHome, repoId },
+    contract.workId,
+    {
+      summary: `Verified terminal resource cleanup completed with receipt ${receipt.receiptId}.`,
+      receiptId: receipt.receiptId,
+      evidenceRefs: [{
+        title: 'cancelled Work terminal cleanup completed',
+        summary: `Physical worktree/branch cleanup completed under receipt ${receipt.receiptId}; unexecuted semantic phases remain skipped rather than satisfied.`,
+        detailLevel: 'summary',
+      }, ...contract.evidenceRefs],
+    },
+  );
+}
+
 export async function reconcileSingleTerminalWorkCleanup(
   controllerHome: string,
   repositoryId: string,
@@ -1178,6 +1202,9 @@ export async function reconcileSingleTerminalWorkCleanup(
   });
   cleaned.receipt.ownership.controllerLease = controllerLease;
   const persisted = writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
+  if (cleaned.receipt.complete) {
+    reconcileCancelledCleanupProjection(controllerHome, repositoryId, contract, cleaned.receipt);
+  }
   if (!cleaned.receipt.complete) {
     return {
       status: 'blocked',
@@ -1256,6 +1283,7 @@ export async function reconcileTerminalWorkCleanups(
         continue;
       }
       if (originalHandle.state === 'cleaned' && originalHandle.cleanupReceipt?.complete === true) {
+        reconcileCancelledCleanupProjection(controllerHome, repository.repoId, contract, originalHandle.cleanupReceipt);
         const targetBranch = resolveWorkDeliveryTargetBranch(originalHandle, repository.defaultBranch);
         if (!cleanedManagedBranchRetirementCandidate(
           repository,
@@ -1315,7 +1343,10 @@ export async function reconcileTerminalWorkCleanups(
           cleaned.receipt.ownership.controllerLease = 'already_released';
         }
         writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
-        if (cleaned.receipt.complete) report.cleaned.push(originalHandle.workId);
+        if (cleaned.receipt.complete) {
+          reconcileCancelledCleanupProjection(controllerHome, repository.repoId, contract, cleaned.receipt);
+          report.cleaned.push(originalHandle.workId);
+        }
         else report.blocked.push({
           workId: originalHandle.workId,
           reason: cleaned.receipt.blockers.join('; ') || cleaned.receipt.worktree.reason || cleaned.receipt.branchCleanup.reason || 'terminal cleanup incomplete',

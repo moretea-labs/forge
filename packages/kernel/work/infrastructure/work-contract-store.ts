@@ -33,6 +33,7 @@ import {
   type WorkAdmissionPolicy,
 } from '../domain/admission-policy';
 import {
+  WORK_PHASES,
   type EvidenceRef,
   type CompletionOutcome,
   type DispatchState,
@@ -1203,6 +1204,25 @@ export function refreshPlanBoundWorkRevision(
   return validateWorkSemanticTransition(canonicalCurrent, next);
 }
 
+function cancellationPhaseEvidence(
+  current: WorkContract,
+  input: { summary: string; evidenceRefs?: EvidenceRef[]; recordedAt: string },
+): WorkPhaseEvidenceMap {
+  const evidenceRefs = (input.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs);
+  const existing = current.phaseEvidence[current.phase];
+  if (!['pending', 'active'].includes(existing.state)) return current.phaseEvidence;
+  return {
+    ...current.phaseEvidence,
+    [current.phase]: {
+      state: 'skipped',
+      source: 'recorded',
+      summary: input.summary.trim().slice(0, 1_000) || 'Work cancelled.',
+      evidenceRefs,
+      recordedAt: input.recordedAt,
+    },
+  };
+}
+
 /**
  * Retire technical Work authority when its owning Plan is no longer current.
  *
@@ -1242,9 +1262,8 @@ export function retirePlanBoundWorkContract(
   const next = validateWorkSemantics({
     ...canonicalCurrent,
     status: 'cancelled',
-    phase: 'cleanup',
-    phaseEvidence: transitionPhaseEvidence(canonicalCurrent, 'cleanup', {
-      status: 'cancelled',
+    phase: canonicalCurrent.phase,
+    phaseEvidence: cancellationPhaseEvidence(canonicalCurrent, {
       summary,
       evidenceRefs,
       recordedAt: input.recordedAt,
@@ -1380,12 +1399,10 @@ export function cancelWorkContract(
   return updateWorkContractInternal(options, workId, (current, at) => {
     if (current.status === 'completed') throw new Error(`WORK_CANCEL_COMPLETED: ${workId}`);
     if (current.status === 'cancelled') return undefined;
-    const phaseEvidence = transitionPhaseEvidence(current, current.phase, {
-      status: 'cancelled',
+    const phaseEvidence = cancellationPhaseEvidence(current, {
       summary: input.summary,
       evidenceRefs: input.evidenceRefs,
       recordedAt: at,
-      source: 'recorded',
     });
     return {
       status: 'cancelled',
@@ -1393,6 +1410,57 @@ export function cancelWorkContract(
       phaseEvidence,
       dispatchState: 'terminal',
       ...(input.evidenceRefs ? { evidenceRefs: input.evidenceRefs } : {}),
+      suggestedNextActions: [],
+    };
+  }, false, true);
+}
+
+/**
+ * Record verified physical cleanup for an already-cancelled Work without
+ * inventing semantic success. Phases that never ran are skipped, while prior
+ * satisfied/skipped/blocked/failed evidence remains immutable. The cleanup
+ * receipt is the authority for the only newly satisfied phase.
+ */
+export function recordCancelledWorkCleanupCompleted(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: { summary: string; receiptId: string; evidenceRefs?: EvidenceRef[] },
+): WorkContract {
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.status !== 'cancelled') {
+      throw new Error(`WORK_CANCELLED_CLEANUP_STATUS_REQUIRED: ${workId}:${current.status}`);
+    }
+    const summary = input.summary.trim().slice(0, 1_000);
+    if (!summary) throw new Error('WORK_CANCELLED_CLEANUP_SUMMARY_REQUIRED');
+    const receiptId = input.receiptId.trim();
+    if (!receiptId) throw new Error('WORK_CANCELLED_CLEANUP_RECEIPT_REQUIRED');
+    const evidenceRefs = (input.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs);
+    const phaseEvidence: WorkPhaseEvidenceMap = { ...current.phaseEvidence };
+    for (const phase of WORK_PHASES) {
+      if (phase === 'cleanup') continue;
+      const existing = phaseEvidence[phase];
+      if (!['pending', 'active'].includes(existing.state)) continue;
+      phaseEvidence[phase] = {
+        state: 'skipped',
+        source: 'recorded',
+        summary: `Skipped after Work cancellation: ${summary}`.slice(0, 1_000),
+        evidenceRefs,
+        recordedAt: at,
+      };
+    }
+    phaseEvidence.cleanup = {
+      state: 'satisfied',
+      source: 'recorded',
+      summary,
+      evidenceRefs,
+      recordedAt: at,
+      receiptId,
+    };
+    return {
+      phase: 'cleanup',
+      phaseEvidence,
+      dispatchState: 'terminal',
+      evidenceRefs,
       suggestedNextActions: [],
     };
   }, false, true);

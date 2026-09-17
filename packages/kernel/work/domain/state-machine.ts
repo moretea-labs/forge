@@ -81,7 +81,10 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
     const checkpoint = contract.phaseEvidence?.[phase];
     if (!checkpoint) throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
     const index = phaseIndex(phase);
-    if (index < currentPhaseIndex && !['satisfied', 'skipped'].includes(checkpoint.state)) {
+    const historicalCancellationEvidence = contract.status === 'cancelled'
+      && contract.phase === 'cleanup'
+      && ['blocked', 'failed'].includes(checkpoint.state);
+    if (index < currentPhaseIndex && !['satisfied', 'skipped'].includes(checkpoint.state) && !historicalCancellationEvidence) {
       throw new Error(`WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: ${phase}`);
     }
     if (index === currentPhaseIndex && checkpoint.state === 'pending') {
