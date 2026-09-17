@@ -17,7 +17,6 @@ import {
 } from '../server';
 import {
   loadMcpServiceLocalConfig,
-  loadMcpServiceRuntimeState,
   mcpServiceOAuthTokenStoreFallbackPaths,
   mcpServiceOAuthTokenStorePath,
   parseMcpHttpAuthMode,
@@ -27,29 +26,18 @@ import {
 } from '../auth';
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
 import { resolveMcpRepoRoot } from '../repo';
-import { buildMcpToolDefinitions } from '../tool-mapping/tools';
 import { resolveControllerHome } from '../../../src/cli/repositories/controller-home';
-import {
-  controllerExposureSnapshot,
-} from '../toolset';
-import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
 import { invalidateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
-import { runtimeIdentitySnapshot } from '../runtime-gateway/runtime-tools';
-import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
 import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../src/runtime/root/status';
-import { getRepository, listRepositories } from '../../../src/cli/repositories/registry';
-import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
-import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
-import { reconcileReadinessProjectionSource } from '../readiness-projection';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
-  repositoryIdentity,
 } from '../../../src/cli/controller/runtime-config';
 import { McpSessionRegistry, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
+import { registerMcpHttpObservationRoutes } from './http-observation';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
 import {
   connectionIdentity,
@@ -64,17 +52,6 @@ export interface McpHttpOptions extends McpServerOptions {
   port?: number;
   authToken?: string;
   auth?: string;
-}
-
-function localControllerDiagnosticMatchesRuntime(
-  payload: Record<string, unknown> | null,
-  generation?: string,
-): boolean {
-  return payload?.status === 'ok'
-    && payload.toolSurface === FORGE_TOOL_SURFACE
-    && payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION
-    && payload.version === FORGE_VERSION
-    && (generation === undefined || payload.generation === generation);
 }
 
 function bearerFromRequest(req: Request): string | null {
@@ -253,27 +230,6 @@ export function sendMcpRequestError(res: Response, error: unknown): void {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('x-forge-session-preserved', 'true');
   res.status(response.status).json(response.body);
-}
-
-function localControllerHealthUrl(host: string, port: number): string {
-  return `http://${host === '::1' ? '[::1]' : host}:${port}/health`;
-}
-
-async function jsonHealth(url: string): Promise<Record<string, unknown> | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2_000);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { accept: 'application/json' },
-    });
-    if (!response.ok) return null;
-    return await response.json() as Record<string, unknown>;
-  } catch (_error) {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function sendBearerUnauthorized(res: Response, description: string, hasConfiguredToken: boolean): void {
@@ -740,239 +696,39 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       return await readCanonicalRuntimeToolSchema(context, sharedRuntimeProxy);
     }
     : undefined;
-  const localControllerConfig = {
-    enabled: serviceConfig?.localController?.enabled ?? profile === 'controller',
-    host: serviceConfig?.localController?.host ?? '127.0.0.1',
-    port: serviceConfig?.localController?.port ?? 8766,
-  };
-  const compatibilityToolDefinitions = buildMcpToolDefinitions(toolContext.policy, { enableChatgptBrowser: opts.enableChatgptBrowser === true });
   const toolSurface = toolContext.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
   const toolSurfaceSchemaVersion = toolContext.policy.profile === 'controller' ? FORGE_MCP_SCHEMA_VERSION : 1;
   const forgeVersion = FORGE_VERSION;
-  const repoId = toolContext.policy.profile === 'controller' || !repoRoot ? undefined : repositoryIdentity(repoRoot);
-  const startedAt = new Date().toISOString();
-  const localOrigin = `http://${host === '::' || host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
-  const advertisedOrigin = configuredPublicOrigin ?? localOrigin;
   const app = express();
   app.set('trust proxy', 1);
 
-  const controllerHealth = () => {
-    if (!('controllerHome' in toolContext)) return null;
-    const runtimeGeneration = currentRuntimeGeneration();
-    const exposure = controllerExposureSnapshot(toolContext);
-    // Health is a bounded diagnostic endpoint, not an MCP discovery authority.
-    // Session initialization and invocation obtain a live Runtime tools/list;
-    // health only reports the Runtime's published identity.
-    const runtimeFingerprint = currentRuntimeToolSurfaceFingerprint();
-    return {
-      configuredAccessMode: exposure.access.configuredAccessMode,
-      effectiveAccessMode: exposure.access.effectiveAccessMode,
-      effectiveToolset: exposure.access.effectiveToolset,
-      exposureRevision: exposure.access.exposureRevision,
-      accessModeSource: exposure.access.source,
-      accessModeLastAppliedAt: exposure.access.lastAppliedAt,
-      toolset: exposure.access.effectiveToolset,
-      toolSurfaceFingerprint: runtimeFingerprint,
-      runtimeToolSurfaceFingerprint: runtimeFingerprint,
-      toolCount: undefined,
-      generation: runtimeGeneration?.generation,
-      source: runtimeGeneration?.source,
-      runtimeIdentity: runtimeIdentitySnapshot(toolContext),
-    };
-  };
-
-  app.get('/health', (_req, res) => {
-    const health = controllerHealth();
-    res.setHeader('x-forge-tool-surface', toolSurface);
-    res.setHeader('x-forge-version', String(forgeVersion));
-    res.setHeader('x-forge-schema-version', String(toolSurfaceSchemaVersion));
-    if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
-    if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
-    if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
-    const sessionSnapshot = sessionRegistry.snapshot();
-    res.json({
-      status: 'ok',
-      server: 'forge-mcp',
-      forgeInstanceId: forgeInstance.instanceId,
-      ...(process.env.FORGE_MCP_INSTANCE_ID
-        ? { controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID }
-        : {}),
-      version: forgeVersion,
-      profile: toolContext.policy.profile,
-      toolSurface,
-      schemaVersion: toolSurfaceSchemaVersion,
-      toolSurfaceFingerprint: health?.toolSurfaceFingerprint,
-      runtimeToolSurfaceFingerprint: health?.runtimeToolSurfaceFingerprint,
-      generation: health?.generation,
-      source: health?.source,
-      // Deprecated diagnostic alias; not a Runtime schema claim.
-      toolset: health?.toolset ?? 'full',
-      gatewayToolset: health?.toolset ?? 'full',
-      toolCount: health?.toolCount,
-      compatibilityToolCount: compatibilityToolDefinitions.length,
-      runtimeIdentity: health?.runtimeIdentity,
-      configuredAccessMode: health?.configuredAccessMode,
-      effectiveAccessMode: health?.effectiveAccessMode,
-      effectiveToolset: health?.effectiveToolset,
-      accessModeSource: health?.accessModeSource,
-      accessModeLastAppliedAt: health?.accessModeLastAppliedAt,
-      exposureRevision: health?.exposureRevision,
-      ...(repoId ? { repoId } : {}),
-      startedAt,
-      runner: {
-        enabled: toolContext.policy.execution.agentRunner,
-        defaultTimeoutMs: toolContext.policy.execution.runnerTimeoutMs,
-        maxTimeoutMs: toolContext.policy.execution.runnerMaxTimeoutMs,
-      },
-      auth: authMode === 'oauth'
-        ? (oauthPassphrase ? 'oauth' : 'missing')
-        : authMode === 'bearer'
-          ? (authToken ? 'required' : 'missing')
-          : 'none',
-      ...(oauthProvider ? { oauthAuthorizationCodes: oauthProvider.authorizationCodeDiagnostics() } : {}),
-      mcpEndpoint: `${advertisedOrigin}/mcp`,
-      // Grok now completes standard OAuth dynamic registration + PKCE on the
-      // canonical MCP resource. Keep /mcp-grok below only as a legacy alias.
-      grokEndpoint: `${advertisedOrigin}/mcp`,
-      bearerEndpoint: `${advertisedOrigin}/mcp-bearer`,
-      sessions: {
-        ...sessionSnapshot,
-        initializing: runtimeStats.initializing,
-        activePosts: runtimeStats.activePosts,
-        maximumActivePosts: MAX_ACTIVE_POSTS,
-        rejectedOverload: runtimeStats.rejectedOverload,
-      },
-    });
-  });
-
-  // Recovery probes this endpoint every few seconds. Keep it strictly in-memory
-  // and transport-scoped: whole-control-plane readiness below may traverse every
-  // repository projection and probe the local bridge, which must never become a
-  // periodic event-loop load generator for the public MCP Connector itself.
-  app.get('/transport-ready', (_req, res) => {
-    const sessionSnapshot = sessionRegistry.snapshot();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < MAX_INITIALIZING_SESSIONS
-      && runtimeStats.activePosts < MAX_ACTIVE_POSTS;
-    res.status(sessionCapacityReady ? 200 : 503).json({
-      ready: sessionCapacityReady,
-      profile: toolContext.policy.profile,
-      gateway: sessionCapacityReady ? 'ready' : 'saturated',
-      sessionCapacity: sessionSnapshot,
-      runtimeCapacity: {
-        initializing: runtimeStats.initializing,
-        maximumInitializing: MAX_INITIALIZING_SESSIONS,
-        activePosts: runtimeStats.activePosts,
-        maximumActivePosts: MAX_ACTIVE_POSTS,
-      },
-    });
-  });
-
-  app.get('/ready', async (_req, res) => {
-    const runtimeGeneration = currentRuntimeGeneration();
-    const sessionSnapshot = sessionRegistry.snapshot();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < MAX_INITIALIZING_SESSIONS
-      && runtimeStats.activePosts < MAX_ACTIVE_POSTS;
-    if (!runtimeControllerHome) {
-      res.status(sessionCapacityReady ? 200 : 503).json({
-        ready: sessionCapacityReady,
-        profile: toolContext.policy.profile,
-        gateway: sessionCapacityReady ? 'ready' : 'saturated',
-        controllerDaemon: 'not-required',
-        sessionCapacity: sessionSnapshot,
-      });
-      return;
-    }
-    const daemon = readForgeRuntimeStatus(runtimeControllerHome);
-    const runtimeState = loadMcpServiceRuntimeState(runtimeControllerHome, repoRoot);
-    const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
-    const projectionSnapshots = repositories.map((repository) => {
-      const snapshot = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
-      const reconciliation = reconcileReadinessProjectionSource(
-        snapshot,
-        legacyIssueAuthorityRetired(repository.canonicalRoot)
-          ? undefined
-          : buildControllerTaskLedgerProjection(repository.canonicalRoot),
-      );
-      return { repoId: repository.repoId, snapshot, reconciliation };
-    });
-    const staleRepositories = projectionSnapshots
-      .filter(({ snapshot }) => snapshot.stale)
-      .map(({ repoId }) => repoId);
-    const blockingStaleRepositories = projectionSnapshots
-      .filter(({ snapshot }) => projectionBlocksReadiness(snapshot))
-      .map(({ repoId }) => repoId);
-    const sourceMismatches = projectionSnapshots
-      .filter(({ reconciliation }) => reconciliation.status === 'mismatch')
-      .map(({ repoId, reconciliation }) => ({ repoId, ...reconciliation }));
-    const localBridgeHealth = localControllerConfig.enabled
-      ? await jsonHealth(localControllerHealthUrl(localControllerConfig.host, localControllerConfig.port))
-      : null;
-    const localBridgeReady = !localControllerConfig.enabled
-      || localControllerDiagnosticMatchesRuntime(localBridgeHealth, runtimeGeneration?.generation);
-    const daemonReady = daemon.status === 'ready' && daemon.degraded !== true;
-    const projectionReady = blockingStaleRepositories.length === 0;
-    const publicConfigured = Boolean(runtimeState?.tunnel?.publicEndpoint);
-    const publicReady = !publicConfigured || runtimeState?.tunnel?.healthy === true;
-    const connectorReady = !publicConfigured || (
-      publicReady
-      && runtimeState?.tunnel?.connectorNeedsReconnect !== true
-    );
-    const ready = daemonReady && projectionReady && localBridgeReady && sessionCapacityReady;
-    res.status(ready ? 200 : 503).json({
-      ready,
-      generation: runtimeGeneration?.generation,
-      source: runtimeGeneration?.source,
-      gateway: { status: ready ? 'ready' : 'degraded', thin: true, eventLoopIsolatedFromWorkers: true },
-      controllerDaemon: daemon,
-      localBridge: {
-        enabled: localControllerConfig.enabled,
-        ready: localBridgeReady,
-        endpoint: `http://${localControllerConfig.host === '::1' ? '[::1]' : localControllerConfig.host}:${localControllerConfig.port}/`,
-      },
-      projections: {
-        ready: projectionReady,
-        repositoryCount: repositories.length,
-        staleRepositories,
-        blockingStaleRepositories,
-        sourceMismatches,
-      },
-      publicReadiness: {
-        configured: publicConfigured,
-        ready: publicReady,
-        endpoint: runtimeState?.tunnel?.publicEndpoint,
-      },
-      connectorReadiness: {
-        configured: publicConfigured,
-        ready: connectorReady,
-        connectorNeedsReconnect: runtimeState?.tunnel?.connectorNeedsReconnect === true,
-      },
-      sessionCapacity: sessionSnapshot,
-    });
-  });
-
-  app.get('/repos/:repoId/health', (req, res) => {
-    if (!runtimeControllerHome) {
-      res.status(404).json({ error: 'controller profile required' });
-      return;
-    }
-    try {
-      const repository = getRepository(req.params.repoId, runtimeControllerHome, { includeRemoved: true });
-      const projection = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
-      res.json({
-        status: repository.enabled && !repository.removedAt ? 'ok' : 'disabled',
-        repository: {
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          enabled: repository.enabled,
-          removedAt: repository.removedAt,
-        },
-        projection,
-      });
-    } catch (error) {
-      res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
-    }
+  registerMcpHttpObservationRoutes({
+    app,
+    toolContext,
+    sessionRegistry,
+    runtimeStats,
+    runtimeControllerHome,
+    repoRoot,
+    forgeInstanceId: forgeInstance.instanceId,
+    currentRuntimeToolSurfaceFingerprint,
+    toolSurface,
+    toolSurfaceSchemaVersion,
+    forgeVersion,
+    authMode,
+    authTokenConfigured: Boolean(authToken),
+    oauthPassphraseConfigured: Boolean(oauthPassphrase),
+    oauthAuthorizationCodeDiagnostics: oauthProvider ? () => oauthProvider.authorizationCodeDiagnostics() : undefined,
+    configuredPublicOrigin,
+    host,
+    port,
+    enableChatgptBrowser: opts.enableChatgptBrowser === true,
+    localController: {
+      enabled: serviceConfig?.localController?.enabled ?? profile === 'controller',
+      host: serviceConfig?.localController?.host ?? '127.0.0.1',
+      port: serviceConfig?.localController?.port ?? 8766,
+    },
+    maxInitializingSessions: MAX_INITIALIZING_SESSIONS,
+    maxActivePosts: MAX_ACTIVE_POSTS,
   });
 
   if (authMode === 'oauth' && oauthProvider) {
