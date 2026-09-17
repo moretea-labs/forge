@@ -1395,10 +1395,10 @@ export function resetFinalizationStagesForRequest(
   // attempt already marked commit/merge done. Exact validation of a dirty current
   // workspace proves there is new Work-owned content still requiring delivery;
   // re-arm only the requested Git stages instead of letting cleanup discard it.
-  if (options.workspaceDirty === true && wants.commit && next.commit === 'done') {
+  if (options.workspaceDirty === true && wants.commit && (next.commit === 'done' || next.commit === 'skipped')) {
     next.commit = 'pending';
     reset = true;
-    if (wants.merge && next.merge === 'done') next.merge = 'pending';
+    if (wants.merge && (next.merge === 'done' || next.merge === 'skipped')) next.merge = 'pending';
   }
   // A prior finalize(cleanup=false) intentionally records managed resources as
   // skipped/retained. A later explicit cleanup=true is a new resource-disposal
@@ -2094,7 +2094,7 @@ async function finalizeWorkInternal(
       markWorkValidationPending(ctx.controllerHome, current);
       throw new Error('WORK_VALIDATION_REQUIRED: run work_validate against the exact current workspace before finalization');
     }
-    if (!validationInput.clean && wants.commit && current.finalization.commit === 'done') {
+    if (!validationInput.clean && wants.commit && (current.finalization.commit === 'done' || current.finalization.commit === 'skipped')) {
       current = transact('rearm-delivery-after-validated-repair', (fresh) => writeWorkHandle(ctx.controllerHome, {
         ...fresh,
         state: 'validating',

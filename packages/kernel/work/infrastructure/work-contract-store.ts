@@ -1002,11 +1002,20 @@ function updateWorkContractInternal(
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
-    const store = readWorkContractStore(options);
-    const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
-    if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
+    const exact = sqliteBacked(options)
+      ? readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', options.repoId, sanitizedId)
+      : undefined;
+    const store = exact ? undefined : readWorkContractStore(options);
+    const index = store?.contracts.findIndex((contract) => contract.workId === sanitizedId) ?? -1;
+    if (!exact && index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const at = nowIso(options);
-    const current = store.contracts[index];
+    // A per-Work SQLite row is the mutable authority.  Do not normalize every
+    // sibling just to update this row: malformed historical evidence must stay
+    // visible and fenced, but cannot prevent a different terminal Work from
+    // recording its physical cleanup.
+    const current = exact
+      ? canonicalizeStoredWorkContract(exact.value)
+      : store!.contracts[index]!;
     const patch = typeof mutation === 'function' ? mutation(current, at) : mutation;
     if (!patch) return current;
     if (options.controllerHome) {
@@ -1064,7 +1073,21 @@ function updateWorkContractInternal(
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
     }), { allowRetainedCancelledResume, allowPhaseRegression });
-    const contracts = [...store.contracts];
+    if (exact && sqliteBacked(options)) {
+      withControlPlaneTransaction(options.controllerHome, (database) => {
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract',
+          scope: options.repoId,
+          key: next.workId,
+          schemaVersion: 3,
+          value: next,
+          action: 'work_contract_updated',
+          expectedRevision: exact.revision,
+        });
+      });
+      return next;
+    }
+    const contracts = [...store!.contracts];
     contracts[index] = next;
     writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
     return next;
