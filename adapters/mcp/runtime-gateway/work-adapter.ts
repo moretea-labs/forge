@@ -1,4 +1,3 @@
-import { randomUUID } from "crypto";
 import { existsSync } from "fs";
 import { join } from "path";
 import { collectRuntimePerformanceDiagnostics } from "../../../src/runtime/diagnostics/performance";
@@ -17,7 +16,6 @@ import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEf
 import { completeRemoteEffectWorkFromProcessReceipt } from "../../../packages/kernel/work/api/index";
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, workDeliveryBaseRevision, type WorkHandleState } from "../../../src/runtime/control-plane/execution/work-handle-store";
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from "../../../src/runtime/control-plane/execution/work-handle-authority";
-import { recoverControllerAuthority } from "../../../src/runtime/control-plane/execution/controller-authority-recovery";
 import { reconcileSingleTerminalWorkCleanup, recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from "../../../src/runtime/control-plane/execution/verification-evidence";
 import { resolveWorkVerificationContext } from "../../../src/runtime/control-plane/execution/work-verification-context";
@@ -33,7 +31,7 @@ import { listControllerChecks, readLatestControllerCheckEvidence } from "../../.
 import { finalizeRemoteEffectWorkFromActionReceipt } from "../../../src/runtime/plugins/store";
 import { gitSnapshot } from "../../../src/cli/repository/inspector";
 import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workflow-watchdog";
-import { applyRuntimeMaintenance, buildRecoveryAuditRecord, buildRuntimeMaintenanceStatus, writeRecoveryAuditRecord, type RecoveryActionDescriptor } from "../../../src/runtime/recovery";
+import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { callStandaloneRecoveryTool } from "./recovery-client-adapter";
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation } from './work-requirement-operations';
@@ -49,11 +47,12 @@ import { materializeRepositoryWorkPlacement } from "../../../src/runtime/control
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from "../../../src/runtime/control-plane/execution/retained-work-resume";
 import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-plane/execution/validation";
 import { callExecutionTool } from "./execution-tools";
-import { runStandaloneChatgptPrompt } from "../../../src/runtime/control-plane/launcher/chatgpt-work-continuation";
-import { controllerRoundBlockerClass, controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, rearmControllerRoundAfterProviderRecovery, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
+import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
 import { normalizeRhWorkInputCompatibility } from './work-input-compatibility';
 import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
+import { callRhWorkControllerRecoveryOperation } from './work-controller-recovery-operations';
+export { recoverControllerRoundAfterVerifiedProviderRepair } from './work-controller-recovery-operations';
 import {
   assertFacadeControllerRoundAuthority,
   assertSessionlessFacadeControllerAuthority,
@@ -69,98 +68,6 @@ import {
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';
 
 export const RH_WORK_VERIFY_LEASE_WAIT_MS = DEFAULT_WORK_CHECK_LEASE_WAIT_MS;
-
-const CONTROLLER_PROVIDER_RECOVERY_CAPABILITY_PREFIX = 'controller.provider.recover:';
-const CONTROLLER_PROVIDER_RECOVERY_AUDIT_ACTION: RecoveryActionDescriptor = {
-  id: 'recovery.controller_provider_probe',
-  title: 'Verify Controller provider recovery',
-  description: 'Verify the current ChatGPT provider with a non-semantic probe before rearming one exact blocked ControllerRound.',
-  class: 'unknown',
-  risk: 'medium',
-  confirmation: 'authorization',
-  localOnly: false,
-  boundedTo: ['controller_round', 'chatgpt_provider'],
-};
-
-export interface ControllerProviderRecoveryInput {
-  controllerHome: string;
-  repoId: string;
-  repoRoot: string;
-  workId: string;
-  relayScopeId: string;
-  authorityId: string;
-  timeoutMs?: number;
-  now?: () => string;
-  probe?: typeof runStandaloneChatgptPrompt;
-}
-
-export async function recoverControllerRoundAfterVerifiedProviderRepair(input: ControllerProviderRecoveryInput) {
-  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
-  const workId = input.workId.trim();
-  const relayScopeId = input.relayScopeId.trim();
-  const authorityId = input.authorityId.trim();
-  const blocked = getControllerRoundRelay(store, workId);
-  if (!blocked) throw new Error(`CONTROLLER_PROVIDER_RECOVERY_RELAY_REQUIRED: ${workId}`);
-  if (blocked.relayScopeId !== relayScopeId) throw new Error(`CONTROLLER_PROVIDER_RECOVERY_SCOPE_MISMATCH: ${workId}`);
-  if ((blocked.authorityId?.trim() || '') !== authorityId) throw new Error(`CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_MISMATCH: ${workId}`);
-  if (controllerRoundBlockerClass(blocked) !== 'consecutive_failures') throw new Error(`CONTROLLER_PROVIDER_RECOVERY_BLOCKER_MISMATCH: ${workId}`);
-  if (getControllerSession(store, workId)) throw new Error(`CONTROLLER_PROVIDER_RECOVERY_ACTIVE_CLAIM: ${workId}`);
-
-  const probe = input.probe ?? runStandaloneChatgptPrompt;
-  const nonce = randomUUID();
-  const result = await probe({
-    controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    repoRoot: input.repoRoot,
-    scopeId: `controller-provider-recovery:${workId}:${authorityId}`,
-    prompt: `Forge provider recovery probe ${nonce}. Reply with ACK only. Do not invoke tools or modify external state.`,
-    tabPolicy: 'new',
-    timeoutMs: input.timeoutMs ?? 60_000,
-  });
-  if (result.status !== 'dispatched' || result.providerDeliveryStatus !== 'dispatch_confirmed') {
-    const code = result.error?.code ?? `CHATGPT_PROVIDER_${result.providerDeliveryStatus?.toUpperCase() ?? 'PROBE_FAILED'}`;
-    throw new Error(`CONTROLLER_PROVIDER_RECOVERY_PROBE_FAILED: ${code}: ${result.error?.message ?? result.status}`);
-  }
-
-  const verifiedAt = input.now?.() ?? new Date().toISOString();
-  if (Date.parse(verifiedAt) <= Date.parse(blocked.updatedAt)) {
-    throw new Error(`CONTROLLER_PROVIDER_RECOVERY_EVIDENCE_NOT_FRESH: ${workId}`);
-  }
-  const audit = writeRecoveryAuditRecord(
-    input.controllerHome,
-    input.repoId,
-    buildRecoveryAuditRecord({
-      actor: 'rh_work.controller_provider_recovery',
-      action: CONTROLLER_PROVIDER_RECOVERY_AUDIT_ACTION,
-      result: 'succeeded',
-      reason: `Verified provider recovery for exact ControllerRound ${workId}.`,
-      evidence: [{
-        source: 'chatgpt_provider_recovery_probe',
-        message: 'ChatGPT provider dispatch was confirmed by a non-semantic recovery probe.',
-        at: verifiedAt,
-        details: {
-          workId,
-          relayScopeId,
-          controllerAuthorityId: authorityId,
-          blockedUpdatedAt: blocked.updatedAt,
-          provider: result.provider,
-          providerDeliveryStatus: result.providerDeliveryStatus,
-          browserSessionId: result.browserSessionId,
-          executionPreferenceVerified: result.executionPreferenceVerified,
-        },
-      }],
-      at: verifiedAt,
-    }),
-  );
-  const relay = rearmControllerRoundAfterProviderRecovery(store, {
-    workId,
-    relayScopeId,
-    authorityId,
-    expectedUpdatedAt: blocked.updatedAt,
-    evidenceId: audit.id,
-  });
-  return { relay, audit, probe: result };
-}
 
 export function contextRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -760,91 +667,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             }
           }
   
-          const providerRecoveryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith(CONTROLLER_PROVIDER_RECOVERY_CAPABILITY_PREFIX)
-            ? args.capability_id.slice(CONTROLLER_PROVIDER_RECOVERY_CAPABILITY_PREFIX.length).trim()
-            : '';
-          if (providerRecoveryWorkId) {
-            const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-            const relayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
-            const authorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
-            if (!explicitWorkId || explicitWorkId !== providerRecoveryWorkId) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: `CONTROLLER_PROVIDER_RECOVERY_SCOPE_MISMATCH: capability targets ${providerRecoveryWorkId}; exact work_id is required.`,
-                data: { workId: providerRecoveryWorkId, providerRecovered: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            if (!relayScopeId || !authorityId) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: 'CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_REQUIRED: exact controller_authority_id and relay_scope_id are required.',
-                data: { workId: providerRecoveryWorkId, providerRecovered: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            try {
-              const recovered = await recoverControllerRoundAfterVerifiedProviderRepair({
-                controllerHome: ctx.controllerHome,
-                repoId: repository.repoId,
-                repoRoot: repository.canonicalRoot,
-                workId: providerRecoveryWorkId,
-                relayScopeId,
-                authorityId,
-                timeoutMs: typeof args.probe_timeout_ms === 'number' ? args.probe_timeout_ms : undefined,
-              });
-              return result(buildFacadeResult({
-                summary: `Verified ChatGPT provider recovery and rearmed exact ControllerRound for Work ${providerRecoveryWorkId} without changing semantic round identity or recovery budgets.`,
-                data: {
-                  workId: providerRecoveryWorkId,
-                  providerRecovered: true,
-                  recoveryAuditId: recovered.audit.id,
-                  provider: recovered.probe.provider,
-                  relay: recovered.relay,
-                },
-              }) as unknown as Record<string, unknown>);
-            } catch (error) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : 'Controller provider recovery failed.',
-                data: { workId: providerRecoveryWorkId, providerRecovered: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-          }
-
-          const authorityRecoveryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('controller.authority.recover:')
-            ? args.capability_id.slice('controller.authority.recover:'.length).trim()
-            : '';
-          if (authorityRecoveryWorkId) {
-            const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-            if (!explicitWorkId || explicitWorkId !== authorityRecoveryWorkId) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: `WORK_CONTROLLER_AUTHORITY_RECOVERY_SCOPE_MISMATCH: capability targets ${authorityRecoveryWorkId}; exact work_id is required.`,
-                data: { workId: authorityRecoveryWorkId, authorityRecovered: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            try {
-              const recovered = recoverControllerAuthority({
-                controllerHome: ctx.controllerHome,
-                repoId: repository.repoId,
-                repositoryActiveCheckoutId: repository.activeCheckoutId,
-                workId: authorityRecoveryWorkId,
-                requestedBy: typeof args.requested_by === 'string' ? args.requested_by : undefined,
-                identity: authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true }),
-                runtime: runtimeIdentitySnapshot(ctx),
-                leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-              });
-              return result(buildFacadeResult({
-                summary: `Controller authority for exact Work ${authorityRecoveryWorkId} was recovered without changing semantic Work identity, relay scope, or recovery budgets.`,
-                data: recovered,
-              }) as unknown as Record<string, unknown>);
-            } catch (error) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : 'Controller authority recovery failed.',
-                data: { workId: authorityRecoveryWorkId, authorityRecovered: false },
-              }) as unknown as Record<string, unknown>, true);
-            }
-          }
+          const controllerRecoveryOperationResult = await callRhWorkControllerRecoveryOperation(ctx, repository, operation, args);
+          if (controllerRecoveryOperationResult) return controllerRecoveryOperationResult;
   
           const workflowOperationResult = await callRhWorkWorkflowOperation(ctx, repository, operation, args);
           if (workflowOperationResult) return workflowOperationResult;
