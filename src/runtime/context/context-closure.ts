@@ -28,8 +28,19 @@ type ContextPackLike = {
   coverage: { relevantTests: string[]; inspectedFiles: string[] };
 };
 
+function canonicalReceiptValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalReceiptValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, entry]) => [key, canonicalReceiptValue(entry)]),
+  );
+}
+
 function fullReceiptDigest(receipt: ContextClosureReceipt): string {
-  return createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonicalReceiptValue(receipt))).digest('hex');
 }
 
 function recordIssuedContextClosure(receipt: ContextClosureReceipt): ContextClosureReceipt {
