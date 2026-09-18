@@ -44,6 +44,8 @@ export interface RuntimeReleaseManifest {
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffEntrypoint?: 'browser-handoff-host.js';
   browserHandoffArtifactIdentity?: string;
+  workflowSupervisorNativeHostEntrypoint?: 'forge-workflow-supervisor-native-host';
+  workflowSupervisorNativeHostArtifactIdentity?: string;
   processRunnerEntrypoint?: 'process-runner.js';
   processRunnerArtifactIdentity?: string;
   checkRunnerEntrypoint?: 'forge-check-runner';

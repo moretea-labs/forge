@@ -49,6 +49,8 @@ function sourceFixture() {
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
   mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
   mkdirSync(join(root, 'src/cli/local-bridge/ui-dist'), { recursive: true });
+  mkdirSync(join(root, 'supervisor/native-messaging'), { recursive: true });
+  mkdirSync(join(root, 'supervisor/chrome-extension'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
@@ -59,6 +61,8 @@ function sourceFixture() {
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
+  writeFileSync(join(root, 'supervisor/native-messaging/host.ts'), 'process.exit(0);\n');
+  for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) writeFileSync(join(root, 'supervisor/chrome-extension', file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// supervisor extension fixture\n');
   writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.js'), 'console.log("ui");\n');
   writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.css'), ':root { color-scheme: light; }\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
@@ -101,6 +105,8 @@ function executionSurfaceFixture(input: {
   const releaseRoot = join(input.controllerHome, 'runtime', 'releases', input.releaseId);
   mkdirSync(releaseRoot, { recursive: true });
   const runtime = '#!/bin/sh\nexit 0\n';
+  mkdirSync(join(releaseRoot, 'package', 'src', 'cli'), { recursive: true });
+  writeFileSync(join(releaseRoot, 'package', 'src', 'cli', 'index.ts'), 'process.exit(0);\n');
   const processRunner = input.processRunnerSource ?? `#!/bin/sh\nexit ${input.processExit ?? 0}\n`;
   const checkRunner = `#!/bin/sh\nexit ${input.checkExit ?? 0}\n`;
   for (const [name, content] of [
@@ -388,7 +394,9 @@ describe('runtime release materialization', () => {
           ? 'check-runner-binary'
           : entryPath?.endsWith('cli-sidecar.ts')
             ? 'cli-binary'
-            : 'runtime-binary';
+            : entryPath?.endsWith('supervisor/native-messaging/host.ts')
+              ? 'supervisor-native-host-binary'
+              : 'runtime-binary';
         writeFileSync(outputPath, kind);
         return { ok: true };
       },
@@ -416,6 +424,10 @@ describe('runtime release materialization', () => {
     expect(existsSync(handoffHostPath)).toBe(true);
     expect(readFileSync(handoffHostPath, 'utf8')).toBe('handoff-host-bundle');
     expect(staged.browserHandoffArtifactIdentity).toMatch(/^sha256:/);
+    const supervisorNativeHostPath = join(staged.releasePath, 'forge-workflow-supervisor-native-host');
+    expect(existsSync(supervisorNativeHostPath)).toBe(true);
+    expect(readFileSync(supervisorNativeHostPath, 'utf8')).toBe('supervisor-native-host-binary');
+    expect(staged.workflowSupervisorNativeHostArtifactIdentity).toMatch(/^sha256:/);
     expect(existsSync(join(staged.releasePath, 'browser-automation-helper'))).toBe(false);
     const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
     expect(existsSync(externalPluginProbePath)).toBe(true);
@@ -444,6 +456,8 @@ describe('runtime release materialization', () => {
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
+    expect(manifest.workflowSupervisorNativeHostEntrypoint).toBe('forge-workflow-supervisor-native-host');
+    expect(manifest.workflowSupervisorNativeHostArtifactIdentity).toBe(staged.workflowSupervisorNativeHostArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBeUndefined();
     expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
     expect(manifest.executionMode).toBe('standalone-binary');
@@ -468,6 +482,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(join(staged.releasePath, 'package', 'package.json'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'supervisor', 'chrome-extension', 'background.js'))).toBe(true);
     expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.packageRoot).toBe('package');
     expect(manifest.packageArtifactIdentity).toBe(staged.packageArtifactIdentity);
