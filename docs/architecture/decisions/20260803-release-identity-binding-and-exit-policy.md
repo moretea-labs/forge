@@ -1,7 +1,7 @@
 # ADR: Whole-Forge-Runtime Release Identity and Exit Policy
 
 - **Status:** Accepted and aligned with the Canonical Forge Runtime
-- **Date:** 2026-08-03; revised 2026-08-09
+- **Date:** 2026-08-03; revised 2026-08-09 and 2026-09-18
 - **Authority:** [`../CURRENT.md`](../CURRENT.md), [`../CURRENT.md`](../CURRENT.md)
 
 ## Decision
@@ -29,6 +29,12 @@ The OS service manager starts and automatically restarts the single `forge-runti
 
 Standalone Recovery remains independently installed. It may diagnose the service, repair the service definition or tunnel, and perform authorized offline whole-Runtime rollback when the primary Runtime cannot start. It never becomes a second scheduler, Gateway, state writer, or component owner.
 
+Runtime release activation is a recoverable transaction inside the single `ControllerHome/runtime/releases/authority.json` authority. While a candidate is being activated, the authority carries bounded pre-activation rollback context for the prior active/previous release bundle and bound SQLite backup. Successful whole-Runtime verification commits by clearing that transaction context without minting a second release authority; failed or interrupted activation aborts through the same authority and restores the pre-activation bundle. Standalone Recovery reconciles an interrupted transaction on restart rather than creating a new activation owner.
+
+Recovery known-good attestations are bounded recovery authority, not detached historical labels. The bounded attestation set protects its matching immutable Runtime release artifacts from release-retention pruning while the attestation remains live; once an attestation retires, ordinary bounded retention may remove the artifact. Recovery projections distinguish physically recoverable known-good releases from stale/unavailable attestation records.
+
+A Runtime startup failure before Gateway readiness writes one latest-only diagnostic receipt containing the startup stage and reason. This receipt is diagnostic evidence only, never lifecycle authority, and a later successful whole-Runtime startup clears it.
+
 The immutable release carries every helper executable or library needed by those bounded children. This includes the Process/Check runners, Browser/Desktop helpers, external-plugin probe, and the matching CodeGraph Node executable, read-only sidecar, and compiled library tree. CodeGraph is invoked once per bounded context query by `forge-runtime`; it is not a daemon, service, recovery owner, readiness authority, or persistent state writer. Its only durable input is the repository-owned `.codegraph/` index selected for the request.
 
 The CodeGraph artifact group is all-or-nothing in `manifest.json`: canonical co-located paths and SHA-256 identities are declared for the Node executable, sidecar, and library directory. A missing platform bundle fails release staging before publication. At runtime, an unavailable or failed structural query produces typed degraded context evidence and fails a mode's required-context condition; it does not create a second Runtime readiness state or restart authority.
@@ -48,6 +54,9 @@ CodeGraph child cleanup is owned by the initiating bounded query through timeout
 - immutable release identity never follows ambient Git HEAD;
 - advancing a developer checkout cannot alter the active release identity;
 - failed activation restores the previous release and matching SQLite backup;
+- interrupted activation reconciles to one committed or aborted release transaction without a second release authority;
+- bounded known-good attestations cannot advertise a missing immutable release as usable recovery authority;
+- pre-Gateway startup failure remains diagnosable after process exit without preserving stale Runtime lifecycle state;
 - service restart preserves durable Work, Process and evidence identities;
 - a release missing any CodeGraph artifact fails closed before activation, a bounded query times out or exits without leaving a child owner, and a complete previous-release rollback restores the matching CodeGraph artifact group;
 - no component-level restart, slot selection, ingress fallback or Supervisor authority exists.

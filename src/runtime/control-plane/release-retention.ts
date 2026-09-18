@@ -151,9 +151,10 @@ function loadPackageConnectorReleaseProtection(controllerHome: string, releasesR
   return canonical(releaseRoot);
 }
 
-function validateRecoveryKnownGoodHistory(controllerHome: string, releasesRoot: string): void {
+function loadRecoveryKnownGoodProtection(controllerHome: string, releasesRoot: string): Set<string> {
+  const protectedPaths = new Set<string>();
   const knownGoodPath = join(controllerHome, 'recovery', 'state', 'known-good.json');
-  if (!existsSync(knownGoodPath)) return;
+  if (!existsSync(knownGoodPath)) return protectedPaths;
   const parsed = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as Record<string, unknown>;
   if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.releases)) {
     throw new Error('standalone recovery known-good authority is invalid');
@@ -175,7 +176,9 @@ function validateRecoveryKnownGoodHistory(controllerHome: string, releasesRoot: 
     ) {
       throw new Error('standalone recovery known-good release is outside runtime releases');
     }
+    if (existsSync(manifestPath) && existsSync(releaseRoot)) protectedPaths.add(canonical(releaseRoot));
   }
+  return protectedPaths;
 }
 
 function loadPinnedRuntimeReleaseProtection(controllerHome: string, releasesRoot: string): string | undefined {
@@ -227,15 +230,22 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   if (connectorRelease) releasePaths.add(connectorRelease);
   const pinnedRelease = loadPinnedRuntimeReleaseProtection(controllerHome, releasesRoot);
   if (pinnedRelease) releasePaths.add(pinnedRelease);
-  // Recovery known-good is append-only attestation evidence, not a storage
-  // ownership authority. Recovery itself only accepts a known-good entry when
-  // it still matches the current active/previous release authority, both of
-  // which are already protected above. Keeping every extant historical entry
-  // here creates a circular retention leak: the artifact can never disappear
-  // because its historical evidence exists, while the evidence is allowed to
-  // outlive the artifact. Validate the ledger fail-closed, but do not grant old
-  // attestations independent retention authority.
-  validateRecoveryKnownGoodHistory(controllerHome, releasesRoot);
+  // The known-good ledger is bounded by Recovery (currently at most eight
+  // attestations), so its extant immutable releases are bounded recovery
+  // authority, not unbounded history. Once Recovery retires an attestation the
+  // release naturally falls out of this protection set and ordinary retention
+  // may prune it after the grace period.
+  for (const knownGoodRelease of loadRecoveryKnownGoodProtection(controllerHome, releasesRoot)) {
+    releasePaths.add(knownGoodRelease);
+  }
+
+  const activation = parsed.activation;
+  if (activation && typeof activation === 'object' && !Array.isArray(activation)) {
+    const preActivationPrevious = (activation as Record<string, unknown>).preActivationPrevious;
+    if (preActivationPrevious !== undefined) {
+      releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, preActivationPrevious, 'activation.preActivationPrevious'));
+    }
+  }
 
   const backupPaths = new Set<string>();
   let backupAuthoritySafe = true;
@@ -250,6 +260,22 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
         backupAuthoritySafe = false;
       } else {
         backupPaths.add(canonical(backupPath));
+      }
+    }
+  }
+
+  if (activation && typeof activation === 'object' && !Array.isArray(activation)) {
+    const preActivationPrevious = (activation as Record<string, unknown>).preActivationPrevious;
+    if (preActivationPrevious && typeof preActivationPrevious === 'object' && !Array.isArray(preActivationPrevious)) {
+      const databaseBackup = (preActivationPrevious as Record<string, unknown>).databaseBackup;
+      if (databaseBackup && typeof databaseBackup === 'object' && !Array.isArray(databaseBackup)) {
+        const rawPath = (databaseBackup as Record<string, unknown>).path;
+        const path = typeof rawPath === 'string' ? rawPath.trim() : '';
+        if (!path || !directChild(backupsRoot, path) || !existsSync(path)) {
+          backupAuthoritySafe = false;
+        } else {
+          backupPaths.add(canonical(path));
+        }
       }
     }
   }

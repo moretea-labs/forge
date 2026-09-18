@@ -28,6 +28,18 @@ export interface RuntimeExitEvidence {
   message?: string;
 }
 
+/** Latest failed startup attempt only. Diagnostic evidence, never lifecycle authority. */
+export interface RuntimeStartupFailureEvidence {
+  schemaVersion: 1;
+  runtimeInstanceId: string;
+  stage: string;
+  reasonCode: string;
+  message?: string;
+  releaseId?: string;
+  artifactIdentity?: string;
+  observedAt: string;
+}
+
 export interface RuntimeReleaseManifest {
   schemaVersion: 1;
   releaseId: string;

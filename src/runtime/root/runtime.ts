@@ -29,7 +29,7 @@ import { startInProcessScheduler, type RuntimeSchedulerHandle } from './schedule
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
 import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
 import { startWorkflowSupervisorRuntime, type RuntimeWorkflowSupervisorHandle } from './workflow-supervisor-runtime';
-import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
+import { removeRuntimeStartupFailureEvidence, removeRuntimeStatusSnapshot, writeRuntimeStartupFailureEvidence, writeRuntimeStatusSnapshot } from './status';
 import type {
   CanonicalRuntimeConfig,
   CanonicalRuntimeStatusSnapshot,
@@ -475,12 +475,30 @@ export class CanonicalForgeRuntime {
       this.readinessState.setDiagnostic('mcpEndToEnd', 'pass');
       this.readinessState.markReady();
       this.publishStatus();
+      removeRuntimeStartupFailureEvidence(this.config.controllerHome);
       stage = 'release';
       this.startReleaseAuthorityMonitor();
     } catch (error) {
       const reason = this.startupReason(stage);
+      const message = error instanceof Error ? error.message : String(error);
       this.markStartupFailure(stage, reason);
-      await this.stop(reason, error instanceof Error ? error.message : String(error));
+      try {
+        writeRuntimeStartupFailureEvidence(this.config.controllerHome, {
+          schemaVersion: 1,
+          runtimeInstanceId: this.runtimeInstanceId,
+          stage,
+          reasonCode: reason,
+          message,
+          ...(this.release ? {
+            releaseId: this.release.releaseId,
+            artifactIdentity: this.release.artifactIdentity,
+          } : {}),
+          observedAt: new Date().toISOString(),
+        });
+      } catch {
+        // Diagnostic persistence must never replace the original startup failure.
+      }
+      await this.stop(reason, message);
       throw error;
     }
   }

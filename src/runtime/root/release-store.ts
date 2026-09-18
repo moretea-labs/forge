@@ -33,6 +33,16 @@ export interface RuntimePublishedRelease {
   databaseBackup?: RuntimeDatabaseBackup;
 }
 
+export interface RuntimeReleaseActivationTransaction {
+  schemaVersion: 1;
+  operationId: string;
+  candidateReleaseId: string;
+  preActivationRevision: number;
+  preActivationActive: RuntimePublishedRelease;
+  preActivationPrevious?: RuntimePublishedRelease;
+  startedAt: string;
+}
+
 export interface RuntimeReleaseAuthority {
   schemaVersion: 1;
   status: 'committed';
@@ -40,6 +50,8 @@ export interface RuntimeReleaseAuthority {
   fencingToken: string;
   active: RuntimePublishedRelease;
   previous?: RuntimePublishedRelease;
+  /** In-flight activation rollback context. It is part of this authority, never a second store. */
+  activation?: RuntimeReleaseActivationTransaction;
   operationId: string;
   committedAt: string;
 }
@@ -125,6 +137,28 @@ function validRelease(controllerHome: string, release: RuntimePublishedRelease |
   }
 }
 
+function validActivationTransaction(
+  controllerHome: string,
+  authority: RuntimeReleaseAuthority,
+): boolean {
+  const transaction = authority.activation;
+  if (!transaction) return true;
+  const candidateActive = transaction.candidateReleaseId === authority.active.releaseId;
+  const preActivationActive = sameRelease(authority.active, transaction.preActivationActive);
+  return transaction.schemaVersion === 1
+    && Boolean(transaction.operationId?.trim())
+    && (candidateActive || preActivationActive)
+    && Number.isInteger(transaction.preActivationRevision)
+    && transaction.preActivationRevision >= 1
+    && Number.isFinite(Date.parse(transaction.startedAt))
+    && validRelease(controllerHome, transaction.preActivationActive)
+    && (transaction.preActivationPrevious === undefined || validRelease(controllerHome, transaction.preActivationPrevious))
+    && (!candidateActive || (
+      Boolean(authority.previous?.databaseBackup)
+      && sameRelease(authority.previous!, transaction.preActivationActive)
+    ));
+}
+
 type RuntimeReleaseAuthorityRead =
   | { state: 'missing' }
   | { state: 'valid'; authority: RuntimeReleaseAuthority }
@@ -145,6 +179,7 @@ function inspectRuntimeReleaseAuthority(controllerHome: string): RuntimeReleaseA
       || !Number.isFinite(Date.parse(value.committedAt))
       || !validRelease(controllerHome, value.active)
       || (value.previous !== undefined && !validRelease(controllerHome, value.previous))
+      || !validActivationTransaction(controllerHome, value)
     ) return { state: 'invalid', reason: 'authority fields or referenced release evidence are invalid' };
     return { state: 'valid', authority: value };
   } catch (error) {
@@ -166,7 +201,9 @@ export function readRuntimeReleaseAuthority(controllerHome: string): RuntimeRele
 }
 
 function writeRuntimeReleaseAuthority(controllerHome: string, authority: RuntimeReleaseAuthority): RuntimeReleaseAuthority {
-  if (!validRelease(controllerHome, authority.active) || (authority.previous && !validRelease(controllerHome, authority.previous))) {
+  if (!validRelease(controllerHome, authority.active)
+    || (authority.previous && !validRelease(controllerHome, authority.previous))
+    || !validActivationTransaction(controllerHome, authority)) {
     throw new Error('RUNTIME_RELEASE_AUTHORITY_INVALID');
   }
   atomicWrite(runtimeReleaseAuthorityPath(controllerHome), authority);
@@ -207,10 +244,12 @@ export function publishRuntimeRelease(
   manifestPath: string,
   operationId: string,
   dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
+  activation?: { operationId: string },
 ): RuntimeReleaseAuthority {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
   const candidate = manifestRecord(controllerHome, manifestPath);
   const current = mutableRuntimeReleaseAuthority(controllerHome);
+  if (!current && activation) throw new Error('RUNTIME_RELEASE_ACTIVATION_REQUIRES_EXISTING_AUTHORITY');
   if (!current) {
     return writeRuntimeReleaseAuthority(controllerHome, {
       schemaVersion: 1,
@@ -237,6 +276,17 @@ export function publishRuntimeRelease(
       ...current.active,
       databaseBackup: { path: resolve(backup), schemaVersion: inspection.schemaVersion, createdAt: committedAt },
     },
+    ...(activation ? {
+      activation: {
+        schemaVersion: 1 as const,
+        operationId: activation.operationId,
+        candidateReleaseId: candidate.releaseId,
+        preActivationRevision: current.revision,
+        preActivationActive: current.active,
+        ...(current.previous ? { preActivationPrevious: current.previous } : {}),
+        startedAt: committedAt,
+      },
+    } : {}),
     operationId,
     committedAt,
   });
@@ -287,6 +337,7 @@ export function rollbackRuntimeRelease(
         ...current.active,
         databaseBackup: { path: resolve(currentBackup), schemaVersion: currentInspection.schemaVersion, createdAt: committedAt },
       },
+      ...(current.activation ? { activation: current.activation } : {}),
       operationId,
       committedAt,
     });
@@ -294,6 +345,59 @@ export function rollbackRuntimeRelease(
     dependencies.restoreDatabase(controllerHome, currentBackup);
     throw error;
   }
+}
+
+export function commitRuntimeReleaseActivation(
+  controllerHome: string,
+  operationId: string,
+): RuntimeReleaseAuthority {
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
+  const transaction = current?.activation;
+  if (!current || !transaction || transaction.operationId !== operationId) {
+    throw new Error('RUNTIME_RELEASE_ACTIVATION_TRANSACTION_MISMATCH');
+  }
+  if (current.active.releaseId !== transaction.candidateReleaseId) {
+    throw new Error('RUNTIME_RELEASE_ACTIVATION_COMMIT_CANDIDATE_MISMATCH');
+  }
+  const { activation: _activation, ...committed } = current;
+  return writeRuntimeReleaseAuthority(controllerHome, {
+    ...committed,
+    operationId,
+    committedAt: new Date().toISOString(),
+  });
+}
+
+export function abortRuntimeReleaseActivation(
+  controllerHome: string,
+  operationId: string,
+  dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
+): RuntimeReleaseAuthority {
+  const initial = mutableRuntimeReleaseAuthority(controllerHome);
+  const transaction = initial?.activation;
+  if (!initial || !transaction || transaction.operationId !== operationId) {
+    throw new Error('RUNTIME_RELEASE_ACTIVATION_TRANSACTION_MISMATCH');
+  }
+
+  let restored = initial;
+  if (!sameRelease(restored.active, transaction.preActivationActive)) {
+    if (restored.active.releaseId !== transaction.candidateReleaseId) {
+      throw new Error('RUNTIME_RELEASE_ACTIVATION_ABORT_ACTIVE_MISMATCH');
+    }
+    restored = rollbackRuntimeRelease(controllerHome, operationId, dependencies);
+  }
+  if (!sameRelease(restored.active, transaction.preActivationActive)) {
+    throw new Error('RUNTIME_RELEASE_ACTIVATION_ABORT_RESTORE_MISMATCH');
+  }
+
+  const { activation: _activation, ...base } = restored;
+  return writeRuntimeReleaseAuthority(controllerHome, {
+    ...base,
+    ...(transaction.preActivationPrevious
+      ? { previous: transaction.preActivationPrevious }
+      : { previous: undefined }),
+    operationId,
+    committedAt: new Date().toISOString(),
+  });
 }
 
 export function activeRuntimeReleaseManifest(controllerHome: string): RuntimeReleaseManifest | undefined {
