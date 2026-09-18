@@ -13,7 +13,7 @@ import { WorkflowSupervisorEphemeralDiscovery } from '../supervisor/server';
 const home = mkdtempSync(join(tmpdir(), 'forge-supervisor-chrome-'));
 try {
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home), { completionContract: async () => ({ valid: true, reason: 'ok' }), userBlockerPolicy: async () => ({ valid: true, reason: 'ok' }) });
-  const conversationId = '11111111-2222-3333-4444-555555555555';
+  const conversationId = 'WEB:11111111-2222-3333-4444-555555555555';
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
   control.registerTask({ taskId: 'task-1', conversationId, conversationUrl, objective: 'Keep implementing the original Forge goal.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const enrollment = control.reserveEnrollment('task-1');

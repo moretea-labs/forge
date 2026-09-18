@@ -10,8 +10,8 @@
       const segments = url.pathname.split('/').filter(Boolean);
       const marker = segments.lastIndexOf('c');
       if (marker < 0 || marker + 2 !== segments.length) return null;
-      const conversationId = segments[marker + 1] ?? '';
-      if (!/^[a-zA-Z0-9-]{8,128}$/.test(conversationId)) return null;
+      const conversationId = String(segments[marker + 1] ?? '').trim();
+      if (!conversationId || conversationId.length > 256) return null;
       return { conversationId, canonicalUrl: `https://chatgpt.com/${segments.join('/')}` };
     } catch { return null; }
   }
