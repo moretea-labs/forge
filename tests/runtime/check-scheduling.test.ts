@@ -94,6 +94,39 @@ describe('check execution scheduling', () => {
     }
   });
 
+  test('schedules the canonical s3 verification gates in one wave from concrete effects', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-s3-check-effects-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({
+        scripts: {
+          'check:type': 'bun x tsc --noEmit',
+          'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
+          'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
+          'check:check-scheduling': 'bun test tests/runtime/check-scheduling.test.ts',
+        },
+      }));
+      const checks = listControllerChecks(root);
+      const requestedCheckIds = [
+        'package:check:type',
+        'package:check:runtime-architecture',
+        'package:check:architecture-sync',
+        'package:check:check-scheduling',
+      ];
+      const schedule = buildCheckExecutionSchedule({
+        checks,
+        requestedCheckIds,
+        repoId: 'repo-test',
+        checkoutId: 'checkout-test',
+      });
+
+      expect(schedule.waves).toEqual([{ wave: 1, checkIds: requestedCheckIds, parallelSafe: true }]);
+      expect(schedule.conflicts).toEqual([]);
+      expect(schedule.maxParallel).toBe(4);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('declares governed task/main gates as source-read-only while release remains conservative', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-governed-gate-effects-'));
     try {

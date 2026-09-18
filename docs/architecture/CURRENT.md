@@ -217,6 +217,8 @@ Source-line-count limits are review heuristics, not architecture truth, and must
 
 Within one migration slice, gather facts in batches, decide ownership once, implement a coherent patch, then review the whole slice for authority/dependency drift before running focused checks. Repeated full-suite validation after each small move is discouraged because it slows structural work without increasing semantic confidence. Milestone/candidate boundaries receive broader cross-module review, multi-review where useful, and whole-candidate validation. Runtime baseline activation is deliberately later than source integration: a locally passing partial slice does not become the active baseline until the integrated candidate satisfies the Kernel V2 architecture contract.
 
+Validation scheduling is derived from each check's concrete resource effects, not from a blanket assumption that every analysis gate writes the workspace or shared build cache. Proven source-read-only/no-emit checks declare reads (plus only the Git/temp/host resources they actually use) so resource-compatible gates may share one validation wave; missing or unknown effect metadata remains conservative. This projection never weakens the underlying lease conflict rules or creates a second scheduling authority.
+
 ## Runtime and MCP boundary
 
 - Canonical Runtime is activated as one immutable whole release with a previous release retained for rollback.

@@ -280,8 +280,19 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
     // and persist only content-bound receipts/caches outside repository source.
     return { reads: ['.'], cache: 'write', temp: 'isolated', git: 'read' };
   }
-  const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
-  if (staticAnalysis) return { reads: ['.'], cache: 'write' };
+  if (normalized === 'check:type' || normalized === 'check:runtime-architecture') {
+    // These canonical gates are source readers: TypeScript runs with --noEmit,
+    // while runtime-architecture only inspects source/AST structure. Neither
+    // owns the shared repository build cache.
+    return { reads: ['.'] };
+  }
+  if (normalized === 'check:architecture-sync') {
+    // Architecture sync runs the queue in --check mode and inspects Git state.
+    // Its scratch space is check-local; it never mutates repository source.
+    return { reads: ['.'], temp: 'isolated', git: 'read' };
+  }
+  const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(normalized);
+  if (cachedStaticAnalysis) return { reads: ['.'], cache: 'write' };
   const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(normalized);
   if (isolatedReadOnlyCheck) return { reads: ['.'], temp: 'isolated', git: 'read' };
   const browserLive = /(?:^|:)browser-live$/.test(normalized);
