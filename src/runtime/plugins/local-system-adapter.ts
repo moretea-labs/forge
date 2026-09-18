@@ -935,8 +935,8 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     case 'start_user_launch_agent': return startVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'upgrade_standalone_recovery': return await upgradeStandaloneRecovery(input.controllerHome);
     case 'repair_standalone_recovery_tunnel': return await repairStandaloneRecoveryTunnel(input.controllerHome);
-    case 'workflow_supervisor_browser_adapter_status': return (hooks.inspectWorkflowSupervisorBrowserAdapter ?? inspectWorkflowSupervisorBrowserAdapter)(input.controllerHome) as unknown as Record<string, unknown>;
-    case 'install_workflow_supervisor_browser_adapter': return (hooks.installWorkflowSupervisorBrowserAdapter ?? installWorkflowSupervisorBrowserAdapter)(input.controllerHome) as unknown as Record<string, unknown>;
+    case 'workflow_supervisor_browser_adapter_status': return (hooks.inspectWorkflowSupervisorBrowserAdapter ?? inspectWorkflowSupervisorBrowserAdapter)(input.controllerHome, { repository: { repoId: input.repoId, repoRoot: input.repoRoot } }) as unknown as Record<string, unknown>;
+    case 'install_workflow_supervisor_browser_adapter': return (hooks.installWorkflowSupervisorBrowserAdapter ?? installWorkflowSupervisorBrowserAdapter)(input.controllerHome, { repository: { repoId: input.repoId, repoRoot: input.repoRoot } }) as unknown as Record<string, unknown>;
     case 'open_application': {
       const appName = optionalString(input.args, 'app_name');
       const bundleId = optionalString(input.args, 'bundle_id');

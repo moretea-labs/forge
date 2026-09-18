@@ -119,6 +119,29 @@ describe('Workflow Supervisor browser adapter installer', () => {
       expect(manifest.allowed_origins).toEqual(['chrome-extension://' + EXPECTED_EXTENSION_ID + '/']);
     }
   });
+  test('registers the native host in the exact Forge-managed repo Browser user-data directory', () => {
+    const f = fixture();
+    const repoRoot = temp('forge-supervisor-managed-browser-repo-');
+    const ready = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
+      homeDir: temp('forge-supervisor-browser-home-'),
+      repository: { repoId: 'repo_test_managed_browser', repoRoot },
+      activeRelease: f.activeRelease,
+    });
+    const managedRoot = join(
+      f.controllerHome,
+      'repositories',
+      'repo_test_managed_browser',
+      'browser',
+      'profiles',
+      'default',
+      'NativeMessagingHosts',
+    );
+    const manifestPath = join(managedRoot, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json');
+    expect(ready.nativeManifestPaths).toContain(manifestPath);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    expect(manifest.path).toBe(ready.nativeHostPath);
+    expect(manifest.allowed_origins).toEqual(['chrome-extension://' + EXPECTED_EXTENSION_ID + '/']);
+  });
   test('contains no Chrome Preferences or profile-discovery dependency', () => {
     const source = readFileSync(join(process.cwd(), 'supervisor', 'browser-adapter-installer.ts'), 'utf8');
     expect(source).not.toContain('Preferences');

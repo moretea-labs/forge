@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import { resolveControllerHome } from '../src/cli/repositories/controller-home';
 import { loadRuntimeReleaseManifest } from '../src/runtime/root/release-manifest';
 import { readRuntimeReleaseAuthority } from '../src/runtime/root/release-store';
+import { ensureBrowserStateInControllerHome } from '../src/runtime/plugins/browser-session-store';
 import { renderWorkflowSupervisorNativeManifest } from './native-messaging/manifest';
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from './native-messaging/host';
 
@@ -12,7 +13,7 @@ const EXTENSION_FILES = ['manifest.json', 'background.js', 'content.js', 'core.j
 const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
 
 export interface WorkflowSupervisorBrowserInstallation {
-  browser: 'chrome' | 'chrome-for-testing' | 'chromium';
+  browser: 'chrome' | 'chrome-for-testing' | 'chromium' | 'forge-managed';
   nativeMessagingRoot: string;
 }
 interface ActiveBrowserAdapterRelease {
@@ -25,6 +26,7 @@ export interface WorkflowSupervisorBrowserAdapterDependencies {
   homeDir?: string;
   browserInstallations?: readonly WorkflowSupervisorBrowserInstallation[];
   activeRelease?: (controllerHome: string) => ActiveBrowserAdapterRelease;
+  repository?: { repoId: string; repoRoot: string };
 }
 export interface WorkflowSupervisorBrowserAdapterStatus {
   state: 'ready' | 'not_installed' | 'projection_stale' | 'runtime_release_incomplete';
@@ -62,12 +64,21 @@ function controllerPaths(controllerHome: string) {
     nativeHostPath: join(root, 'forge-workflow-supervisor-native-host'),
   };
 }
-function defaultBrowserInstallations(homeDir = process.env.HOME ?? homedir()): WorkflowSupervisorBrowserInstallation[] {
-  return [
+function defaultBrowserInstallations(
+  controllerHome: string,
+  homeDir = process.env.HOME ?? homedir(),
+  repository?: { repoId: string; repoRoot: string },
+): WorkflowSupervisorBrowserInstallation[] {
+  const installations: WorkflowSupervisorBrowserInstallation[] = [
     { browser: 'chrome', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts') },
     { browser: 'chrome-for-testing', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Google', 'ChromeForTesting', 'NativeMessagingHosts') },
     { browser: 'chromium', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts') },
   ];
+  if (repository) {
+    const browserStateRoot = ensureBrowserStateInControllerHome(controllerHome, repository.repoId, repository.repoRoot);
+    installations.push({ browser: 'forge-managed', nativeMessagingRoot: join(browserStateRoot, 'profiles', 'default', 'NativeMessagingHosts') });
+  }
+  return installations;
 }
 function activeBrowserAdapterRelease(controllerHome: string): ActiveBrowserAdapterRelease {
   const home = resolveControllerHome(controllerHome);
@@ -144,7 +155,7 @@ function inspectWithRelease(
   const extensionCurrent = existsSync(paths.extensionPath)
     && extensionProjectionCurrent(release.extensionSourcePath, paths.extensionPath)
     && nativeManifestReady(join(paths.extensionPath, FORGE_NATIVE_MESSAGING_DECLARATION), paths.nativeHostPath, exactExtensionId);
-  const installations = dependencies.browserInstallations ?? defaultBrowserInstallations(dependencies.homeDir);
+  const installations = dependencies.browserInstallations ?? defaultBrowserInstallations(controllerHome, dependencies.homeDir, dependencies.repository);
   const nativeManifestPaths = installations.map(nativeManifestPath);
   const manifestsCurrent = nativeManifestPaths.every((path) => nativeManifestReady(path, paths.nativeHostPath, exactExtensionId));
   const projectionCurrent = hostCurrent && extensionCurrent && manifestsCurrent;
@@ -193,7 +204,7 @@ export function installWorkflowSupervisorBrowserAdapter(
     renderWorkflowSupervisorNativeManifest({ executablePath: paths.nativeHostPath, extensionId: exactExtensionId }),
     { mode: 0o600 },
   );
-  for (const installation of dependencies.browserInstallations ?? defaultBrowserInstallations(dependencies.homeDir)) {
+  for (const installation of dependencies.browserInstallations ?? defaultBrowserInstallations(controllerHome, dependencies.homeDir, dependencies.repository)) {
     const path = nativeManifestPath(installation);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = path + '.' + randomUUID().slice(0, 12) + '.tmp';
