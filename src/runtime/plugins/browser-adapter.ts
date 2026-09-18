@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   AssistantPluginActionExecutionInput,
@@ -1900,6 +1900,11 @@ async function openManagedContext(
   };
 }
 
+const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
+interface ManagedNativeMessagingHost {
+  name: string;
+  manifest: string;
+}
 interface BrowserExtensionInfo {
   id: string;
   name?: string;
@@ -1913,7 +1918,7 @@ function pathWithin(root: string, candidate: string): boolean {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
 }
 
-function unpackedExtensionPath(input: AssistantPluginActionExecutionInput): { path: string; expectedId?: string } {
+function unpackedExtensionPath(input: AssistantPluginActionExecutionInput): { path: string; expectedId?: string; nativeHost?: ManagedNativeMessagingHost } {
   const requested = requiredString(input.args.extension_path, 'extension_path');
   if (!isAbsolute(requested)) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'extension_path must be absolute.', { retryable: false });
   if (!existsSync(requested) || !statSync(requested).isDirectory()) {
@@ -1939,7 +1944,60 @@ function unpackedExtensionPath(input: AssistantPluginActionExecutionInput): { pa
     if (bytes.length > 0) expectedId = createHash('sha256').update(bytes).digest('hex').slice(0, 32)
       .replace(/[0-9a-f]/g, (nibble) => String.fromCharCode(97 + Number.parseInt(nibble, 16)));
   }
-  return { path: realPath, expectedId };
+  const declarationPath = join(realPath, FORGE_NATIVE_MESSAGING_DECLARATION);
+  let nativeHost: ManagedNativeMessagingHost | undefined;
+  if (existsSync(declarationPath)) {
+    if (!expectedId || !statSync(declarationPath).isFile() || !pathWithin(realPath, realpathSync(declarationPath))) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging declaration requires a regular file and stable extension manifest key.', { retryable: false });
+    }
+    let declaration: { name?: unknown; description?: unknown; path?: unknown; type?: unknown; allowed_origins?: unknown };
+    try { declaration = JSON.parse(readFileSync(declarationPath, 'utf8')) as typeof declaration; }
+    catch { throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'forge-native-messaging-host.json must contain valid JSON.', { retryable: false }); }
+    const name = typeof declaration.name === 'string' ? declaration.name.trim() : '';
+    const hostPath = typeof declaration.path === 'string' ? declaration.path.trim() : '';
+    const expectedOrigin = `chrome-extension://${expectedId}/`;
+    if (!/^[a-z0-9_]+(?:\.[a-z0-9_]+)*$/.test(name)
+      || declaration.type !== 'stdio'
+      || !isAbsolute(hostPath)
+      || !Array.isArray(declaration.allowed_origins)
+      || declaration.allowed_origins.length !== 1
+      || declaration.allowed_origins[0] !== expectedOrigin) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging declaration must bind one valid host name, stdio transport, absolute executable, and the exact stable extension origin.', { retryable: false });
+    }
+    if (!existsSync(hostPath) || !statSync(hostPath).isFile()) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging host executable must exist as a regular file.', { retryable: false });
+    }
+    const realHostPath = realpathSync(hostPath);
+    if (!trustedRoots.some((root) => pathWithin(root, realHostPath))) {
+      throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Managed native messaging host executable must resolve inside an already trusted extension, repository, or Controller browser-adapter root.', { retryable: false });
+    }
+    if (process.platform !== 'win32' && (statSync(realHostPath).mode & 0o111) === 0) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging host must be executable.', { retryable: false });
+    }
+    nativeHost = {
+      name,
+      manifest: `${JSON.stringify({
+        name,
+        description: typeof declaration.description === 'string' ? declaration.description.slice(0, 512) : '',
+        path: realHostPath,
+        type: 'stdio',
+        allowed_origins: [expectedOrigin],
+      }, null, 2)}\n`,
+    };
+  }
+  return { path: realPath, expectedId, nativeHost };
+}
+
+function projectManagedNativeMessagingHost(profileDir: string, host: ManagedNativeMessagingHost | undefined): boolean {
+  if (!host) return false;
+  const root = join(profileDir, 'NativeMessagingHosts');
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const target = join(root, `${host.name}.json`);
+  if (existsSync(target) && readFileSync(target, 'utf8') === host.manifest) return false;
+  const temporary = `${target}.${randomUUID().slice(0, 12)}.tmp`;
+  writeFileSync(temporary, host.manifest, { mode: 0o600 });
+  renameSync(temporary, target);
+  return true;
 }
 
 function extensionTargets(context: BrowserContextLike): string[] {
@@ -3558,9 +3616,10 @@ async function executeBrowserPluginActionInternal(
         const key = managedContextKey(profile);
         const paths = managedExtensionPaths.get(key) ?? new Set<string>();
         const changed = !paths.has(extension.path);
+        const nativeHostChanged = projectManagedNativeMessagingHost(profile.profileDir, extension.nativeHost);
         paths.add(extension.path);
         managedExtensionPaths.set(key, paths);
-        if (changed) await evictManagedContext(key);
+        if (changed || nativeHostChanged) await evictManagedContext(key);
         const state = await managedContextState(runtimeHooks.loadPlaywright(input.repoRoot), input.repoRoot, current, profile);
         const runtimeTarget = await waitForManagedExtension(state.context, extension.expectedId, positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS));
         return { provider: 'playwright-persistent-context', extension: { id: extension.expectedId, path: extension.path, enabled: true, runtimeTarget }, verified: true };

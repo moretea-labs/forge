@@ -9,6 +9,7 @@ import { renderWorkflowSupervisorNativeManifest } from './native-messaging/manif
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from './native-messaging/host';
 
 const EXTENSION_FILES = ['manifest.json', 'background.js', 'content.js', 'core.js'] as const;
+const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
 
 export interface WorkflowSupervisorBrowserInstallation {
   browser: 'chrome' | 'chrome-for-testing' | 'chromium';
@@ -140,7 +141,9 @@ function inspectWithRelease(
   const paths = controllerPaths(controllerHome);
   const exactExtensionId = extensionId(release.extensionSourcePath);
   const hostCurrent = existsSync(paths.nativeHostPath) && 'sha256:' + sha256(paths.nativeHostPath) === release.nativeHostArtifactIdentity;
-  const extensionCurrent = existsSync(paths.extensionPath) && extensionProjectionCurrent(release.extensionSourcePath, paths.extensionPath);
+  const extensionCurrent = existsSync(paths.extensionPath)
+    && extensionProjectionCurrent(release.extensionSourcePath, paths.extensionPath)
+    && nativeManifestReady(join(paths.extensionPath, FORGE_NATIVE_MESSAGING_DECLARATION), paths.nativeHostPath, exactExtensionId);
   const installations = dependencies.browserInstallations ?? defaultBrowserInstallations(dependencies.homeDir);
   const nativeManifestPaths = installations.map(nativeManifestPath);
   const manifestsCurrent = nativeManifestPaths.every((path) => nativeManifestReady(path, paths.nativeHostPath, exactExtensionId));
@@ -185,6 +188,11 @@ export function installWorkflowSupervisorBrowserAdapter(
   const exactExtensionId = extensionId(release.extensionSourcePath);
   projectExtension(release.extensionSourcePath, paths.extensionPath);
   projectNativeHost(release.nativeHostSourcePath, release.nativeHostArtifactIdentity, paths.nativeHostPath);
+  writeFileSync(
+    join(paths.extensionPath, FORGE_NATIVE_MESSAGING_DECLARATION),
+    renderWorkflowSupervisorNativeManifest({ executablePath: paths.nativeHostPath, extensionId: exactExtensionId }),
+    { mode: 0o600 },
+  );
   for (const installation of dependencies.browserInstallations ?? defaultBrowserInstallations(dependencies.homeDir)) {
     const path = nativeManifestPath(installation);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

@@ -85,6 +85,9 @@ describe('Workflow Supervisor browser adapter installer', () => {
     expect(ready.projectionCurrent).toBe(true);
     expect(existsSync(join(ready.extensionPath, 'background.js'))).toBe(true);
     expect(existsSync(ready.nativeHostPath)).toBe(true);
+    const managedDeclaration = JSON.parse(readFileSync(join(ready.extensionPath, 'forge-native-messaging-host.json'), 'utf8')) as Record<string, unknown>;
+    expect(managedDeclaration.path).toBe(ready.nativeHostPath);
+    expect(managedDeclaration.allowed_origins).toEqual(['chrome-extension://' + EXPECTED_EXTENSION_ID + '/']);
     const manifestPath = join(f.nativeMessagingRoot, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.path).toBe(ready.nativeHostPath);

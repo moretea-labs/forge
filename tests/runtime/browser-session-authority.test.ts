@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -855,12 +855,23 @@ describe('browser session compatibility on Computer target authority', () => {
       profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
     }));
     const canonicalExtensionPath = realpathSync(extensionPath);
+    const nativeHostPath = join(repoA, 'forge-native-host');
+    writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
+      name: 'com.moretea.forge.fixture',
+      description: 'fixture',
+      path: nativeHostPath,
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+    }));
     let launchOptions: Record<string, unknown> | undefined;
+    let launchedProfileDir = '';
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchedProfileDir = _dir;
             launchOptions = options;
             return {
               pages: () => [],
@@ -883,11 +894,47 @@ describe('browser session compatibility on Computer target authority', () => {
       '--disable-extensions-except=' + canonicalExtensionPath,
       '--load-extension=' + canonicalExtensionPath,
     ]);
+    const projectedHost = JSON.parse(readFileSync(join(launchedProfileDir, 'NativeMessagingHosts', 'com.moretea.forge.fixture.json'), 'utf8')) as Record<string, unknown>;
+    expect(projectedHost).toMatchObject({
+      name: 'com.moretea.forge.fixture',
+      path: realpathSync(nativeHostPath),
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+    });
     expect(result).toMatchObject({
       provider: 'playwright-persistent-context',
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
       verified: true,
     });
+  });
+
+  test('rejects managed native messaging declarations whose allowed origin does not match the stable extension id', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const nativeHostPath = join(repoA, 'forge-native-host');
+    writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
+      name: 'com.moretea.forge.fixture',
+      path: nativeHostPath,
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + 'a'.repeat(32) + '/'],
+    }));
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    let launched = false;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({ chromium: { launchPersistentContext: async () => { launched = true; throw new Error('must not launch'); } } }),
+    });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-native-origin-mismatch', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toThrow(/exact stable extension origin/);
+    expect(launched).toBe(false);
   });
 
   test('ordinary managed browsing still honors configured branded channel when no extension is requested', async () => {
