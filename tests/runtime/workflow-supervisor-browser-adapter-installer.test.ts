@@ -96,6 +96,26 @@ describe('Workflow Supervisor browser adapter installer', () => {
     expect(repeated.state).toBe('ready');
     expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toEqual(manifest);
   });
+  test('registers the exact native host for Chrome, Chrome for Testing, and Chromium by default', () => {
+    const f = fixture();
+    const homeDir = temp('forge-supervisor-browser-home-');
+    const ready = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
+      homeDir,
+      activeRelease: f.activeRelease,
+    });
+    expect(ready.state).toBe('ready');
+    const roots = [
+      join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts'),
+      join(homeDir, 'Library', 'Application Support', 'Google', 'ChromeForTesting', 'NativeMessagingHosts'),
+      join(homeDir, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts'),
+    ];
+    expect(ready.nativeManifestPaths).toEqual(roots.map((root) => join(root, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json')));
+    for (const root of roots) {
+      const manifest = JSON.parse(readFileSync(join(root, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json'), 'utf8')) as Record<string, unknown>;
+      expect(manifest.path).toBe(ready.nativeHostPath);
+      expect(manifest.allowed_origins).toEqual(['chrome-extension://' + EXPECTED_EXTENSION_ID + '/']);
+    }
+  });
   test('contains no Chrome Preferences or profile-discovery dependency', () => {
     const source = readFileSync(join(process.cwd(), 'supervisor', 'browser-adapter-installer.ts'), 'utf8');
     expect(source).not.toContain('Preferences');

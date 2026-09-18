@@ -11,7 +11,7 @@ import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from './native-messaging/host';
 const EXTENSION_FILES = ['manifest.json', 'background.js', 'content.js', 'core.js'] as const;
 
 export interface WorkflowSupervisorBrowserInstallation {
-  browser: 'chrome' | 'chromium';
+  browser: 'chrome' | 'chrome-for-testing' | 'chromium';
   nativeMessagingRoot: string;
 }
 interface ActiveBrowserAdapterRelease {
@@ -64,6 +64,7 @@ function controllerPaths(controllerHome: string) {
 function defaultBrowserInstallations(homeDir = process.env.HOME ?? homedir()): WorkflowSupervisorBrowserInstallation[] {
   return [
     { browser: 'chrome', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts') },
+    { browser: 'chrome-for-testing', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Google', 'ChromeForTesting', 'NativeMessagingHosts') },
     { browser: 'chromium', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts') },
   ];
 }
