@@ -17,10 +17,12 @@ function fixture(): { home: string; packageRoot: string } {
   roots.push(root);
   const home = join(root, 'home');
   const packageRoot = join(root, 'package-source');
-  for (const dir of ['src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'adapters/mcp', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
+  for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'adapters/mcp', 'packages/kernel/scheduler/api', 'supervisor', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+  writeFileSync(join(packageRoot, 'supervisor', 'client.ts'), 'export const supervisorClient = 1;\n');
+  writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), "import { supervisorClient } from '../../supervisor/client';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(supervisorClient === 1 ? 0 : 3);\nprocess.exit(4);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
   writeFileSync(join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'export const scheduler = 1;\n');
@@ -45,6 +47,7 @@ describe('package Runtime release immutability', () => {
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'utf8')).toBe('export const adapter = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe('export const scheduler = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'supervisor', 'client.ts'), 'utf8')).toBe('export const supervisorClient = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8')).toBe('export const linked = 1;\n');
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;
@@ -82,6 +85,21 @@ describe('package Runtime release immutability', () => {
 
     expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-repeat' }))
       .toThrow(/PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION|RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_EXECUTABLE/);
+  });
+
+  test('does not promote a package release whose staged Connector CLI dependency graph is incomplete', () => {
+    const { home, packageRoot } = fixture();
+    mkdirSync(join(packageRoot, 'future-runtime-root'), { recursive: true });
+    writeFileSync(join(packageRoot, 'future-runtime-root', 'dependency.ts'), 'export const futureDependency = 1;\n');
+    writeFileSync(
+      join(packageRoot, 'src', 'cli', 'index.ts'),
+      "import { futureDependency } from '../../future-runtime-root/dependency';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(futureDependency === 1 ? 0 : 3);\nprocess.exit(4);\n",
+    );
+
+    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'connector-canary-fail' }))
+      .toThrow(/RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: connector_cli/);
+    const releasesRoot = join(home, 'runtime', 'releases');
+    expect(existsSync(releasesRoot) ? readdirSync(releasesRoot) : []).toEqual([]);
   });
 
   test('does not promote a package release whose staged Process Runner canary fails', () => {

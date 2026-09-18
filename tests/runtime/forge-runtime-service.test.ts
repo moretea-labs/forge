@@ -45,7 +45,9 @@ function fixture(): { root: string; home: string; repo: string; token: string } 
 
 function writePackageRuntimeCanaryFixture(packageRoot: string): void {
   const executionRoot = join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime');
+  const cliRoot = join(packageRoot, 'src', 'cli');
   mkdirSync(executionRoot, { recursive: true });
+  mkdirSync(cliRoot, { recursive: true });
   const canaryOnly = [
     `if (process.argv.includes('--forge-release-canary-child')) {`,
     `  process.exit(0);`,
@@ -55,6 +57,10 @@ function writePackageRuntimeCanaryFixture(packageRoot: string): void {
   ].join('\n');
   writeFileSync(join(executionRoot, 'process-runner-entry.ts'), canaryOnly);
   writeFileSync(join(executionRoot, 'check-runner-sidecar.ts'), canaryOnly);
+  writeFileSync(
+    join(cliRoot, 'index.ts'),
+    "if (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(0);\nprocess.exit(4);\n",
+  );
 }
 
 afterEach(() => {

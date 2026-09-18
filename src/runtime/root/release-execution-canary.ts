@@ -1,12 +1,14 @@
+import { join } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
+import { resolveBunExecutable } from '../shared/process-environment';
 import {
   assertRuntimeReleaseExecutionSurface,
   type RuntimeReleaseExecutionSurface,
 } from './release-manifest';
 
 export interface RuntimeReleaseExecutionCanaryCommand {
-  name: RuntimeReleaseExecutionSurface['entries'][number]['name'];
+  name: RuntimeReleaseExecutionSurface['entries'][number]['name'] | 'connector_cli';
   executable: string;
   args: string[];
 }
@@ -39,7 +41,12 @@ export function runtimeReleaseCanaryEnvironment(
   return { ...env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
 }
 
-/** Execute the exact manifest-owned Process/Check Runner artifacts in bounded no-op mode. */
+/**
+ * Execute the minimum immutable Runtime execution surface plus the package
+ * Connector CLI import graph. The latter is intentionally a help-only command:
+ * it loads the exact CLI dependency closure used by the persistent Connector
+ * without opening a listener or mutating Runtime authority.
+ */
 export function assertRuntimeReleaseExecutionCanaries(
   manifestPath: string,
   controllerHome: string,
@@ -56,16 +63,31 @@ export function assertRuntimeReleaseExecutionCanaries(
       maxOutputBytes: 64 * 1024,
     },
   ));
-  for (const entry of surface.entries) {
-    const canary: RuntimeReleaseExecutionCanaryCommand = {
-      name: entry.name,
-      executable: entry.path,
-      args: [PROCESS_RUNTIME_RELEASE_CANARY_ARG],
-    };
+  const assertCanary = (canary: RuntimeReleaseExecutionCanaryCommand): void => {
     const result = runExecutionEntryCanary(canary);
     if (!result.ok) {
       throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${result.stderr || result.stdout || result.error || 'unknown failure'}`.slice(0, 2_000));
     }
+  };
+
+  for (const entry of surface.entries) {
+    assertCanary({
+      name: entry.name,
+      executable: entry.path,
+      args: [PROCESS_RUNTIME_RELEASE_CANARY_ARG],
+    });
   }
+
+  // Package launcher releases execute source-backed CLI code from their own
+  // immutable snapshot. Compiled standalone releases have a different closed
+  // artifact surface and therefore do not use this source CLI probe.
+  if (surface.manifest.executionMode !== 'standalone-binary') {
+    assertCanary({
+      name: 'connector_cli',
+      executable: resolveBunExecutable(process.execPath, process.env),
+      args: [join(surface.releaseRoot, 'package', 'src', 'cli', 'index.ts'), 'mcp', 'serve', '--help'],
+    });
+  }
+
   return surface;
 }
