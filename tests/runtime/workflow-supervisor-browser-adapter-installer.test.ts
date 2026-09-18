@@ -6,11 +6,17 @@ import { join } from 'path';
 import {
   installWorkflowSupervisorBrowserAdapter,
   inspectWorkflowSupervisorBrowserAdapter,
+  workflowSupervisorExtensionIdFromManifestKey,
   type WorkflowSupervisorBrowserInstallation,
 } from '../../supervisor/browser-adapter-installer';
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from '../../supervisor/native-messaging/host';
 import { buildLocalSystemPluginManifest, localSystemPluginAdapter } from '../../src/runtime/plugins/local-system-adapter';
+
 const roots: string[] = [];
+const sourceManifestPath = join(process.cwd(), 'supervisor', 'chrome-extension', 'manifest.json');
+const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf8')) as { key: string };
+const EXPECTED_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';
+
 afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -28,27 +34,23 @@ function fixture() {
   const releaseRoot = join(root, 'release');
   const extensionSourcePath = join(releaseRoot, 'package', 'supervisor', 'chrome-extension');
   const nativeHostSourcePath = join(releaseRoot, 'forge-workflow-supervisor-native-host');
-  const userDataRoot = join(root, 'chrome');
   const nativeMessagingRoot = join(root, 'native-hosts');
   mkdirSync(extensionSourcePath, { recursive: true });
-  mkdirSync(join(userDataRoot, 'Default'), { recursive: true });
   for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) {
-    writeFileSync(join(extensionSourcePath, file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// fixture\n');
+    const content = file === 'manifest.json' ? readFileSync(sourceManifestPath) : Buffer.from('// fixture\n');
+    writeFileSync(join(extensionSourcePath, file), content);
   }
   writeFileSync(nativeHostSourcePath, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
-  const browserInstallations: WorkflowSupervisorBrowserInstallation[] = [{
-    browser: 'chrome',
-    userDataRoot,
-    nativeMessagingRoot,
-  }];
+  const browserInstallations: WorkflowSupervisorBrowserInstallation[] = [{ browser: 'chrome', nativeMessagingRoot }];
   const activeRelease = () => ({
     releaseId: 'release-test',
     extensionSourcePath,
     nativeHostSourcePath,
     nativeHostArtifactIdentity: 'sha256:' + sha256(nativeHostSourcePath),
   });
-  return { controllerHome, userDataRoot, nativeMessagingRoot, browserInstallations, activeRelease };
+  return { controllerHome, nativeMessagingRoot, browserInstallations, activeRelease };
 }
+
 describe('local_system Workflow Supervisor browser adapter surface', () => {
   test('exposes only bounded argument-free Controller actions', () => {
     const manifest = buildLocalSystemPluginManifest();
@@ -60,58 +62,45 @@ describe('local_system Workflow Supervisor browser adapter surface', () => {
     expect(install?.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
     expect(install?.confirmation).toBe('authorization');
     expect(install?.resourceClaims).toEqual([{ resource: 'provider-state', mode: 'write' }]);
-    expect(manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-workflow-supervisor-browser-adapter')?.actions)
-      .toEqual(['workflow_supervisor_browser_adapter_status', 'install_workflow_supervisor_browser_adapter']);
   });
 });
+
 describe('Workflow Supervisor browser adapter installer', () => {
-  test('projects active release artifacts but reports Chrome authorization as an explicit boundary', () => {
+  test('derives one stable Chrome extension id from the package-owned public manifest key', () => {
+    expect(workflowSupervisorExtensionIdFromManifestKey(sourceManifest.key)).toBe(EXPECTED_EXTENSION_ID);
+  });
+  test('projects and registers the active release without reading Chrome profile state', () => {
     const f = fixture();
     const before = inspectWorkflowSupervisorBrowserAdapter(f.controllerHome, {
       browserInstallations: f.browserInstallations,
       activeRelease: f.activeRelease,
     });
     expect(before.state).toBe('not_installed');
-    const status = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
-      browserInstallations: f.browserInstallations,
-      activeRelease: f.activeRelease,
-    });
-    expect(status.state).toBe('extension_authorization_required');
-    expect(status.projectionCurrent).toBe(true);
-    expect(existsSync(join(status.extensionPath, 'background.js'))).toBe(true);
-    expect(existsSync(status.nativeHostPath)).toBe(true);
-    expect(status.extensionBindings).toEqual([]);
-    expect(existsSync(join(f.nativeMessagingRoot, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json'))).toBe(false);
-  });
-  test('discovers exact enabled extension identity and registers only exact allowed origins', () => {
-    const f = fixture();
-    const projected = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
-      browserInstallations: f.browserInstallations,
-      activeRelease: f.activeRelease,
-    });
-    const extensionId = 'a'.repeat(32);
-    writeFileSync(join(f.userDataRoot, 'Default', 'Preferences'), JSON.stringify({
-      extensions: { settings: { [extensionId]: { state: 1, path: projected.extensionPath } } },
-    }));
     const ready = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
       browserInstallations: f.browserInstallations,
       activeRelease: f.activeRelease,
     });
     expect(ready.state).toBe('ready');
-    expect(ready.extensionBindings).toEqual([expect.objectContaining({
-      extensionId,
-      profileDirectory: 'Default',
-      browser: 'chrome',
-    })]);
+    expect(ready.extensionId).toBe(EXPECTED_EXTENSION_ID);
+    expect(ready.projectionCurrent).toBe(true);
+    expect(existsSync(join(ready.extensionPath, 'background.js'))).toBe(true);
+    expect(existsSync(ready.nativeHostPath)).toBe(true);
     const manifestPath = join(f.nativeMessagingRoot, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.path).toBe(ready.nativeHostPath);
-    expect(manifest.allowed_origins).toEqual(['chrome-extension://' + extensionId + '/']);
+    expect(manifest.allowed_origins).toEqual(['chrome-extension://' + EXPECTED_EXTENSION_ID + '/']);
     const repeated = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
       browserInstallations: f.browserInstallations,
       activeRelease: f.activeRelease,
     });
     expect(repeated.state).toBe('ready');
     expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toEqual(manifest);
+  });
+  test('contains no Chrome Preferences or profile-discovery dependency', () => {
+    const source = readFileSync(join(process.cwd(), 'supervisor', 'browser-adapter-installer.ts'), 'utf8');
+    expect(source).not.toContain('Preferences');
+    expect(source).not.toContain('Secure Preferences');
+    expect(source).not.toContain('userDataRoot');
+    expect(source).not.toContain('readdirSync');
   });
 });
