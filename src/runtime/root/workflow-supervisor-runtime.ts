@@ -2,7 +2,8 @@ import { once } from 'node:events';
 import { WorkflowSupervisorControlPlane } from '../../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../../supervisor/forge-validators';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
-import { createWorkflowSupervisorServer } from '../../../supervisor/server';
+import { createWorkflowSupervisorServer, WorkflowSupervisorEphemeralDiscovery } from '../../../supervisor/server';
+import { startWorkflowSupervisorNativeBrowserAdapter } from '../../../supervisor/native-browser-adapter';
 import { WorkflowSupervisorStore } from '../../../supervisor/store';
 
 export interface RuntimeWorkflowSupervisorHandle {
@@ -22,18 +23,22 @@ export async function startWorkflowSupervisorRuntime(controllerHome: string): Pr
     new WorkflowSupervisorStore(forgeHome),
     forgeWorkflowSupervisorValidators(),
   );
+  const discovery = new WorkflowSupervisorEphemeralDiscovery();
   const server = createWorkflowSupervisorServer({
     controlPlane,
     socketPath: workflowSupervisorSocketPath(forgeHome),
+    discovery,
   });
   const done = once(server, 'close').then(() => undefined);
   await once(server, 'listening');
+  const nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery);
   let closing = false;
   return {
     done,
     async close(): Promise<void> {
       if (closing || !server.listening) return;
       closing = true;
+      await nativeBrowser?.close().catch(() => undefined);
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });

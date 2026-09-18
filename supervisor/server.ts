@@ -51,8 +51,8 @@ function text(params: Record<string, unknown>, key: string): string { const valu
 function reply(socket: Socket, id: string, result: unknown): void { socket.write(`${JSON.stringify({ id, ok: true, result })}\n`); }
 function fail(socket: Socket, id: string, error: unknown): void { const message = error instanceof Error ? error.message : String(error); socket.write(`${JSON.stringify({ id, ok: false, error: { code: message.split(':')[0], message } })}\n`); }
 
-export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string }): Server {
-  const discovery = new WorkflowSupervisorEphemeralDiscovery();
+export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery }): Server {
+  const discovery = input.discovery ?? new WorkflowSupervisorEphemeralDiscovery();
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0); let chain = Promise.resolve();
     socket.on('data', (chunk: Buffer) => {
