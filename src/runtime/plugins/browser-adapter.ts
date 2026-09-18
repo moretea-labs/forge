@@ -175,15 +175,23 @@ interface BrowserProfileSelection {
   selectedProfilePath: string;
 }
 
+type BrowserExtensionTargetLike = { url(): string };
+type BrowserCdpSessionLike = {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  detach?(): Promise<void>;
+};
 type BrowserContextLike = {
   pages(): PageLike[];
   newPage(): Promise<PageLike>;
   close(): Promise<void>;
+  serviceWorkers?(): BrowserExtensionTargetLike[];
+  backgroundPages?(): BrowserExtensionTargetLike[];
 };
 
 type BrowserLike = {
   contexts(): BrowserContextLike[];
   newContext?(): Promise<BrowserContextLike>;
+  newBrowserCDPSession?(): Promise<BrowserCdpSessionLike>;
   close?(): Promise<void>;
   disconnect?(): Promise<void> | void;
 };
@@ -313,6 +321,7 @@ interface ManagedBrowserContextState {
 }
 
 const managedBrowserContexts = new Map<string, Promise<ManagedBrowserContextState>>();
+const managedExtensionPaths = new Map<string, Set<string>>();
 
 export function setBrowserPluginRuntimeHooksForTest(hooks: Partial<BrowserPluginRuntimeHooks>): void {
   runtimeHooks = { ...defaultRuntimeHooks, ...hooks };
@@ -323,6 +332,7 @@ export function resetBrowserPluginRuntimeHooksForTest(): void {
   runtimeHooks = { ...defaultRuntimeHooks };
   runtimeHooksCustomized = false;
   managedBrowserContexts.clear();
+  managedExtensionPaths.clear();
 }
 
 function now(): string {
@@ -1545,13 +1555,19 @@ async function discoverCdpEndpoint(endpoint: string, timeoutMs: number): Promise
 }
 
 function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, profile: BrowserProfileSelection): Record<string, unknown> {
+  const extensionPaths = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].sort();
+  const args = [
+    ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
+    ...(extensionPaths.length > 0 ? [`--disable-extensions-except=${extensionPaths.join(',')}`, `--load-extension=${extensionPaths.join(',')}`] : []),
+  ];
   return {
     headless: false,
     acceptDownloads: true,
     viewport: { width: 1280, height: 900 },
     ...(config.executablePath ? { executablePath: resolveConfiguredPath(repoRoot, config.executablePath) } : {}),
     ...(!config.executablePath && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
-    ...(profile.profileDirectory ? { args: [`--profile-directory=${profile.profileDirectory}`] } : {}),
+    ...(extensionPaths.length > 0 ? { ignoreDefaultArgs: ['--disable-extensions'] } : {}),
+    ...(args.length > 0 ? { args } : {}),
   };
 }
 
@@ -1882,6 +1898,119 @@ async function openManagedContext(
       if (activeMode === 'isolated') await context.close().catch(() => undefined);
     },
   };
+}
+
+interface BrowserExtensionInfo {
+  id: string;
+  name?: string;
+  version?: string;
+  path: string;
+  enabled: boolean;
+}
+
+function pathWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+function unpackedExtensionPath(input: AssistantPluginActionExecutionInput): { path: string; expectedId?: string } {
+  const requested = requiredString(input.args.extension_path, 'extension_path');
+  if (!isAbsolute(requested)) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'extension_path must be absolute.', { retryable: false });
+  if (!existsSync(requested) || !statSync(requested).isDirectory()) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'extension_path must reference an existing directory.', { retryable: false });
+  }
+  const realPath = realpathSync(requested);
+  const trustedRoots = [realpathSync(input.repoRoot)];
+  const controllerBrowserRoot = join(resolve(input.controllerHome), 'supervisor', 'browser-adapter');
+  if (existsSync(controllerBrowserRoot)) trustedRoots.push(realpathSync(controllerBrowserRoot));
+  if (!trustedRoots.some((root) => pathWithin(root, realPath))) {
+    throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Unpacked extensions must resolve inside the repository or Controller-owned browser-adapter root.', { retryable: false });
+  }
+  const manifestPath = join(realPath, 'manifest.json');
+  if (!existsSync(manifestPath) || !statSync(manifestPath).isFile() || !pathWithin(realPath, realpathSync(manifestPath))) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unpacked extension requires a regular manifest.json inside the extension directory.', { retryable: false });
+  }
+  let manifest: { key?: unknown };
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { key?: unknown }; }
+  catch { throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unpacked extension manifest.json must contain valid JSON.', { retryable: false }); }
+  let expectedId: string | undefined;
+  if (typeof manifest.key === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(manifest.key.trim())) {
+    const bytes = Buffer.from(manifest.key.trim(), 'base64');
+    if (bytes.length > 0) expectedId = createHash('sha256').update(bytes).digest('hex').slice(0, 32)
+      .replace(/[0-9a-f]/g, (nibble) => String.fromCharCode(97 + Number.parseInt(nibble, 16)));
+  }
+  return { path: realPath, expectedId };
+}
+
+function extensionTargets(context: BrowserContextLike): string[] {
+  return [...(context.serviceWorkers?.() ?? []), ...(context.backgroundPages?.() ?? [])].map((target) => target.url());
+}
+
+async function waitForManagedExtension(context: BrowserContextLike, extensionId: string, timeoutMs: number): Promise<string> {
+  const prefix = `chrome-extension://${extensionId}/`;
+  const deadline = Date.now() + Math.min(Math.max(timeoutMs, 250), 10_000);
+  while (Date.now() <= deadline) {
+    const url = extensionTargets(context).find((candidate) => candidate.startsWith(prefix));
+    if (url) return url;
+    await delay(100);
+  }
+  throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Managed browser did not expose an exact runtime target for the requested extension id.', { retryable: true, details: { extensionId } });
+}
+
+async function browserLevelCdp(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+): Promise<{ browser: BrowserLike; session: BrowserCdpSessionLike; endpoint: string } | undefined> {
+  if (cdpEndpoints(config).length === 0 || !runtimeHooks.moduleAvailable('playwright', repoRoot)) return undefined;
+  const runtime = runtimeHooks.loadPlaywright(repoRoot);
+  const connectOverCDP = runtime.chromium.connectOverCDP;
+  if (typeof connectOverCDP !== 'function') return undefined;
+  for (const endpoint of cdpEndpoints(config)) {
+    try {
+      const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
+      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      if (typeof browser.newBrowserCDPSession !== 'function') {
+        if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
+        else if (browser.close) await browser.close().catch(() => undefined);
+        continue;
+      }
+      const session = await browser.newBrowserCDPSession();
+      return { browser, session, endpoint: discovered.discoveredEndpoint ?? endpoint };
+    } catch { /* Pre-dispatch endpoint discovery/attach failure; try the next configured endpoint. */ }
+  }
+  return undefined;
+}
+
+async function closeBrowserLevelCdp(handle: { browser: BrowserLike; session: BrowserCdpSessionLike }): Promise<void> {
+  await handle.session.detach?.().catch(() => undefined);
+  if (handle.browser.disconnect) await Promise.resolve(handle.browser.disconnect()).catch(() => undefined);
+  else if (handle.browser.close) await handle.browser.close().catch(() => undefined);
+}
+
+async function cdpExtensionList(repoRoot: string, config: BrowserPluginConfig): Promise<{ provider: string; endpoint: string; extensions: BrowserExtensionInfo[] } | undefined> {
+  const handle = await browserLevelCdp(repoRoot, config);
+  if (!handle) return undefined;
+  try {
+    const result = await handle.session.send('Extensions.getExtensions') as { extensions?: BrowserExtensionInfo[] };
+    return { provider: 'playwright-cdp', endpoint: handle.endpoint, extensions: Array.isArray(result.extensions) ? result.extensions : [] };
+  } finally { await closeBrowserLevelCdp(handle); }
+}
+
+async function cdpInstallExtension(input: AssistantPluginActionExecutionInput, config: BrowserPluginConfig, extensionPath: string): Promise<Record<string, unknown> | undefined> {
+  const handle = await browserLevelCdp(input.repoRoot, config);
+  if (!handle) return undefined;
+  try {
+    const loaded = await handle.session.send('Extensions.loadUnpacked', {
+      path: extensionPath,
+      ...(input.args.enable_in_incognito === true ? { enableInIncognito: true } : {}),
+    }) as { id?: string };
+    const id = typeof loaded.id === 'string' && loaded.id.trim() ? loaded.id.trim() : undefined;
+    if (!id) throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Chrome did not return an extension id after loadUnpacked.', { retryable: true });
+    const listed = await handle.session.send('Extensions.getExtensions') as { extensions?: BrowserExtensionInfo[] };
+    const exact = (listed.extensions ?? []).find((entry) => entry.id === id && entry.enabled === true && realpathSync(entry.path) === extensionPath);
+    if (!exact) throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Chrome did not verify the exact enabled unpacked extension id/path after loadUnpacked.', { retryable: true, details: { extensionId: id } });
+    return { provider: 'playwright-cdp', endpoint: handle.endpoint, extension: exact, verified: true };
+  } finally { await closeBrowserLevelCdp(handle); }
 }
 
 async function openAttachedContext(
@@ -3232,7 +3361,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     pluginId: BROWSER_PLUGIN_ID,
     provider: 'local-browser',
     displayName: 'Controller Browser Plugin',
-    pluginVersion: '1.1.0',
+    pluginVersion: '1.2.0',
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
@@ -3384,6 +3513,57 @@ async function executeBrowserPluginActionInternal(
         }
         await closeManagedContextsForRepo(input.repoRoot);
         return { config, health: health(config, input.repoRoot) };
+      }
+      case 'list_unpacked_extensions': {
+        if (current.browserMode === 'attach_preferred') {
+          const cdp = await cdpExtensionList(input.repoRoot, current);
+          if (cdp) return { ...cdp, verified: true };
+          if (current.cdpAttachFallback !== 'managed_persistent') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Unpacked-extension control requires a configured browser-level CDP endpoint; refusing to restart or mutate the user-owned native browser.', { retryable: true });
+          }
+        }
+        if (current.browserMode !== 'managed_persistent' && current.cdpAttachFallback !== 'managed_persistent') {
+          throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Selected Browser mode does not provide unpacked-extension control.', { retryable: false });
+        }
+        const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
+        const pending = managedBrowserContexts.get(managedContextKey(profile));
+        if (!pending) return { provider: 'playwright-persistent-context', extensions: [], verified: true };
+        const state = await pending;
+        const urls = extensionTargets(state.context);
+        const extensions = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].map((path) => {
+          const { expectedId } = unpackedExtensionPath({ ...input, args: { ...input.args, extension_path: path } });
+          const enabled = Boolean(expectedId && urls.some((url) => url.startsWith(`chrome-extension://${expectedId}/`)));
+          return { id: expectedId, path, enabled };
+        });
+        return { provider: 'playwright-persistent-context', extensions, verified: true };
+      }
+      case 'install_unpacked_extension': {
+        const extension = unpackedExtensionPath(input);
+        if (current.browserMode === 'attach_preferred') {
+          const cdp = await cdpInstallExtension(input, current, extension.path);
+          if (cdp) return cdp;
+          if (current.cdpAttachFallback !== 'managed_persistent') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Unpacked-extension install requires a configured browser-level CDP endpoint; refusing to restart or mutate the user-owned native browser.', { retryable: true });
+          }
+        }
+        if ((current.browserMode !== 'managed_persistent' && current.cdpAttachFallback !== 'managed_persistent') || !extension.expectedId) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', extension.expectedId
+            ? 'Selected Browser mode does not provide managed unpacked-extension control.'
+            : 'Managed unpacked-extension verification requires a stable manifest key.', { retryable: false });
+        }
+        if (!runtimeHooks.moduleAvailable('playwright', input.repoRoot)) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed unpacked-extension install requires Playwright.', { retryable: false });
+        }
+        const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
+        const key = managedContextKey(profile);
+        const paths = managedExtensionPaths.get(key) ?? new Set<string>();
+        const changed = !paths.has(extension.path);
+        paths.add(extension.path);
+        managedExtensionPaths.set(key, paths);
+        if (changed) await evictManagedContext(key);
+        const state = await managedContextState(runtimeHooks.loadPlaywright(input.repoRoot), input.repoRoot, current, profile);
+        const runtimeTarget = await waitForManagedExtension(state.context, extension.expectedId, positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS));
+        return { provider: 'playwright-persistent-context', extension: { id: extension.expectedId, path: extension.path, enabled: true, runtimeTarget }, verified: true };
       }
       case 'list_sessions': {
         const inventory = await inspectSavedSessions(input.repoRoot, current);

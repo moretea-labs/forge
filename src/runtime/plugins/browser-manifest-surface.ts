@@ -33,6 +33,13 @@ export function browserPermissions(ready: boolean): AssistantPluginPermissionSco
       granted: ready,
       required: true,
     },
+    {
+      scope: 'browser.extensions',
+      mode: 'write',
+      description: 'List or load bounded unpacked extensions through the existing Browser provider control plane.',
+      granted: ready,
+      required: false,
+    },
   ];
 }
 
@@ -63,6 +70,13 @@ export function browserCapabilities(): AssistantPluginCapability[] {
         'screenshot', 'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive',
         'get_console_errors', 'get_failed_requests',
       ],
+    },
+    {
+      capabilityId: 'browser-extensions',
+      title: 'Browser Extensions',
+      description: 'List or load unpacked extensions from policy-bounded local directories without exposing raw CDP methods.',
+      scopes: ['browser.extensions', 'browser.profile'],
+      actions: ['list_unpacked_extensions', 'install_unpacked_extension'],
     },
     {
       capabilityId: 'browser-interaction',
@@ -157,6 +171,25 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
         },
         additionalProperties: false,
       },
+    },
+    {
+      actionId: 'list_unpacked_extensions',
+      title: 'List unpacked browser extensions',
+      description: 'List unpacked extensions visible to the selected Browser provider. No arbitrary CDP method is accepted.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
+      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: readRemote,
+      argumentsSchema: sessionTargetSchema({}, []),
+    },
+    {
+      actionId: 'install_unpacked_extension',
+      title: 'Install unpacked browser extension',
+      description: 'Load one policy-bounded unpacked extension directory through the selected Browser provider and verify its exact installed identity.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: false, idempotent: false,
+      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: sessionTargetSchema({
+        extension_path: { type: 'string' },
+        enable_in_incognito: { type: 'boolean' },
+      }, ['extension_path']),
     },
     {
       actionId: 'create_session',

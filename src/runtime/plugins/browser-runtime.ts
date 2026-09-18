@@ -56,6 +56,8 @@ const READ_ACTIONS = new Set([
   'wait_for_load_state', 'wait_for_selector', 'await_file_transfer',
 ]);
 const SCREENSHOT_ACTIONS = new Set(['screenshot']);
+const INTERNAL_RESOURCE_READ_ACTIONS = new Set(['list_unpacked_extensions']);
+const INTERNAL_RESOURCE_MUTATION_ACTIONS = new Set(['install_unpacked_extension']);
 const TRUSTED_INPUT_ACTIONS = new Set(['trusted_input', 'activate_page']);
 const DOM_INTERACTION_ACTIONS = new Set([
   'create_session', 'open_page', 'navigate', 'reload', 'go_back',
@@ -88,6 +90,12 @@ export function invalidateBrowserRuntime(runtimeKey: string, reason: string): vo
 export function browserRuntimeActionPolicy(actionId: string): BrowserRuntimeActionPolicy {
   if (SCREENSHOT_ACTIONS.has(actionId)) {
     return { requiredCapabilities: ['browser.screenshot', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
+  }
+  if (INTERNAL_RESOURCE_READ_ACTIONS.has(actionId)) {
+    return { requiredCapabilities: ['browser.internal_resources', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
+  }
+  if (INTERNAL_RESOURCE_MUTATION_ACTIONS.has(actionId)) {
+    return { requiredCapabilities: ['browser.internal_resources', 'browser.transaction'], foreground: 'none', replaySafety: 'non_idempotent' };
   }
   if (TRUSTED_INPUT_ACTIONS.has(actionId)) {
     return {
@@ -125,6 +133,9 @@ function stringArgument(args: Record<string, unknown>, key: string): string | un
 }
 
 function stableTargetFor(input: AssistantPluginActionExecutionInput, providerId: string): BrowserTargetIdentity {
+  if (INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)) {
+    return { providerId, resourceKind: 'browser_internal_resource', resourceId: 'unpacked-extensions', ownership: 'provider_owned' };
+  }
   const sessionId = stringArgument(input.args, 'session_id');
   const nativeProduct = stringArgument(input.args, 'native_browser_product');
   const nativeWindowId = stringArgument(input.args, 'native_window_id');
@@ -166,7 +177,9 @@ function transactionFor(
     foreground: policy.foreground,
     replaySafety: policy.replaySafety,
     action: {
-      kind: policy.replaySafety === 'read_only' ? 'read' : policy.foreground === 'explicit_required' ? 'trusted_input' : 'dom',
+      kind: INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)
+        ? 'internal_resource'
+        : policy.replaySafety === 'read_only' ? 'read' : policy.foreground === 'explicit_required' ? 'trusted_input' : 'dom',
       operation: input.actionId,
       arguments: input.args,
     },

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -49,6 +49,20 @@ function fixture() {
     repoA: join(root, 'repo-a'),
     repoB: join(root, 'repo-b'),
   };
+}
+
+const SUPERVISOR_EXTENSION_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxFzo1eixjsWsZbN1pBuyzdKinJSAAuzTRavD0xFQFwrTIEQ7hxxueEBEhifpGq9nplNnmxmZvIL7PJycEAYT8mrbyXBLCPR1jQBuL4YR775phnlNVpF3dHX5OWDHLWRnHRgOO1FibQ54fM2rKylr66+x+J6/4C7a9dpiSMuxf3fOStXA6wJb0d7A4E22Q1+GGfWgs0NCyVI5k4aczK+J5Ao61ZXKBr8Qw/FCmwhCcDgQdIpURgoMHkyvQH3ryYWocucjRhMVsU8H65adIIKFHkEhPJCiVY64L6bu6kNR2fpf0yJ1GvI5ota6Hf4NAEi7Yt7PL7i3ISyv3pPQWW1nIwIDAQAB';
+const SUPERVISOR_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';
+
+function extensionFixture(repoRoot: string): string {
+  const extensionPath = join(repoRoot, 'extension-fixture');
+  mkdirSync(extensionPath, { recursive: true });
+  writeFileSync(join(extensionPath, 'manifest.json'), JSON.stringify({
+    manifest_version: 3, name: 'Forge extension fixture', version: '1.0.0',
+    key: SUPERVISOR_EXTENSION_KEY, background: { service_worker: 'background.js' },
+  }));
+  writeFileSync(join(extensionPath, 'background.js'), 'console.log("fixture");\n');
+  return extensionPath;
 }
 
 function computerBackedSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string) {
@@ -782,6 +796,114 @@ describe('browser session compatibility on Computer target authority', () => {
       selectedProduct: 'chrome',
       attempts: [{ product: 'chrome', status: 'selected' }],
     });
+  });
+
+  test('installs unpacked extension through browser-level CDP and verifies exact id/path before success', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpEndpoint: 'http://127.0.0.1:9222',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    const methods: string[] = [];
+    let disconnected = 0;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      fetchJson: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test', Browser: 'Chrome/153' }),
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
+          connectOverCDP: async () => ({
+            contexts: () => [],
+            newBrowserCDPSession: async () => ({
+              send: async (method: string, params?: Record<string, unknown>) => {
+                methods.push(method);
+                if (method === 'Extensions.loadUnpacked') {
+                  expect(params).toEqual({ path: canonicalExtensionPath });
+                  return { id: SUPERVISOR_EXTENSION_ID };
+                }
+                if (method === 'Extensions.getExtensions') {
+                  return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                }
+                throw new Error('unexpected method ' + method);
+              },
+            }),
+            disconnect: () => { disconnected += 1; },
+          }),
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-cdp-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(methods).toEqual(['Extensions.loadUnpacked', 'Extensions.getExtensions']);
+    expect(disconnected).toBe(1);
+    expect(result).toMatchObject({ provider: 'playwright-cdp', extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }, verified: true });
+  });
+
+  test('managed extension install removes Playwright extension suppression and verifies the exact runtime target', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    let launchOptions: Record<string, unknown> | undefined;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchOptions = options;
+            return {
+              pages: () => [],
+              newPage: async () => { throw new Error('page creation is not required'); },
+              close: async () => undefined,
+              serviceWorkers: () => [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }],
+            };
+          },
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-managed-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
+    expect(launchOptions?.args).toEqual([
+      '--disable-extensions-except=' + canonicalExtensionPath,
+      '--load-extension=' + canonicalExtensionPath,
+    ]);
+    expect(result).toMatchObject({
+      provider: 'playwright-persistent-context',
+      extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
+      verified: true,
+    });
+  });
+
+  test('attach-preferred extension install without CDP fails closed before native browser mutation', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    }));
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-native-fail-closed', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
   });
 
   test('browser defaults fail closed and declares foreground effects per action', () => {
