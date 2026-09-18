@@ -12,6 +12,7 @@ export {
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  getRequirementControllerRoundRelay,
   readControllerRoundContextSnapshot,
   readControllerRoundSemanticStateFingerprint,
   rearmControllerRoundAfterProviderRecovery,

@@ -1,5 +1,5 @@
 export type WorkflowSupervisorAction = 'CONTINUE' | 'DONE' | 'NEEDS_USER';
-export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction';
+export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
 export type WorkflowEffectOutcome = 'applied' | 'not_applied' | 'unknown';
 
 export interface WorkflowSupervisorProposal {
@@ -53,6 +53,21 @@ export interface WorkflowContractValidation {
 export interface WorkflowSupervisorValidators {
   completionContract(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;
   userBlockerPolicy(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): Promise<WorkflowContractValidation>;
+}
+export interface WorkflowSupervisorTurnSettlement {
+  continuationAllowed: boolean;
+  continuationContext?: string;
+  reason?: string;
+}
+
+export interface WorkflowSupervisorLifecycleHooks {
+  /** Derived from canonical lower-layer lifecycle facts; must not create a second task lifecycle authority. */
+  browserTaskActive?(task: WorkflowSupervisorTask): boolean;
+  /** Idempotent: browser/recovery observation may replay the same completion fingerprint. */
+  assistantTurnCommitted?(
+    task: WorkflowSupervisorTask,
+    completion: WorkflowSupervisorCompletion,
+  ): Promise<WorkflowSupervisorTurnSettlement | void>;
 }
 
 export interface WorkflowAssistantObservation {

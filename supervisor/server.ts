@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, lstatSync, unlinkSync } from 'node:fs';
-import { createServer, type Server, type Socket } from 'node:net';
+import { chmodSync, existsSync, lstatSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
@@ -18,6 +18,149 @@ export interface WorkflowSupervisorDiscoveredConversation {
 export interface WorkflowSupervisorDiscoverySnapshot {
   observedAt: string;
   conversations: WorkflowSupervisorDiscoveredConversation[];
+}
+
+/** Ephemeral socket binding to the Canonical Runtime's durable incarnation. */
+export interface WorkflowSupervisorWriterIdentity {
+  runtimeInstanceId: string;
+  fencingGeneration: number;
+  pid: number;
+}
+
+export interface WorkflowSupervisorSocketOwner extends WorkflowSupervisorWriterIdentity {
+  schemaVersion: 1;
+  recordedAt: string;
+}
+
+export function workflowSupervisorSocketOwnerPath(socketPath: string): string {
+  return `${socketPath}.owner.json`;
+}
+
+function writeSocketOwner(socketPath: string, identity: WorkflowSupervisorWriterIdentity): void {
+  const path = workflowSupervisorSocketOwnerPath(socketPath);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, ...identity, recordedAt: new Date().toISOString() } satisfies WorkflowSupervisorSocketOwner)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+export function readWorkflowSupervisorSocketOwner(socketPath: string): WorkflowSupervisorSocketOwner | undefined {
+  const path = workflowSupervisorSocketOwnerPath(socketPath);
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as WorkflowSupervisorSocketOwner;
+    if (value.schemaVersion !== 1 || !value.runtimeInstanceId || !Number.isInteger(value.fencingGeneration) || value.fencingGeneration < 1 || !Number.isInteger(value.pid) || value.pid < 1) return undefined;
+    return value;
+  } catch { return undefined; }
+}
+
+function sameWriterIdentity(left: WorkflowSupervisorWriterIdentity, right: WorkflowSupervisorWriterIdentity): boolean {
+  return left.runtimeInstanceId === right.runtimeInstanceId
+    && left.fencingGeneration === right.fencingGeneration
+    && left.pid === right.pid;
+}
+
+function writerProcessStillAlive(writer: WorkflowSupervisorWriterIdentity): boolean {
+  try {
+    process.kill(writer.pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(socketPath);
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', () => { socket.destroy(); resolve(false); });
+  });
+}
+
+
+export interface WorkflowSupervisorSocketInspection {
+  exists: boolean;
+  isSocket: boolean;
+  acceptsConnections: boolean;
+  owner?: WorkflowSupervisorSocketOwner;
+}
+
+export async function inspectWorkflowSupervisorSocket(socketPath: string): Promise<WorkflowSupervisorSocketInspection> {
+  if (!existsSync(socketPath)) {
+    return { exists: false, isSocket: false, acceptsConnections: false };
+  }
+  let isSocket = false;
+  try { isSocket = lstatSync(socketPath).isSocket(); } catch { /* raced with cleanup */ }
+  if (!isSocket) {
+    return {
+      exists: existsSync(socketPath),
+      isSocket: false,
+      acceptsConnections: false,
+      owner: readWorkflowSupervisorSocketOwner(socketPath),
+    };
+  }
+  return {
+    exists: true,
+    isSocket: true,
+    acceptsConnections: await socketAcceptsConnections(socketPath),
+    owner: readWorkflowSupervisorSocketOwner(socketPath),
+  };
+}
+
+/**
+ * Recovery uses this only after the Runtime service and Runtime ownership have
+ * been proven stopped. It never removes a live socket. The owner sidecar is
+ * forensic evidence, not independent lifecycle authority.
+ */
+export async function reconcileStoppedWorkflowSupervisorSocket(socketPath: string): Promise<{
+  ok: boolean;
+  changed: boolean;
+  detail: string;
+  inspection: WorkflowSupervisorSocketInspection;
+}> {
+  const inspection = await inspectWorkflowSupervisorSocket(socketPath);
+  if (!inspection.exists) {
+    return { ok: true, changed: false, detail: 'Workflow Supervisor socket is already quiescent', inspection };
+  }
+  if (!inspection.isSocket) {
+    return { ok: false, changed: false, detail: 'WORKFLOW_SUPERVISOR_SOCKET_PATH_OCCUPIED', inspection };
+  }
+  if (inspection.acceptsConnections) {
+    return { ok: false, changed: false, detail: 'WORKFLOW_SUPERVISOR_WRITER_STILL_LIVE', inspection };
+  }
+  try { unlinkSync(socketPath); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  try { unlinkSync(workflowSupervisorSocketOwnerPath(socketPath)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  return { ok: true, changed: true, detail: 'stale Workflow Supervisor socket authority was reconciled after Runtime shutdown', inspection };
+}
+
+/**
+ * A stale socket is removable only after it rejects a connection and its
+ * recorded writer is not the incoming incarnation. A live socket remains a
+ * hard conflict; this is fencing/reconciliation, not a retry special case.
+ */
+export async function reconcileWorkflowSupervisorSocket(input: {
+  socketPath: string;
+  incoming: WorkflowSupervisorWriterIdentity;
+}): Promise<void> {
+  if (!existsSync(input.socketPath)) return;
+  if (!lstatSync(input.socketPath).isSocket()) throw new Error('WORKFLOW_SUPERVISOR_SOCKET_PATH_OCCUPIED');
+  if (await socketAcceptsConnections(input.socketPath)) throw new Error('WORKFLOW_SUPERVISOR_WRITER_ALREADY_PRESENT');
+  const owner = readWorkflowSupervisorSocketOwner(input.socketPath);
+  if (owner && sameWriterIdentity(owner, input.incoming)) {
+    throw new Error('WORKFLOW_SUPERVISOR_SOCKET_STALE_FOR_CURRENT_INCARNATION');
+  }
+  if (owner && writerProcessStillAlive(owner)) {
+    throw new Error('WORKFLOW_SUPERVISOR_WRITER_PROCESS_STILL_LIVE');
+  }
+  try { unlinkSync(input.socketPath); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  try { unlinkSync(workflowSupervisorSocketOwnerPath(input.socketPath)); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 }
 export class WorkflowSupervisorEphemeralDiscovery {
   private snapshot: WorkflowSupervisorDiscoverySnapshot = { observedAt: '', conversations: [] };
@@ -51,7 +194,7 @@ function text(params: Record<string, unknown>, key: string): string { const valu
 function reply(socket: Socket, id: string, result: unknown): void { socket.write(`${JSON.stringify({ id, ok: true, result })}\n`); }
 function fail(socket: Socket, id: string, error: unknown): void { const message = error instanceof Error ? error.message : String(error); socket.write(`${JSON.stringify({ id, ok: false, error: { code: message.split(':')[0], message } })}\n`); }
 
-export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery }): Server {
+export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSupervisorControlPlane; socketPath: string; discovery?: WorkflowSupervisorEphemeralDiscovery; writer?: WorkflowSupervisorWriterIdentity }): Server {
   const discovery = input.discovery ?? new WorkflowSupervisorEphemeralDiscovery();
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0); let chain = Promise.resolve();
@@ -69,8 +212,17 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
       }
     });
   });
-  server.once('listening', () => chmodSync(input.socketPath, 0o600));
-  server.once('close', () => { if (existsSync(input.socketPath)) unlinkSync(input.socketPath); });
+  server.once('listening', () => {
+    chmodSync(input.socketPath, 0o600);
+    if (input.writer) writeSocketOwner(input.socketPath, input.writer);
+  });
+  server.once('close', () => {
+    const owner = readWorkflowSupervisorSocketOwner(input.socketPath);
+    if (input.writer && (!owner || !sameWriterIdentity(owner, input.writer))) return;
+    if (existsSync(input.socketPath)) unlinkSync(input.socketPath);
+    const ownerPath = workflowSupervisorSocketOwnerPath(input.socketPath);
+    if (existsSync(ownerPath)) unlinkSync(ownerPath);
+  });
   mkdirSync(dirname(input.socketPath), { recursive: true, mode: 0o700 });
   // The socket path is the daemon's local single-writer fence. Never unlink an
   // existing socket speculatively: it may belong to a live Supervisor writer.

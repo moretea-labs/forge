@@ -100,6 +100,32 @@ function storedGeneration(value: unknown): number {
   const generation = Number(parsedObject(value).generation);
   return Number.isInteger(generation) && generation > 0 ? generation : 1;
 }
+function latestRetryEvidenceEventId(db: Database, effectId: string): number {
+  const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
+  const preSubmitUnknown = statement(db, `SELECT event_id FROM events
+    WHERE effect_id = ?
+      AND kind = 'effect_unknown'
+      AND json_extract(payload_json, '$.surface') = 'macos-native'
+      AND json_extract(payload_json, '$.reason') IN ('composer_missing', 'send_button_missing')
+    ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effectId)) as { event_id?: number } | undefined;
+  return Math.max(Number(notApplied?.event_id ?? 0), Number(preSubmitUnknown?.event_id ?? 0));
+}
+function providerRecoveryDepth(db: Database, effectId: string): number {
+  let current = effectId;
+  let depth = 0;
+  const seen = new Set<string>();
+  while (depth < 32 && !seen.has(current)) {
+    seen.add(current);
+    const row = statement(db, 'SELECT origin_key FROM effects WHERE effect_id = ?', (s) => s.get(current)) as { origin_key?: string } | undefined;
+    const origin = String(row?.origin_key ?? '');
+    if (!origin.startsWith('provider-recovery:')) break;
+    const parent = origin.slice('provider-recovery:'.length).trim();
+    if (!parent) break;
+    depth += 1;
+    current = parent;
+  }
+  return depth;
+}
 
 export class WorkflowSupervisorStore {
   constructor(readonly forgeHome?: string) {}
@@ -150,13 +176,78 @@ export class WorkflowSupervisorStore {
       const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effect.effectId)) as { event_id?: number; payload_json?: string } | undefined;
       if (!dispatch?.event_id) return { effect, mode: 'send', generation: 1 };
       const currentGeneration = storedGeneration(dispatch.payload_json);
-      const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effect.effectId)) as { event_id?: number } | undefined;
-      const retryAuthorized = Number(notApplied?.event_id ?? 0) > Number(dispatch.event_id);
+      const retryAuthorized = latestRetryEvidenceEventId(db, effect.effectId) > Number(dispatch.event_id);
       return { effect, mode: retryAuthorized ? 'send' : 'reconcile', generation: retryAuthorized ? currentGeneration + 1 : currentGeneration };
     });
   }
   terminalAction(taskId: string): 'DONE' | 'NEEDS_USER' | undefined { return this.read((db) => { const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined; return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : undefined; }); }
   effectApplied(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId)))); }
+  providerRecoveryExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
+  latestAppliedEffectWithoutCompletion(taskId: string): WorkflowSupervisorEffect | undefined {
+    return this.read((db) => {
+      const row = statement(db, `SELECT e.* FROM effects e
+        WHERE e.task_id = ?
+          AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
+          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+          AND NOT EXISTS (SELECT 1 FROM effects child WHERE child.origin_key = 'provider-recovery:' || e.effect_id)
+        ORDER BY (SELECT MAX(event_id) FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied') DESC
+        LIMIT 1`, (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      return row ? effectFromRow(row) : undefined;
+    });
+  }
+
+  observeProviderTurn(input: {
+    taskId: string;
+    effectId: string;
+    generating: boolean;
+    assistantDigest: string;
+    observedAtMs: number;
+    graceMs: number;
+    maxRecoveryDepth: number;
+    recovery: { effectId: string; prompt: string };
+  }): { state: 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
+    if (!Number.isFinite(input.observedAtMs)) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_OBSERVED_AT_INVALID');
+    const graceMs = Math.max(1_000, Math.min(10 * 60_000, Math.floor(input.graceMs)));
+    const maxRecoveryDepth = Math.max(0, Math.min(8, Math.floor(input.maxRecoveryDepth)));
+    const digest = input.assistantDigest.trim().slice(0, 128);
+    const observedAt = new Date(input.observedAtMs).toISOString();
+    return this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM effects WHERE effect_id = ?', (s) => s.get(input.effectId)) as Record<string, unknown> | undefined;
+      if (!row) return { state: 'none' };
+      const effect = effectFromRow(row);
+      if (effect.taskId !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_EFFECT_TASK_MISMATCH');
+      const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effect.effectId));
+      const completed = statement(db, 'SELECT 1 AS ok FROM completions WHERE task_id = ? AND source_effect_id = ? LIMIT 1', (s) => s.get(input.taskId, effect.effectId));
+      if (!applied || completed) return { state: 'none' };
+      const recoveryOrigin = `provider-recovery:${effect.effectId}`;
+      const existingRecovery = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(recoveryOrigin)) as Record<string, unknown> | undefined;
+      if (existingRecovery) return { state: 'recovery_reserved', recoveryEffect: effectFromRow(existingRecovery) };
+
+      const latest = statement(db, `SELECT event_id,kind,payload_json,occurred_at FROM events
+        WHERE effect_id = ? AND kind IN ('assistant_provider_generating','assistant_provider_idle')
+        ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effect.effectId)) as { event_id?: number; kind?: string; payload_json?: string; occurred_at?: string } | undefined;
+      const latestEvidence = parsedObject(latest?.payload_json);
+      const desiredKind = input.generating ? 'assistant_provider_generating' : 'assistant_provider_idle';
+      const sameState = latest?.kind === desiredKind && latestEvidence.assistant_digest === digest;
+      if (!sameState) {
+        const eventKey = `assistant-provider-state:${effect.effectId}:${desiredKind}:${Number(latest?.event_id ?? 0) + 1}:${digest || 'empty'}`;
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, eventKey, desiredKind, effect.effectId, json({ assistant_digest: digest }), observedAt));
+        return { state: input.generating ? 'generating' : 'idle_pending' };
+      }
+      if (input.generating) return { state: 'generating' };
+      const idleSinceMs = Date.parse(String(latest?.occurred_at ?? ''));
+      if (!Number.isFinite(idleSinceMs) || input.observedAtMs - idleSinceMs < graceMs) return { state: 'idle_pending' };
+
+      const depth = providerRecoveryDepth(db, effect.effectId);
+      if (depth >= maxRecoveryDepth) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ depth, max_recovery_depth: maxRecoveryDepth, assistant_digest: digest }), observedAt));
+        return { state: 'exhausted' };
+      }
+      const recoveryEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.recovery.effectId, kind: 'recovery', originKey: recoveryOrigin, prompt: input.recovery.prompt });
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-reserved:${effect.effectId}`, 'assistant_recovery_reserved', effect.effectId, json({ recovery_effect_id: recoveryEffect.effectId, recovery_depth: depth + 1 }), observedAt));
+      return { state: 'recovery_reserved', recoveryEffect };
+    });
+  }
 
   reserveEffect(input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     return this.transaction((db) => this.reserveEffectWithin(db, input));
@@ -177,8 +268,7 @@ export class WorkflowSupervisorStore {
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
       const prior = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
       const currentGeneration = prior?.event_id ? storedGeneration(prior.payload_json) : 0;
-      const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
-      const retryAuthorized = !prior?.event_id || Number(notApplied?.event_id ?? 0) > Number(prior.event_id);
+      const retryAuthorized = !prior?.event_id || latestRetryEvidenceEventId(db, effectId) > Number(prior.event_id);
       if (!retryAuthorized || generation !== currentGeneration + 1) return false;
       statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}:${generation}`, 'effect_dispatch_started', effectId, json({ dispatchId, generation, ...evidence }), now()));
       return true;

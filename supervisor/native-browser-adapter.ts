@@ -27,6 +27,7 @@ export interface WorkflowSupervisorNativeSnapshot {
   title: string;
   latestUserText: string;
   latestAssistantResponse: string;
+  isGenerating: boolean;
 }
 export interface WorkflowSupervisorNativeBrowserDependencies {
   platform: NodeJS.Platform;
@@ -37,7 +38,9 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   readOwner(page: WorkflowSupervisorNativePage): Promise<string>;
   writeOwner(page: WorkflowSupervisorNativePage, marker: string): Promise<void>;
   snapshot(page: WorkflowSupervisorNativePage): Promise<WorkflowSupervisorNativeSnapshot>;
-  dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string): Promise<{ dispatched: boolean; reason?: string }>;
+  dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
+  nowMs(): number;
+  providerIdleGraceMs: number;
   sleep(ms: number): Promise<void>;
   setInterval(handler: () => void, ms: number): ReturnType<typeof setInterval>;
   clearInterval(timer: ReturnType<typeof setInterval>): void;
@@ -75,6 +78,7 @@ async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<Work
       title: String(document.title || ''),
       latestUserText: latest('[data-message-author-role="user"]'),
       latestAssistantResponse: latest('[data-message-author-role="assistant"]'),
+      isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop"]')),
     };
   })()`);
 }
@@ -116,6 +120,8 @@ const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   writeOwner: async (page, marker) => { await page.evaluate(`(() => { window.name = ${JSON.stringify(marker)}; return window.name; })()`); },
   snapshot: defaultSnapshot,
   dispatchPrompt: defaultDispatchPrompt,
+  nowMs: () => Date.now(),
+  providerIdleGraceMs: 60_000,
   sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
   setInterval: (handler, ms) => setInterval(handler, ms),
   clearInterval: (timer) => clearInterval(timer),
@@ -172,8 +178,16 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         await this.observeAssistant(task, snapshot);
+        this.control.browserObserveProviderTurn({
+          conversationId: task.conversationId,
+          conversationUrl: task.conversationUrl,
+          generating: snapshot.isGenerating,
+          latestAssistantResponse: snapshot.latestAssistantResponse,
+          observedAtMs: this.deps.nowMs(),
+          graceMs: this.deps.providerIdleGraceMs,
+        });
         const poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
-        if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command);
+        if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command, task);
       } catch (error) {
         this.deps.onError(error);
       }
@@ -271,7 +285,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async executeCommand(page: WorkflowSupervisorNativePage, command: WorkflowSupervisorBrowserCommand): Promise<void> {
+  private async executeCommand(page: WorkflowSupervisorNativePage, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
     let snapshot = await this.deps.snapshot(page);
     let mode = command.mode;
     if (mode === 'send') {
@@ -309,7 +323,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       });
       return;
     }
-    const dispatch = await this.deps.dispatchPrompt(page, command.prompt);
+    const dispatch = await this.deps.dispatchPrompt(page, command.prompt, task);
     if (!dispatch.dispatched) {
       this.control.browserObserveEffect({
         conversationId: command.conversationId,
@@ -318,6 +332,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         observationId: `native-observe-${randomUUID()}`,
         outcome: 'unknown',
         evidence: { surface: 'macos-native', reason: dispatch.reason ?? 'dispatch_failed' },
+      });
+      return;
+    }
+    if (dispatch.confirmed) {
+      this.control.browserObserveEffect({
+        conversationId: command.conversationId,
+        conversationUrl: command.conversationUrl,
+        effectId: command.effectId,
+        observationId: `native-observe-${randomUUID()}`,
+        outcome: 'applied',
+        evidence: { surface: 'canonical-chatgpt-provider', provider_confirmed: true },
       });
       return;
     }

@@ -1,10 +1,17 @@
 import { once } from 'node:events';
 import { WorkflowSupervisorControlPlane } from '../../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../../supervisor/forge-validators';
+import { forgeWorkflowSupervisorLifecycleHooks, resolveWorkflowSupervisorChatgptDelivery } from './workflow-supervisor-composition';
+import { submitChatgptPrompt, withChatgptBrowserActionOrigin } from '../../../adapters/chatgpt/browser-delivery-runtime';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
-import { createWorkflowSupervisorServer, WorkflowSupervisorEphemeralDiscovery } from '../../../supervisor/server';
+import {
+  createWorkflowSupervisorServer,
+  reconcileWorkflowSupervisorSocket,
+  WorkflowSupervisorEphemeralDiscovery,
+} from '../../../supervisor/server';
 import { startWorkflowSupervisorNativeBrowserAdapter } from '../../../supervisor/native-browser-adapter';
 import { WorkflowSupervisorStore } from '../../../supervisor/store';
+import { getRuntimeWriteClaim } from './write-fence';
 
 export interface RuntimeWorkflowSupervisorHandle {
   readonly done: Promise<void>;
@@ -19,19 +26,48 @@ export interface RuntimeWorkflowSupervisorHandle {
  */
 export async function startWorkflowSupervisorRuntime(controllerHome: string): Promise<RuntimeWorkflowSupervisorHandle> {
   const forgeHome = resolveWorkflowSupervisorForgeHome(controllerHome);
+  const socketPath = workflowSupervisorSocketPath(forgeHome);
+  const claim = getRuntimeWriteClaim();
+  const writer = claim && !claim.unmanaged
+    ? { runtimeInstanceId: claim.runtimeInstanceId, fencingGeneration: claim.releaseAuthorityRevision, pid: claim.ownerPid }
+    : undefined;
+  if (writer) await reconcileWorkflowSupervisorSocket({ socketPath, incoming: writer });
   const controlPlane = new WorkflowSupervisorControlPlane(
     new WorkflowSupervisorStore(forgeHome),
     forgeWorkflowSupervisorValidators(),
+    forgeWorkflowSupervisorLifecycleHooks(controllerHome),
   );
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
   const server = createWorkflowSupervisorServer({
     controlPlane,
-    socketPath: workflowSupervisorSocketPath(forgeHome),
+    socketPath,
     discovery,
+    ...(writer ? { writer } : {}),
   });
   const done = once(server, 'close').then(() => undefined);
   await once(server, 'listening');
-  const nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery);
+  const nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
+    dispatchPrompt: async (_page, prompt, task) => {
+      const durableTask = controlPlane.getTask(task.taskId);
+      if (!durableTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const delivery = resolveWorkflowSupervisorChatgptDelivery(controllerHome, durableTask);
+      await withChatgptBrowserActionOrigin(
+        { surface: 'schedule', actor: 'workflow-supervisor' },
+        async () => {
+          await submitChatgptPrompt(
+            controllerHome,
+            delivery.workId,
+            delivery.browserSessionId,
+            prompt,
+            delivery.conversationUrl,
+            60_000,
+          );
+        },
+        new Set(delivery.authorizationGrantRefs),
+      );
+      return { dispatched: true, confirmed: true };
+    },
+  });
   let closing = false;
   return {
     done,

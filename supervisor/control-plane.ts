@@ -2,15 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
 
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
 const rejectUnconfigured = async (): Promise<WorkflowContractValidation> => ({ valid: false, reason: 'validator_unconfigured' });
 
 export class WorkflowSupervisorControlPlane {
   readonly validators: WorkflowSupervisorValidators;
-  constructor(readonly store: WorkflowSupervisorStore, validators: Partial<WorkflowSupervisorValidators> = {}) {
+  readonly hooks: WorkflowSupervisorLifecycleHooks;
+  constructor(readonly store: WorkflowSupervisorStore, validators: Partial<WorkflowSupervisorValidators> = {}, hooks: WorkflowSupervisorLifecycleHooks = {}) {
     this.validators = { completionContract: validators.completionContract ?? rejectUnconfigured, userBlockerPolicy: validators.userBlockerPolicy ?? rejectUnconfigured };
+    this.hooks = hooks;
   }
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask { return this.store.registerTask(input); }
   reserveEnrollment(taskId: string): WorkflowSupervisorEffect {
@@ -22,9 +24,10 @@ export class WorkflowSupervisorControlPlane {
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
-  browserTasks(): WorkflowSupervisorBrowserTask[] { return this.store.listTasks().filter((task) => !this.store.terminalAction(task.taskId)).map(browserTask); }
+  browserTasks(): WorkflowSupervisorBrowserTask[] { return this.store.listTasks().filter((task) => !this.store.terminalAction(task.taskId) && this.browserTaskActive(task)).map(browserTask); }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
+    if (!this.browserTaskActive(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     const projection = browserTask(task);
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal) return { authorized: true, task: projection, terminal };
@@ -77,6 +80,24 @@ export class WorkflowSupervisorControlPlane {
     });
     return { recorded: true };
   }
+  browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
+    const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
+    if (!this.browserTaskActive(task)) return { state: 'inactive' };
+    const sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
+    if (!sourceEffect) return { state: 'none' };
+    const recoveryId = effectId();
+    const recoveryReason = `Applied Supervisor effect ${sourceEffect.effectId} reached a provider-idle turn without a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`;
+    return this.store.observeProviderTurn({
+      taskId: task.taskId,
+      effectId: sourceEffect.effectId,
+      generating: input.generating,
+      assistantDigest: sha256(input.latestAssistantResponse),
+      observedAtMs: input.observedAtMs,
+      graceMs: input.graceMs,
+      maxRecoveryDepth: 2,
+      recovery: { effectId: recoveryId, prompt: renderSupervisorPrompt(task, recoveryId, 'recovery', undefined, recoveryReason) },
+    });
+  }
   async browserObserveAssistant(input: { conversationId: string; conversationUrl: string; responseText: string }): Promise<WorkflowAssistantObservationResult> {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     return await this.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText: input.responseText });
@@ -95,21 +116,32 @@ export class WorkflowSupervisorControlPlane {
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
 
+    // Persist exact assistant-turn evidence before lower-layer reconciliation.
+    // Replayed observation may therefore retry a missed settlement without asking
+    // the provider to regenerate the completion.
+    const committed = this.store.commitCompletion(completion);
+    const settlement: WorkflowSupervisorTurnSettlement = await this.hooks.assistantTurnCommitted?.(task, completion)
+      ?? { continuationAllowed: true };
+
     if (parsed.proposal.action === 'CONTINUE') {
+      if (!settlement.continuationAllowed) {
+        throw new Error(`WORKFLOW_SUPERVISOR_LOWER_LAYER_CONTINUATION_BLOCKED:${settlement.reason ?? 'unspecified'}`);
+      }
       const nextId = effectId();
-      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', parsed.proposal.checkpoint);
-      const committed = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
-      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: committed.successorEffect!, deduplicated: committed.deduplicated };
+      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', parsed.proposal.checkpoint, undefined, settlement.continuationContext);
+      const withSuccessor = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
+      return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: withSuccessor.successorEffect!, deduplicated: committed.deduplicated || withSuccessor.deduplicated };
     }
 
-    const committed = this.store.commitCompletion(completion);
     const validator = parsed.proposal.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
     const validation = await validator(task, parsed.proposal);
     const correctionId = validation.valid ? undefined : effectId();
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.checkpoint, validation.reason) } } : {}) });
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
+
+  private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }
 
   private browserSnapshotMatchesSource(task: WorkflowSupervisorTask, effect: WorkflowSupervisorEffect, snapshot: { latestUserText: string; latestAssistantResponse: string }): boolean {
     if (!effect.sourceCompletionFingerprint) return true;

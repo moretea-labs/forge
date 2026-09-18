@@ -1,5 +1,14 @@
 import { existsSync } from 'node:fs';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
+import {
+  beginControllerRoundRelayAfterRelease,
+  getControllerSession,
+  getRequirementControllerRoundRelay,
+  getRetainedControllerSession,
+  releaseObservedControllerSession,
+  reconcileControllerRoundAfterTerminalWork,
+  settleControllerRoundAfterTurn,
+} from '../../../packages/kernel/controller/api/index';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
@@ -8,6 +17,7 @@ import {
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
+import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' | 'conversation_pending' }
@@ -67,6 +77,133 @@ export function inheritWorkflowSupervisorConversationBinding(
   });
 }
 
+function workflowSupervisorContractText(task: WorkflowSupervisorTask, key: string): string | undefined {
+  const value = task.completionContract[key] ?? task.userBlockerPolicy[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+async function settleForgeWorkflowSupervisorTurn(
+  controllerHome: string,
+  task: WorkflowSupervisorTask,
+  completion: WorkflowSupervisorCompletion,
+): Promise<WorkflowSupervisorTurnSettlement> {
+  const repoId = workflowSupervisorContractText(task, 'repo_id');
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+  if (!repoId || !requirementId || !taskControllerHome) return { continuationAllowed: true };
+  if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
+
+  const store = { controllerHome, repoId };
+  let relay = getRequirementControllerRoundRelay(store, requirementId);
+  if (!relay) return { continuationAllowed: false, reason: 'CONTROLLER_ROUND_REQUIREMENT_RELAY_MISSING' };
+
+  const settledWorkId = relay.originWorkId;
+  if (relay.status === 'claimed') {
+    relay = settleControllerRoundAfterTurn(store, {
+      workId: settledWorkId,
+      completionEvidenceId: completion.completionFingerprint,
+    }) ?? relay;
+  }
+
+  const liveOwner = getControllerSession(store, settledWorkId);
+  const releaseWitness = liveOwner ?? getRetainedControllerSession(store, settledWorkId);
+  if (liveOwner && ['pending_release', 'waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed'].includes(relay.status)) {
+    const released = releaseObservedControllerSession(store, {
+      workId: settledWorkId,
+      actor: `workflow-supervisor-turn-settled:${completion.completionFingerprint}`,
+      owner: liveOwner,
+    });
+    if (!released.allowed) {
+      return { continuationAllowed: false, reason: `CONTROLLER_SESSION_RELEASE_FENCED:${released.reason}` };
+    }
+  }
+
+  if (relay.status === 'pending_release') {
+    if (!releaseWitness) return { continuationAllowed: false, reason: 'CONTROLLER_SESSION_RELEASE_WITNESS_MISSING' };
+    relay = beginControllerRoundRelayAfterRelease(store, {
+      workId: settledWorkId,
+      releasedSession: releaseWitness,
+    }) ?? relay;
+  }
+
+  if (relay.status !== 'dispatching' || !relay.authorityId) {
+    return {
+      continuationAllowed: false,
+      reason: `CONTROLLER_ROUND_NOT_READY_FOR_OUTER_CONTINUATION:${relay.status}${relay.blockedReason ? `:${relay.blockedReason}` : ''}`,
+    };
+  }
+
+  if (relay.originWorkId !== settledWorkId) {
+    inheritWorkflowSupervisorConversationBinding(store, settledWorkId, relay.originWorkId);
+  }
+  const continuationContext = [
+    `Exact lower-layer ControllerRound prepared for Work ${relay.originWorkId} in repo ${repoId}.`,
+    `controller_authority_id=${relay.authorityId}`,
+    `relay_scope_id=${relay.relayScopeId}`,
+    `Before any repository mutation, call rh_work operation=controller_claim for exact Work ${relay.originWorkId} with this exact authority pair.`,
+    'Reuse the same controller_authority_id and relay_scope_id for continue/verify/review/finalize/stop/controller_release in this round.',
+    'Never mint a replacement authority and never substitute a transport session id.',
+  ].join('\n');
+  return { continuationAllowed: true, continuationContext };
+}
+
+export function resolveWorkflowSupervisorChatgptDelivery(
+  controllerHome: string,
+  task: WorkflowSupervisorTask,
+): { repoId: string; workId: string; browserSessionId: string; conversationUrl: string; authorizationGrantRefs: string[] } {
+  const repoId = workflowSupervisorContractText(task, 'repo_id');
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+  if (!repoId || !requirementId || !taskControllerHome) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_CONTRACT_INCOMPLETE');
+  if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
+  const store = { controllerHome, repoId };
+  const relay = getRequirementControllerRoundRelay(store, requirementId);
+  if (!relay) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_RELAY_MISSING');
+  const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
+  if (!binding || binding.conversationId !== task.conversationId || binding.conversationUrl !== task.conversationUrl) {
+    throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_BINDING_MISMATCH');
+  }
+  if (!binding.latestBrowserSessionId?.trim()) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_BROWSER_SESSION_MISSING');
+  return {
+    repoId,
+    workId: relay.originWorkId,
+    browserSessionId: binding.latestBrowserSessionId,
+    conversationUrl: binding.conversationUrl,
+    authorizationGrantRefs: [...(binding.authorizationGrantRefs ?? [])],
+  };
+}
+function forgeWorkflowSupervisorBrowserTaskActive(controllerHome: string, task: WorkflowSupervisorTask): boolean {
+  const repoId = workflowSupervisorContractText(task, 'repo_id');
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+  if (!repoId || !requirementId || !taskControllerHome) return true;
+  if (taskControllerHome !== controllerHome) return false;
+  const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+  if (!requirement || requirement.state === 'done' || requirement.state === 'cancelled') return false;
+  const store = { controllerHome, repoId };
+  let relay = getRequirementControllerRoundRelay(store, requirementId);
+  if (!relay) return false;
+  const work = getWorkContract(store, relay.originWorkId);
+  if (!work) return false;
+  if (isTerminalWorkContractStatus(work.status)) {
+    if (work.status === 'failed' || work.status === 'cancelled') {
+      try {
+        relay = reconcileControllerRoundAfterTerminalWork(store, { workId: work.workId, actor: `workflow-supervisor-task-reconcile:${task.taskId}` }) ?? relay;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+  return relay.status !== 'failed';
+}
+
+export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
+  return {
+    browserTaskActive: (task) => forgeWorkflowSupervisorBrowserTaskActive(controllerHome, task),
+    assistantTurnCommitted: (task, completion) => settleForgeWorkflowSupervisorTurn(controllerHome, task, completion),
+  };
+}
 export async function ensureWorkflowSupervisorEnrollmentForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,

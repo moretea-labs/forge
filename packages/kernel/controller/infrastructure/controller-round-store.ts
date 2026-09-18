@@ -179,6 +179,18 @@ export function getControllerRoundRelay(
   return readRelayRecord(options, workId)?.value;
 }
 
+export function getRequirementControllerRoundRelay(
+  options: ControllerRoundRelayStoreOptions,
+  requirementId: string,
+): ControllerRoundRelayRecord | undefined {
+  const normalizedRequirementId = requirementId.trim();
+  if (!normalizedRequirementId) return undefined;
+  const relayScopeId = `requirement:${normalizedRequirementId}`;
+  return latestRelayRecordsByScope(options).find((entry) =>
+    entry.relayScopeId === relayScopeId
+    && entry.requirementId === normalizedRequirementId);
+}
+
 /**
  * Resolve an existing Requirement-scoped ControllerRound authority for another
  * Work that is mechanically part of the same durable Requirement/Work graph.
