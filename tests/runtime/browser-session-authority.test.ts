@@ -877,6 +877,7 @@ describe('browser session compatibility on Computer target authority', () => {
       requestId: 'extension-managed-install', actionId: 'install_unpacked_extension',
       args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
     });
+    expect(launchOptions?.channel).toBeUndefined();
     expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
     expect(launchOptions?.args).toEqual([
       '--disable-extensions-except=' + canonicalExtensionPath,
@@ -887,6 +888,48 @@ describe('browser session compatibility on Computer target authority', () => {
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
       verified: true,
     });
+  });
+
+  test('ordinary managed browsing still honors configured branded channel when no extension is requested', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    let launchOptions: Record<string, unknown> | undefined;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchOptions = options;
+            const page = {
+              url: () => 'https://example.com/',
+              title: async () => 'Example',
+              goto: async () => undefined,
+              evaluate: async <T>() => undefined as T,
+              screenshot: async () => Buffer.from(''),
+              click: async () => undefined,
+              fill: async () => undefined,
+              press: async () => undefined,
+              waitForSelector: async () => undefined,
+              bringToFront: async () => undefined,
+              close: async () => undefined,
+            };
+            return { pages: () => [page], newPage: async () => page, close: async () => undefined };
+          },
+        },
+      }),
+    });
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-managed-channel', actionId: 'create_session',
+      args: { session_id: 'ordinary-managed-channel', url: 'https://example.com/' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launchOptions?.channel).toBe('chrome');
+    expect(launchOptions?.ignoreDefaultArgs).toBeUndefined();
   });
 
   test('attach-preferred extension install without CDP fails closed before native browser mutation', async () => {

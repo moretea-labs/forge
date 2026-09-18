@@ -1565,7 +1565,7 @@ function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, pro
     acceptDownloads: true,
     viewport: { width: 1280, height: 900 },
     ...(config.executablePath ? { executablePath: resolveConfiguredPath(repoRoot, config.executablePath) } : {}),
-    ...(!config.executablePath && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
+    ...(!config.executablePath && extensionPaths.length === 0 && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
     ...(extensionPaths.length > 0 ? { ignoreDefaultArgs: ['--disable-extensions'] } : {}),
     ...(args.length > 0 ? { args } : {}),
   };
