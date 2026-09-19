@@ -3,6 +3,7 @@ const core = globalThis.ForgeWorkflowSupervisorChromeCore;
 const NATIVE_HOST = 'com.moretea.forge.workflow_supervisor';
 const ALARM = 'forge-workflow-supervisor-scan';
 const inflight = new Set();
+const observedAssistant = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 function nativeRpc(method, params = {}) {
@@ -48,8 +49,19 @@ async function handlePage(message, sender) {
   const identity = { conversationId: String(message.conversationId ?? ''), canonicalUrl: String(message.canonicalUrl ?? '') };
   if (!tabId || !core.sameIdentity(identity, core.parseConversation(sender.tab?.url ?? identity.canonicalUrl))) return;
   if (typeof message.assistantResponse === 'string' && core.isCommittedAssistantResponse(message.assistantResponse)) {
-    try { await nativeRpc('browser_observe_assistant', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, response_text: message.assistantResponse }); }
-    catch (error) { if (!String(error?.message ?? error).includes('TASK_TERMINAL')) console.warn('[Forge Supervisor] assistant observation rejected', error); }
+    const fingerprint = core.textFingerprint(message.assistantResponse);
+    if (observedAssistant.get(identity.conversationId) !== fingerprint) {
+      try {
+        await nativeRpc('browser_observe_assistant', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, response_text: message.assistantResponse });
+        observedAssistant.set(identity.conversationId, fingerprint);
+      } catch (error) {
+        // A malformed provider block is durable evidence that this exact
+        // response is not a completion. Do not reparse it on every mutation;
+        // the next distinct response remains eligible for observation.
+        if (String(error?.message ?? error).includes('WORKFLOW_SUPERVISOR_')) observedAssistant.set(identity.conversationId, fingerprint);
+        if (!String(error?.message ?? error).includes('TASK_TERMINAL')) console.warn('[Forge Supervisor] assistant observation rejected', error);
+      }
+    }
   }
   const poll = await nativeRpc('browser_poll', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl });
   if (poll?.command) await act(tabId, identity, poll.command);

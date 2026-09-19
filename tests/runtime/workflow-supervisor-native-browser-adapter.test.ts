@@ -257,4 +257,17 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });
+
+  test('does not retry the same invalid Supervisor completion on every browser tick', async () => {
+    const conversationId = '88888888-7777-6666-5555-444444444444';
+    const h = harness();
+    const { conversationUrl, effect } = register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    page.latestAssistantResponse = `${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'RETRY', source_effect_id: effect.effectId, checkpoint: 'invalid', reason: 'invalid', evidence: ['invalid'] })}\n${SUPERVISOR_BLOCK_END}`;
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+    expect(h.errors).toEqual([]);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
+  });
 });

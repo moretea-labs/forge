@@ -18,6 +18,15 @@
   function effectMarker(effectId) { return EFFECT.test(effectId) ? `<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>` : ''; }
   function promptHasEffect(prompt, effectId) { const marker = effectMarker(effectId); return Boolean(marker && String(prompt).includes(marker)); }
   function isCommittedAssistantResponse(text) { const value = String(text ?? '').trim(); return value.length <= 512 * 1024 && value.endsWith(END) && value.lastIndexOf(START) >= 0; }
+  function textFingerprint(text) {
+    const value = String(text ?? '');
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${value.length}:${(hash >>> 0).toString(16)}`;
+  }
   function sameIdentity(a, b) { return Boolean(a && b && a.conversationId === b.conversationId && a.canonicalUrl === b.canonicalUrl); }
-  globalThis.ForgeWorkflowSupervisorChromeCore = Object.freeze({ normalizeText, parseConversation, effectMarker, promptHasEffect, isCommittedAssistantResponse, sameIdentity });
+  globalThis.ForgeWorkflowSupervisorChromeCore = Object.freeze({ normalizeText, parseConversation, effectMarker, promptHasEffect, isCommittedAssistantResponse, textFingerprint, sameIdentity });
 })();

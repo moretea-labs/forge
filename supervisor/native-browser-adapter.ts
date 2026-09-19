@@ -327,6 +327,16 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED') || message.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) return;
+      // A provider can render a syntactically complete but semantically invalid
+      // Supervisor block. It is not a completion receipt and must not be
+      // retried on every one-second browser tick. Remember that exact response
+      // while still allowing the provider-idle observer below to drive bounded
+      // recovery. A later provider response has a different digest and is
+      // observed normally.
+      if (message.startsWith('WORKFLOW_SUPERVISOR_')) {
+        this.observedAssistant.set(task.conversationId, digest);
+        return;
+      }
       throw error;
     }
   }
