@@ -1965,6 +1965,10 @@ describe('standalone recovery on canonical Runtime', () => {
     const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false, lastFullVerifyAt });
     expect(tick.decision.action).toBe('healthy');
     expect(tick.state.lastFullVerifyAt).toBe(lastFullVerifyAt);
+    expect(tick.verify.probes.active_gateway?.ok).toBe(true);
+    expect(tick.verify.probes.runtime_execution_surface).toBeUndefined();
+    expect(tick.verify.probes.external_mcp_http).toBeUndefined();
+    expect(tick.verify.probes.mcp_initialize).toBeUndefined();
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
 

@@ -1769,6 +1769,81 @@ async function verifyLocalRuntime(
   }, createRecoveryHttpTransport(config.controllerHome), options);
 }
 
+/**
+ * Five-second Watchdog cadence owns health observation, not release
+ * verification. Keep this path deliberately bounded to already-published
+ * Runtime authority/status plus local HTTP transport checks needed for prompt
+ * targeted repair. Expensive execution canaries, known-good bundle inspection,
+ * tunnel commands, external transport probes and MCP initialize/list/call stay
+ * in verifyStableRuntime/verifyLocalRuntime and run only on the periodic
+ * verification deadline or after this health tier degrades.
+ */
+async function observeWatchdogHealthTier(
+  config: RecoveryConfig,
+  transport = createRecoveryHttpTransport(config.controllerHome),
+): Promise<VerifyResult> {
+  const observation = observeRuntimeStatus(config.controllerHome);
+  const authority = releaseAuthority(config);
+  const active = activeAuthorityRelease(config);
+  const previous = previousAuthorityRelease(config);
+  const runtimeHealthy = observation.running && observation.ready && !observation.stale;
+  const coherent = Boolean(
+    authority
+    && active
+    && observation.snapshot?.releaseId === active.revision
+    && observation.snapshot?.artifactIdentity === active.artifactIdentity
+    && authority.active.workerProtocolVersion === active.workerProtocolVersion
+  );
+  const probes: VerifyResult['probes'] = {
+    runtime_status: {
+      ok: observation.running && !observation.stale,
+      detail: observation.running
+        ? observation.stale ? 'canonical Runtime status is stale' : 'canonical Runtime owner is live'
+        : 'canonical Runtime is not running',
+    },
+  };
+  const endpoint = observation.snapshot?.endpoint;
+  probes.active_gateway = endpoint
+    ? await probe(transport, runtimeHealthEndpoint(endpoint))
+    : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
+  const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
+  if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
+  if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
+  const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
+  probes.recovery_watchdog = {
+    ok: watchdogHealth.ok,
+    detail: watchdogHealth.detail,
+    value: {
+      pulseAgeMs: watchdogHealth.pulseAgeMs,
+      tickAgeMs: watchdogHealth.tickAgeMs,
+      currentReleaseRevision: watchdogHealth.currentReleaseRevision,
+      watchdogReleaseRevision: watchdogHealth.runtimeIdentity?.releaseRevision,
+      watchdogPid: watchdogHealth.runtimeIdentity?.pid,
+    },
+  };
+  const localChecks = Object.entries(probes)
+    .filter(([name]) => !name.startsWith('recovery_'))
+    .every(([, entry]) => entry.ok);
+  return {
+    ok: Boolean(runtimeHealthy && coherent && localChecks),
+    at: new Date().toISOString(),
+    runtime: {
+      ok: runtimeHealthy,
+      running: observation.running,
+      ready: observation.ready,
+      stale: observation.stale,
+      reasonCodes: [...observation.reasonCodes],
+    },
+    releases: {
+      active,
+      previous,
+      knownGood: matchingKnownGood(config, active),
+      coherent,
+    },
+    probes,
+  };
+}
+
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
   const configured = configuredRecoveryTunnel(config);
   const localRecoveryGatewayHealthy = localVerify.probes.recovery_gateway?.ok ?? true;
@@ -5036,16 +5111,20 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   const fullVerifyDue = !runtimeStartupGrace
     && (scopedPrior.lastFullVerifyAt === undefined || now - scopedPrior.lastFullVerifyAt >= 60_000);
   let fullVerificationPerformed = fullVerifyDue;
-  let verified = await verifyStableRuntime(
-    config,
-    createRecoveryHttpTransport(config.controllerHome),
-    { probeMcpProtocol: fullVerifyDue },
-  );
-  let localVerify = await verifyLocalRuntime(config, { probeMcpProtocol: fullVerifyDue });
-  if (!localVerify.ok && !fullVerifyDue && !runtimeStartupGrace) {
+  let verified: VerifyResult;
+  let localVerify: VerifyResult;
+  if (fullVerifyDue) {
     verified = await verifyStableRuntime(config);
     localVerify = await verifyLocalRuntime(config);
-    fullVerificationPerformed = true;
+  } else {
+    const health = await observeWatchdogHealthTier(config);
+    verified = health;
+    localVerify = health;
+    if (!health.ok && !runtimeStartupGrace) {
+      verified = await verifyStableRuntime(config);
+      localVerify = await verifyLocalRuntime(config);
+      fullVerificationPerformed = true;
+    }
   }
   const lastFullVerifyAt = fullVerificationPerformed ? now : scopedPrior.lastFullVerifyAt;
   const activeMutation = liveRecoveryMutationLock(config);
