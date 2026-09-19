@@ -715,9 +715,21 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               // identity.  This both preserves the source/fingerprint boundary
               // and prevents a prepared managed Work from reaching a review
               // with untyped or absent identity fields.
-              const reconciled = workId
-                ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
+              const preparedIdentity = preparedReviewCandidate?.sourceRevision
+                && preparedReviewCandidate.workspaceFingerprint
+                && preparedReviewCandidate.implementationReviewWorkspaceFingerprint
+                ? {
+                    sourceRevision: preparedReviewCandidate.sourceRevision,
+                    workspaceFingerprint: preparedReviewCandidate.workspaceFingerprint,
+                    implementationReviewWorkspaceFingerprint: preparedReviewCandidate.implementationReviewWorkspaceFingerprint,
+                    workspaceChangedPaths: preparedReviewCandidate.workspaceChangedPaths ?? [],
+                    reconciledProcessIds: preparedReviewCandidate.reconciledProcessIds ?? [],
+                    workBoundProcessEvidenceIds: preparedReviewCandidate.workBoundProcessEvidenceIds ?? [],
+                  }
                 : undefined;
+              const reconciled = preparedIdentity ?? (workId
+                ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
+                : undefined);
               if (!workId || !reconciled?.sourceRevision || !reconciled.workspaceFingerprint || !reconciled.implementationReviewWorkspaceFingerprint) {
                 throw new Error(`WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED: ${workId || 'work_id_missing'}`);
               }
