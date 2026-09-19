@@ -1066,6 +1066,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(browserRuntime).toContain('submitAssistantPluginAction(');
     expect(browserRuntime).toContain('controllerPluginRepository(controllerHome)');
     expect(browserRuntime).toContain('authorizationGrantRefs: [...(context?.authorizationGrantRefs ?? [])]');
+    const pluginStore = readFileSync(join(process.cwd(), 'src/runtime/plugins/store.ts'), 'utf8');
+    const lateCreateSessionAuthorizationTarget = pluginStore.indexOf("if (action.actionId === 'create_session'");
+    const reusableGrantPersistence = pluginStore.indexOf('const grant = recordPluginCapabilityAuthorization', lateCreateSessionAuthorizationTarget);
+    expect(lateCreateSessionAuthorizationTarget).toBeGreaterThan(-1);
+    expect(reusableGrantPersistence).toBeGreaterThan(lateCreateSessionAuthorizationTarget);
     expect(source).toContain("originSurface?: 'chatgpt-action' | 'schedule'");
     expect(source).toContain('authorizationGrantRefs?: readonly string[]');
     expect(source).toContain("surface: input.originSurface ?? 'chatgpt-action'");

@@ -1527,6 +1527,32 @@ export async function submitAssistantPluginAction(
           : undefined,
       }),
     );
+    // create_session materializes the exact provider/session identity during
+    // execution, so its authorization target cannot always be resolved before
+    // the action runs. Resolve that postcondition once after a successful
+    // interactive bootstrap, then persist the same exact-target grant path as
+    // every other authorization-class Browser action. Scheduled execution
+    // still remains grant-only because this branch is interactive-origin only.
+    if (action.actionId === 'create_session'
+      && action.confirmation === 'authorization'
+      && !authorizationContext
+      && originMayEstablishCapabilityAuthorization(request.origin)
+      && adapter.resolveAuthorizationContext) {
+      authorizationContext = await adapter.resolveAuthorizationContext({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: repository.canonicalRoot,
+        pluginId: request.pluginId,
+        actionId: request.actionId,
+        requestId: request.requestId,
+        args: normalizedArgs,
+        origin: request.origin,
+        jobId: receiptId,
+        timeoutMs: request.timeoutMs,
+        signal: request.signal,
+      });
+    }
+
     if (action.confirmation === 'authorization'
       && authorizationContext
       && !activeAuthorizationGrant
@@ -1558,32 +1584,6 @@ export async function submitAssistantPluginAction(
           persistenceError: authorizationError(error),
         };
       }
-    }
-
-    // create_session materializes the exact provider/session identity during
-    // execution, so its authorization target cannot always be resolved before
-    // the action runs. Resolve that postcondition once after a successful
-    // interactive bootstrap, then persist the same exact-target grant path as
-    // every other authorization-class Browser action. Scheduled execution
-    // still remains grant-only because this branch is interactive-origin only.
-    if (action.actionId === 'create_session'
-      && action.confirmation === 'authorization'
-      && !authorizationContext
-      && originMayEstablishCapabilityAuthorization(request.origin)
-      && adapter.resolveAuthorizationContext) {
-      authorizationContext = await adapter.resolveAuthorizationContext({
-        controllerHome,
-        repoId: repository.repoId,
-        repoRoot: repository.canonicalRoot,
-        pluginId: request.pluginId,
-        actionId: request.actionId,
-        requestId: request.requestId,
-        args: normalizedArgs,
-        origin: request.origin,
-        jobId: receiptId,
-        timeoutMs: request.timeoutMs,
-        signal: request.signal,
-      });
     }
 
     let resultWithLineage = result;
