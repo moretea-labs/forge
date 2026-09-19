@@ -223,17 +223,24 @@ export class WorkflowSupervisorStore {
    * and dispatch that recovery instead of abandoning the browser task.
    */
   hasAppliedEffectAwaitingCompletion(taskId: string): boolean {
-    return this.read((db) => Boolean(statement(db, `SELECT 1 AS ok FROM effects e
+    return this.read((db) => Boolean(statement(db, `WITH RECURSIVE provider_chain(effect_id, root_id) AS (
+        SELECT effect_id, effect_id FROM effects WHERE task_id = ?
+        UNION ALL
+        SELECT child.effect_id, provider_chain.root_id
+        FROM effects child
+        JOIN provider_chain ON child.origin_key = 'provider-recovery:' || provider_chain.effect_id
+        WHERE child.task_id = ?
+      )
+      SELECT 1 AS ok FROM effects e
       WHERE e.task_id = ?
         AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
         AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-        AND NOT EXISTS (SELECT 1 FROM events exhausted WHERE exhausted.effect_id = e.effect_id AND exhausted.kind = 'assistant_recovery_exhausted')
         AND NOT EXISTS (
-          SELECT 1 FROM effects child
-          JOIN events child_exhausted ON child_exhausted.effect_id = child.effect_id AND child_exhausted.kind = 'assistant_recovery_exhausted'
-          WHERE child.origin_key = 'provider-recovery:' || e.effect_id
+          SELECT 1 FROM provider_chain exhausted_chain
+          JOIN events exhausted ON exhausted.effect_id = exhausted_chain.effect_id AND exhausted.kind = 'assistant_recovery_exhausted'
+          WHERE exhausted_chain.root_id = e.effect_id
         )
-      LIMIT 1`, (s) => s.get(taskId))));
+      LIMIT 1`, (s) => s.get(taskId, taskId, taskId))));
   }
 
   observeProviderTurn(input: {
