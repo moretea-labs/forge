@@ -89,6 +89,9 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
 }
 
 const DEFAULT_RELEASE_AUTHORITY_MONITOR_INTERVAL_MS = 1_000;
+const JSC_SAMPLING_TRACE_LIMIT = 2_000;
+const JSC_SAMPLING_FRAME_LIMIT = 32;
+const JSC_SAMPLING_SOURCE_LIMIT = 512;
 
 function startDefaultReleaseAuthorityMonitor(observe: () => void): RuntimeReleaseAuthorityMonitor {
   const timer = setInterval(observe, DEFAULT_RELEASE_AUTHORITY_MONITOR_INTERVAL_MS);
@@ -149,6 +152,7 @@ export class CanonicalForgeRuntime {
   private jscHeapDiagnosticsCaptureInFlight = false;
   private jscSamplingProfilerSignalHandler?: () => void;
   private jscSamplingProfilerStartInFlight = false;
+  private jscSamplingProfilerSnapshotInFlight = false;
   private jscSamplingProfilerStarted = false;
   lastExit?: RuntimeExitEvidence;
 
@@ -239,7 +243,57 @@ export class CanonicalForgeRuntime {
   private installJscSamplingProfilerSignal(): void {
     if (process.platform === 'win32' || this.jscSamplingProfilerSignalHandler) return;
     const handler = () => {
-      if (this.jscSamplingProfilerStarted || this.jscSamplingProfilerStartInFlight) return;
+      if (this.jscSamplingProfilerStartInFlight || this.jscSamplingProfilerSnapshotInFlight) return;
+      if (this.jscSamplingProfilerStarted) {
+        this.jscSamplingProfilerSnapshotInFlight = true;
+        void import('bun:jsc').then((module) => {
+          const samplingProfilerStackTraces = (module as unknown as {
+            samplingProfilerStackTraces: () => {
+              interval: number;
+              traces: Array<{ timestamp: number; frames: Array<Record<string, unknown>> }>;
+              sources: Array<Record<string, unknown>>;
+            };
+          }).samplingProfilerStackTraces;
+          const sampling = samplingProfilerStackTraces();
+          const traces = sampling.traces
+            .slice(-JSC_SAMPLING_TRACE_LIMIT)
+            .map((trace) => ({
+              ...trace,
+              frames: trace.frames.slice(0, JSC_SAMPLING_FRAME_LIMIT),
+            }));
+          const path = join(this.config.controllerHome, 'diagnostics', 'jsc-sampling-stacks.json');
+          writeJsonAtomic(path, {
+            schemaVersion: 1,
+            capturedAt: new Date().toISOString(),
+            pid: process.pid,
+            runtimeInstanceId: this.runtimeInstanceId,
+            releaseId: this.release?.releaseId,
+            interval: sampling.interval,
+            totalTraceCount: sampling.traces.length,
+            retainedTraceCount: traces.length,
+            traces,
+            sources: sampling.sources.slice(0, JSC_SAMPLING_SOURCE_LIMIT),
+          });
+          process.stderr.write(`${JSON.stringify({
+            event: 'forge_runtime_jsc_sampling_snapshot_captured',
+            runtimeInstanceId: this.runtimeInstanceId,
+            path,
+            totalTraceCount: sampling.traces.length,
+            retainedTraceCount: traces.length,
+            observedAt: new Date().toISOString(),
+          })}\n`);
+        }).catch((error) => {
+          process.stderr.write(`${JSON.stringify({
+            event: 'forge_runtime_jsc_sampling_snapshot_failed',
+            runtimeInstanceId: this.runtimeInstanceId,
+            message: error instanceof Error ? error.message : String(error),
+            observedAt: new Date().toISOString(),
+          })}\n`);
+        }).finally(() => {
+          this.jscSamplingProfilerSnapshotInFlight = false;
+        });
+        return;
+      }
       this.jscSamplingProfilerStartInFlight = true;
       const directory = join(this.config.controllerHome, 'diagnostics', 'jsc-profile');
       void this.dependencies.startJscSamplingProfiler(directory).then(() => {
