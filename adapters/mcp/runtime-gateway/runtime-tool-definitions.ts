@@ -202,6 +202,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     dry_run: { type: 'boolean', description: 'Defaults to true for repair.' },
     check_ids: { type: 'array', items: { type: 'string' }, description: 'Requested checks. Before launching multiple checks concurrently, call rh_context with requested_check_ids to read resource-compatible checkScheduling waves; do not overlap checks from different waves.' },
     check_id: { type: 'string' },
+    reconcile_process_ids: { type: 'array', items: { type: 'string' }, maxItems: 32, uniqueItems: true, description: 'Optional exact terminal generic run_check Process ids to reconcile into this Work. Forge validates repository, checkout, Check execution identity, and persisted semantic result; caller-supplied pass/fail values are never trusted.' },
     acceptance_criteria: { type: 'array', items: { type: 'string' } },
     allowed_paths: { type: 'array', items: { type: 'string' } },
     initial_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative first-pass discovery candidates. May expand after investigation; allowed_paths remains a policy fence only.' },

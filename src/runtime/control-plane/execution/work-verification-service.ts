@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { resolve } from 'path';
 import { controllerCheckExecutionIdentity, listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
@@ -42,6 +43,8 @@ export interface ExecuteWorkVerificationInput {
   timeoutMs?: number;
   interactiveWaitMs?: number;
   leaseWaitMs?: number;
+  /** Exact terminal generic Check Processes to reconcile into this Work. */
+  reconcileProcessIds?: readonly string[];
   simulate?: {
     infrastructureFailed?: boolean;
     checkFailed?: boolean;
@@ -310,6 +313,8 @@ export function reconcileTerminalWorkVerifications(input: {
   controllerHome: string;
   repository: RepositoryRecord;
   workId: string;
+  /** Explicit Process ids are required for generic run_check evidence. */
+  reconcileProcessIds?: readonly string[];
 }): ReconcileTerminalWorkVerificationsResult {
   const resolved = resolveWorkVerificationContext({
     controllerHome: input.controllerHome,
@@ -350,15 +355,56 @@ export function reconcileTerminalWorkVerifications(input: {
   };
   const seenChecks = new Set<string>();
   const reconciledProcessIds: string[] = [];
-  const candidates = listProcessRecords(input.controllerHome, input.repository.repoId, 500)
-    .filter((record) => (
+  const explicitProcessIds = new Set(
+    (input.reconcileProcessIds ?? [])
+      .map((processId) => processId.trim())
+      .filter(Boolean)
+      .slice(0, 32),
+  );
+  const recordsById = new Map(
+    listProcessRecords(input.controllerHome, input.repository.repoId, 500).map((record) => [record.processId, record] as const),
+  );
+  // An explicitly named Process may be older than the bounded recent scan.
+  // Fetching that one exact id preserves bounded reads without treating an
+  // arbitrary caller-supplied receipt as authority.
+  for (const processId of explicitProcessIds) {
+    if (!recordsById.has(processId)) {
+      const record = getProcessRecord(input.controllerHome, input.repository.repoId, processId);
+      if (record) recordsById.set(processId, record);
+    }
+  }
+  const candidates = [...recordsById.values()].filter((record) => {
+    const workSnapshot = (
       record.workId === input.workId
       && record.checkoutId === repository.activeCheckoutId
       && !isManagedProcessActive(record)
       && record.origin?.workVerificationSnapshot === true
       && typeof record.origin?.checkId === 'string'
       && typeof record.origin?.requestSemanticFingerprint === 'string'
-    ));
+    );
+    if (workSnapshot) return true;
+    if (!explicitProcessIds.has(record.processId)) return false;
+
+    // Generic run_check records have no Work owner. They are eligible only
+    // when the caller names the exact terminal Process and the record proves
+    // the same repository/checkout, canonical checkout root, checkout-scoped
+    // Check execution, and check surface. The persisted semantic result is
+    // validated below before any Work mutation.
+    const executionIdentity = record.executionIdentity;
+    return (
+      record.repoId === repository.repoId
+      && record.checkoutId === repository.activeCheckoutId
+      && record.workId == null
+      && !isManagedProcessActive(record)
+      && record.origin?.surface === 'check'
+      && typeof record.origin?.checkId === 'string'
+      && executionIdentity?.repositoryId === repository.repoId
+      && executionIdentity.checkoutId === repository.activeCheckoutId
+      && resolve(executionIdentity.canonicalRoot) === resolve(repository.canonicalRoot)
+      && record.checkExecution?.reuseScope === 'checkout'
+      && record.checkExecution.scopeKey === `checkout:${repository.activeCheckoutId}`
+    );
+  });
 
   for (const record of candidates) {
     const checkId = record.origin?.checkId?.trim() ?? '';
@@ -374,7 +420,30 @@ export function reconcileTerminalWorkVerifications(input: {
       checkId: normalizedCheckId,
       requestedChecks,
     });
-    if (record.origin?.requestSemanticFingerprint !== currentFingerprint || !record.checkExecution) continue;
+    const workSnapshot = record.workId === input.workId && record.origin?.workVerificationSnapshot === true;
+    if (workSnapshot && (record.origin?.requestSemanticFingerprint !== currentFingerprint || !record.checkExecution)) continue;
+    if (!workSnapshot) {
+      const recordedExecution = record.checkExecution;
+      if (!recordedExecution) continue;
+      const currentExecution = controllerCheckExecutionIdentity(repository.canonicalRoot, normalizedCheckId);
+      if (
+        currentExecution.cacheKey !== recordedExecution.cacheKey
+        || currentExecution.revision !== recordedExecution.revision
+        || currentExecution.definitionDigest !== recordedExecution.definitionDigest
+        || currentExecution.environmentFingerprint !== recordedExecution.environmentFingerprint
+        || currentExecution.timeoutMs !== recordedExecution.timeoutMs
+        || currentExecution.reuseScope !== recordedExecution.reuseScope
+      ) continue;
+      const structuredReceipt = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
+      if (
+        !structuredReceipt
+        || structuredReceipt.checkId !== normalizedCheckId
+        || structuredReceipt.cacheKey !== recordedExecution.cacheKey
+        || structuredReceipt.validatedRevision !== recordedExecution.revision
+      ) continue;
+    }
+    const checkExecution = record.checkExecution;
+    if (!checkExecution) continue;
 
     try {
       const receipt = processCheckCompletionReceipt(record, {
@@ -385,12 +454,12 @@ export function reconcileTerminalWorkVerifications(input: {
         processId: record.processId,
         requestId: record.origin?.requestId,
         checkExecution: {
-          cacheKey: record.checkExecution.cacheKey,
-          revision: record.checkExecution.revision,
-          definitionDigest: record.checkExecution.definitionDigest,
-          environmentFingerprint: record.checkExecution.environmentFingerprint,
-          timeoutMs: record.checkExecution.timeoutMs,
-          scopeKey: record.checkExecution.scopeKey,
+          cacheKey: checkExecution.cacheKey,
+          revision: checkExecution.revision,
+          definitionDigest: checkExecution.definitionDigest,
+          environmentFingerprint: checkExecution.environmentFingerprint,
+          timeoutMs: checkExecution.timeoutMs,
+          scopeKey: checkExecution.scopeKey,
         },
       });
       if (workContract.checkRefs.some((entry) => entry.receipt?.receiptId === receipt.receiptId)) continue;
@@ -683,8 +752,9 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       requestedChecks,
     }) : undefined;
 
+    const explicitReconciliationRequested = (input.reconcileProcessIds?.length ?? 0) > 0;
     const currentReceipt = currentReusableVerificationRecord({
-      workContract,
+      workContract: explicitReconciliationRequested ? undefined : workContract,
       checkId: normalizedCheckId,
       sourceRevision: observedGitHead ?? undefined,
       workspaceFingerprint,
@@ -699,12 +769,15 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       });
     }
 
+    let reconciledProcessIds: string[] = [];
     if (workContract && observedGitHead) {
       const reconciled = reconcileTerminalWorkVerifications({
         controllerHome: input.controllerHome,
         repository: input.repository,
         workId: workContract.workId,
+        reconcileProcessIds: input.reconcileProcessIds,
       });
+      reconciledProcessIds = reconciled.reconciledProcessIds;
       if (reconciled.reconciledProcessIds.length > 0) {
         const refreshed = resolveWorkVerificationContext({
           controllerHome: input.controllerHome,
@@ -729,6 +802,22 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
           }
         }
       }
+    }
+    if (explicitReconciliationRequested) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: 'No explicitly requested terminal Process could be reconciled into the exact Work verification authority.',
+        data: {
+          verification: {
+            checkId: normalizedCheckId,
+            outcome: 'reconciliation_not_authoritative',
+            isAcceptanceFailure: false,
+            isInfrastructureIssue: true,
+            reconciledProcessIds,
+          },
+        },
+        warnings: ['WORK_VERIFY_RECONCILIATION_NOT_AUTHORIZED: Forge did not re-execute the Check after explicit reconciliation failed.'],
+      }), true);
     }
 
     const registeredCheck = checks.find((entry) => entry.id === normalizedCheckId);
