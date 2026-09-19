@@ -211,3 +211,29 @@ test('browserTasks polls only tasks with pending browser work or an applied effe
   });
   expect(control.browserTasks()).toHaveLength(1);
 });
+
+test('browserTasks stops polling after bounded provider recovery is exhausted', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-exhausted-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-browser-exhausted';
+  const conversationId = '34343434-5656-7878-9090-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Stop after bounded provider recovery.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: effect.effectId, observationId: 'browser-exhausted-applied', outcome: 'applied' });
+
+  const first = store.observeProviderTurn({
+    taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 1_000, graceMs: 1_000,
+    maxRecoveryDepth: 0, recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery' },
+  });
+  expect(first.state).toBe('idle_pending');
+  const exhausted = store.observeProviderTurn({
+    taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 2_001, graceMs: 1_000,
+    maxRecoveryDepth: 0, recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'recovery' },
+  });
+  expect(exhausted.state).toBe('exhausted');
+  expect(store.providerRecoveryExhausted(effect.effectId)).toBe(true);
+  expect(control.browserTasks()).toEqual([]);
+});

@@ -221,6 +221,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     h.advance(60_000);
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(3);
+    expect(h.control.browserTasks()).toEqual([]);
     expect(h.errors).toEqual([]);
   });
   test('observes a committed CONTINUE response and dispatches the successor effect in the same loop', async () => {
