@@ -120,3 +120,44 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
   expect((requests[2]!.init.headers as Record<string, string>)['mcp-session-id']).toBe('session-local-recovery');
   expect((requests[3]!.init.headers as Record<string, string>)['mcp-session-id']).toBe('session-local-recovery');
 });
+
+
+test('ReleaseSession actions expose only the exact session id and provider-owned mutation identity', async () => {
+  const calls: Array<{ controllerHome: string; name: string; args: Record<string, unknown> }> = [];
+  const callRecoveryTool = async (controllerHome: string, name: string, args: Record<string, unknown>) => {
+    calls.push({ controllerHome, name, args });
+    return { ok: true, name };
+  };
+  const providerConfig = { controllerHome: '/tmp/controller' };
+  const sessionId = 'release-session-fixture-1234';
+
+  await executeAction('release_session_status', { session_id: sessionId }, providerConfig, { callRecoveryTool, requestId: 'session-status' });
+  for (const actionId of [
+    'verify_runtime_release_session_static',
+    'verify_runtime_release_session_candidate',
+    'cutover_runtime_release_session',
+    'promote_runtime_release_session_known_good',
+  ]) {
+    await executeAction(actionId, { session_id: sessionId }, providerConfig, { callRecoveryTool, requestId: `request-${actionId}` });
+  }
+
+  expect(calls[0]).toEqual({
+    controllerHome: '/tmp/controller',
+    name: 'release_session_status',
+    args: { session_id: sessionId },
+  });
+  for (const call of calls.slice(1)) {
+    expect(call.controllerHome).toBe('/tmp/controller');
+    expect(call.args).toEqual({
+      session_id: sessionId,
+      request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/),
+    });
+  }
+
+  await expect(executeAction('release_session_status', { session_id: sessionId, endpoint: 'http://127.0.0.1:1' }, providerConfig, { callRecoveryTool }))
+    .rejects.toThrow(/accept only session_id/);
+  await expect(executeAction('cutover_runtime_release_session', { session_id: sessionId, request_id: 'caller-owned' }, providerConfig, { callRecoveryTool }))
+    .rejects.toThrow(/accept only session_id/);
+  await expect(executeAction('verify_runtime_release_session_static', { session_id: 'short' }, providerConfig, { callRecoveryTool }))
+    .rejects.toThrow(/8 to 120/);
+});

@@ -11,8 +11,30 @@ export const PLUGIN_ID = 'local_recovery';
 export const PLUGIN_VERSION = '0.1.0';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = ['forge.local_recovery.transport.v1'];
-export const ACTIONS = ['runtime_status', 'list_releases', 'stage_and_activate_runtime_release'];
-const MUTATING_ACTIONS = new Set(['stage_and_activate_runtime_release']);
+export const ACTIONS = [
+  'runtime_status',
+  'list_releases',
+  'stage_and_activate_runtime_release',
+  'release_session_status',
+  'verify_runtime_release_session_static',
+  'verify_runtime_release_session_candidate',
+  'cutover_runtime_release_session',
+  'promote_runtime_release_session_known_good',
+];
+const RELEASE_SESSION_ACTIONS = new Set([
+  'release_session_status',
+  'verify_runtime_release_session_static',
+  'verify_runtime_release_session_candidate',
+  'cutover_runtime_release_session',
+  'promote_runtime_release_session_known_good',
+]);
+const MUTATING_ACTIONS = new Set([
+  'stage_and_activate_runtime_release',
+  'verify_runtime_release_session_static',
+  'verify_runtime_release_session_candidate',
+  'cutover_runtime_release_session',
+  'promote_runtime_release_session_known_good',
+]);
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function providerError(code, message, retryable = false, details) {
@@ -119,6 +141,17 @@ function assertEmptyInput(input) {
   }
 }
 
+function releaseSessionInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1 || typeof input.session_id !== 'string') {
+    throw providerError('LOCAL_RECOVERY_RELEASE_SESSION_ARGUMENTS_INVALID', 'ReleaseSession actions accept only session_id.');
+  }
+  const sessionId = input.session_id.trim();
+  if (sessionId.length < 8 || sessionId.length > 120) {
+    throw providerError('LOCAL_RECOVERY_RELEASE_SESSION_ID_INVALID', 'ReleaseSession session_id must be 8 to 120 characters.');
+  }
+  return { session_id: sessionId };
+}
+
 function mutationRequestId(requestId) {
   return `local-recovery:${createHash('sha256').update(String(requestId)).digest('hex').slice(0, 32)}`;
 }
@@ -142,10 +175,14 @@ export function ensureSourceRepositoryProvenance(controllerHome, injected = {}) 
 export async function executeAction(actionId, input, providerConfig, injected = {}) {
   const config = validateProviderConfig(providerConfig);
   if (!ACTIONS.includes(actionId)) throw providerError('LOCAL_RECOVERY_ACTION_UNSUPPORTED', 'Unsupported Local Recovery action.');
-  assertEmptyInput(input);
+  const sessionArgs = RELEASE_SESSION_ACTIONS.has(actionId) ? releaseSessionInput(input) : undefined;
+  if (!sessionArgs) assertEmptyInput(input);
   const callTool = injected.callRecoveryTool ?? callRecoveryTool;
   if (actionId === 'stage_and_activate_runtime_release') ensureSourceRepositoryProvenance(config.controllerHome, injected);
-  const args = MUTATING_ACTIONS.has(actionId) ? { request_id: mutationRequestId(injected.requestId ?? actionId) } : {};
+  const args = {
+    ...(sessionArgs ?? {}),
+    ...(MUTATING_ACTIONS.has(actionId) ? { request_id: mutationRequestId(injected.requestId ?? actionId) } : {}),
+  };
   return await callTool(config.controllerHome, actionId, args, injected);
 }
 
