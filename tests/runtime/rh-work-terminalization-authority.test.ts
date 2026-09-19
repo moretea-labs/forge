@@ -2616,7 +2616,7 @@ describe('rh_work terminalization authority', () => {
       createdAt: now,
       updatedAt: now,
       cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
-      finalization: { validation: 'done', commit: 'pending', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'pending' },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'pending' },
     });
     publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
     writeFileSync(join(fx.repoRoot, 'src', 'index.ts'), 'export const ready = 2;\n');
@@ -4176,6 +4176,7 @@ describe('rh_work terminalization authority', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toMatchObject({
       deliveryBaseCommit: advancedRevision,
       expectedHead: advancedRevision,
+      finalization: { validation: 'done' },
     });
   }, 15_000);
 

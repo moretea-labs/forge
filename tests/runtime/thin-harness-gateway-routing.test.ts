@@ -13,6 +13,7 @@ import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
@@ -47,6 +48,7 @@ import {
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -614,6 +616,67 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(readFileSync(marker, 'utf8')).toBe('1');
   });
+
+  test('process_wait reconciles a terminal Work verification receipt without a second rh_work verify call', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const workId = 'work-process-wait-auto-reconcile';
+    const status = repositoryGitStatus(fx.repository);
+    const sourceRevision = String(status.head ?? '');
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, status);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Project terminal Process evidence into Work verification on dependency join.',
+      acceptanceCriteria: ['Joining the exact terminal verification Process records one current Work check receipt.'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: ['slow'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+    });
+    const requestSemanticFingerprint = verificationInputFingerprint({
+      sourceRevision,
+      workspaceFingerprint,
+      checkId: 'slow',
+      requestedChecks: ['slow'],
+    });
+    const executed = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository, { workId }),
+      checkId: 'slow',
+      interactiveWaitMs: 0,
+      requestId: 'process-wait-auto-reconcile',
+      requestSemanticFingerprint,
+      workId,
+      commandId: 'process-wait-auto-reconcile',
+      verificationSnapshot: { workId, allowedPaths: ['src/**'], forbiddenPaths: [] },
+    });
+    const processId = String(executed.process?.processId ?? '');
+    expect(processId).toBeTruthy();
+    const joined = await callProcessTool(fx.ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: processId,
+      timeout_ms: 10_000,
+    });
+    expect(joined?.isError).not.toBe(true);
+    expect(joined?.structuredContent).toMatchObject({
+      synchronization: 'terminal_result_available',
+      workVerificationReconciliation: { workId, processId, status: 'reconciled' },
+    });
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(contract?.checkRefs).toHaveLength(1);
+    expect(contract?.checkRefs[0]?.receipt?.processId).toBe(processId);
+  }, 15_000);
 
   test('batch run_check launches one resource-compatible wave concurrently in one gateway call', async () => {
     const fx = fixture();

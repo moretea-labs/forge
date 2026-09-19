@@ -16,6 +16,9 @@ import {
   waitRepositoryCommandProcess,
 } from '../../../src/runtime/execution/process-runtime';
 import { redactSensitiveText, redactSensitiveValue } from '../../../src/runtime/evidence/sensitive-output';
+import { getProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
+import { reconcileTerminalWorkVerifications } from '../../../src/runtime/control-plane/execution/work-verification-service';
+import { selected } from './shared-adapter';
 
 function definition(
   name: string,
@@ -114,6 +117,33 @@ export const processToolDefinitions: McpToolDefinition[] = [
 
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
 const processAttachmentToolNames = new Set(['process_get', 'process_wait', 'process_logs', 'process_cancel']);
+
+function reconcileAttachedWorkVerification(
+  ctx: MultiRepositoryMcpToolContext,
+  repoId: string,
+  processId: string,
+  handle: { completed?: boolean; workId?: string },
+): Record<string, unknown> | undefined {
+  if (handle.completed !== true || !handle.workId) return undefined;
+  const record = getProcessRecord(ctx.controllerHome, repoId, processId);
+  if (record?.origin?.workVerificationSnapshot !== true) return undefined;
+  try {
+    const repository = selected(ctx, { repo_id: repoId, checkout_id: record.checkoutId });
+    const reconciled = reconcileTerminalWorkVerifications({
+      controllerHome: ctx.controllerHome,
+      repository,
+      workId: handle.workId,
+    });
+    return {
+      workId: handle.workId,
+      processId,
+      status: reconciled.reconciledProcessIds.includes(processId) ? 'reconciled' : 'already_current_or_non_authoritative',
+      reconciledProcessIds: reconciled.reconciledProcessIds,
+    };
+  } catch {
+    return { workId: handle.workId, processId, status: 'non_authoritative' };
+  }
+}
 // A long-lived MCP wait can monopolize shared Runtime request/transport capacity
 // even though the underlying Process wait is asynchronous. Keep public waits
 // short and return a normal running snapshot; the Process continues unchanged
@@ -224,9 +254,11 @@ export async function callProcessTool(
       case 'process_get': {
         const handle = getRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
         if (!handle) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+        const workVerificationReconciliation = reconcileAttachedWorkVerification(ctx, repoId, processId, handle);
         return result({
           repoId,
           process: handleToPayload(handle),
+          ...(workVerificationReconciliation ? { workVerificationReconciliation } : {}),
         });
       }
       case 'process_wait': {
@@ -241,9 +273,11 @@ export async function callProcessTool(
         const handle = await waitRepositoryCommandProcess(ctx.controllerHome, repoId, processId, {
           timeoutMs: Math.min(requestedWaitMs, attachBudgetMs),
         });
+        const workVerificationReconciliation = reconcileAttachedWorkVerification(ctx, repoId, processId, handle);
         return result({
           repoId,
           process: handleToPayload(handle),
+          ...(workVerificationReconciliation ? { workVerificationReconciliation } : {}),
           synchronization: handle.completed === true ? 'terminal_result_available' : 'continue_independent_work',
           waitedMs: Date.now() - startedAt,
           requestedWaitMs,

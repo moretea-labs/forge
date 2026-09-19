@@ -665,6 +665,24 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               if (!workId || !reconciled?.sourceRevision || !reconciled.workspaceFingerprint || !reconciled.implementationReviewWorkspaceFingerprint) {
                 throw new Error(`WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED: ${workId || 'work_id_missing'}`);
               }
+              if (reviewContract?.workKind === 'repository_change') {
+                const currentReviewHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+                if (!currentReviewHandle) throw new Error(`WORK_HANDLE_NOT_FOUND: ${workId}`);
+                const reviewValidationSession = bindFacadeExecutionSession(ctx, repository, currentReviewHandle, args);
+                const validation = await callExecutionTool(ctx, 'work_validate', {
+                  session_id: reviewValidationSession.sessionId,
+                  repo_id: repository.repoId,
+                  work_id: workId,
+                  check_ids: (getWorkContract(store, workId) ?? reviewContract).checks,
+                });
+                if (!validation || validation.isError === true) return validation ?? result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: `WORK_VALIDATION_REQUIRED: exact candidate validation did not return a result for ${workId}.`,
+                  data: { workId, implementationReviewRecorded: false },
+                }) as unknown as Record<string, unknown>, true);
+                const validationPayload = contextRecord(validation.structuredContent);
+                if (contextRecord(validationPayload.validation).passed !== true) return validation;
+              }
               const facade = runGoalWorkloop({
                 ...workloopCtx,
                 principalId: identity.principalId,
