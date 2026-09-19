@@ -14,7 +14,7 @@ import {
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
 import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
+import { getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityAdjustmentResult, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
@@ -322,6 +322,39 @@ function relevantWork(
   return all
     .filter((work) => linkedWorkIds.has(work.workId))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function relayMayHaveActiveWork(
+  options: ControllerRoundRelayStoreOptions,
+  record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
+  activeWorkSnapshot: ReturnType<typeof readActiveWorkCandidates>,
+): boolean {
+  // Invalid active candidates remain fail-closed: the canonical aggregate read
+  // below must report the same semantic error rather than silently skipping a
+  // potentially related Work.
+  if (activeWorkSnapshot.invalid.length > 0) return true;
+
+  const linkedWorkIds = new Set([
+    record.originWorkId,
+    ...relayHistory(options, record.relayScopeId).map((entry) => entry.originWorkId),
+  ]);
+  if (record.requirementId) {
+    return activeWorkSnapshot.contracts.some((work) => work.requirementId === record.requirementId);
+  }
+
+  const activeById = new Map(activeWorkSnapshot.contracts.map((work) => [work.workId, work] as const));
+  for (const work of activeWorkSnapshot.contracts) {
+    if (linkedWorkIds.has(work.workId)) return true;
+    const visited = new Set<string>();
+    let parentWorkId = work.parentWorkId;
+    while (parentWorkId && !visited.has(parentWorkId)) {
+      if (linkedWorkIds.has(parentWorkId)) return true;
+      visited.add(parentWorkId);
+      parentWorkId = activeById.get(parentWorkId)?.parentWorkId
+        ?? getWorkContract(options, parentWorkId)?.parentWorkId;
+    }
+  }
+  return false;
 }
 
 function relevantHandoffs(
@@ -1356,6 +1389,11 @@ export function claimStalledControllerRoundRelays(
   // across candidates. The locked transition below still refreshes the Work
   // snapshot before deriving the durable recovery decision.
   let scanWorkContracts: readonly WorkContract[] | undefined;
+  let scanActiveWorkSnapshot: ReturnType<typeof readActiveWorkCandidates> | undefined;
+  const activeWorkSnapshotForScan = (): ReturnType<typeof readActiveWorkCandidates> => {
+    scanActiveWorkSnapshot ??= readActiveWorkCandidates({ controllerHome: options.controllerHome, repoId: options.repoId, limit: 1_000 });
+    return scanActiveWorkSnapshot;
+  };
   const workSnapshotForScan = (): readonly WorkContract[] => {
     scanWorkContracts ??= readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
     return scanWorkContracts;
@@ -1375,6 +1413,7 @@ export function claimStalledControllerRoundRelays(
     }
     const requirement = requirementForRelay(options, candidate.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) continue;
+    if (!relayMayHaveActiveWork(options, candidate, activeWorkSnapshotForScan())) continue;
     const candidateWorks = relevantWork(options, candidate, workSnapshotForScan());
     const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
     if (activeCandidateWorks.length === 0) continue;
