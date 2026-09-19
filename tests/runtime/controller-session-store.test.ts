@@ -11,9 +11,10 @@ import {
   mintControllerSessionAuthority,
   resumeControllerSession,
 } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { recoverDirectControllerAuthority } from '../../src/runtime/control-plane/execution/controller-authority-recovery';
+import { bindControllerOwnershipForInvocation, recoverDirectControllerAuthority } from '../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, finishControllerRoundRelayDispatch, getControllerRoundRelay } from '../../src/runtime/control-plane/facade/controller-round-relay';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -107,6 +108,63 @@ describe('controller Work ownership fencing', () => {
     expect(() => claimControllerSession(store, claimInput('session-b', 'principal-b', 'instance-b'))).toThrow(/WORK_ALREADY_CLAIMED/);
   });
 
+  test('stalled round recovery fences a stale live owner before rotating relay authority', () => {
+    const home = controllerHome();
+    const observedNow = Date.now();
+    const staleAt = new Date(observedNow - 10 * 60_000).toISOString();
+    const staleStore = { controllerHome: home, repoId: 'repo-a', now: () => staleAt };
+    const currentStore = { controllerHome: home, repoId: 'repo-a', now: () => new Date(observedNow).toISOString() };
+    createWorkContract(staleStore, {
+      workId: 'work-owner',
+      repoId: 'repo-a',
+      mode: 'goal_workloop',
+      objective: 'recover one stalled ControllerRound without splitting relay and owner authority',
+      acceptanceCriteria: ['stale owner is fenced before round capability rotation'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const opened = beginInitialControllerRoundDispatch(staleStore, {
+      workId: 'work-owner',
+      occurrenceId: 'occurrence-stalled-owner',
+      identity: {
+        controllerId: 'principal-a',
+        controllerType: 'chatgpt',
+        principalId: 'principal-a',
+        controllerInstanceId: 'runtime-old',
+        sessionId: 'session-old',
+      },
+      maxRepeatedState: 3,
+    });
+    finishControllerRoundRelayDispatch(staleStore, { workId: 'work-owner', ok: true });
+    const owner = claimControllerSession(staleStore, {
+      ...claimInput('session-old', 'principal-a', 'runtime-old'),
+      leaseMs: 60 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(staleStore, { workId: 'work-owner', session: owner })?.status).toBe('claimed');
+    expect(Date.parse(owner.leaseExpiresAt)).toBeGreaterThan(observedNow);
+    expect(controllerSessionBlocksRecovery(currentStore, 'work-owner', { nowMs: observedNow, graceMs: 5 * 60_000 })).toBe(false);
+
+    const recovered = claimStalledControllerRoundRelays(currentStore, {
+      nowMs: observedNow,
+      graceMs: 5 * 60_000,
+      controllerTypes: ['chatgpt'],
+    });
+
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      originWorkId: 'work-owner',
+      status: 'dispatching',
+      lastError: 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED',
+    });
+    expect(recovered[0]!.authorityId).not.toBe(opened.authorityId);
+    expect(getControllerSession(currentStore, 'work-owner')).toBeUndefined();
+    expect(getControllerRoundRelay(currentStore, 'work-owner')?.authorityId).toBe(recovered[0]!.authorityId);
+  });
+
   test('rejects claim and resume for an existing terminal Work before persisting ownership', () => {
     const home = controllerHome();
     const store = { controllerHome: home, repoId: 'repo-a' };
@@ -151,6 +209,80 @@ describe('controller Work ownership fencing', () => {
       ...claimInput('session-stale', 'principal-a', 'runtime-old'),
       currentRuntimeInstanceId: 'runtime-new',
     })).toThrow(/WORK_CONTROLLER_INSTANCE_MISMATCH/);
+    expect(getControllerSession(store, 'work-owner')?.controllerInstanceId).toBe('runtime-new');
+  });
+
+  test('keeps exact relay authority while rebinding the same principal to the positively current Runtime', () => {
+    const home = controllerHome();
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    createWorkContract(store, {
+      workId: 'work-owner',
+      repoId: 'repo-a',
+      mode: 'goal_workloop',
+      objective: 'preserve exact ControllerRound authority across Runtime rotation',
+      acceptanceCriteria: ['only the replaceable Work owner binding moves to the new Runtime'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId: 'work-owner',
+      occurrenceId: 'occurrence-runtime-rotation',
+      identity: {
+        controllerId: 'principal-a',
+        controllerType: 'chatgpt',
+        principalId: 'principal-a',
+        controllerInstanceId: 'runtime-old',
+        sessionId: 'session-old',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, { workId: 'work-owner', ok: true });
+    const oldOwner = claimControllerSession(store, claimInput('session-old', 'principal-a', 'runtime-old'));
+    expect(acknowledgeControllerRoundClaim(store, { workId: 'work-owner', session: oldOwner })?.status).toBe('claimed');
+
+    const rebound = bindControllerOwnershipForInvocation({
+      ...store,
+      workId: 'work-owner',
+      relayScopeId: opened.relayScopeId,
+      identity: {
+        controllerId: 'principal-a',
+        controllerType: 'chatgpt',
+        principalId: 'principal-a',
+        controllerInstanceId: 'runtime-new',
+        sessionId: 'session-new',
+        controllerAuthorityId: opened.authorityId,
+      },
+      runtime: { running: true, runtimeInstanceId: 'runtime-new' },
+    });
+
+    expect(rebound).toMatchObject({
+      workId: 'work-owner',
+      controllerId: 'principal-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'runtime-new',
+      sessionId: 'session-new',
+      claimGeneration: (oldOwner.claimGeneration ?? 1) + 1,
+    });
+    expect(getControllerRoundRelay(store, 'work-owner')?.authorityId).toBe(opened.authorityId);
+
+    expect(() => bindControllerOwnershipForInvocation({
+      ...store,
+      workId: 'work-owner',
+      relayScopeId: opened.relayScopeId,
+      identity: {
+        controllerId: 'principal-a',
+        controllerType: 'chatgpt',
+        principalId: 'principal-a',
+        controllerInstanceId: 'runtime-old',
+        sessionId: 'session-stale',
+        controllerAuthorityId: opened.authorityId,
+      },
+      runtime: { running: true, runtimeInstanceId: 'runtime-new' },
+    })).toThrow(/WORK_CONTROLLER_INSTANCE_MISMATCH/);
+    expect(getControllerRoundRelay(store, 'work-owner')?.authorityId).toBe(opened.authorityId);
     expect(getControllerSession(store, 'work-owner')?.controllerInstanceId).toBe('runtime-new');
   });
 

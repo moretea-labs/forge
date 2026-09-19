@@ -623,7 +623,14 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (operation === 'verify') {
             const workId = String(args.work_id ?? '').trim();
             try {
-              if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+              if (workId) {
+                const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+                const identity = authenticatedFacadeControllerIdentity(ctx, args);
+                bindFacadeControllerOwnership(ctx, store, workId, identity, {
+                  allowClaimIfMissing: Boolean(relay?.authorityId),
+                  relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
+                });
+              }
             } catch (error) {
               const blocked = buildFacadeResult({
                 status: 'blocked',

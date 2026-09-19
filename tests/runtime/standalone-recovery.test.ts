@@ -1786,6 +1786,7 @@ describe('standalone recovery on canonical Runtime', () => {
       'verify_runtime_release_session_static',
       'verify_runtime_release_session_candidate',
       'cutover_runtime_release_session',
+      'rollback_runtime_release_session',
       'promote_runtime_release_session_known_good',
     ]));
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('migrate_controller_home');
@@ -1827,6 +1828,7 @@ describe('standalone recovery on canonical Runtime', () => {
       'verify_runtime_release_session_static',
       'verify_runtime_release_session_candidate',
       'cutover_runtime_release_session',
+      'rollback_runtime_release_session',
       'promote_runtime_release_session_known_good',
       'migrate_controller_home',
       'restart_public_tunnel',
@@ -1846,6 +1848,7 @@ describe('standalone recovery on canonical Runtime', () => {
       'release-session-static-verify',
       'release-session-candidate-verify',
       'release-session-cutover',
+      'release-session-rollback',
       'release-session-known-good',
     ]));
     expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');

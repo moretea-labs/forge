@@ -297,6 +297,7 @@ export type RecoveryMutationAction =
   | 'release_session_static_verify'
   | 'release_session_candidate_boot'
   | 'release_session_cutover'
+  | 'release_session_rollback'
   | 'release_session_known_good'
   | 'restart_primary_connector'
   | 'restart_recovery_gateway'
@@ -3156,6 +3157,51 @@ export async function recoverPrimaryRuntime(
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
+
+  const activation = releaseAuthority(config)?.activation;
+  if (activation?.releaseSessionId) {
+    const session = readReleaseSession(config.controllerHome, activation.releaseSessionId);
+    if (!session) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_ACTIVATION_OWNER_MISSING: ${activation.releaseSessionId}`,
+        verify: initial,
+      };
+    }
+    if (!['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_ACTIVATION_OWNER_PHASE_MISMATCH: ${session.phase}`,
+        verify: initial,
+      };
+    }
+    const sessionRollback = await rollbackConfiguredRuntimeReleaseSession(
+      config,
+      session.sessionId,
+      dependencies,
+      `recover-primary-runtime:${activation.operationId}`,
+    );
+    const after = await verifyLocal(config);
+    const rollback: RollbackResult = {
+      ok: sessionRollback.ok,
+      ...(sessionRollback.noOp === true ? { noOp: true } : {}),
+      detail: sessionRollback.detail,
+      verify: after,
+    };
+    return {
+      ok: sessionRollback.ok,
+      attempted: sessionRollback.attempted,
+      ...(sessionRollback.noOp === true ? { noOp: true } : {}),
+      detail: sessionRollback.detail,
+      rollback,
+      verify: after,
+    };
+  }
+
   const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
   const service = primaryRuntimeServiceOwner(config, platform, uid);
@@ -3495,7 +3541,12 @@ async function activateRuntimeReleaseInternal(
         candidate.manifestPath,
         operationId,
         undefined,
-        guard.preserveDatabaseOnFailure ? undefined : { operationId },
+        guard.preserveDatabaseOnFailure
+          ? undefined
+          : {
+              operationId,
+              ...(guard.releaseSessionId?.trim() ? { releaseSessionId: guard.releaseSessionId.trim() } : {}),
+            },
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'runtime release authority publish failed';
@@ -3551,12 +3602,13 @@ async function activateRuntimeReleaseInternal(
     });
     let after = activated.verify;
     if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      let activationCommitted = true;
-      if (!guard.preserveDatabaseOnFailure) {
+      let activationReady = true;
+      const activationCommitDeferred = !guard.preserveDatabaseOnFailure && Boolean(guard.releaseSessionId?.trim());
+      if (!guard.preserveDatabaseOnFailure && !activationCommitDeferred) {
         try {
           commitRuntimeReleaseActivation(config.controllerHome, operationId);
         } catch (error) {
-          activationCommitted = false;
+          activationReady = false;
           activationFailureDetail = `Runtime became healthy but activation transaction commit failed: ${error instanceof Error ? error.message : String(error)}`;
           audit(config, 'runtime_release_activation_transaction_commit_failed', {
             serviceTarget: service.target,
@@ -3566,7 +3618,7 @@ async function activateRuntimeReleaseInternal(
           });
         }
       }
-      if (activationCommitted) {
+      if (activationReady) {
         audit(config, 'runtime_release_activation_succeeded', {
           serviceTarget: service.target,
           operationId,
@@ -3576,13 +3628,17 @@ async function activateRuntimeReleaseInternal(
           expectedActiveReleaseId: guard.expectedActiveReleaseId,
           controllerHomeStorageMigrated: storageMigration?.migrated === true,
           connectorBindingRepaired: candidateConnectorBinding?.attempted === true,
+          activationCommitDeferred,
+          ...(guard.releaseSessionId?.trim() ? { releaseSessionId: guard.releaseSessionId.trim() } : {}),
         });
         return {
           ok: true,
           attempted: true,
-          detail: storageMigration?.migrated
-            ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
-            : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
+          detail: activationCommitDeferred
+            ? 'requested Runtime release activated and verified; exact ReleaseSession activation transaction remains open through soak'
+            : storageMigration?.migrated
+              ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
+              : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
           serviceTarget: service.target,
           operationId,
           verify: after,
@@ -4644,6 +4700,180 @@ export async function cutoverConfiguredRuntimeReleaseSession(
 }
 
 
+function releaseSessionActivationTransaction(
+  config: RecoveryConfig,
+  session: ReleaseSession,
+): { operationId: string } {
+  const authority = readRuntimeReleaseAuthority(config.controllerHome);
+  const transaction = authority?.activation;
+  const candidateRelease = session.candidateRelease;
+  if (!authority || !transaction || !candidateRelease) {
+    throw new Error('RELEASE_SESSION_ACTIVATION_TRANSACTION_REQUIRED');
+  }
+  if (transaction.releaseSessionId !== session.sessionId) {
+    throw new Error('RELEASE_SESSION_ACTIVATION_TRANSACTION_MISMATCH');
+  }
+  if (
+    transaction.candidateReleaseId !== candidateRelease.releaseId
+    || authority.active.releaseId !== candidateRelease.releaseId
+    || authority.active.artifactIdentity !== candidateRelease.artifactIdentity
+    || transaction.preActivationActive.releaseId !== session.stableRelease.releaseId
+    || transaction.preActivationActive.artifactIdentity !== session.stableRelease.artifactIdentity
+    || transaction.preActivationActive.manifestSha256 !== session.stableRelease.manifestSha256
+  ) {
+    throw new Error('RELEASE_SESSION_ACTIVATION_TRANSACTION_IDENTITY_MISMATCH');
+  }
+  return { operationId: transaction.operationId };
+}
+
+export async function rollbackConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sessionId: string,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_rollback',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase === 'rolled_back') {
+      return { ok: true as const, attempted: false, noOp: true, detail: 'ReleaseSession is already rolled back', releaseSession: session };
+    }
+    if (!['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_ROLLBACK_REQUIRES_CUTOVER: ${session.phase}`,
+        releaseSession: session,
+      };
+    }
+
+    let transaction: { operationId: string };
+    try {
+      transaction = releaseSessionActivationTransaction(config, session);
+    } catch (error) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: error instanceof Error ? error.message : String(error),
+        releaseSession: session,
+      };
+    }
+
+    const platform = dependencies.platform ?? process.platform;
+    const uid = await (dependencies.currentUid ?? currentUid)();
+    const service = primaryRuntimeServiceOwner(config, platform, uid);
+    if (!service) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `primary Forge Runtime ${configuredPrimaryRuntimeService(config, platform).platform} service is not installed for ${platform}`,
+        releaseSession: session,
+      };
+    }
+    const runCommand = dependencies.runCommand ?? command;
+    const now = dependencies.now ?? Date.now;
+    const wait = dependencies.sleep ?? sleep;
+    const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
+    const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+    const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
+      ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
+
+    const stopped = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
+    if (!stopped.ok) {
+      return { ok: false as const, attempted: true, detail: stopped.detail, releaseSession: session };
+    }
+
+    let restored: RuntimeReleaseAuthority;
+    try {
+      restored = abortRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
+      if (
+        restored.active.releaseId !== session.stableRelease.releaseId
+        || restored.active.artifactIdentity !== session.stableRelease.artifactIdentity
+        || restored.active.manifestSha256 !== session.stableRelease.manifestSha256
+      ) throw new Error('RELEASE_SESSION_ROLLBACK_STABLE_IDENTITY_MISMATCH');
+    } catch (error) {
+      const restart = await rebindStartAndVerifyPrimaryRuntime({
+        config,
+        service,
+        runCommand,
+        now,
+        wait,
+        verifyLocal,
+        ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
+        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+        successDetail: 'ReleaseSession rollback transaction failed; current authoritative Runtime was restarted and verified',
+      });
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: `${error instanceof Error ? error.message : String(error)}; authoritative Runtime restart: ${restart.detail}`,
+        releaseSession: session,
+      };
+    }
+
+    let rollbackConnectorBinding: { ok: boolean; attempted: boolean; noOp?: boolean; detail: string } | undefined;
+    const restarted = await rebindStartAndVerifyPrimaryRuntime({
+      config,
+      service,
+      runCommand,
+      now,
+      wait,
+      verifyLocal,
+      ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
+      contractFailureContext: 'after ReleaseSession rollback',
+      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+      successDetail: 'exact Stable A whole-Runtime release and SQLite backup restored, restarted, rebound, and verified',
+      afterRuntimeReady: async () => {
+        rollbackConnectorBinding = await repairConnectorBinding(config);
+        return rollbackConnectorBinding.ok
+          ? { ok: true, detail: rollbackConnectorBinding.detail }
+          : { ok: false, detail: `Stable A persistent Connector binding failed after ReleaseSession rollback: ${rollbackConnectorBinding.detail}` };
+      },
+    });
+
+    const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
+    session = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: latest.revision,
+      phase: restarted.ok ? 'rolled_back' : 'failed',
+      receipts: [{
+        id: restarted.ok ? 'rollback' : 'rollback_failed',
+        kind: 'rollback',
+        summary: restarted.ok
+          ? `exact Stable A ${latest.stableRelease.releaseId} and its SQLite backup restored from ReleaseSession activation transaction`
+          : `Stable A authority restored but Runtime verification failed after rollback: ${restarted.detail}`.slice(0, 500),
+      }],
+    });
+    audit(config, restarted.ok ? 'release_session_rolled_back' : 'release_session_rollback_restart_failed', {
+      sessionId,
+      activationOperationId: transaction.operationId,
+      restoredStableReleaseId: restored.active.releaseId,
+      connectorBindingRepaired: rollbackConnectorBinding?.ok === true,
+      detail: restarted.detail,
+    });
+    return {
+      ok: restarted.ok,
+      attempted: true,
+      detail: restarted.ok
+        ? 'ReleaseSession rollback restored the exact frozen Stable A release, SQLite backup, service binding, and verified Runtime'
+        : `ReleaseSession restored Stable A authority but failed post-rollback Runtime verification: ${restarted.detail}`,
+      releaseSession: session,
+    };
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
+  return locked.value;
+}
+
+
 export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   config: RecoveryConfig,
   sessionId: string,
@@ -4699,6 +4929,18 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     ) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
+    let transaction: { operationId: string };
+    try {
+      transaction = releaseSessionActivationTransaction(config, session);
+      commitRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
+    } catch (error) {
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: error instanceof Error ? error.message : String(error),
+        releaseSession: session,
+      };
+    }
     session = advanceReleaseSession({
       controllerHome: config.controllerHome,
       sessionId,
@@ -4715,6 +4957,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       releaseId: attested.revision,
       attestationId: attested.recoveryBundle!.attestationId,
       releaseAuthorityRevision: attested.releaseAuthorityRevision,
+      activationOperationId: transaction.operationId,
     });
     return {
       ok: true as const,
@@ -5099,6 +5342,50 @@ async function reconcileInterruptedRuntimeReleaseActivation(config: RecoveryConf
     && observation.snapshot?.releaseId === observedAuthority.active.releaseId
     && observation.snapshot?.artifactIdentity === observedAuthority.active.artifactIdentity,
   );
+
+  if (observedTransaction.releaseSessionId) {
+    const session = readReleaseSession(config.controllerHome, observedTransaction.releaseSessionId);
+    if (!session) {
+      audit(config, 'runtime_release_activation_release_session_missing', {
+        operationId: observedTransaction.operationId,
+        releaseSessionId: observedTransaction.releaseSessionId,
+      });
+      return;
+    }
+    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+      audit(config, 'runtime_release_activation_release_session_preserved', {
+        operationId: observedTransaction.operationId,
+        releaseSessionId: session.sessionId,
+        phase: session.phase,
+        candidateHealthy,
+      });
+      return;
+    }
+    if (session.phase === 'known_good' && candidateHealthy) {
+      const locked = await withLock(config, {
+        action: 'release_session_known_good',
+        requestId: `watchdog:reconcile_release_session:${observedTransaction.operationId}`,
+      }, async () => {
+        const current = releaseAuthority(config);
+        const transaction = current?.activation;
+        if (!transaction || transaction.operationId !== observedTransaction.operationId || transaction.releaseSessionId !== session.sessionId) return;
+        commitRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
+        audit(config, 'runtime_release_activation_release_session_reconciled_committed', {
+          operationId: transaction.operationId,
+          releaseSessionId: session.sessionId,
+        });
+      });
+      if (!locked.acquired) return;
+      return;
+    }
+    audit(config, 'runtime_release_activation_release_session_phase_mismatch', {
+      operationId: observedTransaction.operationId,
+      releaseSessionId: session.sessionId,
+      phase: session.phase,
+    });
+    return;
+  }
+
   if (observation.running && !candidateHealthy) return;
 
   const locked = await withLock(config, {
