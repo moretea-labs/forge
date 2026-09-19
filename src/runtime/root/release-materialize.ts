@@ -9,7 +9,7 @@ import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlit
 import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 import { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryCommand } from './release-execution-canary';
 export { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryDependencies } from './release-execution-canary';
-import { compiledRuntimePackageFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
+import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
 /**
  * Stage one immutable Forge Runtime release below Controller Home. The staged
@@ -688,13 +688,16 @@ export function stageRuntimeRelease(input: {
     cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
     const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
 
-    // Compiled releases execute only attested binaries/bundles. Keep a
-    // bounded package projection for Chrome extension installation and legacy
-    // Recovery recognition; Connector execution is owned by the compiled
-    // forge-mcp-gateway sidecar above.
+    // Keep the source-backed package projection during the Recovery migration.
+    // The active standalone Recovery release can predate the compiled Connector
+    // sidecar and still rebind the primary Connector through package/src/cli.
+    // Removing that surface here makes a candidate pass isolated Runtime
+    // canaries but fail the real cutover with missing CLI command modules. Once
+    // every supported Recovery release launches forge-mcp-gateway, this
+    // compatibility projection can be removed together with the fallback.
     const packageRoot = 'package' as const;
     const packagePath = join(staging, packageRoot);
-    const packageRecords = compiledRuntimePackageFileIndex(sourceRoot);
+    const packageRecords = packageRuntimeFileIndex(sourceRoot);
     stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords);
     const packageArtifactIdentity = `sha256:${sha256Directory(packagePath)}`;
 

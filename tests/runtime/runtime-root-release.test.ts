@@ -48,6 +48,7 @@ function sourceFixture() {
   roots.push(root, controllerHome);
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
   mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
+  mkdirSync(join(root, 'src/cli/commands'), { recursive: true });
   mkdirSync(join(root, 'src/cli/local-bridge/ui-dist'), { recursive: true });
   mkdirSync(join(root, 'supervisor/native-messaging'), { recursive: true });
   mkdirSync(join(root, 'supervisor/chrome-extension'), { recursive: true });
@@ -57,6 +58,7 @@ function sourceFixture() {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '1.7.0-test' }));
   writeFileSync(join(root, 'bin/forge-runtime.mjs'), 'process.exit(0);\n');
   writeFileSync(join(root, 'src/cli/index.ts'), 'export {};\n');
+  writeFileSync(join(root, 'src/cli/commands/install.ts'), 'export {};\n');
   writeFileSync(join(root, 'src/runtime/shared/node-ts-loader.mjs'), 'export {};\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
@@ -481,6 +483,7 @@ describe('runtime release materialization', () => {
     expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'package', 'package.json'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'commands', 'install.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'supervisor', 'chrome-extension', 'background.js'))).toBe(true);
     expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
