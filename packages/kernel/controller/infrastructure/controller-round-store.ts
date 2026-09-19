@@ -8,6 +8,7 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecord,
   writeControlPlaneRecordWithinTransaction,
+  withControlPlaneReadDatabase,
   type ControlPlaneRecord,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
@@ -103,6 +104,14 @@ const DEFAULT_UNCLOSED_ROUND_GRACE_MS = 10 * 60_000;
 const MAX_UNCLOSED_ROUND_GRACE_MS = 60 * 60_000;
 const DEFAULT_STALLED_RECOVERY_BACKOFF_MS = 60_000;
 const MAX_STALLED_RECOVERY_BACKOFF_MS = 15 * 60_000;
+const MAX_LATEST_RELAY_CACHE_ENTRIES = 128;
+
+interface LatestRelayRecordsCacheEntry {
+  signature: string;
+  records: ControllerRoundRelayRecord[];
+}
+
+const latestRelayRecordsCache = new Map<string, LatestRelayRecordsCacheEntry>();
 
 
 function transitionDecisionOrThrow(decision: ControllerRoundTransitionDecision): { record: ControllerRoundRelayRecord; action?: string; changed: boolean } {
@@ -234,6 +243,25 @@ function relayHistory(options: ControllerRoundRelayStoreOptions, relayScopeId: s
 }
 
 function latestRelayRecordsByScope(options: ControllerRoundRelayStoreOptions): ControllerRoundRelayRecord[] {
+  const cacheKey = `${options.controllerHome}\u0000${options.repoId}`;
+  const signature = withControlPlaneReadDatabase(options.controllerHome, (database) => {
+    const statement = database.prepare(`
+      SELECT COUNT(*) AS recordCount,
+             COALESCE(SUM(revision), 0) AS revisionSum,
+             MAX(updated_at) AS latestUpdatedAt
+      FROM control_plane_records
+      WHERE namespace = ? AND scope = ?
+    `);
+    try {
+      const row = statement.get(NAMESPACE, options.repoId) as { recordCount?: unknown; revisionSum?: unknown; latestUpdatedAt?: unknown } | undefined;
+      return `${String(row?.recordCount ?? 0)}:${String(row?.revisionSum ?? 0)}:${typeof row?.latestUpdatedAt === 'string' ? row.latestUpdatedAt : ''}`;
+    } finally {
+      statement.finalize?.();
+    }
+  });
+  const cached = latestRelayRecordsCache.get(cacheKey);
+  if (cached && cached.signature === signature) return cached.records;
+
   const latest = new Map<string, ControllerRoundRelayRecord>();
   for (const entry of listControlPlaneRecords<ControllerRoundRelayRecord>(options.controllerHome, {
     namespace: NAMESPACE,
@@ -244,7 +272,14 @@ function latestRelayRecordsByScope(options: ControllerRoundRelayStoreOptions): C
     const current = latest.get(entry.relayScopeId);
     if (!current || entry.updatedAt > current.updatedAt) latest.set(entry.relayScopeId, entry);
   }
-  return [...latest.values()].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+  const records = [...latest.values()].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+  latestRelayRecordsCache.set(cacheKey, { signature, records });
+  while (latestRelayRecordsCache.size > MAX_LATEST_RELAY_CACHE_ENTRIES) {
+    const oldest = latestRelayRecordsCache.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    latestRelayRecordsCache.delete(oldest);
+  }
+  return records;
 }
 
 
