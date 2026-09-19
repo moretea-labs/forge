@@ -351,7 +351,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (mode === 'reconcile') {
       const exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
-      const markerPresent = targetMarkerPresent(snapshot.pageText ?? snapshot.latestUserText, command.effectId);
+      // Page text also includes the composer and transient UI labels. Treating
+      // a marker there as proof of submission can acknowledge a prompt that
+      // never became a committed user message after a send-control failure.
+      // Only submitted user-role history is causal evidence for this effect.
+      const markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
       this.control.browserObserveEffect({
         conversationId: command.conversationId,
         conversationUrl: command.conversationUrl,
@@ -398,7 +402,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     for (let attempt = 0; attempt < 50; attempt += 1) {
       snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
       exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
-      markerPresent = targetMarkerPresent(snapshot.pageText ?? snapshot.latestUserText, command.effectId);
+      // A marker in page text may still be sitting in the composer after the
+      // send control failed. Only the committed user-role history can prove
+      // that this external mutation reached the conversation.
+      markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
       if (exact || markerPresent) break;
       await this.deps.sleep(100);
     }

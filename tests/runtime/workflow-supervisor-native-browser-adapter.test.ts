@@ -14,7 +14,7 @@ afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, f
 function home(): string { const value = mkdtempSync(join(tmpdir(), 'forge-supervisor-native-browser-')); roots.push(value); return value; }
 
 class FakePage implements WorkflowSupervisorNativePage {
-  owner = ''; latestUserText = ''; latestAssistantResponse = ''; isGenerating = false; closed = false;
+  owner = ''; latestUserText = ''; pageText = ''; latestAssistantResponse = ''; isGenerating = false; closed = false;
   constructor(readonly ref: MacOsBrowserTabRef, public url: string, public title = 'ChatGPT') {}
   async evaluate<T>(): Promise<T> { throw new Error('fake evaluate should be replaced by adapter dependencies'); }
   tabRef(): MacOsBrowserTabRef { return { ...this.ref }; }
@@ -22,7 +22,7 @@ class FakePage implements WorkflowSupervisorNativePage {
 function inventory(page: FakePage): MacOsBrowserTabInventoryEntry {
   return { windowId: page.ref.windowId, tabId: page.ref.tabId, url: page.url, title: page.title, active: false };
 }
-function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfirmed = false, preSubmitFailureReason = '', dispatchedUserSuffix = '') {
+function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfirmed = false, preSubmitFailureReason = '', dispatchedUserSuffix = '', pageTextOnly = false) {
   const settlements: string[] = [];
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home()), {
     completionContract: async () => ({ valid: true, reason: 'ok' }),
@@ -48,12 +48,15 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     writeOwner: async (page, marker) => { (page as FakePage).owner = marker; },
     snapshot: async (page) => {
       const value = page as FakePage;
-      return { url: value.url, title: value.title, latestUserText: value.latestUserText, latestAssistantResponse: value.latestAssistantResponse, isGenerating: value.isGenerating };
+      return { url: value.url, title: value.title, latestUserText: value.latestUserText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, isGenerating: value.isGenerating };
     },
     dispatchPrompt: async (page, prompt) => {
       dispatchAttempts += 1;
       if (preSubmitFailureReason && dispatchAttempts === 1) return { dispatched: false, reason: preSubmitFailureReason };
-      if (!providerConfirmed) (page as FakePage).latestUserText = `${prompt}${dispatchedUserSuffix}`;
+      if (!providerConfirmed) {
+        if (pageTextOnly) (page as FakePage).pageText = `${prompt}${dispatchedUserSuffix}`;
+        else (page as FakePage).latestUserText = `${prompt}${dispatchedUserSuffix}`;
+      }
       return { dispatched: true, ...(providerConfirmed ? { confirmed: true } : {}) };
     },
     nowMs: () => nowMs,
@@ -153,6 +156,19 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(1);
+    expect(h.errors).toEqual([]);
+  });
+  test('does not treat a composer/page-text marker as submitted user evidence', async () => {
+    const conversationId = '16161616-2727-3838-4949-606060606060';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const h = harness([], '', false, '', '', true);
+    const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(false);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toMatchObject({ mode: 'send', dispatchGeneration: 2 });
     expect(h.errors).toEqual([]);
   });
   test('accepts canonical provider confirmation without requiring DOM user-message equality', async () => {
