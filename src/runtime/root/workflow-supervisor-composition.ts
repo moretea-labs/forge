@@ -184,7 +184,7 @@ function workflowSupervisorWorkRecordRevision(controllerHome: string, repoId: st
       const revision = Number(row?.revision);
       return Number.isInteger(revision) && revision > 0 ? revision : undefined;
     } finally {
-      statement.finalize();
+      statement.finalize?.();
     }
   });
 }
@@ -219,9 +219,8 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
       workStateById.set(work.workId, { revision, active: false });
       return false;
     }
-    const active = relay.status !== 'failed';
-    workStateById.set(work.workId, { revision, active });
-    return active;
+    workStateById.set(work.workId, { revision, active: true });
+    return true;
   };
 }
 
