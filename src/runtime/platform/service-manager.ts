@@ -8,6 +8,8 @@ import {
   installLaunchAgent,
   launchAgentPath,
   retireConflictingForgeLaunchAgents,
+  retireLaunchAgentExact,
+  type ExactLaunchAgentRetirementResult,
 } from '../../cli/controller/launch-agents';
 import {
   installSystemdUserUnit,
@@ -15,6 +17,8 @@ import {
   systemdUserAvailable,
   writeSystemdUserUnit,
   systemdUserInstallCommands,
+  retireSystemdUserUnitExact,
+  type ExactSystemdUserUnitRetirementResult,
   type SystemdUserUnitInput,
 } from '../../cli/controller/systemd-user';
 
@@ -48,6 +52,8 @@ export interface PlatformServiceManagerHost {
   bootstrapLaunchd(input: { label: string; plistPath: string }): Promise<{ ok: boolean; diagnostics: string[] }>;
   bootoutLaunchd(input: { label: string; plistPath: string }): Promise<{ ok: boolean; diagnostics: string[] }>;
   retireConflictingLaunchd(input: Parameters<typeof retireConflictingForgeLaunchAgents>[0]): ReturnType<typeof retireConflictingForgeLaunchAgents>;
+  retireLaunchdExact(input: { label: string; accountHome?: string }): Promise<ExactLaunchAgentRetirementResult>;
+  retireSystemdUserExact(input: { unitName: string; env?: NodeJS.ProcessEnv }): ExactSystemdUserUnitRetirementResult;
   launchdDomain(): string;
   detachLaunchdBootout(label: string): void;
   startDetached(input: PlatformDetachedProcessInput): number;
@@ -98,6 +104,8 @@ export function createPlatformServiceManagerHost(input: {
     bootstrapLaunchd: bootstrapLaunchAgentWithRetryV2,
     bootoutLaunchd: bootoutLaunchAgentWithRetryV2,
     retireConflictingLaunchd: retireConflictingForgeLaunchAgents,
+    retireLaunchdExact: retireLaunchAgentExact,
+    retireSystemdUserExact: retireSystemdUserUnitExact,
     launchdDomain: currentUserLaunchdDomain,
     detachLaunchdBootout(label: string): void {
       if (platform !== 'darwin') return;

@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost } from '../platform/service-manager';
+import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import type { RuntimeReleaseManifest } from './types';
@@ -47,8 +48,7 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
 export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeServicePaths {
   const home = resolveControllerHome(controllerHome);
   const serviceRoot = join(home, 'runtime', 'service');
-  const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
-  const label = `com.moretea.forge.runtime.${suffix}`;
+  const label = forgeRuntimePersistentServiceLabel(home);
   const launchAgentsRoot = join(process.env.HOME ?? homedir(), 'Library', 'LaunchAgents');
   return {
     controllerHome: home,

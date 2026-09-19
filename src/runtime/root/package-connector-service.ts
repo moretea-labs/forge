@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
@@ -6,6 +5,7 @@ import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 import { createPlatformServiceManagerHost, platformLaunchdInstalledPath, type PlatformServiceManagerHost, type SystemdUserUnitInput } from '../platform/service-manager';
+import { forgeConnectorPersistentServiceLabel } from '../platform/service-inventory';
 
 export interface PackageConnectorServicePaths {
   label: string;
@@ -57,8 +57,7 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
 
 export function packageConnectorServicePaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): PackageConnectorServicePaths {
   const home = resolve(controllerHome);
-  const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
-  const label = `com.moretea.forge.mcp-gateway.${suffix}`;
+  const label = forgeConnectorPersistentServiceLabel(home);
   const serviceRoot = join(home, 'runtime', 'connector-service');
   return {
     label,

@@ -66,6 +66,10 @@ Execution placement, lifecycle, retry, authorization, and acceptance decisions c
 
 Machine-visible failures have a stable code plus an explicit class and retry disposition; transport projections such as HTTP status derive from that contract. Free-form messages exist for diagnostics and user presentation. A producer-specific adapter may translate a native SDK/OS error into the failure contract once, but retry policy must not be inferred from words such as `temporary`, `worker`, or `network`, and authorization must not be inferred from arbitrary prose. Ambiguous non-idempotent outcomes use an explicit reconciliation-before-retry disposition rather than generic transient retry.
 
+### Persistent service identity authority
+
+Forge core persistent service ownership is machine-enumerable in `src/runtime/platform/service-inventory.ts`. The inventory owns exact current Runtime/Connector/Recovery identities and an explicit exact retired set; platform service managers own only launchd/systemd mechanics. Upgrade reconciliation may retire only exact entries from the retired Forge-core set and must verify service plus installed artifact absence. Broad `com.moretea.*` / `com.moretea.forge.*` prefix retirement is forbidden. Provider-owned services such as Desktop Operator and user-configured tunnel services remain outside Forge core retirement authority even when their labels share Forge naming.
+
 ### Tool Contract ABI authority
 
 The published tool contract is a transport ABI, not a second semantic authority. Current and frozen clients must enter the same canonical typed handlers. The stable `rh_work` operation registry is one ABI authority shared by MCP schema generation and server-side `SuggestedNextAction` admission, so lifecycle projection cannot invent an operation the published contract does not expose or reject an operation the schema already owns. New frozen `rh_work` compatibility travels through the versioned `semantic.v1` envelope; older ad-hoc `capability_id` prefixes are shrinking migration debt and new prefixes are rejected by the runtime architecture gate.

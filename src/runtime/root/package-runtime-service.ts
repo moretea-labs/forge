@@ -4,6 +4,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost, probeSystemdUserAvailable, type PlatformServiceManagerHost, type PlatformServiceManagerKind, type SystemdUserUnitInput } from '../platform/service-manager';
+import { reconcileRetiredForgePersistentServices, type ForgeRetiredServiceReconciliation } from '../platform/service-inventory';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import {
   activeRuntimeEntrypoint,
@@ -75,6 +76,7 @@ export interface PackageRuntimeServiceInstallResult {
   pid?: number;
   warnings: string[];
   connector?: PackageConnectorServiceResult;
+  retiredServices?: ForgeRetiredServiceReconciliation[];
   activation?: {
     operationId: string;
     status: 'activation_scheduled';
@@ -103,6 +105,7 @@ export interface PackageRuntimeServiceDependencies {
   ensureConnectorService?: typeof ensurePackageConnectorService;
   scheduleDarwinActivation?: (request: PackageRuntimeActivationRequest) => Promise<{ label: string; servicePath: string }>;
   activationMode?: 'detached' | 'inline';
+  reconcileRetiredServices?: typeof reconcileRetiredForgePersistentServices;
 }
 
 export interface PackageRuntimeActivationDependencies {
@@ -478,6 +481,11 @@ export async function installPackageRuntimeService(
   const env = options.env ?? process.env;
   const serviceHost = createPlatformServiceManagerHost({ platform, env, forcePortable: options.forcePortable });
   const serviceManager = serviceHost.selection;
+  const retiredServices = await (dependencies.reconcileRetiredServices ?? reconcileRetiredForgePersistentServices)({
+    host: serviceHost,
+    env,
+    accountHome: env.HOME,
+  });
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
   const explicitInjectedInline = Boolean(dependencies.installDarwinService && !dependencies.scheduleDarwinActivation && !dependencies.activationMode);
   const activationMode = dependencies.activationMode ?? (explicitInjectedInline ? 'inline' : 'detached');
@@ -591,6 +599,7 @@ export async function installPackageRuntimeService(
     }
   }
 
+  base = { ...base, retiredServices };
   if (!connectorEndpoint || base.status === 'activation_scheduled') return base;
   const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const connector = await ensureConnectorService({
