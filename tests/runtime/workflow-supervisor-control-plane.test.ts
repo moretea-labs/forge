@@ -252,3 +252,25 @@ test('browserTasks stops polling after bounded provider recovery is exhausted', 
   expect(control.reserveSchedulerRecovery(taskId, 'occ-supervisor-rearm-2')?.effectId).toBe(nextRecovery.effectId);
   expect(control.browserTasks()).toHaveLength(1);
 });
+
+test('browserTasks keeps an applied external effect observable while lower ControllerRound waits', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-applied-waiting-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store, {}, { browserTaskActive: () => false });
+  const taskId = 'task-browser-applied-waiting';
+  const conversationId = '56565656-7878-9090-1212-343434343434';
+  control.registerTask({
+    taskId,
+    conversationId,
+    conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+    objective: 'Keep observing an already applied effect while the lower round waits.',
+    completionContract: {},
+    continuationPolicy: {},
+    userBlockerPolicy: {},
+  });
+  const effect = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: effect.effectId, observationId: 'applied-while-waiting', outcome: 'applied' });
+
+  expect(control.browserTasks()).toHaveLength(1);
+});

@@ -215,6 +215,27 @@ export class WorkflowSupervisorStore {
     });
   }
 
+  /**
+   * An applied browser effect remains a Supervisor-owned external observation
+   * obligation even when its lower ControllerRound temporarily waits. This
+   * intentionally includes effects that already have a bounded provider
+   * recovery child; the native adapter must stay alive long enough to observe
+   * and dispatch that recovery instead of abandoning the browser task.
+   */
+  hasAppliedEffectAwaitingCompletion(taskId: string): boolean {
+    return this.read((db) => Boolean(statement(db, `SELECT 1 AS ok FROM effects e
+      WHERE e.task_id = ?
+        AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
+        AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+        AND NOT EXISTS (SELECT 1 FROM events exhausted WHERE exhausted.effect_id = e.effect_id AND exhausted.kind = 'assistant_recovery_exhausted')
+        AND NOT EXISTS (
+          SELECT 1 FROM effects child
+          JOIN events child_exhausted ON child_exhausted.effect_id = child.effect_id AND child_exhausted.kind = 'assistant_recovery_exhausted'
+          WHERE child.origin_key = 'provider-recovery:' || e.effect_id
+        )
+      LIMIT 1`, (s) => s.get(taskId))));
+  }
+
   observeProviderTurn(input: {
     taskId: string;
     effectId: string;

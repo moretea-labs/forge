@@ -40,11 +40,16 @@ export class WorkflowSupervisorControlPlane {
       // reconcile, or observe to completion. An otherwise-active Requirement is
       // not itself a reason to re-open Work/Requirement authority and snapshot
       // the browser every second.
+      const appliedEffectAwaitingCompletion = this.store.hasAppliedEffectAwaitingCompletion(task.taskId);
       const needsBrowserAttention = Boolean(
         this.store.nextBrowserEffect(task.taskId)
-        || this.store.latestAppliedEffectWithoutCompletion(task.taskId),
+        || appliedEffectAwaitingCompletion,
       );
-      return needsBrowserAttention && this.browserTaskActive(task);
+      // Once a browser effect has been applied, observation and any bounded
+      // Supervisor recovery belong to the Supervisor external-effect
+      // lifecycle. A transient lower ControllerRound wait must not strand
+      // that effect before assistant completion is observed.
+      return needsBrowserAttention && this.browserTaskActiveForExternalEffect(task);
     }).map(browserTask);
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
@@ -104,7 +109,7 @@ export class WorkflowSupervisorControlPlane {
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
-    if (!this.browserTaskActive(task)) return { state: 'inactive' };
+    if (!this.browserTaskActiveForExternalEffect(task)) return { state: 'inactive' };
     const sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
     if (!sourceEffect) return { state: 'none' };
     const recoveryId = effectId();
@@ -164,6 +169,9 @@ export class WorkflowSupervisorControlPlane {
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }
+  private browserTaskActiveForExternalEffect(task: WorkflowSupervisorTask): boolean {
+    return this.store.hasAppliedEffectAwaitingCompletion(task.taskId) || this.browserTaskActive(task);
+  }
 
   private browserSnapshotMatchesSource(task: WorkflowSupervisorTask, effect: WorkflowSupervisorEffect, snapshot: { latestUserText: string; latestAssistantResponse: string }): boolean {
     if (!effect.sourceCompletionFingerprint) return true;
