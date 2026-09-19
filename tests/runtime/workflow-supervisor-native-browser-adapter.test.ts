@@ -78,6 +78,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
             ? [{ innerText: 'effect marker prompt' }, { innerText: 'later provider user node' }]
             : [{ innerText: 'latest assistant response' }],
           querySelector: () => null,
+          body: { innerText: 'full visible conversation with effect marker' },
           title: 'ChatGPT',
         };
         return Function('document', 'location', `return ${expression}`)(fakeDocument, { href: 'https://chatgpt.com/c/test' }) as T;
@@ -86,6 +87,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     };
     const snapshot = await defaultSnapshot(page);
     expect(snapshot.latestUserText).toBe('effect marker prompt\nlater provider user node');
+    expect(snapshot.pageText).toBe('full visible conversation with effect marker');
     expect(snapshot.latestAssistantResponse).toBe('latest assistant response');
   });
 

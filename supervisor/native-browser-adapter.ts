@@ -26,6 +26,7 @@ export interface WorkflowSupervisorNativeSnapshot {
   url: string;
   title: string;
   latestUserText: string;
+  pageText?: string;
   latestAssistantResponse: string;
   isGenerating: boolean;
 }
@@ -83,6 +84,7 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promi
       // provider/tool UI can append later user-role nodes. Keep the complete
       // visible user history so the unique Forge marker remains evidence.
       latestUserText: userTexts.join('\\n'),
+      pageText: String(document.body?.innerText ?? document.body?.textContent ?? '').trim(),
       latestAssistantResponse: assistantTexts.at(-1) ?? '',
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"]')),
     };
@@ -340,7 +342,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     if (mode === 'reconcile') {
       const exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
-      const markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
+      const markerPresent = targetMarkerPresent(snapshot.pageText ?? snapshot.latestUserText, command.effectId);
       this.control.browserObserveEffect({
         conversationId: command.conversationId,
         conversationUrl: command.conversationUrl,
@@ -353,6 +355,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           reconciliation: true,
           target_marker_present: markerPresent,
           latest_user_text: snapshot.latestUserText,
+          page_text: snapshot.pageText,
           latest_assistant_response: snapshot.latestAssistantResponse,
         },
       });
@@ -386,7 +389,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     for (let attempt = 0; attempt < 50; attempt += 1) {
       snapshot = await this.deps.snapshot(page);
       exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
-      markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
+      markerPresent = targetMarkerPresent(snapshot.pageText ?? snapshot.latestUserText, command.effectId);
       if (exact || markerPresent) break;
       await this.deps.sleep(100);
     }
