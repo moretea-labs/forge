@@ -130,6 +130,7 @@ export function recoverControllerAuthority(input: {
   repositoryActiveCheckoutId?: string;
   workId: string;
   requestedBy?: string;
+  recoveryReason?: string;
   identity: DirectControllerAuthorityRecoveryIdentity;
   runtime: { running?: boolean; runtimeInstanceId?: string };
   leaseMs?: number;
@@ -142,6 +143,7 @@ export function recoverControllerAuthority(input: {
   const relay = recoverControllerRoundRelayAuthority(store, {
     workId: input.workId,
     requestedBy: input.requestedBy,
+    recoveryReason: input.recoveryReason,
     identity: {
       controllerId: input.identity.controllerId,
       controllerType: input.identity.controllerType,

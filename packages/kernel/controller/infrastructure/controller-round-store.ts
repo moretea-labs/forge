@@ -78,6 +78,7 @@ export interface BeginInitialControllerRoundDispatchInput {
 export interface RecoverControllerRoundRelayAuthorityInput {
   workId: string;
   requestedBy?: string;
+  recoveryReason?: string;
   identity: ControllerRoundRelayIdentity;
 }
 
@@ -1159,7 +1160,12 @@ export function recoverControllerRoundRelayAuthority(
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_PRINCIPAL_MISMATCH: ${workId}`);
   }
   const recoverableStatuses: readonly ControllerRoundRelayStatus[] = ['pending_release', 'dispatching', 'dispatched', 'claimed', 'failed'];
-  if (!recoverableStatuses.includes(initial.value.status)) {
+  const initialRepeatedStateBlock = initial.value.status === 'blocked' && initial.value.blockedReason?.startsWith('repeated_state:');
+  const initialRecoveryReason = input.recoveryReason?.trim() ?? '';
+  if (initialRepeatedStateBlock && !initialRecoveryReason) {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_REASON_REQUIRED: ${workId}; repeated-state recovery must state why the bounded recovery is being opened.`);
+  }
+  if (!recoverableStatuses.includes(initial.value.status) && !initialRepeatedStateBlock) {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_STATE_INVALID: ${workId}:${initial.value.status}`);
   }
 
@@ -1170,7 +1176,11 @@ export function recoverControllerRoundRelayAuthority(
     if (!latest || latest.originWorkId !== workId || latest.updatedAt !== current.value.updatedAt) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_NOT_CURRENT: ${workId}`);
     }
-    if (!recoverableStatuses.includes(current.value.status)) {
+    const currentRepeatedStateBlock = current.value.status === 'blocked' && current.value.blockedReason?.startsWith('repeated_state:');
+    if (currentRepeatedStateBlock && !initialRecoveryReason) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_REASON_REQUIRED: ${workId}; repeated-state recovery must state why the bounded recovery is being opened.`);
+    }
+    if (!recoverableStatuses.includes(current.value.status) && !currentRepeatedStateBlock) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_STATE_INVALID: ${workId}:${current.value.status}`);
     }
     if (relayControllerType(current.value) !== input.identity.controllerType
@@ -1194,6 +1204,7 @@ export function recoverControllerRoundRelayAuthority(
     return applyControllerRoundTransition(options, current, {
       type: 'authority_recovery_requested', at: nowIso(options), proposedAuthorityId: newControllerRoundAuthorityId(),
       keepsConfirmedDispatch: current.value.status === 'dispatched',
+      ...(initialRecoveryReason ? { reason: initialRecoveryReason } : {}),
     });
   });
 }

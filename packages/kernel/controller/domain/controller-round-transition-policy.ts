@@ -43,7 +43,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'successor_release_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
   | { type: 'terminal_work_observed'; at: string; error: string }
   | { type: 'abandoned_release_observed'; at: string; error: string }
-  | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean };
+  | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean; reason?: string };
 
 export type ControllerRoundTransitionDecision =
   | { kind: 'accept'; next: ControllerRoundRelayRecord; action: string }
@@ -362,7 +362,7 @@ export function decideControllerRoundTransition(
     }
     case 'authority_recovery_requested': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
-      return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, claimedAt: undefined, nextRecoveryAt: undefined, ...(event.keepsConfirmedDispatch ? {} : { providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }), updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
+      return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, blockedReason: undefined, claimedAt: undefined, nextRecoveryAt: undefined, ...(event.reason ? { reason: event.reason } : {}), ...(event.keepsConfirmedDispatch ? {} : { providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }), updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
     }
   }
 }

@@ -210,6 +210,7 @@ export async function callRhWorkControllerRecoveryOperation(
         repositoryActiveCheckoutId: repository.activeCheckoutId,
         workId,
         requestedBy: typeof args.requested_by === 'string' ? args.requested_by : undefined,
+        recoveryReason: typeof args.reason === 'string' ? args.reason : undefined,
         identity: authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true }),
         runtime: runtimeIdentitySnapshot(ctx),
         leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
