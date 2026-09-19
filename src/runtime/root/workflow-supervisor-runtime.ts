@@ -39,8 +39,9 @@ export async function startWorkflowSupervisorRuntime(
     ? { runtimeInstanceId: claim.runtimeInstanceId, fencingGeneration: claim.fencingGeneration, pid: claim.ownerPid }
     : undefined;
   if (writer) await reconcileWorkflowSupervisorSocket({ socketPath, incoming: writer });
+  const store = new WorkflowSupervisorStore(forgeHome);
   const controlPlane = new WorkflowSupervisorControlPlane(
-    new WorkflowSupervisorStore(forgeHome),
+    store,
     forgeWorkflowSupervisorValidators(),
     forgeWorkflowSupervisorLifecycleHooks(controllerHome),
   );
@@ -60,12 +61,18 @@ export async function startWorkflowSupervisorRuntime(
   return {
     done,
     async close(): Promise<void> {
-      if (closing || !server.listening) return;
+      if (closing) return;
       closing = true;
-      await nativeBrowser?.close().catch(() => undefined);
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-      });
+      try {
+        await nativeBrowser?.close().catch(() => undefined);
+        if (server.listening) {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => error ? reject(error) : resolve());
+          });
+        }
+      } finally {
+        store.close();
+      }
     },
   };
 }

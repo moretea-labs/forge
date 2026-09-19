@@ -128,12 +128,30 @@ function providerRecoveryDepth(db: Database, effectId: string): number {
 }
 
 export class WorkflowSupervisorStore {
-  constructor(readonly forgeHome?: string) {}
-  private transaction<T>(fn: (db: Database) => T): T {
-    const db = openDatabase(this.forgeHome); db.exec('BEGIN IMMEDIATE');
-    try { const result = fn(db); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } finally { db.close(); }
+  private readonly db: Database;
+  private closed = false;
+
+  constructor(readonly forgeHome?: string) {
+    this.db = openDatabase(forgeHome);
   }
-  private read<T>(fn: (db: Database) => T): T { const db = openDatabase(this.forgeHome); try { return fn(db); } finally { db.close(); } }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.db.close();
+  }
+
+  private database(): Database {
+    if (this.closed) throw new Error('WORKFLOW_SUPERVISOR_STORE_CLOSED');
+    return this.db;
+  }
+
+  private transaction<T>(fn: (db: Database) => T): T {
+    const db = this.database();
+    db.exec('BEGIN IMMEDIATE');
+    try { const result = fn(db); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  private read<T>(fn: (db: Database) => T): T { return fn(this.database()); }
 
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask {
     return this.transaction((db) => {
