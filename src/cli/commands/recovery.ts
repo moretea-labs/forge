@@ -37,6 +37,7 @@ import {
   activateRuntimeRelease,
   defaultPrimaryRuntimeServiceConfig,
   loadRecoveryConfig,
+  normalizeRecoveryInstallProfile,
   recoverPrimaryRuntime,
   recoveryMachineIdentity,
   restartPrimaryConnector,
@@ -781,6 +782,7 @@ export function buildRecoveryCommand(): Command {
         primaryPublicTunnelService: current.primaryPublicTunnelService,
         primaryRuntimeService: current.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(),
         primaryConnectorService,
+        profile: 'self-healing',
       });
       const refreshed = loadRecoveryConfig(home);
       const runtime = await stageAndActivateConfiguredRuntimeRelease(refreshed);
@@ -952,8 +954,9 @@ export function buildRecoveryCommand(): Command {
     });
 
   command.command('install')
-    .description('Build and activate the independent Forge Recovery Gateway and Watchdog release')
+    .description('Build Forge Recovery artifacts and activate only the explicitly selected persistent Recovery profile')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .option('--profile <profile>', 'Recovery install profile: manual, gateway, or self-healing', 'manual')
     .option('--port <port>', 'Loopback Recovery Gateway port', '8787')
     .option('--public-mcp-url <url>', 'Primary Forge MCP public URL')
     .option('--recovery-public-url <url>', 'Dedicated Forge Recovery MCP public URL')
@@ -978,7 +981,7 @@ export function buildRecoveryCommand(): Command {
     .option('--primary-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for primary Forge')
     .option('--primary-openai-admin-profile <profile>', 'Optional tunnel-client admin profile used for primary runtime connect')
     .option('--primary-runtime-source-root <path>', 'Stable canonical/package source used by Recovery for future Runtime staging')
-    .option('--stage-only', 'Build and canary the Recovery release without activating services')
+    .option('--stage-only', 'Compatibility alias: build/canary only and do not mutate installed Recovery config or services')
     .action(async (opts: {
       controllerHome: string;
       port: string;
@@ -1005,9 +1008,12 @@ export function buildRecoveryCommand(): Command {
       primaryOpenaiProfileDir?: string;
       primaryOpenaiAdminProfile?: string;
       primaryRuntimeSourceRoot?: string;
+      profile: string;
       stageOnly?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
+      const profile = normalizeRecoveryInstallProfile(opts.stageOnly ? 'manual' : opts.profile, 'manual');
+      if (opts.stageOnly && opts.profile !== 'manual') throw new Error('RECOVERY_STAGE_ONLY_PROFILE_CONFLICT');
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
       const recoveryLaunchdTunnel = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
@@ -1063,6 +1069,7 @@ export function buildRecoveryCommand(): Command {
       assertDistinctRecoveryOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
 
       const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
+      if (profile === 'manual' && (recoveryTunnelService || recoveryPublicUrl)) throw new Error('RECOVERY_PROFILE_GATEWAY_REQUIRED');
       if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
       if ((recoveryLaunchdTunnel || recoverySystemdTunnel) && !recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
       if (!recoveryTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
@@ -1082,6 +1089,7 @@ export function buildRecoveryCommand(): Command {
         ...(primaryRuntimeSourceRepository ? { primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId } : {}),
         sourceRoot: packageRoot,
         port,
+        profile,
         stageOnly: opts.stageOnly === true,
         primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
         publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
@@ -1092,6 +1100,7 @@ export function buildRecoveryCommand(): Command {
       });
       output({
         status: opts.stageOnly ? 'staged' : 'installed',
+        profile: result.profile,
         staged: result.staged.release,
         activation: result.activated,
         connector: recoveryConnectorDescriptor(home),

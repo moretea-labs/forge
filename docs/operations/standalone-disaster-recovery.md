@@ -93,18 +93,23 @@ The watchdog cannot launch an Agent, edit a source checkout, generate repair scr
 
 ## Installation
 
-Build, canary, and activate the immutable Recovery release with the public CLI:
+Build and canary the immutable Recovery release with the public CLI. Installation role is explicit:
+
+- `manual` is the default. It publishes the Recovery artifact/configuration but registers no persistent Recovery Gateway or Watchdog.
+- `gateway` registers only the independently reachable Recovery Gateway.
+- `self-healing` registers Gateway plus Watchdog and is the only profile that pays the autonomous health-monitoring/recovery cost.
 
 ```sh
 forge recovery install \
   --controller-home /absolute/controller-home \
+  --profile gateway \
   --public-mcp-url https://mcp.example.com/mcp \
   --recovery-public-url https://recovery.example.com/recovery/mcp \
   --recovery-tunnel-service-label com.example.forge-recovery-tunnel \
   --recovery-tunnel-service-plist /absolute/path/com.example.forge-recovery-tunnel.plist
 ```
 
-Use `--stage-only` to build and canary without activating Gateway or Watchdog services. The source-level `bun scripts/install-standalone-recovery.ts` entry remains an internal packaging primitive, not a second operator surface.
+`--stage-only` remains a compatibility alias for build/canary-only behavior and does not mutate installed Recovery configuration or services. The source-level `bun scripts/install-standalone-recovery.ts` entry remains an internal packaging primitive, not a second operator surface. Shipping Forge source/CLI does not itself activate any persistent Recovery profile.
 
 A public Recovery endpoint is optional for local-only operations. A ChatGPT Recovery Connector requires one independently owned external transport: either an explicit HTTPS Recovery URL plus its dedicated tunnel service owner, or a dedicated OpenAI Secure MCP Tunnel. The OpenAI transport keeps the Recovery Gateway on loopback; `tunnel-client` is the outbound transport and is supervised separately from the primary Forge Runtime/Connector.
 
@@ -113,6 +118,7 @@ For a Windows/WSL Recovery installation, create a new OpenAI tunnel identity tha
 ```sh
 forge recovery install \
   --controller-home /home/<user>/.forge/controller \
+  --profile gateway \
   --recovery-openai-tunnel-id <dedicated-wsl-recovery-tunnel-id> \
   --recovery-openai-runtime-api-key-ref env:FORGE_RECOVERY_TUNNEL_KEY
 ```
@@ -127,9 +133,9 @@ forge recovery connector --controller-home /absolute/controller-home
 
 The descriptor and `runtime_status` expose a `RecoveryMachineIdentity` containing host, platform, resolved Controller Home, current Recovery release identity, and the exact target Runtime service/release identity. Every external Recovery mutation requires the caller to echo the current `expected_host`, `expected_platform`, `expected_controller_home`, `expected_recovery_release`, and `expected_target_runtime` values from that observation. Missing, stale, or cross-machine values are rejected before any mutation. Successful mutation responses include the post-operation machine identity as well. This makes accidentally selecting the macOS Recovery connector while intending to repair WSL fail closed rather than repairing the wrong machine.
 
-Because Gateway, Watchdog, immutable Recovery release, and the dedicated Recovery tunnel are installed independently of the primary Runtime/Connector, a primary Runtime outage does not remove this external Recovery control path.
+When the selected profile includes Gateway, the Recovery Gateway and any dedicated Recovery tunnel are installed independently of the primary Runtime/Connector, so a primary Runtime outage does not remove that external Recovery control path. Watchdog independence applies only to the explicit `self-healing` profile.
 
-The installer owns publication and activation. Before registering `com.moretea.forge-recovery-gateway` and `com.moretea.forge-recovery-watchdog`, it exits and removes stale Recovery services discovered under the Recovery-owned launchd directory. Configuration is rewritten from the current schema and does not preserve retired ingress, agent-repair, or legacy tunnel fields. Direct reload scripts are not a second mutation path.
+The installer owns Recovery publication and role reconciliation. It activates only the roles selected by the typed install profile and explicitly retires Recovery-owned Gateway/Watchdog services that are no longer selected. It never treats a package/source install as permission to enable Watchdog. Configuration is rewritten from the current schema and does not preserve retired ingress, agent-repair, or legacy tunnel fields. Direct reload scripts are not a second mutation path.
 
 Forge deliberately has no blue-green Runtime topology. There is one active whole-release authority and one canonical service. Candidate validation happens before activation; activation stops the complete Runtime, switches the atomic active release, starts one Runtime, and gates on whole-Runtime readiness. Failure restores the previous whole release and its bound SQLite backup.
 

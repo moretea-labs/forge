@@ -62,7 +62,7 @@ import {
   rollbackStoppedRepoLocalControllerHomeStorage,
   type ControllerHomeStorageMigration,
 } from '../../cli/repositories/controller-home';
-import { readCurrentRecoveryRelease } from './release';
+import { readCurrentRecoveryRelease, type RecoveryRuntimeRole } from './release';
 import { recoveryOperationLockPath } from './operation-lock';
 import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';
 import { createCandidateExecutionLane, readStableExecutionLane } from '../root/runtime-lane';
@@ -150,9 +150,25 @@ export interface SystemdPrimaryConnectorServiceConfig extends PrimaryConnectorRe
 
 export type PrimaryConnectorServiceConfig = LaunchdPrimaryConnectorServiceConfig | SystemdPrimaryConnectorServiceConfig;
 
+export type RecoveryInstallProfile = 'manual' | 'gateway' | 'self-healing';
+
+export function normalizeRecoveryInstallProfile(value: unknown, fallback: RecoveryInstallProfile = 'self-healing'): RecoveryInstallProfile {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (value === 'manual' || value === 'gateway' || value === 'self-healing') return value;
+  throw new Error(`RECOVERY_INSTALL_PROFILE_INVALID: ${String(value)}`);
+}
+
+export function recoveryInstallProfileRoles(profile: RecoveryInstallProfile): RecoveryRuntimeRole[] {
+  if (profile === 'manual') return [];
+  if (profile === 'gateway') return ['gateway'];
+  return ['gateway', 'watchdog'];
+}
+
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
+  /** Persistent Recovery role selection. Legacy configs default to self-healing. */
+  installProfile: RecoveryInstallProfile;
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: RecoveryTunnelServiceConfig;
@@ -459,6 +475,7 @@ export function defaultPrimaryRuntimeServiceConfig(platform: NodeJS.Platform = p
 
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
+  installProfile: 'self-healing',
   readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
 };
@@ -533,6 +550,7 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
     ...DEFAULT_CONFIG,
     schemaVersion: 1,
     controllerHome: resolve(typeof loaded.controllerHome === 'string' ? loaded.controllerHome : controllerHome),
+    installProfile: normalizeRecoveryInstallProfile(loaded.installProfile, 'self-healing'),
     ...(typeof loaded.publicMcpUrl === 'string' ? { publicMcpUrl: loaded.publicMcpUrl } : {}),
     ...(typeof loaded.recoveryPublicUrl === 'string' ? { recoveryPublicUrl: loaded.recoveryPublicUrl } : {}),
     ...(loaded.recoveryTunnelService ? { recoveryTunnelService: loaded.recoveryTunnelService } : {}),
@@ -4044,6 +4062,7 @@ function candidateRecoveryConfig(session: ReleaseSession): RecoveryConfig {
   return {
     schemaVersion: 1,
     controllerHome: session.candidate.controllerHome,
+    installProfile: 'manual',
     primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
     mainMcpTokenFile: session.candidate.authTokenFile,
     readOnlyTool: {
@@ -5016,7 +5035,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryRuntimeSourceRepositoryId' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'installProfile' | 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryRuntimeSourceRepositoryId' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');
