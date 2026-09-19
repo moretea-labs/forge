@@ -235,7 +235,9 @@ export async function runSchedulerControllerRoundRecovery(input: {
         });
         const boundary = workflowSupervisorBoundaryForWork(store, record.originWorkId);
         if (boundary.status === 'outer_turn') {
-          await ensureWorkflowSupervisorEnrollmentForWork(store, record.originWorkId);
+          await ensureWorkflowSupervisorEnrollmentForWork(store, record.originWorkId, {
+            schedulerRecoveryKey: record.occurrenceId ?? record.updatedAt,
+          });
           continue;
         }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
