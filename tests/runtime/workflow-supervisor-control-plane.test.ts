@@ -10,6 +10,7 @@ import { cancelWorkContract, createWorkContract, implementationReviewChangedPath
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { forgeWorkflowSupervisorLifecycleHooks, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
+import { renderSupervisorPrompt } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket } from '../../supervisor/server';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -35,6 +36,23 @@ function fixture() {
 }
 
 describe('Workflow Supervisor canonical lifecycle projection', () => {
+  test('pins the exact assistant action enum so lower-layer wait is not emitted as an invalid outer action', () => {
+    const prompt = renderSupervisorPrompt({
+      taskId: 'task-supervisor-action-contract',
+      conversationId: 'abababab-cdcd-efef-1212-343434343434',
+      conversationUrl: 'https://chatgpt.com/c/abababab-cdcd-efef-1212-343434343434',
+      objective: 'Keep the outer Supervisor protocol exact.',
+      completionContract: {},
+      continuationPolicy: {},
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }, 'fx_12345678', 'recovery');
+
+    expect(prompt).toContain('"CONTINUE", "DONE", or "NEEDS_USER"');
+    expect(prompt).toContain('"WAIT", "RETRY", and every other value are invalid');
+    expect(prompt).toContain('Use CONTINUE for any non-terminal state');
+  });
+
   test('requires a prepared lower ControllerRound before treating an outer turn as runnable', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-lower-layer-readiness';

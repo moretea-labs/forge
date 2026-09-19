@@ -65,8 +65,10 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
   const lowerLayerLine = lowerLayerContext?.trim()
     ? `Forge lower-layer continuation contract (machine-generated):\n${lowerLayerContext.trim().slice(0, 16_000)}`
     : '';
+  const actionContractLine = 'The action field is an exact enum: "CONTINUE", "DONE", or "NEEDS_USER". "WAIT", "RETRY", and every other value are invalid. Use CONTINUE for any non-terminal state that still has autonomous work or an internal wait/retry path; use NEEDS_USER only when the configured user-blocker policy requires a genuine user decision; use DONE only when the completion contract is satisfied.';
   return [marker, mode, `Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
     'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.',
+    actionContractLine,
     `End this turn with exactly one ${SUPERVISOR_BLOCK_START} JSON block and ${SUPERVISOR_BLOCK_END}.`,
     `The block must echo source_effect_id=${JSON.stringify(effectId)}. Do not invent next_prompt content.`].filter(Boolean).join('\n');
 }
