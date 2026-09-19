@@ -68,16 +68,22 @@ function refKey(ref: MacOsBrowserTabRef): string { return `${ref.windowId}:${ref
 
 async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<WorkflowSupervisorNativeSnapshot> {
   return await page.evaluate<WorkflowSupervisorNativeSnapshot>(`(() => {
-    const latest = (selector) => {
+    const texts = (selector) => {
       const nodes = document.querySelectorAll(selector);
-      const node = nodes.item(nodes.length - 1);
-      return node ? String(node.innerText ?? node.textContent ?? '').trim() : '';
+      return Array.from(nodes)
+        .map((node) => String(node.innerText ?? node.textContent ?? '').trim())
+        .filter(Boolean);
     };
+    const userTexts = texts('[data-message-author-role="user"]');
+    const assistantTexts = texts('[data-message-author-role="assistant"]');
     return {
       url: String(location.href || ''),
       title: String(document.title || ''),
-      latestUserText: latest('[data-message-author-role="user"]'),
-      latestAssistantResponse: latest('[data-message-author-role="assistant"]'),
+      // The latest user node is not necessarily the effect-bearing node:
+      // provider/tool UI can append later user-role nodes. Keep the complete
+      // visible user history so the unique Forge marker remains evidence.
+      latestUserText: userTexts.join('\n'),
+      latestAssistantResponse: assistantTexts.at(-1) ?? '',
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"]')),
     };
   })()`);
@@ -340,7 +346,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         conversationUrl: command.conversationUrl,
         effectId: command.effectId,
         observationId: `native-observe-${randomUUID()}`,
-        outcome: exact ? 'applied' : markerPresent ? 'unknown' : 'not_applied',
+        outcome: exact || markerPresent ? 'applied' : 'not_applied',
         evidence: {
           surface: 'macos-native',
           exact_user_message: exact,

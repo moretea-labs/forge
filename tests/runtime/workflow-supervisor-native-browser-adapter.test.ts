@@ -130,6 +130,8 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
     expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(1);
     expect(h.errors).toEqual([]);
   });
   test('accepts canonical provider confirmation without requiring DOM user-message equality', async () => {
