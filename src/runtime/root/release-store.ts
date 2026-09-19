@@ -68,6 +68,16 @@ const DEFAULT_DEPENDENCIES: RuntimeReleaseStoreDependencies = {
 
 const RUNTIME_RELEASE_STATE_RESERVE_BYTES = 64 * 1024 * 1024;
 
+interface RuntimeManifestIdentityCacheEntry {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+  identity: Pick<RuntimePublishedRelease, 'releaseId' | 'artifactIdentity' | 'manifestPath' | 'manifestSha256' | 'workerProtocolVersion'>;
+}
+
+const runtimeManifestIdentityCache = new Map<string, RuntimeManifestIdentityCacheEntry>();
+
 function fileSize(path: string): number {
   try { return existsSync(path) ? statSync(path).size : 0; } catch { return 0; }
 }
@@ -106,14 +116,35 @@ function atomicWrite(path: string, value: unknown): void {
 
 function manifestRecord(controllerHome: string, manifestPath: string, publishedAt = new Date().toISOString()): RuntimePublishedRelease {
   const path = resolve(manifestPath);
-  const manifest = loadRuntimeReleaseManifest(path, controllerHome);
-  const bytes = readFileSync(path);
+  const file = statSync(path);
+  const cached = runtimeManifestIdentityCache.get(path);
+  const identity = cached
+    && cached.size === file.size
+    && cached.mtimeMs === file.mtimeMs
+    && cached.ctimeMs === file.ctimeMs
+    && cached.ino === file.ino
+    ? cached.identity
+    : (() => {
+      const manifest = loadRuntimeReleaseManifest(path, controllerHome);
+      const bytes = readFileSync(path);
+      const next: RuntimeManifestIdentityCacheEntry = {
+        size: file.size,
+        mtimeMs: file.mtimeMs,
+        ctimeMs: file.ctimeMs,
+        ino: Number(file.ino ?? 0),
+        identity: {
+          releaseId: manifest.releaseId,
+          artifactIdentity: manifest.artifactIdentity,
+          manifestPath: path,
+          manifestSha256: createHash('sha256').update(bytes).digest('hex'),
+          workerProtocolVersion: manifest.workerProtocolVersion,
+        },
+      };
+      runtimeManifestIdentityCache.set(path, next);
+      return next.identity;
+    })();
   return {
-    releaseId: manifest.releaseId,
-    artifactIdentity: manifest.artifactIdentity,
-    manifestPath: path,
-    manifestSha256: createHash('sha256').update(bytes).digest('hex'),
-    workerProtocolVersion: manifest.workerProtocolVersion,
+    ...identity,
     publishedAt,
   };
 }
