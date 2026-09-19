@@ -30,6 +30,7 @@ import {
   runSchedulerValidationReconciliation,
 } from './maintenance';
 import { planSchedulerSourceSampling } from './source-scan';
+import { runSchedulerAutonomousContinuationReconciliation } from './autonomous-continuation';
 import {
   runSchedulerDurableAdmission,
   SCHEDULE_TICK_INTERVAL_MS,
@@ -535,6 +536,7 @@ export class GlobalScheduler {
     this.persistState();
     const repositories = this.repositoryList(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
     let periodicCleanupRan = false;
+    let reconciliationRan = false;
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick. Canonical Runtime launches the
@@ -575,6 +577,7 @@ export class GlobalScheduler {
       });
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
+      reconciliationRan = true;
     }
     const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
     const activeSourceRepoIds = new Set(activeJobSnapshot.map((job) => job.repoId));
@@ -632,6 +635,16 @@ export class GlobalScheduler {
       this.lastHeartbeatAt = new Date().toISOString();
       this.persistState(true);
       return { activeJobs: activeJobSnapshot.length };
+    }
+    if (reconciliationRan && schedulerDispatchAllowed(this.controllerHome)) {
+      const liveness = await runSchedulerAutonomousContinuationReconciliation({
+        controllerHome: this.controllerHome,
+        nowMs: now,
+        repositories,
+      });
+      if (liveness.failed > 0) {
+        console.error('[forge liveness] autonomous continuation reconciliation reported ' + liveness.failed + ' failure(s)');
+      }
     }
     if (periodicCleanupRan) {
       await runSchedulerControllerRoundRecovery({
