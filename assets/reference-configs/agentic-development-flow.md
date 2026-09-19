@@ -16,6 +16,23 @@ Forge owns the workflow contract. External host skills may improve reasoning qua
 
 Missing external skills must degrade only the named enhancement. Hooks may suggest Forge modes, but must not route correctness through a third-party skill.
 
+## Architecture Migration Delivery Transaction
+
+For Kernel/V2 migrations and similarly cross-cutting work, the primary unit of execution is a coherent delivery slice, not an issue, file, failing check, or incidental symptom.
+
+1. **Batch discovery**: gather the relevant architecture, ownership, runtime, persistence, and evidence facts in one bounded pass.
+2. **Root-cause decision**: identify the owning invariant/module and decide whether new observations are same-root scope or an independent delivery boundary.
+3. **Freeze the slice**: establish one candidate scope and acceptance contract. Same-root discoveries extend this candidate; they do not create sibling Works by default.
+4. **Coherent implementation**: implement the whole slice before broad validation. Use edit-session/savepoint state rather than per-file Git commits.
+5. **Whole-candidate review**: review authority, dependency, migration, lifecycle, recovery, and diff coherence once the implementation is source-complete.
+6. **Validation wave**: run focused behavior checks first, then canonical gates once. After repair, rerun only affected checks unless evidence invalidates the architecture.
+7. **Delivery boundary**: commit/merge once for the coherent candidate, then perform Candidate/canary/release once. Release must not begin while same-delivery source-changing Works remain active.
+8. **Terminal cleanup**: retire superseded Work/Plan/check/release state so the Controller's active inventory represents only real remaining work.
+
+Do not turn concrete incidents into an issue-by-issue patch campaign. Cluster symptoms by architecture owner and invariant before implementation. One-file commits are acceptable only when that file is itself the complete coherent delivery; file count is not the boundary.
+
+If execution exposes a defect in Forge lifecycle machinery, decide whether it is required for the current version to converge safely. If not, record a bounded post-version Plan with the violated invariant, evidence, intended owner, and acceptance criteria, then continue the current release without implementing that machinery refactor.
+
 ## Public CLI Boundary
 
 The user-facing CLI is intentionally smaller than the implementation surface:

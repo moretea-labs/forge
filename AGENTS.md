@@ -12,6 +12,20 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Ordinary local risk levels are metadata, not permission gates. There is no approval queue and no `approve_risk` handshake. Only an explicitly destructive or irreversible operation requires authorization in the same request.
 - The Controller UI is an auxiliary configuration/state utility behind ChatGPT: Overview, Work, Automations, Capabilities, Repositories, Settings, and System. It presents durable user-facing state and hides Issue/Task/Run internals unless diagnostics require them.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
+
+## Mandatory Delivery Transaction
+
+For Kernel V2 and other architecture migrations, optimize for one coherent delivery transaction rather than issue-by-issue lifecycle churn.
+
+- Default execution shape: `batch factual discovery -> root-cause/architecture decision -> freeze one delivery scope -> coherent implementation -> whole-diff review -> one focused validation wave -> one canonical-gate wave -> one final delivery -> terminal cleanup`.
+- Do not create a new Work, commit, validation cycle, or release merely because a new symptom, file, or same-root-cause path is discovered. Extend the current candidate when the architecture invariant and delivery objective remain the same.
+- During implementation, do not repeatedly re-check baseline, run broad gates, stage Candidate releases, or activate Runtime baselines. Early checks are reserved for facts that can invalidate the architecture/design or for safety-critical ambiguity.
+- Git commits are delivery/history boundaries, not scratch savepoints. Preserve intermediate state with the Work/edit-session/savepoint mechanisms; prefer one coherent candidate commit over per-file or per-fix commits.
+- Release is a Requirement/candidate boundary, not a per-Work boundary. Do not start Candidate/canary/cutover while source-changing Works for the same delivery remain active or the candidate scope is still moving.
+- A failed focused/canonical check returns to the same candidate and reruns only the affected check set after repair unless the failure invalidates the architecture. Do not restart the entire lifecycle by default.
+- Before opening another Work for an observed defect, cluster symptoms by root cause and owner. If the new fact belongs to the same invariant, keep it in the current Work; only a genuinely independent authority, delivery, security boundary, or architecture decision justifies a sibling Work.
+- Superseded, covered, or delivery-complete Work/Plan records must be reconciled and retired promptly so active lifecycle state represents real remaining work.
+- If lifecycle machinery itself is inefficient but the current V2 candidate can still converge safely, record a bounded post-V2 Plan and defer the machinery refactor. Do not expand the current release scope to fix the workflow that is executing it.
 ## Canonical Workflow Authority
 
 - Root `forge.config.json` is the modern declarative opt-in marker. It selects Controller Home Runtime authority; it is not a mirror of mutable state.
