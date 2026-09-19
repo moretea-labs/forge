@@ -34,7 +34,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     },
   });
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
-  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let nowMs = 1_000_000; const errors: string[] = [];
+  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let snapshotCount = 0; let nowMs = 1_000_000; const errors: string[] = [];
   const dependencies: Partial<WorkflowSupervisorNativeBrowserDependencies> = {
     platform: 'darwin',
     listTabs: async () => pages.filter((page) => !page.closed).map(inventory),
@@ -47,6 +47,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     readOwner: async (page) => (page as FakePage).owner,
     writeOwner: async (page, marker) => { (page as FakePage).owner = marker; },
     snapshot: async (page) => {
+      snapshotCount += 1;
       const value = page as FakePage;
       return { url: value.url, title: value.title, latestUserText: value.latestUserText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, isGenerating: value.isGenerating };
     },
@@ -64,7 +65,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     sleep: async () => undefined,
     onError: (error) => { errors.push(error instanceof Error ? error.message : String(error)); },
   };
-  return { control, discovery, pages, errors, settlements, adapter: new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies), created: () => created, dispatchAttempts: () => dispatchAttempts, advance: (ms: number) => { nowMs += ms; } };
+  return { control, discovery, pages, errors, settlements, adapter: new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies), created: () => created, dispatchAttempts: () => dispatchAttempts, snapshots: () => snapshotCount, advance: (ms: number) => { nowMs += ms; } };
 }
 function register(control: WorkflowSupervisorControlPlane, conversationId: string) {
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
@@ -73,6 +74,22 @@ function register(control: WorkflowSupervisorControlPlane, conversationId: strin
 }
 
 describe('Workflow Supervisor macOS native browser adapter', () => {
+  test('reuses the page-validation snapshot instead of capturing the same active page twice per run', async () => {
+    const conversationId = '10101010-2020-3030-4040-505050505050';
+    const h = harness();
+    register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+    // One readiness snapshot plus the two dispatch/reconciliation snapshots.
+    // The old hot path took an additional redundant runOnce snapshot here.
+    expect(h.snapshots()).toBe(3);
+
+    await h.adapter.runOnce();
+    // Cached-page validation supplies the runOnce observation on the idle pass.
+    expect(h.snapshots()).toBe(4);
+    expect(h.errors).toEqual([]);
+  });
+
   test('keeps effect markers when later user-role nodes are visible in the browser DOM', async () => {
     const page: WorkflowSupervisorNativePage = {
       async evaluate<T>(expression: string): Promise<T> {

@@ -218,13 +218,16 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string }> = [];
     for (const task of tasks) {
       try {
-        const page = await this.ensurePage(task);
-        let snapshot = await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
+        const ensured = await this.ensurePage(task);
+        let page = ensured.page;
+        let snapshot = ensured.snapshot
+          ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
         if (!exactConversation(snapshot.url, task)) {
           await this.retireOwnedPage(task, page);
           const replacement = await this.createOwnedPage(task);
-          this.pages.set(task.conversationId, replacement);
-          snapshot = await this.deps.snapshot(replacement, { includeUserHistory: false, includePageText: false });
+          page = replacement.page;
+          this.pages.set(task.conversationId, page);
+          snapshot = replacement.snapshot;
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         await this.observeAssistant(task, snapshot);
@@ -263,13 +266,18 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async ensurePage(task: WorkflowSupervisorBrowserTask): Promise<WorkflowSupervisorNativePage> {
+  private async ensurePage(task: WorkflowSupervisorBrowserTask): Promise<{
+    page: WorkflowSupervisorNativePage;
+    snapshot?: WorkflowSupervisorNativeSnapshot;
+  }> {
     const marker = ownerMarker(task.conversationId);
     const cached = this.pages.get(task.conversationId);
     if (cached) {
       try {
         const snapshot = await this.deps.snapshot(cached, { includeUserHistory: false, includePageText: false });
-        if (await this.deps.readOwner(cached) === marker && exactConversation(snapshot.url, task)) return cached;
+        if (await this.deps.readOwner(cached) === marker && exactConversation(snapshot.url, task)) {
+          return { page: cached, snapshot };
+        }
       } catch { /* Reconstruct from browser evidence below. */ }
       this.pages.delete(task.conversationId);
     }
@@ -286,14 +294,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       const [selected, ...duplicates] = matches;
       for (const duplicate of duplicates) await this.deps.close(duplicate.ref).catch(() => undefined);
       this.pages.set(task.conversationId, selected!.page);
-      return selected!.page;
+      return { page: selected!.page };
     }
-    const page = await this.createOwnedPage(task);
-    this.pages.set(task.conversationId, page);
-    return page;
+    const created = await this.createOwnedPage(task);
+    this.pages.set(task.conversationId, created.page);
+    return created;
   }
 
-  private async createOwnedPage(task: WorkflowSupervisorBrowserTask): Promise<WorkflowSupervisorNativePage> {
+  private async createOwnedPage(task: WorkflowSupervisorBrowserTask): Promise<{
+    page: WorkflowSupervisorNativePage;
+    snapshot: WorkflowSupervisorNativeSnapshot;
+  }> {
     const page = await this.deps.create(task.conversationUrl);
     const ref = page.tabRef();
     try {
@@ -308,7 +319,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       if (!snapshot || !exactConversation(snapshot.url, task)) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_CONVERSATION_NOT_READY');
       await this.deps.writeOwner(page, ownerMarker(task.conversationId));
       if (await this.deps.readOwner(page) !== ownerMarker(task.conversationId)) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_OWNER_MARKER_FAILED');
-      return page;
+      return { page, snapshot };
     } catch (error) {
       if (ref) await this.deps.close(ref).catch(() => undefined);
       throw error;
