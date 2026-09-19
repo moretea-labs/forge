@@ -16,6 +16,7 @@ import type { WorkflowSupervisorBrowserCommand, WorkflowSupervisorBrowserTask } 
 
 const OWNER_PREFIX = 'forge-workflow-supervisor:';
 const DEFAULT_INTERVAL_MS = 1_000;
+const IDLE_INTERVAL_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface WorkflowSupervisorNativePage {
@@ -176,6 +177,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private timer?: ReturnType<typeof setInterval>;
   private inflight?: Promise<void>;
   private closed = false;
+  private nextRunAtMs = 0;
+  private lastRunHadTasks = false;
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
     private readonly discovery: WorkflowSupervisorEphemeralDiscovery,
@@ -184,12 +187,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   start(intervalMs = DEFAULT_INTERVAL_MS): void {
     if (this.timer || this.closed || this.deps.platform !== 'darwin') return;
+    const activeIntervalMs = Math.max(1, Math.trunc(intervalMs));
+    const idleIntervalMs = Math.max(activeIntervalMs, IDLE_INTERVAL_MS);
     const tick = () => {
-      if (this.inflight || this.closed) return;
-      this.inflight = this.runOnce().catch(this.deps.onError).finally(() => { this.inflight = undefined; });
+      if (this.inflight || this.closed || this.deps.nowMs() < this.nextRunAtMs) return;
+      this.inflight = this.runOnce().catch(this.deps.onError).finally(() => {
+        this.nextRunAtMs = this.deps.nowMs() + (this.lastRunHadTasks ? activeIntervalMs : idleIntervalMs);
+        this.inflight = undefined;
+      });
     };
     tick();
-    this.timer = this.deps.setInterval(tick, intervalMs);
+    this.timer = this.deps.setInterval(tick, activeIntervalMs);
     this.timer.unref?.();
   }
 
@@ -205,6 +213,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   async runOnce(): Promise<void> {
     if (this.deps.platform !== 'darwin' || this.closed) return;
     const tasks = this.control.browserTasks();
+    this.lastRunHadTasks = tasks.length > 0;
     await this.cleanupInactive(tasks);
     const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string }> = [];
     for (const task of tasks) {
