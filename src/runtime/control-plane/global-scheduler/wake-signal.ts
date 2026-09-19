@@ -47,6 +47,23 @@ export function isSchedulerWakeSignalEvent(filename: string | Buffer | null | un
     || (observed.startsWith('wake-signal.json.') && observed.endsWith('.tmp'));
 }
 
+export function shouldWakeForSchedulerEvent(
+  filename: string | Buffer | null | undefined,
+  expectedRevision: number,
+  observedRevision: number,
+): boolean {
+  if (!isSchedulerWakeSignalEvent(filename)) return false;
+  // A null filename is an ambiguous directory event on some Bun/macOS
+  // combinations. Only treat it as a wake when the durable revision changed;
+  // otherwise the Scheduler's own state.json write would wake it immediately
+  // and turn the idle loop into a CPU-consuming self-trigger cycle.
+  if (filename == null) return observedRevision !== expectedRevision;
+  // A named wake-file event is authoritative even when the revision is equal:
+  // concurrent writers may coalesce onto one revision, while the lifecycle
+  // truth remains in the canonical stores.
+  return true;
+}
+
 export async function waitForSchedulerWakeSignal(
   controllerHome: string,
   expectedRevision: number,
@@ -84,11 +101,15 @@ export async function waitForSchedulerWakeSignal(
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
       watcher = watch(dirname(path), (_eventType, filename) => {
-        if (!isSchedulerWakeSignalEvent(filename)) return;
-        // A canonical wake-file event is itself the notification. Do not make
-        // event delivery depend on observing a strictly newer JSON revision:
-        // concurrent writers may legitimately coalesce onto one revision, while
-        // lifecycle truth is read from canonical Job/Process/Work stores.
+        if (!shouldWakeForSchedulerEvent(
+          filename,
+          expectedRevision,
+          readSchedulerWakeSignal(controllerHome).revision,
+        )) return;
+        // A named canonical wake-file event is itself the notification. Do not
+        // make event delivery depend on observing a strictly newer JSON
+        // revision: concurrent writers may legitimately coalesce onto one
+        // revision, while lifecycle truth is read from canonical stores.
         finish('wakeup');
       });
       watcher.on?.('error', maybeWake);

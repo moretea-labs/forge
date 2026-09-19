@@ -59,6 +59,7 @@ import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/contr
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
 import { runSchedulerDurableAdmission } from '../../src/runtime/control-plane/global-scheduler/durable-admission';
+import { shouldWakeForSchedulerEvent } from '../../src/runtime/control-plane/global-scheduler/wake-signal';
 import { RepoActorRegistry } from '../../src/runtime/control-plane/repo-actor/registry';
 
 const roots: string[] = [];
@@ -183,6 +184,13 @@ describe('repository command managed-worktree authority', () => {
 });
 
 describe('control-plane hardening', () => {
+  test('does not turn ambiguous Scheduler directory events into a self-trigger loop', () => {
+    expect(shouldWakeForSchedulerEvent(null, 7, 7)).toBe(false);
+    expect(shouldWakeForSchedulerEvent(null, 7, 8)).toBe(true);
+    expect(shouldWakeForSchedulerEvent('state.json.tmp', 7, 7)).toBe(false);
+    expect(shouldWakeForSchedulerEvent('wake-signal.json', 7, 7)).toBe(true);
+  });
+
   test('normalizes Scheduler configuration outside the runtime lifecycle constructor', () => {
     expect(normalizeSchedulerConfig({
       maxWorkers: 0,
