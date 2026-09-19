@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -12,6 +14,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import { backupControlPlaneDatabase, inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { forgeRuntimeServicePaths, writeForgeRuntimeServiceConfig } from '../../src/runtime/root/service';
 
 const homes: string[] = [];
 const NOW = Date.parse('2026-08-11T10:00:00.000Z');
@@ -32,6 +36,79 @@ function runtimeRelease(home: string, releaseId: string): string {
   mkdirSync(path, { recursive: true });
   writeFileSync(join(path, 'manifest.json'), '{}\n', 'utf8');
   return path;
+}
+
+function sha256(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function writeRecoverableKnownGood(home: string, releaseId: string): string {
+  inspectControlPlaneDatabase(home);
+  const releaseRoot = join(home, 'runtime', 'releases', releaseId);
+  mkdirSync(releaseRoot, { recursive: true });
+  const manifestPath = join(releaseRoot, 'manifest.json');
+  writeFileSync(manifestPath, `${JSON.stringify({
+    schemaVersion: 1,
+    releaseId,
+    artifactIdentity: `artifact-${releaseId}`,
+    entrypoint: 'forge-runtime',
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome: home,
+    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+    workerProtocolVersion: 1,
+    createdAt: new Date(NOW).toISOString(),
+  }, null, 2)}\n`);
+  const repositoryRoot = join(home, 'source');
+  const authTokenFile = join(home, 'mcp', 'runtime-token');
+  mkdirSync(repositoryRoot, { recursive: true });
+  mkdirSync(join(home, 'mcp'), { recursive: true });
+  writeFileSync(authTokenFile, 'test-token\n');
+  const service = writeForgeRuntimeServiceConfig({
+    schemaVersion: 1,
+    controllerHome: home,
+    repositoryRoot,
+    host: '127.0.0.1',
+    port: 8765,
+    authTokenFile,
+  });
+  const bundleRoot = join(home, 'recovery', 'bundles', 'known-good', 'attestation-retention-test');
+  const databasePath = join(bundleRoot, 'controller.sqlite');
+  const database = backupControlPlaneDatabase(home, databasePath);
+  const serviceContractPath = join(bundleRoot, 'service-contract.json');
+  writeFileSync(serviceContractPath, `${JSON.stringify({
+    schemaVersion: 1,
+    configPath: forgeRuntimeServicePaths(home).configPath,
+    serviceConfig: service.config,
+  }, null, 2)}\n`);
+  mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
+  writeFileSync(join(home, 'recovery', 'state', 'known-good.json'), `${JSON.stringify({
+    schemaVersion: 2,
+    releases: [{
+      path: manifestPath,
+      revision: releaseId,
+      artifactIdentity: `artifact-${releaseId}`,
+      manifestSha256: sha256(manifestPath),
+      workerProtocolVersion: 1,
+      controllerHome: home,
+      recoveryBundle: {
+        schemaVersion: 1,
+        attestationId: 'attestation-retention-test',
+        root: bundleRoot,
+        database: {
+          path: databasePath,
+          sha256: sha256(databasePath),
+          schemaVersion: database.schemaVersion,
+          recordCount: database.recordCount,
+          auditEventCount: database.auditEventCount,
+        },
+        serviceContract: { path: serviceContractPath, sha256: sha256(serviceContractPath) },
+        createdAt: new Date(NOW).toISOString(),
+      },
+    }],
+    updatedAt: new Date(NOW).toISOString(),
+  }, null, 2)}\n`);
+  return releaseRoot;
 }
 
 function writeRuntimeAuthority(
@@ -187,6 +264,25 @@ describe('controller release retention', () => {
     expect(report.skippedByReason.release_authority).toBe(2);
   });
 
+  test('preserves only a bounded Recovery bundle that is independently restorable', () => {
+    const home = controllerHome();
+    const active = runtimeRelease(home, 'active-release');
+    const previous = runtimeRelease(home, 'previous-release');
+    const knownGood = writeRecoverableKnownGood(home, 'known-good-release');
+    const stale = runtimeRelease(home, 'stale-release');
+    writeRuntimeAuthority(home, 'active-release', 'previous-release');
+    age(knownGood);
+    age(stale);
+
+    const report = cleanupControllerReleaseHistory(home, { nowMs: NOW, graceMs: 0, maxRemovals: 20 });
+
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(previous)).toBe(true);
+    expect(existsSync(knownGood)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.skippedByReason.release_authority).toBe(3);
+  });
+
   test('preserves an explicitly pinned Runtime release while known-good history remains non-owning', () => {
     const home = controllerHome();
     const active = runtimeRelease(home, 'active-release');
@@ -337,5 +433,3 @@ describe('runtime cleanup release integration', () => {
   });
 
 });
-
-

@@ -1627,6 +1627,18 @@ function applyReceiptIfPresent(
   }, { authority: 'durable_exit_receipt' });
 }
 
+
+function reconcileObservedTerminalProcess(
+  controllerHome: string,
+  repoId: string,
+  record: ManagedProcessRecord,
+): ManagedProcessRecord {
+  if (record.terminalWritten !== true) return record;
+  const reconciled = releaseProcessLeasesOnce(controllerHome, repoId, record.processId) ?? record;
+  cleanupTerminalRunnerReceipts(reconciled);
+  return reconciled;
+}
+
 export function getProcessHandle(
   controllerHome: string,
   repoId: string,
@@ -1634,6 +1646,9 @@ export function getProcessHandle(
 ): ProcessHandle | undefined {
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) return undefined;
+  if (record.terminalWritten === true) {
+    return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, record), { completed: true });
+  }
   if (isManagedProcessActive(record) && !liveMonitors.has(processId)) {
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, record);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
@@ -1656,7 +1671,9 @@ export async function waitForProcess(
 ): Promise<ProcessHandle> {
   const existing = getProcessRecord(controllerHome, repoId, processId);
   if (!existing) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-  if (existing.terminalWritten) return recordToHandle(existing, { completed: true });
+  if (existing.terminalWritten) {
+    return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, existing), { completed: true });
+  }
 
   const monitor = liveMonitors.get(processId);
   if (monitor) {
@@ -1744,7 +1761,9 @@ export async function cancelProcess(
 ): Promise<ProcessHandle> {
   const record = getProcessRecord(controllerHome, repoId, processId);
   if (!record) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-  if (record.terminalWritten) return recordToHandle(record, { completed: true });
+  if (record.terminalWritten) {
+    return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, record), { completed: true });
+  }
 
   // Process control is itself a writer mutation. Fence BEFORE sending any
   // signal so a passive/stale runtime cannot kill the active runtime's work.

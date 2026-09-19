@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 import { createPlatformServiceManagerHost, platformLaunchdInstalledPath, type PlatformServiceManagerHost, type SystemdUserUnitInput } from '../platform/service-manager';
 
@@ -295,11 +296,7 @@ function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<
 function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): number {
   // A connector is not the Canonical Runtime writer. Never let a transient
   // installer/worker write claim escape into this long-lived process.
-  const childEnv = { ...env };
-  for (const key of [
-    'FORGE_RUNTIME_INSTANCE_ID', 'FORGE_RUNTIME_OWNER_PID', 'FORGE_RELEASE_AUTHORITY_REVISION',
-    'FORGE_RELEASE_FENCING_TOKEN', 'FORGE_RELEASE_ID', 'FORGE_ARTIFACT_IDENTITY', 'FORGE_WORKER_PROTOCOL_VERSION',
-  ]) delete childEnv[key];
+  const childEnv = runtimeAuthorityFreeEnvironment(env);
   return host.startDetached({
     executable: launch.executable,
     args: launch.args,

@@ -4,6 +4,8 @@ import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost } from '../platform/service-manager';
+import { loadRuntimeReleaseManifest } from './release-manifest';
+import type { RuntimeReleaseManifest } from './types';
 
 export interface ForgeRuntimeServiceConfig {
   schemaVersion: 1;
@@ -87,23 +89,7 @@ interface RuntimeReleaseAuthorityRecord {
   active?: { releaseId?: string; manifestPath?: string; artifactIdentity?: string };
 }
 
-interface RuntimeReleaseManifestRecord {
-  schemaVersion: 1;
-  releaseId: string;
-  entrypoint: string;
-  controllerHome: string;
-  artifactIdentity: string;
-  arguments?: string[];
-  diagnosticEntrypoint?: string;
-  packageRoot?: string;
-  packageArtifactIdentity?: string;
-  browserAutomationHelperEntrypoint?: string;
-  browserAutomationHelperArtifactIdentity?: string;
-  browserAutomationHelperContractIdentity?: string;
-  releaseRevision?: string;
-  sourceCommit?: string;
-  cleanWorkspace?: boolean;
-}
+type RuntimeReleaseManifestRecord = RuntimeReleaseManifest;
 
 interface ActiveRuntimeReleaseRecord {
   releaseId: string;
@@ -135,9 +121,8 @@ function readActiveRuntimeRelease(controllerHome: string): ActiveRuntimeReleaseR
   }
   const manifestPath = resolve(active.manifestPath);
   if (!isInside(releasesRoot, manifestPath)) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_OUTSIDE_RELEASES');
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as RuntimeReleaseManifestRecord;
+  const manifest = loadRuntimeReleaseManifest(manifestPath, home);
   if (manifest.schemaVersion !== 1 || !manifest.releaseId || !manifest.entrypoint) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_INVALID');
-  if (resolve(manifest.controllerHome) !== home) throw new Error('FORGE_RUNTIME_RELEASE_CONTROLLER_HOME_MISMATCH');
   if (active.releaseId && active.releaseId !== manifest.releaseId) throw new Error('FORGE_RUNTIME_RELEASE_ID_MISMATCH');
   const releaseRoot = dirname(manifestPath);
   const entrypoint = resolve(releaseRoot, manifest.entrypoint);

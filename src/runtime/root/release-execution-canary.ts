@@ -81,7 +81,7 @@ export function assertRuntimeReleaseExecutionCanaries(
   // Package launcher releases execute source-backed CLI code from their own
   // immutable snapshot. Compiled standalone releases have a different closed
   // artifact surface and therefore do not use this source CLI probe.
-  if (surface.manifest.executionMode !== 'standalone-binary') {
+  if (surface.manifest.executionMode !== 'standalone-binary' && surface.manifest.packageRoot) {
     assertCanary({
       name: 'connector_cli',
       executable: resolveBunExecutable(process.execPath, process.env),

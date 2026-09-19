@@ -239,6 +239,7 @@ function latestRelayRecordsByScope(options: ControllerRoundRelayStoreOptions): C
   return [...latest.values()].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
 }
 
+
 function requirementForRelay(options: ControllerRoundRelayStoreOptions, requirementId: string | undefined) {
   return requirementId ? readRequirement({ controllerHome: options.controllerHome }, requirementId)?.value : undefined;
 }
@@ -800,15 +801,20 @@ export function settleControllerRoundAfterTurn(
     const work = getWorkContract(options, input.workId);
     if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
     const at = nowIso(options);
-    if (isTerminalWorkContractStatus(work.status)) {
+    const successor = work.status === 'completed' && current.value.successorWorkId
+      ? getWorkContract(options, current.value.successorWorkId)
+      : undefined;
+    const terminalSuccessorContinuation = Boolean(successor && !isTerminalWorkContractStatus(successor.status));
+    if (isTerminalWorkContractStatus(work.status) && !terminalSuccessorContinuation) {
       return applyControllerRoundTransition(options, current, {
         type: 'terminal_work_observed', at, error: `Controller turn settled after terminal Work ${work.status}`,
       });
     }
+    const semanticWork = successor ?? work;
     const blockingHandoff = relevantHandoffs(options, relevantWork(options, current.value), current.value.handoffId)
       .find((handoff) => Boolean(handoff.blockingDecision?.trim())
-        && (handoff.workId === input.workId || handoff.id === current.value.handoffId));
-    const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId, current.value.handoffId);
+        && (handoff.workId === semanticWork.workId || handoff.id === current.value.handoffId));
+    const stateFingerprint = mechanicalStateFingerprint(options, semanticWork, current.value.requirementId, current.value.relayScopeId, current.value.handoffId);
     return applyControllerRoundTransition(options, current, {
       type: 'controller_turn_settled', at, stateFingerprint, completionEvidenceId,
       ...(blockingHandoff ? { blockingHandoffId: blockingHandoff.id } : {}),

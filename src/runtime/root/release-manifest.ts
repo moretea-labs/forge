@@ -124,9 +124,20 @@ export function loadRuntimeReleaseManifest(
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
   }
-  const controllerHome = resolve(requireString(value.controllerHome, 'controllerHome'));
-  if (canonicalExistingPathIdentity(controllerHome) !== canonicalExistingPathIdentity(expectedControllerHome)) {
-    throw new Error('RELEASE_MANIFEST_CONTROLLER_HOME_MISMATCH');
+  const deploymentScope = value.deploymentScope === undefined
+    ? 'controller-home'
+    : requireString(value.deploymentScope, 'deploymentScope');
+  if (deploymentScope !== 'controller-home' && deploymentScope !== 'portable') {
+    throw new Error(`RELEASE_MANIFEST_INVALID: deploymentScope must be portable when present, got ${deploymentScope}`);
+  }
+  let controllerHome: string | undefined;
+  if (deploymentScope === 'controller-home') {
+    controllerHome = resolve(requireString(value.controllerHome, 'controllerHome'));
+    if (canonicalExistingPathIdentity(controllerHome) !== canonicalExistingPathIdentity(expectedControllerHome)) {
+      throw new Error('RELEASE_MANIFEST_CONTROLLER_HOME_MISMATCH');
+    }
+  } else if (value.controllerHome !== undefined) {
+    throw new Error('RELEASE_MANIFEST_INVALID: portable release must not embed controllerHome');
   }
   const compatibility = value.databaseSchemaCompatibility as Record<string, unknown> | undefined;
   const minimum = Number(compatibility?.minimum);
@@ -303,7 +314,7 @@ export function loadRuntimeReleaseManifest(
     ...(controllerUi ?? {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
-    controllerHome,
+    ...(deploymentScope === 'portable' ? { deploymentScope: 'portable' as const } : { controllerHome: controllerHome! }),
     databaseSchemaCompatibility: { minimum, maximum },
     workerProtocolVersion,
     ...(typeof value.sourceRepositoryId === 'string' && value.sourceRepositoryId.trim() ? { sourceRepositoryId: value.sourceRepositoryId.trim() } : {}),

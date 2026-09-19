@@ -85,7 +85,10 @@ export interface RuntimeReleaseManifest {
   controllerUiArtifactIdentity?: string;
   arguments: string[];
   configurationSchemaVersion: 1;
-  controllerHome: string;
+  /** New compiled releases are portable artifacts. Absence means legacy ControllerHome-bound deployment semantics. */
+  deploymentScope?: 'portable';
+  /** Legacy/package deployment binding only. Portable compiled artifacts omit this field. */
+  controllerHome?: string;
   databaseSchemaCompatibility: {
     minimum: number;
     maximum: number;

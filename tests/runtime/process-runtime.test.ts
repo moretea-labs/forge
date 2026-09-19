@@ -2715,7 +2715,7 @@ describe('Process Runtime real lease contention', () => {
       .some((lease) => lease.ownerJobId === `process:${processId}`)).toBe(true);
   });
 
-  test('terminal lease release failure remains visible and recovery retry clears it', () => {
+  test('terminal lease release failure remains visible and ordinary observation retry clears it', () => {
     const fx = fixture();
     const processId = 'proc_terminal_retryable_lease_release';
     const resourceKey = `workspace:${fx.repository.activeCheckoutId}`;
@@ -2772,7 +2772,8 @@ describe('Process Runtime real lease contention', () => {
         checkoutId: lease.checkoutId,
       })),
     }, { allowTerminal: true });
-    expect(recoverManagedProcesses(fx.controllerHome, fx.repository.repoId).leasesReleased).toContain(processId);
+    const observed = getProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
+    expect(observed).toMatchObject({ processId, completed: true });
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({
       leaseReleaseState: 'released',
       leasesReleased: true,
@@ -2850,6 +2851,7 @@ describe('Process Runtime real lease contention', () => {
     bindTestRuntimeClaim({
       controllerHome: fx.controllerHome,
       runtimeInstanceId: 'runtime-stale',
+      fencingGeneration: activeRuntime.claim.fencingGeneration,
       ownerPid: activeRuntime.owner.record.pid,
       releaseAuthorityRevision: activeRuntime.authority.revision,
       fencingToken: activeRuntime.authority.fencingToken,
@@ -3073,6 +3075,7 @@ describe('Process Runtime real lease contention', () => {
     bindTestRuntimeClaim({
       controllerHome: fx.controllerHome,
       runtimeInstanceId: 'runtime-stale',
+      fencingGeneration: activeRuntime.claim.fencingGeneration,
       ownerPid: activeRuntime.owner.record.pid,
       releaseAuthorityRevision: activeRuntime.authority.revision,
       fencingToken: 'stale-token',

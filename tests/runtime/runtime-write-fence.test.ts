@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { readRuntimeIncarnation } from '../../src/runtime/root/ownership';
 import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
@@ -67,6 +68,24 @@ describe('Canonical Runtime write fence', () => {
     expect(assertRuntimeMayWrite('renew_lease', fx.home).allowed).toBe(true);
     fx.owner.release();
     const replacement = acquireRuntimeOwnership(fx.home, 'runtime-b');
+    expect(assertRuntimeMayWrite('renew_lease', fx.home)).toMatchObject({
+      allowed: false,
+      reason: 'runtime_instance_fenced',
+    });
+    replacement.release();
+  });
+
+  test('a replacement Runtime advances the durable incarnation generation even when the old owner released cleanly', () => {
+    const fx = fixture();
+    const parent = bindRuntimeWriteClaim({ controllerHome: fx.home, owner: fx.owner.record, authority: fx.authority });
+    const firstGeneration = parent.fencingGeneration;
+    fx.owner.release();
+    const replacement = acquireRuntimeOwnership(fx.home, 'runtime-b');
+    expect(replacement.record.fencingGeneration).toBeGreaterThan(firstGeneration);
+    expect(readRuntimeIncarnation(fx.home)).toMatchObject({
+      runtimeInstanceId: 'runtime-b',
+      fencingGeneration: replacement.record.fencingGeneration,
+    });
     expect(assertRuntimeMayWrite('renew_lease', fx.home)).toMatchObject({
       allowed: false,
       reason: 'runtime_instance_fenced',

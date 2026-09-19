@@ -4,7 +4,7 @@ import type { ChildProcess } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../src/runtime/shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../../src/runtime/shared/process-environment';
 import {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -38,6 +38,27 @@ afterEach(() => {
 });
 
 describe('repository child process environment', () => {
+  test('removes every host-private writer authority before a service boundary adds its own contract', () => {
+    const sanitized = runtimeAuthorityFreeEnvironment({
+      PATH: '/usr/bin:/bin',
+      FORGE_WRITER_SLOT: 'host-writer-must-not-leak',
+      FORGE_RUNTIME_INSTANCE_ID: 'runtime-a',
+      FORGE_RUNTIME_INCARNATION_GENERATION: '7',
+      FORGE_RELEASE_FENCING_TOKEN: 'secret-fence',
+      FORGE_CONTROLLER_LIFECYCLE_OWNER: 'host-runtime',
+      FORGE_SUPERVISOR_PRIVATE_STATE: 'private',
+      USER_VISIBLE_SETTING: 'preserve-me',
+    });
+
+    expect(sanitized.FORGE_WRITER_SLOT).toBeUndefined();
+    expect(sanitized.FORGE_RUNTIME_INSTANCE_ID).toBeUndefined();
+    expect(sanitized.FORGE_RUNTIME_INCARNATION_GENERATION).toBeUndefined();
+    expect(sanitized.FORGE_RELEASE_FENCING_TOKEN).toBeUndefined();
+    expect(sanitized.FORGE_CONTROLLER_LIFECYCLE_OWNER).toBeUndefined();
+    expect(sanitized.FORGE_SUPERVISOR_PRIVATE_STATE).toBeUndefined();
+    expect(sanitized.USER_VISIBLE_SETTING).toBe('preserve-me');
+  });
+
   test('normalizes Windows PATH case variants into one usable canonical PATH', () => {
     const normalized = repositoryChildProcessEnvironment({
       Path: 'C:\\Windows\\System32;C:\\Program Files\\Git\\cmd',

@@ -124,14 +124,19 @@ describe('Forge Runtime service', () => {
       releaseId: 'release-a',
       entrypoint: 'forge-runtime',
       diagnosticEntrypoint: 'forge-cli',
+      diagnosticArtifactIdentity: `sha256:${'b'.repeat(64)}`,
       packageRoot: 'package',
-      packageArtifactIdentity: 'sha256:package-test',
+      packageArtifactIdentity: `sha256:${'a'.repeat(64)}`,
       controllerHome: fx.home,
       artifactIdentity: 'sha256:test',
       releaseRevision: 'release-revision-a',
       sourceCommit: 'source-a',
       cleanWorkspace: true,
       arguments: [],
+      configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
       schemaVersion: 1,
@@ -206,10 +211,14 @@ describe('Forge Runtime service', () => {
       releaseId: 'release-invalid-version',
       entrypoint: 'forge-runtime',
       packageRoot: 'package',
-      packageArtifactIdentity: 'sha256:package-test',
+      packageArtifactIdentity: `sha256:${'a'.repeat(64)}`,
       controllerHome: fx.home,
       artifactIdentity: 'sha256:test',
       arguments: [],
+      configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
       schemaVersion: 1,
@@ -246,6 +255,10 @@ describe('Forge Runtime service', () => {
         controllerHome: fx.home,
         artifactIdentity: `sha256:${releaseId}`,
         arguments: [],
+        configurationSchemaVersion: 1,
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: new Date().toISOString(),
       })}\n`);
       writeFileSync(authorityPath, `${JSON.stringify({
         schemaVersion: 1,
@@ -288,7 +301,9 @@ describe('Forge Runtime service', () => {
     writeFileSync(entry, 'runtime');
     writeFileSync(manifestPath, `${JSON.stringify({
       schemaVersion: 1, releaseId: 'release-legacy-helper', entrypoint: 'forge-runtime', controllerHome: fx.home,
-      artifactIdentity: 'sha256:runtime', arguments: [], browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      artifactIdentity: 'sha256:runtime', arguments: [], configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, createdAt: new Date().toISOString(),
+      browserAutomationHelperEntrypoint: 'browser-automation-helper',
       browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`, browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`,
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
@@ -323,6 +338,15 @@ describe('Forge Runtime service', () => {
     expect(launcherBytes).not.toContain('FORGE_FORCE_NODE');
     const launchdEnvironment = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(launched.status).toBe(0);
+    // launchd executes the TCC-stable byte mirror rather than the immutable
+    // release entrypoint. The mirror must retain the release-root binding,
+    // otherwise it looks for package-files.json beside itself in runtime/service.
+    const stableEntrypoint = syncForgeRuntimeActiveEntrypoint(fx.home).path;
+    const stableLaunched = spawnSync(stableEntrypoint, [], {
+      encoding: 'utf8',
+      env: { ...launchdEnvironment, FORGE_RELEASE_PATH: release.releaseRoot },
+    });
+    expect(stableLaunched.status).toBe(0);
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     const unchanged = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(unchanged.status).toBe(0);
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');

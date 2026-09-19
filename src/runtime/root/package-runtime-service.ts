@@ -4,7 +4,7 @@ import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost, probeSystemdUserAvailable, type PlatformServiceManagerHost, type PlatformServiceManagerKind, type SystemdUserUnitInput } from '../platform/service-manager';
-import { RUNTIME_WRITE_CLAIM_ENV } from './write-fence';
+import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import {
   activeRuntimeEntrypoint,
   activeRuntimeLaunchSpec,
@@ -131,14 +131,10 @@ export function systemdUserAvailable(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnvironment: Record<string, string>): NodeJS.ProcessEnv {
-  const next = { ...env };
-  for (const key of Object.values(RUNTIME_WRITE_CLAIM_ENV)) delete next[key];
-  delete next.FORGE_CONTROLLER_LIFECYCLE_OWNER;
-  delete next.FORGE_RELEASE_PATH;
-  delete next.FORGE_RELEASE_REVISION;
-  delete next.FORGE_RELEASE_SOURCE_COMMIT;
-  delete next.FORGE_RELEASE_CLEAN_WORKSPACE;
-  return { ...next, ...releaseEnvironment };
+  // The selected immutable release is the only authority reintroduced below.
+  // Do not carry an installer, host Runtime or Supervisor writer claim across
+  // this service boundary.
+  return { ...runtimeAuthorityFreeEnvironment(env), ...releaseEnvironment };
 }
 
 export function systemdRuntimeInstallCommands(unitName: string): string[][] {

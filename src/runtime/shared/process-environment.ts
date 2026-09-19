@@ -22,10 +22,29 @@ const RUNTIME_PRIVATE_ENV_PREFIXES = [
 
 const RUNTIME_PRIVATE_ENV_KEYS = new Set([
   'FORGE_BUILD_VERSION',
+  'FORGE_INSTANCE_ID',
   'FORGE_MCP_INSTANCE_ID',
   'FORGE_MCP_PUBLIC_ORIGIN',
   'FORGE_STABLE_SUPERVISOR',
 ]);
+
+/**
+ * Remove the hosting Runtime's private authority before starting a service or
+ * child. Callers may then add the exact contract they own. This prevents an
+ * ambient writer slot/claim from becoming an accidental second writer.
+ */
+export function runtimeAuthorityFreeEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const sanitized = { ...env };
+  for (const key of Object.keys(sanitized)) {
+    if (
+      RUNTIME_PRIVATE_ENV_KEYS.has(key)
+      || RUNTIME_PRIVATE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
+    ) delete sanitized[key];
+  }
+  return sanitized;
+}
 
 function appendExecutableDirectory(pathEntries: string[], candidate: string | undefined): void {
   if (!candidate || !isAbsolute(candidate) || pathEntries.includes(candidate)) return;
@@ -70,15 +89,7 @@ export function repositoryChildProcessEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
-  const sanitized = { ...env };
-  for (const key of Object.keys(sanitized)) {
-    if (
-      RUNTIME_PRIVATE_ENV_KEYS.has(key)
-      || RUNTIME_PRIVATE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))
-    ) {
-      delete sanitized[key];
-    }
-  }
+  const sanitized = runtimeAuthorityFreeEnvironment(env);
 
   if (platform === 'win32') {
     let inheritedPath: string | undefined;

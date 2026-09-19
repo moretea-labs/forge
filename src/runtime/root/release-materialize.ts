@@ -4,8 +4,9 @@ import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, read
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
-import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
+import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 import { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryCommand } from './release-execution-canary';
 export { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryDependencies } from './release-execution-canary';
 import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
@@ -723,7 +724,7 @@ export function stageRuntimeRelease(input: {
       controllerUiArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
-      controllerHome: resolve(input.controllerHome),
+      deploymentScope: 'portable',
       databaseSchemaCompatibility: {
         minimum: CONTROL_PLANE_SCHEMA_VERSION,
         maximum: CONTROL_PLANE_SCHEMA_VERSION,
@@ -765,6 +766,137 @@ export function stageRuntimeRelease(input: {
       sourceCommit,
       ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
     };
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+
+interface RuntimeReleaseTreeInspection {
+  sha256: string;
+  bytes: number;
+  files: number;
+}
+
+function inspectRuntimeReleaseTree(releaseRootInput: string): RuntimeReleaseTreeInspection {
+  const requestedRoot = resolve(releaseRootInput);
+  if (!existsSync(requestedRoot)) throw new Error('RUNTIME_RELEASE_TREE_MISSING');
+  const rootStat = lstatSync(requestedRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('RUNTIME_RELEASE_TREE_ROOT_INVALID');
+  const root = realpathSync(requestedRoot);
+  const records: Array<{ path: string; mode: number; bytes: number; sha256: string }> = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(directory, entry.name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) throw new Error(`RUNTIME_RELEASE_TREE_SYMLINK_FORBIDDEN: ${relative(root, path)}`);
+      if (stat.isDirectory()) {
+        visit(path);
+        continue;
+      }
+      if (!stat.isFile()) throw new Error(`RUNTIME_RELEASE_TREE_SPECIAL_FILE_FORBIDDEN: ${relative(root, path)}`);
+      const bytes = readFileSync(path);
+      records.push({
+        path: relative(root, path).replaceAll('\\', '/'),
+        mode: stat.mode & 0o777,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      });
+    }
+  };
+  visit(root);
+  const digest = createHash('sha256').update(JSON.stringify(records)).digest('hex');
+  return {
+    sha256: digest,
+    bytes: records.reduce((sum, record) => sum + record.bytes, 0),
+    files: records.length,
+  };
+}
+
+export function runtimeReleaseTreeSha256(releaseRoot: string): string {
+  return inspectRuntimeReleaseTree(releaseRoot).sha256;
+}
+
+export interface PromotedPortableRuntimeRelease {
+  releaseId: string;
+  artifactIdentity: string;
+  manifestPath: string;
+  manifestSha256: string;
+  treeSha256: string;
+  sourceReleaseRoot: string;
+  targetReleaseRoot: string;
+  reusedExisting: boolean;
+}
+
+export function promotePortableRuntimeRelease(input: {
+  sourceManifestPath: string;
+  targetControllerHome: string;
+  expectedTreeSha256: string;
+}): PromotedPortableRuntimeRelease {
+  const sourceManifestPath = resolve(input.sourceManifestPath);
+  const sourceReleaseRoot = dirname(sourceManifestPath);
+  const targetControllerHome = resolve(input.targetControllerHome);
+  const manifest = loadRuntimeReleaseManifest(sourceManifestPath, targetControllerHome);
+  if (manifest.deploymentScope !== 'portable') throw new Error('RUNTIME_RELEASE_PROMOTION_REQUIRES_PORTABLE_ARTIFACT');
+  requireCompleteCompiledRuntimeReleaseManifest(manifest);
+  assertRuntimeReleaseExecutionSurface(sourceManifestPath, targetControllerHome);
+
+  const sourceTree = inspectRuntimeReleaseTree(sourceReleaseRoot);
+  if (sourceTree.sha256 !== input.expectedTreeSha256) throw new Error('RUNTIME_RELEASE_PROMOTION_SOURCE_TREE_MISMATCH');
+  const sourceManifestSha256 = createHash('sha256').update(readFileSync(sourceManifestPath)).digest('hex');
+
+  const releasesRoot = join(targetControllerHome, 'runtime', 'releases');
+  mkdirSync(releasesRoot, { recursive: true, mode: 0o700 });
+  const targetReleaseRoot = join(releasesRoot, manifest.releaseId);
+  const targetManifestPath = join(targetReleaseRoot, 'manifest.json');
+
+  const verifyTarget = (reusedExisting: boolean): PromotedPortableRuntimeRelease => {
+    const targetManifest = loadRuntimeReleaseManifest(targetManifestPath, targetControllerHome);
+    if (
+      targetManifest.deploymentScope !== 'portable'
+      || targetManifest.releaseId !== manifest.releaseId
+      || targetManifest.artifactIdentity !== manifest.artifactIdentity
+    ) throw new Error('RUNTIME_RELEASE_PROMOTION_TARGET_IDENTITY_MISMATCH');
+    requireCompleteCompiledRuntimeReleaseManifest(targetManifest);
+    assertRuntimeReleaseExecutionSurface(targetManifestPath, targetControllerHome);
+    const targetManifestSha256 = createHash('sha256').update(readFileSync(targetManifestPath)).digest('hex');
+    const targetTreeSha256 = runtimeReleaseTreeSha256(targetReleaseRoot);
+    if (targetManifestSha256 !== sourceManifestSha256 || targetTreeSha256 !== sourceTree.sha256) {
+      throw new Error('RUNTIME_RELEASE_PROMOTION_NOT_BYTE_IDENTICAL');
+    }
+    return {
+      releaseId: manifest.releaseId,
+      artifactIdentity: manifest.artifactIdentity,
+      manifestPath: targetManifestPath,
+      manifestSha256: targetManifestSha256,
+      treeSha256: targetTreeSha256,
+      sourceReleaseRoot,
+      targetReleaseRoot,
+      reusedExisting,
+    };
+  };
+
+  if (existsSync(targetReleaseRoot)) return verifyTarget(true);
+
+  assertStorageHeadroom(releasesRoot, {
+    operation: 'runtime_release_promotion',
+    requiredBytes: sourceTree.bytes,
+    reserveBytes: 64 * 1024 * 1024,
+  });
+  const staging = join(releasesRoot, `.${manifest.releaseId}.promote-${process.pid}-${randomUUID().slice(0, 8)}`);
+  try {
+    cpSync(sourceReleaseRoot, staging, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      preserveTimestamps: false,
+      dereference: false,
+    });
+    const stagedTree = inspectRuntimeReleaseTree(staging);
+    if (stagedTree.sha256 !== sourceTree.sha256) throw new Error('RUNTIME_RELEASE_PROMOTION_STAGING_TREE_MISMATCH');
+    renameSync(staging, targetReleaseRoot);
+    return verifyTarget(false);
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     throw error;

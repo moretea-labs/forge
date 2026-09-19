@@ -154,7 +154,12 @@ function launcherSource(input: {
     + `import { dirname, join } from 'node:path';\n`
     + `import { fileURLToPath } from 'node:url';\n`
     + `import { spawn } from 'node:child_process';\n`
-    + `const releaseRoot=dirname(fileURLToPath(import.meta.url));\n`
+    // macOS runs a byte-for-byte mirror of this launcher from its fixed,
+    // TCC-stable service path. The mirrored file is not its immutable release
+    // directory, so use the launch contract's attested release binding when it
+    // is present. Direct execution from the immutable release still derives
+    // the same root from the entrypoint location.
+    + `const releaseRoot=process.env.FORGE_RELEASE_PATH?.trim()||dirname(fileURLToPath(import.meta.url));\n`
     + `const packageRoot=join(releaseRoot,'package');\n`
     + `const indexPath=join(releaseRoot,'package-files.json');\n`
     + `const expectedIndex=${JSON.stringify(input.indexSha256)};\n`
@@ -224,7 +229,12 @@ function assertImmutablePackageRuntimeRelease(input: {
     && manifest.checkRunnerArtifactIdentity === expected.checkRunnerArtifactIdentity
     && JSON.stringify(manifest.arguments ?? []) === JSON.stringify(expected.arguments ?? [])
     && manifest.configurationSchemaVersion === expected.configurationSchemaVersion
-    && resolve(manifest.controllerHome) === resolve(expected.controllerHome)
+    && manifest.deploymentScope === expected.deploymentScope
+    && (manifest.deploymentScope === 'portable'
+      ? expected.deploymentScope === 'portable'
+      : typeof manifest.controllerHome === 'string'
+        && typeof expected.controllerHome === 'string'
+        && resolve(manifest.controllerHome) === resolve(expected.controllerHome))
     && JSON.stringify(manifest.databaseSchemaCompatibility) === JSON.stringify(expected.databaseSchemaCompatibility)
     && manifest.workerProtocolVersion === expected.workerProtocolVersion
     && manifest.releaseRevision === expected.releaseRevision
@@ -232,6 +242,7 @@ function assertImmutablePackageRuntimeRelease(input: {
     && typeof manifest.createdAt === 'string'
     && Number.isFinite(Date.parse(manifest.createdAt));
   if (!compatible) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: manifest identity changed');
+  if (!expected.controllerHome) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package release must remain ControllerHome-bound');
   assertRuntimeReleaseExecutionSurface(input.manifestPath, expected.controllerHome);
 }
 
@@ -246,7 +257,7 @@ export function materializePackageRuntimeRelease(input: {
   const records = packageRuntimeFileIndex(sourcePackageRoot);
   const fingerprint = packageRuntimeFingerprint(records);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
-  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v5`);
+  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v6`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   const releaseRoot = join(releasesRoot, releaseId);

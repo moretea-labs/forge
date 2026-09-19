@@ -3,7 +3,6 @@ import { ensureRepositoryRuntimeStorage } from '../../cli/repositories/runtime-s
 import { prepareTransferArtifacts } from '../../cli/repositories/selected-path-actions';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../maintenance/cleanup';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../root/release-materialize';
 import { recoveryActionById } from './actions';
 import { assertRecoveryAuthorized, buildRecoveryAuditRecord } from './audit';
 import { applyRuntimeMaintenance } from './maintenance-executor';
@@ -89,25 +88,10 @@ export async function executeCapabilityRecoveryAction(
   let affectedPaths: string[] = [];
   switch (action.id) {
     case 'recovery.stage_and_activate_runtime_release': {
-      const staged = stageRuntimeReleaseFromCandidateSource({
-        controllerHome: input.controllerHome,
-        sourceRoot: input.repository.canonicalRoot,
-        sourceRepositoryId: input.repository.repoId,
+      payload = await input.callStandaloneRecoveryTool('prepare_runtime_release_session', {
+        request_id: `runtime-release-session-${Date.now()}`,
       });
-      assertRuntimeReleaseFiles(staged);
-      payload = {
-        staged: {
-          releaseId: staged.releaseId,
-          sourceCommit: staged.sourceCommit,
-          artifactIdentity: staged.artifactIdentity,
-          manifestSha256: staged.manifestSha256,
-        },
-        activation: await input.callStandaloneRecoveryTool('activate_runtime_release', {
-          request_id: `runtime-cutover-${Date.now()}`,
-          release_path: staged.manifestPath,
-        }),
-      };
-      affectedPaths = ['controllerHome/runtime/releases', 'controllerHome/runtime/releases/authority.json'];
+      affectedPaths = ['controllerHome/recovery/state/release-sessions', 'candidate-runtime-lanes'];
       break;
     }
     case 'recovery.restart_primary_connector': {

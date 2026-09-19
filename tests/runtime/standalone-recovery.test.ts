@@ -62,7 +62,7 @@ import {
   RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
 } from '../../src/runtime/standalone-recovery/watchdog-heartbeat';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
+import { acquireRuntimeOwnership, runtimeIncarnationPath, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
@@ -270,6 +270,10 @@ function controllerHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'standalone-recovery-canonical-'));
   roots.push(home);
   inspectControlPlaneDatabase(home);
+  // A known-good attestation is a real offline restore point, including the
+  // declarative Runtime service contract. Keep the canonical fixture aligned
+  // with production rather than accepting metadata-only attestations.
+  runtimeServiceConfig(home);
   return home;
 }
 
@@ -657,7 +661,14 @@ function startObservedRuntime(
   startedAt = new Date(Date.now() - 1_000).toISOString(),
 ): RuntimeOwnershipHandle {
   const runtimeInstanceId = `runtime-${releaseId}`;
-  const ownership = acquireRuntimeOwnership(home, runtimeInstanceId);
+  const acquired = acquireRuntimeOwnership(home, runtimeInstanceId);
+  const ownership: RuntimeOwnershipHandle = {
+    record: acquired.record,
+    release: () => {
+      acquired.release();
+      rmSync(runtimeIncarnationPath(home), { force: true });
+    },
+  };
   ownerships.push(ownership);
   writeRuntimeStatusSnapshot(home, {
     schemaVersion: 1,
@@ -1362,51 +1373,56 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
   }
 });
 
-test('standalone Recovery stages only its configured Runtime source and hands a first-generation future sidecar release to activation', async () => {
+test('legacy stage-and-activate ABI only prepares isolated Candidate B and never mutates Stable A', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
-  mkdirSync(sourceRoot, { recursive: true });
-  const releasePath = join(home, 'runtime', 'releases', 'release-new');
-  mkdirSync(releasePath, { recursive: true });
-  const manifestPath = join(releasePath, 'manifest.json');
-  const runtimePath = join(releasePath, 'forge-runtime');
-  writeFileSync(runtimePath, '#!/bin/sh\n# release-new\nexit 0\n', { mode: 0o700 });
-  const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
-  const manifestText = `${JSON.stringify({
-    schemaVersion: 1,
-    releaseId: 'release-new',
-    artifactIdentity,
-    entrypoint: 'forge-runtime',
-    futureSidecarEntrypoint: 'future-sidecar-v2',
-    arguments: [],
-    configurationSchemaVersion: 1,
-    controllerHome: resolve(home),
-    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-    workerProtocolVersion: 1,
-    sourceCommit: 'a'.repeat(40),
-    createdAt: '2026-08-14T00:00:00.000Z',
-  }, null, 2)}\n`;
-  writeFileSync(manifestPath, manifestText);
-  writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
+  const sourceRevision = committedRecoverySource(sourceRoot);
   const baseline = verifiedManifest(home, 'release-baseline');
   ensureActiveRuntimeRelease(home, baseline.path);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  startObservedRuntime(home, runtime.endpoint, 'release-baseline', baseline.artifactIdentity);
   const expectedAuthority = readRuntimeReleaseAuthority(home)!;
   const config = createRecoveryConfig(home, {
     primaryRuntimeSourceRoot: sourceRoot,
     primaryRuntimeSourceRepositoryId: 'repo_source_fixture',
   });
   let stagedFrom = '';
-  let activatedManifest = '';
+  let candidateHome = '';
+  let activationCalled = false;
   const result = await stageAndActivateConfiguredRuntimeRelease(config, {
     stage: (input) => {
       stagedFrom = input.sourceRoot;
+      candidateHome = input.controllerHome;
       expect(input.sourceRepositoryId).toBe('repo_source_fixture');
+      expect(resolve(input.controllerHome)).not.toBe(resolve(home));
       const operationLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
       expect(operationLock).toMatchObject({
         pid: process.pid,
-        action: 'stage_and_activate_runtime_release',
+        action: 'release_session_prepare',
         requestId: 'recovery-gateway:stage-request-1',
       });
+      const releasePath = join(input.controllerHome, 'runtime', 'releases', 'release-new');
+      mkdirSync(releasePath, { recursive: true });
+      const manifestPath = join(releasePath, 'manifest.json');
+      const runtimePath = join(releasePath, 'forge-runtime');
+      writeFileSync(runtimePath, '#!/bin/sh\n# release-new\nexit 0\n', { mode: 0o700 });
+      const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
+      writeFileSync(manifestPath, `${JSON.stringify({
+        schemaVersion: 1,
+        releaseId: 'release-new',
+        artifactIdentity,
+        entrypoint: 'forge-runtime',
+        futureSidecarEntrypoint: 'future-sidecar-v2',
+        arguments: [],
+        configurationSchemaVersion: 1,
+        deploymentScope: 'portable',
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        sourceCommit: sourceRevision,
+        createdAt: '2026-08-14T00:00:00.000Z',
+      }, null, 2)}\n`);
+      writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
       return {
         controllerHome: input.controllerHome,
         releasePath,
@@ -1414,24 +1430,32 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
         releaseId: 'release-new',
         artifactIdentity,
         manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
-        sourceCommit: 'a'.repeat(40),
+        sourceCommit: sourceRevision,
       };
     },
-    activate: async (_config, path, guard) => {
-      activatedManifest = path;
-      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
-      expect(existsSync(join(dirname(path), 'future-sidecar-v2'))).toBe(true);
-      expect(guard).toMatchObject({
-        requestId: 'recovery-gateway:stage-request-1',
-        expectedAuthorityRevision: expectedAuthority.revision,
-        expectedActiveReleaseId: 'release-baseline',
-      });
-      return { ok: true, attempted: true, detail: 'activated' };
+    activate: async () => {
+      activationCalled = true;
+      throw new Error('compatibility alias must never activate Stable A');
     },
   }, 'recovery-gateway:stage-request-1');
   expect(stagedFrom).toBe(resolve(sourceRoot));
-  expect(activatedManifest).toBe(manifestPath);
-  expect(result).toMatchObject({ ok: true, attempted: true, staged: { releaseId: 'release-new' } });
+  expect(candidateHome).not.toBe(resolve(home));
+  expect(activationCalled).toBe(false);
+  expect(result).toMatchObject({
+    ok: true,
+    attempted: true,
+    staged: { releaseId: 'release-new', sourceCommit: sourceRevision },
+    releaseSession: {
+      phase: 'built',
+      stable: { controllerHome: resolve(home) },
+      candidate: { controllerHome: candidateHome },
+      candidateRelease: { releaseId: 'release-new', sourceCommit: sourceRevision },
+    },
+  });
+  expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+    revision: expectedAuthority.revision,
+    active: { releaseId: 'release-baseline', artifactIdentity: baseline.artifactIdentity },
+  });
 });
 
 test('watchdog defers Recovery self-repair while an attributable mutation lock is live', async () => {
@@ -1712,8 +1736,17 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(attested).toMatchObject({ revision: 'release-a', artifactIdentity: 'artifact-a', controllerHome: resolve(home) });
     expect(attested.releaseAuthorityRevision).toBe(1);
     expect(attested.releaseFencingTokenSha256).toHaveLength(64);
-    const repairedKnownGood = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as { releases: Array<{ revision: string }> };
+    expect(attested.recoveryBundle).toMatchObject({
+      schemaVersion: 1,
+      database: { schemaVersion: 1 },
+      serviceContract: {},
+    });
+    expect(existsSync(attested.recoveryBundle!.database.path)).toBe(true);
+    expect(existsSync(attested.recoveryBundle!.serviceContract.path)).toBe(true);
+    const repairedKnownGood = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as { schemaVersion: number; releases: Array<{ revision: string; recoveryBundle?: unknown }> };
+    expect(repairedKnownGood.schemaVersion).toBe(2);
     expect(repairedKnownGood.releases.map((entry) => entry.revision)).toEqual(['release-a']);
+    expect(repairedKnownGood.releases[0]?.recoveryBundle).toBeDefined();
 
     const listed = await listReleases(config) as { runtimeRunning: boolean; runtimeReady: boolean; knownGood: Array<{ revision: string }> };
     expect(listed.runtimeRunning).toBe(true);
@@ -1747,6 +1780,14 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('pin_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('unpin_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_pinned_runtime_release');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      'release_session_status',
+      'prepare_runtime_release_session',
+      'verify_runtime_release_session_static',
+      'verify_runtime_release_session_candidate',
+      'cutover_runtime_release_session',
+      'promote_runtime_release_session_known_good',
+    ]));
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('migrate_controller_home');
     const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
     expect(migrateTool?.inputSchema.required).toEqual(expect.arrayContaining([
@@ -1782,6 +1823,11 @@ describe('standalone recovery on canonical Runtime', () => {
       'unpin_runtime_release',
       'activate_pinned_runtime_release',
       'stage_and_activate_runtime_release',
+      'prepare_runtime_release_session',
+      'verify_runtime_release_session_static',
+      'verify_runtime_release_session_candidate',
+      'cutover_runtime_release_session',
+      'promote_runtime_release_session_known_good',
       'migrate_controller_home',
       'restart_public_tunnel',
     ]) {
@@ -1794,6 +1840,14 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
+    expect(RECOVERY_CLI_COMMANDS).toEqual(expect.arrayContaining([
+      'release-session-status',
+      'release-session-prepare',
+      'release-session-static-verify',
+      'release-session-candidate-verify',
+      'release-session-cutover',
+      'release-session-known-good',
+    ]));
     expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');
   });
   test('frozen Recovery clients can use their exported activation schema while partial or wrong explicit identity still fails closed', async () => {
@@ -2451,12 +2505,18 @@ describe('standalone recovery on canonical Runtime', () => {
         primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
       });
       let probes = 0;
+      let launchdLoaded = true;
       const commands: string[][] = [];
       const result = await restartPrimaryRuntime(config, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         verifyLocal: async () => ++probes >= 3
@@ -2466,7 +2526,10 @@ describe('standalone recovery on canonical Runtime', () => {
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true });
-      expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+      const bootoutIndex = commands.findIndex((args) => args.includes('bootout'));
+      const kickstartIndex = commands.findIndex((args) => args.includes('kickstart'));
+      expect(bootoutIndex).toBeGreaterThanOrEqual(0);
+      expect(kickstartIndex).toBeGreaterThan(bootoutIndex);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -2493,6 +2556,7 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 1000,
         runCommand: async (name, args) => {
           commands.push([name, ...args]);
+          if (name === 'systemctl' && args.includes('show')) return { ok: true, status: 0, stdout: 'inactive\n', stderr: '' };
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         verifyLocal: async () => ++probes >= 3
@@ -2502,7 +2566,10 @@ describe('standalone recovery on canonical Runtime', () => {
         sleep: async () => undefined,
       });
       expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: `${paths.label}.service` });
-      expect(commands).toContainEqual(['systemctl', '--user', 'restart', `${paths.label}.service`]);
+      const stopIndex = commands.findIndex((entry) => entry.join(' ') === `systemctl --user stop ${paths.label}.service`);
+      const restartIndex = commands.findIndex((entry) => entry.join(' ') === `systemctl --user restart ${paths.label}.service`);
+      expect(stopIndex).toBeGreaterThanOrEqual(0);
+      expect(restartIndex).toBeGreaterThan(stopIndex);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -3577,10 +3644,11 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       expect(result.ok).toBe(false);
       expect(result.rollback).toMatchObject({ ok: true });
-      expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+      const restoredAuthority = readRuntimeReleaseAuthority(home);
+      expect(restoredAuthority).toMatchObject({
         active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
-        previous: { releaseId: candidateReleaseId, artifactIdentity },
       });
+      expect(restoredAuthority?.previous).toBeUndefined();
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
       expect(connectorBindingStates).toEqual(['release-a:runtime-started']);
     } finally {
@@ -3694,10 +3762,11 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result.ok).toBe(false);
       expect(result.detail).toContain('failed to start');
       expect(result.rollback).toMatchObject({ ok: true });
-      expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+      const restoredAuthority = readRuntimeReleaseAuthority(home);
+      expect(restoredAuthority).toMatchObject({
         active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
-        previous: { releaseId: 'release-start-failure', artifactIdentity: candidate.artifactIdentity },
       });
+      expect(restoredAuthority?.previous).toBeUndefined();
       expect(kickstarts).toBe(2);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

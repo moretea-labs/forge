@@ -29,7 +29,7 @@ export async function startWorkflowSupervisorRuntime(controllerHome: string): Pr
   const socketPath = workflowSupervisorSocketPath(forgeHome);
   const claim = getRuntimeWriteClaim();
   const writer = claim && !claim.unmanaged
-    ? { runtimeInstanceId: claim.runtimeInstanceId, fencingGeneration: claim.releaseAuthorityRevision, pid: claim.ownerPid }
+    ? { runtimeInstanceId: claim.runtimeInstanceId, fencingGeneration: claim.fencingGeneration, pid: claim.ownerPid }
     : undefined;
   if (writer) await reconcileWorkflowSupervisorSocket({ socketPath, incoming: writer });
   const controlPlane = new WorkflowSupervisorControlPlane(
