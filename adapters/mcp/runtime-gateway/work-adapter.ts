@@ -484,6 +484,19 @@ export async function runFacadeVerify(
     });
     return result(blocked as unknown as Record<string, unknown>, true);
   }
+  const hasReconciliationInput = Object.prototype.hasOwnProperty.call(args, 'reconcile_process_ids');
+  if (hasReconciliationInput && !Array.isArray(args.reconcile_process_ids)) {
+    const blocked = buildFacadeResult({
+      status: 'blocked',
+      summary: 'rh_work verify reconcile_process_ids must be an array.',
+      data: { workId: workId || undefined, verificationStarted: false },
+      warnings: ['WORK_VERIFY_RECONCILE_PROCESS_IDS_INVALID'],
+    });
+    return result(blocked as unknown as Record<string, unknown>, true);
+  }
+  const reconcileProcessIds = hasReconciliationInput
+    ? (args.reconcile_process_ids as unknown[]).map(String).map((value) => value.trim()).filter(Boolean)
+    : undefined;
   const commonVerificationInput = {
     controllerHome: ctx.controllerHome,
     repository,
@@ -492,6 +505,7 @@ export async function runFacadeVerify(
     timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     interactiveWaitMs: 0,
     leaseWaitMs: RH_WORK_VERIFY_LEASE_WAIT_MS,
+    reconcileProcessIds,
     simulate: args.simulate_check === true || args.infrastructure_failed === true || args.check_failed === true || args.skipped === true
       ? {
           infrastructureFailed: args.infrastructure_failed === true,
@@ -623,7 +637,14 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (operation === 'verify') {
             const workId = String(args.work_id ?? '').trim();
             try {
-              if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+              if (workId) {
+                const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+                const identity = authenticatedFacadeControllerIdentity(ctx, args);
+                bindFacadeControllerOwnership(ctx, store, workId, identity, {
+                  allowClaimIfMissing: Boolean(relay?.authorityId),
+                  relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
+                });
+              }
             } catch (error) {
               const blocked = buildFacadeResult({
                 status: 'blocked',

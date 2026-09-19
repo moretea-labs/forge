@@ -19,6 +19,7 @@ export const ACTIONS = [
   'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
+  'rollback_runtime_release_session',
   'promote_runtime_release_session_known_good',
 ];
 const RELEASE_SESSION_ACTIONS = new Set([
@@ -26,6 +27,7 @@ const RELEASE_SESSION_ACTIONS = new Set([
   'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
+  'rollback_runtime_release_session',
   'promote_runtime_release_session_known_good',
 ]);
 const MUTATING_ACTIONS = new Set([
@@ -33,6 +35,7 @@ const MUTATING_ACTIONS = new Set([
   'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
+  'rollback_runtime_release_session',
   'promote_runtime_release_session_known_good',
 ]);
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);

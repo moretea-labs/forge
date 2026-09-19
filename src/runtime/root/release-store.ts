@@ -36,6 +36,8 @@ export interface RuntimePublishedRelease {
 export interface RuntimeReleaseActivationTransaction {
   schemaVersion: 1;
   operationId: string;
+  /** Exact Recovery ReleaseSession that owns a portable cutover transaction. */
+  releaseSessionId?: string;
   candidateReleaseId: string;
   preActivationRevision: number;
   preActivationActive: RuntimePublishedRelease;
@@ -178,6 +180,7 @@ function validActivationTransaction(
   const preActivationActive = sameRelease(authority.active, transaction.preActivationActive);
   return transaction.schemaVersion === 1
     && Boolean(transaction.operationId?.trim())
+    && (transaction.releaseSessionId === undefined || /^[A-Za-z0-9][A-Za-z0-9_-]{7,119}$/.test(transaction.releaseSessionId))
     && (candidateActive || preActivationActive)
     && Number.isInteger(transaction.preActivationRevision)
     && transaction.preActivationRevision >= 1
@@ -275,7 +278,7 @@ export function publishRuntimeRelease(
   manifestPath: string,
   operationId: string,
   dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
-  activation?: { operationId: string },
+  activation?: { operationId: string; releaseSessionId?: string },
 ): RuntimeReleaseAuthority {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
   const candidate = manifestRecord(controllerHome, manifestPath);
@@ -311,6 +314,7 @@ export function publishRuntimeRelease(
       activation: {
         schemaVersion: 1 as const,
         operationId: activation.operationId,
+        ...(activation.releaseSessionId ? { releaseSessionId: activation.releaseSessionId } : {}),
         candidateReleaseId: candidate.releaseId,
         preActivationRevision: current.revision,
         preActivationActive: current.active,

@@ -2208,7 +2208,7 @@ async function finalizeWorkInternal(
     // are identical. Preserve validation from exact reviewed content equivalence;
     // transferWorkVerificationAcrossContentEquivalentCommit remains responsible
     // for invalidating checks whose semantics are genuinely Git-sensitive.
-    const validationPreservedAcrossCommit = Boolean(
+    let validationPreservedAcrossCommit = Boolean(
       checks.length > 0
       && exactValidationInput
       && reviewedContentPreservedAcrossCommit
@@ -2226,16 +2226,7 @@ async function finalizeWorkInternal(
         : postCommitInput.fingerprint,
       failureReason: undefined,
     }));
-    if (checks.length && !validationPreservedAcrossCommit) {
-      markWorkValidationPending(ctx.controllerHome, current);
-      return {
-        work: compactHandle(current),
-        stages: current.finalization,
-        completed: false,
-        continuation: 'WORK_COMMITTED_REVALIDATION_REQUIRED: committed content changed from the exact validated workspace; run work_validate on the committed HEAD before merge or completion',
-      };
-    }
-    if (prepareReviewCandidate) {
+    if (reviewedContentPreservedAcrossCommit && prepareReviewCandidate) {
       const verificationTransfer = planWorkVerificationAcrossContentEquivalentCommit({
         controllerHome: ctx.controllerHome,
         repository: validated.worktreeRepository,
@@ -2266,12 +2257,13 @@ async function finalizeWorkInternal(
           continuation: `WORK_COMMITTED_REVALIDATION_REQUIRED: content-equivalent verification transfer invalidated [${verificationTransfer.invalidatedCheckIds.join(', ')}] before implementation review`,
         };
       }
+      validationPreservedAcrossCommit = true;
       appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
         title: 'verification authority preserved while preparing exact implementation-review candidate',
         summary: `The exact Work content was committed as ${postCommitInput.head}; ${verificationTransfer.reusableCheckIds.length}/${checks.length} non-Git-sensitive Process receipt(s) were transferred without deriving implementation-review authority.`,
         detailLevel: 'summary',
       });
-    } else {
+    } else if (reviewedContentPreservedAcrossCommit) {
       const authorityTransfer = transferReviewedWorkAuthorityAcrossContentEquivalentCommit({
         controllerHome: ctx.controllerHome,
         repository: validated.worktreeRepository,
@@ -2302,11 +2294,29 @@ async function finalizeWorkInternal(
       if (!authorityTransfer.transferred || !authorityTransfer.derivedReview) {
         throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_REQUIRED');
       }
+      validationPreservedAcrossCommit = true;
       appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
         title: 'verification and implementation-review authority preserved across content-equivalent commit',
         summary: `The exact reviewed Work content was committed as ${postCommitInput.head}; ${authorityTransfer.reusableCheckIds.length}/${checks.length} non-Git-sensitive Process receipt(s) and review ${authorityTransfer.derivedReview.reviewId} were transferred atomically.`,
         detailLevel: 'summary',
       });
+    }
+    if (checks.length && validationPreservedAcrossCommit && current.finalization.validation !== 'done') {
+      current = transact('commit-validation-authority-transferred', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        finalization: { ...fresh.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
+        validatedInputFingerprint: postCommitInput.fingerprint,
+        failureReason: undefined,
+      }));
+    }
+    if (checks.length && !validationPreservedAcrossCommit) {
+      markWorkValidationPending(ctx.controllerHome, current);
+      return {
+        work: compactHandle(current),
+        stages: current.finalization,
+        completed: false,
+        continuation: 'WORK_COMMITTED_REVALIDATION_REQUIRED: committed content or check semantics changed; run work_validate on the committed HEAD before merge or completion',
+      };
     }
   } else if (!wants.commit && current.finalization.commit === 'pending') {
     const committedRepository = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize').worktreeRepository;

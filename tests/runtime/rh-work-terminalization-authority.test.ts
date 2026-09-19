@@ -25,6 +25,7 @@ import { readWorkHandle, transitionWorkHandle, writeWorkHandle } from '../../src
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { invalidateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
@@ -5914,7 +5915,7 @@ describe('rh_work content-equivalent commit authority transfer', () => {
     const fx = fixture();
     const checkId = 'package:check:content-equivalent-finalize';
     writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
-      scripts: { 'check:content-equivalent-finalize': 'node -e "process.exit(0)"' },
+      scripts: { 'check:content-equivalent-finalize': 'node -e "setTimeout(() => process.exit(0), 250)"' },
     }, null, 2) + '\n');
     execFileSync('git', ['add', 'package.json'], { cwd: fx.repoRoot });
     execFileSync('git', ['commit', '-m', 'add content-equivalent finalize check'], { cwd: fx.repoRoot });
@@ -5987,27 +5988,34 @@ describe('rh_work content-equivalent commit authority transfer', () => {
     ));
     expect(admitted.status).toBe('ok');
 
-    let verified: Record<string, any> | undefined;
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      verified = structured(await callRuntimeTool(
-        ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
-        'rh_work',
-        {
-          repo_id: repository.repoId,
-          checkout_id: workspace.checkoutId,
-          operation: 'verify',
-          work_id: workId,
-          check_id: checkId,
-          requested_by: 'chatgpt',
-          request_id: 'content-equivalent-managed-finalize-check',
-        },
-      ));
-      if (verified.data?.verification?.completed === true) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    expect(verified?.status).toBe('ok');
-    expect(verified?.data?.verification).toMatchObject({ completed: true, outcome: 'valid_pass' });
-    expect(verified?.data?.nextStep).toBe('review');
+    const verificationStarted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'verify',
+        work_id: workId,
+        check_id: checkId,
+        requested_by: 'chatgpt',
+        request_id: 'content-equivalent-managed-finalize-check',
+      },
+    ));
+    expect(verificationStarted.status).toBe('ok');
+    const processId = String(verificationStarted.data?.verification?.processId ?? '');
+    expect(processId).toBeTruthy();
+    const waited = await callProcessTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'process_wait',
+      { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 },
+    );
+    expect(waited?.isError).not.toBe(true);
+    expect(waited?.structuredContent).toMatchObject({
+      process: { processId, completed: true, ok: true },
+      workVerificationReconciliation: { workId, processId, status: 'reconciled' },
+    });
+    const verifiedContract = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(verifiedContract.checkRefs.some((record) => record.checkId === checkId && record.outcome === 'valid_pass')).toBe(true);
 
     const reviewed = structured(await callRuntimeTool(
       ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),

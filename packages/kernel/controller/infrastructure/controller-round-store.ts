@@ -12,7 +12,7 @@ import {
   type ControlPlaneRecord,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
-import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
+import { controllerSessionBlocksRecovery, getControllerSession, releaseObservedControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
@@ -1446,6 +1446,24 @@ export function claimStalledControllerRoundRelays(
       const activeWorks = works.filter((work) => !isTerminalWorkContractStatus(work.status));
       if (activeWorks.length === 0) return undefined;
       if (activeWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
+
+      // A claimed ControllerRound may become recoverable after its execution
+      // activity grace expires while the durable owner lease itself is still
+      // unexpired. Never rotate the opaque per-round capability while leaving
+      // that old owner authoritative: doing so makes release/recovery mutually
+      // inaccessible. Fence the exact observed stale owner first. A crash after
+      // this release but before relay transition is safe and retryable because
+      // the old relay authority remains unchanged and no stale writer survives.
+      for (const work of activeWorks) {
+        const staleOwner = getControllerSession(options, work.workId);
+        if (!staleOwner) continue;
+        const released = releaseObservedControllerSession(options, {
+          workId: work.workId,
+          actor: `controller-relay-stalled-recovery:${latest.originWorkId}`,
+          owner: staleOwner,
+        });
+        if (!released.allowed) return undefined;
+      }
 
       const currentRecord = readRelayRecord(options, latest.originWorkId);
       if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;
