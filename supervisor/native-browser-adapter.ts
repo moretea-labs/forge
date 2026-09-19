@@ -66,7 +66,7 @@ function committedAssistant(text: string): boolean {
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
 function refKey(ref: MacOsBrowserTabRef): string { return `${ref.windowId}:${ref.tabId}`; }
 
-async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<WorkflowSupervisorNativeSnapshot> {
+export async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<WorkflowSupervisorNativeSnapshot> {
   return await page.evaluate<WorkflowSupervisorNativeSnapshot>(`(() => {
     const texts = (selector) => {
       const nodes = document.querySelectorAll(selector);
@@ -82,7 +82,7 @@ async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<Work
       // The latest user node is not necessarily the effect-bearing node:
       // provider/tool UI can append later user-role nodes. Keep the complete
       // visible user history so the unique Forge marker remains evidence.
-      latestUserText: userTexts.join('\n'),
+      latestUserText: userTexts.join('\\n'),
       latestAssistantResponse: assistantTexts.at(-1) ?? '',
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"]')),
     };

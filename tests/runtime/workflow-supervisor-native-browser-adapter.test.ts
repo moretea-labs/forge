@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
+import { defaultSnapshot, WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
@@ -70,6 +70,25 @@ function register(control: WorkflowSupervisorControlPlane, conversationId: strin
 }
 
 describe('Workflow Supervisor macOS native browser adapter', () => {
+  test('keeps effect markers when later user-role nodes are visible in the browser DOM', async () => {
+    const page: WorkflowSupervisorNativePage = {
+      async evaluate<T>(expression: string): Promise<T> {
+        const fakeDocument = {
+          querySelectorAll: (selector: string) => selector.includes('user')
+            ? [{ innerText: 'effect marker prompt' }, { innerText: 'later provider user node' }]
+            : [{ innerText: 'latest assistant response' }],
+          querySelector: () => null,
+          title: 'ChatGPT',
+        };
+        return Function('document', 'location', `return ${expression}`)(fakeDocument, { href: 'https://chatgpt.com/c/test' }) as T;
+      },
+      tabRef: () => undefined,
+    };
+    const snapshot = await defaultSnapshot(page);
+    expect(snapshot.latestUserText).toBe('effect marker prompt\nlater provider user node');
+    expect(snapshot.latestAssistantResponse).toBe('latest assistant response');
+  });
+
   test('never adopts an unmarked user tab and sends enrollment only through a new Forge-owned exact tab', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
     const url = `https://chatgpt.com/c/${conversationId}`;
