@@ -54,6 +54,7 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'executionMode',
   'runtimeBundleEntrypoint', 'runtimeBundleArtifactIdentity',
   'diagnosticEntrypoint', 'diagnosticArtifactIdentity',
+  'connectorEntrypoint', 'connectorArtifactIdentity',
   'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
   'workflowSupervisorNativeHostEntrypoint', 'workflowSupervisorNativeHostArtifactIdentity',
@@ -155,6 +156,12 @@ export function loadRuntimeReleaseManifest(
     entryField: 'diagnosticEntrypoint',
     identityField: 'diagnosticArtifactIdentity',
     canonicalEntry: 'forge-cli',
+  });
+  const connector = optionalRuntimeComponent({
+    value,
+    entryField: 'connectorEntrypoint',
+    identityField: 'connectorArtifactIdentity',
+    canonicalEntry: 'forge-mcp-gateway',
   });
   const browserNodeBridge = optionalRuntimeComponent({
     value,
@@ -299,6 +306,7 @@ export function loadRuntimeReleaseManifest(
     ...(executionMode ? { executionMode: 'standalone-binary' as const } : {}),
     ...(runtimeBundle ?? {}),
     ...(diagnostic ?? {}),
+    ...(connector ?? {}),
     ...(browserNodeBridge ?? {}),
     ...(browserHandoff ?? {}),
     ...(workflowSupervisorNativeHost ?? {}),

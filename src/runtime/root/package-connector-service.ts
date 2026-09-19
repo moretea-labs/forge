@@ -179,7 +179,11 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
   }
-  const executable = resolve(input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
+  const compiledConnector = join(resolve(input.release.releaseRoot), 'forge-mcp-gateway');
+  const hasCompiledConnector = existsSync(compiledConnector);
+  const executable = resolve(hasCompiledConnector
+    ? compiledConnector
+    : input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
   if (/^forge-recovery-(?:gateway|watchdog)$/i.test(basename(executable))) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_EXECUTABLE_INVALID');
   }
@@ -201,7 +205,7 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   ];
   return {
     executable,
-    args: isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
+    args: hasCompiledConnector ? cliArgs : isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
     environment: {
       FORGE_CONTROLLER_HOME: resolve(input.controllerHome),
       FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',

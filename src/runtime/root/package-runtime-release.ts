@@ -37,6 +37,16 @@ export interface PackageRuntimeRelease {
 // staging but cannot start after the installed package moves or disappears.
 const PACKAGE_RUNTIME_ROOTS = ['src', 'adapters', 'packages', 'supervisor', 'bin', 'assets', 'scripts', 'node_modules'] as const;
 const PACKAGE_RUNTIME_FILES = ['package.json'] as const;
+// Compiled releases execute only compiled/bundled artifacts. Keep a tiny package
+// projection for browser-extension installation plus two legacy Recovery
+// recognition sentinels; neither sentinel is executed when the compiled
+// Connector sidecar is present.
+const COMPILED_RUNTIME_PACKAGE_ROOTS = ['supervisor/chrome-extension'] as const;
+const COMPILED_RUNTIME_PACKAGE_FILES = [
+  'package.json',
+  'src/cli/index.ts',
+  'src/runtime/shared/node-ts-loader.mjs',
+] as const;
 const PACKAGE_RUNTIME_STAGING_RESERVE_BYTES = 256 * 1024 * 1024;
 
 function sha256(value: Buffer | string): string {
@@ -70,19 +80,42 @@ function walkRegularFiles(root: string, current: string, output: string[]): void
   for (const entry of readdirSync(current).sort()) walkRegularFiles(root, join(current, entry), output);
 }
 
-export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
+function packageFileIndex(
+  packageRoot: string,
+  roots: readonly string[],
+  files: readonly string[],
+): PackageRuntimeFileRecord[] {
   const root = resolve(packageRoot);
   const paths: string[] = [];
-  for (const directory of PACKAGE_RUNTIME_ROOTS) walkRegularFiles(root, join(root, directory), paths);
-  for (const file of PACKAGE_RUNTIME_FILES) walkRegularFiles(root, join(root, file), paths);
-  const unique = [...new Set(paths)].sort();
-  if (!unique.includes('package.json') || !unique.some((path) => path === 'bin/forge-runtime.mjs')) {
-    throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
-  }
-  return unique.map((path) => {
+  for (const directory of roots) walkRegularFiles(root, join(root, directory), paths);
+  for (const file of files) walkRegularFiles(root, join(root, file), paths);
+  return [...new Set(paths)].sort().map((path) => {
     const bytes = readFileSync(join(root, path));
     return { path, sha256: sha256(bytes), bytes: bytes.length };
   });
+}
+
+export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
+  const root = resolve(packageRoot);
+  const records = packageFileIndex(root, PACKAGE_RUNTIME_ROOTS, PACKAGE_RUNTIME_FILES);
+  const paths = new Set(records.map((record) => record.path));
+  if (!paths.has('package.json') || !paths.has('bin/forge-runtime.mjs')) {
+    throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
+  }
+  return records;
+}
+
+export function compiledRuntimePackageFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
+  const root = resolve(packageRoot);
+  const records = packageFileIndex(root, COMPILED_RUNTIME_PACKAGE_ROOTS, COMPILED_RUNTIME_PACKAGE_FILES);
+  const paths = new Set(records.map((record) => record.path));
+  for (const required of COMPILED_RUNTIME_PACKAGE_FILES) {
+    if (!paths.has(required)) throw new Error(`COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: ${required}`);
+  }
+  if (![...paths].some((path) => path.startsWith('supervisor/chrome-extension/'))) {
+    throw new Error('COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: supervisor/chrome-extension');
+  }
+  return records;
 }
 
 export function packageRuntimeFingerprint(records: PackageRuntimeFileRecord[]): string {

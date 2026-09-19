@@ -9,7 +9,7 @@ import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlit
 import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 import { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryCommand } from './release-execution-canary';
 export { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryDependencies } from './release-execution-canary';
-import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
+import { compiledRuntimePackageFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
 /**
  * Stage one immutable Forge Runtime release below Controller Home. The staged
@@ -36,6 +36,7 @@ export interface StagedRuntimeRelease {
   artifactIdentity: string;
   runtimeBundleArtifactIdentity?: string;
   diagnosticArtifactIdentity?: string;
+  connectorArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffArtifactIdentity?: string;
   workflowSupervisorNativeHostArtifactIdentity?: string;
@@ -363,6 +364,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     artifactIdentity: receipt.artifactIdentity,
     runtimeBundleArtifactIdentity: manifest.runtimeBundleArtifactIdentity,
     diagnosticArtifactIdentity: manifest.diagnosticArtifactIdentity,
+    connectorArtifactIdentity: manifest.connectorArtifactIdentity,
     browserNodeBridgeArtifactIdentity: manifest.browserNodeBridgeArtifactIdentity,
     browserHandoffArtifactIdentity: manifest.browserHandoffArtifactIdentity,
     workflowSupervisorNativeHostArtifactIdentity: manifest.workflowSupervisorNativeHostArtifactIdentity,
@@ -520,6 +522,19 @@ export function stageRuntimeRelease(input: {
     chmodSync(diagnosticExecutable, 0o700);
     const diagnosticArtifactIdentity = `sha256:${sha256(diagnosticExecutable)}`;
 
+    const connectorEntrypoint = 'forge-mcp-gateway' as const;
+    const connectorPath = join(staging, connectorEntrypoint);
+    const connectorCompile = compileBinary({
+      sourceRoot,
+      outputPath: connectorPath,
+      entryPath: join(sourceRoot, 'src/cli/index.ts'),
+    });
+    if (!connectorCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_CONNECTOR_BUILD_FAILED: ${connectorCompile.stderr || connectorCompile.stdout || connectorCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(connectorPath, 0o700);
+    const connectorArtifactIdentity = `sha256:${sha256(connectorPath)}`;
+
     const browserNodeBridgeEntrypoint = 'browser-node-bridge-host.js' as const;
     const browserNodeBridgePath = join(staging, browserNodeBridgeEntrypoint);
     const bundleNodeHost = dependencies.bundleNodeHost ?? defaultBundleNodeScript;
@@ -673,13 +688,13 @@ export function stageRuntimeRelease(input: {
     cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
     const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
 
-    // The persistent OAuth/Connector is source-backed even when the primary
-    // Runtime itself is compiled. Co-locate one immutable package snapshot in
-    // the same release so standalone Recovery can bind the Connector to the
-    // exact active release instead of retaining an older package release.
+    // Compiled releases execute only attested binaries/bundles. Keep a
+    // bounded package projection for Chrome extension installation and legacy
+    // Recovery recognition; Connector execution is owned by the compiled
+    // forge-mcp-gateway sidecar above.
     const packageRoot = 'package' as const;
     const packagePath = join(staging, packageRoot);
-    const packageRecords = packageRuntimeFileIndex(sourceRoot);
+    const packageRecords = compiledRuntimePackageFileIndex(sourceRoot);
     stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords);
     const packageArtifactIdentity = `sha256:${sha256Directory(packagePath)}`;
 
@@ -694,6 +709,8 @@ export function stageRuntimeRelease(input: {
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticEntrypoint: 'forge-cli',
       diagnosticArtifactIdentity,
+      connectorEntrypoint,
+      connectorArtifactIdentity,
       browserNodeBridgeEntrypoint,
       browserNodeBridgeArtifactIdentity,
       browserHandoffEntrypoint,
@@ -748,6 +765,7 @@ export function stageRuntimeRelease(input: {
       runtimeBundleArtifactIdentity,
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticArtifactIdentity,
+      connectorArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
       workflowSupervisorNativeHostArtifactIdentity,
@@ -963,6 +981,7 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
     }
   }
   assertComponentFile({ path: join(release.releasePath, 'forge-cli'), identity: release.diagnosticArtifactIdentity, missingCode: 'RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-mcp-gateway'), identity: release.connectorArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CONNECTOR_ENTRYPOINT_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'browser-node-bridge-host.js'), identity: release.browserNodeBridgeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'browser-handoff-host.js'), identity: release.browserHandoffArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-workflow-supervisor-native-host'), identity: release.workflowSupervisorNativeHostArtifactIdentity, missingCode: 'RUNTIME_RELEASE_WORKFLOW_SUPERVISOR_NATIVE_HOST_MISSING', executable: true });

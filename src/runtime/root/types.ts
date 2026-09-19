@@ -52,6 +52,8 @@ export interface RuntimeReleaseManifest {
   runtimeBundleArtifactIdentity?: string;
   diagnosticEntrypoint?: 'forge-cli';
   diagnosticArtifactIdentity?: string;
+  connectorEntrypoint?: 'forge-mcp-gateway';
+  connectorArtifactIdentity?: string;
   browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffEntrypoint?: 'browser-handoff-host.js';
