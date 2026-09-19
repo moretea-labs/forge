@@ -161,7 +161,10 @@ export class WorkflowSupervisorControlPlane {
     const completion = this.store.getCompletion(effect.sourceCompletionFingerprint);
     if (!completion || completion.taskId !== task.taskId || sha256(snapshot.latestAssistantResponse) !== completion.responseSha256) return false;
     const sourceEffect = this.store.getEffect(completion.sourceEffectId);
-    return Boolean(sourceEffect && sourceEffect.taskId === task.taskId && normalizeBrowserText(snapshot.latestUserText) === normalizeBrowserText(sourceEffect.prompt));
+    return Boolean(sourceEffect
+      && sourceEffect.taskId === task.taskId
+      && (normalizeBrowserText(snapshot.latestUserText) === normalizeBrowserText(sourceEffect.prompt)
+        || browserTextHasEffect(snapshot.latestUserText, sourceEffect.effectId)));
   }
 
   private requireTask(taskId: string): WorkflowSupervisorTask { const task = this.store.getTask(taskId); if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN'); return task; }

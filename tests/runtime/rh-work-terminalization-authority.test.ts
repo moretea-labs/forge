@@ -1275,6 +1275,112 @@ describe('rh_work terminalization authority', () => {
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work.worktreeRef!, encoding: 'utf8' }).trim()).toBe(candidateRevision);
   }, 20_000);
 
+  test('validation-process loss rehydrates an exact pending candidate before delivery', async () => {
+    const fx = fixture();
+    const workId = 'work-pending-candidate-validation-recovery';
+    const caller = {
+      principalId: 'principal-pending-candidate-validation-recovery',
+      sessionId: 'transport-pending-candidate-validation-recovery',
+      controllerInstanceId: 'runtime-pending-candidate-validation-recovery',
+    };
+    const branch = 'work/pending-candidate-validation-recovery';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Pending candidate validation recovery',
+      branchName: branch,
+    });
+    const baseRevision = workspace.baseRevision!;
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "pending-candidate";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'pending candidate validation recovery'], { cwd: workspace.root! });
+    const candidateRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Recover an exact committed candidate after its validation process disappeared.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'verification',
+      worktreeRef: workspace.root,
+      evidenceState: 'stale',
+      scopeEvidence: {
+        initialLikelyPaths: ['src/index.ts'],
+        inspectedPaths: ['src/index.ts'],
+        actualChangedPaths: ['src/index.ts'],
+        recordedAt: now,
+      },
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: candidateRevision,
+      permissionSnapshotVersion: 1,
+      state: 'failed',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'failed',
+        commit: 'done',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+        lastError: 'Validation process record is unavailable.',
+      },
+    });
+
+    const oldCheckoutId = workspace.checkoutId!;
+    const oldWorktree = workspace.root!;
+    execFileSync('git', ['worktree', 'remove', '--force', oldWorktree], { cwd: fx.repoRoot });
+    expect(reconcileRepositoryCheckouts(fx.repository.repoId, fx.controllerHome).archivedCheckoutIds).toContain(oldCheckoutId);
+
+    const recovered = ensureRunningRepositoryWorkCheckout({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    });
+    expect(recovered.reconstructedCheckout).toBe(true);
+    const work = getWorkContract(store, workId)!;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(work.status).toBe('running');
+    expect(work.phase).toBe('verification');
+    expect(work.evidenceState).toBe('stale');
+    expect(handle.state).toBe('validating');
+    expect(handle.expectedHead).toBe(candidateRevision);
+    expect(handle.finalization).toMatchObject({
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work.worktreeRef!, encoding: 'utf8' }).trim()).toBe(candidateRevision);
+  }, 20_000);
+
   test('continue fails closed and preserves dirty source when the running Work checkout is archived but still present', async () => {
     const fx = fixture();
     const workId = 'work-running-dirty-checkout-runtime-recovery';

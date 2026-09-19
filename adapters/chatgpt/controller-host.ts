@@ -89,6 +89,7 @@ export function createChatgptControllerHost(options: {
         reasoning: payload.reasoning ?? 'high',
         tabPolicy: payload.tabPolicy ?? 'auto',
         timeoutMs: payload.timeoutMs,
+        authorizationGrantRefs: payload.authorizationGrantRefs,
         originSurface: 'schedule',
       });
       if (result.status === 'failed') {

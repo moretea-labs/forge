@@ -66,6 +66,7 @@ export async function callRhWorkScheduleAdapter(
         workId,
         scheduleMode: scheduleModeRaw as 'continuation' | 'browser_watch' | 'browser_keepalive',
         controllerType: controllerType as ContinuationControllerType,
+        authorizationGrantRefs: Array.isArray(args.authorization_grant_refs) ? args.authorization_grant_refs.map(String) : undefined,
         executable: typeof args.executable === 'string' ? args.executable : undefined,
         launchArgs: Array.isArray(args.launch_args) ? args.launch_args.map(String) : undefined,
         launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,

@@ -9,6 +9,7 @@ import {
   claimPlanStepForWork,
   completePlanStepForWork,
   createPlanContract,
+  getPlanExecutionBaselineRevision,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
   createRequirement,
@@ -168,7 +169,10 @@ describe('Goal authority convergence', () => {
       acceptedSourceRevision: 'rev-b',
     });
     expect(finalized.status).toBe('finalized');
-    expect(finalized.sourceRevision).toBe('rev-b');
+    // Plan semantic source remains the approved contract revision. Delivery
+    // advancement is tracked by the separate execution baseline authority.
+    expect(finalized.sourceRevision).toBe('rev-a');
+    expect(getPlanExecutionBaselineRevision(planOptions, finalized)).toBe('rev-b');
 
     const requirementStillActive = readRequirement({ controllerHome }, requirementId)!.value;
     const finalizedDecision = projectAutonomousGoalProgression({
@@ -181,6 +185,7 @@ describe('Goal authority convergence', () => {
       plan: {
         ...deliveredSnapshot.plan,
         sourceRevision: finalized.sourceRevision,
+        executionBaselineRevision: getPlanExecutionBaselineRevision(planOptions, finalized),
         status: finalized.status,
         steps: finalized.steps.map((step) => ({
           id: step.id,

@@ -3,7 +3,7 @@
 
 > **Runtime Docs**: user-level forge reference
 > **Doc ID**: development-protocol
-> **Version**: 1.8.0
+> **Version**: 1.8.1
 > **Source Command**: `forge docs path development-protocol`
 
 This repo keeps workflow facts and runtime artifacts locally under `.ai/`.

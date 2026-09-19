@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { claimPlanStepForWork, getPlanContract, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { buildFrozenSemanticCompatibilityCapability, parseFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
@@ -259,7 +259,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(conflictingNativeField.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
   }, 15_000);
 
-  test('lets an explicit frozen successor recover an invalidated predecessor without replacing an unrelated active Plan', async () => {
+  test('lets an execution-baseline shift preserve Plan authority without replacing an unrelated active Plan', async () => {
     const repoRoot = tempRoot('forge-frozen-invalidated-plan-repo-');
     const controllerHome = tempRoot('forge-frozen-invalidated-plan-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -268,7 +268,6 @@ describe('rh_work Requirement bootstrap', () => {
     const ctx = mcpContext(controllerHome, repository);
     const requirementId = 'REQ-FROZEN-INVALIDATED-PLAN';
     const predecessorPlanId = 'PLAN-FROZEN-INVALIDATED-R1';
-    const successorPlanId = 'PLAN-FROZEN-INVALIDATED-R2';
     const unrelatedPlanId = 'PLAN-FROZEN-POST-V2';
     const step = {
       id: 'stage-a', objective: 'Preserve exact successor lineage.', dependencies: [], authoritative_files: [],
@@ -277,7 +276,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'requirement_create', requirement_id: requirementId,
-      requirement_title: 'Recover invalidated Plan', requirement_outcome: 'Keep source-drift replanning on the intended Plan lineage.',
+      requirement_title: 'Preserve Plan execution baseline', requirement_outcome: 'Keep execution-baseline changes separate from semantic Plan replanning.',
     })).status).toBe('ok');
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_create', plan_id: predecessorPlanId, requirement_id: requirementId,
@@ -286,40 +285,27 @@ describe('rh_work Requirement bootstrap', () => {
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_approve', plan_id: predecessorPlanId,
     })).status).toBe('ok');
-    expect(claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, {
+    const claimed = claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, {
       planId: predecessorPlanId, stepId: 'stage-a', workId: 'work-never-created', sourceRevision: 'different-source-revision',
-    }).status).toBe('invalidated_by_drift');
+    });
+    expect(claimed).toMatchObject({
+      planId: predecessorPlanId,
+      status: 'executing',
+      steps: [{ id: 'stage-a', status: 'executing', workId: 'work-never-created' }],
+    });
+    expect(getPlanExecutionBaselineRevision({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toBe('different-source-revision');
 
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_create', plan_id: unrelatedPlanId, requirement_id: requirementId,
       scope_key: 'post-v2', source_revision: sourceRevision, objective: 'Unrelated post-V2 Plan.', plan_relation: 'parallel', plan_steps: [step],
     })).status).toBe('ok');
 
-    const predecessor = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)!;
-    const capability = buildFrozenSemanticCompatibilityCapability({
-      operation: 'plan_create',
-      args: { obligation_dispositions: listUnresolvedPlanObligations(predecessor).map((obligation) => ({
-        predecessor_plan_id: predecessorPlanId,
-        obligation_id: obligation.obligationId,
-        disposition: 'keep' as const,
-        successor_refs: [obligation.sourceRef],
-      })) },
-    });
-    const successor = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId, operation: 'repair', capability_id: capability,
-      plan_id: successorPlanId, requirement_id: requirementId, scope_key: 'v2-release', source_revision: sourceRevision,
-      objective: 'Recovered successor Plan.', plan_relation: 'extend', related_plan_id: predecessorPlanId, plan_steps: [step],
-    }));
-    expect(successor.status).toBe('ok');
-    expect(successor.summary).toContain('PLAN_REVISION_REUSED_AUTHORITY');
-    expect(successor.data).toMatchObject({ planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: predecessorPlanId } });
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({
       planId: predecessorPlanId,
       revision: 1,
-      status: 'replanning',
-      pendingRevision: { revision: 2, requestedRevisionLabel: successorPlanId },
+      status: 'executing',
+      steps: [{ id: 'stage-a', status: 'executing', workId: 'work-never-created' }],
     });
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.status).toBe('draft');
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.supersededBy).toBeUndefined();
   }, 15_000);

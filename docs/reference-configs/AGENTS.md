@@ -3,7 +3,7 @@
 
 > **Runtime Docs**: user-level forge reference
 > **Doc ID**: AGENTS
-> **Version**: 1.8.0
+> **Version**: 1.8.1
 > **Source Command**: `forge docs path AGENTS`
 
 This repo keeps workflow facts and runtime artifacts locally under `.ai/`.

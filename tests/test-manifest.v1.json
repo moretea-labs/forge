@@ -365,6 +365,10 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/runtime/autonomous-work-liveness-reconciler.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/browser-state-controller-home-boundary.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"

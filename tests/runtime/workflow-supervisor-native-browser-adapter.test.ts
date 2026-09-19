@@ -22,7 +22,7 @@ class FakePage implements WorkflowSupervisorNativePage {
 function inventory(page: FakePage): MacOsBrowserTabInventoryEntry {
   return { windowId: page.ref.windowId, tabId: page.ref.tabId, url: page.url, title: page.title, active: false };
 }
-function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfirmed = false, preSubmitFailureReason = '') {
+function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfirmed = false, preSubmitFailureReason = '', dispatchedUserSuffix = '') {
   const settlements: string[] = [];
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home()), {
     completionContract: async () => ({ valid: true, reason: 'ok' }),
@@ -53,7 +53,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     dispatchPrompt: async (page, prompt) => {
       dispatchAttempts += 1;
       if (preSubmitFailureReason && dispatchAttempts === 1) return { dispatched: false, reason: preSubmitFailureReason };
-      if (!providerConfirmed) (page as FakePage).latestUserText = prompt;
+      if (!providerConfirmed) (page as FakePage).latestUserText = `${prompt}${dispatchedUserSuffix}`;
       return { dispatched: true, ...(providerConfirmed ? { confirmed: true } : {}) };
     },
     nowMs: () => nowMs,
@@ -98,6 +98,37 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(retry.command?.dispatchGeneration).toBe(2);
     await h.adapter.runOnce();
     expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(2);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
+    expect(h.errors).toEqual([]);
+  });
+  test('leaves a pending effect untouched while the provider is still generating', async () => {
+    const conversationId = '14141414-2525-3636-4747-585858585858';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const page = new FakePage({ windowId: 'forge-window', tabId: 'forge-tab-generating' }, url);
+    page.owner = `forge-workflow-supervisor:${conversationId}`;
+    page.isGenerating = true;
+    const h = harness([page]);
+    const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(0);
+    expect(h.control.store.latestEffectDispatch(effect.effectId)).toBeUndefined();
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command?.mode).toBe('send');
+
+    page.isGenerating = false;
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(1);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
+    expect(h.errors).toEqual([]);
+  });
+  test('confirms a dispatched effect from its unique marker when the DOM adds UI text', async () => {
+    const conversationId = '15151515-2626-3737-4848-595959595959';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const h = harness([], '', false, '', '\\n展开');
+    const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });
@@ -171,7 +202,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
   });
   test('observes a committed CONTINUE response and dispatches the successor effect in the same loop', async () => {
     const conversationId = '99999999-8888-7777-6666-555555555555';
-    const h = harness([], 'controller_authority_id=ctrl_next relay_scope_id=requirement:REQ-next'); const { conversationUrl, effect } = register(h.control, conversationId);
+    const h = harness([], 'controller_authority_id=ctrl_next relay_scope_id=requirement:REQ-next', false, '', '\\n展开'); const { conversationUrl, effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     const firstPrompt = page.latestUserText;

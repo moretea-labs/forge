@@ -225,6 +225,179 @@ function restoreArchivedBlockedDeliveryCheckout(input: {
 }
 
 /**
+ * Rehydrate a committed candidate whose validation process disappeared before
+ * delivery/cleanup. The candidate is safe to revisit only when the durable
+ * WorkHandle, Git object database, and recorded changed-path identity all agree.
+ * A missing cleanup receipt is intentional here: this is a pre-delivery
+ * recovery, not a second delivery authority.
+ */
+function restoreArchivedPendingCandidateCheckout(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  work: NonNullable<ReturnType<typeof getWorkContract>>;
+  handle: WorkHandleState;
+  identity: RetainedWorkResumeIdentity;
+}): { reconstructedCheckout: boolean } | undefined {
+  const { controllerHome, repository, work, handle, identity } = input;
+  if (work.status === 'completed' || work.status === 'failed' || work.status === 'cancelled') return undefined;
+  if (work.phase !== 'verification' || work.workKind !== 'repository_change') return undefined;
+  if (handle.state !== 'failed'
+    || handle.finalization.validation !== 'failed'
+    || handle.finalization.commit !== 'done'
+    || handle.finalization.merge !== 'pending'
+    || handle.finalization.branchCleanup !== 'pending'
+    || handle.finalization.worktreeCleanup !== 'pending'
+    || handle.cleanupReceipt
+    || work.completionReceipt
+    || work.completionOutcome) return undefined;
+
+  const candidateRevision = handle.expectedHead?.trim();
+  const baseRevisionRaw = work.baseRevision?.trim() || handle.baseCommit?.trim();
+  const recordedChangedPaths = normalizedPaths(work.scopeEvidence?.actualChangedPaths ?? []);
+  if (!candidateRevision || !baseRevisionRaw || recordedChangedPaths.length === 0) {
+    return undefined;
+  }
+
+  const candidateCommit = gitCommitAtRef(repository.canonicalRoot, candidateRevision);
+  if (candidateCommit !== candidateRevision) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_MISSING: ${work.workId}`);
+  }
+  const baseRevision = gitCommitAtRef(repository.canonicalRoot, baseRevisionRaw);
+  if (!baseRevision) throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_BASE_MISSING: ${work.workId}`);
+  if (!git(repository.canonicalRoot, ['merge-base', '--is-ancestor', baseRevision, candidateRevision]).ok) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_REVISION_AMBIGUOUS: ${work.workId}`);
+  }
+
+  const targetBranch = handle.deliveryTargetBranch?.trim() || repository.defaultBranch?.trim();
+  if (!targetBranch) throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_TARGET_REQUIRED: ${work.workId}`);
+  if (git(repository.canonicalRoot, ['merge-base', '--is-ancestor', candidateRevision, targetBranch]).ok) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_ALREADY_INTEGRATED: ${work.workId}`);
+  }
+  const changed = git(repository.canonicalRoot, ['diff', '--name-only', `${baseRevision}..${candidateRevision}`]);
+  if (!changed.ok) throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_DIFF_UNAVAILABLE: ${work.workId}`);
+  const candidateChangedPaths = normalizedPaths(changed.stdout.split(/\r?\n/));
+  if (candidateChangedPaths.length === 0) throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_ZERO_DELTA: ${work.workId}`);
+
+  // A delivery candidate can contain a canonical target advancement as a
+  // merge parent. Only the unique parent already reachable from the current
+  // target branch may be treated as target history; the Work-owned delta is
+  // then measured from that parent to the candidate. This keeps unrelated
+  // target changes out of Work scope evidence while still requiring the exact
+  // candidate tree and recorded path identity to agree.
+  let workOwnedChangedPaths = candidateChangedPaths;
+  let deliveryBaseCommit = baseRevision;
+  const parents = git(repository.canonicalRoot, ['rev-list', '--parents', '-n', '1', candidateRevision]);
+  if (parents.ok) {
+    const parentRevisions = parents.stdout.split(/\s+/).slice(1).filter(Boolean);
+    const targetParents = parentRevisions.filter((parent) =>
+      git(repository.canonicalRoot, ['merge-base', '--is-ancestor', parent, targetBranch]).ok,
+    );
+    if (parentRevisions.length === 2 && targetParents.length === 1 && targetParents[0] !== baseRevision) {
+      const targetParent = targetParents[0];
+      const targetRelative = git(repository.canonicalRoot, ['diff', '--name-only', `${targetParent}..${candidateRevision}`]);
+      if (!targetRelative.ok) throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_TARGET_RELATIVE_DIFF_UNAVAILABLE: ${work.workId}`);
+      workOwnedChangedPaths = normalizedPaths(targetRelative.stdout.split(/\r?\n/));
+      if (workOwnedChangedPaths.length === 0) throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_ZERO_WORK_DELTA: ${work.workId}`);
+      deliveryBaseCommit = targetParent;
+      const expectedRecordedPaths = normalizedPaths([...workOwnedChangedPaths, ...normalizedPaths(
+        git(repository.canonicalRoot, ['diff', '--name-only', `${baseRevision}..${targetParent}`]).stdout.split(/\r?\n/),
+      )]);
+      if (JSON.stringify(recordedChangedPaths) !== JSON.stringify(candidateChangedPaths)
+        && JSON.stringify(recordedChangedPaths) !== JSON.stringify(workOwnedChangedPaths)
+        && JSON.stringify(recordedChangedPaths) !== JSON.stringify(expectedRecordedPaths)) {
+        throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_PATH_IDENTITY_MISMATCH: ${work.workId}`);
+      }
+    }
+  }
+  const scopeViolation = findWorkPathScopeViolation(work, workOwnedChangedPaths);
+  if (scopeViolation) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_SCOPE_VIOLATION: ${scopeViolation.kind}:${scopeViolation.path}`);
+  }
+  if (deliveryBaseCommit === baseRevision && JSON.stringify(recordedChangedPaths) !== JSON.stringify(candidateChangedPaths)) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_PATH_IDENTITY_MISMATCH: ${work.workId}`);
+  }
+
+  const branchName = `work/resume-pending-candidate-${work.workId.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 34)}-${candidateRevision.slice(0, 12)}`;
+  const existingResumeBranch = gitCommitAtRef(repository.canonicalRoot, `refs/heads/${branchName}`);
+  if (existingResumeBranch && existingResumeBranch !== candidateRevision) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_BRANCH_CONFLICT: ${work.workId}`);
+  }
+  const workspace = ensureManagedWorkspace(controllerHome, repository, {
+    requestId: `${work.workId}:pending-candidate-recovery:${candidateRevision}`,
+    title: `${work.objective} pending candidate recovery`,
+    branchName,
+    baseRef: candidateRevision,
+  });
+  if (!workspace.managed || !workspace.checkoutId || !workspace.root || !workspace.branch) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_RECONSTRUCTION_FAILED: ${work.workId}`);
+  }
+  const refreshedRepository = listRepositories(controllerHome, { includeRemoved: true })
+    .find((candidate) => candidate.repoId === repository.repoId);
+  if (!refreshedRepository) throw new Error(`WORK_CONTINUE_REPOSITORY_MISSING: ${work.workId}`);
+  const reconstructed = selectRepositoryCheckout(refreshedRepository, workspace.checkoutId);
+  const reconstructedStatus = repositoryGitStatus(reconstructed);
+  if (!reconstructedStatus.clean || reconstructedStatus.head !== candidateRevision || reconstructedStatus.branch !== workspace.branch) {
+    throw new Error(`WORK_CONTINUE_COMMITTED_CANDIDATE_RECONSTRUCTION_REVISION_MISMATCH: ${work.workId}`);
+  }
+
+  const at = new Date().toISOString();
+  const store = { controllerHome, repoId: repository.repoId };
+  updateWorkContract(store, work.workId, {
+    checkoutId: workspace.checkoutId,
+    worktreeRef: workspace.root,
+    controllerInstanceId: identity.controllerInstanceId,
+    ...(deliveryBaseCommit !== baseRevision
+      ? {
+          scopeEvidence: {
+            initialLikelyPaths: work.scopeEvidence?.initialLikelyPaths ?? work.allowedPaths,
+            inspectedPaths: work.scopeEvidence?.inspectedPaths ?? [],
+            actualChangedPaths: workOwnedChangedPaths,
+            recordedAt: at,
+          },
+        }
+      : {}),
+    continuationPrompt: `Continue work ${repository.repoId}: ${work.objective.slice(0, 500)}. Forge rehydrated exact pending candidate ${candidateRevision}; rerun verification before delivery.`,
+  });
+  transitionWorkContractPhase(store, work.workId, {
+    phase: 'verification',
+    status: 'running',
+    state: 'active',
+    dispatchState: 'running',
+    summary: `Pending candidate ${candidateRevision} was rehydrated after validation-process loss; fresh verification is required before delivery.`,
+  });
+  if (work.evidenceState === 'partial' || work.evidenceState === 'valid') {
+    recordWorkEvidenceState(store, work.workId, 'stale');
+  }
+  writeWorkHandle(controllerHome, {
+    ...handle,
+    principalId: identity.principalId,
+    sessionId: identity.sessionId,
+    checkoutId: workspace.checkoutId,
+    worktreePath: workspace.root,
+    branch: workspace.branch,
+    sourceCheckoutId: repository.activeCheckoutId,
+    deliveryTargetBranch: targetBranch,
+    managedWorktree: true,
+    baseCommit: baseRevision,
+    deliveryBaseCommit,
+    expectedHead: candidateRevision,
+    state: 'validating',
+    validatedInputFingerprint: undefined,
+    failureReason: undefined,
+    cleanupReceipt: undefined,
+    updatedAt: at,
+    finalization: {
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    },
+  });
+  return { reconstructedCheckout: true };
+}
+
+/**
  * Re-establish the checkout binding for a still-running isolated Work only
  * when durable and Git evidence prove that the missing checkout carried no
  * repository delta. Any dirty, divergent, committed, or cleaned evidence
@@ -265,6 +438,10 @@ export function ensureRunningRepositoryWorkCheckout(
     controllerHome, repository, work, handle, identity, prepareDependencies: input.prepareDependencies,
   });
   if (archivedDelivery) return archivedDelivery;
+  const pendingCandidate = restoreArchivedPendingCandidateCheckout({
+    controllerHome, repository, work, handle, identity,
+  });
+  if (pendingCandidate) return pendingCandidate;
   if (['committed', 'merged', 'cleaned', 'failed_terminal_cleanup'].includes(handle.state)
     || handle.finalization.commit === 'done'
     || handle.finalization.merge === 'done'

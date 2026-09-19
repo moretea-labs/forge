@@ -19,10 +19,19 @@ import { buildFacadeResult } from '../facade/facade-result';
 import { classifyVerificationOutcome, normalizeCheckIds } from '../facade/check-normalization';
 import { verifyGoalWorkloop } from '../facade/goal-workloop';
 import type { FacadeResult, VerificationRecord, WorkContract } from '../facade/types';
+import { evaluateWorkCompletionEvidence } from './work-evidence-policy';
+import {
+  implementationReviewChangedPathDigest,
+  latestImplementationReview,
+  normalizeImplementationReviewChangedPaths,
+  workRequiresImplementationReview,
+} from '../../../../packages/kernel/work/api/index';
 import { executionIdentityForRepository } from './execution-identity';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import { resolveWorkVerificationContext } from './work-verification-context';
 import { listWorkBoundRepositoryProcessEvidence } from './work-process-evidence';
+import { changedPaths as workChangedPaths, changedPathsFromUnbornBase } from './work-task-receipt';
+import { readWorkHandle, workDeliveryBaseRevision } from './work-handle-store';
 
 export interface ExecuteWorkVerificationInput {
   controllerHome: string;
@@ -51,6 +60,34 @@ function result(facade: FacadeResult, isError = false): ExecuteWorkVerificationR
   return { facade, isError };
 }
 
+/**
+ * Derive the exact current implementation paths for the canonical Work
+ * verifier. Review admission cannot rely on Work scope evidence alone: a
+ * committed candidate in a managed checkout has no dirty-path signal, while
+ * a target-only advance must not become part of the Work candidate.
+ */
+function trustedWorkspaceChangedPaths(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  work: WorkContract;
+  verificationStatus: ReturnType<typeof repositoryGitStatus>;
+}): string[] {
+  const sourceRevision = input.verificationStatus.head;
+  const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.work.workId);
+  const deliveryBaseRevision = workDeliveryBaseRevision(handle ?? {}) ?? input.work.baseRevision;
+  const committedPaths = deliveryBaseRevision && sourceRevision
+    ? input.work.repositoryBaseState === 'unborn'
+      ? changedPathsFromUnbornBase(input.repository.canonicalRoot, sourceRevision)
+      : workChangedPaths(input.repository.canonicalRoot, deliveryBaseRevision, sourceRevision)
+    : input.work.scopeEvidence?.actualChangedPaths ?? [];
+  return [...new Set([
+    ...committedPaths,
+    ...input.verificationStatus.staged,
+    ...input.verificationStatus.unstaged,
+    ...input.verificationStatus.untracked,
+  ])].map((path) => path.trim()).filter(Boolean).sort();
+}
+
 function currentReusableVerificationRecord(input: {
   workContract?: WorkContract;
   checkId: string;
@@ -73,10 +110,45 @@ function currentReusableVerificationRecord(input: {
 
 function reusedVerificationResult(
   record: VerificationRecord,
+  input: {
+    workContract?: WorkContract;
+    sourceRevision?: string;
+    workspaceFingerprint: string;
+    workspaceChangedPaths?: readonly string[];
+  } = { workspaceFingerprint: '' },
   reconciledProcessIds: string[] = [],
 ): ExecuteWorkVerificationResult {
   const receipt = record.receipt!;
   const passed = record.outcome === 'valid_pass';
+  let nextStep: 'review' | 'finalize' | 'continue' | undefined;
+  if (passed && input.workContract && input.sourceRevision) {
+    const currentChangedPaths = normalizeImplementationReviewChangedPaths(
+      input.workspaceChangedPaths ?? input.workContract.scopeEvidence?.actualChangedPaths ?? [],
+    );
+    const completion = evaluateWorkCompletionEvidence(
+      input.workContract,
+      input.sourceRevision,
+      input.workspaceFingerprint,
+      [],
+      currentChangedPaths,
+    );
+    if (completion.status === 'complete') {
+      const latestReview = latestImplementationReview(input.workContract.implementationReviews);
+      const approvedReviewRemainsAuthoritative = Boolean(
+        input.workContract.phase === 'delivery'
+        && input.workContract.phaseEvidence.review.state === 'satisfied'
+        && latestReview?.decision === 'approved'
+        && latestReview.sourceRevision === input.sourceRevision
+        && latestReview.verificationWorkspaceFingerprint === input.workspaceFingerprint
+        && latestReview.changedPathDigest === implementationReviewChangedPathDigest(currentChangedPaths)
+      );
+      nextStep = approvedReviewRemainsAuthoritative || !workRequiresImplementationReview(input.workContract.workKind, currentChangedPaths)
+        ? 'finalize'
+        : 'review';
+    } else {
+      nextStep = 'continue';
+    }
+  }
   return result(buildFacadeResult({
     status: passed ? 'ok' : 'failed',
     summary: `Reused exact current verification receipt for ${record.checkId}; no Process was re-executed.`,
@@ -94,7 +166,9 @@ function reusedVerificationResult(
         ok: passed,
         evidenceReceiptId: receipt.receiptId,
         reconciledProcessIds,
+        ...(nextStep ? { nextStep } : {}),
       },
+      ...(nextStep ? { nextStep } : {}),
     },
     rawAvailable: false,
   }), !passed);
@@ -250,6 +324,12 @@ export function reconcileTerminalWorkVerifications(input: {
   const sourceRevision = verificationStatus.head ?? undefined;
   if (!sourceRevision) return { repository, verificationStatus, reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
   const workspaceFingerprint = workspaceValidationFingerprint(repository.canonicalRoot, verificationStatus);
+  const workspaceChangedPaths = trustedWorkspaceChangedPaths({
+    controllerHome: input.controllerHome,
+    repository,
+    work: workContract,
+    verificationStatus,
+  });
   const workBoundProcessEvidenceIds = (
     workContract.workKind === 'local_effect'
     || (workContract.workKind === 'repository_change' && workContract.checks.length === 0)
@@ -266,6 +346,7 @@ export function reconcileTerminalWorkVerifications(input: {
     handoffStore: store,
     repoId: input.repository.repoId,
     availableChecks,
+    workspaceChangedPaths,
   };
   const seenChecks = new Set<string>();
   const reconciledProcessIds: string[] = [];
@@ -524,6 +605,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
     handoffStore: store,
     repoId: input.repository.repoId,
     availableChecks: checks,
+    workspaceChangedPaths: workContract?.scopeEvidence?.actualChangedPaths,
   };
   if (workId && (!workContract || workContract.status === 'completed' || workContract.status === 'cancelled' || workContract.status === 'failed')) {
     const facade = verifyGoalWorkloop(workloopCtx, { workId, checkId });
@@ -581,6 +663,18 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
     const verificationStatus = repositoryGitStatus(verificationRepository);
     const observedGitHead = verificationStatus.head;
     const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
+    const workspaceChangedPaths = workContract
+      ? trustedWorkspaceChangedPaths({
+          controllerHome: input.controllerHome,
+          repository: verificationRepository,
+          work: workContract,
+          verificationStatus,
+        })
+      : undefined;
+    const exactWorkloopCtx = {
+      ...workloopCtx,
+      workspaceChangedPaths,
+    };
     const requestedChecks = workContract?.checks.length ? workContract.checks : [normalizedCheckId];
     const verificationRequestFingerprint = observedGitHead ? verificationInputFingerprint({
       sourceRevision: observedGitHead,
@@ -596,7 +690,14 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       workspaceFingerprint,
       requestedChecks,
     });
-    if (currentReceipt) return reusedVerificationResult(currentReceipt);
+    if (currentReceipt) {
+      return reusedVerificationResult(currentReceipt, {
+        workContract,
+        sourceRevision: observedGitHead ?? undefined,
+        workspaceFingerprint,
+        workspaceChangedPaths,
+      });
+    }
 
     if (workContract && observedGitHead) {
       const reconciled = reconcileTerminalWorkVerifications({
@@ -619,7 +720,12 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
             requestedChecks,
           });
           if (reconciledReceipt) {
-            return reusedVerificationResult(reconciledReceipt, reconciled.reconciledProcessIds);
+            return reusedVerificationResult(reconciledReceipt, {
+              workContract: refreshed.context.workContract,
+              sourceRevision: observedGitHead,
+              workspaceFingerprint,
+              workspaceChangedPaths,
+            }, reconciled.reconciledProcessIds);
           }
         }
       }
@@ -783,7 +889,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
 
     if (workId) {
       const sourceRevision = observedGitHead ?? undefined;
-      const facade = verifyGoalWorkloop(workloopCtx, {
+      const facade = verifyGoalWorkloop(exactWorkloopCtx, {
         workId,
         checkId: normalizedCheckId,
         sourceRevision,

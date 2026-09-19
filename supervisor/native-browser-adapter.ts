@@ -78,32 +78,56 @@ async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<Work
       title: String(document.title || ''),
       latestUserText: latest('[data-message-author-role="user"]'),
       latestAssistantResponse: latest('[data-message-author-role="assistant"]'),
-      isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop"]')),
+      isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"]')),
     };
   })()`);
 }
 async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string): Promise<{ dispatched: boolean; reason?: string }> {
   return await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
     const prompt = ${JSON.stringify(prompt)};
-    const composer = document.querySelector('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"]');
+    const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+    const composer = [
+      '[data-testid="composer-text-input"]',
+      'div#prompt-textarea[contenteditable="true"]',
+      '#prompt-textarea[contenteditable="true"]',
+      'textarea[name="prompt"]',
+      'textarea[placeholder*="Message"]',
+      'textarea[placeholder*="问问"]',
+      'div[role="textbox"][contenteditable="true"]',
+    ].map((selector) => document.querySelector(selector)).find(visible);
     if (!composer) return { dispatched: false, reason: 'composer_missing' };
     composer.focus();
-    const selection = globalThis.getSelection?.();
-    if (selection) {
-      const range = document.createRange();
-      range.selectNodeContents(composer);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      selection.deleteFromDocument();
+    let inserted = false;
+    if ('value' in composer) {
+      composer.value = '';
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+      composer.value = prompt;
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
+      inserted = true;
+    } else {
+      const selection = globalThis.getSelection?.();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(composer);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        selection.deleteFromDocument();
+      }
+      inserted = document.execCommand?.('insertText', false, prompt) === true;
     }
-    const inserted = document.execCommand?.('insertText', false, prompt) === true;
-    const current = String(composer.innerText ?? composer.textContent ?? '').replace(/\\s+/g, ' ').trim();
+    const current = String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '')).replace(/\\s+/g, ' ').trim();
     const expected = prompt.replace(/\\s+/g, ' ').trim();
     if (!inserted || current !== expected) {
-      composer.textContent = prompt;
+      if ('value' in composer) composer.value = prompt;
+      else composer.textContent = prompt;
       composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
     }
-    const button = document.querySelector('[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]');
+    const button = [
+      '[data-testid="send-button"]',
+      'button[aria-label*="Send"]',
+      'button[aria-label*="发送"]',
+      'button[data-testid*="send"]',
+    ].map((selector) => document.querySelector(selector)).find((candidate) => visible(candidate) && !candidate.disabled && candidate.getAttribute('aria-disabled') !== 'true');
     if (!button) return { dispatched: false, reason: 'send_button_missing' };
     button.click();
     return { dispatched: true };
@@ -186,6 +210,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           observedAtMs: this.deps.nowMs(),
           graceMs: this.deps.providerIdleGraceMs,
         });
+        // A provider turn owns the composer while it is generating. Do not
+        // mutate the composer or classify the temporarily absent send control
+        // as an unknown external effect; wait for the same exact page to become
+        // idle and let the durable effect remain pending.
+        if (snapshot.isGenerating) continue;
         const poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command, task);
       } catch (error) {
@@ -347,10 +376,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       return;
     }
     let exact = false;
+    let markerPresent = false;
     for (let attempt = 0; attempt < 50; attempt += 1) {
       snapshot = await this.deps.snapshot(page);
       exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
-      if (exact) break;
+      markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
+      if (exact || markerPresent) break;
       await this.deps.sleep(100);
     }
     this.control.browserObserveEffect({
@@ -358,8 +389,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       conversationUrl: command.conversationUrl,
       effectId: command.effectId,
       observationId: `native-observe-${randomUUID()}`,
-      outcome: exact ? 'applied' : 'unknown',
-      evidence: { surface: 'macos-native', exact_user_message: exact, ...(exact ? {} : { reason: 'outbound_not_confirmed' }) },
+      outcome: exact || markerPresent ? 'applied' : 'unknown',
+      evidence: {
+        surface: 'macos-native',
+        exact_user_message: exact,
+        target_marker_present: markerPresent,
+        ...(!exact && !markerPresent ? { reason: 'outbound_not_confirmed' } : {}),
+      },
     });
   }
 }

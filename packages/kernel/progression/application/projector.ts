@@ -20,6 +20,7 @@ function stableSnapshot(snapshot: AutonomousGoalProgressionSnapshot): unknown {
       planId: snapshot.plan.planId,
       requirementId: snapshot.plan.requirementId,
       sourceRevision: snapshot.plan.sourceRevision,
+      executionBaselineRevision: snapshot.plan.executionBaselineRevision,
       status: snapshot.plan.status,
       steps: snapshot.plan.steps.map((step) => ({
         id: step.id,
@@ -120,7 +121,8 @@ export function projectAutonomousGoalProgression(
       && work.baseRevision === plan.sourceRevision
       && work.completionTargetRevision === snapshot.currentSourceRevision);
   const expectedDeliveryAdvance = Boolean(validatingDelivery && plan.sourceRevision !== snapshot.currentSourceRevision);
-  if (plan.sourceRevision !== snapshot.currentSourceRevision && !expectedDeliveryAdvance) {
+  const acceptedExecutionAdvance = plan.executionBaselineRevision?.trim() === snapshot.currentSourceRevision;
+  if (plan.sourceRevision !== snapshot.currentSourceRevision && !expectedDeliveryAdvance && !acceptedExecutionAdvance) {
     return decision(snapshot, 'request_replan', 'PLAN_SOURCE_DRIFT');
   }
   if (plan.status === 'replanning' || plan.status === 'invalidated_by_drift') return decision(snapshot, 'request_replan', 'PLAN_REPLAN_REQUIRED');

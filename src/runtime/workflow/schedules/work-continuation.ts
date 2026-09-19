@@ -31,6 +31,8 @@ export interface WorkContinuationScheduleInput {
   workId?: string;
   scheduleMode?: WorkScheduleMode;
   controllerType?: ContinuationControllerType;
+  /** Exact interactive Browser grants to carry into the scheduled Controller binding. */
+  authorizationGrantRefs?: string[];
   executable?: string;
   launchArgs?: string[];
   launchReservationMs?: number;
@@ -116,6 +118,9 @@ function providerSeedArguments(input: WorkContinuationScheduleInput, controllerT
   return {
     ...(workId ? { work_id: workId } : {}),
     controller_type: controllerType,
+    ...(input.authorizationGrantRefs?.length
+      ? { authorization_grant_refs: [...new Set(input.authorizationGrantRefs.map(String).map(value => value.trim()).filter(Boolean))] }
+      : {}),
     ...(input.executable?.trim() ? { executable: input.executable.trim() } : {}),
     ...(input.launchArgs ? { launch_args: input.launchArgs.map(String) } : {}),
     ...(input.launchReservationMs !== undefined ? { launch_reservation_ms: input.launchReservationMs } : {}),

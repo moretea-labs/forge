@@ -8,7 +8,7 @@ import { result } from "./result-adapter";
 import { selected } from "./shared-adapter";
 import { controllerReadinessEvidence, invalidFacadeOperation, repositoryRevisionContains } from "./status-inbox-adapter";
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
-import { repositoryCheckoutLifecycle, selectRepositoryCheckout } from "../../../src/cli/repositories/registry";
+import { getRepository, repositoryCheckoutLifecycle, selectRepositoryCheckout } from "../../../src/cli/repositories/registry";
 import { repositoryGitStatus } from "../../../src/cli/repositories/structured-git";
 import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
@@ -524,7 +524,7 @@ export async function runFacadeVerify(
 /** MCP rh_work transport adapter. Canonical lifecycle semantics remain in Kernel/application services; this layer normalizes ABI input and orchestrates those services. */
 export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<CallToolResult> {
   {
-          const repository = selected(ctx, args);
+          let repository = selected(ctx, args);
           const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
           const compatibility = normalizeRhWorkInputCompatibility(args);
           if (!compatibility.ok) {
@@ -636,11 +636,67 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             const workId = String(args.work_id ?? '').trim();
             try {
               if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+              // Route malformed review input through the canonical Workloop
+              // validator before repository/WorkHandle preparation. A frozen
+              // review carrier must report decision/rationale errors even
+              // when the candidate has not yet been materialized.
+              const reviewDecision = args.review_decision;
+              const reviewRationale = typeof args.review_rationale === 'string' ? args.review_rationale.trim() : '';
+              if (
+                (reviewDecision !== 'approved' && reviewDecision !== 'changes_required' && reviewDecision !== 'blocked')
+                || !reviewRationale
+              ) {
+                const facade = runGoalWorkloop(workloopCtx, 'review', args);
+                return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'failed' || facade.status === 'not_found');
+              }
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const reviewContract = workId ? getWorkContract(store, workId) : undefined;
-              const reviewHandle = workId ? readWorkHandle(ctx.controllerHome, repository.repoId, workId) : undefined;
+              let reviewHandle = workId ? readWorkHandle(ctx.controllerHome, repository.repoId, workId) : undefined;
+              const reviewWorkspaceDirty = !repositoryGitStatus(repository).clean;
+              // Direct canonical Work may have an independently verified,
+              // disjoint target advance while its WorkHandle still points at
+              // the previous target HEAD. Reconcile that delivery identity
+              // before full WorkHandle validation; validation itself is fenced
+              // by the current expectedHead and otherwise rejects the exact
+              // review scenario this reconciliation is meant to admit.
+              if (reviewContract?.workKind === 'repository_change' && reviewHandle && !reviewHandle.managedWorktree) {
+                reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
+                reviewHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+              }
+              if (reviewContract?.workKind === 'repository_change') {
+                if (!reviewHandle) throw new Error(`WORK_HANDLE_NOT_FOUND: ${workId}`);
+                // Candidate preparation commits the exact reviewed bytes and
+                // therefore requires current validation authority first.
+                // Validate before preparation; otherwise finalization can
+                // correctly reject the candidate before the review adapter
+                // has a chance to establish that authority.
+                const reviewValidationSession = bindFacadeExecutionSession(ctx, repository, reviewHandle, args);
+                const validation = await callExecutionTool(ctx, 'work_validate', {
+                  session_id: reviewValidationSession.sessionId,
+                  repo_id: repository.repoId,
+                  work_id: workId,
+                  check_ids: reviewContract.checks,
+                });
+                if (!validation || validation.isError === true) return validation ?? result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: `WORK_VALIDATION_REQUIRED: exact candidate validation did not return a result for ${workId}.`,
+                  data: { workId, implementationReviewRecorded: false },
+                }) as unknown as Record<string, unknown>, true);
+                const validationPayload = contextRecord(validation.structuredContent);
+                if (contextRecord(validationPayload.validation).passed !== true) return validation;
+              }
               let preparedReviewCandidate: Awaited<ReturnType<typeof prepareWorkImplementationReviewCandidate>> | undefined;
-              if (reviewContract?.workKind === 'repository_change' && reviewHandle?.managedWorktree) {
+              // Checked repository Work can be reviewed against the exact dirty
+              // candidate first; finalize then owns the representation-only
+              // commit and atomically transfers its verification/review
+              // authority. Check-free Work still materializes a candidate here
+              // so physical delivery identity is established before review.
+              const prepareDirtyReviewCandidate = reviewContract?.workKind === 'repository_change'
+                && reviewHandle?.managedWorktree
+                && reviewWorkspaceDirty
+                && reviewContract.checks.length === 0;
+              if (prepareDirtyReviewCandidate) {
+                if (!reviewHandle) throw new Error(`WORK_HANDLE_NOT_FOUND: ${workId}`);
                 const reviewSession = bindFacadeExecutionSession(ctx, repository, reviewHandle, args);
                 preparedReviewCandidate = await prepareWorkImplementationReviewCandidate(ctx, {
                   ...args,
@@ -664,24 +720,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 : undefined;
               if (!workId || !reconciled?.sourceRevision || !reconciled.workspaceFingerprint || !reconciled.implementationReviewWorkspaceFingerprint) {
                 throw new Error(`WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED: ${workId || 'work_id_missing'}`);
-              }
-              if (reviewContract?.workKind === 'repository_change') {
-                const currentReviewHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-                if (!currentReviewHandle) throw new Error(`WORK_HANDLE_NOT_FOUND: ${workId}`);
-                const reviewValidationSession = bindFacadeExecutionSession(ctx, repository, currentReviewHandle, args);
-                const validation = await callExecutionTool(ctx, 'work_validate', {
-                  session_id: reviewValidationSession.sessionId,
-                  repo_id: repository.repoId,
-                  work_id: workId,
-                  check_ids: (getWorkContract(store, workId) ?? reviewContract).checks,
-                });
-                if (!validation || validation.isError === true) return validation ?? result(buildFacadeResult({
-                  status: 'blocked',
-                  summary: `WORK_VALIDATION_REQUIRED: exact candidate validation did not return a result for ${workId}.`,
-                  data: { workId, implementationReviewRecorded: false },
-                }) as unknown as Record<string, unknown>, true);
-                const validationPayload = contextRecord(validation.structuredContent);
-                if (contextRecord(validationPayload.validation).passed !== true) return validation;
               }
               const facade = runGoalWorkloop({
                 ...workloopCtx,
@@ -1238,6 +1276,15 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 });
                 reconstructedRunningCheckout = recovered.reconstructedCheckout;
                 if (reconstructedRunningCheckout) {
+                  const refreshedRepository = getRepository(repository.repoId, ctx.controllerHome, { includeRemoved: true });
+                  if (!refreshedRepository) throw new Error(`WORK_CONTINUE_REPOSITORY_MISSING: ${workId}`);
+                  // A recovered managed checkout is a new Controller-owned
+                  // registry record. Reconcile and run the Workloop against
+                  // that exact checkout; retaining the pre-recovery
+                  // repository snapshot would observe canonical/main and
+                  // falsely report that a committed candidate has no source
+                  // implementation evidence.
+                  repository = refreshedRepository;
                   work = getWorkContract(store, workId);
                   if (!work) throw new Error(`WORK_CONTINUE_RECONSTRUCTION_CONTRACT_MISSING: ${workId}`);
                 }

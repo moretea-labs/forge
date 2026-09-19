@@ -324,6 +324,14 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(navigateAuth?.target.kind).toBe('browser-origin');
     expect(navigateAuth?.target.id).toBe('chrome@https://chatgpt.com');
+
+    const createSessionAuth = await resolveBrowserPluginAuthorizationContext({
+      ...baseInput,
+      actionId: 'create_session',
+      args: { session_id: 'three', url: 'https://chatgpt.com/' },
+    });
+    expect(createSessionAuth?.target.kind).toBe('browser-origin');
+    expect(createSessionAuth?.target.id).toBe('chrome@https://example.com');
   });
 
   test('native active-tab adoption distinguishes browser-active from authoritative system foreground', async () => {

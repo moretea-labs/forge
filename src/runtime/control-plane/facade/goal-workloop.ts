@@ -919,6 +919,7 @@ export function startGoalWorkloop(
         planId: plan.planId,
         requirementId: plan.requirementId,
         sourceRevision: plan.sourceRevision,
+        executionBaselineRevision: ctx.planStore ? getPlanExecutionBaselineRevision(ctx.planStore, plan) : undefined,
         status: plan.status,
         steps: plan.steps.map((candidate) => ({ id: candidate.id, dependencies: candidate.dependencies, status: candidate.status, workId: candidate.workId })),
       },

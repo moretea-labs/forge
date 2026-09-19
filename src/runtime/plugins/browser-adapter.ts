@@ -500,7 +500,13 @@ async function resolveBrowserPluginAuthorizationContextInternal(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
   const action = browserActions().find((entry) => entry.actionId === input.actionId);
-  if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
+  // Browser session/profile mutations also need an exact reusable target. In
+  // particular, create_session is the bootstrap action for a scheduled
+  // Controller round and intentionally carries browser.read + browser.profile
+  // rather than browser.interact. Restricting authorization resolution to
+  // browser.interact made the first interactive session usable only for that
+  // call and left the Scheduler without a durable browser-session grant.
+  if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.profile')) return undefined;
 
   const persistedConfig = loadConfig(input.repoRoot, input);
   const sessionId = stringValue(input.args.session_id);

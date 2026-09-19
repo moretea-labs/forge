@@ -212,7 +212,7 @@ Only after P0/P1 evidence should P2 perform cross-Work strategy comparison, poli
 
 ## First P0 canary
 
-The first live canary is Avela repository `repo_21712be862868339083670ec` with exactly three current development ChatGPT conversations enrolled by exact conversation id/URL. The two promotion conversations are explicitly excluded.
+The first live canary is the Avela repository with exactly three current development ChatGPT conversations enrolled by exact conversation id/URL. The two promotion conversations are explicitly excluded.
 
 P0 is not complete when Forge can send one automatic `continue`. It is complete only after the real canary demonstrates multi-turn unattended progress with no user continuation messages, correct conversation isolation, no duplicate continuation, restart recovery, technical-failure recovery, MCP-session replacement, validated `DONE`, and validated `NEEDS_USER`, without lowering Forge verification/review/authorization gates.
 

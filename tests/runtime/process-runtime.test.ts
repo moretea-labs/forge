@@ -1293,7 +1293,7 @@ describe('run_check Process Runtime facade', () => {
     const encodedEvidence = JSON.stringify(evidence);
     checks.checks['package:test:full'] = {
       description: 'structured source failure followed by signal',
-      command: ['node', '-e', `const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)});process.kill(process.pid,'SIGTERM')`],
+      command: ['sh', '-c', `node -e ${JSON.stringify(`const fs=require('fs');const p=process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;if(!p)throw new Error('missing structured result path');fs.writeFileSync(p,${JSON.stringify(encodedEvidence)})`)}; kill -TERM $$`],
       timeoutMs: 30_000,
     };
     writeFileSync(checksPath, JSON.stringify(checks, null, 2));

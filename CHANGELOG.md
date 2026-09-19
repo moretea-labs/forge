@@ -4,6 +4,20 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.8.1 - 2026-09-19
+
+### Automatic workflows and V2
+
+- Stabilize the durable Workflow Supervisor boundary for automatic cross-turn continuation, exact effect identity, restart recovery, and same-principal conversation isolation.
+- Harden the native ChatGPT adapter against provider-owned generation state and DOM-added UI text while preserving unique effect-marker confirmation.
+- Preserve explicit `DONE` and `NEEDS_USER` validation while keeping provider, MCP, schedule, and ordinary Forge failures on autonomous recovery paths.
+- Harden schedule progression, duplicate-wake suppression, settlement fencing, and bounded maintenance backoff across manual, repository-event, condition, cron, and calendar triggers.
+
+### Runtime and release readiness
+
+- Reuse the held Recovery mutation lock during configured release-session cutover so whole-release activation cannot race its enclosing Recovery authority.
+- Keep runtime residue outside the source tree and remove real external repository identifiers from the tracked public surface.
+
 ## 1.8.0 - 2026-09-13
 
 ### Controller and workflow authority

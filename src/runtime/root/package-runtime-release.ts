@@ -91,6 +91,14 @@ export function packageRuntimeFingerprint(records: PackageRuntimeFileRecord[]): 
   return hash.digest('hex');
 }
 
+function packageRuntimeArtifactIdentity(root: string, records: PackageRuntimeFileRecord[]): string {
+  const hash = createHash('sha256');
+  for (const record of records) {
+    hash.update(record.path).update('\0').update(readFileSync(join(root, record.path))).update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
 function assertPackageRuntimeSnapshot(snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
   if (!existsSync(snapshotRoot)) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package snapshot is missing');
   const rootStat = lstatSync(snapshotRoot);
@@ -256,6 +264,7 @@ export function materializePackageRuntimeRelease(input: {
   const version = packageVersion(sourcePackageRoot);
   const records = packageRuntimeFileIndex(sourcePackageRoot);
   const fingerprint = packageRuntimeFingerprint(records);
+  const packageArtifactIdentity = packageRuntimeArtifactIdentity(sourcePackageRoot, records);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
   const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v6`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
@@ -291,6 +300,8 @@ export function materializePackageRuntimeRelease(input: {
     processRunnerArtifactIdentity,
     checkRunnerEntrypoint,
     checkRunnerArtifactIdentity,
+    packageRoot: 'package',
+    packageArtifactIdentity,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome,

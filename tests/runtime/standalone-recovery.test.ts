@@ -96,7 +96,7 @@ import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntim
 
 function idleCpuDependencies() {
   let elapsed = 0;
-  const base = Date.now() - 60_000;
+  const base = Date.now() - 360_000;
   return {
     readCpu: () => ({ cpuMs: 0, processStartTime: 'fixture-process-start' }),
     monotonicNow: () => elapsed,
@@ -4453,7 +4453,7 @@ describe('Recovery explicit performance acceptance', () => {
   test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
     const deps = idleCpuDependencies();
     const evidence = await measureRuntimePerformance(() => identity, deps);
-    expect(evidence).toMatchObject({ policy: 'idle-cpu-v1', sampleCount: 10, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0 });
+    expect(evidence).toMatchObject({ policy: 'idle-cpu-v1', sampleCount: 30, warmupMs: 60_000, durationMs: 300_000, meanCpuPercent: 0 });
     expect(() => assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, p95CpuPercent: 11 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
@@ -4466,7 +4466,7 @@ describe('Recovery explicit performance acceptance', () => {
       ...idleCpuDependencies(), readCpu: () => ({ cpuMs: 0, processStartTime: String(readings++) }),
     })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     const changed = idleCpuDependencies();
-    await expect(measureRuntimePerformance(() => ({ ...identity, authorityRevision: changed.monotonicNow() > 10_000 ? 4 : 3 }), changed))
+    await expect(measureRuntimePerformance(() => ({ ...identity, authorityRevision: changed.monotonicNow() > 60_000 ? 4 : 3 }), changed))
       .rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     await expect(measureRuntimePerformance(() => identity, {
       ...idleCpuDependencies(), readCpu: () => { throw new Error('sample unavailable'); },

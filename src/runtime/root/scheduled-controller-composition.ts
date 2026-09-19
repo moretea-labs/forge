@@ -22,6 +22,10 @@ export function ensureScheduledControllerBinding(
       workId: input.workId, sessionId: input.session.sessionId,
       browserSessionId: durable?.latestBrowserSessionId ?? (typeof input.args.browser_session_id === 'string' ? input.args.browser_session_id : undefined),
       conversationUrl: durable?.conversationUrl ?? (typeof input.args.conversation_url === 'string' ? input.args.conversation_url : undefined),
+      authorizationGrantRefs: [
+        ...(durable?.authorizationGrantRefs ?? []),
+        ...(Array.isArray(input.args.authorization_grant_refs) ? input.args.authorization_grant_refs.map(String) : []),
+      ].map(value => value.trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index),
       title: input.scheduleName,
       model: typeof input.args.model === 'string' ? input.args.model : 'gpt-5.6',
       reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'xhigh' ? input.args.reasoning : 'high',
