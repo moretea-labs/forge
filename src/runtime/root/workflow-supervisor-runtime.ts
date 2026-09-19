@@ -1,8 +1,7 @@
 import { once } from 'node:events';
 import { WorkflowSupervisorControlPlane } from '../../../supervisor/control-plane';
 import { forgeWorkflowSupervisorValidators } from '../../../supervisor/forge-validators';
-import { forgeWorkflowSupervisorLifecycleHooks, resolveWorkflowSupervisorChatgptDelivery } from './workflow-supervisor-composition';
-import { submitChatgptPrompt, withChatgptBrowserActionOrigin } from '../../../adapters/chatgpt/browser-delivery-runtime';
+import { forgeWorkflowSupervisorLifecycleHooks } from './workflow-supervisor-composition';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import {
   createWorkflowSupervisorServer,
@@ -56,28 +55,7 @@ export async function startWorkflowSupervisorRuntime(
   await once(server, 'listening');
   const nativeBrowser = options.nativeBrowserAdapter === false
     ? undefined
-    : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
-      dispatchPrompt: async (_page, prompt, task) => {
-      const durableTask = controlPlane.getTask(task.taskId);
-      if (!durableTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
-      const delivery = resolveWorkflowSupervisorChatgptDelivery(controllerHome, durableTask);
-      await withChatgptBrowserActionOrigin(
-        { surface: 'schedule', actor: 'workflow-supervisor' },
-        async () => {
-          await submitChatgptPrompt(
-            controllerHome,
-            delivery.workId,
-            delivery.browserSessionId,
-            prompt,
-            delivery.conversationUrl,
-            60_000,
-          );
-        },
-        new Set(delivery.authorizationGrantRefs),
-      );
-      return { dispatched: true, confirmed: true };
-      },
-    });
+    : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery);
   let closing = false;
   return {
     done,
