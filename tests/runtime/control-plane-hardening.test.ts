@@ -42,7 +42,7 @@ import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFr
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
-import { createSchedule, getOccurrence, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
+import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
@@ -2471,6 +2471,40 @@ describe('scheduled external Controller wake', () => {
       const nextManual = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: `manual-${name}-request-2` });
       expect(nextManual?.occurrenceId).not.toBe(manual?.occurrenceId);
     }
+  });
+
+  test('reclaims an orphaned created occurrence before max-active admission blocks the next trigger', () => {
+    const root = temp('forge-schedule-orphaned-created-');
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repoId = 'repo-schedule-orphaned-created';
+    const schedule = createSchedule(controllerHome, {
+      requestId: 'schedule-orphaned-created-request',
+      repoId,
+      name: 'orphaned created occurrence recovery',
+      enabled: true,
+      trigger: { type: 'manual' },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'controller_context', resourceClaims: [] },
+      stopConditions: [],
+    });
+    const createdAt = new Date(Date.now() - 10 * 60 * 1_000).toISOString();
+    saveOccurrence(controllerHome, {
+      schemaVersion: 1,
+      revision: 0,
+      occurrenceId: 'OCC-orphaned-created',
+      scheduleId: schedule.scheduleId,
+      repoId,
+      windowKey: 'orphaned-created',
+      status: 'created',
+      decision: 'nothing_to_do',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const reclaimed = reclaimStaleCreatedOccurrences(controllerHome, repoId, schedule.scheduleId, Date.now());
+    expect(reclaimed).toMatchObject([{ occurrenceId: 'OCC-orphaned-created', status: 'skipped', decision: 'operation_blocked' }]);
+    expect(getOccurrence(controllerHome, repoId, 'OCC-orphaned-created')?.reason).toContain('Orphaned created occurrence reclaimed');
   });
 
   test('scopes continuation stop conditions to the target Work instead of historical repository noise', async () => {

@@ -27,6 +27,7 @@ import {
   getSchedule,
   listActiveOccurrences,
   listOccurrences,
+  reclaimStaleCreatedOccurrences,
   recordScheduleOccurrenceHandoff,
   listSchedules,
   saveOccurrence,
@@ -658,6 +659,7 @@ export async function evaluateSchedule(
   }
 
   const recent = listOccurrences(controllerHome, schedule.repoId, schedule.scheduleId, 1000);
+  reclaimStaleCreatedOccurrences(controllerHome, schedule.repoId, schedule.scheduleId);
   const active = listActiveOccurrences(controllerHome, schedule.repoId, schedule.scheduleId)
     .filter((entry) => entry.occurrenceId !== occurrence.occurrenceId);
   const admission = evaluateScheduleOccurrenceAdmission(schedule, {

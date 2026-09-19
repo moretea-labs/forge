@@ -65,6 +65,7 @@ function requestPath(controllerHome: string, repoId: string, requestId: string):
 }
 
 export const SCHEDULE_OCCURRENCE_RECENT_LIMIT = 5_000;
+export const SCHEDULE_CREATED_OCCURRENCE_STALE_MS = 5 * 60 * 1_000;
 
 const EXTERNAL_CONTROLLER_WAKE_MAX_FAILURES = 3;
 const EXTERNAL_CONTROLLER_WAKE_DAILY_BUDGET_MINUTES = 60;
@@ -432,6 +433,36 @@ export function listActiveOccurrences(controllerHome: string, repoId: string, sc
       const occurrence = getOccurrence(controllerHome, repoId, entry.occurrenceId);
       return occurrence ? [occurrence] : [];
     });
+}
+
+/**
+ * A created occurrence must be settled by the same evaluateSchedule call that
+ * creates it. If the process dies or an early Controller/Supervisor exception
+ * escapes before that settlement, leaving it active permanently blocks the
+ * schedule's maxActiveOccurrences admission. Reclaim only old `created`
+ * records; queued/running work remains owned by the normal worker recovery
+ * path.
+ */
+export function reclaimStaleCreatedOccurrences(
+  controllerHome: string,
+  repoId: string,
+  scheduleId: string,
+  nowMs = Date.now(),
+  staleAfterMs = SCHEDULE_CREATED_OCCURRENCE_STALE_MS,
+): ScheduleOccurrence[] {
+  const threshold = Math.max(1_000, staleAfterMs);
+  return listActiveOccurrences(controllerHome, repoId, scheduleId)
+    .filter((occurrence) => occurrence.status === 'created')
+    .filter((occurrence) => {
+      const createdAt = Date.parse(occurrence.createdAt);
+      return Number.isFinite(createdAt) && nowMs - createdAt >= threshold;
+    })
+    .map((occurrence) => saveOccurrence(controllerHome, {
+      ...occurrence,
+      status: 'skipped',
+      decision: 'operation_blocked',
+      reason: `Orphaned created occurrence reclaimed after ${threshold}ms without Scheduler settlement.`,
+    }));
 }
 
 export function listOccurrences(controllerHome: string, repoId: string, scheduleId?: string, limit = 100): ScheduleOccurrence[] {
