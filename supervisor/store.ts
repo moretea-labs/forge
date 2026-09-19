@@ -271,9 +271,11 @@ export class WorkflowSupervisorStore {
   reserveEffect(input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     return this.transaction((db) => this.reserveEffectWithin(db, input));
   }
-  reserveSchedulerRecovery(input: { taskId: string; effectId: string; prompt: string }): WorkflowSupervisorEffect | undefined {
+  reserveSchedulerRecovery(input: { taskId: string; effectId: string; recoveryKey?: string; prompt: string }): WorkflowSupervisorEffect | undefined {
     return this.transaction((db) => {
-      const originKey = `scheduler-recovery:${input.taskId}`;
+      const recoveryKey = input.recoveryKey?.trim();
+      if (recoveryKey && /[\r\n]/.test(recoveryKey)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_KEY_INVALID');
+      const originKey = `scheduler-recovery:${input.taskId}${recoveryKey ? `:${recoveryKey.slice(0, 240)}` : ''}`;
       const existing = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)) as Record<string, unknown> | undefined;
       if (existing) return effectFromRow(existing);
       const exhausted = statement(db, `SELECT e.effect_id FROM effects e

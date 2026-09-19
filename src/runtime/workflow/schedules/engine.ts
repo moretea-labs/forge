@@ -391,7 +391,11 @@ async function executeExternalControllerWake(
             },
           );
           if (prepared.outcome === 'dispatched') {
-            const reEnrollment = await ensureWorkflowSupervisorEnrollmentForWork({ controllerHome, repoId: schedule.repoId }, workId);
+            const reEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(
+              { controllerHome, repoId: schedule.repoId },
+              workId,
+              { schedulerRecoveryKey: occurrence.occurrenceId },
+            );
             if (reEnrollment.status !== 'enrolled') {
               throw new Error(`WORKFLOW_SUPERVISOR_REENROLLMENT_FAILED:${reEnrollment.status}:${reEnrollment.reason ?? boundary.taskId}`);
             }

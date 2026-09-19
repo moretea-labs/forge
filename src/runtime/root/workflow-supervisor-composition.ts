@@ -258,6 +258,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
 export async function ensureWorkflowSupervisorEnrollmentForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
+  input: { schedulerRecoveryKey?: string } = {},
 ): Promise<{ status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string }> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
   if (boundary.status !== 'outer_turn') return { status: boundary.status };
@@ -293,6 +294,6 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, boundary.taskId);
-  const schedulerRecovery = await reserveWorkflowSupervisorSchedulerRecovery(forgeHome, boundary.taskId);
+  const schedulerRecovery = await reserveWorkflowSupervisorSchedulerRecovery(forgeHome, boundary.taskId, input.schedulerRecoveryKey);
   return { status: 'enrolled', taskId: boundary.taskId, effectId: schedulerRecovery?.effectId ?? effect.effectId };
 }

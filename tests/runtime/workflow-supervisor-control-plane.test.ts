@@ -241,4 +241,14 @@ test('browserTasks stops polling after bounded provider recovery is exhausted', 
   expect(schedulerRecovery.kind).toBe('recovery');
   expect(control.browserTasks()).toHaveLength(1);
   expect(control.reserveSchedulerRecovery(taskId)?.effectId).toBe(schedulerRecovery.effectId);
+
+  // A later Scheduler-owned ControllerRound recovery needs a fresh causal
+  // effect after the prior recovery was applied without a Supervisor completion;
+  // replaying the permanent task-level key would leave the browser with no new
+  // message to send. Replaying the same occurrence remains idempotent.
+  control.observeEffect({ effectId: schedulerRecovery.effectId, observationId: 'scheduler-recovery-applied', outcome: 'applied' });
+  const nextRecovery = control.reserveSchedulerRecovery(taskId, 'occ-supervisor-rearm-2')!;
+  expect(nextRecovery.effectId).not.toBe(schedulerRecovery.effectId);
+  expect(control.reserveSchedulerRecovery(taskId, 'occ-supervisor-rearm-2')?.effectId).toBe(nextRecovery.effectId);
+  expect(control.browserTasks()).toHaveLength(1);
 });
