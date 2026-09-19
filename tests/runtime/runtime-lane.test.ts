@@ -8,6 +8,7 @@ import {
   createCandidateExecutionLane,
   planCandidateExecutionLane,
   readStableExecutionLane,
+  removeRetiredCandidateExecutionLane,
 } from '../../src/runtime/root/runtime-lane';
 
 const roots: string[] = [];
@@ -79,6 +80,16 @@ describe('Stable A and Candidate B execution lanes', () => {
       schemaVersion: 1,
       repositoryRoot: join(fx.root, 'source'),
       host: '127.0.0.1',
+      topology: {
+        schemaVersion: 1,
+        remoteControllers: ['chatgpt'],
+        capabilityIntents: [],
+        persistentRuntimeRequired: true,
+        components: {
+          workflowSupervisor: true,
+          workflowSupervisorNativeBrowser: true,
+        },
+      },
     });
   });
 
@@ -97,5 +108,27 @@ describe('Stable A and Candidate B execution lanes', () => {
       candidatePort: 8765,
       sessionId: 'release-session-12345678',
     })).toThrow('RUNTIME_CANDIDATE_PORT_COLLIDES_WITH_STABLE');
+  });
+
+  test('removes only a retired Candidate B home fenced to its session lane', () => {
+    const fx = stableFixture();
+    const stable = readStableExecutionLane(fx.stableHome);
+    const candidateHome = join(fx.root, 'candidate-runtime-lanes', 'release-session-12345678');
+    const candidate = planCandidateExecutionLane({
+      stable,
+      candidateControllerHome: candidateHome,
+      candidatePort: 8766,
+      sessionId: 'release-session-12345678',
+    });
+    mkdirSync(join(candidateHome, 'runtime'), { recursive: true });
+    writeFileSync(join(candidateHome, 'runtime', 'marker'), 'candidate');
+
+    removeRetiredCandidateExecutionLane(stable, candidate);
+
+    expect(existsSync(candidateHome)).toBe(false);
+    expect(() => removeRetiredCandidateExecutionLane(stable, {
+      ...candidate,
+      controllerHome: join(fx.root, 'other', candidate.sessionId),
+    })).toThrow('RUNTIME_CANDIDATE_CLEANUP_PATH_INVALID');
   });
 });

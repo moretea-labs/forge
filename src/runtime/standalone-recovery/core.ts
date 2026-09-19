@@ -21,6 +21,7 @@ import {
   syncForgeRuntimeActiveEntrypoint,
   uninstallForgeRuntimeService,
 } from '../root/service';
+import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
 import {
   inspectKnownGoodRecoveryBundle,
   knownGoodRecoveryBundleRoot,
@@ -3943,6 +3944,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
           receipts: [{ id: 'build_failed', kind: 'build', summary: detail.slice(0, 500) }],
         });
       } catch { /* Preserve the original build failure. */ }
+      cleanupRetiredCandidateLane(config, session);
       audit(config, 'release_session_candidate_build_failed', { sessionId, sourceRevision, detail });
       return { ok: false as const, attempted: true, detail, releaseSession: session };
     }
@@ -4049,6 +4051,7 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
           receipts: [{ id: 'static_failed', kind: 'static_gate', summary: detail.slice(0, 500) }],
         });
       } catch { /* preserve the original static verification failure */ }
+      cleanupRetiredCandidateLane(config, session);
       audit(config, 'release_session_static_failed', { sessionId, detail });
       return { ok: false as const, attempted: true, detail, releaseSession: session };
     }
@@ -4120,6 +4123,27 @@ async function installReleaseSessionCandidateService(
 interface ReleaseSessionCandidateRetirement {
   ok: boolean;
   detail: string;
+}
+
+function cleanupRetiredCandidateLane(config: RecoveryConfig, session: ReleaseSession): ReleaseSessionCandidateRetirement {
+  try {
+    removeRetiredCandidateExecutionLane(session.stable, session.candidate);
+    audit(config, 'release_session_candidate_lane_cleaned', {
+      sessionId: session.sessionId,
+      candidateControllerHome: session.candidate.controllerHome,
+      phase: session.phase,
+    });
+    return { ok: true, detail: 'Candidate B Controller Home was removed after terminal ReleaseSession cleanup' };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    audit(config, 'release_session_candidate_lane_cleanup_failed', {
+      sessionId: session.sessionId,
+      candidateControllerHome: session.candidate.controllerHome,
+      phase: session.phase,
+      detail,
+    });
+    return { ok: false, detail };
+  }
 }
 
 async function stopReleaseSessionCandidateService(
@@ -4228,6 +4252,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
           summary: 'Candidate B boot/restart canary was interrupted; Candidate B was retired before terminalizing the ReleaseSession',
         }],
       });
+      cleanupRetiredCandidateLane(config, session);
       return {
         ok: false as const,
         attempted: true,
@@ -4328,6 +4353,9 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
             receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: terminalDetail.slice(0, 500) }],
           });
         }
+        if (retirement.ok && ['failed', 'rolled_back'].includes(session.phase)) {
+          cleanupRetiredCandidateLane(config, session);
+        }
       } catch { /* preserve original Candidate B failure */ }
       audit(config, 'release_session_candidate_failed', {
         sessionId,
@@ -4417,6 +4445,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
             summary: `cutover reconciled at ${new Date().toISOString()}; Candidate B is retired and known-good promotion remains gated on later stable verification`,
           }],
         });
+        const cleanup = cleanupRetiredCandidateLane(config, session);
         audit(config, 'release_session_cutover_reconciled_committed', {
           sessionId,
           releaseId: candidateRelease.releaseId,
@@ -4426,7 +4455,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         return {
           ok: true as const,
           attempted: true,
-          detail: 'ReleaseSession cutover reconciled to committed: Stable A runs the verified candidate artifact and Candidate B is retired',
+          detail: `ReleaseSession cutover reconciled to committed: Stable A runs the verified candidate artifact and Candidate B is retired${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
           releaseSession: session,
           ...(activation ? { activation } : {}),
         };
@@ -4444,6 +4473,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
             summary: `cutover did not commit; exact Stable A ${session.stableRelease.releaseId} is active and verified, and Candidate B is retired`,
           }],
         });
+        const cleanup = cleanupRetiredCandidateLane(config, session);
         audit(config, 'release_session_cutover_reconciled_rolled_back', {
           sessionId,
           restoredStableReleaseId: session.stableRelease.releaseId,
@@ -4453,7 +4483,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         return {
           ok: false as const,
           attempted: true,
-          detail: 'ReleaseSession cutover reconciled to rolled_back: exact Stable A is active and Candidate B is retired',
+          detail: `ReleaseSession cutover reconciled to rolled_back: exact Stable A is active and Candidate B is retired${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
           releaseSession: session,
           ...(activation ? { activation } : {}),
         };
@@ -4470,6 +4500,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
           summary: `${reason}; Stable A outcome is not fully verified; Candidate B is retired`.slice(0, 500),
         }],
       });
+      const cleanup = cleanupRetiredCandidateLane(config, session);
       audit(config, 'release_session_cutover_reconciled_failed', {
         sessionId,
         candidateReleaseId: candidateRelease.releaseId,
@@ -4480,7 +4511,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       return {
         ok: false as const,
         attempted: true,
-        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified`,
+        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
         releaseSession: session,
         ...(activation ? { activation } : {}),
       };
@@ -4597,6 +4628,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
               summary: `${detail}; Candidate B retired`.slice(0, 500),
             }],
           });
+          cleanupRetiredCandidateLane(config, session);
         } catch { /* preserve original cutover precondition failure */ }
         audit(config, 'release_session_cutover_precondition_failed', {
           sessionId,
