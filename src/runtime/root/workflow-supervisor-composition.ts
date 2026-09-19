@@ -214,24 +214,48 @@ function workflowSupervisorWorkRecordRevision(controllerHome: string, repoId: st
 
 function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string): (task: WorkflowSupervisorTask) => boolean {
   const workStateById = new Map<string, { revision: number; active: boolean }>();
+  const lowerLayerNotReadyUntilByTask = new Map<string, number>();
+  const LOWER_LAYER_NOT_READY_CACHE_MS = 5_000;
   return (task) => {
     const repoId = workflowSupervisorContractText(task, 'repo_id');
     const requirementId = workflowSupervisorContractText(task, 'requirement_id');
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
     if (!repoId || !requirementId || !taskControllerHome) return true;
     if (taskControllerHome !== controllerHome) return false;
+    const nowMs = Date.now();
+    const lowerLayerNotReadyUntil = lowerLayerNotReadyUntilByTask.get(task.taskId) ?? 0;
+    if (lowerLayerNotReadyUntil > nowMs) return false;
+    lowerLayerNotReadyUntilByTask.delete(task.taskId);
     const requirement = readRequirement({ controllerHome }, requirementId)?.value;
-    if (!requirement || requirement.state === 'done' || requirement.state === 'cancelled') return false;
+    if (!requirement || requirement.state === 'done' || requirement.state === 'cancelled') {
+      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
+      return false;
+    }
     const store = { controllerHome, repoId };
     let relay = getRequirementControllerRoundRelay(store, requirementId);
-    if (!relay || relay.status === 'failed') return false;
-    if (!workflowSupervisorLowerLayerReadyForWork(store, relay.originWorkId).ready) return false;
+    if (!relay || relay.status === 'failed') {
+      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
+      return false;
+    }
+    if (!workflowSupervisorLowerLayerReadyForWork(store, relay.originWorkId).ready) {
+      // A blocked/paused lower layer must not make the native adapter rescan
+      // the full Controller record set every second. The next Scheduler or
+      // Controller transition is still observed within this bounded TTL.
+      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
+      return false;
+    }
     const revision = workflowSupervisorWorkRecordRevision(controllerHome, repoId, relay.originWorkId);
-    if (!revision) return false;
+    if (!revision) {
+      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
+      return false;
+    }
     const cached = workStateById.get(relay.originWorkId);
     if (cached?.revision === revision) return cached.active;
     const work = getWorkContract(store, relay.originWorkId);
-    if (!work) return false;
+    if (!work) {
+      lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
+      return false;
+    }
     if (isTerminalWorkContractStatus(work.status)) {
       if (work.status === 'failed' || work.status === 'cancelled') {
         try {
