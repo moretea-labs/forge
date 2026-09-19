@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { chmodSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
 import { backupControlPlaneDatabase, type ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
+import { normalizeRuntimeDeploymentTopology } from './deployment-topology';
 import { forgeRuntimeServicePaths, readForgeRuntimeServiceConfig, writeForgeRuntimeServiceConfig, type ForgeRuntimeServiceConfig } from './service';
 
 export interface StableExecutionLane {
@@ -97,11 +98,19 @@ function createPrivateCandidateToken(stableTokenPath: string, destination: strin
 }
 
 function candidateServiceConfig(stable: ForgeRuntimeServiceConfig, lane: CandidateExecutionLane): ForgeRuntimeServiceConfig {
+  const topology = normalizeRuntimeDeploymentTopology(stable.topology);
   return {
     ...stable,
     controllerHome: lane.controllerHome,
     port: lane.port,
     authTokenFile: lane.authTokenFile,
+    // Candidate B may verify the Supervisor socket and internal lifecycle,
+    // but it must never submit external browser effects against Stable A's
+    // real conversation during an isolated canary.
+    topology: {
+      ...topology,
+      components: { ...topology.components, workflowSupervisorNativeBrowser: false },
+    },
   };
 }
 

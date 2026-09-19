@@ -87,7 +87,7 @@ describe('Stable A and Candidate B execution lanes', () => {
         persistentRuntimeRequired: true,
         components: {
           workflowSupervisor: true,
-          workflowSupervisorNativeBrowser: true,
+          workflowSupervisorNativeBrowser: false,
         },
       },
     });
