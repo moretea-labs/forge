@@ -8,7 +8,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { beginInitialControllerRoundDispatch, getRequirementControllerRoundRelay } from '../../packages/kernel/controller/api/index';
 import { cancelWorkContract, createWorkContract, implementationReviewChangedPathDigest, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../packages/kernel/work/api/index';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { forgeWorkflowSupervisorLifecycleHooks } from '../../src/runtime/root/workflow-supervisor-composition';
+import { forgeWorkflowSupervisorLifecycleHooks, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket } from '../../supervisor/server';
@@ -34,6 +34,26 @@ function fixture() {
 }
 
 describe('Workflow Supervisor canonical lifecycle projection', () => {
+  test('requires a prepared lower ControllerRound before treating an outer turn as runnable', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-lower-layer-readiness';
+    const workId = 'work-supervisor-lower-layer-readiness';
+    createRequirement({ controllerHome: fx.controllerHome }, { requirementId, title: 'Supervisor lower-layer readiness', outcomeStatement: 'Do not submit an outer turn without a lower ControllerRound authority.' });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, mode: 'goal_workloop',
+      objective: 'Require a prepared ControllerRound before Supervisor enrollment.',
+      acceptanceCriteria: ['missing lower-layer authority is not runnable'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+
+    expect(workflowSupervisorLowerLayerReadyForWork(fx.store, workId)).toEqual({ ready: false, reason: 'CONTROLLER_ROUND_NOT_PREPARED' });
+    beginInitialControllerRoundDispatch(fx.store, {
+      workId, requirementId,
+      identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
+    });
+    expect(workflowSupervisorLowerLayerReadyForWork(fx.store, workId)).toEqual({ ready: true, workId });
+  });
+
   test('retires a stale relay when its canonical origin Work is cancelled', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-terminal-reconcile';

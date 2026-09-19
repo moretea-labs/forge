@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
+  getControllerRoundRelay,
   getControllerSession,
   getRequirementControllerRoundRelay,
   getRetainedControllerSession,
@@ -23,6 +24,28 @@ import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, Wo
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' | 'conversation_pending' }
   | { status: 'outer_turn'; taskId: string; requirementId: string; conversationId: string; conversationUrl: string };
+
+export type WorkflowSupervisorEnrollmentStatus =
+  | 'not_eligible'
+  | 'conversation_pending'
+  | 'daemon_unavailable'
+  | 'enrolled'
+  | 'lower_layer_not_ready';
+
+export function workflowSupervisorLowerLayerReadyForWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+): { ready: true; workId: string } | { ready: false; reason: string } {
+  const directRelay = getControllerRoundRelay(options, workId);
+  const work = getWorkContract(options, workId);
+  const relay = directRelay ?? (work?.requirementId ? getRequirementControllerRoundRelay(options, work.requirementId) : undefined);
+  if (!relay) return { ready: false, reason: 'CONTROLLER_ROUND_NOT_PREPARED' };
+  if (!relay.authorityId?.trim()) return { ready: false, reason: `CONTROLLER_ROUND_AUTHORITY_REQUIRED:${relay.originWorkId}` };
+  if (!['dispatching', 'dispatched', 'claimed'].includes(relay.status)) {
+    return { ready: false, reason: `CONTROLLER_ROUND_NOT_DISPATCHABLE:${relay.status}:${relay.blockedReason ?? relay.originWorkId}` };
+  }
+  return { ready: true, workId: relay.originWorkId };
+}
 
 function taskIdForRequirement(repoId: string, requirementId: string): string {
   return `forge:${repoId}:requirement:${requirementId}`;
@@ -202,6 +225,7 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
     const store = { controllerHome, repoId };
     let relay = getRequirementControllerRoundRelay(store, requirementId);
     if (!relay || relay.status === 'failed') return false;
+    if (!workflowSupervisorLowerLayerReadyForWork(store, relay.originWorkId).ready) return false;
     const revision = workflowSupervisorWorkRecordRevision(controllerHome, repoId, relay.originWorkId);
     if (!revision) return false;
     const cached = workStateById.get(relay.originWorkId);
@@ -234,9 +258,11 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
 export async function ensureWorkflowSupervisorEnrollmentForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
-): Promise<{ status: 'not_eligible' | 'conversation_pending' | 'daemon_unavailable' | 'enrolled'; taskId?: string; effectId?: string }> {
+): Promise<{ status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string }> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
   if (boundary.status !== 'outer_turn') return { status: boundary.status };
+  const lowerLayer = workflowSupervisorLowerLayerReadyForWork(options, workId);
+  if (!lowerLayer.ready) return { status: 'lower_layer_not_ready', reason: lowerLayer.reason };
   const requirement = readRequirement({ controllerHome: options.controllerHome }, boundary.requirementId)?.value;
   if (!requirement) return { status: 'not_eligible' };
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);

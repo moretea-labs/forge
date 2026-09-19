@@ -14,7 +14,7 @@ import {
   type ControllerRoundDisposition,
 } from '../../../../packages/kernel/controller/api/index';
 import { chatgptControllerRoundBinding, recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
-import { ensureWorkflowSupervisorEnrollmentForWork, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
+import { ensureWorkflowSupervisorEnrollmentForWork, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, type WorkflowSupervisorEnrollmentStatus } from '../../root/workflow-supervisor-composition';
 import { readExecutionSession, updateExecutionSession } from '../execution/session-store';
 import { runWorkChatgptContinuation, type WorkChatgptContinuationResult } from './chatgpt-work-continuation';
 import { getRepository } from '../../../cli/repositories/registry';
@@ -318,7 +318,7 @@ export interface SourceChatgptRoundContinueResult {
   relayWorkId: string;
   outerTurnOwner: 'controller_round_provider' | 'workflow_supervisor';
   dispatch?: WorkChatgptContinuationResult;
-  supervisorEnrollment?: { status: 'not_eligible' | 'conversation_pending' | 'daemon_unavailable' | 'enrolled'; taskId?: string; effectId?: string };
+  supervisorEnrollment?: { status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string };
 }
 
 export async function continueChatgptControllerRoundFromSource(
