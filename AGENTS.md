@@ -15,6 +15,14 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 
 ## Mandatory Delivery Transaction
 
+### Current Task Lineage Isolation
+
+- The current task is selected by explicit user intent and the exact current Work/Requirement/Plan lineage. Repository-wide active Work is not a task queue.
+- `rh_status`, Plan listings, scheduler inventories, and other global projections may be consulted only to detect path conflicts, writer/authority ownership, blockers, or release admission conditions. They must not cause unrelated Work to enter discovery, implementation, validation, review, release, cleanup, or completion decisions for the current task.
+- Do not switch to another active Work because it looks urgent, is nearby in the repository, shares a broad Requirement, or appears in a global status response. A task switch requires explicit user intent or an explicit typed lineage transition from the current Work/Requirement.
+- When global state contains unrelated active Work, ignore its objectives and evidence unless they directly conflict with the current Work's files/authority or block the current delivery boundary. Record the conflict narrowly; do not absorb the unrelated Work.
+- When reporting progress, count only the current lineage. Repository-wide active counts must be labeled as unrelated inventory and never presented as remaining work for the current task.
+
 For Kernel V2 and other architecture migrations, optimize for one coherent delivery transaction rather than issue-by-issue lifecycle churn.
 
 - Default execution shape: `batch factual discovery -> root-cause/architecture decision -> freeze one delivery scope -> coherent implementation -> whole-diff review -> one focused validation wave -> one canonical-gate wave -> one final delivery -> terminal cleanup`.

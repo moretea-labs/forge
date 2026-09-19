@@ -18,6 +18,14 @@ Missing external skills must degrade only the named enhancement. Hooks may sugge
 
 ## Architecture Migration Delivery Transaction
 
+### Current-Task Lineage Fence
+
+Every controller round has one semantic task lineage. Resolve it from the user's current objective and the exact Work/Requirement/Plan relation before consulting repository-wide status. Global active Work is conflict metadata, not a work queue.
+
+The controller may inspect unrelated active Work only to answer four bounded questions: does it own an overlapping write path, does it hold an authority/resource needed by the current lineage, does it create a merge/release admission blocker, or does it prove the current lineage was superseded by an explicit typed transition? If none apply, the unrelated Work is ignored for the rest of the round.
+
+Never pivot into another Work's implementation, verification, review, release, cleanup, or progress accounting without explicit user intent or an explicit typed lineage transition. This prevents autonomous continuation from turning repository activity into accidental scope expansion.
+
 For Kernel/V2 migrations and similarly cross-cutting work, the primary unit of execution is a coherent delivery slice, not an issue, file, failing check, or incidental symptom.
 
 1. **Batch discovery**: gather the relevant architecture, ownership, runtime, persistence, and evidence facts in one bounded pass.

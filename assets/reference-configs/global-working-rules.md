@@ -11,6 +11,13 @@ Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` a
 
 ## Delivery Transaction Discipline
 
+### Current Task Lineage Isolation
+
+- Select the current task from explicit user intent plus the exact Work/Requirement/Plan lineage. Never treat repository-wide active Work as the current task queue.
+- Global status/inventory exists for conflict, ownership, blocker, and release-admission checks only. Unrelated active Work must not trigger discovery, edits, validation, review, release, cleanup, or progress accounting in the current controller round.
+- Switch tasks only on explicit user intent or an explicit typed lineage transition. Similar files, shared broad Requirements, urgency, or mere visibility in status are not lineage.
+- Report current-task progress from the current lineage only; label unrelated repository activity separately if it materially blocks the task.
+
 For architecture migrations, self-hosting work, and other multi-file system changes, optimize for one bounded delivery transaction instead of repeated micro-lifecycles.
 
 - Batch facts first, decide the root cause/owner once, freeze the delivery scope, implement the coherent candidate, review the whole diff, run one focused validation wave, run canonical gates once, then deliver and clean up.
