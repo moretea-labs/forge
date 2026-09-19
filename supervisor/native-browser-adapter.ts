@@ -30,6 +30,10 @@ export interface WorkflowSupervisorNativeSnapshot {
   latestAssistantResponse: string;
   isGenerating: boolean;
 }
+export interface WorkflowSupervisorNativeSnapshotOptions {
+  includeUserHistory?: boolean;
+  includePageText?: boolean;
+}
 export interface WorkflowSupervisorNativeBrowserDependencies {
   platform: NodeJS.Platform;
   listTabs(): Promise<MacOsBrowserTabInventoryEntry[]>;
@@ -38,7 +42,7 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   close(ref: MacOsBrowserTabRef): Promise<void>;
   readOwner(page: WorkflowSupervisorNativePage): Promise<string>;
   writeOwner(page: WorkflowSupervisorNativePage, marker: string): Promise<void>;
-  snapshot(page: WorkflowSupervisorNativePage): Promise<WorkflowSupervisorNativeSnapshot>;
+  snapshot(page: WorkflowSupervisorNativePage, options?: WorkflowSupervisorNativeSnapshotOptions): Promise<WorkflowSupervisorNativeSnapshot>;
   dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
   nowMs(): number;
   providerIdleGraceMs: number;
@@ -67,27 +71,32 @@ function committedAssistant(text: string): boolean {
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
 function refKey(ref: MacOsBrowserTabRef): string { return `${ref.windowId}:${ref.tabId}`; }
 
-export async function defaultSnapshot(page: WorkflowSupervisorNativePage): Promise<WorkflowSupervisorNativeSnapshot> {
+export async function defaultSnapshot(page: WorkflowSupervisorNativePage, options: WorkflowSupervisorNativeSnapshotOptions = {}): Promise<WorkflowSupervisorNativeSnapshot> {
+  const includeUserHistory = options.includeUserHistory ?? true;
+  const includePageText = options.includePageText ?? true;
   return await page.evaluate<WorkflowSupervisorNativeSnapshot>(`(() => {
-    const texts = (selector) => {
-      const nodes = document.querySelectorAll(selector);
-      return Array.from(nodes)
-        .map((node) => String(node.innerText ?? node.textContent ?? '').trim())
-        .filter(Boolean);
+    const text = (node) => String(node?.innerText ?? node?.textContent ?? '').trim();
+    const nodes = (selector) => document.querySelectorAll(selector);
+    const latestText = (selector) => {
+      const matches = nodes(selector);
+      return text(matches.length ? matches[matches.length - 1] : undefined);
     };
-    const userTexts = texts('[data-message-author-role="user"]');
-    const assistantTexts = texts('[data-message-author-role="assistant"]');
-    return {
+    const allTexts = (selector) => {
+      const matches = nodes(selector);
+      return Array.from(matches).map(text).filter(Boolean);
+    };
+    const includeUserHistory = ${JSON.stringify(includeUserHistory)};
+    const includePageText = ${JSON.stringify(includePageText)};
+    const userTexts = includeUserHistory ? allTexts('[data-message-author-role="user"]') : undefined;
+    const snapshot = {
       url: String(location.href || ''),
       title: String(document.title || ''),
-      // The latest user node is not necessarily the effect-bearing node:
-      // provider/tool UI can append later user-role nodes. Keep the complete
-      // visible user history so the unique Forge marker remains evidence.
-      latestUserText: userTexts.join('\\n'),
-      pageText: String(document.body?.innerText ?? document.body?.textContent ?? '').trim(),
-      latestAssistantResponse: assistantTexts.at(-1) ?? '',
+      latestUserText: userTexts ? userTexts.join('\\n') : latestText('[data-message-author-role="user"]'),
+      latestAssistantResponse: latestText('[data-message-author-role="assistant"]'),
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"]')),
     };
+    if (includePageText) snapshot.pageText = String(document.body?.innerText ?? document.body?.textContent ?? '').trim();
+    return snapshot;
   })()`);
 }
 async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string): Promise<{ dispatched: boolean; reason?: string }> {
@@ -201,12 +210,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     for (const task of tasks) {
       try {
         const page = await this.ensurePage(task);
-        let snapshot = await this.deps.snapshot(page);
+        let snapshot = await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
         if (!exactConversation(snapshot.url, task)) {
           await this.retireOwnedPage(task, page);
           const replacement = await this.createOwnedPage(task);
           this.pages.set(task.conversationId, replacement);
-          snapshot = await this.deps.snapshot(replacement);
+          snapshot = await this.deps.snapshot(replacement, { includeUserHistory: false, includePageText: false });
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         await this.observeAssistant(task, snapshot);
@@ -250,7 +259,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const cached = this.pages.get(task.conversationId);
     if (cached) {
       try {
-        const snapshot = await this.deps.snapshot(cached);
+        const snapshot = await this.deps.snapshot(cached, { includeUserHistory: false, includePageText: false });
         if (await this.deps.readOwner(cached) === marker && exactConversation(snapshot.url, task)) return cached;
       } catch { /* Reconstruct from browser evidence below. */ }
       this.pages.delete(task.conversationId);
@@ -282,7 +291,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       let snapshot: WorkflowSupervisorNativeSnapshot | undefined;
       for (let attempt = 0; attempt < 30; attempt += 1) {
         try {
-          snapshot = await this.deps.snapshot(page);
+          snapshot = await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
           if (exactConversation(snapshot.url, task)) break;
         } catch { /* Page may still be loading. */ }
         await this.deps.sleep(100);
@@ -323,7 +332,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async executeCommand(page: WorkflowSupervisorNativePage, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
-    let snapshot = await this.deps.snapshot(page);
+    let snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
     let mode = command.mode;
     if (mode === 'send') {
       const begin = this.control.browserBeginEffect({
@@ -387,7 +396,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     let exact = false;
     let markerPresent = false;
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      snapshot = await this.deps.snapshot(page);
+      snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
       exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
       markerPresent = targetMarkerPresent(snapshot.pageText ?? snapshot.latestUserText, command.effectId);
       if (exact || markerPresent) break;
