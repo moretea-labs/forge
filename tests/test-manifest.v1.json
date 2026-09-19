@@ -701,6 +701,10 @@
       "module": "routing",
       "resource": "temp-isolated"
     },
+    "tests/runtime/generic-work-verification-reconciliation.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/goal-authority-convergence.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
