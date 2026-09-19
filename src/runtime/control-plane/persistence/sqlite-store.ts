@@ -672,6 +672,11 @@ function payloadTextExclusionPredicate(input: PayloadTextExclusion): string {
   return `${namespace} AND (${extraction} IS NULL OR ${extraction} NOT IN (${values.map(literal).join(', ')}))`;
 }
 
+function payloadTextExclusionIndexName(input: PayloadTextExclusion, predicate = payloadTextExclusionPredicate(input)): string {
+  const prefix = `control_plane_candidate_${createHash('sha256').update(`${input.namespace}/${input.field}`).digest('hex').slice(0, 16)}_`;
+  return `${prefix}${createHash('sha256').update(predicate).digest('hex').slice(0, 16)}`;
+}
+
 /** Explicit startup DDL. JSON remains authority; SQLite maintains the derived index in every write transaction. */
 export function initializeControlPlanePayloadTextExclusionIndex(
   controllerHome: string,
@@ -679,7 +684,7 @@ export function initializeControlPlanePayloadTextExclusionIndex(
 ): void {
   const predicate = payloadTextExclusionPredicate(input);
   const prefix = `control_plane_candidate_${createHash('sha256').update(`${input.namespace}/${input.field}`).digest('hex').slice(0, 16)}_`;
-  const name = `${prefix}${createHash('sha256').update(predicate).digest('hex').slice(0, 16)}`;
+  const name = payloadTextExclusionIndexName(input, predicate);
   withControlPlaneTransaction(controllerHome, (database) => {
     database.exec(`CREATE INDEX IF NOT EXISTS ${name} ON control_plane_records (scope, updated_at, record_key) WHERE ${predicate}`);
     // Retire obsolete predicates for this domain field in the same transaction.
@@ -698,11 +703,16 @@ export function listControlPlaneRecordsExcludingPayloadTextValues<T>(
   input: PayloadTextExclusion & { scope: string; limit?: number },
 ): ControlPlaneRecord<T>[] {
   const predicate = payloadTextExclusionPredicate(input);
+  const candidateIndex = payloadTextExclusionIndexName(input, predicate);
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1_000), 5_000));
   return withDatabaseForRead(controllerHome, (database) => {
+    const candidateIndexExists = withSqliteStatement(database,
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1",
+      (statement) => statement.get(candidateIndex) != null);
+    const indexHint = candidateIndexExists ? ` INDEXED BY ${candidateIndex}` : '';
     const rows = withSqliteStatement(database, `
       SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
-      FROM control_plane_records
+      FROM control_plane_records${indexHint}
       WHERE ${predicate} AND scope = ?
       ORDER BY updated_at ASC, record_key ASC
       LIMIT ?
