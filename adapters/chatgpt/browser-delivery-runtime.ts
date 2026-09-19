@@ -58,16 +58,15 @@ const CHATGPT_BROWSER_AUTHORIZATION_ACTIONS = new Set(
     .map((action) => action.actionId),
 );
 
-const CHATGPT_BROWSER_TRANSPORT_OVERRIDES = {
-  browser_mode: 'attach_preferred',
-  cdp_attach_fallback: 'fail_closed',
-  native_attach_mode: 'auto',
-  native_browser_candidates: ['chrome'],
-} as const;
-
 export function chatgptBrowserActionArgs(actionId: string, args: Record<string, unknown>): Record<string, unknown> {
-  if (actionId === 'configure' || actionId === 'list_sessions' || actionId === 'reconcile_sessions') return args;
-  return { ...args, ...CHATGPT_BROWSER_TRANSPORT_OVERRIDES };
+  // Browser transport policy is controller-scoped configuration. Do not copy
+  // it into every action envelope: older Browser action schemas legitimately
+  // reject these optional fields even though the persisted configuration still
+  // supports the same policy. Keeping the envelope action-specific also lets a
+  // resumed ChatGPT round cross a connector/schema rotation without failing
+  // before the provider can observe the conversation.
+  void actionId;
+  return args;
 }
 
 export function chatgptBrowserActionResult(envelope: Record<string, unknown>, actionId: string): Record<string, unknown> {
@@ -894,4 +893,3 @@ export async function submitChatgptPrompt(
     { conversationUrl: observedUrl },
   );
 }
-

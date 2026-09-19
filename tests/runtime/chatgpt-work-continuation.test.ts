@@ -271,12 +271,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('不得仅为了满足该 host wording 而 delegate');
   });
 
-  test('pins ChatGPT automation Browser actions to native Chrome attach without global transport mutation', () => {
-    expect(chatgptBrowserActionArgs('open_page', { session_id: 'session-a', url: 'https://chatgpt.com/' })).toMatchObject({
-      session_id: 'session-a', browser_mode: 'attach_preferred', cdp_attach_fallback: 'fail_closed',
-      native_attach_mode: 'auto', native_browser_candidates: ['chrome'],
+  test('keeps ChatGPT automation Browser action envelopes compatible with persisted transport policy', () => {
+    expect(chatgptBrowserActionArgs('open_page', { session_id: 'session-a', url: 'https://chatgpt.com/' })).toEqual({
+      session_id: 'session-a', url: 'https://chatgpt.com/',
     });
-    expect(chatgptBrowserActionArgs('get_text', { session_id: 'session-a' })).toMatchObject({ browser_mode: 'attach_preferred' });
+    expect(chatgptBrowserActionArgs('get_text', { session_id: 'session-a' })).toEqual({ session_id: 'session-a' });
     expect(chatgptBrowserActionArgs('configure', { enabled: true })).toEqual({ enabled: true });
   });
 
