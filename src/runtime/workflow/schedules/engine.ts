@@ -33,7 +33,7 @@ import {
   saveScheduleDecision,
   updateSchedule,
 } from '../../../../packages/kernel/scheduler/api/index';
-import { resumeControllerRoundOccurrence } from '../../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../../../packages/kernel/controller/api/index';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 export { cronDue };
 import { ensureScheduledControllerBinding, controllerHostForScheduledBinding } from '../../root/scheduled-controller-composition';
@@ -374,6 +374,61 @@ async function executeExternalControllerWake(
     const boundary = workflowSupervisorBoundaryForWork({ controllerHome, repoId: schedule.repoId }, workId);
     if (boundary.status === 'outer_turn') {
       const enrollment = await ensureWorkflowSupervisorEnrollmentForWork({ controllerHome, repoId: schedule.repoId }, workId);
+      if (enrollment.status === 'lower_layer_not_ready') {
+        // A Scheduler wake is allowed to repair a lost Supervisor outer-turn
+        // enrollment, but it must prepare only the lower relay. The Supervisor
+        // remains the sole component that submits the ChatGPT message.
+        const existingRelay = getControllerRoundRelay({ controllerHome, repoId: schedule.repoId }, workId);
+        if (!existingRelay || existingRelay.status === 'waiting') {
+          const prepared = prepareControllerRoundOccurrence(
+            { controllerHome, repoId: schedule.repoId },
+            {
+              occurrenceId: occurrence.occurrenceId,
+              workId,
+              controllerBindingId: bindingRecord.binding.bindingId,
+              relayScopeId,
+              allowSemanticWaitRecovery: true,
+            },
+          );
+          if (prepared.outcome === 'dispatched') {
+            const reEnrollment = await ensureWorkflowSupervisorEnrollmentForWork({ controllerHome, repoId: schedule.repoId }, workId);
+            if (reEnrollment.status !== 'enrolled') {
+              throw new Error(`WORKFLOW_SUPERVISOR_REENROLLMENT_FAILED:${reEnrollment.status}:${reEnrollment.reason ?? boundary.taskId}`);
+            }
+            updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+              enabled: false,
+              pausedReason: 'workflow_supervisor_owns_outer_turn',
+              lastTriggeredAt: timestamp,
+              lastOccurrenceId: occurrence.occurrenceId,
+            }));
+            const repaired = decideOccurrence(
+              controllerHome,
+              schedule,
+              occurrence,
+              'execute',
+              'dispatched',
+              `Scheduler repaired ControllerRound ${prepared.relay.relayScopeId} and re-enrolled Workflow Supervisor ${boundary.taskId}; Supervisor owns the outer ChatGPT turn.`,
+              occurrenceDecisionEvidence({
+                operation: schedule.action.operation,
+                workId,
+                controllerType,
+                controllerBindingId: bindingRecord.binding.bindingId,
+                controllerRound: prepared.relay.relayScopeId,
+                workflowSupervisorTaskId: boundary.taskId,
+                workflowSupervisorEffectId: reEnrollment.effectId,
+                schedulerRecovery: true,
+              }),
+            );
+            appendWorkEvidence({ controllerHome, repoId: schedule.repoId }, workId, {
+              evidenceId: repaired.occurrenceId,
+              title: 'scheduled Workflow Supervisor enrollment repaired',
+              summary: `Schedule ${schedule.scheduleId} prepared the lower ControllerRound and re-enrolled the exact outer-turn Supervisor task.`,
+              detailLevel: 'summary',
+            });
+            return repaired;
+          }
+        }
+      }
       updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
         ...(enrollment.status === 'enrolled' ? { enabled: false, pausedReason: 'workflow_supervisor_owns_outer_turn' } : {}),
         lastTriggeredAt: timestamp,

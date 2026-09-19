@@ -261,12 +261,12 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
 ): Promise<{ status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string }> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
   if (boundary.status !== 'outer_turn') return { status: boundary.status };
+  const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
+  if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId: boundary.taskId };
   const lowerLayer = workflowSupervisorLowerLayerReadyForWork(options, workId);
   if (!lowerLayer.ready) return { status: 'lower_layer_not_ready', reason: lowerLayer.reason };
   const requirement = readRequirement({ controllerHome: options.controllerHome }, boundary.requirementId)?.value;
   if (!requirement) return { status: 'not_eligible' };
-  const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
-  if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId: boundary.taskId };
   await registerWorkflowSupervisorTask(forgeHome, {
     taskId: boundary.taskId,
     conversationId: boundary.conversationId,

@@ -25,7 +25,7 @@ export function controllerRoundBlockerClass(record: Pick<ControllerRoundRelayRec
 }
 
 export type ControllerRoundTransitionEvent =
-  | { type: 'occurrence_requested'; at: string; repoId: string; relayScopeId: string; originWorkId: string; requirementId?: string; identity: ControllerRoundRelayIdentity; stateFingerprint: string; proposedAuthorityId: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; bindingId?: string; occurrenceId?: string; abandonedReleaseRecovery: boolean }
+  | { type: 'occurrence_requested'; at: string; repoId: string; relayScopeId: string; originWorkId: string; requirementId?: string; identity: ControllerRoundRelayIdentity; stateFingerprint: string; proposedAuthorityId: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; bindingId?: string; occurrenceId?: string; abandonedReleaseRecovery: boolean; allowSemanticWaitRecovery?: boolean }
   | { type: 'provider_dispatch_started'; at: string; providerDispatchEffectId: string; bindingId?: string }
   | { type: 'provider_dispatch_succeeded'; at: string; providerDispatchEffectId: string; bindingId?: string; providerDispatchReceiptId?: string }
   | { type: 'provider_dispatch_failed'; at: string; error: string; recovery: boolean; nextRecoveryAt?: string }
@@ -79,7 +79,7 @@ export function decideControllerRoundTransition(
         // silently replay an old lineage.
         if (previous.status !== 'failed' && !event.abandonedReleaseRecovery && !event.occurrenceId?.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED' };
         if (event.occurrenceId?.trim() && previous.occurrenceId === event.occurrenceId.trim()) return { kind: 'reject', code: `CONTROLLER_RELAY_OCCURRENCE_ALREADY_APPLIED:${event.occurrenceId.trim()}` };
-        if (previous.status === 'waiting' && previous.stateFingerprint === event.stateFingerprint) return { kind: 'reject', code: 'CONTROLLER_RELAY_WAITING_STATE_UNCHANGED' };
+        if (previous.status === 'waiting' && previous.stateFingerprint === event.stateFingerprint && !event.allowSemanticWaitRecovery) return { kind: 'reject', code: 'CONTROLLER_RELAY_WAITING_STATE_UNCHANGED' };
         if (previous.status === 'failed' && !event.abandonedReleaseRecovery && event.occurrenceId?.trim()) return { kind: 'reject', code: 'CONTROLLER_RELAY_FAILED_REQUIRES_EXPLICIT_RESUME' };
         if (event.abandonedReleaseRecovery && previous.status !== 'failed') return { kind: 'reject', code: 'CONTROLLER_RELAY_ABANDONED_RECOVERY_STATE_INVALID' };
       }

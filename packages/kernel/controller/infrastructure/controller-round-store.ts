@@ -73,6 +73,13 @@ export interface BeginInitialControllerRoundDispatchInput {
   maxFailures?: number;
   /** Required for any later schedule/manual/replan occurrence after a prior semantic state exists. */
   occurrenceId?: string;
+  /**
+   * Scheduler-owned recovery may re-arm an unchanged semantic wait when the
+   * outer Workflow Supervisor task is no longer runnable. This is bounded by
+   * the existing repeated-state/round budgets and never applies to a user
+   * blocker or an unknown provider outcome.
+   */
+  allowSemanticWaitRecovery?: boolean;
 }
 
 export interface RecoverControllerRoundRelayAuthorityInput {
@@ -852,6 +859,7 @@ export function beginInitialControllerRoundDispatch(
       maxRounds: boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32), maxRepeatedState: boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8),
       maxFailures: boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8),
       ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}), ...(occurrenceId ? { occurrenceId } : {}),
+      ...(input.allowSemanticWaitRecovery ? { allowSemanticWaitRecovery: true } : {}),
       abandonedReleaseRecovery: Boolean(abandonedReleasedRound),
     });
   });

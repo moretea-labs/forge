@@ -32,7 +32,7 @@ import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-work
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
+import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -2277,6 +2277,65 @@ describe('rh_work terminalization authority', () => {
     expect(resumeCalls).toBe(1);
     expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
   }, 15_000);
+
+  test('Supervisor recovery re-arms an unchanged semantic wait without dispatching the provider itself', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-supervisor-semantic-wait-recovery';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-supervisor-recovery',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-supervisor-recovery',
+      principalId: 'principal-supervisor-recovery',
+      controllerInstanceId: 'runtime-supervisor-recovery',
+      leaseMs: 60_000,
+    });
+    const binding = upsertChatgptControllerBinding(store, {
+      workId, sessionId: owner.sessionId, title: 'supervisor recovery target', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: binding.binding.bindingId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: binding.binding.bindingId, providerDispatchReceiptId: 'dispatch-before-supervisor-recovery' });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+    expect(submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+      disposition: 'wait',
+    }).status).toBe('waiting');
+
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'occ-supervisor-recovery',
+      workId,
+      controllerBindingId: binding.binding.bindingId,
+      relayScopeId,
+      allowSemanticWaitRecovery: true,
+    });
+    expect(prepared).toMatchObject({ outcome: 'dispatched', reused: false });
+    expect(prepared.relay).toMatchObject({ status: 'dispatching', occurrenceId: 'occ-supervisor-recovery' });
+    expect(prepared.relay.providerDispatchStartedAt).toBeUndefined();
+    expect(prepared.relay.providerDispatchReceiptId).toBeUndefined();
+  });
 
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {
     const fx = fixture();

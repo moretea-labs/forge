@@ -20,6 +20,8 @@ export interface ControllerRoundOccurrenceInput {
   controllerBindingId: string;
   relayScopeId?: string;
   continuationHint?: string;
+  /** Scheduler-owned recovery only; normal continuation preserves semantic wait. */
+  allowSemanticWaitRecovery?: boolean;
 }
 
 export type ControllerRoundOccurrenceOutcome = 'dispatched' | 'semantic_wait' | 'wait_for_user' | 'rejected';
@@ -59,15 +61,15 @@ function reusedOccurrenceResult(relay: ControllerRoundRelayRecord): ControllerRo
 }
 
 /**
- * Canonical trigger-to-Controller continuation path. Schedule/manual occurrences
- * contribute only the exact occurrence identity. ControllerRound owns semantic
- * suppression, provider effect fencing, dispatch attempt, receipt and recovery.
+ * Prepare the lower-layer ControllerRound without touching the provider. This is
+ * the only path used when a Requirement-backed Work has an exact Workflow
+ * Supervisor outer-turn boundary: Scheduler repairs/prepares the lower relay,
+ * then Supervisor owns the actual ChatGPT message.
  */
-export async function resumeControllerRoundOccurrence(
+export function prepareControllerRoundOccurrence(
   options: ControllerRoundRelayStoreOptions,
   input: ControllerRoundOccurrenceInput,
-  host: ControllerHost,
-): Promise<ControllerRoundOccurrenceResult> {
+): ControllerRoundOccurrenceResult {
   const work = getWorkContract(options, input.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
   if (isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ALREADY_TERMINAL: ${work.workId}:${work.status}`);
@@ -96,7 +98,7 @@ export async function resumeControllerRoundOccurrence(
 
   if (relay?.status === 'waiting' && relay.relayScopeId === canonicalRelayScopeId) {
     const currentFingerprint = readControllerRoundSemanticStateFingerprint(options, work.workId);
-    if (currentFingerprint && currentFingerprint === relay.stateFingerprint) {
+    if (currentFingerprint && currentFingerprint === relay.stateFingerprint && !input.allowSemanticWaitRecovery) {
       return {
         relay,
         outcome: 'semantic_wait',
@@ -156,6 +158,7 @@ export async function resumeControllerRoundOccurrence(
         requirementId: work.requirementId,
         bindingId: bindingRecord.binding.bindingId,
         occurrenceId: input.occurrenceId,
+        allowSemanticWaitRecovery: input.allowSemanticWaitRecovery,
         identity: {
           controllerId: session.controllerId,
           controllerType: session.controllerType,
@@ -177,9 +180,31 @@ export async function resumeControllerRoundOccurrence(
   if (!relay.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${relay.relayScopeId}`);
   if (relay.providerDispatchStartedAt) throw new Error(`CONTROLLER_CONTINUATION_ALREADY_DISPATCHING:${input.occurrenceId}`);
 
+  return { relay, outcome: 'dispatched', reused: false };
+}
+
+/**
+ * Canonical trigger-to-Controller continuation path. Schedule/manual occurrences
+ * contribute only the exact occurrence identity. ControllerRound owns semantic
+ * suppression, provider effect fencing, dispatch attempt, receipt and recovery.
+ */
+export async function resumeControllerRoundOccurrence(
+  options: ControllerRoundRelayStoreOptions,
+  input: ControllerRoundOccurrenceInput,
+  host: ControllerHost,
+): Promise<ControllerRoundOccurrenceResult> {
+  const prepared = prepareControllerRoundOccurrence(options, input);
+  if (prepared.outcome !== 'dispatched' || prepared.reused) return prepared;
+
+  const work = getWorkContract(options, input.workId);
+  if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
+  const bindingRecord = getControllerWorkBinding(options, work.workId);
+  if (!bindingRecord) throw new Error(`CONTROLLER_WORK_BINDING_NOT_FOUND: ${work.workId}`);
+  let relay = prepared.relay;
+
   relay = beginControllerRoundProviderDispatch(options, {
     workId: work.workId,
-    authorityId: relay.authorityId,
+    authorityId: relay.authorityId!,
     expectedUpdatedAt: relay.updatedAt,
     bindingId: bindingRecord.binding.bindingId,
   });
