@@ -24,7 +24,20 @@ export class WorkflowSupervisorControlPlane {
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
-  browserTasks(): WorkflowSupervisorBrowserTask[] { return this.store.listTasks().filter((task) => !this.store.terminalAction(task.taskId) && this.browserTaskActive(task)).map(browserTask); }
+  browserTasks(): WorkflowSupervisorBrowserTask[] {
+    return this.store.listTasks().filter((task) => {
+      if (this.store.terminalAction(task.taskId)) return false;
+      // Browser observation is needed only while there is something to send,
+      // reconcile, or observe to completion. An otherwise-active Requirement is
+      // not itself a reason to re-open Work/Requirement authority and snapshot
+      // the browser every second.
+      const needsBrowserAttention = Boolean(
+        this.store.nextBrowserEffect(task.taskId)
+        || this.store.latestAppliedEffectWithoutCompletion(task.taskId),
+      );
+      return needsBrowserAttention && this.browserTaskActive(task);
+    }).map(browserTask);
+  }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     if (!this.browserTaskActive(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');

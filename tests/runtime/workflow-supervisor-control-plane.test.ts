@@ -129,3 +129,35 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(existsSync(socketPath)).toBe(true);
   });
 });
+
+
+test('browserTasks polls only tasks with pending browser work or an applied effect awaiting completion', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-attention-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-browser-attention';
+  const conversationId = '12121212-3434-5656-7878-909090909090';
+  control.registerTask({
+    taskId,
+    conversationId,
+    conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+    objective: 'Poll only while browser work is outstanding.',
+    completionContract: {},
+    continuationPolicy: {},
+    userBlockerPolicy: {},
+  });
+
+  expect(control.browserTasks()).toEqual([]);
+
+  const effect = control.reserveEnrollment(taskId);
+  expect(control.browserTasks()).toHaveLength(1);
+
+  control.observeEffect({
+    effectId: effect.effectId,
+    observationId: 'browser-attention-applied',
+    outcome: 'applied',
+    evidence: { surface: 'test' },
+  });
+  expect(control.browserTasks()).toHaveLength(1);
+});
