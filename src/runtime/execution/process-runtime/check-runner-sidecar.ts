@@ -2,13 +2,8 @@
 import { createHash } from 'crypto';
 import { rmSync } from 'fs';
 import { resolve } from 'path';
-import {
-  controllerCheckExecutionIdentity,
-  runControllerCheckAsync,
-  snapshotControllerCheck,
-  type ControllerCheckSnapshot,
-} from '../../../cli/controller/check-runner';
-import { writePersistedCheckResultReceipt } from './check-result';
+import type { ControllerCheckSnapshot } from '../../../cli/controller/check-runner';
+import { materializeManagedWorkspaceDependencies } from '../managed-workspace';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from './canary';
 
 interface ParsedArgs {
@@ -32,7 +27,6 @@ function requiredValue(argv: string[], flag: string): string {
   if (!value) throw new Error(`PERSISTED_CHECK_USAGE: missing ${flag}`);
   return value;
 }
-
 
 function decodeCheckSnapshot(value: string): ControllerCheckSnapshot {
   let decoded: unknown;
@@ -77,6 +71,22 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
   const args = parseArgs(argv);
   const root = resolve(args.repo);
   try {
+    // A Work verification snapshot is disposable execution state. When exact
+    // canonical dependency reuse was unavailable during snapshot construction,
+    // establish the candidate's frozen dependency closure inside this Check
+    // Process before loading the candidate Check Runner module graph.
+    if (args.cleanupRoot && (!args.checkSnapshot || args.checkSnapshot.source === 'package-script')) {
+      materializeManagedWorkspaceDependencies(root);
+    }
+
+    const [
+      { controllerCheckExecutionIdentity, runControllerCheckAsync, snapshotControllerCheck },
+      { writePersistedCheckResultReceipt },
+    ] = await Promise.all([
+      import('../../../cli/controller/check-runner'),
+      import('./check-result'),
+    ]);
+
     // New callers carry the exact definition resolved from canonical repository
     // authority. The fallback keeps older package releases compatible.
     const snapshot = args.checkSnapshot ?? snapshotControllerCheck(root, args.checkId);

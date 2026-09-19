@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import {
   controllerCheckExecutionIdentity,
   controllerCheckLiveExecutionStateFingerprint,
@@ -426,6 +426,85 @@ describe('controller check provenance and failure classification', () => {
     });
     expect(trackedStatus.status).toBe(0);
     expect(trackedStatus.stdout.trim()).toBe('');
+  });
+
+  test('bootstraps snapshot dependencies before loading the candidate Check Runner module graph', () => {
+    if (process.platform === 'win32') return;
+
+    const root = mkdtempSync(join(tmpdir(), 'forge-check-snapshot-bootstrap-'));
+    roots.push(root);
+    const sourceRoot = resolve(import.meta.dir, '..', '..');
+    const repoRoot = join(root, 'candidate');
+    const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--', sourceRoot, repoRoot], { encoding: 'utf8' });
+    expect(clone.status).toBe(0);
+
+    writeFileSync(
+      join(repoRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts'),
+      readFileSync(join(sourceRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts')),
+    );
+
+    const packagePath = join(repoRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { scripts?: Record<string, string> };
+    packageJson.scripts = {
+      ...(packageJson.scripts ?? {}),
+      'check:snapshot-bootstrap': "node -e \"console.log('candidate-check-ran')\"",
+    };
+    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    rmSync(join(repoRoot, 'node_modules'), { recursive: true, force: true });
+
+    const fakeBun = join(root, 'bun');
+    const canonicalNodeModules = join(sourceRoot, 'node_modules');
+    expect(existsSync(canonicalNodeModules)).toBe(true);
+    writeFileSync(fakeBun, [
+      `#!${process.execPath}`,
+      "import { existsSync, symlinkSync, writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      `const source = ${JSON.stringify(canonicalNodeModules)};`,
+      "const target = join(process.cwd(), 'node_modules');",
+      "if (!existsSync(target)) symlinkSync(source, target, 'dir');",
+      "writeFileSync(join(process.cwd(), '.dependency-bootstrap-ran'), 'ready\\n');",
+      '',
+    ].join('\n'));
+    chmodSync(fakeBun, 0o755);
+
+    const checkId = 'package:check:snapshot-bootstrap';
+    const snapshot = snapshotControllerCheck(repoRoot, checkId);
+    const expectedCheckFingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    const controllerHome = join(root, 'controller-home');
+    const isolatedControllerHome = join(root, 'isolated-controller-home');
+    const cleanupRoot = join(root, 'cleanup-root');
+    const resultReceiptPath = join(root, 'check-result.json');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(cleanupRoot, { recursive: true });
+
+    const result = spawnSync(process.execPath, [
+      join(repoRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts'),
+      '--repo', repoRoot,
+      '--controller-home', controllerHome,
+      '--repo-id', 'repo-snapshot-bootstrap',
+      '--check-id', checkId,
+      '--expected-check-fingerprint', expectedCheckFingerprint,
+      '--check-snapshot', Buffer.from(JSON.stringify(snapshot)).toString('base64url'),
+      '--result-receipt', resultReceiptPath,
+      '--isolated-controller-home', isolatedControllerHome,
+      '--cleanup-root', cleanupRoot,
+    ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, FORGE_BUN_EXECUTABLE: fakeBun },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('Cannot find module');
+    expect(result.stdout).toContain('candidate-check-ran');
+    expect(existsSync(join(repoRoot, '.dependency-bootstrap-ran'))).toBe(true);
+    expect(realpathSync(join(repoRoot, 'node_modules'))).toBe(realpathSync(canonicalNodeModules));
+    expect(JSON.parse(readFileSync(resultReceiptPath, 'utf8'))).toMatchObject({
+      checkId,
+      ok: true,
+      timedOut: false,
+    });
   });
 
   test('exposes cache provenance, validated revision, and original execution time', async () => {
