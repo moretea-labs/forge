@@ -271,6 +271,14 @@ test('browserTasks keeps an applied external effect observable while lower Contr
   });
   const effect = control.reserveEnrollment(taskId);
   control.observeEffect({ effectId: effect.effectId, observationId: 'applied-while-waiting', outcome: 'applied' });
+  const recovery = store.reserveEffect({
+    taskId,
+    effectId: 'fx_78787878787878787878787878787878',
+    kind: 'recovery',
+    originKey: `provider-recovery:${effect.effectId}`,
+    prompt: 'recovery',
+  });
 
   expect(control.browserTasks()).toHaveLength(1);
+  expect(control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command?.effectId).toBe(recovery.effectId);
 });

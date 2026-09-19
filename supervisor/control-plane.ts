@@ -54,7 +54,7 @@ export class WorkflowSupervisorControlPlane {
   }
   browserPoll(input: { conversationId: string; conversationUrl: string }): WorkflowSupervisorBrowserPollResult {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
-    if (!this.browserTaskActive(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+    if (!this.browserTaskActiveForExternalEffect(task)) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
     const projection = browserTask(task);
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal) return { authorized: true, task: projection, terminal };
