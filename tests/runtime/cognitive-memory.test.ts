@@ -109,6 +109,7 @@ describe('generic cognitive memory', () => {
     const fx = fixture();
     const activeAt = '2026-09-18T00:00:00.000Z';
     recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:a-expired', 'Temporal candidate shared term.', ['temporal.limit'], 'E-1'), validFrom: '2026-09-15T00:00:00.000Z', expiresAt: '2026-09-16T00:00:00.000Z' });
+    recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:a-future', 'Temporal candidate shared term.', ['temporal.limit'], 'E-1'), validFrom: '2026-09-19T00:00:00.000Z' });
     const live = recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:z-live', 'Temporal candidate shared term.', ['temporal.limit'], 'E-2'), validFrom: '2026-09-17T00:00:00.000Z' });
     const port = cognitionReadPort(fx.controllerHome);
     expect(port.exactByConcept([scope], ['temporal.limit'], 1, activeAt).map(item => item.id)).toEqual([live.id]);
@@ -116,8 +117,10 @@ describe('generic cognitive memory', () => {
 
     const seed = recordCognitiveMemory(fx.store, fx.authority, draft('mem:seed', 'Graph seed.', ['graph.seed'], 'E-1'));
     recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:a-expired-target', 'Expired graph target.', ['graph.target'], 'E-2'), validFrom: '2026-09-15T00:00:00.000Z', expiresAt: '2026-09-16T00:00:00.000Z' });
+    recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:a-future-target', 'Future graph target.', ['graph.target'], 'E-2'), validFrom: '2026-09-19T00:00:00.000Z' });
     recordCognitiveMemory(fx.store, fx.authority, draft('mem:b-edge-expired-target', 'Live target behind expired edge.', ['graph.target'], 'E-3'));
     const liveTarget = recordCognitiveMemory(fx.store, fx.authority, draft('mem:z-live-target', 'Live graph target.', ['graph.target'], 'E-4'));
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:future-target', scope, fromId: seed.id, toId: 'mem:a-future-target', relation: 'supports', weight: 1, evidenceRefs: ['E-1'], recordedAt: at });
     recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:expired-target', scope, fromId: seed.id, toId: 'mem:a-expired-target', relation: 'supports', weight: 0.99, evidenceRefs: ['E-1'], recordedAt: at });
     recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:expired', scope, fromId: seed.id, toId: 'mem:b-edge-expired-target', relation: 'supports', weight: 0.95, evidenceRefs: ['E-2'], recordedAt: at, expiresAt: '2026-09-17T12:00:00.000Z' });
     recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:live', scope, fromId: seed.id, toId: liveTarget.id, relation: 'supports', weight: 0.5, evidenceRefs: ['E-3'], recordedAt: at });

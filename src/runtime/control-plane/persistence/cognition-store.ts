@@ -534,9 +534,9 @@ export function cognitionReadPort(controllerHome: string): CognitiveReadPort {
   return {
     readByIds: (scopes, ids) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).readByIds(scopes, ids)),
     readByAddresses: addresses => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).readByAddresses(addresses)),
-    exactByConcept: (scopes, concepts, limit) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).exactByConcept(scopes, concepts, limit)),
-    lexical: (scopes, terms, limit) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).lexical(scopes, terms, limit)),
-    neighbors: (seeds, limit) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).neighbors(seeds, limit)),
+    exactByConcept: (scopes, concepts, limit, activeAt) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).exactByConcept(scopes, concepts, limit, activeAt)),
+    lexical: (scopes, terms, limit, activeAt) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).lexical(scopes, terms, limit, activeAt)),
+    neighbors: (seeds, limit, activeAt) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).neighbors(seeds, limit, activeAt)),
   };
 }
 
