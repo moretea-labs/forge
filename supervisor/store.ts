@@ -253,6 +253,28 @@ export class WorkflowSupervisorStore {
   reserveEffect(input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     return this.transaction((db) => this.reserveEffectWithin(db, input));
   }
+  reserveSchedulerRecovery(input: { taskId: string; effectId: string; prompt: string }): WorkflowSupervisorEffect | undefined {
+    return this.transaction((db) => {
+      const originKey = `scheduler-recovery:${input.taskId}`;
+      const existing = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)) as Record<string, unknown> | undefined;
+      if (existing) return effectFromRow(existing);
+      const exhausted = statement(db, `SELECT e.effect_id FROM effects e
+        JOIN events exhausted ON exhausted.effect_id = e.effect_id AND exhausted.kind = 'assistant_recovery_exhausted'
+        WHERE e.task_id = ?
+          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
+        ORDER BY exhausted.event_id DESC LIMIT 1`, (s) => s.get(input.taskId)) as { effect_id?: string } | undefined;
+      if (!exhausted?.effect_id) return undefined;
+      const recovery = this.reserveEffectWithin(db, {
+        taskId: input.taskId,
+        effectId: input.effectId,
+        kind: 'recovery',
+        originKey,
+        prompt: input.prompt,
+      });
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `scheduler-recovery-reserved:${input.taskId}`, 'scheduler_recovery_reserved', exhausted.effect_id, json({ recovery_effect_id: recovery.effectId }), now()));
+      return recovery;
+    });
+  }
   private reserveEffectWithin(db: Database, input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     statement(db, 'INSERT OR IGNORE INTO effects(effect_id,task_id,kind,origin_key,source_completion_fingerprint,prompt_text,created_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.effectId, input.taskId, input.kind, input.originKey, input.sourceCompletionFingerprint ?? null, input.prompt, now()));
     const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(input.originKey)) as Record<string, unknown> | undefined;

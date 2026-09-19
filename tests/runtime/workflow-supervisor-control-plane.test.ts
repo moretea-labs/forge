@@ -236,4 +236,9 @@ test('browserTasks stops polling after bounded provider recovery is exhausted', 
   expect(exhausted.state).toBe('exhausted');
   expect(store.providerRecoveryExhausted(effect.effectId)).toBe(true);
   expect(control.browserTasks()).toEqual([]);
+
+  const schedulerRecovery = control.reserveSchedulerRecovery(taskId)!;
+  expect(schedulerRecovery.kind).toBe('recovery');
+  expect(control.browserTasks()).toHaveLength(1);
+  expect(control.reserveSchedulerRecovery(taskId)?.effectId).toBe(schedulerRecovery.effectId);
 });

@@ -51,3 +51,7 @@ export async function registerWorkflowSupervisorTask(forgeHome: string, input: W
 export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, taskId: string): Promise<WorkflowSupervisorEffect> {
   return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', { task_id: taskId });
 }
+
+export async function reserveWorkflowSupervisorSchedulerRecovery(forgeHome: string, taskId: string): Promise<WorkflowSupervisorEffect | undefined> {
+  return await rpc<WorkflowSupervisorEffect | undefined>(forgeHome, 'reserve_scheduler_recovery', { task_id: taskId });
+}

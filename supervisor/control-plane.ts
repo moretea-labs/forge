@@ -19,6 +19,14 @@ export class WorkflowSupervisorControlPlane {
     const task = this.requireTask(taskId); const id = effectId();
     return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey: `enrollment:${taskId}`, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
   }
+  reserveSchedulerRecovery(taskId: string): WorkflowSupervisorEffect | undefined {
+    const task = this.requireTask(taskId); const id = effectId();
+    return this.store.reserveSchedulerRecovery({
+      taskId,
+      effectId: id,
+      prompt: renderSupervisorPrompt(task, id, 'recovery', undefined, 'The previous bounded Supervisor recovery attempts were exhausted. This is one scheduler-owned retry; preserve completed work and end with the required Supervisor control block.'),
+    });
+  }
   observeEffect(input: { effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
     this.store.recordEffectObservation(validateEffectId(input.effectId), input.observationId, input.outcome, input.evidence);
   }

@@ -17,7 +17,7 @@ import {
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { withControlPlaneReadDatabase } from '../control-plane/persistence/sqlite-store';
-import { registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
+import { registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment, reserveWorkflowSupervisorSchedulerRecovery } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 
@@ -293,5 +293,6 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, boundary.taskId);
-  return { status: 'enrolled', taskId: boundary.taskId, effectId: effect.effectId };
+  const schedulerRecovery = await reserveWorkflowSupervisorSchedulerRecovery(forgeHome, boundary.taskId);
+  return { status: 'enrolled', taskId: boundary.taskId, effectId: schedulerRecovery?.effectId ?? effect.effectId };
 }
