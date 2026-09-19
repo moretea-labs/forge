@@ -24,7 +24,15 @@ export interface RuntimeWorkflowSupervisorHandle {
  * this composition gives Supervisor one in-process server/writer while keeping
  * its SQLite and Unix socket authority isolated under the exact Controller Home.
  */
-export async function startWorkflowSupervisorRuntime(controllerHome: string): Promise<RuntimeWorkflowSupervisorHandle> {
+export function startWorkflowSupervisorRuntime(controllerHome: string): Promise<RuntimeWorkflowSupervisorHandle>;
+export function startWorkflowSupervisorRuntime(
+  controllerHome: string,
+  options: { nativeBrowserAdapter?: boolean },
+): Promise<RuntimeWorkflowSupervisorHandle>;
+export async function startWorkflowSupervisorRuntime(
+  controllerHome: string,
+  options: { nativeBrowserAdapter?: boolean } = {},
+): Promise<RuntimeWorkflowSupervisorHandle> {
   const forgeHome = resolveWorkflowSupervisorForgeHome(controllerHome);
   const socketPath = workflowSupervisorSocketPath(forgeHome);
   const claim = getRuntimeWriteClaim();
@@ -46,8 +54,10 @@ export async function startWorkflowSupervisorRuntime(controllerHome: string): Pr
   });
   const done = once(server, 'close').then(() => undefined);
   await once(server, 'listening');
-  const nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
-    dispatchPrompt: async (_page, prompt, task) => {
+  const nativeBrowser = options.nativeBrowserAdapter === false
+    ? undefined
+    : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
+      dispatchPrompt: async (_page, prompt, task) => {
       const durableTask = controlPlane.getTask(task.taskId);
       if (!durableTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
       const delivery = resolveWorkflowSupervisorChatgptDelivery(controllerHome, durableTask);
@@ -66,8 +76,8 @@ export async function startWorkflowSupervisorRuntime(controllerHome: string): Pr
         new Set(delivery.authorizationGrantRefs),
       );
       return { dispatched: true, confirmed: true };
-    },
-  });
+      },
+    });
   let closing = false;
   return {
     done,

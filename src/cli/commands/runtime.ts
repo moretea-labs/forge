@@ -12,6 +12,7 @@ import { listOccurrences, listSchedules } from '../../../packages/kernel/schedul
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../../../adapters/mcp/auth';
 import { createSetupBootstrapControlApi } from './bootstrap-control';
+import { readSetupProfile, runtimeDeploymentTopologyForSetupProfile } from './setup-profile';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
 import { activateScheduledPackageRuntimeServiceFromPath, installPackageRuntimeService, readPackageRuntimeActivationReceipt } from '../../runtime/root/package-runtime-service';
@@ -73,12 +74,14 @@ export function buildRuntimeCommand(): Command {
         writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
       }
       const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+      const setupProfile = readSetupProfile();
       const result = await installPackageRuntimeService({
         controllerHome: home,
         packageRoot,
         host: opts.host,
         port,
         authTokenFile: tokenPath,
+        ...(setupProfile ? { topology: runtimeDeploymentTopologyForSetupProfile(setupProfile) } : {}),
         forcePortable: opts.portable === true,
         refreshConnector: opts.refreshConnector === true,
       });

@@ -19,6 +19,7 @@ import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './
 import { readRuntimeReleaseAuthority, revertInitialRuntimeReleasePublication, rollbackRuntimeRelease } from './release-store';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
+import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 
 export type PackageRuntimeServiceMode = PlatformServiceManagerKind;
 
@@ -94,6 +95,7 @@ export interface PackageRuntimeServiceOptions {
   env?: NodeJS.ProcessEnv;
   forcePortable?: boolean;
   refreshConnector?: boolean;
+  topology?: RuntimeDeploymentTopology;
 }
 
 export interface PackageRuntimeServiceDependencies {
@@ -467,6 +469,7 @@ export async function installPackageRuntimeService(
     host: options.host ?? '127.0.0.1',
     port: options.port ?? 8765,
     authTokenFile: options.authTokenFile,
+    topology: normalizeRuntimeDeploymentTopology(options.topology),
     ...(options.exclusiveWorkId?.trim() ? { exclusiveWorkId: options.exclusiveWorkId.trim() } : {}),
   };
   writeForgeRuntimeServiceConfig(config);

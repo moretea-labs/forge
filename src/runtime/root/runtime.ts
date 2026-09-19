@@ -29,6 +29,7 @@ import { startInProcessScheduler, type RuntimeSchedulerHandle } from './schedule
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
 import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
 import { startWorkflowSupervisorRuntime, type RuntimeWorkflowSupervisorHandle } from './workflow-supervisor-runtime';
+import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import { removeRuntimeStartupFailureEvidence, removeRuntimeStatusSnapshot, writeRuntimeStartupFailureEvidence, writeRuntimeStatusSnapshot } from './status';
 import type {
   CanonicalRuntimeConfig,
@@ -53,7 +54,7 @@ export interface CanonicalRuntimeDependencies {
   startScheduler(input: Parameters<typeof startInProcessScheduler>[0]): RuntimeSchedulerHandle;
   startLocalBridge(input: { controllerHome: string; repositoryRoot?: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
   startPowerAssertion(input: { controllerHome: string; runtimePid: number }): RuntimePowerAssertionHandle;
-  startWorkflowSupervisor(controllerHome: string): Promise<RuntimeWorkflowSupervisorHandle>;
+  startWorkflowSupervisor(controllerHome: string, options?: { nativeBrowserAdapter?: boolean }): Promise<RuntimeWorkflowSupervisorHandle>;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
   collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
@@ -131,6 +132,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
 export class CanonicalForgeRuntime {
   readonly forgeInstanceId: string;
   readonly runtimeInstanceId: string;
+  readonly topology: RuntimeDeploymentTopology;
   private readonly readinessState = new RuntimeReadinessState();
   private readonly dependencies: CanonicalRuntimeDependencies;
   private ownership?: RuntimeOwnershipHandle;
@@ -161,6 +163,7 @@ export class CanonicalForgeRuntime {
     dependencies: Partial<CanonicalRuntimeDependencies> = {},
   ) {
     this.runtimeInstanceId = config.runtimeInstanceId?.trim() || `runtime_${randomUUID().replaceAll('-', '')}`;
+    this.topology = normalizeRuntimeDeploymentTopology(config.topology);
     this.dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
     if (!config.controllerHome.trim()) throw new Error('RUNTIME_CONFIG_REQUIRED: controllerHome');
     if (config.repositoryRoot?.trim()) {
@@ -465,12 +468,16 @@ export class CanonicalForgeRuntime {
         });
       }
 
-      stage = 'supervisor';
-      this.workflowSupervisor = await this.dependencies.startWorkflowSupervisor(this.config.controllerHome);
-      void this.workflowSupervisor.done.then(
-        () => this.failCore('WORKFLOW_SUPERVISOR_STOPPED', 'Workflow Supervisor stopped while Runtime was active.'),
-        (error) => this.failCore('WORKFLOW_SUPERVISOR_FAILED', error instanceof Error ? error.message : String(error)),
-      );
+      if (this.topology.components.workflowSupervisor) {
+        stage = 'supervisor';
+        this.workflowSupervisor = await this.dependencies.startWorkflowSupervisor(this.config.controllerHome, {
+          nativeBrowserAdapter: this.topology.components.workflowSupervisorNativeBrowser,
+        });
+        void this.workflowSupervisor.done.then(
+          () => this.failCore('WORKFLOW_SUPERVISOR_STOPPED', 'Workflow Supervisor stopped while Runtime was active.'),
+          (error) => this.failCore('WORKFLOW_SUPERVISOR_FAILED', error instanceof Error ? error.message : String(error)),
+        );
+      }
 
       stage = 'scheduler';
       const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'

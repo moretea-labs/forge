@@ -113,6 +113,8 @@ export interface CanonicalRuntimeConfig {
   exclusiveWorkId?: string;
   runtimeInstanceId?: string;
   schedulerReadyTimeoutMs?: number;
+  /** Product-level component composition; missing means a legacy ChatGPT-capable installation. */
+  topology?: import('./deployment-topology').RuntimeDeploymentTopology;
 }
 
 export interface RuntimeStatusSnapshot {

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost } from '../platform/service-manager';
 import { loadRuntimeReleaseManifest } from './release-manifest';
+import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import type { RuntimeReleaseManifest } from './types';
 
 export interface ForgeRuntimeServiceConfig {
@@ -16,6 +17,8 @@ export interface ForgeRuntimeServiceConfig {
   port: number;
   authTokenFile: string;
   exclusiveWorkId?: string;
+  /** Persisted product-level component composition. Missing is accepted only for legacy configs. */
+  topology?: RuntimeDeploymentTopology;
 }
 
 export interface ForgeRuntimeServicePaths {
@@ -75,6 +78,7 @@ export function validateForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConf
     ...(repositoryRoot ? { repositoryRoot } : {}),
     host: input.host.trim(),
     authTokenFile,
+    topology: normalizeRuntimeDeploymentTopology(input.topology),
     ...(input.exclusiveWorkId?.trim() ? { exclusiveWorkId: input.exclusiveWorkId.trim() } : {}),
   };
 }
@@ -194,6 +198,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
     throw new Error('FORGE_RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_INVALID');
   }
   const productVersion = activeRuntimeProductVersion(active);
+  const topology = normalizeRuntimeDeploymentTopology(config.topology);
   return {
     args: [
       '--controller-home', home,
@@ -202,6 +207,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
       '--host', config.host,
       '--port', String(config.port),
       '--auth-token-file', config.authTokenFile,
+      '--deployment-topology', JSON.stringify(topology),
       ...manifestArguments,
       ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
     ],
