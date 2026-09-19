@@ -239,8 +239,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       required: ['context_closure', 'product_dod', 'design_decision', 'independent_critique'],
       additionalProperties: false,
     },
-    engineering_blocker: { type: 'object', description: 'Explicit semantic blocker classification for continue. Forge derives return_to_design vs linked_work; free text cannot widen the current Work.', properties: {
-      blocker_id: { type: 'string' }, classification: { type: 'string', enum: ['same_root_cause', 'unrelated'] }, rationale: { type: 'string' }, semantic_scope_keys: { type: 'array', items: { type: 'string' } },
+    engineering_blocker: { type: 'object', description: 'Explicit semantic blocker classification for continue. same_root_cause remains conservative Design re-entry; same_root_cause_scope_extension preserves the current architecture authority and exact candidate; unrelated creates linked Work.', properties: {
+      blocker_id: { type: 'string' }, classification: { type: 'string', enum: ['same_root_cause', 'same_root_cause_scope_extension', 'unrelated'] }, rationale: { type: 'string' }, semantic_scope_keys: { type: 'array', items: { type: 'string' } },
     }, required: ['blocker_id', 'classification', 'rationale'], additionalProperties: false },
     additional_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative candidates discovered after Work start. Valid for continue; does not widen allowed_paths.' },
     inspected_paths: { type: 'array', items: { type: 'string' }, description: 'Paths actually inspected during progressive discovery. Valid for continue; does not widen allowed_paths.' },

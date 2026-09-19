@@ -19,7 +19,7 @@ import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInput
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, routeWorkStart, stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -81,6 +81,53 @@ function passingDiagnostics() {
     mcpEndToEnd: { outcome: 'pass' as const },
   };
 }
+
+describe('bounded Work candidate extension authority', () => {
+  test('same-root scope extension stays in the exact Work and applies policy scope before implementation continues', () => {
+    const root = temp('forge-candidate-scope-extension-');
+    const context = {
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-candidate-scope-extension',
+      checkoutId: 'checkout-candidate-scope-extension',
+      principalId: 'principal-candidate-scope-extension',
+      controllerInstanceId: 'runtime-candidate-scope-extension',
+      sourceRevision: 'revision-a',
+      workspaceChangedPaths: [] as string[],
+    };
+    const started = routeWorkStart(context, {
+      objective: 'Preserve one candidate while progressive discovery expands the same architecture boundary.',
+      acceptanceCriteria: ['The exact Work owns the expanded same-root scope.'],
+      allowedPaths: ['src/base.ts'],
+      initialLikelyPaths: ['src/base.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+    });
+    expect(started.status).toBe('ok');
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const continued = continueGoalWorkloop(context, {
+      workId,
+      allowedPaths: ['src/discovered.ts'],
+      engineeringBlocker: {
+        blockerId: 'same-root-progressive-discovery',
+        classification: 'same_root_cause_scope_extension',
+        rationale: 'The discovered path belongs to the already selected architecture authority.',
+      },
+    });
+
+    expect(continued.summary).toContain('requires implementation before verification');
+    const work = getWorkContract(context.workStore, workId);
+    expect(work?.allowedPaths).toContain('src/discovered.ts');
+    expect(work?.engineeringContext?.designState).toBeUndefined();
+    expect(work?.engineeringContext?.blockerDispositions?.at(-1)?.action).toBe('extend_candidate');
+    expect(work?.evidenceRefs.some((entry) => entry.title === 'same-root candidate scope extension')).toBe(true);
+  });
+});
 
 describe('repository command managed-worktree authority', () => {
   test('exact current-source ControllerRound argv owns one explicit controller-local effect without weakening repository scope', () => {

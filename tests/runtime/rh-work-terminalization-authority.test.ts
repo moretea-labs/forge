@@ -407,7 +407,16 @@ describe('rh_work terminalization authority', () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     expect(single?.status).toBe('ok');
-    expect(single?.data?.verification).toMatchObject({ checkId: 'check:batch-a', completed: true, outcome: 'valid_pass' });
+    expect(single?.data?.verification).toMatchObject({
+      checkId: 'check:batch-a',
+      completed: true,
+      outcome: 'valid_pass',
+      reused: true,
+      executed: false,
+    });
+    const batchAProcessId = batch?.data?.verifications?.find((entry: { checkId?: string }) => entry.checkId === 'check:batch-a')?.processId;
+    expect(single?.data?.verification?.processId).toBe(batchAProcessId);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(2);
   }, 20_000);
   test('materializes a canonical WorkHandle for isolated completed_no_change Work', () => {
     const fx = fixture();

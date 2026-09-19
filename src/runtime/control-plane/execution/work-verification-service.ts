@@ -51,6 +51,55 @@ function result(facade: FacadeResult, isError = false): ExecuteWorkVerificationR
   return { facade, isError };
 }
 
+function currentReusableVerificationRecord(input: {
+  workContract?: WorkContract;
+  checkId: string;
+  sourceRevision?: string;
+  workspaceFingerprint: string;
+  requestedChecks: string[];
+}): VerificationRecord | undefined {
+  if (!input.workContract || !input.sourceRevision) return undefined;
+  return effectiveVerificationEvidence(input.workContract.checkRefs, {
+    sourceRevision: input.sourceRevision,
+    workspaceFingerprint: input.workspaceFingerprint,
+    checkId: input.checkId,
+    requestedChecks: input.requestedChecks,
+  }).find((entry) =>
+    entry.current
+    && (entry.record.outcome === 'valid_pass' || entry.record.outcome === 'valid_fail')
+    && Boolean(entry.record.receipt)
+  )?.record;
+}
+
+function reusedVerificationResult(
+  record: VerificationRecord,
+  reconciledProcessIds: string[] = [],
+): ExecuteWorkVerificationResult {
+  const receipt = record.receipt!;
+  const passed = record.outcome === 'valid_pass';
+  return result(buildFacadeResult({
+    status: passed ? 'ok' : 'failed',
+    summary: `Reused exact current verification receipt for ${record.checkId}; no Process was re-executed.`,
+    data: {
+      verification: {
+        checkId: record.checkId,
+        outcome: record.outcome,
+        isAcceptanceFailure: !passed,
+        isInfrastructureIssue: false,
+        executed: false,
+        completed: true,
+        reused: true,
+        processId: receipt.processId,
+        processStatus: receipt.runtimeStatus,
+        ok: passed,
+        evidenceReceiptId: receipt.receiptId,
+        reconciledProcessIds,
+      },
+    },
+    rawAvailable: false,
+  }), !passed);
+}
+
 export interface ContentEquivalentWorkVerificationTransferPlan {
   transferredRecords: VerificationRecord[];
   reusableCheckIds: string[];
@@ -539,6 +588,43 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       checkId: normalizedCheckId,
       requestedChecks,
     }) : undefined;
+
+    const currentReceipt = currentReusableVerificationRecord({
+      workContract,
+      checkId: normalizedCheckId,
+      sourceRevision: observedGitHead ?? undefined,
+      workspaceFingerprint,
+      requestedChecks,
+    });
+    if (currentReceipt) return reusedVerificationResult(currentReceipt);
+
+    if (workContract && observedGitHead) {
+      const reconciled = reconcileTerminalWorkVerifications({
+        controllerHome: input.controllerHome,
+        repository: input.repository,
+        workId: workContract.workId,
+      });
+      if (reconciled.reconciledProcessIds.length > 0) {
+        const refreshed = resolveWorkVerificationContext({
+          controllerHome: input.controllerHome,
+          repository: input.repository,
+          workId: workContract.workId,
+        });
+        if (refreshed.ok) {
+          const reconciledReceipt = currentReusableVerificationRecord({
+            workContract: refreshed.context.workContract,
+            checkId: normalizedCheckId,
+            sourceRevision: observedGitHead,
+            workspaceFingerprint,
+            requestedChecks,
+          });
+          if (reconciledReceipt) {
+            return reusedVerificationResult(reconciledReceipt, reconciled.reconciledProcessIds);
+          }
+        }
+      }
+    }
+
     const registeredCheck = checks.find((entry) => entry.id === normalizedCheckId);
     const durableClassCheck = checkRequiresDurableWorkflow(registeredCheck);
     const allowDurableCheckExecution = Boolean(

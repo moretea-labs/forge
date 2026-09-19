@@ -171,7 +171,7 @@ export interface GoalWorkloopContinueInput {
   /** Semantic Controller blocker classification; Forge derives the permitted action and persists the receipt. */
   engineeringBlocker?: {
     blockerId: string;
-    classification: 'same_root_cause' | 'unrelated';
+    classification: 'same_root_cause' | 'same_root_cause_scope_extension' | 'unrelated';
     rationale: string;
     semanticScopeKeys?: string[];
   };
@@ -1627,38 +1627,46 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     } catch (error) {
       return buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'ENGINEERING_BLOCKER_INVALID', data: { work: summarizeWorkContract(work) } });
     }
-    const returnToDesign = blocker.action === 'return_to_design';
-    const formalDesignReentryRequired = returnToDesign && work.engineeringContext?.designState === 'revisit_required';
-    const observeProfileWithoutPriorDesign = returnToDesign
-      && !formalDesignReentryRequired
-      && (work.engineeringContext?.riskClass === 'low' || work.engineeringContext?.riskClass === 'normal');
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: observeProfileWithoutPriorDesign
-        ? `Same-root-cause blocker ${blocker.blockerId} was recorded. This observe-profile Work has no formal Design authority to supersede, so it remains governed by its existing engineering risk profile.`
-        : returnToDesign
-          ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
-          : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
-      data: {
-        work: summarizeWorkContract(work),
-        engineeringBlocker: blocker,
-        ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
-        nextStep: observeProfileWithoutPriorDesign ? 'continue' : blocker.action,
-      },
-      suggestedNextActions: observeProfileWithoutPriorDesign
-        ? [{ label: 'Continue Work under existing engineering profile', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write' }]
-        : returnToDesign
-          ? [{
-              label: 'Refresh design evidence',
-              tool: 'rh_context',
-              operation: 'search',
-              payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
-              risk: 'readonly',
-            }]
-          : linkedWork
-            ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
-            : [],
-    });
+    if (blocker.action === 'extend_candidate') {
+      work = appendWorkEvidence(ctx.workStore, work.workId, {
+        title: 'same-root candidate scope extension',
+        summary: `Blocker ${blocker.blockerId} remains inside the current architecture authority; continue the exact candidate without Design re-entry or sibling Work.`,
+        detailLevel: 'summary',
+      });
+    } else {
+      const returnToDesign = blocker.action === 'return_to_design';
+      const formalDesignReentryRequired = returnToDesign && work.engineeringContext?.designState === 'revisit_required';
+      const observeProfileWithoutPriorDesign = returnToDesign
+        && !formalDesignReentryRequired
+        && (work.engineeringContext?.riskClass === 'low' || work.engineeringContext?.riskClass === 'normal');
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: observeProfileWithoutPriorDesign
+          ? `Same-root-cause blocker ${blocker.blockerId} was recorded. This observe-profile Work has no formal Design authority to supersede, so it remains governed by its existing engineering risk profile.`
+          : returnToDesign
+            ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
+            : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
+        data: {
+          work: summarizeWorkContract(work),
+          engineeringBlocker: blocker,
+          ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
+          nextStep: observeProfileWithoutPriorDesign ? 'continue' : blocker.action,
+        },
+        suggestedNextActions: observeProfileWithoutPriorDesign
+          ? [{ label: 'Continue Work under existing engineering profile', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write' }]
+          : returnToDesign
+            ? [{
+                label: 'Refresh design evidence',
+                tool: 'rh_context',
+                operation: 'search',
+                payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
+                risk: 'readonly',
+              }]
+            : linkedWork
+              ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
+              : [],
+      });
+    }
   }
 
   if ((input.reviewFindings?.length ?? 0) > 0 && work.workKind !== 'read_only_review') {
@@ -2926,7 +2934,7 @@ export function runGoalWorkloop(
         }
         const rawBlocker = args.engineering_blocker as Record<string, unknown>;
         const classification = rawBlocker.classification;
-        if (classification !== 'same_root_cause' && classification !== 'unrelated') {
+        if (classification !== 'same_root_cause' && classification !== 'same_root_cause_scope_extension' && classification !== 'unrelated') {
           return buildFacadeResult({ status: 'blocked', summary: 'ENGINEERING_BLOCKER_CLASSIFICATION_INVALID', data: { workId: String(args.work_id ?? '') } });
         }
         engineeringBlocker = {
