@@ -15,6 +15,7 @@ import {
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
+import { withControlPlaneReadDatabase } from '../control-plane/persistence/sqlite-store';
 import { registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
@@ -172,35 +173,62 @@ export function resolveWorkflowSupervisorChatgptDelivery(
     authorizationGrantRefs: [...(binding.authorizationGrantRefs ?? [])],
   };
 }
-function forgeWorkflowSupervisorBrowserTaskActive(controllerHome: string, task: WorkflowSupervisorTask): boolean {
-  const repoId = workflowSupervisorContractText(task, 'repo_id');
-  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
-  const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || !requirementId || !taskControllerHome) return true;
-  if (taskControllerHome !== controllerHome) return false;
-  const requirement = readRequirement({ controllerHome }, requirementId)?.value;
-  if (!requirement || requirement.state === 'done' || requirement.state === 'cancelled') return false;
-  const store = { controllerHome, repoId };
-  let relay = getRequirementControllerRoundRelay(store, requirementId);
-  if (!relay) return false;
-  const work = getWorkContract(store, relay.originWorkId);
-  if (!work) return false;
-  if (isTerminalWorkContractStatus(work.status)) {
-    if (work.status === 'failed' || work.status === 'cancelled') {
-      try {
-        relay = reconcileControllerRoundAfterTerminalWork(store, { workId: work.workId, actor: `workflow-supervisor-task-reconcile:${task.taskId}` }) ?? relay;
-      } catch {
-        return false;
-      }
+function workflowSupervisorWorkRecordRevision(controllerHome: string, repoId: string, workId: string): number | undefined {
+  return withControlPlaneReadDatabase(controllerHome, (database) => {
+    const statement = database.prepare(`
+      SELECT revision FROM control_plane_records
+      WHERE namespace = 'work_contract' AND scope = ? AND record_key = ?
+    `);
+    try {
+      const row = statement.get(repoId, workId) as { revision?: number } | undefined;
+      const revision = Number(row?.revision);
+      return Number.isInteger(revision) && revision > 0 ? revision : undefined;
+    } finally {
+      statement.finalize();
     }
-    return false;
-  }
-  return relay.status !== 'failed';
+  });
+}
+
+function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string): (task: WorkflowSupervisorTask) => boolean {
+  const workStateById = new Map<string, { revision: number; active: boolean }>();
+  return (task) => {
+    const repoId = workflowSupervisorContractText(task, 'repo_id');
+    const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+    const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+    if (!repoId || !requirementId || !taskControllerHome) return true;
+    if (taskControllerHome !== controllerHome) return false;
+    const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+    if (!requirement || requirement.state === 'done' || requirement.state === 'cancelled') return false;
+    const store = { controllerHome, repoId };
+    let relay = getRequirementControllerRoundRelay(store, requirementId);
+    if (!relay || relay.status === 'failed') return false;
+    const revision = workflowSupervisorWorkRecordRevision(controllerHome, repoId, relay.originWorkId);
+    if (!revision) return false;
+    const cached = workStateById.get(relay.originWorkId);
+    if (cached?.revision === revision) return cached.active;
+    const work = getWorkContract(store, relay.originWorkId);
+    if (!work) return false;
+    if (isTerminalWorkContractStatus(work.status)) {
+      if (work.status === 'failed' || work.status === 'cancelled') {
+        try {
+          relay = reconcileControllerRoundAfterTerminalWork(store, { workId: work.workId, actor: `workflow-supervisor-task-reconcile:${task.taskId}` }) ?? relay;
+        } catch {
+          return false;
+        }
+      }
+      workStateById.set(work.workId, { revision, active: false });
+      return false;
+    }
+    const active = relay.status !== 'failed';
+    workStateById.set(work.workId, { revision, active });
+    return active;
+  };
 }
 
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
+  const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
-    browserTaskActive: (task) => forgeWorkflowSupervisorBrowserTaskActive(controllerHome, task),
+    browserTaskActive,
     assistantTurnCommitted: (task, completion) => settleForgeWorkflowSupervisorTurn(controllerHome, task, completion),
   };
 }
