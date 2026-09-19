@@ -22,6 +22,13 @@ export interface RuntimePerformanceEvidence extends RuntimePerformanceIdentity {
 
 export interface RuntimeCpuReading { cpuMs: number; processStartTime: string }
 
+const PERFORMANCE_WINDOW_MS = 5_000;
+const PERFORMANCE_MAX_WINDOW_MS = 7_500;
+const PERFORMANCE_WARMUP_WINDOWS = 2;
+const PERFORMANCE_SAMPLE_WINDOWS = 10;
+const PERFORMANCE_WARMUP_MS = PERFORMANCE_WINDOW_MS * PERFORMANCE_WARMUP_WINDOWS;
+const PERFORMANCE_DURATION_MS = PERFORMANCE_WINDOW_MS * PERFORMANCE_SAMPLE_WINDOWS;
+
 /** Dependencies are in-process test seams; no transport accepts evidence or threshold overrides. */
 export interface RuntimePerformanceDependencies {
   readCpu?: (pid: number) => RuntimeCpuReading;
@@ -56,8 +63,8 @@ export function assertRuntimePerformanceEvidence(
   const age = now - Date.parse(evidence.measuredUntil);
   if (evidence.policy !== 'idle-cpu-v1' || !samePerformanceIdentity(evidence, identity)
     || !Number.isFinite(age) || age < 0 || age > 60_000
-    || evidence.warmupMs < 60_000 || evidence.warmupMs > 90_000
-    || evidence.durationMs < 300_000 || evidence.durationMs > 450_000 || evidence.sampleCount !== 30
+    || evidence.warmupMs < PERFORMANCE_WARMUP_MS || evidence.warmupMs > PERFORMANCE_MAX_WINDOW_MS * PERFORMANCE_WARMUP_WINDOWS
+    || evidence.durationMs < PERFORMANCE_DURATION_MS || evidence.durationMs > PERFORMANCE_MAX_WINDOW_MS * PERFORMANCE_SAMPLE_WINDOWS || evidence.sampleCount !== PERFORMANCE_SAMPLE_WINDOWS
     || !Number.isFinite(evidence.meanCpuPercent) || evidence.meanCpuPercent < 0
     || !Number.isFinite(evidence.p95CpuPercent) || evidence.p95CpuPercent < 0) {
     throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: incomplete, stale or mismatched performance evidence');
@@ -67,7 +74,7 @@ export function assertRuntimePerformanceEvidence(
   }
 }
 
-/** Observe 60 seconds of warmup followed by thirty 10-second CPU-time delta windows. */
+/** Observe 10 seconds of warmup followed by ten 5-second CPU-time delta windows. */
 export async function measureRuntimePerformance(
   observeIdentity: () => RuntimePerformanceIdentity,
   dependencies: RuntimePerformanceDependencies = {},
@@ -90,12 +97,12 @@ export async function measureRuntimePerformance(
   };
   const warmingAt = monotonicNow();
   let previousWarmupAt = warmingAt;
-  for (let i = 0; i < 6; i++) {
-    await sleep(10_000);
+  for (let i = 0; i < PERFORMANCE_WARMUP_WINDOWS; i++) {
+    await sleep(PERFORMANCE_WINDOW_MS);
     observe();
     const nextWarmupAt = monotonicNow();
     const elapsed = nextWarmupAt - previousWarmupAt;
-    if (elapsed < 10_000 || elapsed > 15_000) {
+    if (elapsed < PERFORMANCE_WINDOW_MS || elapsed > PERFORMANCE_MAX_WINDOW_MS) {
       throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: interrupted CPU warmup window');
     }
     previousWarmupAt = nextWarmupAt;
@@ -107,14 +114,14 @@ export async function measureRuntimePerformance(
   const startedAt = previousAt;
   let totalCpuMs = 0;
   const windows: number[] = [];
-  for (let i = 0; i < 30; i++) {
-    await sleep(10_000);
+  for (let i = 0; i < PERFORMANCE_SAMPLE_WINDOWS; i++) {
+    await sleep(PERFORMANCE_WINDOW_MS);
     const nextCpu = observe().cpuMs;
     const nextAt = monotonicNow();
     const elapsed = nextAt - previousAt;
     const cpuDelta = nextCpu - previousCpu;
-    // Suspended/overloaded collectors cannot pass as thirty ordinary windows.
-    if (elapsed < 10_000 || elapsed > 15_000 || cpuDelta < 0) {
+    // Suspended/overloaded collectors cannot pass as ordinary sample windows.
+    if (elapsed < PERFORMANCE_WINDOW_MS || elapsed > PERFORMANCE_MAX_WINDOW_MS || cpuDelta < 0) {
       throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: interrupted CPU observation window');
     }
     windows.push(cpuDelta / elapsed * 100);
