@@ -36,6 +36,10 @@ One bounded associative activation path combines stable-id seeds, exact concepts
 
 The normal Controller hot path receives one compact `ActivationPack`; it does not simulate association with repeated MCP `memory.search` calls. Legacy Experience is admitted as transient candidates and de-duplicated by scope-qualified memory identity, never by bare id. Model-facing projection stays semantic typed JSON/text because ChatGPT consumes semantics, while machine-native binary/index encodings remain internal.
 
+Scope-qualified identity survives the entire model-facing boundary: activation, AssistantContext item identity, ControllerRound snapshot and usage accounting all use the same scope-qualified memory address, so equal bare ids in different Work/Requirement/Plan/Project scopes cannot collide. Project knowledge is optional enrichment rather than a prerequisite for Cognitive recall; Work/Requirement/Plan memory remains available without a Project binding, while repository/project knowledge sources still require an explicit Project identity.
+
+Temporal validity is part of candidate selection, not merely post-selection filtering. Canonical SQL reads exclude retracted, expired and not-yet-valid memories/edges before bounded `LIMIT` is applied, preventing inactive rows from starving live recall. If canonical memory exists while concept/term projections are missing or structurally corrupt, the cognition persistence owner rebuilds those derived indexes from canonical memory before normal activation proceeds and records the recovery in activation gaps.
+
 ## Consolidation and compression
 
 Consolidation compresses **representation**, not provenance. Repeated memories may produce a warm pattern/concept candidate plus `derived_from` edges, but source memories remain addressable. Original evidence or CAS payload can be expanded when a summary is disputed, stale or insufficient.

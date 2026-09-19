@@ -64,14 +64,14 @@ export function prepareAssistantWorkContext(input: {
   // Semantic Project identity comes from Work lineage/portable placement. The engineering contract is an optional knowledge-source contract, not identity authority.
   const scopes = experienceScopesForWork(work, input.controllerHome);
   const boundProject = scopes.find(scope => scope.kind === 'project')?.id;
-  // Project knowledge is advisory enrichment. A Work that has not yet been
-  // bound to a Project must still be able to claim and continue its durable
-  // ControllerRound; missing optional context is not a lifecycle blocker.
-  if (!boundProject) return undefined;
-  const loaded = loadProjectEngineeringContract({ repoRoot, sourceRevision: 'working-tree', now: () => input.now ?? new Date().toISOString() });
-  if (loaded.status === 'ready' && boundProject !== loaded.contract.projectId) throw new Error('ASSISTANT_CONTEXT_PROJECT_BINDING_MISMATCH');
+  // Project knowledge is optional enrichment. Generic cognition authority is
+  // scoped by Work lineage and must remain available even when no Project is bound.
+  const loaded = boundProject
+    ? loadProjectEngineeringContract({ repoRoot, sourceRevision: 'working-tree', now: () => input.now ?? new Date().toISOString() })
+    : undefined;
+  if (loaded?.status === 'ready' && boundProject !== loaded.contract.projectId) throw new Error('ASSISTANT_CONTEXT_PROJECT_BINDING_MISMATCH');
   const now = input.now ?? new Date().toISOString();
-  const sources = loaded.status === 'ready' ? loaded.contract.knowledgeSources ?? [] : [];
+  const sources = loaded?.status === 'ready' ? loaded.contract.knowledgeSources ?? [] : [];
   const applicability = effectiveApplicability({
     explicit: input.applicability,
     declared: sources.map(source => source.applicability),
@@ -80,7 +80,7 @@ export function prepareAssistantWorkContext(input: {
   const experiences = queryExperiences(controllerExperienceStore({ controllerHome: input.controllerHome, repoId: input.repoId, ...(input.now ? { now: () => input.now! } : {}) }), { scopes, applicability: applicability.value, now });
   const query = input.query ?? work.objective;
   const activation = activateCognitiveMemory(input.controllerHome, scopes, query, { now, transientMemories: experiences.records.map(memoryUnitFromExperience) });
-  return resolveAssistantContext({ projectId: boundProject, query,
+  return resolveAssistantContext({ ...(boundProject ? { projectId: boundProject } : {}), query,
     sources,
     knowledge: fileKnowledgeSourcePort({ repoRoot, brainRoot: configuredBrainRoot(), sourceRevision: 'working-tree' }),
     experiences: experiences.records, activation, gaps: [...experiences.gaps, ...(applicability.conflict ? ['assistant_context_applicability_conflict'] : [])], applicability: applicability.value, now });

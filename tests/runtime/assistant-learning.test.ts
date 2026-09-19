@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { recordExperience, queryExperiences, retractExperience, supersedeExperience, validateOutcomeObservation, type ExperienceDraft, type ExperienceRecord, type ExperienceStorePort } from '../../packages/kernel/memory/api/index';
 import { validateProjectKnowledgeSources } from '../../packages/kernel/work/api/index';
+import { memoryAddressKey, type ActivationPack, type MemoryUnit } from '../../packages/kernel/cognition/api/index';
 import { fileKnowledgeSourcePort, resolveAssistantContext } from '../../src/runtime/context/assistant-context';
 import { controllerExperienceStore, cleanupExpiredExperiences } from '../../src/runtime/control-plane/persistence/experience-store';
 
@@ -76,6 +77,28 @@ describe('assistant experience and context', () => {
     expect(() => recordExperience(store, { ...draft(), kind: 'lesson' }, now)).toThrow('EXPIRY_REQUIRED');
     expect(() => recordExperience(store, { ...draft(), statement: 'sk-123456789012345678901234567890' }, now)).toThrow('SECRET_REFUSED');
     expect(() => recordExperience(store, { ...draft(), recordedAt: '2027-01-01T00:00:00Z' }, now)).toThrow('FUTURE_OBSERVATION');
+  });
+
+  test('projectless cognition preserves scope-qualified identity while project knowledge remains explicitly bound', () => {
+    const dir = root();
+    const workScope = { schemaVersion: 1 as const, kind: 'work' as const, id: 'work-projectless' };
+    const requirementScope = { schemaVersion: 1 as const, kind: 'requirement' as const, id: 'req-projectless' };
+    const memory = (memoryScope: typeof workScope | typeof requirementScope, text: string): MemoryUnit => ({
+      schemaVersion: 1, id: 'shared-id', revision: 1, scope: memoryScope, facets: ['knowledge'], canonicalText: text, concepts: ['projectless.recall'],
+      provenance: { sourceKind: 'system', recordedAt: now, evidenceRefs: [] }, confidence: 0.9, utility: 0.8, tier: 'hot', validFrom: now, counterEvidenceRefs: [],
+    });
+    const memories = [memory(workScope, 'Work-scoped memory.'), memory(requirementScope, 'Requirement-scoped memory.')];
+    const activation: ActivationPack = { schemaVersion: 1, query: 'projectless.recall', generatedAt: now,
+      items: memories.map(item => ({ memory: item, score: 1, reasons: [], activationPath: [] })), gaps: [], truncated: false, inspectedCandidates: 2, estimatedBytes: 1 };
+    const resolved = resolveAssistantContext({ sources: [], query: 'projectless.recall', now,
+      knowledge: fileKnowledgeSourcePort({ repoRoot: dir, sourceRevision: 'test' }), activation });
+    expect(resolved.projectId).toBeUndefined();
+    expect(new Set(resolved.items.map(item => item.id)).size).toBe(2);
+    expect(resolved.items.map(item => item.id)).toEqual(expect.arrayContaining(memories.map(item => memoryAddressKey({ scope: item.scope, id: item.id }))));
+
+    writeFileSync(join(dir, 'project.md'), 'project-only knowledge');
+    expect(() => resolveAssistantContext({ sources: [{ id: 'project', kind: 'repository', path: 'project.md', required: true }], query: 'project', now,
+      knowledge: fileKnowledgeSourcePort({ repoRoot: dir, sourceRevision: 'test' }) })).toThrow('ASSISTANT_CONTEXT_PROJECT_REQUIRED_FOR_KNOWLEDGE');
   });
 
   test('Chinese recall survives a fresh reader and source edits invalidate content identity', () => {

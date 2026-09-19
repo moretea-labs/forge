@@ -15,9 +15,9 @@ import {
 export interface CognitiveReadPort {
   readByIds(scopes: readonly ScopeRef[], ids: readonly string[]): MemoryUnit[];
   readByAddresses(addresses: readonly MemoryAddress[]): MemoryUnit[];
-  exactByConcept(scopes: readonly ScopeRef[], concepts: readonly string[], limit: number): MemoryUnit[];
-  lexical(scopes: readonly ScopeRef[], terms: readonly string[], limit: number): MemoryUnit[];
-  neighbors(seeds: readonly MemoryAddress[], limit: number): Array<{ edge: MemoryEdge; from: MemoryAddress; memory: MemoryUnit }>;
+  exactByConcept(scopes: readonly ScopeRef[], concepts: readonly string[], limit: number, activeAt?: string): MemoryUnit[];
+  lexical(scopes: readonly ScopeRef[], terms: readonly string[], limit: number, activeAt?: string): MemoryUnit[];
+  neighbors(seeds: readonly MemoryAddress[], limit: number, activeAt?: string): Array<{ edge: MemoryEdge; from: MemoryAddress; memory: MemoryUnit }>;
 }
 
 export interface SemanticCandidate {
@@ -98,6 +98,7 @@ export function activateMemory(
   const nowText = options.now ?? new Date().toISOString();
   const now = Date.parse(nowText);
   if (!Number.isFinite(now)) throw new Error('COGNITION_ACTIVATION_TIME_INVALID');
+  const activeAt = new Date(now).toISOString();
 
   const queryTerms = cognitiveTerms(query.slice(0, 8_192));
   const inferredConcepts = [...queryTerms].filter(term => /[._:/-]/.test(term));
@@ -132,7 +133,7 @@ export function activateMemory(
   }
 
   if (seedConcepts.length) {
-    for (const memory of port.exactByConcept(scopes, seedConcepts, Math.min(maxCandidates, 64))) {
+    for (const memory of port.exactByConcept(scopes, seedConcepts, Math.min(maxCandidates, 64), activeAt)) {
       if (!active(memory, now)) continue;
       const hits = memory.concepts.filter(concept => seedConcepts.includes(concept)).length;
       const score = Math.min(1, hits / Math.max(1, seedConcepts.length));
@@ -142,7 +143,7 @@ export function activateMemory(
     }
   }
 
-  for (const memory of port.lexical(scopes, [...queryTerms].slice(0, 96), Math.min(maxCandidates, 128))) {
+  for (const memory of port.lexical(scopes, [...queryTerms].slice(0, 96), Math.min(maxCandidates, 128), activeAt)) {
     if (!active(memory, now)) continue;
     const score = lexicalScore(memory, queryTerms);
     if (!score) continue;
@@ -173,7 +174,7 @@ export function activateMemory(
   const seen = new Set(frontier.map(memoryAddressKey));
   for (let depth = 1; depth <= maxGraphDepth && frontier.length && candidates.size < maxCandidates; depth++) {
     const next: MemoryAddress[] = [];
-    for (const { edge, from, memory } of port.neighbors(frontier, Math.min(maxCandidates * 2, 512))) {
+    for (const { edge, from, memory } of port.neighbors(frontier, Math.min(maxCandidates * 2, 512), activeAt)) {
       if (!active(memory, now) || edge.retractedAt || edge.expiresAt && Date.parse(edge.expiresAt) <= now) continue;
       const source = candidates.get(memoryAddressKey(from));
       const propagated = Math.max(0.01, (source?.score ?? 0.5) * edge.weight * (1 / (depth + 0.5)));

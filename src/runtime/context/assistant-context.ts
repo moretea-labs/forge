@@ -20,7 +20,7 @@ export interface AssistantContextItem {
   activation?: { score: number; reasons: string[]; path: string[]; facets: string[]; concepts: string[] };
 }
 export interface AssistantContextResolution {
-  schemaVersion: 1; projectId: string; items: AssistantContextItem[];
+  schemaVersion: 1; projectId?: string; items: AssistantContextItem[];
   gaps: string[]; missingRequiredSources: string[]; truncated: boolean; bytes: number; estimatedTokens: number;
 }
 
@@ -78,11 +78,12 @@ function budget(value: number | undefined, fallback: number, max: number): numbe
 }
 
 export function resolveAssistantContext(input: {
-  projectId: string; query: string; sources: readonly ProjectKnowledgeSource[]; knowledge: KnowledgeSourcePort;
+  projectId?: string; query: string; sources: readonly ProjectKnowledgeSource[]; knowledge: KnowledgeSourcePort;
   experiences?: readonly ExperienceRecord[]; activation?: ActivationPack; applicability?: ExperienceApplicability; now?: string;
   maxItems?: number; maxBytes?: number; maxTokens?: number; maxReadBytes?: number; maxReadMs?: number; gaps?: readonly string[];
 }): AssistantContextResolution {
-  if (!input.projectId.trim()) throw new Error('ASSISTANT_CONTEXT_PROJECT_REQUIRED');
+  const projectId = input.projectId?.trim() || undefined;
+  if (input.sources.length > 0 && !projectId) throw new Error('ASSISTANT_CONTEXT_PROJECT_REQUIRED_FOR_KNOWLEDGE');
   const now = Date.parse(input.now ?? new Date().toISOString());
   if (!Number.isFinite(now)) throw new Error('ASSISTANT_CONTEXT_TIME_INVALID');
   const maxItems = budget(input.maxItems, DEFAULT_CONTEXT_MAX_ITEMS, MAX_CONTEXT_MAX_ITEMS);
@@ -127,7 +128,7 @@ export function resolveAssistantContext(input: {
     const memory = activated.memory;
     const address = { scope: memory.scope, id: memory.id };
     const kind: AssistantContextItem['kind'] = ['experience', 'outcome'].includes(memory.provenance.sourceKind) ? 'experience' : 'knowledge';
-    candidates.push({ kind, id: memory.id, text: `[memory:${memory.facets.join(',')}] ${memory.canonicalText}${memory.counterEvidenceRefs.length ? '\nCounterevidence: ' + memory.counterEvidenceRefs.join(', ') : ''}`, rank: Math.round(activated.score * 1000), activation: { score: activated.score, reasons: activated.reasons.map(reason => `${reason.signal}:${reason.detail}`), path: activated.activationPath, facets: memory.facets, concepts: memory.concepts }, provenance: { uri: memoryAddressLabel(address), revision: memory.revision, modifiedAt: memory.provenance.recordedAt, evidenceRefs: memory.provenance.evidenceRefs } });
+    candidates.push({ kind, id: memoryAddressKey(address), text: `[memory:${memory.facets.join(',')}] ${memory.canonicalText}${memory.counterEvidenceRefs.length ? '\nCounterevidence: ' + memory.counterEvidenceRefs.join(', ') : ''}`, rank: Math.round(activated.score * 1000), activation: { score: activated.score, reasons: activated.reasons.map(reason => `${reason.signal}:${reason.detail}`), path: activated.activationPath, facets: memory.facets, concepts: memory.concepts }, provenance: { uri: memoryAddressLabel(address), revision: memory.revision, modifiedAt: memory.provenance.recordedAt, evidenceRefs: memory.provenance.evidenceRefs } });
     activatedAddresses.add(memoryAddressKey(address));
   }
   if (input.activation) gaps.push(...input.activation.gaps.map(gap => `cognition:${gap}`));
@@ -135,10 +136,10 @@ export function resolveAssistantContext(input: {
     if (activatedAddresses.has(memoryAddressKey({ scope: record.scope, id: record.id }))) continue;
     if (record.retractedAt || record.expiresAt && Date.parse(record.expiresAt) <= now || !matchesExperienceApplicability(record.applicability, input.applicability ?? {})) continue;
     // The caller supplies lineage-filtered records; explicit foreign projects are never admitted.
-    if (record.scope.kind === 'project' && record.scope.id !== input.projectId) continue;
+    if (record.scope.kind === 'project' && (!projectId || record.scope.id !== projectId)) continue;
     const relevance = score(record.statement, terms);
     if (!relevance) continue;
-    candidates.push({ kind: 'experience', id: record.id, text: `[${record.kind}] ${record.statement}${record.counterEvidenceRefs.length ? '\nCounterevidence: ' + record.counterEvidenceRefs.join(', ') : ''}`, rank: relevance * 100,
+    candidates.push({ kind: 'experience', id: memoryAddressKey({ scope: record.scope, id: record.id }), text: `[${record.kind}] ${record.statement}${record.counterEvidenceRefs.length ? '\nCounterevidence: ' + record.counterEvidenceRefs.join(', ') : ''}`, rank: relevance * 100,
       provenance: { uri: `experience:${record.scope.kind}:${record.scope.id}:${record.id}`, revision: record.revision, modifiedAt: record.recordedAt, evidenceRefs: record.evidenceRefs } });
   }
   candidates.sort((a, b) => b.rank - a.rank || b.provenance.modifiedAt.localeCompare(a.provenance.modifiedAt) || a.id.localeCompare(b.id));
@@ -157,7 +158,7 @@ export function resolveAssistantContext(input: {
     }
     items.push(item); bytes += size; estimatedTokens += tokens;
   }
-  return { schemaVersion: 1, projectId: input.projectId, items, gaps: [...new Set(gaps)], missingRequiredSources: [...missing], truncated: gaps.some(g => /budget|limit/.test(g)), bytes, estimatedTokens };
+  return { schemaVersion: 1, ...(projectId ? { projectId } : {}), items, gaps: [...new Set(gaps)], missingRequiredSources: [...missing], truncated: gaps.some(g => /budget|limit/.test(g)), bytes, estimatedTokens };
 }
 
 export function renderAssistantContext(context: AssistantContextResolution): string {

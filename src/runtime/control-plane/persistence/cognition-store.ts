@@ -71,6 +71,21 @@ function termIndexAvailable(database: SqliteDatabase): boolean {
   return tablesAvailable(database, [TERM_INDEX_TABLE]);
 }
 
+function derivedIndexesHealthy(database: SqliteDatabase): boolean {
+  if (!conceptIndexAvailable(database) || !termIndexAvailable(database)) return false;
+  try {
+    statement(database,
+      'SELECT scope_kind, scope_id, concept_id, memory_id FROM cognition_concept_index LIMIT 1',
+      prepared => prepared.get());
+    statement(database,
+      'SELECT scope_kind, scope_id, term, memory_id FROM cognition_term_index LIMIT 1',
+      prepared => prepared.get());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function ensureSchema(database: SqliteDatabase): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS cognition_memory_units (
@@ -423,57 +438,77 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
     readByAddresses(addresses) {
       return readAddresses(database, addresses);
     },
-    exactByConcept(scopes, concepts, limit) {
+    exactByConcept(scopes, concepts, limit, activeAt = new Date().toISOString()) {
       if (!conceptIndexAvailable(database) || !scopes.length || !concepts.length) return [];
       const scope = scopePredicate(scopes);
       const uniqueConcepts = [...new Set(concepts)].slice(0, 128);
       const placeholders = uniqueConcepts.map(() => '?').join(',');
       const rows = statement(database, `
-        SELECT DISTINCT scope_kind, scope_id, memory_id
-        FROM cognition_concept_index
+        SELECT scope_kind, scope_id, memory_id, COUNT(*) AS hits
+        FROM cognition_concept_index c
         WHERE (${scope.sql}) AND concept_id IN (${placeholders})
-        LIMIT ?`, prepared => prepared.all(...scope.params, ...uniqueConcepts, limit) as Array<{ scope_kind: ScopeRef['kind']; scope_id: string; memory_id: string }>);
+          AND EXISTS (
+            SELECT 1 FROM cognition_memory_units m
+            WHERE m.scope_kind = c.scope_kind AND m.scope_id = c.scope_id AND m.memory_id = c.memory_id
+              AND m.retracted_at IS NULL AND m.valid_from <= ? AND (m.expires_at IS NULL OR m.expires_at > ?)
+          )
+        GROUP BY scope_kind, scope_id, memory_id
+        ORDER BY hits DESC, scope_kind ASC, scope_id ASC, memory_id ASC
+        LIMIT ?`, prepared => prepared.all(...scope.params, ...uniqueConcepts, activeAt, activeAt, limit) as Array<{ scope_kind: ScopeRef['kind']; scope_id: string; memory_id: string }>);
       return readAddresses(database, rows.map(row => ({ scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id }, id: row.memory_id })));
     },
-    lexical(scopes, terms, limit) {
+    lexical(scopes, terms, limit, activeAt = new Date().toISOString()) {
       if (!termIndexAvailable(database) || !scopes.length || !terms.length) return [];
       const scope = scopePredicate(scopes);
       const uniqueTerms = [...new Set(terms)].slice(0, 128);
       const placeholders = uniqueTerms.map(() => '?').join(',');
       const rows = statement(database, `
         SELECT scope_kind, scope_id, memory_id, COUNT(*) AS hits
-        FROM cognition_term_index
+        FROM cognition_term_index t
         WHERE (${scope.sql}) AND term IN (${placeholders})
+          AND EXISTS (
+            SELECT 1 FROM cognition_memory_units m
+            WHERE m.scope_kind = t.scope_kind AND m.scope_id = t.scope_id AND m.memory_id = t.memory_id
+              AND m.retracted_at IS NULL AND m.valid_from <= ? AND (m.expires_at IS NULL OR m.expires_at > ?)
+          )
         GROUP BY scope_kind, scope_id, memory_id
         ORDER BY hits DESC, scope_kind ASC, scope_id ASC, memory_id ASC
-        LIMIT ?`, prepared => prepared.all(...scope.params, ...uniqueTerms, limit) as Array<{ scope_kind: ScopeRef['kind']; scope_id: string; memory_id: string }>);
+        LIMIT ?`, prepared => prepared.all(...scope.params, ...uniqueTerms, activeAt, activeAt, limit) as Array<{ scope_kind: ScopeRef['kind']; scope_id: string; memory_id: string }>);
       return readAddresses(database, rows.map(row => ({ scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id }, id: row.memory_id })));
     },
-    neighbors(seeds, limit) {
+    neighbors(seeds, limit, activeAt = new Date().toISOString()) {
       if (!canonicalSchemaAvailable(database) || !seeds.length) return [];
       const uniqueSeeds = [...new Map(seeds.map(seed => [memoryAddressKey(seed), seed])).values()].slice(0, 128);
-      const predicate = uniqueSeeds.map(() => '(scope_kind = ? AND scope_id = ? AND (from_memory_id = ? OR to_memory_id = ?))').join(' OR ');
-      const params = uniqueSeeds.flatMap(seed => [seed.scope.kind, seed.scope.id, seed.id, seed.id]);
+      const seedValues = uniqueSeeds.map(() => '(?, ?, ?)').join(',');
+      const seedParams = uniqueSeeds.flatMap(seed => [seed.scope.kind, seed.scope.id, seed.id]);
       const rows = statement(database, `
-        SELECT * FROM cognition_memory_edges
-        WHERE ${predicate}
-        ORDER BY weight DESC, recorded_at DESC, scope_kind ASC, scope_id ASC, edge_id ASC
-        LIMIT ?`, prepared => prepared.all(...params, limit) as Array<Record<string, unknown>>);
+        WITH seeds(scope_kind, scope_id, memory_id) AS (VALUES ${seedValues})
+        SELECT e.*, s.memory_id AS seed_memory_id,
+          CASE WHEN e.from_memory_id = s.memory_id THEN e.to_memory_id ELSE e.from_memory_id END AS target_memory_id
+        FROM seeds s
+        JOIN cognition_memory_edges e
+          ON e.scope_kind = s.scope_kind AND e.scope_id = s.scope_id
+          AND (e.from_memory_id = s.memory_id OR e.to_memory_id = s.memory_id)
+        JOIN cognition_memory_units m
+          ON m.scope_kind = e.scope_kind AND m.scope_id = e.scope_id
+          AND m.memory_id = CASE WHEN e.from_memory_id = s.memory_id THEN e.to_memory_id ELSE e.from_memory_id END
+        WHERE e.retracted_at IS NULL AND (e.expires_at IS NULL OR e.expires_at > ?)
+          AND m.retracted_at IS NULL AND m.valid_from <= ? AND (m.expires_at IS NULL OR m.expires_at > ?)
+        ORDER BY e.weight DESC, e.recorded_at DESC, e.scope_kind ASC, e.scope_id ASC, e.edge_id ASC, s.memory_id ASC
+        LIMIT ?`, prepared => prepared.all(...seedParams, activeAt, activeAt, activeAt, limit) as Array<Record<string, unknown>>);
       const seedKeys = new Map(uniqueSeeds.map(seed => [memoryAddressKey(seed), seed]));
       const expansions: Array<{ edge: MemoryEdge; from: MemoryAddress; target: MemoryAddress }> = [];
       for (const row of rows) {
         const scope = { schemaVersion: 1 as const, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string };
-        const fromAddress = { scope, id: row.from_memory_id as string };
-        const toAddress = { scope, id: row.to_memory_id as string };
-        const seed = seedKeys.get(memoryAddressKey(fromAddress)) ?? seedKeys.get(memoryAddressKey(toAddress));
+        const seed = seedKeys.get(memoryAddressKey({ scope, id: row.seed_memory_id as string }));
         if (!seed) continue;
-        const target = seed.id === fromAddress.id ? toAddress : fromAddress;
+        const target = { scope, id: row.target_memory_id as string };
         const edge = validateMemoryEdge({
           schemaVersion: 1,
           id: row.edge_id as string,
           scope,
-          fromId: fromAddress.id,
-          toId: toAddress.id,
+          fromId: row.from_memory_id as string,
+          toId: row.to_memory_id as string,
           relation: row.relation as string,
           weight: Number(row.weight),
           evidenceRefs: JSON.parse(row.evidence_json as string) as string[],
@@ -511,14 +546,33 @@ export function activateCognitiveMemory(
   query: string,
   options: ActivationOptions = {},
 ): ActivationPack {
-  return withControlPlaneReadDatabase(controllerHome, database =>
+  const derivedState = withControlPlaneReadDatabase(controllerHome, database => {
+    if (!canonicalSchemaAvailable(database)) return 'empty' as const;
+    return derivedIndexesHealthy(database) ? 'ready' as const : 'degraded' as const;
+  });
+  let rebuilt = false;
+  if (derivedState === 'degraded') {
+    try {
+      rebuildCognitionDerivedIndexes(controllerHome);
+      rebuilt = true;
+    } catch (error) {
+      throw new Error(`COGNITION_DERIVED_INDEX_RECOVERY_FAILED:${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const pack = withControlPlaneReadDatabase(controllerHome, database =>
     activateMemory(readPortForDatabase(database), scopes, query, options));
+  return rebuilt ? { ...pack, gaps: [...new Set([...pack.gaps, 'derived_index_rebuilt'])] } : pack;
 }
 
 export function rebuildCognitionDerivedIndexes(controllerHome: string): number {
   return withControlPlaneTransaction(controllerHome, database => {
+    database.exec(`
+      DROP INDEX IF EXISTS cognition_concept_lookup;
+      DROP INDEX IF EXISTS cognition_term_lookup;
+      DROP TABLE IF EXISTS cognition_concept_index;
+      DROP TABLE IF EXISTS cognition_term_index;
+    `);
     ensureSchema(database);
-    database.exec('DELETE FROM cognition_concept_index; DELETE FROM cognition_term_index;');
     const rows = statement(database,
       'SELECT * FROM cognition_memory_units ORDER BY scope_kind, scope_id, memory_id',
       prepared => prepared.all() as Array<Record<string, unknown>>);

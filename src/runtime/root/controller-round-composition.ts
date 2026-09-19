@@ -79,7 +79,7 @@ function controllerAssistantContextSnapshot(resolution: AssistantContextResoluti
     sourceRevision: item.provenance.sourceRevision,
   }));
   const identity = {
-    projectId: resolution.projectId,
+    ...(resolution.projectId ? { projectId: resolution.projectId } : {}),
     items,
     gaps: resolution.gaps,
     missingRequiredSources: resolution.missingRequiredSources,

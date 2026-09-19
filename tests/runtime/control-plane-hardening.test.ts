@@ -1427,10 +1427,10 @@ describe('scheduled external Controller wake', () => {
       principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', leaseMs: 5 * 60_000,
     });
     const snapshot = {
-      digest: 'sha256:assistant-context-fixture', projectId: 'project-fixture',
+      digest: 'sha256:assistant-context-fixture',
       items: [
-        { kind: 'knowledge' as const, itemId: 'knowledge:1', digest: 'knowledge-digest', sourceRevision: 'source-a' },
-        { kind: 'experience' as const, itemId: 'experience:1', revision: 2 },
+        { kind: 'experience' as const, itemId: '["work","work-a","shared-id"]', revision: 1 },
+        { kind: 'experience' as const, itemId: '["requirement","req-a","shared-id"]', revision: 2 },
       ],
       gaps: [], missingRequiredSources: [], truncated: false,
     };
@@ -1445,8 +1445,8 @@ describe('scheduled external Controller wake', () => {
       principalId: session.principalId!, controllerInstanceId: session.controllerInstanceId!, sessionId: session.sessionId,
     };
     const completeUsage = [
-      { kind: 'knowledge' as const, itemId: 'knowledge:1', decision: 'used' as const, reason: 'Applied the durable project constraint.' },
-      { kind: 'experience' as const, itemId: 'experience:1', decision: 'rejected' as const, reason: 'Not applicable to this exact round.' },
+      { kind: 'experience' as const, itemId: '["work","work-a","shared-id"]', decision: 'used' as const, reason: 'Applied the Work-scoped memory.' },
+      { kind: 'experience' as const, itemId: '["requirement","req-a","shared-id"]', decision: 'rejected' as const, reason: 'Requirement-scoped memory was not applicable to this exact round.' },
     ];
     expect(() => submitControllerRoundDisposition(store, {
       workId, identity, disposition: 'wait', assistantContextDigest: 'sha256:stale', assistantContextUsage: completeUsage,

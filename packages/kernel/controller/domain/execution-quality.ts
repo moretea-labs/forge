@@ -73,7 +73,7 @@ export interface AssistantContextItemEvidence {
 
 export interface AssistantContextSnapshot {
   digest: string;
-  projectId: string;
+  projectId?: string;
   items: AssistantContextItemEvidence[];
   gaps: string[];
   missingRequiredSources: string[];

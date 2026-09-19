@@ -16,6 +16,7 @@ import { withControlPlaneTransaction } from '../../src/runtime/control-plane/per
 import {
   activateCognitiveMemory,
   cognitionMemoryStore,
+  cognitionReadPort,
   putCognitivePayload,
   readCognitivePayload,
   rebuildCognitionDerivedIndexes,
@@ -81,17 +82,16 @@ describe('generic cognitive memory', () => {
     expect(pack.items.find(item => item.memory.id === 'mem:revision')?.memory).toMatchObject({ revision: 2, canonicalText: 'Refined observation.' });
   });
 
-  test('keeps canonical memory readable when rebuildable indexes are missing', () => {
+  test('rebuilds missing derived indexes from canonical memory on the normal activation path', () => {
     const fx = fixture();
     recordCognitiveMemory(fx.store, fx.authority, draft('mem:index-loss', 'Canonical memory survives projection loss.', ['index.rebuildable'], 'E-1'));
     withControlPlaneTransaction(fx.controllerHome, database => {
       database.exec('DROP TABLE cognition_concept_index; DROP TABLE cognition_term_index;');
     });
-    const degraded = activateCognitiveMemory(fx.controllerHome, [scope], 'unrelated', { seedMemoryIds: ['mem:index-loss'], now: at });
-    expect(degraded.items.some(item => item.memory.id === 'mem:index-loss')).toBe(true);
-    expect(rebuildCognitionDerivedIndexes(fx.controllerHome)).toBe(1);
     const rebuilt = activateCognitiveMemory(fx.controllerHome, [scope], 'index.rebuildable', { seedConcepts: ['index.rebuildable'], now: at });
     expect(rebuilt.items.some(item => item.memory.id === 'mem:index-loss')).toBe(true);
+    expect(rebuilt.gaps).toContain('derived_index_rebuilt');
+    expect(activateCognitiveMemory(fx.controllerHome, [scope], 'index.rebuildable', { seedConcepts: ['index.rebuildable'], now: at }).gaps).not.toContain('derived_index_rebuilt');
   });
 
   test('keeps identical memory ids isolated by semantic scope', () => {
@@ -103,6 +103,25 @@ describe('generic cognitive memory', () => {
     const matching = pack.items.filter(item => item.memory.id === 'mem:same');
     expect(matching.some(item => item.memory.scope.id === scope.id && item.memory.canonicalText === 'Primary project memory.')).toBe(true);
     expect(matching.some(item => item.memory.scope.id === otherScope.id && item.memory.canonicalText === 'Other project memory.')).toBe(false);
+  });
+
+  test('filters inactive memories and edges before bounded concept, lexical and graph selection', () => {
+    const fx = fixture();
+    const activeAt = '2026-09-18T00:00:00.000Z';
+    recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:a-expired', 'Temporal candidate shared term.', ['temporal.limit'], 'E-1'), validFrom: '2026-09-15T00:00:00.000Z', expiresAt: '2026-09-16T00:00:00.000Z' });
+    const live = recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:z-live', 'Temporal candidate shared term.', ['temporal.limit'], 'E-2'), validFrom: '2026-09-17T00:00:00.000Z' });
+    const port = cognitionReadPort(fx.controllerHome);
+    expect(port.exactByConcept([scope], ['temporal.limit'], 1, activeAt).map(item => item.id)).toEqual([live.id]);
+    expect(port.lexical([scope], ['temporal', 'candidate'], 1, activeAt).map(item => item.id)).toEqual([live.id]);
+
+    const seed = recordCognitiveMemory(fx.store, fx.authority, draft('mem:seed', 'Graph seed.', ['graph.seed'], 'E-1'));
+    recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:a-expired-target', 'Expired graph target.', ['graph.target'], 'E-2'), validFrom: '2026-09-15T00:00:00.000Z', expiresAt: '2026-09-16T00:00:00.000Z' });
+    recordCognitiveMemory(fx.store, fx.authority, draft('mem:b-edge-expired-target', 'Live target behind expired edge.', ['graph.target'], 'E-3'));
+    const liveTarget = recordCognitiveMemory(fx.store, fx.authority, draft('mem:z-live-target', 'Live graph target.', ['graph.target'], 'E-4'));
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:expired-target', scope, fromId: seed.id, toId: 'mem:a-expired-target', relation: 'supports', weight: 0.99, evidenceRefs: ['E-1'], recordedAt: at });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:expired', scope, fromId: seed.id, toId: 'mem:b-edge-expired-target', relation: 'supports', weight: 0.95, evidenceRefs: ['E-2'], recordedAt: at, expiresAt: '2026-09-17T12:00:00.000Z' });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:live', scope, fromId: seed.id, toId: liveTarget.id, relation: 'supports', weight: 0.5, evidenceRefs: ['E-3'], recordedAt: at });
+    expect(port.neighbors([{ scope, id: seed.id }], 1, activeAt).map(item => item.memory.id)).toEqual([liveTarget.id]);
   });
 
   test('content-addresses large source detail without duplicating it into memory text', () => {
