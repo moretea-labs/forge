@@ -1095,6 +1095,8 @@ describe('ChatGPT Work conversation binding', () => {
     expect(maintenance).toContain('exactOriginWork: !dispatchingRecord.requirementId');
     expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated })');
     expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
+    expect(browserRuntime).toContain("withChatgptBrowserActionOrigin(");
+    expect(browserRuntime).toContain("new Set(authorizationGrantRefs)");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
     expect(browserRuntime).toContain('settleWorkChatgptAutomationTab');
     const workContinuation = source.slice(source.indexOf('export async function runWorkChatgptContinuation'));
@@ -1132,6 +1134,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerRelease).toContain('relayScopeId: relay.relayScopeId');
     expect(controllerRelease).not.toContain('await runStandaloneChatgptPrompt({');
     expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
+    expect(controllerRelease).toContain('authorizationGrantRefs: binding?.authorizationGrantRefs');
     expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
     expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
   });
