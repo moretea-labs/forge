@@ -374,7 +374,14 @@ async function executeExternalControllerWake(
   if (controllerType === 'chatgpt') {
     const boundary = workflowSupervisorBoundaryForWork({ controllerHome, repoId: schedule.repoId }, workId);
     if (boundary.status === 'outer_turn') {
-      const enrollment = await ensureWorkflowSupervisorEnrollmentForWork({ controllerHome, repoId: schedule.repoId }, workId);
+      // Each Scheduler occurrence gets its own recovery origin key.  Without
+      // this, a previous exhausted Supervisor recovery is reused forever and
+      // the schedule can report `enrolled` while no new browser effect exists.
+      const enrollment = await ensureWorkflowSupervisorEnrollmentForWork(
+        { controllerHome, repoId: schedule.repoId },
+        workId,
+        { schedulerRecoveryKey: occurrence.occurrenceId },
+      );
       if (enrollment.status === 'lower_layer_not_ready') {
         // A Scheduler wake is allowed to repair a lost Supervisor outer-turn
         // enrollment, but it must prepare only the lower relay. The Supervisor
@@ -500,7 +507,11 @@ async function executeExternalControllerWake(
 
     }
     const supervisorEnrollment = controllerType === 'chatgpt'
-      ? await ensureWorkflowSupervisorEnrollmentForWork({ controllerHome, repoId: schedule.repoId }, workId)
+        ? await ensureWorkflowSupervisorEnrollmentForWork(
+          { controllerHome, repoId: schedule.repoId },
+          workId,
+          { schedulerRecoveryKey: occurrence.occurrenceId },
+        )
       : { status: 'not_eligible' as const };
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,

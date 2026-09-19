@@ -643,11 +643,19 @@ export async function closeChatgptAutomationTabAfterDispatch(
   workId: string,
   browserSessionId: string,
   timeoutMs?: number,
+  authorizationGrantRefs: readonly string[] = [],
 ): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
   try {
-    const closed = await controllerBrowserAction(controllerHome, workId, 'close_page', {
+    const closePage = () => controllerBrowserAction(controllerHome, workId, 'close_page', {
       session_id: browserSessionId,
     }, Math.min(timeoutMs ?? 15_000, 15_000));
+    const closed = authorizationGrantRefs.length > 0
+      ? await withChatgptBrowserActionOrigin(
+          { surface: 'schedule', actor: 'chatgpt-work-continuation' },
+          closePage,
+          new Set(authorizationGrantRefs),
+        )
+      : await closePage();
     if (closed.preservedUserOwnedTab === true) return { status: 'preserved_user_owned' };
     if (closed.resourceClosed === true) return { status: 'closed' };
     return { status: 'session_closed' };
@@ -674,6 +682,7 @@ export async function settleWorkChatgptAutomationTab(input: {
   workId: string;
   browserSessionId: string;
   timeoutMs?: number;
+  authorizationGrantRefs?: readonly string[];
 }): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
   if (input.browserSessionId.startsWith('forge-chatgpt-bridge-')) return { status: 'session_closed' };
   return closeChatgptAutomationTabAfterDispatch(
@@ -681,6 +690,7 @@ export async function settleWorkChatgptAutomationTab(input: {
     input.workId,
     input.browserSessionId,
     input.timeoutMs,
+    input.authorizationGrantRefs,
   );
 }
 

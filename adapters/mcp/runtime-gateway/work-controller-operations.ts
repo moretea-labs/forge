@@ -423,6 +423,7 @@ export async function callRhWorkControllerOperation(
             relayScopeId: relay.relayScopeId,
             browserSessionId: relayBinding?.browserSessionId ?? predecessorBinding?.browserSessionId,
             conversationUrl: relayBinding?.conversationUrl ?? predecessorBinding?.conversationUrl,
+            authorizationGrantRefs: relayBinding?.authorizationGrantRefs ?? predecessorBinding?.authorizationGrantRefs,
             tabPolicy: 'reuse',
           });
           if (dispatched.status === 'failed') throw new Error(`${dispatched.error?.code ?? 'CONTROLLER_RELAY_DISPATCH_FAILED'}:${dispatched.error?.message ?? 'Controller relay dispatch failed'}`);
@@ -469,6 +470,7 @@ export async function callRhWorkControllerOperation(
             controllerHome: ctx.controllerHome,
             workId,
             browserSessionId,
+            authorizationGrantRefs: binding?.authorizationGrantRefs,
           });
           recordChatgptControllerRoundTabSettlement(relayStore, {
             workId,

@@ -207,7 +207,9 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         if (retainedSession.controllerType === 'chatgpt') {
           const boundary = boundaryForWork(store, work.workId);
           if (boundary.status === 'outer_turn') {
-            const enrollment = await ensureSupervisorEnrollment(store, work.workId);
+            const enrollment = await ensureSupervisorEnrollment(store, work.workId, {
+              schedulerRecoveryKey: occurrenceId,
+            });
             if (enrollment.status === 'enrolled') {
               supervisorEnrolled += 1;
               materialized += 1;

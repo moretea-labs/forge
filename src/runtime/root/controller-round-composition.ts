@@ -22,6 +22,7 @@ export interface ChatgptControllerRoundBindingSnapshot {
   bindingId?: string;
   browserSessionId?: string;
   conversationUrl?: string;
+  authorizationGrantRefs?: string[];
 }
 
 export function chatgptControllerRoundBinding(
@@ -34,6 +35,7 @@ export function chatgptControllerRoundBinding(
     bindingId: binding.bindingId,
     browserSessionId: binding.latestBrowserSessionId,
     conversationUrl: binding.conversationUrl,
+    authorizationGrantRefs: [...(binding.authorizationGrantRefs ?? [])],
   };
 }
 

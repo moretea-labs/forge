@@ -1,8 +1,9 @@
 import { randomBytes } from 'crypto';
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { chmodSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { backupControlPlaneDatabase, type ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
+import { normalizeRuntimeDeploymentTopology } from './deployment-topology';
 import { forgeRuntimeServicePaths, readForgeRuntimeServiceConfig, writeForgeRuntimeServiceConfig, type ForgeRuntimeServiceConfig } from './service';
 
 export interface StableExecutionLane {
@@ -97,11 +98,19 @@ function createPrivateCandidateToken(stableTokenPath: string, destination: strin
 }
 
 function candidateServiceConfig(stable: ForgeRuntimeServiceConfig, lane: CandidateExecutionLane): ForgeRuntimeServiceConfig {
+  const topology = normalizeRuntimeDeploymentTopology(stable.topology);
   return {
     ...stable,
     controllerHome: lane.controllerHome,
     port: lane.port,
     authTokenFile: lane.authTokenFile,
+    // Candidate B may verify the Supervisor socket and internal lifecycle,
+    // but it must never submit external browser effects against Stable A's
+    // real conversation during an isolated canary.
+    topology: {
+      ...topology,
+      components: { ...topology.components, workflowSupervisorNativeBrowser: false },
+    },
   };
 }
 
@@ -157,4 +166,24 @@ export function assertCandidateExecutionLaneIsolation(
   if (resolve(candidate.databaseSnapshotPath) !== resolve(candidate.controllerHome, 'control-plane.sqlite')) {
     throw new Error('RUNTIME_CANDIDATE_DATABASE_PATH_INVALID');
   }
+}
+
+/**
+ * Remove one retired Candidate B home after its ReleaseSession has reached a
+ * terminal state. The path fence is deliberately derived from Stable A and
+ * the session identity so terminal cleanup can never target an arbitrary
+ * Controller Home.
+ */
+export function removeRetiredCandidateExecutionLane(
+  stable: StableExecutionLane,
+  candidate: CandidateExecutionLane,
+): void {
+  const stableHome = resolve(stable.controllerHome);
+  const candidateHome = resolve(candidate.controllerHome);
+  const candidateRoot = resolve(dirname(stableHome), 'candidate-runtime-lanes');
+  if (candidateHome === stableHome) throw new Error('RUNTIME_CANDIDATE_CLEANUP_STABLE_COLLISION');
+  if (resolve(dirname(candidateHome)) !== candidateRoot || basename(candidateHome) !== candidate.sessionId) {
+    throw new Error('RUNTIME_CANDIDATE_CLEANUP_PATH_INVALID');
+  }
+  rmSync(candidateHome, { recursive: true, force: true });
 }

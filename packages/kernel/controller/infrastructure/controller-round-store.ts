@@ -14,7 +14,7 @@ import {
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
 import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
+import { getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityAdjustmentResult, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
@@ -287,8 +287,12 @@ function requirementForRelay(options: ControllerRoundRelayStoreOptions, requirem
   return requirementId ? readRequirement({ controllerHome: options.controllerHome }, requirementId)?.value : undefined;
 }
 
-function relevantWork(options: ControllerRoundRelayStoreOptions, record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>): WorkContract[] {
-  const all = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
+function relevantWork(
+  options: ControllerRoundRelayStoreOptions,
+  record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
+  allWorkContracts: readonly WorkContract[] = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts,
+): WorkContract[] {
+  const all = allWorkContracts;
   const linkedWorkIds = new Set([
     record.originWorkId,
     ...relayHistory(options, record.relayScopeId).map((entry) => entry.originWorkId),
@@ -318,6 +322,39 @@ function relevantWork(options: ControllerRoundRelayStoreOptions, record: Pick<Co
   return all
     .filter((work) => linkedWorkIds.has(work.workId))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function relayMayHaveActiveWork(
+  options: ControllerRoundRelayStoreOptions,
+  record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
+  activeWorkSnapshot: ReturnType<typeof readActiveWorkCandidates>,
+): boolean {
+  // Invalid active candidates remain fail-closed: the canonical aggregate read
+  // below must report the same semantic error rather than silently skipping a
+  // potentially related Work.
+  if (activeWorkSnapshot.invalid.length > 0) return true;
+
+  const linkedWorkIds = new Set([
+    record.originWorkId,
+    ...relayHistory(options, record.relayScopeId).map((entry) => entry.originWorkId),
+  ]);
+  if (record.requirementId) {
+    return activeWorkSnapshot.contracts.some((work) => work.requirementId === record.requirementId);
+  }
+
+  const activeById = new Map(activeWorkSnapshot.contracts.map((work) => [work.workId, work] as const));
+  for (const work of activeWorkSnapshot.contracts) {
+    if (linkedWorkIds.has(work.workId)) return true;
+    const visited = new Set<string>();
+    let parentWorkId = work.parentWorkId;
+    while (parentWorkId && !visited.has(parentWorkId)) {
+      if (linkedWorkIds.has(parentWorkId)) return true;
+      visited.add(parentWorkId);
+      parentWorkId = activeById.get(parentWorkId)?.parentWorkId
+        ?? getWorkContract(options, parentWorkId)?.parentWorkId;
+    }
+  }
+  return false;
 }
 
 function relevantHandoffs(
@@ -364,9 +401,10 @@ function mechanicalStateFingerprint(
   requirementId: string | undefined,
   relayScopeId: string,
   explicitHandoffId?: string,
+  allWorkContracts?: readonly WorkContract[],
 ): string {
   const requirement = requirementForRelay(options, requirementId);
-  const works = relevantWork(options, { relayScopeId, originWorkId: work.workId, requirementId })
+  const works = relevantWork(options, { relayScopeId, originWorkId: work.workId, requirementId }, allWorkContracts)
     .map((entry) => ({
       workId: entry.workId,
       parentWorkId: entry.parentWorkId,
@@ -1346,6 +1384,20 @@ export function claimStalledControllerRoundRelays(
   const graceMs = Math.max(60_000, Math.min(input.graceMs ?? DEFAULT_UNCLOSED_ROUND_GRACE_MS, MAX_UNCLOSED_ROUND_GRACE_MS));
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 2), 16));
   const claimed: ControllerRoundRelayRecord[] = [];
+  // A recovery pass evaluates many relay candidates for the same repository.
+  // Work contracts are immutable for this read phase, so share one snapshot
+  // across candidates. The locked transition below still refreshes the Work
+  // snapshot before deriving the durable recovery decision.
+  let scanWorkContracts: readonly WorkContract[] | undefined;
+  let scanActiveWorkSnapshot: ReturnType<typeof readActiveWorkCandidates> | undefined;
+  const activeWorkSnapshotForScan = (): ReturnType<typeof readActiveWorkCandidates> => {
+    scanActiveWorkSnapshot ??= readActiveWorkCandidates({ controllerHome: options.controllerHome, repoId: options.repoId, limit: 1_000 });
+    return scanActiveWorkSnapshot;
+  };
+  const workSnapshotForScan = (): readonly WorkContract[] => {
+    scanWorkContracts ??= readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
+    return scanWorkContracts;
+  };
 
   for (const candidate of latestRelayRecordsByScope(options)) {
     if (claimed.length >= limit) break;
@@ -1361,7 +1413,8 @@ export function claimStalledControllerRoundRelays(
     }
     const requirement = requirementForRelay(options, candidate.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) continue;
-    const candidateWorks = relevantWork(options, candidate);
+    if (!relayMayHaveActiveWork(options, candidate, activeWorkSnapshotForScan())) continue;
+    const candidateWorks = relevantWork(options, candidate, workSnapshotForScan());
     const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
     if (activeCandidateWorks.length === 0) continue;
     if (activeCandidateWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
@@ -1388,7 +1441,8 @@ export function claimStalledControllerRoundRelays(
       }
       const latestRequirement = requirementForRelay(options, latest.requirementId);
       if (latestRequirement && !['planned', 'active'].includes(latestRequirement.state)) return undefined;
-      const works = relevantWork(options, latest);
+      const lockedWorkContracts = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
+      const works = relevantWork(options, latest, lockedWorkContracts);
       const activeWorks = works.filter((work) => !isTerminalWorkContractStatus(work.status));
       if (activeWorks.length === 0) return undefined;
       if (activeWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
@@ -1397,7 +1451,7 @@ export function claimStalledControllerRoundRelays(
       if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;
       const fingerprintWork = activeWorks[0] ?? getWorkContract(options, latest.originWorkId);
       const stateFingerprint = fingerprintWork
-        ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId, latest.handoffId)
+        ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId, latest.handoffId, lockedWorkContracts)
         : latest.stateFingerprint;
       const at = new Date(nowMs).toISOString();
       const lastError = latestRepeatedStateBlocked

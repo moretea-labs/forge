@@ -87,11 +87,20 @@ export function normalizeRuntimeDeploymentTopology(value: unknown): RuntimeDeplo
     throw new Error('RUNTIME_TOPOLOGY_COMPONENTS_INVALID');
   }
   if (componentRecord.workflowSupervisor !== canonical.components.workflowSupervisor
-    || componentRecord.workflowSupervisorNativeBrowser !== canonical.components.workflowSupervisorNativeBrowser
+    // Supervisor Core may remain enabled while its native browser adapter is
+    // explicitly disabled for an isolated Candidate B canary. Enabling the
+    // adapter still requires a ChatGPT-capable topology.
+    || (componentRecord.workflowSupervisorNativeBrowser === true && !canonical.components.workflowSupervisorNativeBrowser)
     || record.persistentRuntimeRequired !== canonical.persistentRuntimeRequired) {
     throw new Error('RUNTIME_TOPOLOGY_DERIVATION_MISMATCH');
   }
-  return canonical;
+  return {
+    ...canonical,
+    components: {
+      ...canonical.components,
+      workflowSupervisorNativeBrowser: componentRecord.workflowSupervisorNativeBrowser as boolean,
+    },
+  };
 }
 
 export function parseRuntimeDeploymentTopologyArgument(value: string | undefined): RuntimeDeploymentTopology {
