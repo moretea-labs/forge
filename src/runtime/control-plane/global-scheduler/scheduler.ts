@@ -115,13 +115,26 @@ export function schedulerIdleWaitDelayMs(input: {
 }): number {
   // Idle execution is event-driven. ExecutionJob/lease/policy mutations and
   // check Process terminal persistence wake the scheduler immediately through
-  // the existing notification revision. Five-second reconciliation remains the
-  // active/event-driven cadence, not an unconditional idle full-tick deadline.
-  // The 30-second schedule cadence is the bounded lost-event safety deadline.
+  // the existing notification revision. The 30-second schedule cadence is the
+  // bounded idle lost-event safety deadline.
   return remainingRecurringDeadlineMs(
     input.nowMs,
     input.lastScheduleTickAt,
     SCHEDULE_TICK_INTERVAL_MS,
+  );
+}
+
+export function schedulerActiveWaitDelayMs(input: {
+  nowMs: number;
+  lastReconcileAt: number;
+}): number {
+  // Active execution uses the same canonical wake notifications as idle
+  // execution. A full scheduler tick is only the lost-event safety net, bounded
+  // by the existing reconciliation cadence instead of the legacy 250ms poll.
+  return remainingRecurringDeadlineMs(
+    input.nowMs,
+    input.lastReconcileAt,
+    SCHEDULER_RECONCILIATION_INTERVAL_MS,
   );
 }
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
@@ -783,18 +796,23 @@ export class GlobalScheduler {
           console.error('[forge scheduler] tick failed:', error);
         }
         const now = Date.now();
-        const delayMs = tickFailed || activeJobs > 0
+        const delayMs = tickFailed
           ? this.config.pollIntervalMs
-          : schedulerIdleWaitDelayMs({
-            nowMs: now,
-            lastScheduleTickAt: this.lastScheduleTick,
-          });
+          : activeJobs > 0
+            ? schedulerActiveWaitDelayMs({
+              nowMs: now,
+              lastReconcileAt: this.lastReconcile,
+            })
+            : schedulerIdleWaitDelayMs({
+              nowMs: now,
+              lastScheduleTickAt: this.lastScheduleTick,
+            });
         const wakeRevision = readSchedulerWakeSignal(this.controllerHome).revision;
         const waitResult = await waitForSchedulerWakeSignal(this.controllerHome, wakeRevision, delayMs, signal, {
           // fs.watch is authoritative for ordinary wakeups. Polling is only a
-          // lost-event safety net, so idle Runtime should not parse wake JSON
-          // every second while waiting for the next real maintenance deadline.
-          fallbackPollMs: activeJobs > 0 ? 250 : Math.min(5_000, Math.max(1_000, delayMs)),
+          // lost-event safety net, so active execution must not regress to a
+          // 250ms JSON-read loop after removing the full-tick poll.
+          fallbackPollMs: Math.min(5_000, Math.max(1_000, delayMs)),
         });
         if (waitResult === 'aborted') break;
       }

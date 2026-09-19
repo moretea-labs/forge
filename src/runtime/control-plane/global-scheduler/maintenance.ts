@@ -23,6 +23,36 @@ import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/
 import { renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 
+const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
+const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
+
+export function planSchedulerPeriodicMaintenance(input: {
+  nowMs: number;
+  cleanupIntervalMs: number;
+  repositoryCount: number;
+}): {
+  periodicSequence: number;
+  runRetention: boolean;
+  runDeepRetention: boolean;
+  processGcRepositoryIndex?: number;
+  deepRetentionRepositoryIndex?: number;
+} {
+  const cleanupIntervalMs = Math.max(1, input.cleanupIntervalMs);
+  const periodicSequence = Math.floor(input.nowMs / cleanupIntervalMs);
+  const retentionEvery = Math.max(1, Math.ceil(PERIODIC_RETENTION_INTERVAL_MS / cleanupIntervalMs));
+  const deepRetentionEvery = Math.max(retentionEvery, Math.ceil(PERIODIC_DEEP_RETENTION_INTERVAL_MS / cleanupIntervalMs));
+  const repositoryCount = Math.max(0, Math.trunc(input.repositoryCount));
+  return {
+    periodicSequence,
+    runRetention: periodicSequence % retentionEvery === 0,
+    runDeepRetention: periodicSequence % deepRetentionEvery === 0,
+    processGcRepositoryIndex: repositoryCount > 0 ? periodicSequence % repositoryCount : undefined,
+    deepRetentionRepositoryIndex: repositoryCount > 0 && periodicSequence % deepRetentionEvery === 0
+      ? Math.floor(periodicSequence / deepRetentionEvery) % repositoryCount
+      : undefined,
+  };
+}
+
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
   controllerPid: number;
@@ -33,11 +63,18 @@ export async function runSchedulerPeriodicCleanup(input: {
   terminalWorkCleanup: typeof reconcileTerminalWorkCleanups;
   processGc: typeof gcTerminalProcesses;
 }): Promise<void> {
+  const plan = planSchedulerPeriodicMaintenance({
+    nowMs: input.nowMs,
+    cleanupIntervalMs: input.cleanupIntervalMs,
+    repositoryCount: input.repositories.length,
+  });
+  // Runtime-state phase rotation and terminal Work cleanup are lifecycle
+  // reconciliation, not retention. Keep them at the base cleanup cadence.
   try {
     input.runtimeCleanup(input.controllerHome, {
       reason: 'periodic',
       nowMs: input.nowMs,
-      periodicSequence: Math.floor(input.nowMs / input.cleanupIntervalMs),
+      periodicSequence: plan.periodicSequence,
       protectedControllerPid: input.controllerPid,
     });
   } catch (error) {
@@ -48,35 +85,56 @@ export async function runSchedulerPeriodicCleanup(input: {
   } catch (error) {
     console.error('[forge cleanup] terminal Work cleanup failed:', error);
   }
+
+  // Browser/computer tombstones are retention state. Their lifecycle truth is
+  // written synchronously by their owning authorities, so a five-minute sweep
+  // is sufficient and avoids repeating controller-wide scans every minute.
+  if (plan.runRetention) {
+    try {
+      closeRuntimeBrowserSessionLegacyImportCutover(
+        input.controllerHome,
+        input.repositories.map((repository) => ({ repoId: repository.repoId, repoRoot: repository.canonicalRoot })),
+      );
+      const browserSessions = cleanupRuntimeBrowserSessionTombstones(input.controllerHome, { nowMs: input.nowMs });
+      if (browserSessions.blockers.length > 0 || browserSessions.budgetExhausted) {
+        console.error('[forge cleanup] Browser session retention reported bounded blockers');
+      }
+    } catch (error) {
+      console.error('[forge cleanup] Browser session retention failed:', error);
+    }
+    try {
+      const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
+      if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
+        console.error('[forge cleanup] Computer interaction-target retention reported bounded blockers');
+      }
+    } catch (error) {
+      console.error('[forge cleanup] Computer interaction-target retention failed:', error);
+    }
+  }
+
+  // Process GC includes stale-active reconciliation with a five-minute minimum
+  // age. Preserve the existing one-repository-per-base-pass round robin so that
+  // recovery remains smooth instead of concentrating all repositories in one
+  // periodic spike.
+  if (plan.processGcRepositoryIndex !== undefined) {
+    const processRepo = input.repositories[plan.processGcRepositoryIndex]!;
+    const result = input.processGc({ controllerHome: input.controllerHome, repoId: processRepo.repoId });
+    if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
+  }
+
+  if (!plan.runDeepRetention) return;
+
+  // Generated caches and persisted artifacts have hour/day-scale retention
+  // thresholds. Run one repository per deep-retention pass, and rotate the
+  // repository index on the deep cadence rather than the one-minute sequence.
   try {
     const xctestCleanup = cleanupIdleXCTestDevices(input.controllerHome);
     if (xctestCleanup.error) console.error('[forge cleanup] XCTest device cleanup failed:', xctestCleanup.error);
   } catch (error) {
     console.error('[forge cleanup] XCTest device cleanup failed:', error);
   }
-  try {
-    closeRuntimeBrowserSessionLegacyImportCutover(
-      input.controllerHome,
-      input.repositories.map((repository) => ({ repoId: repository.repoId, repoRoot: repository.canonicalRoot })),
-    );
-    const browserSessions = cleanupRuntimeBrowserSessionTombstones(input.controllerHome, { nowMs: input.nowMs });
-    if (browserSessions.blockers.length > 0 || browserSessions.budgetExhausted) {
-      console.error('[forge cleanup] Browser session retention reported bounded blockers');
-    }
-  } catch (error) {
-    console.error('[forge cleanup] Browser session retention failed:', error);
-  }
-  try {
-    const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
-    if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
-      console.error('[forge cleanup] Computer interaction-target retention reported bounded blockers');
-    }
-  } catch (error) {
-    console.error('[forge cleanup] Computer interaction-target retention failed:', error);
-  }
-  if (input.repositories.length === 0) return;
-  const slot = Math.floor(input.nowMs / input.cleanupIntervalMs) % input.repositories.length;
-  const repo = input.repositories[slot]!;
+  if (plan.deepRetentionRepositoryIndex === undefined) return;
+  const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
   try {
     const generated = cleanupGeneratedRepositoryCaches(repo.canonicalRoot, { nowMs: input.nowMs });
     if (generated.errors.length > 0) {
@@ -93,8 +151,6 @@ export async function runSchedulerPeriodicCleanup(input: {
   } catch (error) {
     console.error(`[forge cleanup] Browser artifact retention failed for ${repo.repoId}:`, error);
   }
-  const result = input.processGc({ controllerHome: input.controllerHome, repoId: repo.repoId });
-  if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
   try {
     const checkResults = cleanupPersistedCheckResults(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
     if (checkResults.blockers.length > 0 || checkResults.budgetExhausted) {
