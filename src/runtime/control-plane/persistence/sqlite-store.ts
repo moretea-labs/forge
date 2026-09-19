@@ -294,9 +294,10 @@ function openDatabase(controllerHome: string): SqliteDatabase {
     // inspectOpenDatabase(), which is the authoritative integrity boundary.
     // Keep schema fail-closed on every open, but reserve the full integrity scan
     // for those lifecycle/inspection boundaries.
+    let schemaVersion: number | undefined;
     if (existed) {
       try {
-        assertSupportedSchema(database, path);
+        schemaVersion = assertSupportedSchema(database, path);
       } catch (error) {
         const busy = sqliteBusyError(path, error);
         if (busy) throw busy;
@@ -306,8 +307,14 @@ function openDatabase(controllerHome: string): SqliteDatabase {
       }
     }
     database.exec('PRAGMA journal_mode = WAL;');
-    initializeSchema(database);
-    assertSupportedSchema(database, path, true);
+    // Schema DDL is bootstrap work, not transaction work. Existing supported
+    // databases have already crossed the fail-closed schema boundary above;
+    // rerunning CREATE INDEX/TABLE + INSERT OR IGNORE on every write only burns
+    // allocations/SQLite preparation and then validates the same schema twice.
+    if (schemaVersion === undefined) {
+      initializeSchema(database);
+      assertSupportedSchema(database, path, true);
+    }
     return database;
   } catch (error) {
     database.close();

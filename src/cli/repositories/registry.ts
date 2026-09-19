@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
@@ -291,6 +292,51 @@ function readRegistryFile(path: string, strict: boolean): RepositoryRegistry | u
   }
 }
 
+interface RepositoryRegistryReadSnapshot {
+  fileIdentity: string;
+  registry: RepositoryRegistry;
+}
+
+const repositoryRegistryReadSnapshots = new Map<string, RepositoryRegistryReadSnapshot>();
+
+function registryFileIdentity(path: string): string | undefined {
+  try {
+    const stat = statSync(path, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function cloneRepositoryRecord(record: RepositoryRecord): RepositoryRecord {
+  return {
+    ...record,
+    checkouts: record.checkouts.map((checkout) => ({ ...checkout })),
+    github: record.github
+      ? { ...record.github, labels: record.github.labels ? [...record.github.labels] : undefined }
+      : undefined,
+  };
+}
+
+function loadRepositoryRegistryReadSnapshot(controllerHome?: string): RepositoryRegistry {
+  const path = registryPath(controllerHome);
+  const beforeIdentity = registryFileIdentity(path);
+  const cached = beforeIdentity ? repositoryRegistryReadSnapshots.get(path) : undefined;
+  if (cached && cached.fileIdentity === beforeIdentity) return cached.registry;
+
+  let registry = readRegistryFile(path, true) ?? defaultRegistry();
+  let afterIdentity = registryFileIdentity(path);
+  if (beforeIdentity && afterIdentity && beforeIdentity !== afterIdentity) {
+    // A cross-process atomic replacement raced this read. Re-read once from the
+    // new physical authority instead of caching a mixed-generation snapshot.
+    registry = readRegistryFile(path, true) ?? defaultRegistry();
+    afterIdentity = registryFileIdentity(path);
+  }
+  if (afterIdentity) repositoryRegistryReadSnapshots.set(path, { fileIdentity: afterIdentity, registry });
+  else repositoryRegistryReadSnapshots.delete(path);
+  return registry;
+}
+
 function timestampValue(value: string | undefined): number {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : 0;
@@ -555,17 +601,18 @@ export function repositorySummary(record: RepositoryRecord): RepositorySummary {
 }
 
 export function listRepositories(controllerHome?: string, options: { includeRemoved?: boolean } = {}): RepositoryRecord[] {
-  return loadRepositoryRegistry(controllerHome).repositories
+  return loadRepositoryRegistryReadSnapshot(controllerHome).repositories
     .filter((record) => options.includeRemoved === true || !record.removedAt)
-    .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.repoId.localeCompare(b.repoId));
+    .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.repoId.localeCompare(b.repoId))
+    .map(cloneRepositoryRecord);
 }
 
 export function getRepository(repoId: string, controllerHome?: string, options: { includeRemoved?: boolean } = {}): RepositoryRecord {
-  const record = loadRepositoryRegistry(controllerHome).repositories.find((candidate) => candidate.repoId === repoId);
+  const record = loadRepositoryRegistryReadSnapshot(controllerHome).repositories.find((candidate) => candidate.repoId === repoId);
   if (!record || (record.removedAt && options.includeRemoved !== true)) {
     throw new Error(`repository not found: ${repoId}`);
   }
-  return record;
+  return cloneRepositoryRecord(record);
 }
 
 export type RepositoryCheckoutSelectionErrorCode = 'CHECKOUT_NOT_FOUND' | 'CHECKOUT_NOT_ACTIVE';

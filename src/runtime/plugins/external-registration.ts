@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs';
 import { isAbsolute, join } from 'path';
 import { controllerSystemRoot, ensureControllerHome } from '../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -96,6 +96,26 @@ function registrationRoot(controllerHome: string): string {
 
 export function externalPluginRegistrationPath(controllerHome: string, pluginId: string): string {
   return join(registrationRoot(controllerHome), `${sanitizeFileComponent(pluginId)}.json`);
+}
+
+export function externalPluginRegistrationSetIdentity(controllerHome: string): string {
+  const root = registrationRoot(controllerHome);
+  if (!existsSync(root)) return 'absent';
+  const names = readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+  return names.map((name) => {
+    const path = join(root, name);
+    try {
+      const stat = statSync(path, { bigint: true });
+      return `${name}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch {
+      // A concurrent registration replacement/removal is itself an identity
+      // change. Do not reuse the prior adapter snapshot across that race.
+      return `${name}:changed`;
+    }
+  }).join('|');
 }
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {

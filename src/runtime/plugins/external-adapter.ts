@@ -1,5 +1,5 @@
 import { AssistantPluginError } from './errors';
-import { getExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
+import { externalPluginRegistrationSetIdentity, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
 import { executeManagedPluginProcess, executeManagedPluginProcessSync, type ManagedPluginProcessSpec } from './managed-process-adapter';
 import { activateAndVerifyFrontmostApplication, restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
@@ -256,13 +256,36 @@ function externalProviderPolicyContext(
   };
 }
 
+interface ExternalPluginAdapterSnapshot {
+  registrationSetIdentity: string;
+  adapters: readonly AssistantPluginAdapter[];
+  byPluginId: ReadonlyMap<string, AssistantPluginAdapter>;
+}
+
+const externalPluginAdapterSnapshots = new Map<string, ExternalPluginAdapterSnapshot>();
+
+function externalPluginAdapterSnapshot(controllerHome: string): ExternalPluginAdapterSnapshot {
+  const registrationSetIdentity = externalPluginRegistrationSetIdentity(controllerHome);
+  const cached = externalPluginAdapterSnapshots.get(controllerHome);
+  if (cached?.registrationSetIdentity === registrationSetIdentity) return cached;
+
+  const adapters = listExternalPluginRegistrations(controllerHome)
+    .map((registration) => createExternalPluginAdapter(registration));
+  const snapshot: ExternalPluginAdapterSnapshot = {
+    registrationSetIdentity,
+    adapters,
+    byPluginId: new Map(adapters.map((adapter) => [adapter.pluginId, adapter])),
+  };
+  externalPluginAdapterSnapshots.set(controllerHome, snapshot);
+  return snapshot;
+}
+
 export function getExternalPluginAdapter(controllerHome: string, pluginId: string): AssistantPluginAdapter | undefined {
-  const registration = getExternalPluginRegistration(controllerHome, pluginId);
-  return registration ? createExternalPluginAdapter(registration) : undefined;
+  return externalPluginAdapterSnapshot(controllerHome).byPluginId.get(pluginId);
 }
 
 export function listExternalPluginAdapters(controllerHome: string): AssistantPluginAdapter[] {
-  return listExternalPluginRegistrations(controllerHome).map((registration) => createExternalPluginAdapter(registration));
+  return [...externalPluginAdapterSnapshot(controllerHome).adapters];
 }
 
 export function createExternalPluginAdapter(
