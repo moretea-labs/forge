@@ -758,9 +758,19 @@ export function isCurrentWorkContract(contract: WorkContract): boolean {
 }
 
 export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {
-  const store = readWorkContractStore(options);
   const status = options.status ?? 'active';
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
+  if (status === 'active' && sqliteBacked(options)) {
+    const active = readActiveWorkCandidates({ ...options, limit });
+    if (active.invalid.length > 0) {
+      // Preserve the aggregate list API's fail-closed semantics. Callers that
+      // intentionally need row-isolated corruption diagnostics use
+      // readActiveWorkCandidates() directly and can inspect every invalid row.
+      throw new Error(active.invalid[0]!.error);
+    }
+    return active.contracts;
+  }
+  const store = readWorkContractStore(options);
   return store.contracts
     .filter((contract) => {
       if (status === 'all') return true;

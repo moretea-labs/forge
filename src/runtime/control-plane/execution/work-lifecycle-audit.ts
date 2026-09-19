@@ -4,12 +4,10 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
   getWorkContract,
-  listWorkContracts,
   readActiveWorkCandidates,
   type WorkContract,
 } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
-import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { listWorkHandles } from './work-handle-store';
 
 export interface WorkLifecycleAttention {
@@ -147,31 +145,31 @@ interface LifecycleWorkSnapshot {
 }
 
 /**
- * Keep lifecycle diagnostics available when one historical active Work row is malformed.
- * Active Work semantics come only from the Kernel row-isolated projection. When that
- * projection reports corruption, enumerate bounded durable identities and re-read each
- * remaining row through exact Kernel authority so terminal receipt/cleanup diagnostics
- * are preserved without reimplementing Work normalization here.
+ * Lifecycle attention is a projection consumer, not a historical Work scanner.
+ * Active authority comes from the row-isolated Kernel candidate projection.
+ * Terminal diagnostics are bounded to Work that still has a WorkHandle because
+ * that handle owns the physical delivery/cleanup state inspected below. Orphaned
+ * terminal Work is reconstructed by terminal-cleanup reconciliation before it
+ * becomes projection-owned cleanup state.
  */
-function readLifecycleWorkSnapshot(controllerHome: string, repoId: string): LifecycleWorkSnapshot {
+function readLifecycleWorkSnapshot(
+  controllerHome: string,
+  repoId: string,
+  handles: ReturnType<typeof listWorkHandles>,
+): LifecycleWorkSnapshot {
   const store = { controllerHome, repoId };
   const active = readActiveWorkCandidates({ ...store, limit: 100 });
-  if (active.invalid.length === 0) {
-    return { contracts: listWorkContracts({ ...store, status: 'all', limit: 100 }), invalid: [] };
-  }
-
   const contractsById = new Map(active.contracts.map((contract) => [contract.workId, contract]));
   const invalidById = new Map(active.invalid.map((entry) => [entry.workId, { workId: entry.workId, error: entry.error }]));
-  const identities = listControlPlaneRecords<WorkContract>(controllerHome, {
-    namespace: 'work_contract',
-    scope: repoId,
-    limit: 5_000,
-  })
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, 100);
 
-  for (const record of identities) {
-    const workId = record.key;
+  const handledWorkIds = [...new Set(
+    [...handles]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((handle) => handle.workContractId ?? handle.workId),
+  )];
+
+  for (const workId of handledWorkIds) {
+    if (contractsById.size >= 100) break;
     if (contractsById.has(workId) || invalidById.has(workId)) continue;
     try {
       const contract = getWorkContract(store, workId);
@@ -203,9 +201,9 @@ export function collectWorkLifecycleAttention(
   controllerHome: string,
   repository: RepositoryRecord,
 ): WorkLifecycleAttention[] {
-  const workSnapshot = readLifecycleWorkSnapshot(controllerHome, repository.repoId);
-  const contracts = workSnapshot.contracts;
   const handles = listWorkHandles(controllerHome, repository.repoId, 5_000);
+  const workSnapshot = readLifecycleWorkSnapshot(controllerHome, repository.repoId, handles);
+  const contracts = workSnapshot.contracts;
   const contractsByWork = new Map(contracts.map((contract) => [contract.workId, contract]));
   const handlesByWork = new Map(handles.map((handle) => [handle.workContractId ?? handle.workId, handle]));
   const findings: WorkLifecycleAttention[] = workSnapshot.invalid.map((entry) => attention(
