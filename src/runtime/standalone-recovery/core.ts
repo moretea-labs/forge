@@ -3184,11 +3184,12 @@ function validateRuntimeReleaseCandidate(
  * the one Runtime service, require whole-Runtime verification, and on failure
  * restore the previous whole release and its SQLite backup before restarting.
  */
-export async function activateRuntimeRelease(
+async function activateRuntimeReleaseInternal(
   config: RecoveryConfig,
   candidateManifestPath: string,
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
   guard: RuntimeReleaseActivationGuard = {},
+  heldRecoveryLock?: RecoveryLock,
 ): Promise<RuntimeReleaseActivationResult> {
   let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
   try {
@@ -3263,7 +3264,7 @@ export async function activateRuntimeRelease(
     ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const lockRequestId = guard.requestId?.trim() || operationId;
-  const locked = await withLock(config, { action: 'activate_runtime_release', requestId: lockRequestId }, async () => {
+  const activateUnderRecoveryAuthority = async () => {
     // Re-read authority only after acquiring the mutation lock. A caller may
     // have selected its candidate before another activation completed; stale
     // decisions must fail before bootout/publish rather than overwrite the newer
@@ -3604,11 +3605,46 @@ export async function activateRuntimeRelease(
       rollback,
       verify: after,
     } satisfies RuntimeReleaseActivationResult;
-  });
+  };
+
+  if (heldRecoveryLock) {
+    const live = liveRecoveryMutationLock(config);
+    if (
+      !live
+      || live.instanceId !== heldRecoveryLock.instanceId
+      || live.pid !== heldRecoveryLock.pid
+      || live.processStartTime !== heldRecoveryLock.processStartTime
+    ) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: 'RECOVERY_OPERATION_LOCK_AUTHORITY_CHANGED',
+        serviceTarget: service.target,
+        verify: await verifyStableRuntime(config),
+      };
+    }
+    return activateUnderRecoveryAuthority();
+  }
+
+  const locked = await withLock(
+    config,
+    { action: 'activate_runtime_release', requestId: lockRequestId },
+    async () => activateUnderRecoveryAuthority(),
+  );
   if (!locked.acquired) {
     return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: await verifyStableRuntime(config) };
   }
   return locked.value;
+}
+
+export async function activateRuntimeRelease(
+  config: RecoveryConfig,
+  candidateManifestPath: string,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  guard: RuntimeReleaseActivationGuard = {},
+): Promise<RuntimeReleaseActivationResult> {
+  return activateRuntimeReleaseInternal(config, candidateManifestPath, dependencies, guard);
 }
 
 export async function activatePinnedRuntimeRelease(
@@ -3987,22 +4023,59 @@ async function installReleaseSessionCandidateService(
   throw new Error(`RELEASE_SESSION_CANDIDATE_SERVICE_PLATFORM_UNSUPPORTED: ${process.platform}`);
 }
 
+interface ReleaseSessionCandidateRetirement {
+  ok: boolean;
+  detail: string;
+}
+
 async function stopReleaseSessionCandidateService(
   session: ReleaseSession,
   runCommand: CommandRunner = command,
-): Promise<void> {
+): Promise<ReleaseSessionCandidateRetirement> {
   const home = session.candidate.controllerHome;
-  if (process.platform === 'darwin') {
-    await uninstallForgeRuntimeService(home).catch(() => undefined);
-    return;
+  try {
+    if (process.platform === 'darwin') {
+      try {
+        await uninstallForgeRuntimeService(home);
+      } catch (error) {
+        const uid = await currentUid();
+        if (uid === undefined) {
+          return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+        const paths = forgeRuntimeServicePaths(home);
+        const loaded = await runCommand('launchctl', ['print', `gui/${uid}/${paths.label}`], 5_000);
+        if (loaded.ok) {
+          return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+        // An already-absent launchd job is an idempotent retirement. Remove only
+        // its stale installed declaration, then verify the Runtime itself below.
+        rmSync(paths.installedPlistPath, { force: true });
+      }
+    } else if (process.platform === 'linux') {
+      const label = forgeRuntimeServicePaths(home).label;
+      const unitName = systemdUserUnitName(label);
+      const stopped = await runCommand('systemctl', ['--user', 'disable', '--now', unitName], 20_000);
+      const stoppedDetail = `${stopped.stderr}\n${stopped.stdout}`;
+      if (!stopped.ok && !/not loaded|not found|does not exist|no such file/i.test(stoppedDetail)) {
+        return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_STOP_FAILED: ${stoppedDetail.trim() || stopped.status}` };
+      }
+      rmSync(systemdUserUnitPath(unitName), { force: true });
+      const reloaded = await runCommand('systemctl', ['--user', 'daemon-reload'], 20_000);
+      if (!reloaded.ok) {
+        return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_RELOAD_FAILED: ${reloaded.stderr || reloaded.stdout || reloaded.status}` };
+      }
+    } else {
+      return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SERVICE_PLATFORM_UNSUPPORTED: ${process.platform}` };
+    }
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
-  if (process.platform === 'linux') {
-    const label = forgeRuntimeServicePaths(home).label;
-    const unitName = systemdUserUnitName(label);
-    await runCommand('systemctl', ['--user', 'disable', '--now', unitName], 20_000).catch(() => undefined);
-    rmSync(systemdUserUnitPath(unitName), { force: true });
-    await runCommand('systemctl', ['--user', 'daemon-reload'], 20_000).catch(() => undefined);
+
+  const observation = observeRuntimeStatus(home);
+  if (observation.running) {
+    return { ok: false, detail: 'RELEASE_SESSION_CANDIDATE_STILL_RUNNING_AFTER_RETIREMENT' };
   }
+  return { ok: true, detail: 'Candidate B persistent service is absent and its Runtime process is not running' };
 }
 
 function candidateCanaryReceipts(
@@ -4040,6 +4113,34 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
   }, async () => {
     let session = readReleaseSession(config.controllerHome, sessionId);
     if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase === 'candidate_booted') {
+      const retirement = await stopReleaseSessionCandidateService(session);
+      if (!retirement.ok) {
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `Candidate B boot/restart canary was interrupted and retirement failed: ${retirement.detail}`,
+          releaseSession: session,
+        };
+      }
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'failed',
+        receipts: [{
+          id: 'candidate_failed',
+          kind: 'candidate_canary',
+          summary: 'Candidate B boot/restart canary was interrupted; Candidate B was retired before terminalizing the ReleaseSession',
+        }],
+      });
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: 'Candidate B boot/restart canary was interrupted; Candidate B is retired and the ReleaseSession is terminal failed',
+        releaseSession: session,
+      };
+    }
     if (session.phase !== 'static_verified') {
       return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CANDIDATE_BOOT_REQUIRES_STATIC_VERIFIED: ${session.phase}`, releaseSession: session };
     }
@@ -4117,21 +4218,30 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
       };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      await stopReleaseSessionCandidateService(session, runCommand);
+      const retirement = await stopReleaseSessionCandidateService(session, runCommand);
+      const terminalDetail = retirement.ok
+        ? detail
+        : `${detail}; Candidate B retirement failed: ${retirement.detail}`;
       try {
         const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
-        if (!['failed', 'rolled_back', 'known_good'].includes(latest.phase)) {
+        session = latest;
+        if (retirement.ok && !['failed', 'rolled_back', 'known_good'].includes(latest.phase)) {
           session = advanceReleaseSession({
             controllerHome: config.controllerHome,
             sessionId,
             expectedRevision: latest.revision,
             phase: 'failed',
-            receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: detail.slice(0, 500) }],
+            receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: terminalDetail.slice(0, 500) }],
           });
         }
       } catch { /* preserve original Candidate B failure */ }
-      audit(config, 'release_session_candidate_failed', { sessionId, detail });
-      return { ok: false as const, attempted: true, detail, releaseSession: session };
+      audit(config, 'release_session_candidate_failed', {
+        sessionId,
+        detail,
+        candidateRetired: retirement.ok,
+        candidateRetirementDetail: retirement.detail,
+      });
+      return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: session };
     }
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
@@ -4147,14 +4257,147 @@ export async function cutoverConfiguredRuntimeReleaseSession(
   const locked = await withLock(config, {
     action: 'release_session_cutover',
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-  }, async () => {
-    let session = readReleaseSession(config.controllerHome, sessionId);
-    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+  }, async (releaseSessionLock) => {
+    const initialSession = readReleaseSession(config.controllerHome, sessionId);
+    if (!initialSession) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    let session: ReleaseSession = initialSession;
+    const candidateRelease = session.candidateRelease;
+    if (!candidateRelease) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+
+    const reconcileCutoverAttempt = async (
+      reason: string,
+      activation?: RuntimeReleaseActivationResult,
+    ): Promise<ConfiguredRuntimeActivationResult> => {
+      const retirement = await stopReleaseSessionCandidateService(session);
+      if (!retirement.ok) {
+        audit(config, 'release_session_candidate_retirement_failed', {
+          sessionId,
+          phase: session.phase,
+          candidateControllerHome: session.candidate.controllerHome,
+          detail: retirement.detail,
+          reconciliationReason: reason,
+        });
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `${reason}; Candidate B retirement failed: ${retirement.detail}`,
+          releaseSession: session,
+          ...(activation ? { activation } : {}),
+        };
+      }
+
+      const stableNow = await verifyLocalRuntime(config);
+      const candidateIsStable = Boolean(
+        stableNow.ok
+        && stableNow.releases.active?.revision === candidateRelease.releaseId
+        && stableNow.releases.active?.artifactIdentity === candidateRelease.artifactIdentity,
+      );
+      const originalStableRestored = Boolean(
+        stableNow.ok
+        && stableNow.releases.active?.revision === session.stableRelease.releaseId
+        && stableNow.releases.active?.artifactIdentity === session.stableRelease.artifactIdentity,
+      );
+
+      if (candidateIsStable) {
+        if (session.phase === 'cutover_attempting') {
+          session = advanceReleaseSession({
+            controllerHome: config.controllerHome,
+            sessionId,
+            expectedRevision: session.revision,
+            phase: 'cutover_committed',
+            receipts: [{
+              id: 'cutover',
+              kind: 'cutover',
+              summary: `Stable A runs verified Candidate B release ${candidateRelease.releaseId}; Candidate B retired before cutover commit`,
+            }],
+          });
+        }
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'soaking',
+          receipts: [{
+            id: 'soak_started',
+            kind: 'soak',
+            summary: `cutover reconciled at ${new Date().toISOString()}; Candidate B is retired and known-good promotion remains gated on later stable verification`,
+          }],
+        });
+        audit(config, 'release_session_cutover_reconciled_committed', {
+          sessionId,
+          releaseId: candidateRelease.releaseId,
+          candidateRetired: true,
+          reason,
+        });
+        return {
+          ok: true as const,
+          attempted: true,
+          detail: 'ReleaseSession cutover reconciled to committed: Stable A runs the verified candidate artifact and Candidate B is retired',
+          releaseSession: session,
+          ...(activation ? { activation } : {}),
+        };
+      }
+
+      if (originalStableRestored) {
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'rolled_back',
+          receipts: [{
+            id: 'rollback',
+            kind: 'rollback',
+            summary: `cutover did not commit; exact Stable A ${session.stableRelease.releaseId} is active and verified, and Candidate B is retired`,
+          }],
+        });
+        audit(config, 'release_session_cutover_reconciled_rolled_back', {
+          sessionId,
+          restoredStableReleaseId: session.stableRelease.releaseId,
+          candidateRetired: true,
+          reason,
+        });
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: 'ReleaseSession cutover reconciled to rolled_back: exact Stable A is active and Candidate B is retired',
+          releaseSession: session,
+          ...(activation ? { activation } : {}),
+        };
+      }
+
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'failed',
+        receipts: [{
+          id: 'cutover_failed',
+          kind: 'cutover',
+          summary: `${reason}; Stable A outcome is not fully verified; Candidate B is retired`.slice(0, 500),
+        }],
+      });
+      audit(config, 'release_session_cutover_reconciled_failed', {
+        sessionId,
+        candidateReleaseId: candidateRelease.releaseId,
+        candidateRetired: true,
+        reason,
+        observedActiveReleaseId: stableNow.releases.active?.revision,
+      });
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified`,
+        releaseSession: session,
+        ...(activation ? { activation } : {}),
+      };
+    };
+
+    if (session.phase === 'cutover_attempting' || session.phase === 'cutover_committed') {
+      return reconcileCutoverAttempt(`resuming ReleaseSession from ${session.phase} without a second activation attempt`);
+    }
     if (session.phase !== 'cutover_eligible') {
       return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CUTOVER_REQUIRES_ELIGIBLE: ${session.phase}`, releaseSession: session };
     }
-    const candidateRelease = session.candidateRelease;
-    if (!candidateRelease) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
 
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
@@ -4210,128 +4453,63 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         }],
       });
 
-      const activation = await activateRuntimeRelease(config, promoted.manifestPath, {}, {
+      const activation = await activateRuntimeReleaseInternal(config, promoted.manifestPath, {}, {
         ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
         expectedAuthorityRevision: session.stableRelease.authorityRevision,
         expectedActiveReleaseId: session.stableRelease.releaseId,
         releaseSessionId: session.sessionId,
-      });
+      }, releaseSessionLock);
 
-      if (activation.ok) {
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'cutover_committed',
-          receipts: [{
-            id: 'cutover',
-            kind: 'cutover',
-            summary: `Stable A cut over to verified portable release ${candidateRelease.releaseId}; whole-Runtime verification passed`,
-          }],
-        });
-        // Candidate B is no longer needed after the same artifact is healthy on A.
-        await stopReleaseSessionCandidateService(session).catch(() => undefined);
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'soaking',
-          receipts: [{
-            id: 'soak_started',
-            kind: 'soak',
-            summary: `cutover committed at ${new Date().toISOString()}; known-good promotion remains gated on a later stable verification`,
-          }],
-        });
-        audit(config, 'release_session_cutover_committed', {
-          sessionId,
-          releaseId: candidateRelease.releaseId,
-          treeSha256: candidateRelease.treeSha256,
-          operationId: activation.operationId,
-        });
-        return {
-          ok: true as const,
-          attempted: true,
-          detail: 'ReleaseSession cutover committed from the verified Candidate B artifact and entered soak; Stable A now runs the byte-identical artifact',
-          releaseSession: session,
-          activation,
-        };
-      }
-
-      const rollbackVerified = Boolean(
-        activation.rollback?.ok
-        && activation.rollback.verify?.ok
-        && activation.rollback.verify.releases.active?.revision === session.stableRelease.releaseId
-        && activation.rollback.verify.releases.active?.artifactIdentity === session.stableRelease.artifactIdentity,
-      );
-      if (rollbackVerified) {
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'rolled_back',
-          receipts: [{
-            id: 'rollback',
-            kind: 'rollback',
-            summary: `cutover failed and exact Stable A ${session.stableRelease.releaseId} was restored and whole-Runtime verified; no retry was attempted`,
-          }],
-        });
-        await stopReleaseSessionCandidateService(session).catch(() => undefined);
-        audit(config, 'release_session_cutover_rolled_back', {
-          sessionId,
-          candidateReleaseId: candidateRelease.releaseId,
-          restoredStableReleaseId: session.stableRelease.releaseId,
-          operationId: activation.operationId,
-        });
-        return {
-          ok: false as const,
-          attempted: true,
-          detail: `ReleaseSession cutover failed once; exact Stable A was restored and verified: ${activation.detail}`,
-          releaseSession: session,
-          activation,
-        };
-      }
-
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'failed',
-        receipts: [{
-          id: 'cutover_failed',
-          kind: 'cutover',
-          summary: `cutover failed and Stable A rollback was not fully verified: ${activation.detail}`.slice(0, 500),
-        }],
-      });
-      audit(config, 'release_session_cutover_failed_unrecovered', {
-        sessionId,
-        candidateReleaseId: candidateRelease.releaseId,
-        operationId: activation.operationId,
-        rollbackOk: activation.rollback?.ok === true,
-      });
-      return {
-        ok: false as const,
-        attempted: true,
-        detail: `ReleaseSession cutover failed and rollback was not fully verified: ${activation.detail}`,
-        releaseSession: session,
+      return reconcileCutoverAttempt(
+        activation.ok
+          ? 'cutover activation completed; reconciling canonical Runtime identity before phase progression'
+          : `cutover activation returned failure: ${activation.detail}`,
         activation,
-      };
+      );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      // Pre-cutover eligibility failures do not mutate Stable A. Once the
-      // session entered cutover_attempting, only activation owns rollback.
       const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
+      session = latest;
+      if (latest.phase === 'cutover_attempting' || latest.phase === 'cutover_committed') {
+        return reconcileCutoverAttempt(`cutover interrupted after entering ${latest.phase}: ${detail}`);
+      }
       if (latest.phase === 'cutover_eligible') {
+        const retirement = await stopReleaseSessionCandidateService(latest);
+        if (!retirement.ok) {
+          audit(config, 'release_session_candidate_retirement_failed', {
+            sessionId,
+            phase: latest.phase,
+            candidateControllerHome: latest.candidate.controllerHome,
+            detail: retirement.detail,
+            cutoverError: detail,
+          });
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: `${detail}; Candidate B retirement failed: ${retirement.detail}`,
+            releaseSession: latest,
+          };
+        }
         try {
           session = advanceReleaseSession({
             controllerHome: config.controllerHome,
             sessionId,
             expectedRevision: latest.revision,
             phase: 'failed',
-            receipts: [{ id: 'cutover_precondition_failed', kind: 'cutover', summary: detail.slice(0, 500) }],
+            receipts: [{
+              id: 'cutover_precondition_failed',
+              kind: 'cutover',
+              summary: `${detail}; Candidate B retired`.slice(0, 500),
+            }],
           });
         } catch { /* preserve original cutover precondition failure */ }
+        audit(config, 'release_session_cutover_precondition_failed', {
+          sessionId,
+          detail,
+          candidateRetired: true,
+        });
       }
-      audit(config, 'release_session_cutover_precondition_failed', { sessionId, detail });
       return { ok: false as const, attempted: false, noOp: true, detail, releaseSession: session };
     }
   });
