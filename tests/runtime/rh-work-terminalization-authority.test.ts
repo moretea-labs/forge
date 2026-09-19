@@ -311,6 +311,37 @@ describe('rh_work terminalization authority', () => {
     const identityBoundResult = structured(await callRuntimeTool(ctx(fx.controllerHome, fx.repository, caller.principalId, identityBoundSession, caller.controllerInstanceId), 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: identityBoundWorkId }));
     expect(identityBoundResult.data?.nextStep).toBe('repair_or_reverify');
   });
+  test('rh_work start persists a scheduled ChatGPT ControllerWorkBinding before controller release', async () => {
+    const fx = fixture();
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-fresh-binding-start', 'transport-fresh-binding-start', 'runtime-fresh-binding-start');
+    const started = structured(await callRuntimeTool(caller, 'rh_work', {
+      operation: 'start', repo_id: fx.repository.repoId, requested_by: 'chatgpt',
+      objective: 'Persist fresh scheduled binding at Work admission.', work_kind: 'read_only_review',
+      scope_clear: true, allowed_paths: ['src/index.ts'], acceptance_criteria: ['Fresh Work is scheduler-resumable after release.'],
+      constraints: { workspace_mode: 'isolated', require_worktree: true, direct_main_prohibited: true, allow_commit: false, allow_merge: false, allow_cleanup: true },
+    }));
+    expect(started.status).toBe('ok');
+    const workId = String(started.data?.work?.workId ?? '');
+    const binding = getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(binding?.latestSessionId).toBe('transport-fresh-binding-start');
+    expect(binding?.binding).toMatchObject({ hostKind: 'chatgpt' });
+  });
+
+  test('rh_work controller_claim repairs a missing scheduled ChatGPT ControllerWorkBinding', async () => {
+    const fx = fixture();
+    const workId = 'work-fresh-binding-claim';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-fresh-binding-claim', 'transport-fresh-binding-claim', 'runtime-fresh-binding-claim');
+    expect(getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+    const claimed = structured(await callRuntimeTool(caller, 'rh_work', {
+      operation: 'controller_claim', repo_id: fx.repository.repoId, work_id: workId, requested_by: 'chatgpt',
+    }));
+    expect(claimed.status).toBe('ok');
+    const binding = getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(binding?.latestSessionId).toBe('transport-fresh-binding-claim');
+    expect(binding?.binding).toMatchObject({ hostKind: 'chatgpt' });
+  });
+
   test('rh_work verify honors check_ids as one resource-compatible Work verification wave', async () => {
     const fx = fixture();
     installBatchVerificationChecks(fx.repoRoot);

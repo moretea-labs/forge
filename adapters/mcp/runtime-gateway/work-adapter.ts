@@ -32,6 +32,7 @@ import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
+import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 export { runFacadeRepair };
 import { allowedFacadeOperations, buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
@@ -122,7 +123,8 @@ export function claimNewFacadeWork(
 ) {
   const identity = authenticatedFacadeControllerIdentity(ctx, args);
   const authority = mintControllerSessionAuthority();
-  const session = resumeControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const session = resumeControllerSession(store, {
     workId,
     controllerId: identity.controllerId,
     controllerType: identity.controllerType,
@@ -132,6 +134,7 @@ export function claimNewFacadeWork(
     controllerInstanceId: identity.controllerInstanceId,
     leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
   });
+  if (session.controllerType !== 'human') ensureScheduledControllerBindingForWork(store, { workId, session, args });
   return { session, controllerAuthorityId: authority.authorityId };
 }
 

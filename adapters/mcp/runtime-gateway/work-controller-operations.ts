@@ -20,6 +20,7 @@ import {
 import { assertAutomatedOperationAllowed } from '../../../src/runtime/control-plane/governance/external-effects';
 import { ensureControllerDispositionContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { completeRequirementGoal } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 import {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
@@ -144,6 +145,7 @@ export async function callRhWorkControllerOperation(
           : {}),
         leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
       });
+      if (session.controllerType !== 'human') ensureScheduledControllerBindingForWork(store, { workId, session, args });
       const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);
       const executionSession = startExecutionSession(ctx.controllerHome, {
         sessionId: identity.sessionId,
