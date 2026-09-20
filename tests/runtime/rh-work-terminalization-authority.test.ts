@@ -4042,6 +4042,84 @@ describe('rh_work terminalization authority', () => {
 
   }, 25_000);
 
+  test('terminal Requirement-only continuation binds the successor before claiming ownership', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const requirementId = 'REQ-terminal-requirement-successor';
+    const predecessorWorkId = 'work-terminal-requirement-predecessor';
+    const principalId = 'principal-terminal-requirement-successor';
+    const sessionId = 'transport-terminal-requirement-successor';
+    const controllerInstanceId = 'runtime-terminal-requirement-successor';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Terminal Requirement successor compatibility',
+      outcomeStatement: 'Continue a completed Requirement-only Work through the exact ControllerRound relay without introducing a Plan.',
+    });
+    createWorkContract(store, {
+      workId: predecessorWorkId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      objective: 'finish the Requirement predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: targetRevision,
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId: predecessorWorkId,
+      identity: { controllerId: 'schedule:terminal-requirement-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-requirement-successor' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
+    const owner = claimControllerSession(store, {
+      workId: predecessorWorkId, controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId, sessionId, leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId: predecessorWorkId, session: owner })).toMatchObject({ status: 'claimed' });
+
+    const recordedAt = '2026-09-20T00:00:00.000Z';
+    transitionWorkContractPhase(store, predecessorWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Requirement predecessor no-change delivery verified.' });
+    requestWorkImplementationReview(store, predecessorWorkId, 'Requirement predecessor requires review before terminal successor handoff.');
+    recordWorkImplementationReview(store, predecessorWorkId, {
+      schemaVersion: 1, reviewId: 'REV-terminal-requirement-predecessor', workId: predecessorWorkId, reviewerPrincipalId: principalId, reviewerControllerSessionId: sessionId,
+      decision: 'approved', rationale: 'Reviewed Requirement predecessor before successor relay handoff.', findings: [], sourceRevision: targetRevision,
+      workspaceFingerprint: 'terminal-requirement-content', verificationWorkspaceFingerprint: 'terminal-requirement-verification', changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'predecessor delivered',
+      verificationEvidence: [], architectureEvidence: [], recordedAt,
+    });
+    recordWorkCompletionReceipt(store, predecessorWorkId, {
+      schemaVersion: 1, receiptId: 'receipt-terminal-requirement-predecessor', source: 'controller_work', issueId: 'requirement-stage',
+      taskId: predecessorWorkId, workId: predecessorWorkId, targetBranch: 'main', targetRevision, changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    expect(getWorkContract(store, predecessorWorkId)?.status).toBe('completed');
+    expect(releaseObservedControllerSession(store, { workId: predecessorWorkId, actor: 'test-terminal-requirement-release', owner }).allowed).toBe(true);
+
+    const caller = ctx(
+      fx.controllerHome, fx.repository, principalId,
+      `${sessionId}-rotated`, `${controllerInstanceId}-rotated`,
+    );
+    const started = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Continue the Requirement-only successor.',
+      requirement_id: requirementId,
+      related_work_id: predecessorWorkId,
+      work_relation: 'continue',
+      work_kind: 'completed_no_change',
+      controller_authority_id: opened.authorityId,
+      relay_scope_id: opened.relayScopeId,
+      scope_clear: true,
+      requires_recovery: true,
+    }));
+    expect(started.status).toBe('ok');
+    expect(started.data.ownershipClaimed).toBe(false);
+    const successorWorkId = String(started.data.successorWorkId ?? started.data.work?.workId ?? '');
+    expect(successorWorkId).toMatch(/^work-/);
+    expect(getControllerSession(store, successorWorkId)).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({
+      status: 'claimed',
+      successorWorkId,
+      requirementId,
+      relayScopeId: opened.relayScopeId,
+    });
+  }, 20_000);
+
   test('plan_accept_step fails closed when multiple successor Plan steps are ready', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
