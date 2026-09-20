@@ -16,6 +16,7 @@ export const ACTIONS = [
   'list_releases',
   'stage_and_activate_runtime_release',
   'release_session_status',
+  'advance_runtime_release_session',
   'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
@@ -34,6 +35,7 @@ const RELEASE_SESSION_ACTIONS = new Set([
 ]);
 const MUTATING_ACTIONS = new Set([
   'stage_and_activate_runtime_release',
+  'advance_runtime_release_session',
   'verify_runtime_release_session_static',
   'verify_runtime_release_session_candidate',
   'cutover_runtime_release_session',
@@ -137,7 +139,7 @@ export async function callRecoveryTool(controllerHome, toolName, args = {}, inje
         method: 'DELETE',
         headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId },
       });
-    } catch { /* Session cleanup is best effort; Recovery owns mutation transaction durability. */ }
+    } catch { /* Session cleanup is best effort; ReleaseSession durability is independent from this transport session. */ }
   }
 }
 
@@ -184,7 +186,7 @@ export async function executeAction(actionId, input, providerConfig, injected = 
   const sessionArgs = RELEASE_SESSION_ACTIONS.has(actionId) ? releaseSessionInput(input) : undefined;
   if (!sessionArgs) assertEmptyInput(input);
   const callTool = injected.callRecoveryTool ?? callRecoveryTool;
-  if (actionId === 'stage_and_activate_runtime_release') ensureSourceRepositoryProvenance(config.controllerHome, injected);
+  if (actionId === 'stage_and_activate_runtime_release' || actionId === 'advance_runtime_release_session') ensureSourceRepositoryProvenance(config.controllerHome, injected);
   const args = {
     ...(sessionArgs ?? {}),
     ...(MUTATING_ACTIONS.has(actionId) ? { request_id: mutationRequestId(injected.requestId ?? actionId) } : {}),

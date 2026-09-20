@@ -34,7 +34,7 @@ import {
 import {
   listReleaseSessions,
   releaseSessionCandidateIsRetired,
-} from '../standalone-recovery/release-session';
+} from '../release/release-session';
 import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
 import { observeRuntimeStatus } from '../root/status';
 

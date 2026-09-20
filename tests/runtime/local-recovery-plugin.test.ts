@@ -24,7 +24,7 @@ describe('local_recovery managed transport provider', () => {
     ]);
   });
 
-  test('stage-and-activate delegates only to Recovery-owned transaction with provider-generated request id', async () => {
+  test('preparation and coordinator advance delegate with provider-owned request identity', async () => {
     const calls: unknown[] = [];
     const callRecoveryTool = async (controllerHome: string, name: string, args: object) => {
       calls.push({ controllerHome, name, args });
@@ -39,6 +39,15 @@ describe('local_recovery managed transport provider', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'stage_and_activate_runtime_release' });
     expect((calls[0] as any).args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
+
+    await executeAction('advance_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
+      callRecoveryTool,
+      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
+      requestId: 'release-advance-1',
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({ controllerHome: '/tmp/controller', name: 'advance_runtime_release_session' });
+    expect((calls[1] as any).args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
   });
 
   test('backfills only missing source repository provenance from the registered source-root owner', () => {

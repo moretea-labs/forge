@@ -16,7 +16,7 @@ import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { backupControlPlaneDatabase, inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { forgeRuntimeServicePaths, writeForgeRuntimeServiceConfig } from '../../src/runtime/root/service';
-import { advanceReleaseSession, createReleaseSession, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/standalone-recovery/release-session';
+import { advanceReleaseSession, createReleaseSession, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
 const homes: string[] = [];

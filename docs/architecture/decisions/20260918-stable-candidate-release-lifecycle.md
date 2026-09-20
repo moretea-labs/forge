@@ -1,6 +1,6 @@
-# ADR: Stable A / Candidate B and Recovery-owned ReleaseSession
+# ADR: Stable A / Candidate B and ReleaseSession authority
 
-- **Status:** Accepted source architecture; live cutover is explicitly deferred
+- **Status:** Accepted source architecture; authority boundary refined 2026-09-20; live cutover remains a separate release operation
 - **Date:** 2026-09-18
 - **Authority:** [`../CURRENT.md`](../CURRENT.md) and executable Runtime/Recovery contracts
 
@@ -18,10 +18,15 @@ Candidate B (one isolated Controller Home)
   portable immutable release materialized once and tree-hashed
   all candidate canaries on the exact artifact later promoted to A
 
-Recovery ReleaseSession
-  sole lifecycle-side-effect owner
+ReleaseSession (release domain)
+  sole durable normal-release lifecycle authority
   durable receipt/fence journal
-  final atomic routing decision: B or still-healthy A
+  final semantic routing decision: B or still-healthy A
+
+Standalone Recovery provider
+  physical Candidate B preparation and verification
+  fenced Runtime activation / rollback
+  Watchdog health recovery only
 ```
 
 Candidate B never shares A's Controller Home, `control-plane.sqlite`, release
@@ -81,9 +86,15 @@ records remain audit history only and have no retention or rollback authority.
 
 ## ReleaseSession state
 
-`Recovery/state/release-sessions/<id>.json` is a bounded, Recovery-owned
-transaction journal, guarded by the existing Recovery operation lock and a
-per-record revision CAS. It has no second daemon or scheduler.
+`Recovery/state/release-sessions/<id>.json` is the current bounded storage path
+for the ReleaseSession transaction journal; that path is not authority. The
+ReleaseSession domain owns semantic phase progression and a per-record revision
+CAS, while the executing Recovery provider holds the existing mutation lock for
+physical operations. A stateless ReleaseCoordinator derives the next action
+from the persisted phase and has no second daemon, scheduler, Work, or durable
+coordinator state. Only one non-terminal ReleaseSession may exist per Forge
+instance. An interrupted `source_frozen` preparation resumes that same session
+when the frozen source and Stable A identity still match.
 
 ```text
 source_frozen → built → static_verified → candidate_booted
@@ -110,8 +121,8 @@ summaries, never tokens, raw database payloads or browser messages.
 | `runtime-incarnation.json` | Canonical Runtime ownership acquisition | latest epoch; superseded generations remain stale | next owner CAS-reconciles |
 | Supervisor socket owner evidence | Canonical Runtime/Supervisor composition | deleted with socket; ephemeral | probe then remove only stale non-connectable socket |
 | known-good bundle | Standalone Recovery | bounded live attestations; prune only after state commit | validate release + DB + service contract offline |
-| ReleaseSession | Standalone Recovery | `known_good`, `rolled_back`, `failed`; bounded session retention is Recovery cleanup | lock + revision CAS resumes the same session |
-| Candidate B Home | ReleaseSession/Recovery | explicit terminal cleanup only after evidence retention | no deletion/rebuild of A; B can be inspected independently |
+| ReleaseSession | Release domain / stateless ReleaseCoordinator | `known_good`, `rolled_back`, `failed`; bounded session retention is physical cleanup | revision CAS resumes the same session; Recovery provider executes physical effects |
+| Candidate B Home | ReleaseSession semantic authority / Recovery physical provider | explicit terminal cleanup only after evidence retention | no deletion/rebuild of A; B can be inspected independently |
 | Process Runtime terminal lease | Process Runtime lease authority | terminal evidence and lease release are separate idempotent phases | terminal observation/wait/cancel and full maintenance retry exact lease release until settled |
 
 All bundle and session data is local Controller state. It contains no secrets:
@@ -119,6 +130,8 @@ the service contract records a token *path*, while each B token is an independen
 
 ## Verification
 
+- Ordinary repository Work terminalizes at accepted source delivery and cannot depend on Runtime staging, activation, soak or known-good;
+- release-level gates execute once for the frozen ReleaseSession candidate rather than once per contributing Work;
 - Candidate lane derivation/build cannot mutate A; Candidate boot/restart touches only B's isolated service/Home;
 - byte-identical release-tree identity is required for B→A promotion; no production rebuild is allowed;
 - stale Runtime generation and release claims cannot write;

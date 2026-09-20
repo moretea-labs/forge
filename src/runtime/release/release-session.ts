@@ -107,9 +107,9 @@ export interface ReleaseSessionInventory {
 }
 
 /**
- * Bounded read-only inventory for Recovery-owned ReleaseSession authority.
- * Consumers may derive retention decisions from durable phases, but only
- * Recovery operations may advance those phases.
+ * Bounded read-only inventory for ReleaseSession authority.
+ * The release domain owns phase progression. Recovery may execute fenced
+ * Runtime mutations, but it is not the semantic owner of normal release intent.
  */
 export function listReleaseSessions(
   controllerHome: string,
@@ -142,12 +142,20 @@ export function listReleaseSessions(
   };
 }
 
-const RELEASE_SESSION_CANDIDATE_RETIRED_PHASES = new Set<ReleaseSessionPhase>([
-  'soaking',
+const RELEASE_SESSION_TERMINAL_PHASES = new Set<ReleaseSessionPhase>([
   'known_good',
   'rolled_back',
   'failed',
 ]);
+
+const RELEASE_SESSION_CANDIDATE_RETIRED_PHASES = new Set<ReleaseSessionPhase>([
+  'soaking',
+  ...RELEASE_SESSION_TERMINAL_PHASES,
+]);
+
+export function releaseSessionIsTerminal(session: ReleaseSession): boolean {
+  return RELEASE_SESSION_TERMINAL_PHASES.has(session.phase);
+}
 
 /**
  * Durable semantic proof that Candidate B is no longer required as a mutable
@@ -169,6 +177,14 @@ export function createReleaseSession(input: {
   const sessionId = validSessionId(input.sessionId);
   const path = sessionPath(input.controllerHome, sessionId);
   if (existsSync(path)) throw new Error('RELEASE_SESSION_ALREADY_EXISTS');
+  const inventory = listReleaseSessions(input.controllerHome, { maxEntries: 512 });
+  if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+    throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+  }
+  const active = inventory.sessions.filter((session) => !releaseSessionIsTerminal(session));
+  if (active.length > 0) {
+    throw new Error(`RELEASE_SESSION_ACTIVE_EXISTS: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
+  }
   if (resolve(input.stable.controllerHome) === resolve(input.candidate.controllerHome)) throw new Error('RELEASE_SESSION_LANE_COLLISION');
   const timestamp = new Date().toISOString();
   const session: ReleaseSession = {
@@ -231,8 +247,9 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
 }
 
 /**
- * Recovery calls this under its existing operation lock. expectedRevision is
- * a second CAS fence, so a stale observer cannot advance a newer session.
+ * The release coordinator calls this while the executing provider holds the
+ * appropriate mutation lock. expectedRevision is a CAS fence, so a stale
+ * observer cannot advance a newer session.
  */
 export function advanceReleaseSession(input: {
   controllerHome: string;

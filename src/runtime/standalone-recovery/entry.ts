@@ -56,7 +56,16 @@ import {
   type RecoveryRuntimeRole,
 } from './release';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
-import { readReleaseSession } from './release-session';
+import { readReleaseSession } from '../release/release-session';
+import { advanceConfiguredRuntimeRelease, type RuntimeReleaseProvider } from '../release/release-coordinator';
+
+const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> = {
+  prepare: (config, requestId) => prepareConfiguredRuntimeReleaseSession(config, {}, requestId),
+  verifyStatic: (config, sessionId, requestId) => verifyConfiguredRuntimeReleaseSessionStaticGates(config, sessionId, requestId),
+  verifyCandidate: (config, sessionId, requestId) => bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(config, sessionId, requestId),
+  cutover: (config, sessionId, requestId) => cutoverConfiguredRuntimeReleaseSession(config, sessionId, requestId),
+  promoteKnownGood: (config, sessionId, requestId) => promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, requestId),
+};
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -86,6 +95,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'activate-runtime-release',
   'stage-and-activate-runtime-release',
   'release-session-status',
+  'release-session-advance',
   'release-session-prepare',
   'release-session-static-verify',
   'release-session-candidate-verify',
@@ -162,6 +172,7 @@ async function cli(): Promise<void> {
       output(readReleaseSession(config.controllerHome, sessionId) ?? null);
       return;
     }
+    case 'release-session-advance': output(await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-cli:${process.pid}:${Date.now()}`)); return;
     case 'release-session-prepare': output(await prepareConfiguredRuntimeReleaseSession(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
     case 'release-session-static-verify': {
       const sessionId = option('--session-id');
@@ -361,7 +372,8 @@ export const RECOVERY_TOOLS = [
   { name: 'unpin_runtime_release', description: 'Remove the explicit stable Runtime retention pin without deleting or activating any release.', inputSchema: mutationInputSchema() },
   { name: 'activate_pinned_runtime_release', description: 'Activate the explicitly pinned legacy/home-bound Runtime release without restoring an older SQLite backup; portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['expected_active_release_id', 'expected_authority_revision']) },
   { name: 'stage_and_activate_runtime_release', description: 'Compatibility alias: freeze the fixed configured source, create isolated Candidate B, and build one portable immutable Runtime release into a durable ReleaseSession. It no longer activates Stable A.', inputSchema: mutationInputSchema() },
-  { name: 'release_session_status', description: 'Read one durable Recovery ReleaseSession and its exact Stable A/Candidate B phase and evidence.', inputSchema: { type: 'object', properties: { session_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['session_id'], additionalProperties: false } },
+  { name: 'release_session_status', description: 'Read one durable ReleaseSession and its exact Stable A/Candidate B phase and evidence.', inputSchema: { type: 'object', properties: { session_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['session_id'], additionalProperties: false } },
+  { name: 'advance_runtime_release_session', description: 'Advance the single active normal Runtime ReleaseSession by one phase derived from durable ReleaseSession state, or prepare one candidate when none is active. No Work is created per phase.', inputSchema: mutationInputSchema() },
   { name: 'prepare_runtime_release_session', description: 'Freeze configured source and Stable A authority, create isolated Candidate B, and build a portable byte-identifiable Runtime artifact without stopping Stable A.', inputSchema: mutationInputSchema() },
   { name: 'verify_runtime_release_session_static', description: 'Run canonical static gates on the frozen source revision and advance only that exact ReleaseSession.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'verify_runtime_release_session_candidate', description: 'Boot Candidate B in its isolated ControllerHome/service/port, run whole-Runtime and Recovery restart canaries, and mark the session cutover-eligible while Stable A stays active.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
@@ -741,6 +753,11 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'release_session_status': {
       if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       return readReleaseSession(config.controllerHome, args.session_id.trim()) ?? null;
+    }
+    case 'advance_runtime_release_session': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      assertRecoveryGatewayMutationIdentity(config, args);
+      return mutationResponse(config, await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-gateway:${args.request_id}`));
     }
     case 'prepare_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

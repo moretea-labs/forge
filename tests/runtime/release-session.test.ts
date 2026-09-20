@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { advanceReleaseSession, createReleaseSession, listReleaseSessions, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/standalone-recovery/release-session';
+import { advanceReleaseSession, createReleaseSession, listReleaseSessions, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import { decideConfiguredRuntimeReleaseAction } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
@@ -157,6 +158,55 @@ describe('Recovery ReleaseSession', () => {
 
     const again = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel-again');
     expect(again).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'failed' } });
+  });
+
+  test('enforces one active Runtime ReleaseSession per Forge instance', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-singleton-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    let first = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    const second: CandidateExecutionLane = {
+      ...candidate,
+      sessionId: 'release-session-87654321',
+      controllerHome: join(home, 'candidate-2'),
+      serviceLabel: 'candidate-2',
+      port: 8767,
+      databaseSnapshotPath: join(home, 'candidate-2', 'control-plane.sqlite'),
+    };
+    expect(() => createReleaseSession({ controllerHome: home, sessionId: second.sessionId, stable, stableRelease, candidate: second, sourceRevision: 'def456' }))
+      .toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
+    first = advanceReleaseSession({ controllerHome: home, sessionId: first.sessionId, expectedRevision: first.revision, phase: 'failed' });
+    expect(first.phase).toBe('failed');
+    expect(() => createReleaseSession({ controllerHome: home, sessionId: second.sessionId, stable, stableRelease, candidate: second, sourceRevision: 'def456' }))
+      .not.toThrow();
+  });
+
+  test('derives the next normal release action only from durable ReleaseSession phase', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-coordinator-'));
+    roots.push(home);
+    expect(decideConfiguredRuntimeReleaseAction(home)).toEqual({ action: 'prepare' });
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'prepare', session: { sessionId: session.sessionId } });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_static', session: { revision: session.revision } });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate' });
+  });
+
+  test('keeps Work completion and Watchdog outside normal release authority', () => {
+    const root = join(import.meta.dir, '..', '..');
+    const workFinalization = readFileSync(join(root, 'src/runtime/control-plane/execution/work-finalization-service.ts'), 'utf8');
+    const workCompletion = readFileSync(join(root, 'src/runtime/control-plane/execution/work-completion-authority.ts'), 'utf8');
+    const watchdog = readFileSync(join(root, 'src/runtime/watchdog/workflow-watchdog.ts'), 'utf8');
+    expect(workFinalization).not.toContain('release-session');
+    expect(workFinalization).not.toContain('standalone-recovery');
+    expect(workCompletion).not.toContain('release-session');
+    expect(workCompletion).not.toContain('standalone-recovery');
+    expect(watchdog).not.toContain('release-session');
+    expect(watchdog).not.toContain('release-coordinator');
+    const coordinator = readFileSync(join(root, 'src/runtime/release/release-coordinator.ts'), 'utf8');
+    expect(coordinator).not.toContain('standalone-recovery');
   });
 
   test('fences stale observers and never lets them advance the current session', () => {

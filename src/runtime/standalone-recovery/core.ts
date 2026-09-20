@@ -75,7 +75,7 @@ import {
   type ReleaseSession,
   type ReleaseSessionCandidateRelease,
   type ReleaseSessionStableRelease,
-} from './release-session';
+} from '../release/release-session';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 interface PublicTunnelRecoveryPolicy {
@@ -3885,6 +3885,15 @@ function stableReleaseSessionIdentity(config: RecoveryConfig): ReleaseSessionSta
   };
 }
 
+function sameStableReleaseSessionIdentity(left: ReleaseSessionStableRelease, right: ReleaseSessionStableRelease): boolean {
+  return left.authorityRevision === right.authorityRevision
+    && left.releaseId === right.releaseId
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256
+    && left.workerProtocolVersion === right.workerProtocolVersion
+    && left.releaseFencingTokenSha256 === right.releaseFencingTokenSha256;
+}
+
 function assertStableReleaseSessionIdentityCurrent(config: RecoveryConfig, expected: ReleaseSessionStableRelease): void {
   const actual = stableReleaseSessionIdentity(config);
   if (
@@ -3924,10 +3933,9 @@ export async function prepareConfiguredRuntimeReleaseSession(
     const stableRelease = stableReleaseSessionIdentity(config);
     const sourceRevision = configuredSourceRevision(sourceRoot);
 
-    // One Recovery lock owns semantic supersession. A new multi-GiB Candidate B
-    // must not accumulate beside unresolved pre-cutover candidates from earlier
-    // attempts. Historical soak records whose candidate is no longer Stable A
-    // are harmless evidence and do not block a new prepare.
+    // ReleaseSession owns semantic progression. This Recovery lock serializes only
+    // physical preparation. Resume the exact source_frozen session after an
+    // interruption instead of inventing a second release authority.
     const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
     if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
       return {
@@ -3937,8 +3945,25 @@ export async function prepareConfiguredRuntimeReleaseSession(
         detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
       };
     }
+    let resumableSourceFrozen: ReleaseSession | undefined;
     for (const existing of [...inventory.sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
       if (existing.phase === 'failed' || existing.phase === 'rolled_back' || existing.phase === 'known_good') continue;
+      if (
+        existing.phase === 'source_frozen'
+        && existing.sourceRevision === sourceRevision
+        && sameStableReleaseSessionIdentity(existing.stableRelease, stableRelease)
+      ) {
+        if (resumableSourceFrozen) {
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: `RELEASE_SESSION_MULTIPLE_ACTIVE: ${resumableSourceFrozen.sessionId}:source_frozen,${existing.sessionId}:source_frozen`,
+          };
+        }
+        resumableSourceFrozen = existing;
+        continue;
+      }
       if (existing.phase === 'cutover_attempting' || existing.phase === 'cutover_committed') {
         return {
           ok: false as const,
@@ -3967,7 +3992,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
       const superseded = await cancelReleaseSessionUnderLock(
         config,
         existing,
-        'superseded by a newer Recovery-owned release preparation',
+        'superseded by a newer ReleaseSession source freeze',
       );
       if (!superseded.ok) return superseded;
     }
@@ -3982,23 +4007,30 @@ export async function prepareConfiguredRuntimeReleaseSession(
       reserveBytes: STORAGE_WARNING_BYTES,
     });
 
-    const sessionId = `release-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
-    const candidatePort = await allocateCandidateLoopbackPort(stable.port);
-    const candidateLane = createCandidateExecutionLane({
-      stableControllerHome: stable.controllerHome,
-      candidateControllerHome: candidateControllerHomeForSession(config, sessionId),
-      candidatePort,
-      sessionId,
-    }).candidate;
-
-    let session = createReleaseSession({
-      controllerHome: config.controllerHome,
-      sessionId,
-      stable,
-      stableRelease,
-      candidate: candidateLane,
-      sourceRevision,
-    });
+    let session: ReleaseSession;
+    let candidateLane: ReturnType<typeof createCandidateExecutionLane>['candidate'];
+    if (resumableSourceFrozen) {
+      session = resumableSourceFrozen;
+      candidateLane = session.candidate;
+    } else {
+      const nextSessionId = `release-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+      const candidatePort = await allocateCandidateLoopbackPort(stable.port);
+      candidateLane = createCandidateExecutionLane({
+        stableControllerHome: stable.controllerHome,
+        candidateControllerHome: candidateControllerHomeForSession(config, nextSessionId),
+        candidatePort,
+        sessionId: nextSessionId,
+      }).candidate;
+      session = createReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId: nextSessionId,
+        stable,
+        stableRelease,
+        candidate: candidateLane,
+        sourceRevision,
+      });
+    }
+    const sessionId = session.sessionId;
 
     try {
       assertStableReleaseSessionIdentityCurrent(config, stableRelease);
