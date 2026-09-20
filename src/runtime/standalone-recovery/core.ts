@@ -42,8 +42,6 @@ import {
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
-  abortRuntimeReleaseActivation,
-  commitRuntimeReleaseActivation,
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
   rollbackRuntimeRelease,
@@ -72,6 +70,7 @@ import {
   createReleaseSession,
   listReleaseSessions,
   readReleaseSession,
+  recordReleaseSessionTransaction,
   type ReleaseSession,
   type ReleaseSessionCandidateRelease,
   type ReleaseSessionStableRelease,
@@ -3160,48 +3159,57 @@ export async function recoverPrimaryRuntime(
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
 
-  const activation = releaseAuthority(config)?.activation;
-  if (activation?.releaseSessionId) {
-    const session = readReleaseSession(config.controllerHome, activation.releaseSessionId);
-    if (!session) {
+  const releaseAuthoritySnapshot = releaseAuthority(config);
+  if (releaseAuthoritySnapshot) {
+    const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
+    if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
       return {
         ok: false,
         attempted: false,
         noOp: true,
-        detail: `RELEASE_SESSION_ACTIVATION_OWNER_MISSING: ${activation.releaseSessionId}`,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
         verify: initial,
       };
     }
-    if (!['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+    const matching = inventory.sessions.filter((session) => (
+      ['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)
+      && session.transaction
+      && session.candidateRelease?.releaseId === releaseAuthoritySnapshot.active.releaseId
+      && session.candidateRelease.artifactIdentity === releaseAuthoritySnapshot.active.artifactIdentity
+    ));
+    if (matching.length > 1) {
       return {
         ok: false,
         attempted: false,
         noOp: true,
-        detail: `RELEASE_SESSION_ACTIVATION_OWNER_PHASE_MISMATCH: ${session.phase}`,
+        detail: `RELEASE_SESSION_MULTIPLE_ACTIVE_FOR_RUNTIME: ${matching.map((session) => session.sessionId).join(',')}`,
         verify: initial,
       };
     }
-    const sessionRollback = await rollbackConfiguredRuntimeReleaseSession(
-      config,
-      session.sessionId,
-      dependencies,
-      `recover-primary-runtime:${activation.operationId}`,
-    );
-    const after = await verifyLocal(config);
-    const rollback: RollbackResult = {
-      ok: sessionRollback.ok,
-      ...(sessionRollback.noOp === true ? { noOp: true } : {}),
-      detail: sessionRollback.detail,
-      verify: after,
-    };
-    return {
-      ok: sessionRollback.ok,
-      attempted: sessionRollback.attempted,
-      ...(sessionRollback.noOp === true ? { noOp: true } : {}),
-      detail: sessionRollback.detail,
-      rollback,
-      verify: after,
-    };
+    const session = matching[0];
+    if (session) {
+      const sessionRollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        session.sessionId,
+        dependencies,
+        `recover-primary-runtime:${session.transaction!.operationId}`,
+      );
+      const after = await verifyLocal(config);
+      const rollback: RollbackResult = {
+        ok: sessionRollback.ok,
+        ...(sessionRollback.noOp === true ? { noOp: true } : {}),
+        detail: sessionRollback.detail,
+        verify: after,
+      };
+      return {
+        ok: sessionRollback.ok,
+        attempted: sessionRollback.attempted,
+        ...(sessionRollback.noOp === true ? { noOp: true } : {}),
+        detail: sessionRollback.detail,
+        rollback,
+        verify: after,
+      };
+    }
   }
 
   const platform = dependencies.platform ?? process.platform;
@@ -3320,11 +3328,10 @@ function validateRuntimeReleaseCandidate(
 
 /**
  * Activate an already staged and validated immutable Runtime release without
- * depending on the primary Runtime execution plane. The transaction mirrors
- * recoverPrimaryRuntime: stop the complete canonical service, atomically switch
- * active/previous whole-release authority (with a local SQLite backup), start
- * the one Runtime service, require whole-Runtime verification, and on failure
- * restore the previous whole release and its SQLite backup before restarting.
+ * depending on the primary Runtime execution plane. RuntimeReleaseAuthority
+ * changes only physical active/previous identity plus the SQLite backup; when a
+ * ReleaseSession owns the cutover, its transaction snapshot is the sole durable
+ * semantic rollback authority through soak.
  */
 async function activateRuntimeReleaseInternal(
   config: RecoveryConfig,
@@ -3542,13 +3549,6 @@ async function activateRuntimeReleaseInternal(
         config.controllerHome,
         candidate.manifestPath,
         operationId,
-        undefined,
-        guard.preserveDatabaseOnFailure
-          ? undefined
-          : {
-              operationId,
-              ...(guard.releaseSessionId?.trim() ? { releaseSessionId: guard.releaseSessionId.trim() } : {}),
-            },
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'runtime release authority publish failed';
@@ -3605,17 +3605,40 @@ async function activateRuntimeReleaseInternal(
     let after = activated.verify;
     if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
       let activationReady = true;
-      const activationCommitDeferred = !guard.preserveDatabaseOnFailure && Boolean(guard.releaseSessionId?.trim());
-      if (!guard.preserveDatabaseOnFailure && !activationCommitDeferred) {
+      let releaseSessionTransactionPersisted = false;
+      if (!guard.preserveDatabaseOnFailure && guard.releaseSessionId?.trim()) {
         try {
-          commitRuntimeReleaseActivation(config.controllerHome, operationId);
+          const authority = readRuntimeReleaseAuthority(config.controllerHome);
+          const session = readReleaseSession(config.controllerHome, guard.releaseSessionId.trim());
+          if (
+            !authority
+            || authority.operationId !== operationId
+            || !authority.previous?.databaseBackup
+            || !session
+            || session.phase !== 'cutover_attempting'
+          ) throw new Error('RELEASE_SESSION_TRANSACTION_CAPTURE_PRECONDITION_FAILED');
+          recordReleaseSessionTransaction({
+            controllerHome: config.controllerHome,
+            sessionId: session.sessionId,
+            expectedRevision: session.revision,
+            transaction: {
+              schemaVersion: 1,
+              operationId,
+              candidateReleaseId: candidate.manifest.releaseId,
+              cutoverAuthorityRevision: authority.revision,
+              rollbackRelease: authority.previous,
+              startedAt: authority.committedAt,
+            },
+          });
+          releaseSessionTransactionPersisted = true;
         } catch (error) {
           activationReady = false;
-          activationFailureDetail = `Runtime became healthy but activation transaction commit failed: ${error instanceof Error ? error.message : String(error)}`;
-          audit(config, 'runtime_release_activation_transaction_commit_failed', {
+          activationFailureDetail = `Runtime became healthy but ReleaseSession rollback transaction capture failed: ${error instanceof Error ? error.message : String(error)}`;
+          audit(config, 'release_session_transaction_capture_failed', {
             serviceTarget: service.target,
             operationId,
             requestId: lockRequestId,
+            releaseSessionId: guard.releaseSessionId.trim(),
             detail: activationFailureDetail,
           });
         }
@@ -3630,14 +3653,14 @@ async function activateRuntimeReleaseInternal(
           expectedActiveReleaseId: guard.expectedActiveReleaseId,
           controllerHomeStorageMigrated: storageMigration?.migrated === true,
           connectorBindingRepaired: candidateConnectorBinding?.attempted === true,
-          activationCommitDeferred,
+          releaseSessionTransactionPersisted,
           ...(guard.releaseSessionId?.trim() ? { releaseSessionId: guard.releaseSessionId.trim() } : {}),
         });
         return {
           ok: true,
           attempted: true,
-          detail: activationCommitDeferred
-            ? 'requested Runtime release activated and verified; exact ReleaseSession activation transaction remains open through soak'
+          detail: releaseSessionTransactionPersisted
+            ? 'requested Runtime release activated and verified; physical activation committed and ReleaseSession owns rollback authority through soak'
             : storageMigration?.migrated
               ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
               : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
@@ -3680,7 +3703,7 @@ async function activateRuntimeReleaseInternal(
           : operationId;
         const restored = guard.preserveDatabaseOnFailure && previousActive
           ? publishRuntimeRelease(config.controllerHome, previousActive.manifestPath, rollbackOperationId)
-          : abortRuntimeReleaseActivation(config.controllerHome, operationId);
+          : rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
         if (storageMigration?.migrated) {
           rollbackStoppedRepoLocalControllerHomeStorage(storageMigration);
           audit(config, 'runtime_controller_home_noindex_migration_rolled_back', {
@@ -4544,6 +4567,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       reason: string,
       activation?: RuntimeReleaseActivationResult,
     ): Promise<ConfiguredRuntimeActivationResult> => {
+      // Activation may have durably captured the ReleaseSession rollback
+      // transaction and advanced its CAS revision. Re-read the one semantic
+      // authority before any post-cutover phase transition.
+      session = readReleaseSession(config.controllerHome, sessionId) ?? session;
       const retirement = await stopReleaseSessionCandidateService(session);
       if (!retirement.ok) {
         audit(config, 'release_session_candidate_retirement_failed', {
@@ -4888,30 +4915,32 @@ export async function cancelConfiguredRuntimeReleaseSession(
 }
 
 
-function releaseSessionActivationTransaction(
+function releaseSessionRollbackTransaction(
   config: RecoveryConfig,
   session: ReleaseSession,
-): { operationId: string } {
+): NonNullable<ReleaseSession['transaction']> {
   const authority = readRuntimeReleaseAuthority(config.controllerHome);
-  const transaction = authority?.activation;
+  const transaction = session.transaction;
   const candidateRelease = session.candidateRelease;
-  if (!authority || !transaction || !candidateRelease) {
-    throw new Error('RELEASE_SESSION_ACTIVATION_TRANSACTION_REQUIRED');
-  }
-  if (transaction.releaseSessionId !== session.sessionId) {
-    throw new Error('RELEASE_SESSION_ACTIVATION_TRANSACTION_MISMATCH');
+  const previous = authority?.previous;
+  if (!authority || !transaction || !candidateRelease || !previous?.databaseBackup) {
+    throw new Error('RELEASE_SESSION_ROLLBACK_TRANSACTION_REQUIRED');
   }
   if (
     transaction.candidateReleaseId !== candidateRelease.releaseId
     || authority.active.releaseId !== candidateRelease.releaseId
     || authority.active.artifactIdentity !== candidateRelease.artifactIdentity
-    || transaction.preActivationActive.releaseId !== session.stableRelease.releaseId
-    || transaction.preActivationActive.artifactIdentity !== session.stableRelease.artifactIdentity
-    || transaction.preActivationActive.manifestSha256 !== session.stableRelease.manifestSha256
+    || previous.releaseId !== transaction.rollbackRelease.releaseId
+    || previous.artifactIdentity !== transaction.rollbackRelease.artifactIdentity
+    || previous.manifestSha256 !== transaction.rollbackRelease.manifestSha256
+    || previous.databaseBackup.path !== transaction.rollbackRelease.databaseBackup?.path
+    || transaction.rollbackRelease.releaseId !== session.stableRelease.releaseId
+    || transaction.rollbackRelease.artifactIdentity !== session.stableRelease.artifactIdentity
+    || transaction.rollbackRelease.manifestSha256 !== session.stableRelease.manifestSha256
   ) {
-    throw new Error('RELEASE_SESSION_ACTIVATION_TRANSACTION_IDENTITY_MISMATCH');
+    throw new Error('RELEASE_SESSION_ROLLBACK_TRANSACTION_IDENTITY_MISMATCH');
   }
-  return { operationId: transaction.operationId };
+  return transaction;
 }
 
 export async function rollbackConfiguredRuntimeReleaseSession(
@@ -4939,9 +4968,9 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       };
     }
 
-    let transaction: { operationId: string };
+    let transaction: NonNullable<ReleaseSession['transaction']>;
     try {
-      transaction = releaseSessionActivationTransaction(config, session);
+      transaction = releaseSessionRollbackTransaction(config, session);
     } catch (error) {
       return {
         ok: false as const,
@@ -4979,7 +5008,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
 
     let restored: RuntimeReleaseAuthority;
     try {
-      restored = abortRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
+      restored = rollbackRuntimeRelease(config.controllerHome, `release-session-rollback:${session.sessionId}:${Date.now()}`);
       if (
         restored.active.releaseId !== session.stableRelease.releaseId
         || restored.active.artifactIdentity !== session.stableRelease.artifactIdentity
@@ -5041,7 +5070,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
     });
     audit(config, restarted.ok ? 'release_session_rolled_back' : 'release_session_rollback_restart_failed', {
       sessionId,
-      activationOperationId: transaction.operationId,
+      releaseSessionTransactionOperationId: transaction.operationId,
       restoredStableReleaseId: restored.active.releaseId,
       connectorBindingRepaired: rollbackConnectorBinding?.ok === true,
       detail: restarted.detail,
@@ -5117,10 +5146,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     ) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
-    let transaction: { operationId: string };
     try {
-      transaction = releaseSessionActivationTransaction(config, session);
-      commitRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
+      releaseSessionRollbackTransaction(config, session);
     } catch (error) {
       return {
         ok: false as const,
@@ -5145,7 +5172,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       releaseId: attested.revision,
       attestationId: attested.recoveryBundle!.attestationId,
       releaseAuthorityRevision: attested.releaseAuthorityRevision,
-      activationOperationId: transaction.operationId,
+      releaseSessionTransactionOperationId: session.transaction?.operationId,
     });
     return {
       ok: true as const,
@@ -5518,96 +5545,6 @@ export function secureEqual(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-async function reconcileInterruptedRuntimeReleaseActivation(config: RecoveryConfig): Promise<void> {
-  const observedAuthority = releaseAuthority(config);
-  const observedTransaction = observedAuthority?.activation;
-  if (!observedAuthority || !observedTransaction) return;
-
-  const observation = observeRuntimeStatus(config.controllerHome);
-  const candidateHealthy = Boolean(
-    observation.running
-    && observation.ready
-    && observation.snapshot?.releaseId === observedAuthority.active.releaseId
-    && observation.snapshot?.artifactIdentity === observedAuthority.active.artifactIdentity,
-  );
-
-  if (observedTransaction.releaseSessionId) {
-    const session = readReleaseSession(config.controllerHome, observedTransaction.releaseSessionId);
-    if (!session) {
-      audit(config, 'runtime_release_activation_release_session_missing', {
-        operationId: observedTransaction.operationId,
-        releaseSessionId: observedTransaction.releaseSessionId,
-      });
-      return;
-    }
-    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
-      audit(config, 'runtime_release_activation_release_session_preserved', {
-        operationId: observedTransaction.operationId,
-        releaseSessionId: session.sessionId,
-        phase: session.phase,
-        candidateHealthy,
-      });
-      return;
-    }
-    if (session.phase === 'known_good' && candidateHealthy) {
-      const locked = await withLock(config, {
-        action: 'release_session_known_good',
-        requestId: `watchdog:reconcile_release_session:${observedTransaction.operationId}`,
-      }, async () => {
-        const current = releaseAuthority(config);
-        const transaction = current?.activation;
-        if (!transaction || transaction.operationId !== observedTransaction.operationId || transaction.releaseSessionId !== session.sessionId) return;
-        commitRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
-        audit(config, 'runtime_release_activation_release_session_reconciled_committed', {
-          operationId: transaction.operationId,
-          releaseSessionId: session.sessionId,
-        });
-      });
-      if (!locked.acquired) return;
-      return;
-    }
-    audit(config, 'runtime_release_activation_release_session_phase_mismatch', {
-      operationId: observedTransaction.operationId,
-      releaseSessionId: session.sessionId,
-      phase: session.phase,
-    });
-    return;
-  }
-
-  if (observation.running && !candidateHealthy) return;
-
-  const locked = await withLock(config, {
-    action: 'recover_primary_runtime',
-    requestId: `watchdog:reconcile_activation:${observedTransaction.operationId}`,
-  }, async () => {
-    const current = releaseAuthority(config);
-    const transaction = current?.activation;
-    if (!current || !transaction) return;
-    const currentObservation = observeRuntimeStatus(config.controllerHome);
-    const healthy = Boolean(
-      currentObservation.running
-      && currentObservation.ready
-      && currentObservation.snapshot?.releaseId === current.active.releaseId
-      && currentObservation.snapshot?.artifactIdentity === current.active.artifactIdentity,
-    );
-    if (healthy) {
-      commitRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
-      audit(config, 'runtime_release_activation_reconciled_committed', {
-        operationId: transaction.operationId,
-        activeRevision: current.active.releaseId,
-      });
-      return;
-    }
-    if (currentObservation.running) return;
-    const restored = abortRuntimeReleaseActivation(config.controllerHome, transaction.operationId);
-    audit(config, 'runtime_release_activation_reconciled_aborted', {
-      operationId: transaction.operationId,
-      restoredRevision: restored.active.releaseId,
-    });
-  });
-  if (!locked.acquired) return;
-}
-
 export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState): Promise<{
   state: WatchdogState;
   decision: WatchdogDecision;
@@ -5620,7 +5557,6 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   primaryRuntimeRecovery?: PrimaryRuntimeRecoveryResult;
 }> {
   const now = Date.now();
-  await reconcileInterruptedRuntimeReleaseActivation(config);
   const scopedPrior = scopeWatchdogStateToRuntimeRelease(prior, activeAuthorityRelease(config));
   const runtimeObservation = observeRuntimeStatus(config.controllerHome);
   const runtimeStartupGrace = runtimeWithinWatchdogStartupGrace(

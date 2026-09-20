@@ -197,8 +197,8 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   if (!existsSync(authorityPath)) throw new Error('runtime release authority is missing');
 
   const parsed = JSON.parse(readFileSync(authorityPath, 'utf8')) as Record<string, unknown>;
-  if (parsed.schemaVersion !== 1 || parsed.status !== 'committed') {
-    throw new Error('runtime release authority is not committed schemaVersion=1');
+  if (parsed.schemaVersion !== 2 || parsed.status !== 'committed') {
+    throw new Error('runtime release authority is not committed schemaVersion=2');
   }
 
   const releasePaths = new Set<string>();
@@ -220,14 +220,6 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
     releasePaths.add(knownGoodRelease);
   }
 
-  const activation = parsed.activation;
-  if (activation && typeof activation === 'object' && !Array.isArray(activation)) {
-    const preActivationPrevious = (activation as Record<string, unknown>).preActivationPrevious;
-    if (preActivationPrevious !== undefined) {
-      releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, preActivationPrevious, 'activation.preActivationPrevious'));
-    }
-  }
-
   const backupPaths = new Set<string>();
   let backupAuthoritySafe = true;
   if (previous && typeof previous === 'object' && !Array.isArray(previous)) {
@@ -241,22 +233,6 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
         backupAuthoritySafe = false;
       } else {
         backupPaths.add(canonical(backupPath));
-      }
-    }
-  }
-
-  if (activation && typeof activation === 'object' && !Array.isArray(activation)) {
-    const preActivationPrevious = (activation as Record<string, unknown>).preActivationPrevious;
-    if (preActivationPrevious && typeof preActivationPrevious === 'object' && !Array.isArray(preActivationPrevious)) {
-      const databaseBackup = (preActivationPrevious as Record<string, unknown>).databaseBackup;
-      if (databaseBackup && typeof databaseBackup === 'object' && !Array.isArray(databaseBackup)) {
-        const rawPath = (databaseBackup as Record<string, unknown>).path;
-        const path = typeof rawPath === 'string' ? rawPath.trim() : '';
-        if (!path || !directChild(backupsRoot, path) || !existsSync(path)) {
-          backupAuthoritySafe = false;
-        } else {
-          backupPaths.add(canonical(path));
-        }
       }
     }
   }

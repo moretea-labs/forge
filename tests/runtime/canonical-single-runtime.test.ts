@@ -440,7 +440,7 @@ describe('canonical single Runtime', () => {
     let superseded = false;
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       readReleaseAuthority: () => superseded ? {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'committed',
         revision: 2,
         fencingToken: 'fence-superseded',
@@ -500,7 +500,7 @@ describe('canonical single Runtime', () => {
     let monitorStopped = false;
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       readReleaseAuthority: () => observation === 'matching' ? {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'committed',
         revision: 1,
         fencingToken: 'fence-current',

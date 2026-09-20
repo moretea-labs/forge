@@ -24,6 +24,7 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownershi
 import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 import { ensureActiveRuntimeRelease, readRuntimeReleaseAuthority, type RuntimeReleaseAuthority } from './release-store';
+import { migrateReleaseDurableState } from '../release/release-state-migration';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
@@ -45,6 +46,7 @@ export interface RuntimeReleaseAuthorityMonitor {
 
 export interface CanonicalRuntimeDependencies {
   loadReleaseManifest(path: string, controllerHome: string): RuntimeReleaseManifest;
+  migrateReleaseState(controllerHome: string): void;
   ensureReleaseAuthority(controllerHome: string, manifestPath: string): RuntimeReleaseAuthority;
   readReleaseAuthority(controllerHome: string): RuntimeReleaseAuthority | undefined;
   startReleaseAuthorityMonitor(observe: () => void): RuntimeReleaseAuthorityMonitor;
@@ -179,6 +181,7 @@ async function captureDefaultJscSamplingProfile(options: { durationMs: number; s
 
 const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   loadReleaseManifest: loadRuntimeReleaseManifest,
+  migrateReleaseState: migrateReleaseDurableState,
   ensureReleaseAuthority: ensureActiveRuntimeRelease,
   readReleaseAuthority: readRuntimeReleaseAuthority,
   startReleaseAuthorityMonitor: startDefaultReleaseAuthorityMonitor,
@@ -451,6 +454,7 @@ export class CanonicalForgeRuntime {
       this.ownership = this.dependencies.acquireOwnership(this.config.controllerHome, this.runtimeInstanceId);
 
       stage = 'release';
+      this.dependencies.migrateReleaseState(this.config.controllerHome);
       const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
       stage = 'source';
       // A compiled release is a closed execution surface. Fail before Scheduler

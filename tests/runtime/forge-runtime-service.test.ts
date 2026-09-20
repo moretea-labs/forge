@@ -139,7 +139,7 @@ describe('Forge Runtime service', () => {
       createdAt: new Date().toISOString(),
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'committed',
       active: { releaseId: 'release-a', manifestPath, artifactIdentity: 'sha256:test' },
     })}\n`);
@@ -221,7 +221,7 @@ describe('Forge Runtime service', () => {
       createdAt: new Date().toISOString(),
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'committed',
       active: { releaseId: 'release-invalid-version', manifestPath, artifactIdentity: 'sha256:test' },
     })}\n`);
@@ -261,7 +261,7 @@ describe('Forge Runtime service', () => {
         createdAt: new Date().toISOString(),
       })}\n`);
       writeFileSync(authorityPath, `${JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'committed',
         active: { releaseId, manifestPath, artifactIdentity: `sha256:${releaseId}` },
       })}\n`);
@@ -307,7 +307,7 @@ describe('Forge Runtime service', () => {
       browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`, browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`,
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1, status: 'committed', active: { releaseId: 'release-legacy-helper', manifestPath, artifactIdentity: 'sha256:runtime' },
+      schemaVersion: 2, status: 'committed', active: { releaseId: 'release-legacy-helper', manifestPath, artifactIdentity: 'sha256:runtime' },
     })}\n`);
     const paths = forgeRuntimeServicePaths(fx.home);
     mkdirSync(paths.serviceRoot, { recursive: true });

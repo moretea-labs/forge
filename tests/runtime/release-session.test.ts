@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { advanceReleaseSession, createReleaseSession, listReleaseSessions, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import { advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { decideConfiguredRuntimeReleaseAction } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
@@ -207,6 +208,76 @@ describe('Recovery ReleaseSession', () => {
     expect(watchdog).not.toContain('release-coordinator');
     const coordinator = readFileSync(join(root, 'src/runtime/release/release-coordinator.ts'), 'utf8');
     expect(coordinator).not.toContain('standalone-recovery');
+  });
+
+  test('migrates one historical soaking session into the current rollback-authority model exactly once', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-migration-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    const sessionId = candidate.sessionId;
+    const now = new Date().toISOString();
+    const sessionDir = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, `${sessionId}.json`), `${JSON.stringify({
+      schemaVersion: 1,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      candidateRelease,
+      sourceRevision: 'abc123',
+      phase: 'soaking',
+      revision: 9,
+      receipts: [],
+      createdAt: now,
+      updatedAt: now,
+    }, null, 2)}\n`);
+
+    const backupPath = join(home, 'runtime', 'releases', 'backups', 'stable-a.sqlite');
+    const authority: RuntimeReleaseAuthority = {
+      schemaVersion: 2,
+      status: 'committed',
+      revision: 8,
+      fencingToken: 'f'.repeat(64),
+      active: {
+        releaseId: candidateRelease.releaseId,
+        artifactIdentity: candidateRelease.artifactIdentity,
+        manifestPath: candidateRelease.manifestPath,
+        manifestSha256: candidateRelease.manifestSha256,
+        workerProtocolVersion: 1,
+        publishedAt: now,
+      },
+      previous: {
+        releaseId: stableRelease.releaseId,
+        artifactIdentity: stableRelease.artifactIdentity,
+        manifestPath: join(home, 'runtime', 'releases', 'stable-a', 'manifest.json'),
+        manifestSha256: stableRelease.manifestSha256,
+        workerProtocolVersion: stableRelease.workerProtocolVersion,
+        publishedAt: now,
+        databaseBackup: { path: backupPath, schemaVersion: 1, createdAt: now },
+      },
+      operationId: 'cutover-op',
+      committedAt: now,
+    };
+
+    const first = migrateReleaseSessionState(home, { readAuthority: () => authority });
+    expect(first).toMatchObject({ migratedSessionIds: [sessionId], currentSessionIds: [], inspected: 1 });
+    expect(readReleaseSession(home, sessionId)).toMatchObject({
+      schemaVersion: 2,
+      phase: 'soaking',
+      revision: 9,
+      transaction: {
+        candidateReleaseId: candidateRelease.releaseId,
+        cutoverAuthorityRevision: authority.revision,
+        rollbackRelease: {
+          releaseId: stableRelease.releaseId,
+          databaseBackup: { path: backupPath },
+        },
+      },
+    });
+
+    const second = migrateReleaseSessionState(home, { readAuthority: () => authority });
+    expect(second).toMatchObject({ migratedSessionIds: [], currentSessionIds: [sessionId], inspected: 1 });
   });
 
   test('fences stale observers and never lets them advance the current session', () => {

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFile
 import { dirname, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import type { CandidateExecutionLane, StableExecutionLane } from '../root/runtime-lane';
+import type { RuntimePublishedRelease, RuntimeReleaseAuthority } from '../root/release-store';
 
 export const RELEASE_SESSION_PHASES = [
   'source_frozen',
@@ -47,13 +48,29 @@ export interface ReleaseSessionReceipt {
   summary: string;
 }
 
-export interface ReleaseSession {
+/**
+ * Durable semantic rollback authority for one ReleaseSession after physical
+ * cutover has published Candidate B. RuntimeReleaseAuthority stores only
+ * physical active/previous release identity and backing artifacts; rollback
+ * eligibility and transaction semantics live only in this ReleaseSession.
+ */
+export interface ReleaseSessionTransaction {
   schemaVersion: 1;
+  operationId: string;
+  candidateReleaseId: string;
+  cutoverAuthorityRevision: number;
+  rollbackRelease: RuntimePublishedRelease;
+  startedAt: string;
+}
+
+export interface ReleaseSession {
+  schemaVersion: 2;
   sessionId: string;
   stable: StableExecutionLane;
   stableRelease: ReleaseSessionStableRelease;
   candidate: CandidateExecutionLane;
   candidateRelease?: ReleaseSessionCandidateRelease;
+  transaction?: ReleaseSessionTransaction;
   sourceRevision: string;
   phase: ReleaseSessionPhase;
   revision: number;
@@ -84,15 +101,152 @@ function writeSession(path: string, session: ReleaseSession): void {
   renameSync(temporary, path);
 }
 
+function sameStableRelease(session: Pick<ReleaseSession, 'stableRelease'>, release: RuntimePublishedRelease): boolean {
+  return release.releaseId === session.stableRelease.releaseId
+    && release.artifactIdentity === session.stableRelease.artifactIdentity
+    && release.manifestSha256 === session.stableRelease.manifestSha256
+    && release.workerProtocolVersion === session.stableRelease.workerProtocolVersion;
+}
+
+function validTransaction(session: ReleaseSession): boolean {
+  const transaction = session.transaction;
+  if (!transaction) return !['cutover_committed', 'soaking'].includes(session.phase);
+  const rollback = transaction.rollbackRelease;
+  return transaction.schemaVersion === 1
+    && Boolean(transaction.operationId?.trim())
+    && Boolean(session.candidateRelease)
+    && transaction.candidateReleaseId === session.candidateRelease!.releaseId
+    && Number.isInteger(transaction.cutoverAuthorityRevision)
+    && transaction.cutoverAuthorityRevision > session.stableRelease.authorityRevision
+    && Number.isFinite(Date.parse(transaction.startedAt))
+    && sameStableRelease(session, rollback)
+    && Boolean(rollback.manifestPath?.trim())
+    && Number.isFinite(Date.parse(rollback.publishedAt))
+    && Boolean(rollback.databaseBackup)
+    && resolve(rollback.databaseBackup!.path) === rollback.databaseBackup!.path
+    && Number.isInteger(rollback.databaseBackup!.schemaVersion)
+    && rollback.databaseBackup!.schemaVersion > 0
+    && Number.isFinite(Date.parse(rollback.databaseBackup!.createdAt));
+}
+
+function assertCurrentSession(value: ReleaseSession, sessionId: string): ReleaseSession {
+  if (
+    value.schemaVersion !== 2
+    || value.sessionId !== sessionId
+    || !RELEASE_SESSION_PHASES.includes(value.phase)
+    || !Number.isInteger(value.revision)
+    || value.revision < 1
+    || !validTransaction(value)
+  ) throw new Error('RELEASE_SESSION_INVALID');
+  return value;
+}
+
+export interface ReleaseSessionStateMigration {
+  migratedSessionIds: string[];
+  currentSessionIds: string[];
+  inspected: number;
+}
+
+type LegacyReleaseSessionV1 = Omit<ReleaseSession, 'schemaVersion' | 'transaction'> & { schemaVersion: 1 };
+
+export function migrateReleaseSessionState(
+  controllerHome: string,
+  dependencies: { readAuthority?: () => RuntimeReleaseAuthority | undefined } = {},
+): ReleaseSessionStateMigration {
+  const root = dirname(sessionPath(controllerHome, 'release-session-migration'));
+  if (!existsSync(root)) return { migratedSessionIds: [], currentSessionIds: [], inspected: 0 };
+  const authority = dependencies.readAuthority?.();
+  const migratedSessionIds: string[] = [];
+  const currentSessionIds: string[] = [];
+  const names = readdirSync(root).filter((name) => name.endsWith('.json')).sort();
+  for (const name of names) {
+    const id = name.slice(0, -'.json'.length);
+    const path = sessionPath(controllerHome, validSessionId(id));
+    let raw: ReleaseSession | LegacyReleaseSessionV1;
+    try {
+      raw = JSON.parse(readFileSync(path, 'utf8')) as ReleaseSession | LegacyReleaseSessionV1;
+    } catch {
+      throw new Error(`RELEASE_SESSION_MIGRATION_INVALID_JSON: ${id}`);
+    }
+    if (raw.schemaVersion === 2) {
+      let current = raw as ReleaseSession;
+      if (
+        !current.transaction
+        && current.phase === 'cutover_attempting'
+        && current.candidateRelease
+        && authority?.active.releaseId === current.candidateRelease.releaseId
+        && authority.active.artifactIdentity === current.candidateRelease.artifactIdentity
+        && authority.previous?.databaseBackup
+        && authority.previous.releaseId === current.stableRelease.releaseId
+        && authority.previous.artifactIdentity === current.stableRelease.artifactIdentity
+        && authority.previous.manifestSha256 === current.stableRelease.manifestSha256
+      ) {
+        current = {
+          ...current,
+          transaction: {
+            schemaVersion: 1,
+            operationId: `reconcile:${id}:${authority.revision}`,
+            candidateReleaseId: current.candidateRelease.releaseId,
+            cutoverAuthorityRevision: authority.revision,
+            rollbackRelease: authority.previous,
+            startedAt: authority.committedAt,
+          },
+          revision: current.revision + 1,
+          updatedAt: new Date().toISOString(),
+        };
+        assertCurrentSession(current, id);
+        writeSession(path, current);
+        migratedSessionIds.push(id);
+      } else {
+        assertCurrentSession(current, id);
+        currentSessionIds.push(id);
+      }
+      continue;
+    }
+    if (raw.schemaVersion !== 1 || raw.sessionId !== id || !RELEASE_SESSION_PHASES.includes(raw.phase)) {
+      throw new Error(`RELEASE_SESSION_MIGRATION_UNSUPPORTED_SCHEMA: ${id}`);
+    }
+
+    let transaction: ReleaseSessionTransaction | undefined;
+    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(raw.phase)) {
+      const candidate = raw.candidateRelease;
+      const previous = authority?.previous;
+      if (
+        !candidate
+        || !authority
+        || authority.active.releaseId !== candidate.releaseId
+        || authority.active.artifactIdentity !== candidate.artifactIdentity
+        || !previous?.databaseBackup
+        || previous.releaseId !== raw.stableRelease.releaseId
+        || previous.artifactIdentity !== raw.stableRelease.artifactIdentity
+        || previous.manifestSha256 !== raw.stableRelease.manifestSha256
+      ) throw new Error(`RELEASE_SESSION_MIGRATION_AUTHORITY_MISMATCH: ${id}`);
+      transaction = {
+        schemaVersion: 1,
+        operationId: `migration:${id}:${authority.revision}`,
+        candidateReleaseId: candidate.releaseId,
+        cutoverAuthorityRevision: authority.revision,
+        rollbackRelease: previous,
+        startedAt: raw.updatedAt,
+      };
+    }
+    const migrated = assertCurrentSession({
+      ...raw,
+      schemaVersion: 2,
+      ...(transaction ? { transaction } : {}),
+    } as ReleaseSession, id);
+    writeSession(path, migrated);
+    migratedSessionIds.push(id);
+  }
+  return { migratedSessionIds, currentSessionIds, inspected: names.length };
+}
+
 export function readReleaseSession(controllerHome: string, sessionId: string): ReleaseSession | undefined {
   const path = sessionPath(controllerHome, validSessionId(sessionId));
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as ReleaseSession;
-    if (value.schemaVersion !== 1 || value.sessionId !== sessionId || !RELEASE_SESSION_PHASES.includes(value.phase) || !Number.isInteger(value.revision) || value.revision < 1) {
-      throw new Error('RELEASE_SESSION_INVALID');
-    }
-    return value;
+    return assertCurrentSession(value, sessionId);
   } catch (error) {
     if (error instanceof Error && error.message === 'RELEASE_SESSION_INVALID') throw error;
     throw new Error('RELEASE_SESSION_INVALID');
@@ -188,7 +342,7 @@ export function createReleaseSession(input: {
   if (resolve(input.stable.controllerHome) === resolve(input.candidate.controllerHome)) throw new Error('RELEASE_SESSION_LANE_COLLISION');
   const timestamp = new Date().toISOString();
   const session: ReleaseSession = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sessionId,
     stable: input.stable,
     stableRelease: input.stableRelease,
@@ -251,6 +405,27 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
  * appropriate mutation lock. expectedRevision is a CAS fence, so a stale
  * observer cannot advance a newer session.
  */
+export function recordReleaseSessionTransaction(input: {
+  controllerHome: string;
+  sessionId: string;
+  expectedRevision: number;
+  transaction: ReleaseSessionTransaction;
+}): ReleaseSession {
+  const current = readReleaseSession(input.controllerHome, input.sessionId);
+  if (!current) throw new Error('RELEASE_SESSION_MISSING');
+  if (current.revision !== input.expectedRevision) throw new Error('RELEASE_SESSION_REVISION_FENCED');
+  if (current.phase !== 'cutover_attempting') throw new Error(`RELEASE_SESSION_TRANSACTION_REQUIRES_CUTOVER_ATTEMPTING: ${current.phase}`);
+  const next = {
+    ...current,
+    transaction: input.transaction,
+    revision: current.revision + 1,
+    updatedAt: new Date().toISOString(),
+  } satisfies ReleaseSession;
+  if (!validTransaction(next)) throw new Error('RELEASE_SESSION_TRANSACTION_INVALID');
+  writeSession(sessionPath(input.controllerHome, current.sessionId), next);
+  return next;
+}
+
 export function advanceReleaseSession(input: {
   controllerHome: string;
   sessionId: string;

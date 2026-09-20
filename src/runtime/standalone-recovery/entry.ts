@@ -57,6 +57,7 @@ import {
 } from './release';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
 import { readReleaseSession } from '../release/release-session';
+import { migrateReleaseDurableState } from '../release/release-state-migration';
 import { advanceConfiguredRuntimeRelease, type RuntimeReleaseProvider } from '../release/release-coordinator';
 
 const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> = {
@@ -123,6 +124,10 @@ export function recoveryRuntimeRoleFromExecutable(executable = process.execPath)
 async function cli(): Promise<void> {
   const command = process.argv.find((value, index) => index >= 2 && !value.startsWith('-') && process.argv[index - 1] !== '--controller-home') ?? 'status';
   const config = loadRecoveryConfig(controllerHome(), option('--config'));
+  // Internal durable state has one current schema. Every Recovery entrypoint,
+  // including gateway/watchdog startup, crosses the same migration boundary as
+  // Canonical Runtime before reading or mutating release semantics.
+  migrateReleaseDurableState(config.controllerHome);
   const executableRole = recoveryRuntimeRoleFromExecutable();
   if (executableRole) {
     if (command !== executableRole) {

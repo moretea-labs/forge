@@ -88,7 +88,7 @@ export function readForgeRuntimeServiceConfig(path: string): ForgeRuntimeService
 }
 
 interface RuntimeReleaseAuthorityRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   status: string;
   active?: { releaseId?: string; manifestPath?: string; artifactIdentity?: string };
 }
@@ -120,7 +120,7 @@ function readActiveRuntimeRelease(controllerHome: string): ActiveRuntimeReleaseR
   if (!existsSync(authorityPath)) return undefined;
   const authority = JSON.parse(readFileSync(authorityPath, 'utf8')) as RuntimeReleaseAuthorityRecord;
   const active = authority.active;
-  if (authority.schemaVersion !== 1 || authority.status !== 'committed' || !active?.manifestPath) {
+  if (authority.schemaVersion !== 2 || authority.status !== 'committed' || !active?.manifestPath) {
     throw new Error('FORGE_RUNTIME_RELEASE_AUTHORITY_INVALID');
   }
   const manifestPath = resolve(active.manifestPath);
