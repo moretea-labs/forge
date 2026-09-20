@@ -281,6 +281,110 @@ describe('Recovery ReleaseSession', () => {
     expect(second).toMatchObject({ migratedSessionIds: [], currentSessionIds: [sessionId], inspected: 1 });
   });
 
+  test('migrates the observed transitional schema-2 failed session exactly once without changing durable state', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-schema2-migration-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    const sessionId = candidate.sessionId;
+    const root = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(root, { recursive: true });
+    const createdAt = '2026-09-18T13:15:53.309Z';
+    const updatedAt = '2026-09-20T02:03:10.216Z';
+    const receipts = [
+      { id: `source:${sessionId}`, kind: 'source', recordedAt: createdAt, summary: 'source frozen at historical revision' },
+      { id: 'candidate_cancelled', kind: 'candidate_canary', recordedAt: updatedAt, summary: 'Candidate B was retired before cutover' },
+    ];
+    writeFileSync(join(root, `${sessionId}.json`), JSON.stringify({
+      schemaVersion: 2,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: '60dc9c2309b5e8001702f696ec1f3ed6d4b0f77e',
+      phase: 'failed',
+      revision: 2,
+      receipts,
+      createdAt,
+      updatedAt,
+    }, null, 2));
+
+    const first = migrateReleaseSessionState(home);
+    expect(first).toMatchObject({ migratedSessionIds: [sessionId], currentSessionIds: [], inspected: 1 });
+    expect(readReleaseSession(home, sessionId)).toMatchObject({
+      schemaVersion: 1,
+      semanticEpoch: 2,
+      sessionId,
+      sourceRevision: '60dc9c2309b5e8001702f696ec1f3ed6d4b0f77e',
+      phase: 'failed',
+      revision: 2,
+      receipts,
+      createdAt,
+      updatedAt,
+    });
+    expect(readReleaseSession(home, sessionId)?.transaction).toBeUndefined();
+
+    const second = migrateReleaseSessionState(home);
+    expect(second).toMatchObject({ migratedSessionIds: [], currentSessionIds: [sessionId], inspected: 1 });
+  });
+
+  test('preserves an existing transitional schema-2 rollback transaction during migration', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-schema2-transaction-migration-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    const sessionId = candidate.sessionId;
+    const root = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(root, { recursive: true });
+    const updatedAt = '2026-09-20T00:00:00.000Z';
+    const rollbackRelease = {
+      releaseId: stableRelease.releaseId,
+      artifactIdentity: stableRelease.artifactIdentity,
+      manifestPath: join(home, 'runtime', 'releases', stableRelease.releaseId, 'manifest.json'),
+      manifestSha256: stableRelease.manifestSha256,
+      workerProtocolVersion: stableRelease.workerProtocolVersion,
+      publishedAt: updatedAt,
+      databaseBackup: {
+        path: join(home, 'runtime', 'releases', 'backups', 'schema2-stable.sqlite'),
+        schemaVersion: 1,
+        createdAt: updatedAt,
+      },
+    };
+    const transaction = {
+      schemaVersion: 1,
+      operationId: 'schema2-existing-cutover',
+      candidateReleaseId: candidateRelease.releaseId,
+      cutoverAuthorityRevision: stableRelease.authorityRevision + 7,
+      rollbackRelease,
+      startedAt: updatedAt,
+    };
+    writeFileSync(join(root, `${sessionId}.json`), JSON.stringify({
+      schemaVersion: 2,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      candidateRelease,
+      transaction,
+      sourceRevision: 'schema2-existing-transaction-revision',
+      phase: 'soaking',
+      revision: 11,
+      receipts: [],
+      createdAt: updatedAt,
+      updatedAt,
+    }, null, 2));
+
+    const first = migrateReleaseSessionState(home);
+    expect(first).toMatchObject({ migratedSessionIds: [sessionId], currentSessionIds: [], inspected: 1 });
+    expect(readReleaseSession(home, sessionId)).toMatchObject({
+      schemaVersion: 1,
+      semanticEpoch: 2,
+      phase: 'soaking',
+      revision: 11,
+      transaction,
+    });
+    const second = migrateReleaseSessionState(home);
+    expect(second).toMatchObject({ migratedSessionIds: [], currentSessionIds: [sessionId], inspected: 1 });
+  });
+
   test('migrates a historical known-good session with its exact rollback transaction evidence', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-known-good-migration-'));
     roots.push(home);

@@ -156,6 +156,13 @@ type LegacyReleaseSessionV1 = Omit<ReleaseSession, 'semanticEpoch' | 'transactio
   semanticEpoch?: 1;
 };
 
+type TransitionalReleaseSessionV2 = Omit<ReleaseSession, 'schemaVersion' | 'semanticEpoch'> & {
+  schemaVersion: 2;
+  semanticEpoch?: never;
+};
+
+type MigratableReleaseSession = ReleaseSession | LegacyReleaseSessionV1 | TransitionalReleaseSessionV2;
+
 export function migrateReleaseSessionState(
   controllerHome: string,
   dependencies: { readAuthority?: () => RuntimeReleaseAuthority | undefined } = {},
@@ -169,9 +176,9 @@ export function migrateReleaseSessionState(
   for (const name of names) {
     const id = name.slice(0, -'.json'.length);
     const path = sessionPath(controllerHome, validSessionId(id));
-    let raw: ReleaseSession | LegacyReleaseSessionV1;
+    let raw: MigratableReleaseSession;
     try {
-      raw = JSON.parse(readFileSync(path, 'utf8')) as ReleaseSession | LegacyReleaseSessionV1;
+      raw = JSON.parse(readFileSync(path, 'utf8')) as MigratableReleaseSession;
     } catch {
       throw new Error(`RELEASE_SESSION_MIGRATION_INVALID_JSON: ${id}`);
     }
@@ -210,17 +217,22 @@ export function migrateReleaseSessionState(
       }
       continue;
     }
+    const legacyV1 = raw.schemaVersion === 1
+      && (raw.semanticEpoch === undefined || raw.semanticEpoch === 1);
+    const transitionalV2 = raw.schemaVersion === 2
+      && raw.semanticEpoch === undefined;
     if (
-      raw.schemaVersion !== 1
-      || (raw.semanticEpoch !== undefined && raw.semanticEpoch !== 1)
+      (!legacyV1 && !transitionalV2)
       || raw.sessionId !== id
       || !RELEASE_SESSION_PHASES.includes(raw.phase)
     ) {
       throw new Error(`RELEASE_SESSION_MIGRATION_UNSUPPORTED_SCHEMA: ${id}`);
     }
 
-    let transaction: ReleaseSessionTransaction | undefined;
-    if (['cutover_attempting', 'cutover_committed', 'soaking', 'known_good'].includes(raw.phase)) {
+    let transaction: ReleaseSessionTransaction | undefined = 'transaction' in raw
+      ? raw.transaction
+      : undefined;
+    if (!transaction && ['cutover_attempting', 'cutover_committed', 'soaking', 'known_good'].includes(raw.phase)) {
       const candidate = raw.candidateRelease;
       const previous = authority?.previous;
       if (
