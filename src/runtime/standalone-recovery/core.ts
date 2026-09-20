@@ -3839,22 +3839,20 @@ function configuredSourceRevision(sourceRoot: string): string {
     ...runtimeAuthorityFreeEnvironment(process.env),
     PATH: recoveryCommandPath(),
   };
-  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'HEAD'], {
+  // ReleaseSession source authority is the exact committed Git object selected
+  // internally by Recovery. The configured checkout is only an object/dependency
+  // provider: concurrent working-tree edits are intentionally non-authoritative
+  // and are excluded by the detached immutable source snapshot used below.
+  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}'], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
   });
-  if (head.status !== 0 || !/^[a-f0-9]{40}$/i.test((head.stdout ?? '').trim())) {
+  const revision = (head.stdout ?? '').trim();
+  if (head.status !== 0 || !/^[a-f0-9]{40}$/i.test(revision)) {
     throw new Error('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
   }
-  const dirty = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain=v1', '--untracked-files=no'], {
-    encoding: 'utf8',
-    env,
-    timeout: 10_000,
-  });
-  if (dirty.status !== 0) throw new Error('RELEASE_SESSION_SOURCE_STATUS_UNAVAILABLE');
-  if ((dirty.stdout ?? '').trim()) throw new Error('RELEASE_SESSION_SOURCE_NOT_CLEAN');
-  return (head.stdout ?? '').trim();
+  return revision;
 }
 
 async function allocateCandidateLoopbackPort(stablePort: number): Promise<number> {
