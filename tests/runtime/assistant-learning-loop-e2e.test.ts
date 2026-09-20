@@ -13,6 +13,7 @@ import {
   beginInitialControllerRoundDispatch,
   claimControllerSession,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
   readControllerRoundContextSnapshot,
   readControllerRoundSemanticStateFingerprint,
   releaseControllerSession,
@@ -22,6 +23,7 @@ import {
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
@@ -31,6 +33,8 @@ import { recordControllerExperience, recordControllerOutcome } from '../../src/r
 import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
+import { callRhWorkControllerOperation } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
+import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -500,6 +504,91 @@ describe('connected assistant learning loops', () => {
       itemId: memoryItemId,
       revision: 1,
     }));
+  });
+
+  test('surfaces automatic learning failure after durable disposition without rolling back or disguising it as skipped', async () => {
+    const fx = fixture('transport-learning-warning', { knowledge: false });
+    const workId = 'work-transport-learning-warning-unbound';
+    createWorkContract(fx.store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      scopeRef: { schemaVersion: 1, kind: 'work', id: workId },
+      mode: 'goal_workloop',
+      objective: 'Prove post-disposition learning failure is diagnostic only.',
+      acceptanceCriteria: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    fx.setNow(new Date().toISOString());
+    const unboundFx = { ...fx, workId };
+    const round = claimInitialRound(unboundFx, 1);
+    // Inject the ambiguity after claim so AssistantContext can be prepared
+    // successfully and only post-disposition learning observes the failure.
+    writeProjectIdentity({
+      controllerHome: fx.controllerHome,
+      value: {
+        projectId: 'project-learning-loop-shadow',
+        workspaceId: fx.workspaceId,
+        displayName: 'Learning Loop Shadow Project',
+      },
+    });
+    writeProjectPlacement({
+      controllerHome: fx.controllerHome,
+      value: {
+        projectId: 'project-learning-loop-shadow',
+        forgeInstanceId: fx.forgeInstanceId,
+        repositoryId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+      },
+    });
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: fx.repoRoot,
+      principalId: round.owner.principalId ?? round.owner.controllerId,
+      sessionId: round.owner.sessionId,
+      controllerInstanceId: round.owner.controllerInstanceId,
+      controllerType: 'chatgpt' as const,
+      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      toolset: 'core',
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const result = await callRhWorkControllerOperation(ctx, fx.repository, 'controller_disposition', {
+      work_id: workId,
+      disposition: 'wait',
+      controller_authority_id: round.relay.authorityId,
+      relay_scope_id: round.relay.relayScopeId,
+      ...(round.bundle ? {
+        assistant_context_digest: round.bundle.snapshot.digest,
+        assistant_context_usage: contextUsage(round.bundle),
+      } : {}),
+    });
+    expect(result).toBeTruthy();
+    const payload = result!.structuredContent as Record<string, any>;
+    expect(payload.status).toBe('ok');
+    expect(payload.warnings).toEqual([
+      expect.stringContaining('Automatic learning failed after the Controller disposition was durably recorded: PROJECT_PLACEMENT_AMBIGUOUS'),
+    ]);
+    expect(payload.data.automaticLearning).toEqual({
+      storedMemoryIds: [],
+      consolidatedMemoryIds: [],
+      promotedMemoryIds: [],
+      skipped: [],
+    });
+    expect(payload.data.relay).toMatchObject({
+      originWorkId: workId,
+      disposition: 'wait',
+      status: 'waiting',
+    });
+    expect(getControllerRoundRelay(fx.store, workId)).toMatchObject({
+      originWorkId: workId,
+      disposition: 'wait',
+      status: 'waiting',
+    });
   });
 
   test('promotes corroborated engineering learning to Workspace and recalls it in a sibling Project', () => {

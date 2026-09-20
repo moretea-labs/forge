@@ -40,6 +40,7 @@ import { readExecutionSession, startExecutionSession, updateExecutionSession } f
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
 import { ensureManagedWorkspace } from "../../../src/runtime/execution/managed-workspace";
 import { materializeRepositoryWorkPlacement } from "../../../src/runtime/control-plane/facade/repository-work-admission";
+import { ensureRepositoryProjectOnboarding, type RepositoryProjectOnboardingResult } from "../../../src/runtime/control-plane/workspace/project-onboarding";
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from "../../../src/runtime/control-plane/execution/retained-work-resume";
 import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-plane/execution/validation";
 import { callExecutionTool } from "./execution-tools";
@@ -1430,10 +1431,28 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               return result(facade as unknown as Record<string, unknown>, true);
             }
           }
+          let projectOnboarding: RepositoryProjectOnboardingResult | undefined;
+          if (operation === 'start') {
+            try {
+              projectOnboarding = ensureRepositoryProjectOnboarding({
+                controllerHome: ctx.controllerHome,
+                repository,
+                sourceRevision: startContext.sourceRevision,
+              });
+            } catch (error) {
+              const facade = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : 'PROJECT_ONBOARDING_FAILED',
+                data: { operation, executionStarted: false, projectOnboardingAccepted: false },
+              });
+              return result(facade as unknown as Record<string, unknown>, true);
+            }
+          }
           const facade = semanticAdmissionRequired
             ? await withPrimaryWorkAdmissionLockAsync(store, () => runGoalWorkloop(startContext, 'start', args, { verifiedEngineeringEvidence: trustedEngineeringEvidence }))
             : runGoalWorkloop(startContext, operation as 'start' | 'continue', args, { verifiedEngineeringEvidence: trustedEngineeringEvidence });
           const facadeData = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
+          if (projectOnboarding) facadeData.projectOnboarding = projectOnboarding;
           const facadeWorkId = contextText(contextRecord(facadeData.work).workId, 200);
           if (facade.status === 'ok' && facadeWorkId) {
             try {

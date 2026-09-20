@@ -10,6 +10,8 @@ import { addRepositoryCheckout, registerRepository } from '../../src/cli/reposit
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { resolveProjectForRepositoryPlacement } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { buildFrozenSemanticCompatibilityCapability, parseFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 
@@ -63,6 +65,63 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('automatically onboards Project/Workspace identity during normal Work start admission', async () => {
+    const repoRoot = tempRoot('forge-work-project-onboarding-repo-');
+    const controllerHome = tempRoot('forge-work-project-onboarding-home-');
+    initRepo(repoRoot);
+    mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge', 'project-engineering.json'), JSON.stringify({
+      schemaVersion: 1,
+      contractId: 'work-onboarding-contract',
+      contractVersion: '1',
+      projectId: 'work-onboarding-project',
+      authority: {},
+      quality: {},
+      checks: [],
+      journeys: [],
+    }, null, 2));
+    git(repoRoot, 'add', '.forge/project-engineering.json');
+    git(repoRoot, 'commit', '-m', 'add project contract');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Work onboarding fixture' });
+    const ctx = {
+      ...mcpContext(controllerHome, repository),
+      principalId: 'project-onboarding-principal',
+      sessionId: 'project-onboarding-session',
+      controllerInstanceId: 'project-onboarding-runtime',
+      controllerType: 'chatgpt',
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const started = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'start',
+      objective: 'Verify semantic project onboarding at Work admission.',
+      requested_by: 'user',
+      scope_clear: true,
+      work_kind: 'completed_no_change',
+    }));
+    expect(started.status).toBe('ok');
+    expect(started.data.projectOnboarding).toMatchObject({
+      status: 'bound',
+      projectId: 'work-onboarding-project',
+      workspaceId: 'workspace-personal',
+      identitySource: 'project_contract',
+      createdProject: true,
+      createdPlacement: true,
+    });
+    const instance = readForgeInstanceIdentity(controllerHome);
+    expect(instance).toBeTruthy();
+    expect(resolveProjectForRepositoryPlacement({
+      controllerHome,
+      forgeInstanceId: instance!.instanceId,
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    })).toMatchObject({
+      projectId: 'work-onboarding-project',
+      workspaceId: 'workspace-personal',
+    });
+  });
+
   test('lets a frozen rh_work schema create Requirement authority through a bounded semantic transport envelope', async () => {
     const repoRoot = tempRoot('forge-frozen-requirement-repo-');
     const controllerHome = tempRoot('forge-frozen-requirement-home-');
