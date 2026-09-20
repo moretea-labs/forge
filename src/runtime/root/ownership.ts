@@ -110,8 +110,6 @@ export interface RuntimeOwnershipInspection {
 export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershipInspection {
   const owner = readRuntimeOwner(controllerHome);
   const incarnation = readRuntimeIncarnation(controllerHome);
-  const ownerAlive = Boolean(owner && isProcessAlive(owner.pid));
-  const incarnationAlive = Boolean(incarnation && isProcessAlive(incarnation.pid));
   const coherent = Boolean(
     owner
     && incarnation
@@ -119,6 +117,23 @@ export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershi
     && owner.pid === incarnation.pid
     && (owner.fencingGeneration ?? incarnation.fencingGeneration) === incarnation.fencingGeneration,
   );
+  // Schema-v2 owners carry OS-process identity. Once present, raw PID liveness
+  // is insufficient because a stopped Runtime PID may be reused by another
+  // process before Recovery reconciles durable ownership.
+  const ownerAlive = Boolean(owner && (
+    owner.processStartTime && owner.executableFingerprint
+      ? runtimeOwnerProcessIdentityMatches(owner)
+      : isProcessAlive(owner.pid)
+  ));
+  // A coherent incarnation is the same Runtime owner epoch, so inherit the
+  // stronger owner identity result instead of re-introducing PID-only liveness.
+  // Incarnation-only legacy evidence remains conservative because it has no
+  // independent process identity fields.
+  const incarnationAlive = Boolean(incarnation && (
+    coherent
+      ? ownerAlive
+      : isProcessAlive(incarnation.pid)
+  ));
   return { owner, incarnation, ownerAlive, incarnationAlive, coherent };
 }
 

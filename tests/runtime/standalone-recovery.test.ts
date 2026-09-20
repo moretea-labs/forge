@@ -62,7 +62,7 @@ import {
   RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
 } from '../../src/runtime/standalone-recovery/watchdog-heartbeat';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { acquireRuntimeOwnership, runtimeIncarnationPath, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
+import { acquireRuntimeOwnership, inspectRuntimeOwnership, runtimeIncarnationPath, runtimeOwnerPath, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
@@ -137,6 +137,48 @@ afterEach(async () => {
   while (ownerships.length > 0) ownerships.pop()!.release();
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))));
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+test('Runtime ownership liveness rejects a reused live PID when schema-v2 process identity no longer matches', () => {
+  const home = mkdtempSync(join(tmpdir(), 'forge-runtime-owner-pid-reuse-'));
+  roots.push(home);
+  mkdirSync(join(home, 'runtime'), { recursive: true });
+  const runtimeInstanceId = 'runtime-stale-pid-reuse';
+  const fencingGeneration = 9;
+  writeFileSync(runtimeOwnerPath(home), JSON.stringify({
+    schemaVersion: 2,
+    runtimeInstanceId,
+    pid: process.pid,
+    acquiredAt: '2026-09-20T00:00:00.000Z',
+    fencingGeneration,
+    processStartTime: 'stale-runtime-start-time',
+    executableFingerprint: 'stale-runtime-executable',
+  }, null, 2));
+  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+    schemaVersion: 1,
+    controllerHome: home,
+    runtimeInstanceId,
+    pid: process.pid,
+    fencingGeneration,
+    activatedAt: '2026-09-20T00:00:00.000Z',
+  }, null, 2));
+
+  expect(inspectRuntimeOwnership(home)).toMatchObject({
+    coherent: true,
+    ownerAlive: false,
+    incarnationAlive: false,
+  });
+});
+
+test('Runtime ownership liveness still reports an exact live schema-v2 owner', () => {
+  const home = mkdtempSync(join(tmpdir(), 'forge-runtime-owner-exact-live-'));
+  roots.push(home);
+  const ownership = acquireRuntimeOwnership(home, 'runtime-exact-live-owner');
+  ownerships.push(ownership);
+
+  expect(inspectRuntimeOwnership(home)).toMatchObject({
+    ownerAlive: true,
+  });
 });
 
 test('standalone Recovery compiler resolves account Bun when compiled Runtime PATH omits Bun', () => {
