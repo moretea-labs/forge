@@ -1364,6 +1364,75 @@ describe('single Route Policy authority', () => {
     expect(getWorkContract(workStore, workId!)).toMatchObject({ status: 'running', phase: 'verification' });
   });
 
+  test('verify advances a fully verified no-review Work directly to delivery without an extra continue', () => {
+    const root = temp('route-verify-auto-delivery-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      sourceRevision: 'revision-a',
+      workspaceFingerprint: 'workspace-a',
+      workspaceChangedPaths: [] as string[],
+      availableChecks: [{ id: 'check:baseline' }],
+    };
+    const work = createWorkContract(workStore, {
+      workId: 'work-verify-auto-delivery',
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      mode: 'goal_workloop',
+      objective: 'Reconcile already-delivered evidence without source changes.',
+      acceptanceCriteria: ['Exact verification is sufficient.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      workKind: 'reconciliation',
+      checks: ['check:baseline'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const recordedAt = '2026-09-20T00:00:00.000Z';
+    const verified = verifyGoalWorkloop(context, {
+      workId: work.workId,
+      checkId: 'check:baseline',
+      sourceRevision: 'revision-a',
+      workspaceFingerprint: 'workspace-a',
+      verificationInputFingerprint: 'verify-auto-delivery-input',
+      receipt: {
+        schemaVersion: 1,
+        receiptId: 'receipt-verify-auto-delivery',
+        resultDigest: 'digest-verify-auto-delivery',
+        repoId: 'repo-a',
+        checkoutId: 'checkout-a',
+        workId: work.workId,
+        checkId: 'check:baseline',
+        processId: 'process-verify-auto-delivery',
+        status: 'passed',
+        runtimeStatus: 'succeeded',
+        ok: true,
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+        artifactPath: '.ai/harness/checks/verify-auto-delivery.json',
+        summary: 'passed',
+        startedAt: recordedAt,
+        finishedAt: recordedAt,
+      },
+    });
+
+    expect(verified).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(getWorkContract(workStore, work.workId)).toMatchObject({
+      status: 'running',
+      phase: 'delivery',
+      evidenceState: 'valid',
+      phaseEvidence: {
+        verification: { state: 'satisfied' },
+        review: { state: 'skipped' },
+      },
+    });
+  });
+
   test('keeps terminal completed Work verification idempotent without appending late failure evidence', () => {
     const root = temp('route-terminal-verify-');
     const workStore = { root: join(root, 'work') };

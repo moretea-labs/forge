@@ -1603,6 +1603,20 @@ export function transitionWorkContractPhase(
       evidenceRefs: input.evidenceRefs,
       recordedAt: at,
     });
+    if (
+      input.phase === 'delivery'
+      && current.phase !== 'delivery'
+      && current.phaseEvidence.review.state !== 'satisfied'
+      && !workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [], current.engineeringContext?.riskClass)
+    ) {
+      phaseEvidence.review = {
+        state: 'skipped',
+        source: 'recorded',
+        summary: 'Implementation review is not required for this Work candidate under the current risk policy.',
+        evidenceRefs: [],
+        recordedAt: at,
+      };
+    }
     if (input.state) phaseEvidence[input.phase] = { ...phaseEvidence[input.phase], state: input.state };
     return {
       phase: input.phase,

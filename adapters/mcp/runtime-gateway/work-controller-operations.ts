@@ -109,19 +109,21 @@ export async function callRhWorkControllerOperation(
           throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND: ${workId}:${requestedRelayScopeId}`);
         }
       }
-      if (observedOwner && observedOwner.authorityDigest
-        && (observedOwner.sessionId !== identity.sessionId || (observedOwner.controllerInstanceId?.trim() || '') !== identity.controllerInstanceId)
-        && !dispatchedRelay?.authorityId?.trim()
-        && !controllerSessionAuthorityMatches(observedOwner, identity.controllerAuthorityId)) {
-        throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; controller_claim requires the existing Work-bound controller authority after transport rotation.`);
-      }
       const inheritedRequirementAuthority = !dispatchedRelay?.authorityId?.trim() && authorizedRelay?.authorityId?.trim()
         ? {
             authorityId: authorizedRelay.authorityId!.trim(),
             authorityDigest: controllerSessionAuthorityDigest(authorizedRelay.authorityId!),
           }
         : undefined;
-      const directAuthority = dispatchedRelay?.authorityId?.trim() || inheritedRequirementAuthority
+      const existingDirectAuthority = Boolean(observedOwner?.authorityDigest?.trim())
+        && !dispatchedRelay?.authorityId?.trim()
+        && !inheritedRequirementAuthority;
+      if (existingDirectAuthority && identity.controllerAuthorityId
+        && observedOwner
+        && !controllerSessionAuthorityMatches(observedOwner, identity.controllerAuthorityId)) {
+        throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
+      }
+      const directAuthority = (dispatchedRelay?.authorityId?.trim() || inheritedRequirementAuthority || existingDirectAuthority)
         ? undefined
         : mintControllerSessionAuthority();
       const sessionAuthority = inheritedRequirementAuthority ?? directAuthority;
@@ -131,22 +133,26 @@ export async function callRhWorkControllerOperation(
           || controllerSessionPrincipalId(observedOwner!) !== identity.principalId
         )
         && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(store, workId, dispatchedRelay, identity.controllerType);
-      const session = resumeControllerSession(store, {
-        workId,
-        controllerId: identity.controllerId,
-        controllerType: identity.controllerType,
-        sessionId: identity.sessionId,
-        ...(sessionAuthority ? { authorityDigest: sessionAuthority.authorityDigest } : {}),
-        principalId: identity.principalId,
-        controllerInstanceId: identity.controllerInstanceId,
-        ...(crossOwnerRecovery
-          ? {
-              expectedClaimGeneration: observedOwner!.claimGeneration,
-              allowStaleRecovery: true,
-            }
-          : {}),
-        leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-      });
+      const session = existingDirectAuthority
+        ? bindFacadeControllerOwnership(ctx, store, workId, identity, {
+            leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+          })
+        : resumeControllerSession(store, {
+            workId,
+            controllerId: identity.controllerId,
+            controllerType: identity.controllerType,
+            sessionId: identity.sessionId,
+            ...(sessionAuthority ? { authorityDigest: sessionAuthority.authorityDigest } : {}),
+            principalId: identity.principalId,
+            controllerInstanceId: identity.controllerInstanceId,
+            ...(crossOwnerRecovery
+              ? {
+                  expectedClaimGeneration: observedOwner!.claimGeneration,
+                  allowStaleRecovery: true,
+                }
+              : {}),
+            leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+          });
       if (session.controllerType !== 'human') ensureScheduledControllerBindingForWork(store, { workId, session, args });
       const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);
       const executionSession = startExecutionSession(ctx.controllerHome, {

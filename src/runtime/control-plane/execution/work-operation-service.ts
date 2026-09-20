@@ -14,7 +14,7 @@ import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDec
 import { recordMcpTiming } from '../../diagnostics/mcp-timing';
 import { commandValue, normalizeRepositoryCommand, type RepositoryCommandValue } from '../../../cli/repositories/command-normalization';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
-import { getCheckProcessHandle } from '../../execution/process-runtime/check-facade';
+import { getCheckProcessHandle, waitForCheckProcess } from '../../execution/process-runtime/check-facade';
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
 import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
@@ -243,6 +243,10 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   const requestedChecks = Array.isArray(args.check_ids)
     ? args.check_ids.map(String).filter(Boolean)
     : selectDefaultWorkValidationChecks(contract, changedPaths);
+  const interactiveWaitBudgetMs = typeof args.interactive_wait_ms === 'number' && Number.isFinite(args.interactive_wait_ms)
+    ? Math.max(0, Math.min(30_000, Math.floor(args.interactive_wait_ms)))
+    : 0;
+  const interactiveWaitDeadline = interactiveWaitBudgetMs > 0 ? Date.now() + interactiveWaitBudgetMs : 0;
   const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -378,6 +382,17 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
         },
       };
       current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
+    }
+    if (!process.completed && interactiveWaitDeadline > 0) {
+      const remainingWaitMs = Math.max(0, interactiveWaitDeadline - Date.now());
+      if (remainingWaitMs > 0) {
+        process = await waitForCheckProcess(
+          ctx.controllerHome,
+          handle.repositoryId,
+          process.processId,
+          remainingWaitMs,
+        );
+      }
     }
     if (!process.completed) {
       checks.push({ checkId, ok: undefined, status: 'running', process });

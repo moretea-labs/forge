@@ -819,12 +819,31 @@ function deliveryCarryForStep(
   successorStep: PlanStep,
   recordedAt: string,
 ): PlanStepDeliveryCarry | undefined {
-  if (predecessorStep.status !== 'validating' || !predecessorStep.workId) return undefined;
   if (!samePlanStepExecutionContract(predecessorStep, successorStep)) return undefined;
   if (!acceptanceChangesExplicitlyReconciled(predecessorPlan, predecessorStep, successorPlan, successorStep)) return undefined;
   if (!predecessorPlan.requirementId || successorPlan.requirementId !== predecessorPlan.requirementId) return undefined;
 
-  const work = getWorkContract(options, predecessorStep.workId);
+  if (!options.controllerHome || !options.repoId) return undefined;
+  const exactHistoricalWorks = listControlPlaneRecords<WorkContract>(
+    options.controllerHome,
+    { namespace: 'work_contract', scope: options.repoId, limit: 5_000 },
+  ).map((record) => record.value).filter((candidate) =>
+    candidate.status === 'completed'
+    && candidate.planId === predecessorPlan.planId
+    && candidate.planStepId === predecessorStep.id
+    && candidate.requirementId === predecessorPlan.requirementId
+    && candidate.planSourceRevision === predecessorPlan.sourceRevision
+    && candidate.objective === predecessorStep.objective
+    && sameOrderedStrings(candidate.acceptanceCriteria, predecessorStep.acceptanceCriteria)
+    && sameOrderedStrings(candidate.allowedPaths, predecessorStep.allowedPaths)
+    && sameOrderedStrings(candidate.forbiddenPaths, predecessorStep.forbiddenPaths)
+    && sameOrderedStrings(candidate.checks, predecessorStep.checks)
+  );
+  const work = predecessorStep.workId
+    ? getWorkContract(options, predecessorStep.workId)
+    : exactHistoricalWorks.length === 1
+      ? exactHistoricalWorks[0]
+      : undefined;
   if (!work
     || work.status !== 'completed'
     || work.phase !== 'cleanup'
@@ -1222,9 +1241,17 @@ function approvePendingPlanRevisionUnlocked(
       if (previousStep.status === 'completed' && samePlanStepExecutionContract(previousStep, nextStep)
         && sameOrderedStrings(previousStep.acceptanceCriteria, nextStep.acceptanceCriteria)) {
         steps[index] = { ...nextStep, status: 'completed', workId: previousStep.workId, evidenceRefs: previousStep.evidenceRefs };
-      } else if (previousStep.status === 'validating' && deliveryCarryForStep(options, predecessor, previousStep, candidate, nextStep, at)) {
-        steps[index] = { ...nextStep, status: 'validating', workId: previousStep.workId, evidenceRefs: previousStep.evidenceRefs };
-        hasValidating = true;
+      } else {
+        const carry = deliveryCarryForStep(options, predecessor, previousStep, candidate, nextStep, at);
+        if (carry) {
+          steps[index] = {
+            ...nextStep,
+            status: 'validating',
+            workId: carry.workId,
+            evidenceRefs: previousStep.evidenceRefs,
+          };
+          hasValidating = true;
+        }
       }
     }
     candidate = { ...candidate, steps };

@@ -6,6 +6,7 @@ import {
   getControllerSession,
   getControllerWorkBinding,
   getRetainedControllerSession,
+  prepareControllerRoundOccurrence,
   resumeControllerRoundOccurrence,
 } from '../../../../packages/kernel/controller/api/index';
 import { projectAutonomousGoalProgression, type ProgressionWorkSnapshot } from '../../../../packages/kernel/progression/api/index';
@@ -38,6 +39,7 @@ export interface SchedulerAutonomousContinuationDependencies {
   boundaryForWork?: typeof workflowSupervisorBoundaryForWork;
   ensureSupervisorEnrollment?: typeof ensureWorkflowSupervisorEnrollmentForWork;
   hostForBinding?: typeof controllerHostForScheduledBinding;
+  prepareOccurrence?: typeof prepareControllerRoundOccurrence;
   resumeOccurrence?: typeof resumeControllerRoundOccurrence;
 }
 
@@ -92,6 +94,7 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
   const boundaryForWork = input.dependencies?.boundaryForWork ?? workflowSupervisorBoundaryForWork;
   const ensureSupervisorEnrollment = input.dependencies?.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork;
   const hostForBinding = input.dependencies?.hostForBinding ?? controllerHostForScheduledBinding;
+  const prepareOccurrence = input.dependencies?.prepareOccurrence ?? prepareControllerRoundOccurrence;
   const resumeOccurrence = input.dependencies?.resumeOccurrence ?? resumeControllerRoundOccurrence;
 
   let scanned = 0;
@@ -209,6 +212,20 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         if (retainedSession.controllerType === 'chatgpt') {
           const boundary = boundaryForWork(store, work.workId);
           if (boundary.status === 'outer_turn') {
+            // Supervisor owns the outer ChatGPT submit, but ControllerRound still
+            // owns the lower continuation. Materialize that round first so
+            // enrollment never depends on a previous Work having left one behind.
+            const prepared = prepareOccurrence(store, {
+              occurrenceId,
+              workId: work.workId,
+              controllerBindingId: bindingRecord.binding.bindingId,
+              relayScopeId,
+              continuationHint,
+            });
+            if (prepared.outcome !== 'dispatched') {
+              skip(skippedByReason, 'controller_prepare:' + prepared.outcome);
+              continue;
+            }
             const enrollment = await ensureSupervisorEnrollment(store, work.workId, {
               schedulerRecoveryKey: occurrenceId,
             });

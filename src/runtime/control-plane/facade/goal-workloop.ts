@@ -2344,6 +2344,16 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     });
     requestWorkImplementationReview(ctx.workStore, updated.workId, 'Verification is complete; explicit Controller implementation review is required before delivery.');
   }
+  if (validPassReadyForNextBoundary && !reviewRequiredAfterPass && !approvedReviewRemainsAuthoritative) {
+    transitionWorkContractPhase(ctx.workStore, updated.workId, {
+      status: 'running',
+      phase: 'delivery',
+      state: 'satisfied',
+      summary: 'All required exact Work verification receipts are current and this Work does not require implementation review; delivery admission advanced automatically.',
+      evidenceRefs: updated.evidenceRefs,
+      evidenceState: 'valid',
+    });
+  }
   const suggested = validateSuggestedNextActions(
     classified.outcome === 'valid_pass'
       ? [reviewRequiredAfterPass

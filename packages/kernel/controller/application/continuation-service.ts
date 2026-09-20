@@ -8,10 +8,12 @@ import {
   bindLegacyControllerRoundOccurrence,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  getRequirementControllerRoundRelay,
   readControllerRoundSemanticStateFingerprint,
+  reconcileControllerRoundAfterTerminalWork,
   type ControllerRoundRelayStoreOptions,
 } from '../infrastructure/controller-round-store';
-import { controllerSessionPrincipalId, getRetainedControllerSession } from '../infrastructure/controller-session-store';
+import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession } from '../infrastructure/controller-session-store';
 import type { ControllerHost } from '../ports/controller-host';
 
 export interface ControllerRoundOccurrenceInput {
@@ -88,6 +90,24 @@ export function prepareControllerRoundOccurrence(
   const requestedRelayScopeId = input.relayScopeId?.trim() || undefined;
   const canonicalRelayScopeId = requestedRelayScopeId
     ?? (work.requirementId ? `requirement:${work.requirementId}` : `goal:${work.workId}`);
+
+  // A failed/cancelled predecessor may leave the Requirement scope pointing at
+  // its last ControllerRound after the Work itself has already terminalized.
+  // Retire only that exact terminal/no-owner relay before preparing the current
+  // Work. This is mechanical cleanup, not Requirement-level authority inheritance.
+  if (work.requirementId) {
+    const scopedRelay = getRequirementControllerRoundRelay(options, work.requirementId);
+    if (scopedRelay && scopedRelay.originWorkId !== work.workId) {
+      const scopedWork = getWorkContract(options, scopedRelay.originWorkId);
+      if (scopedWork && ['failed', 'cancelled'].includes(scopedWork.status) && !getControllerSession(options, scopedWork.workId)) {
+        reconcileControllerRoundAfterTerminalWork(options, {
+          workId: scopedWork.workId,
+          actor: `controller-continuation-terminal-scope-reconcile:${work.workId}`,
+        });
+      }
+    }
+  }
+
   let relay = getControllerRoundRelay(options, work.workId);
 
   if (relay?.occurrenceId === input.occurrenceId) {

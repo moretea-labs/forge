@@ -406,15 +406,10 @@ describe('rh_work terminalization authority', () => {
     expect(durable.data?.durableCheckIds).toEqual(['check:release-only']);
     expect(durable.data?.verificationStarted).toBe(false);
 
-    let batch: Record<string, any> | undefined;
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      batch = structured(await callRuntimeTool(callerContext, 'rh_work', {
-        operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
-        check_ids: ['check:batch-a', 'check:batch-b'], requested_by: 'chatgpt', request_id: 'batch-verify-compatible',
-      }));
-      if (batch.data?.completed === true) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    const batch = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:batch-b'], requested_by: 'chatgpt', request_id: 'batch-verify-compatible',
+    }));
     expect(batch?.status).toBe('ok');
     expect(batch?.data).toMatchObject({
       batch: true,
@@ -451,6 +446,36 @@ describe('rh_work terminalization authority', () => {
     expect(single?.data?.verification?.processId).toBe(batchAProcessId);
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(2);
   }, 20_000);
+  test('materializes a canonical WorkHandle for isolated reconciliation Work without manual handle ceremony', () => {
+    const fx = fixture();
+    const workId = 'work-reconciliation-handle-auto';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: workId, title: 'reconciliation handle auto' });
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Reconcile already-delivered source evidence.',
+      acceptanceCriteria: ['Existing source remains unchanged.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: ['package:check:type'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'reconciliation',
+      status: 'running',
+      checkoutId: workspace.checkoutId,
+      worktreeRef: workspace.root,
+      baseRevision: workspace.baseRevision ?? undefined,
+    });
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: { sessionId: 'reconciliation-session', principalId: 'principal-reconciliation' },
+    });
+    expect(handle).toMatchObject({ workId, state: 'prepared', managedWorktree: true });
+  });
+
   test('materializes a canonical WorkHandle for isolated completed_no_change Work', () => {
     const fx = fixture();
     const workId = 'work-completed-no-change-handle';
@@ -1755,6 +1780,7 @@ describe('rh_work terminalization authority', () => {
     const workB = 'work-explicit-session-b';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workA);
     createReadyWork(fx.controllerHome, fx.repository.repoId, workB);
+    publishCurrentRuntime(fx.controllerHome, 'runtime-explicit-session');
 
     const withoutTransport = () => ({
       ...ctx(fx.controllerHome, fx.repository, 'principal-explicit-session', 'placeholder', 'runtime-explicit-session'),
@@ -1778,6 +1804,14 @@ describe('rh_work terminalization authority', () => {
     expect(authorityA).toStartWith('ctrl_');
     expect(authorityB).toStartWith('ctrl_');
     expect(authorityA).not.toBe(authorityB);
+
+    const mechanicallyRebound = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workA, requested_by: 'chatgpt' },
+    ));
+    expect(mechanicallyRebound.summary).not.toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getControllerSession(store, workA)?.sessionId).toStartWith('mcp_request_');
 
     const wrongWorkAuthority = structured(await callRuntimeTool(
       withoutTransport(),
@@ -2461,7 +2495,7 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
-  test('explicit user recovery can rekey only a direct exact-Work authority after capability loss without weakening normal transport fencing', async () => {
+  test('direct exact-Work claim mechanically rebinds the same authenticated owner while explicit rekey remains user-directed', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const principalId = 'principal-direct-authority-recovery';
@@ -2484,8 +2518,12 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
     ));
-    expect(ordinaryRotatedClaim.status).toBe('blocked');
-    expect(ordinaryRotatedClaim.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(ordinaryRotatedClaim.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toMatchObject({
+      principalId,
+      sessionId: 'transport-recovery-2',
+      controllerInstanceId: runtimeInstanceId,
+    });
 
     const automatedRecovery = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
@@ -6427,18 +6465,13 @@ describe('rh_work content-equivalent commit authority transfer', () => {
       },
     ));
     expect(verificationStarted.status).toBe('ok');
+    expect(verificationStarted.data?.verification).toMatchObject({
+      checkId,
+      completed: true,
+      outcome: 'valid_pass',
+    });
     const processId = String(verificationStarted.data?.verification?.processId ?? '');
     expect(processId).toBeTruthy();
-    const waited = await callProcessTool(
-      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
-      'process_wait',
-      { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 },
-    );
-    expect(waited?.isError).not.toBe(true);
-    expect(waited?.structuredContent).toMatchObject({
-      process: { processId, completed: true, ok: true },
-      workVerificationReconciliation: { workId, processId, status: 'reconciled' },
-    });
     const verifiedContract = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
     expect(verifiedContract.checkRefs.some((record) => record.checkId === checkId && record.outcome === 'valid_pass')).toBe(true);
 

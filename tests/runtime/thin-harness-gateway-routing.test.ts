@@ -1522,6 +1522,45 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
+  test('bounded attach settles a freshly launched short Check in one work_validate call', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-work-validate-bounded-attach',
+      objective: 'Settle finalizer-owned validation without another Controller round.',
+      acceptance_criteria: ['A short persisted Check completes within one bounded work_validate call.'],
+      allowed_paths: ['src/**'],
+      checks: ['slow'],
+      isolation: 'reuse',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-bounded-attach',
+      interactive_wait_ms: 10_000,
+    });
+    expect(validated?.isError).not.toBe(true);
+    expect((validated?.structuredContent as {
+      validation: { passed: boolean; completed: boolean; checks: Array<{ status: string }> };
+    }).validation).toMatchObject({
+      passed: true,
+      completed: true,
+      checks: [expect.objectContaining({ status: 'passed' })],
+    });
+  });
+
+
   test('rebinds a content-deduplicated completed Check to the committed HEAD without replaying the Process', async () => {
     const fx = fixture();
     roots.push(fx.root);

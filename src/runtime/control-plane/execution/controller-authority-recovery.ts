@@ -261,6 +261,31 @@ function assertControllerLifecycleInvocationAuthority(
   return undefined;
 }
 
+/**
+ * Modern sessionless MCP replaces its request binding on every call. For a
+ * direct Work, omission of an opaque capability is not a semantic ownership
+ * change when the exact Work, authenticated controller/principal/type and live
+ * canonical Runtime still agree. Relay-bound rounds remain capability-scoped,
+ * and an explicitly supplied wrong capability never uses this path.
+ */
+export function controllerInvocationCanMechanicallyRebindDirectOwnership(
+  input: ControllerInvocationAuthorityContext & { runtime: { running?: boolean; runtimeInstanceId?: string } },
+  owner: ControllerSession | undefined = getControllerSession(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    input.workId.trim(),
+  ),
+): boolean {
+  const workId = input.workId.trim();
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  if (!owner || getControllerRoundRelay(store, workId)) return false;
+  if (input.identity.transportSessionId || input.identity.controllerAuthorityId) return false;
+  if (owner.controllerId !== input.identity.controllerId || owner.controllerType !== input.identity.controllerType) return false;
+  if (controllerSessionPrincipalId(owner) !== input.identity.principalId) return false;
+  const requestedInstanceId = input.identity.controllerInstanceId.trim();
+  const canonicalRuntimeInstanceId = input.runtime.running ? input.runtime.runtimeInstanceId?.trim() || '' : '';
+  return Boolean(requestedInstanceId && canonicalRuntimeInstanceId === requestedInstanceId);
+}
+
 /** Bind one exact Work owner to the current transport/runtime without changing semantic ownership. */
 export function bindControllerOwnershipForInvocation(input: ControllerInvocationAuthorityContext & {
   runtime: { running?: boolean; runtimeInstanceId?: string };
@@ -270,7 +295,9 @@ export function bindControllerOwnershipForInvocation(input: ControllerInvocation
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const workId = input.workId.trim();
   const existingOwner = getControllerSession(store, workId);
-  assertControllerLifecycleInvocationAuthority(input, existingOwner);
+  if (!controllerInvocationCanMechanicallyRebindDirectOwnership(input, existingOwner)) {
+    assertControllerLifecycleInvocationAuthority(input, existingOwner);
+  }
   return bindControllerSessionToCurrentRuntime(store, {
     workId,
     controllerId: input.identity.controllerId,

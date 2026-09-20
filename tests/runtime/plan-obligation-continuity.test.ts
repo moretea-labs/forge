@@ -494,6 +494,60 @@ describe('Plan obligation continuity', () => {
     expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).filter((work) => work.workId === workId)).toHaveLength(1);
   });
 
+  test('delivery carry recovers an exact completed Work even when predecessor Plan projection regressed to ready', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-delivery-carry-ready-regression-'));
+    roots.push(controllerHome);
+    const options = { controllerHome, repoId: 'repo-a' };
+    const { predecessor, workId } = deliveredValidatingPredecessor(options, 'PLAN-ready-regression');
+    const accepted = acceptPlanStepEvidence(options, {
+      planId: predecessor.planId,
+      stepId: 'stage-a',
+      reviewer: 'chatgpt',
+      rationale: 'Complete the delivered step before simulating a stale Plan projection.',
+    });
+    const stored = readControlPlaneRecord<typeof accepted>(controllerHome, 'plan_contract', 'repo-a', predecessor.planId)!;
+    writeControlPlaneRecord(controllerHome, {
+      namespace: 'plan_contract',
+      scope: 'repo-a',
+      key: predecessor.planId,
+      schemaVersion: 1,
+      value: {
+        ...stored.value,
+        status: 'approved',
+        steps: stored.value.steps.map((step) => step.id === 'stage-a'
+          ? { ...step, status: 'ready', workId: undefined, evidenceRefs: [] }
+          : step),
+        updatedAt: '2026-09-20T00:00:00.000Z',
+      },
+      action: 'test_regress_completed_step_projection_to_ready',
+      expectedRevision: stored.revision,
+    });
+    const regressed = getPlanContract(options, predecessor.planId)!;
+    const revision = input('PLAN-ready-regression-r2');
+    revision.planId = predecessor.planId;
+    revision.sourceRevision = 'revision-b';
+    revision.goal = regressed.goal;
+    revision.requirementId = regressed.requirementId;
+    revision.scopeKey = regressed.scopeKey;
+    revision.steps = regressed.steps.map((step) => ({ ...step, status: 'pending', workId: undefined, evidenceRefs: [] }));
+    const dispositions = successorDispositions(regressed);
+
+    const admitted = admitPlanContract(options, {
+      ...revision,
+      planRelation: 'extend',
+      relatedPlanId: regressed.planId,
+      obligationDispositions: dispositions,
+    }).plan!;
+    expect(admitted.pendingRevision?.deliveryCarries).toEqual([expect.objectContaining({
+      predecessorStepId: 'stage-a',
+      successorStepId: 'stage-a',
+      workId,
+      completionReceiptId: `REC-${workId}`,
+    })]);
+    const approved = approvePlanContract(options, admitted.planId);
+    expect(approved.steps).toEqual([expect.objectContaining({ id: 'stage-a', status: 'validating', workId })]);
+  });
+
   test('delivery carry accepts a later revision source only with explicit delivered-revision containment proof', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-delivery-carry-ancestor-'));
     roots.push(controllerHome);

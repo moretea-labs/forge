@@ -66,6 +66,7 @@ import {
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';
 
 export const RH_WORK_VERIFY_LEASE_WAIT_MS = DEFAULT_WORK_CHECK_LEASE_WAIT_MS;
+export const RH_WORK_VERIFY_INTERACTIVE_WAIT_MS = 8_000;
 
 export function contextRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -302,6 +303,7 @@ export async function finalizeFacadeWorkHandle(
       repo_id: repository.repoId,
       work_id: workId,
       check_ids: contract?.checks ?? [],
+      interactive_wait_ms: 12_000,
     });
     if (!validation || validation.isError === true) return validation;
     const validationPayload = contextRecord(validation.structuredContent);
@@ -503,7 +505,7 @@ export async function runFacadeVerify(
     workId: workId || undefined,
     requestId: typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : undefined,
     timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-    interactiveWaitMs: 0,
+    interactiveWaitMs: RH_WORK_VERIFY_INTERACTIVE_WAIT_MS,
     leaseWaitMs: RH_WORK_VERIFY_LEASE_WAIT_MS,
     reconcileProcessIds,
     simulate: args.simulate_check === true || args.infrastructure_failed === true || args.check_failed === true || args.skipped === true

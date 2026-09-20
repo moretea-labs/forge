@@ -554,9 +554,20 @@ export function bindControllerSessionToCurrentRuntime(
       throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${input.workId}`);
     }
   }
-  if (ownerInstanceId === requestedInstanceId && current.sessionId === input.sessionId) return current;
+  const requestedAuthorityDigest = input.authorityDigest?.trim() || '';
+  const currentAuthorityDigest = current.authorityDigest?.trim() || '';
+  if (
+    ownerInstanceId === requestedInstanceId
+    && current.sessionId === input.sessionId
+    && (!requestedAuthorityDigest || requestedAuthorityDigest === currentAuthorityDigest)
+  ) return current;
+  // The opaque Work capability belongs to durable ownership, not to one
+  // transport or Runtime process. A positively-current Runtime migration keeps
+  // the same digest while claim generation fences the new controller epoch.
+  const preservedAuthorityDigest = input.authorityDigest?.trim() || current.authorityDigest?.trim() || undefined;
   return resumeControllerSession(options, {
     ...input,
+    ...(preservedAuthorityDigest ? { authorityDigest: preservedAuthorityDigest } : {}),
     expectedClaimGeneration: current.claimGeneration,
   });
 }

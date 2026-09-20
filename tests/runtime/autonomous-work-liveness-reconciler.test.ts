@@ -6,10 +6,11 @@ import {
   bindControllerSessionBinding,
   claimControllerSession,
   getControllerRoundRelay,
+  prepareControllerRoundOccurrence,
   releaseControllerSession,
   type ControllerHost,
 } from '../../packages/kernel/controller/api/index';
-import { createWorkContract } from '../../packages/kernel/work/api/index';
+import { createWorkContract, failWorkContract } from '../../packages/kernel/work/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
@@ -177,6 +178,97 @@ describe('autonomous Work liveness reconciliation', () => {
     expect(second.dispatched).toBe(0);
     expect(second.skippedByReason.controller_round_present).toBe(1);
     expect(providerDispatches).toBe(1);
+  });
+
+  test('prepares the lower ControllerRound before Supervisor enrollment and retires a failed stale Requirement relay', async () => {
+    const controllerHome = home();
+    const store = { controllerHome, repoId: 'repo-a' };
+    createRequirement({ controllerHome }, {
+      requirementId: 'REQ-SUPERVISOR',
+      title: 'Supervisor Requirement',
+      outcomeStatement: 'Continue the current plan without manual wakeups.',
+    });
+
+    createRunningWork(controllerHome, { workId: 'WORK-STALE', requirementId: 'REQ-SUPERVISOR' });
+    const staleBinding = bindReleasedChatgptController(controllerHome, 'WORK-STALE');
+    prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'stale-occurrence',
+      workId: 'WORK-STALE',
+      controllerBindingId: staleBinding.bindingId,
+      relayScopeId: 'requirement:REQ-SUPERVISOR',
+    });
+    failWorkContract(store, 'WORK-STALE', { phase: 'implementation', summary: 'Stale predecessor failed.' });
+
+    createPlanContract({ controllerHome, repoId: 'repo-a' }, {
+      planId: 'PLAN-SUPERVISOR',
+      repoId: 'repo-a',
+      requirementId: 'REQ-SUPERVISOR',
+      scopeKey: 'scope-supervisor',
+      sourceRevision: 'abc123',
+      goal: 'Continue one supervised stage.',
+      nonGoals: [],
+      assumptions: [],
+      resolvedDecisions: [],
+      stopConditions: [],
+      replanConditions: [],
+      steps: [{
+        id: 'stage-current',
+        objective: 'Execute the current stage.',
+        dependencies: [],
+        authoritativeFiles: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: ['package:check:type'],
+        acceptanceCriteria: ['Supervisor enrollment follows canonical ControllerRound preparation.'],
+      }],
+    });
+    approvePlanContract({ controllerHome, repoId: 'repo-a' }, 'PLAN-SUPERVISOR');
+    createRunningWork(controllerHome, {
+      workId: 'WORK-CURRENT',
+      requirementId: 'REQ-SUPERVISOR',
+      planId: 'PLAN-SUPERVISOR',
+      planStepId: 'stage-current',
+    });
+    claimPlanStepForWork(
+      store,
+      { planId: 'PLAN-SUPERVISOR', stepId: 'stage-current', workId: 'WORK-CURRENT', sourceRevision: 'abc123' },
+    );
+    bindReleasedChatgptController(controllerHome, 'WORK-CURRENT');
+
+    let enrollments = 0;
+    let providerDispatches = 0;
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-09-20T06:40:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: {
+        authorizeWake: () => undefined,
+        boundaryForWork: () => ({
+          status: 'outer_turn' as const,
+          taskId: 'task-supervisor',
+          requirementId: 'REQ-SUPERVISOR',
+          conversationId: 'conversation-supervisor',
+          conversationUrl: 'https://chatgpt.com/c/conversation-supervisor',
+        }),
+        ensureSupervisorEnrollment: async (_options, workId) => {
+          const relay = getControllerRoundRelay(store, workId);
+          expect(relay).toMatchObject({
+            status: 'dispatching',
+            originWorkId: 'WORK-CURRENT',
+            relayScopeId: 'requirement:REQ-SUPERVISOR',
+          });
+          enrollments += 1;
+          return { status: 'enrolled' as const, taskId: 'task-supervisor', effectId: 'effect-supervisor' };
+        },
+        hostForBinding: () => ({ resume: async () => { providerDispatches += 1; return { accepted: true }; } }),
+      },
+    });
+
+    expect(result).toMatchObject({ eligible: 1, supervisorEnrolled: 1, dispatched: 0, failed: 0 });
+    expect(enrollments).toBe(1);
+    expect(providerDispatches).toBe(0);
+    expect(getControllerRoundRelay(store, 'WORK-STALE')?.status).toBe('failed');
+    expect(getControllerRoundRelay(store, 'WORK-CURRENT')?.status).toBe('dispatching');
   });
 
   test('does not dispatch while a live Controller still owns the Work', async () => {

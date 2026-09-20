@@ -195,7 +195,11 @@ describe('controller Work ownership fencing', () => {
   test('binds a same-principal Work forward only to the positively current Runtime instance', () => {
     const home = controllerHome();
     const store = { controllerHome: home, repoId: 'repo-a' };
-    const first = claimControllerSession(store, claimInput('session-old', 'principal-a', 'runtime-old'));
+    const authority = mintControllerSessionAuthority();
+    const first = claimControllerSession(store, {
+      ...claimInput('session-old', 'principal-a', 'runtime-old'),
+      authorityDigest: authority.authorityDigest,
+    });
 
     const migrated = bindControllerSessionToCurrentRuntime(store, {
       ...claimInput('session-new', 'principal-a', 'runtime-new'),
@@ -204,6 +208,8 @@ describe('controller Work ownership fencing', () => {
     expect(migrated.controllerInstanceId).toBe('runtime-new');
     expect(migrated.sessionId).toBe('session-new');
     expect(migrated.claimGeneration).toBe((first.claimGeneration ?? 1) + 1);
+    expect(migrated.authorityDigest).toBe(first.authorityDigest);
+    expect(controllerSessionAuthorityMatches(migrated, authority.authorityId)).toBe(true);
 
     expect(() => bindControllerSessionToCurrentRuntime(store, {
       ...claimInput('session-stale', 'principal-a', 'runtime-old'),
