@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import type { CandidateExecutionLane, StableExecutionLane } from '../root/runtime-lane';
@@ -97,6 +97,65 @@ export function readReleaseSession(controllerHome: string, sessionId: string): R
     if (error instanceof Error && error.message === 'RELEASE_SESSION_INVALID') throw error;
     throw new Error('RELEASE_SESSION_INVALID');
   }
+}
+
+export interface ReleaseSessionInventory {
+  sessions: ReleaseSession[];
+  invalidSessionFiles: string[];
+  inspected: number;
+  truncated: boolean;
+}
+
+/**
+ * Bounded read-only inventory for Recovery-owned ReleaseSession authority.
+ * Consumers may derive retention decisions from durable phases, but only
+ * Recovery operations may advance those phases.
+ */
+export function listReleaseSessions(
+  controllerHome: string,
+  options: { maxEntries?: number } = {},
+): ReleaseSessionInventory {
+  const root = dirname(sessionPath(controllerHome, 'release-session-inventory'));
+  if (!existsSync(root)) return { sessions: [], invalidSessionFiles: [], inspected: 0, truncated: false };
+  const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? 512));
+  const names = readdirSync(root)
+    .filter((name) => name.endsWith('.json'))
+    .sort();
+  const selected = names.slice(0, maxEntries);
+  const sessions: ReleaseSession[] = [];
+  const invalidSessionFiles: string[] = [];
+  for (const name of selected) {
+    const sessionId = name.slice(0, -'.json'.length);
+    try {
+      const session = readReleaseSession(controllerHome, sessionId);
+      if (session) sessions.push(session);
+      else invalidSessionFiles.push(name);
+    } catch {
+      invalidSessionFiles.push(name);
+    }
+  }
+  return {
+    sessions,
+    invalidSessionFiles,
+    inspected: selected.length,
+    truncated: names.length > selected.length,
+  };
+}
+
+const RELEASE_SESSION_CANDIDATE_RETIRED_PHASES = new Set<ReleaseSessionPhase>([
+  'soaking',
+  'known_good',
+  'rolled_back',
+  'failed',
+]);
+
+/**
+ * Durable semantic proof that Candidate B is no longer required as a mutable
+ * Controller Home. This does not itself authorize deletion: cleanup must still
+ * prove the exact fenced path and absence of a live Runtime owner.
+ */
+export function releaseSessionCandidateIsRetired(session: ReleaseSession): boolean {
+  return RELEASE_SESSION_CANDIDATE_RETIRED_PHASES.has(session.phase);
 }
 
 export function createReleaseSession(input: {

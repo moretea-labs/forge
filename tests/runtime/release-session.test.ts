@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { advanceReleaseSession, createReleaseSession, readReleaseSession, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/standalone-recovery/release-session';
+import { advanceReleaseSession, createReleaseSession, listReleaseSessions, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/standalone-recovery/release-session';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
@@ -34,6 +34,22 @@ describe('Recovery ReleaseSession', () => {
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'rolled_back', receipts: [{ id: 'rollback', kind: 'rollback', summary: 'Stable A restored' }] });
     expect(readReleaseSession(home, session.sessionId)).toMatchObject({ phase: 'rolled_back', revision: session.revision });
+  });
+
+  test('lists durable sessions and exposes Candidate B retirement only from durable phase', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-inventory-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    expect(listReleaseSessions(home)).toMatchObject({
+      inspected: 1,
+      truncated: false,
+      invalidSessionFiles: [],
+      sessions: [{ sessionId: candidate.sessionId, phase: 'source_frozen' }],
+    });
+    expect(releaseSessionCandidateIsRetired(session)).toBe(false);
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' });
+    expect(releaseSessionCandidateIsRetired(session)).toBe(true);
   });
 
   test('retires a superseded Candidate B before cutover without inventing another lifecycle state', async () => {
@@ -89,6 +105,51 @@ describe('Recovery ReleaseSession', () => {
       phase: 'static_verified',
       receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
     });
+
+    const cancelled = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel');
+    expect(cancelled).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'failed' } });
+    expect(existsSync(candidateHome)).toBe(false);
+
+    const again = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel-again');
+    expect(again).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'failed' } });
+  });
+
+  test('cancels and removes a superseded pre-cutover Candidate B under Recovery authority', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-release-session-cancel-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const sessionId = 'release-session-cancel-1234';
+    const candidateHome = join(root, 'candidate-runtime-lanes', sessionId);
+    mkdirSync(candidateHome, { recursive: true });
+    const stable: StableExecutionLane = {
+      schemaVersion: 1,
+      kind: 'stable',
+      controllerHome,
+      serviceLabel: 'stable',
+      port: 8765,
+      authTokenFile: join(controllerHome, 'mcp', 'runtime-token'),
+    };
+    const stableRelease: ReleaseSessionStableRelease = {
+      authorityRevision: 7,
+      releaseId: 'stable-a',
+      artifactIdentity: 'sha256:stable',
+      manifestSha256: 'stable-manifest',
+      workerProtocolVersion: 1,
+      releaseFencingTokenSha256: 'f'.repeat(64),
+    };
+    const candidate: CandidateExecutionLane = {
+      schemaVersion: 1,
+      kind: 'candidate',
+      sessionId,
+      controllerHome: candidateHome,
+      serviceLabel: 'candidate',
+      port: 8766,
+      authTokenFile: join(candidateHome, 'mcp', 'runtime-token'),
+      databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+      sourceStableControllerHome: controllerHome,
+      createdAt: new Date().toISOString(),
+    };
+    createReleaseSession({ controllerHome, sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
 
     const cancelled = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel');
     expect(cancelled).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'failed' } });
