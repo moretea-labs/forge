@@ -299,6 +299,7 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
   if (risk === 'destructive' || risk === 'destructive_remote' || risk === 'raw_secret_config') return 'destructive';
   if (risk === 'remote_write') return 'high';
   if (risk === 'local_repo_write') return 'low';
+  if (risk === undefined) return 'low';
   return 'medium';
 }
 
@@ -2178,7 +2179,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   const changedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
-  if (workRequiresImplementationReview(work.workKind, changedPaths)) {
+  if (workRequiresImplementationReview(work.workKind, changedPaths, work.engineeringContext?.riskClass)) {
     recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: changedPaths });
     transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'running',
@@ -2202,7 +2203,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }]).actions;
   transitionWorkContractPhase(ctx.workStore, work.workId, {
     status: 'running', phase: 'delivery', state: 'active',
-    summary: 'Source-free Work evidence is complete; implementation review is not required and semantic finalization is next.', evidenceRefs: work.evidenceRefs,
+    summary: 'Work evidence is complete; this candidate does not require implementation review and semantic finalization is next.', evidenceRefs: work.evidenceRefs,
   });
   const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
   return buildFacadeResult({ status: 'ok', summary: 'Continue: evidence is complete; ready to finalize.', data: { work: summarizeWorkContract(updated), backgroundCompleted: false, nextStep: 'finalize' }, suggestedNextActions: suggested });
@@ -2328,7 +2329,7 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
   );
   const reviewRequiredAfterPass = validPassReadyForNextBoundary
     && !approvedReviewRemainsAuthoritative
-    && workRequiresImplementationReview(updated.workKind, currentChangedPaths);
+    && workRequiresImplementationReview(updated.workKind, currentChangedPaths, updated.engineeringContext?.riskClass);
   if (approvedReviewRemainsAuthoritative && updated.evidenceState !== 'valid') {
     recordWorkEvidenceState(ctx.workStore, updated.workId, 'valid');
   }
@@ -2505,7 +2506,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
-  if (workRequiresImplementationReview(work.workKind, currentChangedPaths)) {
+  if (workRequiresImplementationReview(work.workKind, currentChangedPaths, work.engineeringContext?.riskClass)) {
     try {
       const candidate = currentImplementationReviewCandidate(ctx, work);
       assertImplementationReviewPreDeliveryBoundary({

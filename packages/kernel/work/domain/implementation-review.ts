@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import type { EngineeringRiskClass } from './engineering-contracts';
 
 export const IMPLEMENTATION_REVIEW_DECISIONS = ['approved', 'changes_required', 'blocked'] as const;
 export const MAX_IMPLEMENTATION_REVIEW_HISTORY = 256;
@@ -203,12 +204,19 @@ export function latestImplementationReview(
 }
 
 /**
- * Work-kind gate. Source-free effect/investigation/reconciliation Work may skip
- * code review only while they truly have no repository source delta.
+ * Candidate review gate. Low engineering-risk delivery relies on exact durable
+ * completion evidence and may skip a separate Controller review round; normal,
+ * high, and critical repository candidates retain the exact review authority.
+ * Source-free effect/investigation/reconciliation Work may also skip review only
+ * while they truly have no repository source delta.
  */
-export function workRequiresImplementationReview(workKind: string, changedPaths: readonly string[]): boolean {
+export function workRequiresImplementationReview(
+  workKind: string,
+  changedPaths: readonly string[],
+  riskClass?: EngineeringRiskClass,
+): boolean {
   if (workKind === 'read_only_review' || workKind === 'superseded') return false;
-  if (workKind === 'repository_change' || workKind === 'completed_no_change') return true;
+  if (workKind === 'repository_change' || workKind === 'completed_no_change') return riskClass !== 'low';
   return normalizeImplementationReviewChangedPaths(changedPaths).length > 0;
 }
 

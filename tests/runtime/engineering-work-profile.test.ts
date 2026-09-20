@@ -7,6 +7,7 @@ import {
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/work/domain/engineering-profile';
+import { workRequiresImplementationReview } from '../../packages/kernel/work/domain/implementation-review';
 import { loadProjectEngineeringContract } from '../../src/runtime/context/project-engineering-contract';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
 
@@ -30,6 +31,15 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
     expect(engineeringWorkProfileForRisk('medium')).toMatchObject({ riskClass: 'normal', admissionEnforcement: 'observe' });
     expect(engineeringWorkProfileForRisk('high')).toMatchObject({ riskClass: 'high', admissionEnforcement: 'enforce' });
     expect(engineeringWorkProfileForRisk('destructive')).toMatchObject({ riskClass: 'critical', admissionEnforcement: 'enforce' });
+  });
+
+  test('skips a separate implementation review only for low-risk candidates', () => {
+    expect(workRequiresImplementationReview('repository_change', ['src/index.ts'], 'low')).toBe(false);
+    expect(workRequiresImplementationReview('repository_change', ['src/index.ts'], 'normal')).toBe(true);
+    expect(workRequiresImplementationReview('repository_change', ['src/index.ts'], 'high')).toBe(true);
+    expect(workRequiresImplementationReview('repository_change', ['src/index.ts'], 'critical')).toBe(true);
+    expect(workRequiresImplementationReview('repository_change', ['src/index.ts'])).toBe(true);
+    expect(workRequiresImplementationReview('local_effect', ['src/index.ts'], 'low')).toBe(true);
   });
 
   test('records normal evidence gaps without blocking but fails high-risk mutation closed', () => {

@@ -1594,7 +1594,7 @@ export function transitionWorkContractPhase(
     }
     if (input.phase === 'delivery'
       && current.phase !== 'delivery'
-      && workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [])) {
+      && workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [], current.engineeringContext?.riskClass)) {
       throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
     }
     const phaseEvidence = transitionPhaseEvidence(current, input.phase, {
@@ -1922,7 +1922,7 @@ export function recordWorkCompletionReceipt(
     const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
       && Boolean(receipt.reconciliationId?.trim())
       && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
-    const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths);
+    const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
     if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
       throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
     }
@@ -1934,7 +1934,7 @@ export function recordWorkCompletionReceipt(
         ? historicalReconciliationException
           ? { state: 'skipped', source: 'recorded', summary: `Historical reviewed reconciliation ${receipt.reconciliationId} is the narrow compatibility authority for this already-delivered Direct Edit Work.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt }
           : { ...current.phaseEvidence.review, state: 'satisfied' }
-        : { state: 'skipped', source: 'recorded', summary: 'Implementation review is not required for this source-free Work completion.', evidenceRefs: [], recordedAt },
+        : { state: 'skipped', source: 'recorded', summary: 'Implementation review is not required for this Work completion under the current candidate risk policy.', evidenceRefs: [], recordedAt },
       delivery: { state: 'satisfied', source: 'recorded', summary: `Phase delivery accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
       cleanup: { state: 'satisfied', source: 'recorded', summary: `Phase cleanup accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
     };

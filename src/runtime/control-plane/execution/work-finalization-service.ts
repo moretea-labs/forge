@@ -558,7 +558,7 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
     explicitTargetBranch: input.targetBranch,
     review,
   });
-  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths)) return;
+  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths, input.contract.engineeringContext?.riskClass)) return;
   if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
   if (review.sourceRevision !== branchHead) throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: branch source revision changed');
   const verification = authoritativeImplementationReviewVerificationEvidence({
