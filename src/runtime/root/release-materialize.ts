@@ -35,6 +35,7 @@ export interface StagedRuntimeRelease {
   releaseId: string;
   artifactIdentity: string;
   runtimeBundleArtifactIdentity?: string;
+  runtimeInterpreterArtifactIdentity?: string;
   diagnosticArtifactIdentity?: string;
   connectorArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
@@ -64,6 +65,7 @@ export interface RuntimeReleaseMaterializerDependencies {
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string; entryPath?: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleRuntime?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  materializeRuntimeInterpreter?: (input: { sourceRoot: string; outputPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleNodeHost?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleProcessRunner?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   materializeCodeGraphRuntime?: (input: {
@@ -411,6 +413,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     releaseId: receipt.releaseId,
     artifactIdentity: receipt.artifactIdentity,
     runtimeBundleArtifactIdentity: manifest.runtimeBundleArtifactIdentity,
+    runtimeInterpreterArtifactIdentity: manifest.runtimeInterpreterArtifactIdentity,
     diagnosticArtifactIdentity: manifest.diagnosticArtifactIdentity,
     connectorArtifactIdentity: manifest.connectorArtifactIdentity,
     browserNodeBridgeArtifactIdentity: manifest.browserNodeBridgeArtifactIdentity,
@@ -447,6 +450,31 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; e
     '--outfile',
     input.outputPath,
   ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
+}
+
+function defaultMaterializeRuntimeInterpreter(input: { sourceRoot: string; outputPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
+  const configured = process.env.FORGE_BUN_BIN?.trim();
+  const bun = configured || resolveBunExecutable(process.execPath, process.env);
+  const probe = runProcess(bun, ['-e', 'process.stdout.write(process.execPath)'], {
+    cwd: input.sourceRoot,
+    timeoutMs: 15_000,
+    maxOutputBytes: 16 * 1024,
+  });
+  if (!probe.ok) return probe;
+  try {
+    const reported = probe.stdout.trim();
+    if (!reported) return { ok: false, error: 'Bun did not report process.execPath' };
+    const source = realpathSync(resolve(reported));
+    const status = lstatSync(source);
+    if (status.isSymbolicLink() || !status.isFile() || (status.mode & 0o111) === 0) {
+      return { ok: false, error: `resolved Bun interpreter is not a regular executable: ${source}` };
+    }
+    copyFileSync(source, input.outputPath);
+    chmodSync(input.outputPath, 0o700);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function defaultBundleRuntimeScript(input: { sourceRoot: string; outputPath: string; entryPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
@@ -527,6 +555,7 @@ export function stageRuntimeRelease(input: {
   mkdirSync(staging, { recursive: true, mode: 0o700 });
   try {
     const compileBinary = dependencies.compileBinary ?? defaultCompileBinary;
+    const platform = dependencies.platform ?? process.platform;
     const runtimeBundleEntrypoint = 'forge-runtime-bundle.js' as const;
     const runtimeBundlePath = join(staging, runtimeBundleEntrypoint);
     const runtimeBundle = (dependencies.bundleRuntime ?? defaultBundleRuntimeScript)({
@@ -540,6 +569,20 @@ export function stageRuntimeRelease(input: {
     chmodSync(runtimeBundlePath, 0o600);
     const runtimeBundleArtifactIdentity = `sha256:${sha256(runtimeBundlePath)}`;
 
+    const runtimeInterpreterEntrypoint = platform === 'win32'
+      ? 'forge-runtime-bun.exe' as const
+      : 'forge-runtime-bun' as const;
+    const runtimeInterpreterPath = join(staging, runtimeInterpreterEntrypoint);
+    const runtimeInterpreter = (dependencies.materializeRuntimeInterpreter ?? defaultMaterializeRuntimeInterpreter)({
+      sourceRoot,
+      outputPath: runtimeInterpreterPath,
+    });
+    if (!runtimeInterpreter.ok) {
+      throw new Error(`RUNTIME_RELEASE_INTERPRETER_BUILD_FAILED: ${runtimeInterpreter.stderr || runtimeInterpreter.stdout || runtimeInterpreter.error}`.slice(0, 2_000));
+    }
+    chmodSync(runtimeInterpreterPath, 0o700);
+    const runtimeInterpreterArtifactIdentity = `sha256:${sha256(runtimeInterpreterPath)}`;
+
     const executable = join(staging, 'forge-runtime');
     const compile = compileBinary({
       sourceRoot,
@@ -550,7 +593,6 @@ export function stageRuntimeRelease(input: {
       throw new Error(`RUNTIME_RELEASE_BUILD_FAILED: ${compile.stderr || compile.stdout || compile.error}`.slice(0, 2_000));
     }
     chmodSync(executable, 0o700);
-    const platform = dependencies.platform ?? process.platform;
     const macosCodeSigning = platform === 'darwin'
       ? (dependencies.signMacOSRuntime ?? defaultSignMacOSRuntime)({ executable, controllerHome: resolve(input.controllerHome) })
       : undefined;
@@ -759,6 +801,8 @@ export function stageRuntimeRelease(input: {
       executionMode: 'standalone-binary',
       runtimeBundleEntrypoint,
       runtimeBundleArtifactIdentity,
+      runtimeInterpreterEntrypoint,
+      runtimeInterpreterArtifactIdentity,
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticEntrypoint: 'forge-cli',
       diagnosticArtifactIdentity,
@@ -816,6 +860,7 @@ export function stageRuntimeRelease(input: {
       releaseId,
       artifactIdentity,
       runtimeBundleArtifactIdentity,
+      runtimeInterpreterArtifactIdentity,
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticArtifactIdentity,
       connectorArtifactIdentity,
@@ -1024,6 +1069,13 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   assertFileIdentity(runtimePath, release.artifactIdentity);
   assertComponentFile({ path: join(release.releasePath, 'forge-runtime-bundle.js'), identity: release.runtimeBundleArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BUNDLE_MISSING' });
   const platform = dependencies.platform ?? process.platform;
+  const runtimeInterpreterEntrypoint = platform === 'win32' ? 'forge-runtime-bun.exe' : 'forge-runtime-bun';
+  assertComponentFile({
+    path: join(release.releasePath, runtimeInterpreterEntrypoint),
+    identity: release.runtimeInterpreterArtifactIdentity,
+    missingCode: 'RUNTIME_RELEASE_INTERPRETER_MISSING',
+    executable: true,
+  });
   if (platform === 'darwin' && release.macosCodeSigning) {
     const actual = (dependencies.inspectMacOSRuntime ?? inspectMacOSRuntimeCodeSigning)(runtimePath);
     if (actual.identifier !== release.macosCodeSigning.identifier

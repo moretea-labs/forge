@@ -97,6 +97,12 @@ function bundleFakeRuntime(input: { outputPath: string }) {
   return { ok: true };
 }
 
+function materializeFakeRuntimeInterpreter(input: { outputPath: string }) {
+  writeFileSync(input.outputPath, 'runtime-interpreter');
+  chmodSync(input.outputPath, 0o700);
+  return { ok: true };
+}
+
 function executionSurfaceFixture(input: {
   controllerHome: string;
   releaseId: string;
@@ -315,6 +321,7 @@ describe('runtime release materialization', () => {
         uuid: () => 'future-candidate',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
         bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
         materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -336,7 +343,7 @@ describe('runtime release materialization', () => {
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
     }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
-    expect(canaries).toEqual(['process_runner', 'check_runner', 'scheduler_worker', 'periodic_cleanup']);
+    expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'scheduler_worker', 'periodic_cleanup']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
   });
@@ -349,6 +356,7 @@ describe('runtime release materialization', () => {
         platform: 'linux',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
         bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
         materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -374,6 +382,7 @@ describe('runtime release materialization', () => {
         platform: 'linux',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
         bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
         materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -420,6 +429,7 @@ describe('runtime release materialization', () => {
         return { ok: true };
       },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath, entryPath }) => {
         const nodeBridge = entryPath.endsWith('src/runtime/plugins/browser-node-bridge-host.ts');
         const handoff = entryPath.endsWith('src/runtime/plugins/browser-handoff-host.ts');
@@ -465,12 +475,20 @@ describe('runtime release materialization', () => {
     expect(existsSync(runtimeBundlePath)).toBe(true);
     expect(readFileSync(runtimeBundlePath, 'utf8')).toBe('runtime-bundle');
     expect(staged.runtimeBundleArtifactIdentity).toMatch(/^sha256:/);
+    const runtimeInterpreterPath = join(staged.releasePath, 'forge-runtime-bun');
+    expect(existsSync(runtimeInterpreterPath)).toBe(true);
+    expect(readFileSync(runtimeInterpreterPath, 'utf8')).toBe('runtime-interpreter');
+    expect(staged.runtimeInterpreterArtifactIdentity).toMatch(/^sha256:/);
     const manifest = JSON.parse(readFileSync(staged.manifestPath, 'utf8')) as Record<string, unknown>;
     expect(manifest.runtimeBundleEntrypoint).toBe('forge-runtime-bundle.js');
     expect(manifest.runtimeBundleArtifactIdentity).toBe(staged.runtimeBundleArtifactIdentity);
+    expect(manifest.runtimeInterpreterEntrypoint).toBe('forge-runtime-bun');
+    expect(manifest.runtimeInterpreterArtifactIdentity).toBe(staged.runtimeInterpreterArtifactIdentity);
     const resolvedBundle = resolveCompiledRuntimeBundle(['forge-runtime', '--release-manifest', staged.manifestPath]);
     expect(resolvedBundle.bundlePath).toBe(runtimeBundlePath);
     expect(resolvedBundle.artifactIdentity).toBe(staged.runtimeBundleArtifactIdentity!);
+    expect(resolvedBundle.interpreterPath).toBe(runtimeInterpreterPath);
+    expect(resolvedBundle.interpreterArtifactIdentity).toBe(staged.runtimeInterpreterArtifactIdentity!);
     expect(manifest.browserNodeBridgeEntrypoint).toBe('browser-node-bridge-host.js');
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
@@ -542,6 +560,7 @@ describe('runtime release materialization', () => {
         return STABLE_MACOS_SIGNING;
       },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -574,6 +593,7 @@ describe('runtime release materialization', () => {
       uuid: () => 'unsigned-candidate',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-node-host'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-process-runner'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -658,6 +678,7 @@ describe('runtime release materialization', () => {
         return { ok: true };
       },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => {
         writeFileSync(outputPath, 'node-host-bundle');
         return { ok: true };
@@ -681,6 +702,7 @@ describe('runtime release materialization', () => {
         return { ok: true };
       },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => {
         writeFileSync(outputPath, 'node-host-bundle');
         return { ok: true };
@@ -701,6 +723,7 @@ describe('runtime release materialization', () => {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -717,6 +740,7 @@ describe('runtime release materialization', () => {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -731,6 +755,7 @@ describe('runtime release materialization', () => {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -745,6 +770,7 @@ describe('runtime release materialization', () => {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
       bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,

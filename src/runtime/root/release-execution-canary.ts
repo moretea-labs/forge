@@ -74,7 +74,7 @@ export function assertRuntimeReleaseExecutionCanaries(
     assertCanary({
       name: entry.name,
       executable: entry.path,
-      args: [PROCESS_RUNTIME_RELEASE_CANARY_ARG],
+      args: entry.canary === 'runtime_interpreter' ? ['--version'] : [PROCESS_RUNTIME_RELEASE_CANARY_ARG],
     });
   }
 

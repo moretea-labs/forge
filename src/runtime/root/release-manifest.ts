@@ -53,6 +53,7 @@ function optionalRuntimeComponent<
 export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'executionMode',
   'runtimeBundleEntrypoint', 'runtimeBundleArtifactIdentity',
+  'runtimeInterpreterEntrypoint', 'runtimeInterpreterArtifactIdentity',
   'diagnosticEntrypoint', 'diagnosticArtifactIdentity',
   'connectorEntrypoint', 'connectorArtifactIdentity',
   'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
@@ -121,6 +122,12 @@ export function loadRuntimeReleaseManifest(
     entryField: 'runtimeBundleEntrypoint',
     identityField: 'runtimeBundleArtifactIdentity',
     canonicalEntry: 'forge-runtime-bundle.js',
+  });
+  const runtimeInterpreter = optionalRuntimeComponent({
+    value,
+    entryField: 'runtimeInterpreterEntrypoint',
+    identityField: 'runtimeInterpreterArtifactIdentity',
+    canonicalEntry: (process.platform === 'win32' ? 'forge-runtime-bun.exe' : 'forge-runtime-bun') as RuntimeReleaseManifest['runtimeInterpreterEntrypoint'],
   });
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
@@ -305,6 +312,7 @@ export function loadRuntimeReleaseManifest(
     entrypoint: 'forge-runtime',
     ...(executionMode ? { executionMode: 'standalone-binary' as const } : {}),
     ...(runtimeBundle ?? {}),
+    ...(runtimeInterpreter ?? {}),
     ...(diagnostic ?? {}),
     ...(connector ?? {}),
     ...(browserNodeBridge ?? {}),
@@ -337,9 +345,10 @@ export interface RuntimeReleaseExecutionSurface {
   manifest: RuntimeReleaseManifest;
   releaseRoot: string;
   entries: Array<{
-    name: 'process_runner' | 'check_runner' | 'scheduler_worker' | 'periodic_cleanup';
+    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'scheduler_worker' | 'periodic_cleanup';
     path: string;
     artifactIdentity: string;
+    canary: 'runtime_interpreter' | 'process_runtime';
   }>;
 }
 
@@ -365,25 +374,35 @@ export function assertRuntimeReleaseExecutionSurface(
   }
   const releaseRoot = dirname(resolvedManifestPath);
   const entries: RuntimeReleaseExecutionSurface['entries'] = [
+    ...(manifest.runtimeInterpreterEntrypoint && manifest.runtimeInterpreterArtifactIdentity ? [{
+      name: 'runtime_interpreter' as const,
+      path: join(releaseRoot, manifest.runtimeInterpreterEntrypoint),
+      artifactIdentity: manifest.runtimeInterpreterArtifactIdentity,
+      canary: 'runtime_interpreter' as const,
+    }] : []),
     {
       name: 'process_runner',
       path: join(releaseRoot, manifest.processRunnerEntrypoint),
       artifactIdentity: manifest.processRunnerArtifactIdentity,
+      canary: 'process_runtime',
     },
     {
       name: 'check_runner',
       path: join(releaseRoot, manifest.checkRunnerEntrypoint),
       artifactIdentity: manifest.checkRunnerArtifactIdentity,
+      canary: 'process_runtime',
     },
     ...(manifest.schedulerWorkerEntrypoint && manifest.schedulerWorkerArtifactIdentity ? [{
       name: 'scheduler_worker' as const,
       path: join(releaseRoot, manifest.schedulerWorkerEntrypoint),
       artifactIdentity: manifest.schedulerWorkerArtifactIdentity,
+      canary: 'process_runtime' as const,
     }] : []),
     ...(manifest.periodicCleanupEntrypoint && manifest.periodicCleanupArtifactIdentity ? [{
       name: 'periodic_cleanup' as const,
       path: join(releaseRoot, manifest.periodicCleanupEntrypoint),
       artifactIdentity: manifest.periodicCleanupArtifactIdentity,
+      canary: 'process_runtime' as const,
     }] : []),
   ];
   for (const entry of entries) {

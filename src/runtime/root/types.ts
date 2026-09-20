@@ -47,9 +47,12 @@ export interface RuntimeReleaseManifest {
   entrypoint: 'forge-runtime';
   /** Explicit execution contract for compiled immutable releases. Absent means legacy/package launcher semantics. */
   executionMode?: 'standalone-binary';
-  /** Immutable Runtime payload loaded by the small signed compiled entrypoint. */
+  /** Immutable Runtime payload executed by the release-owned Bun interpreter. */
   runtimeBundleEntrypoint?: 'forge-runtime-bundle.js';
   runtimeBundleArtifactIdentity?: string;
+  /** Release-owned interpreter used only for the long-lived Runtime bundle. */
+  runtimeInterpreterEntrypoint?: 'forge-runtime-bun' | 'forge-runtime-bun.exe';
+  runtimeInterpreterArtifactIdentity?: string;
   diagnosticEntrypoint?: 'forge-cli';
   diagnosticArtifactIdentity?: string;
   connectorEntrypoint?: 'forge-mcp-gateway';
