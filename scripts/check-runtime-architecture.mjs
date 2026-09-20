@@ -267,8 +267,9 @@ forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:con
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'export async function callRhWorkRequirementOperation');
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'admitRequirement');
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'continueRequirement');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, operation, requirementOperationArgs)');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'promoteRequirementCandidate');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs)');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_promote_candidate|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanCreateOperation');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'approvePlanContractAsync');

@@ -580,7 +580,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           const controllerOperationResult = await callRhWorkControllerOperation(ctx, repository, operation, args);
           if (controllerOperationResult) return controllerOperationResult;
           const requirementOperationArgs = compatibility.requirementOperationArgs ?? args;
-          const requirementOperationResult = await callRhWorkRequirementOperation(ctx, operation, requirementOperationArgs);
+          const requirementOperationResult = await callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs);
           if (requirementOperationResult) return requirementOperationResult;
           const planOperationResult = await callRhWorkPlanOperation(store, operation, args);
           if (planOperationResult) return planOperationResult;

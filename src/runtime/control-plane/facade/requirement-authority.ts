@@ -1,5 +1,7 @@
 import {
+  bindRequirementCandidateAuditRef,
   createRequirement,
+  listRequirements,
   readRequirement,
   updateRequirement,
   type CreateRequirementInput,
@@ -7,6 +9,8 @@ import {
   type RequirementStoreOptions,
 } from '../persistence/requirement-store';
 import { readPlanContractStore } from './plan-contract-store';
+import { cognitionMemoryStore } from '../persistence/cognition-store';
+import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
 import { withPlanAdmissionLock } from './semantic-admission';
 import {
   getControllerRoundRelay,
@@ -47,6 +51,7 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
     requiredDeliveryReferences: bounded(input.requiredDeliveryReferences, 50),
     legacyAliases: bounded(input.legacyAliases, 20, 160),
+    auditRefs: bounded(input.auditRefs, 50),
   };
   if (!normalized.title || !normalized.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
   return normalized;
@@ -89,6 +94,122 @@ export function admitRequirement(
     const raced = readRequirement(options, requested.requirementId)?.value;
     if (!raced) throw error;
     return existingDecision(raced, requested);
+  }
+}
+
+export type RequirementCandidatePromotionDecision =
+  | RequirementAdmissionDecision
+  | 'candidate_already_promoted';
+
+export interface RequirementCandidatePromotionResult {
+  decision: RequirementCandidatePromotionDecision;
+  requirement: Requirement;
+  created: boolean;
+  candidateAuditRef: string;
+  candidateMemoryId: string;
+  workspaceId: string;
+}
+
+function activeRequirementCandidate(memory: MemoryUnit, at: string): boolean {
+  return !memory.retractedAt
+    && memory.validFrom <= at
+    && (!memory.expiresAt || memory.expiresAt > at)
+    && memory.facets.includes('candidate-finding')
+    && memory.facets.includes('requirement-candidate')
+    && memory.facets.includes('advisory')
+    && memory.concepts.includes('forge.requirement-candidate')
+    && memory.provenance.sourceKind === 'system'
+    && Boolean(memory.provenance.sourceId?.startsWith('cognitive-requirement-candidate:promoted:'))
+    && memory.provenance.evidenceRefs.length > 0;
+}
+
+function validatedRequirementCandidate(
+  options: RequirementStoreOptions,
+  workspaceId: string,
+  candidateMemoryId: string,
+): MemoryUnit {
+  const workspace = String(workspaceId ?? '').trim();
+  const memoryId = String(candidateMemoryId ?? '').trim();
+  if (!workspace || !memoryId) throw new Error('REQUIREMENT_CANDIDATE_SCOPE_REQUIRED');
+  const scope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: workspace };
+  const store = cognitionMemoryStore(options.controllerHome);
+  const candidate = store.read(scope, memoryId);
+  if (!candidate || !activeRequirementCandidate(candidate, options.now?.() ?? new Date().toISOString())) {
+    throw new Error(`REQUIREMENT_CANDIDATE_INVALID: ${memoryId}`);
+  }
+  const sourceId = candidate.provenance.sourceId!.slice('cognitive-requirement-candidate:'.length);
+  const source = store.read(scope, sourceId);
+  if (!source
+    || !source.id.startsWith('promoted:')
+    || source.retractedAt
+    || !source.facets.includes('cross-project')
+    || !source.facets.includes('engineering-principle')
+    || candidate.provenance.evidenceRefs.some(ref => !source.provenance.evidenceRefs.includes(ref))) {
+    throw new Error(`REQUIREMENT_CANDIDATE_SOURCE_INVALID: ${memoryId}`);
+  }
+  return candidate;
+}
+
+export function requirementCandidateAuditRef(workspaceId: string, candidate: Pick<MemoryUnit, 'id' | 'revision'>): string {
+  const scope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: String(workspaceId).trim() };
+  return `cognitive-requirement-candidate:${memoryAddressKey({ scope, id: candidate.id })}:r${candidate.revision}`;
+}
+
+function requirementByCandidateAuditRef(options: RequirementStoreOptions, candidateAuditRef: string): Requirement | undefined {
+  return listRequirements(options, 1000)
+    .map(record => record.value)
+    .find(requirement => requirement.auditRefs.includes(candidateAuditRef));
+}
+
+export function promoteRequirementCandidate(
+  options: RequirementStoreOptions,
+  input: Omit<CreateRequirementInput, 'auditRefs'> & {
+    workspaceId: string;
+    candidateMemoryId: string;
+  },
+): RequirementCandidatePromotionResult {
+  const candidate = validatedRequirementCandidate(options, input.workspaceId, input.candidateMemoryId);
+  const candidateAuditRef = requirementCandidateAuditRef(input.workspaceId, candidate);
+  const prior = requirementByCandidateAuditRef(options, candidateAuditRef);
+  if (prior && prior.requirementId !== String(input.requirementId ?? '').trim()) {
+    return {
+      decision: 'candidate_already_promoted',
+      requirement: prior,
+      created: false,
+      candidateAuditRef,
+      candidateMemoryId: candidate.id,
+      workspaceId: input.workspaceId,
+    };
+  }
+
+  try {
+    const admission = admitRequirement(options, {
+      ...input,
+      auditRefs: [candidateAuditRef],
+    });
+    const requirement = admission.decision === 'reuse_existing'
+      && !admission.requirement.auditRefs.includes(candidateAuditRef)
+      ? bindRequirementCandidateAuditRef(options, admission.requirement.requirementId, candidateAuditRef)
+      : admission.requirement;
+    return {
+      ...admission,
+      requirement,
+      candidateAuditRef,
+      candidateMemoryId: candidate.id,
+      workspaceId: input.workspaceId,
+    };
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'REQUIREMENT_CANDIDATE_ALREADY_PROMOTED') throw error;
+    const raced = requirementByCandidateAuditRef(options, candidateAuditRef);
+    if (!raced) throw error;
+    return {
+      decision: 'candidate_already_promoted',
+      requirement: raced,
+      created: false,
+      candidateAuditRef,
+      candidateMemoryId: candidate.id,
+      workspaceId: input.workspaceId,
+    };
   }
 }
 

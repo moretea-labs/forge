@@ -16,6 +16,7 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
     case 'controller_disposition':
     case 'launcher_start':
     case 'requirement_create':
+    case 'requirement_promote_candidate':
     case 'requirement_continue':
     case 'schedule_create':
     case 'schedule_pause':

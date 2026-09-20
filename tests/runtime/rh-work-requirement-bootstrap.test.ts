@@ -10,8 +10,15 @@ import { addRepositoryCheckout, registerRepository } from '../../src/cli/reposit
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
-import { resolveProjectForRepositoryPlacement } from '../../src/runtime/control-plane/workspace/workspace-store';
+import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
+import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
+import {
+  resolveProjectForRepositoryPlacement,
+  writeProjectIdentity,
+  writeProjectPlacement,
+  writeWorkspaceIdentity,
+} from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { buildFrozenSemanticCompatibilityCapability, parseFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 
@@ -120,6 +127,109 @@ describe('rh_work Requirement bootstrap', () => {
       projectId: 'work-onboarding-project',
       workspaceId: 'workspace-personal',
     });
+  });
+
+  test('explicitly promotes one Workspace Cognitive requirement candidate into exactly one canonical Requirement', async () => {
+    const repoRoot = tempRoot('forge-requirement-candidate-repo-');
+    const controllerHome = tempRoot('forge-requirement-candidate-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement candidate fixture' });
+    const instance = ensureForgeInstanceIdentity({ controllerHome });
+    const workspaceId = 'workspace-requirement-candidate';
+    const projectId = 'project-requirement-candidate';
+    writeWorkspaceIdentity({
+      controllerHome,
+      value: { workspaceId, title: 'Requirement Candidate Workspace' },
+    });
+    writeProjectIdentity({
+      controllerHome,
+      value: { projectId, workspaceId, displayName: 'Requirement Candidate Project' },
+    });
+    writeProjectPlacement({
+      controllerHome,
+      value: {
+        projectId,
+        forgeInstanceId: instance.instanceId,
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      },
+    });
+
+    const scope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: workspaceId };
+    const store = cognitionMemoryStore(controllerHome);
+    const authority: CognitiveWriteAuthorityPort = {
+      assertMemoryWrite: () => undefined,
+      assertEdgeWrite: () => undefined,
+      evidenceAvailable: () => true,
+    };
+    const observedAt = '2026-09-20T09:00:00.000Z';
+    recordCognitiveMemory(store, authority, {
+      id: 'promoted:requirement-candidate-source',
+      scope,
+      facets: ['knowledge', 'pattern', 'engineering-principle', 'cross-project', 'repeated_root_cause'],
+      canonicalText: 'Repeated root cause shows a systemic architecture defect.',
+      concepts: ['forge.execution-quality.repeated_root_cause'],
+      provenance: {
+        sourceKind: 'system',
+        sourceId: 'project-learning-promotion:project-source:consolidated-source',
+        recordedAt: observedAt,
+        evidenceRefs: ['receipt-root-cause-1', 'receipt-root-cause-2', 'receipt-root-cause-3'],
+      },
+      confidence: 0.95,
+      utility: 0.9,
+      tier: 'warm',
+      validFrom: observedAt,
+      counterEvidenceRefs: [],
+    });
+    recordCognitiveMemory(store, authority, {
+      id: 'candidate:requirement-candidate-source',
+      scope,
+      facets: ['candidate-finding', 'requirement-candidate', 'advisory', 'engineering-improvement', 'repeated_root_cause'],
+      canonicalText: 'Candidate finding for normal Requirement promotion only.',
+      concepts: ['forge.requirement-candidate', 'forge.engineering-improvement', 'forge.execution-quality.repeated_root_cause'],
+      provenance: {
+        sourceKind: 'system',
+        sourceId: 'cognitive-requirement-candidate:promoted:requirement-candidate-source',
+        recordedAt: observedAt,
+        evidenceRefs: ['receipt-root-cause-1', 'receipt-root-cause-2', 'receipt-root-cause-3'],
+      },
+      confidence: 0.95,
+      utility: 0.9,
+      tier: 'warm',
+      validFrom: observedAt,
+      counterEvidenceRefs: [],
+    });
+
+    const ctx = mcpContext(controllerHome, repository);
+    const promoted = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_promote_candidate',
+      requirement_candidate_id: 'candidate:requirement-candidate-source',
+      requirement_id: 'REQ-COGNITIVE-CANDIDATE',
+      requirement_title: 'Resolve repeated systemic root cause',
+      requirement_outcome: 'Replace the repeated root cause with one coherent architecture correction.',
+      requirement_acceptance_criteria: ['The root cause is corrected through normal Requirement/Plan/Work authority.'],
+    }));
+    expect(promoted.status).toBe('ok');
+    expect(promoted.data.requirementCreated).toBe(true);
+    expect(promoted.data.admissionDecision).toBe('created');
+    expect(promoted.data.requirementCandidatePromoted).toBe(true);
+    expect(promoted.data.requirement.auditRefs).toContain(promoted.data.candidateAuditRef);
+
+    const duplicate = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_promote_candidate',
+      requirement_candidate_id: 'candidate:requirement-candidate-source',
+      requirement_id: 'REQ-COGNITIVE-CANDIDATE-DUPLICATE',
+      requirement_title: 'Duplicate semantic branch must not be created',
+      requirement_outcome: 'This should reuse the original candidate-bound Requirement.',
+    }));
+    expect(duplicate.status).toBe('ok');
+    expect(duplicate.data.requirementCreated).toBe(false);
+    expect(duplicate.data.admissionDecision).toBe('candidate_already_promoted');
+    expect(duplicate.data.requirement.requirementId).toBe('REQ-COGNITIVE-CANDIDATE');
+    expect(readRequirement({ controllerHome }, 'REQ-COGNITIVE-CANDIDATE-DUPLICATE')).toBeUndefined();
   });
 
   test('lets a frozen rh_work schema create Requirement authority through a bounded semantic transport envelope', async () => {

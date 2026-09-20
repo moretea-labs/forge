@@ -68,6 +68,8 @@ describe('handoff and facade contracts', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toContain('requirement_create');
+    expect(properties?.operation?.enum).toContain('requirement_promote_candidate');
+    expect(properties).toHaveProperty('requirement_candidate_id');
     expect(properties).toHaveProperty('requirement_title');
     expect(properties).toHaveProperty('requirement_outcome');
     expect(properties).toHaveProperty('requirement_acceptance_criteria');

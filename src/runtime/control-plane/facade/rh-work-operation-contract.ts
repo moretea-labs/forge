@@ -21,6 +21,7 @@ export const RH_WORK_OPERATIONS = [
   'controller_get_owner',
   'launcher_start',
   'requirement_create',
+  'requirement_promote_candidate',
   'requirement_continue',
   'plan_create',
   'plan_get',
