@@ -2567,8 +2567,57 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
     ));
-    expect(whileActive.status).toBe('blocked');
-    expect(whileActive.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM');
+    const whileActiveAuthority = String(whileActive.data?.controllerAuthorityId ?? '');
+    expect(whileActive).toMatchObject({ status: 'ok' });
+    expect(whileActive.data?.authorityRecovered).toBe(true);
+    expect(whileActiveAuthority).toStartWith('cra_');
+    expect(whileActiveAuthority).not.toBe(recoveredAuthority);
+    expect(whileActive.data?.relayScopeId).toBe(opened.relayScopeId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const reclaimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-5', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, session_id: whileActiveAuthority },
+    ));
+    expect(reclaimed.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
+
+    const foreignRecovery = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-relay-authority-foreign', 'transport-relay-recovery-foreign', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(foreignRecovery.status).toBe('blocked');
+    expect(foreignRecovery.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_PRINCIPAL_MISMATCH');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
+
+    const now = new Date().toISOString();
+    createProcessRecord({
+      schemaVersion: 1,
+      processId: 'proc-relay-authority-recovery-active',
+      repoId: fx.repository.repoId,
+      workId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 60000)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 60_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      terminalFenceToken: 1,
+    });
+    const whileExecuting = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-6', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(whileExecuting.status).toBe('blocked');
+    expect(whileExecuting.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_EXECUTION');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
   }, 15_000);
 
   test('provider recovery requires exact authority and fresh confirmed probe evidence before rearming the same blocked round', async () => {
