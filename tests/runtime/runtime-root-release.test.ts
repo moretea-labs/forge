@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { spawnSync } from 'child_process';
-import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
+import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { runtimeReleaseCanaryEnvironment } from '../../src/runtime/root/release-execution-canary';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { resolveCompiledRuntimeBundle } from '../../src/runtime/root/release-loader';
@@ -286,6 +286,23 @@ describe('persistent Gateway release retention', () => {
 });
 
 describe('runtime release materialization', () => {
+  test('keeps a frozen source revision stable while the configured checkout advances', () => {
+    const { root } = sourceFixture();
+    const frozenRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const observed = withRuntimeReleaseSourceSnapshot({ sourceRoot: root, sourceRevision: frozenRevision }, snapshotRoot => {
+      expect(snapshotRoot).not.toBe(root);
+      expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
+      writeFileSync(join(root, 'README.md'), 'fixture advanced while candidate is staging\n');
+      spawnSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'advance source concurrently'], { cwd: root, stdio: 'ignore' });
+      const advancedRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+      expect(advancedRevision).not.toBe(frozenRevision);
+      expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
+      return advancedRevision;
+    });
+    expect(observed).not.toBe(frozenRevision);
+  });
+
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();

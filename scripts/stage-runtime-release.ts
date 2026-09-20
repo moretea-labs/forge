@@ -17,12 +17,13 @@ function requiredOption(args: string[], name: string): string {
 const args = process.argv.slice(2);
 const controllerHome = resolve(requiredOption(args, '--controller-home'));
 const sourceRoot = resolve(requiredOption(args, '--source-root'));
+const dependencyRoot = resolve(option(args, '--dependency-root')?.trim() || sourceRoot);
 const expectedHead = requiredOption(args, '--expected-head');
 const sourceRepositoryId = requiredOption(args, '--source-repository-id');
 if (!/^[a-f0-9]{40}$/i.test(expectedHead)) throw new Error('RUNTIME_RELEASE_CANDIDATE_EXPECTED_HEAD_INVALID');
 if (realpathSync(sourceRoot) !== realpathSync(process.cwd())) throw new Error('RUNTIME_RELEASE_CANDIDATE_CWD_MISMATCH');
 
-const staged = stageRuntimeRelease({ controllerHome, sourceRoot, sourceRepositoryId });
+const staged = stageRuntimeRelease({ controllerHome, sourceRoot, dependencyRoot, sourceRepositoryId });
 assertRuntimeReleaseFiles(staged);
 if (staged.sourceCommit !== expectedHead) {
   throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_MISMATCH: expected ${expectedHead}, got ${staged.sourceCommit}`);

@@ -60,7 +60,7 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
   renameSync(temporary, path);
 }
 
-function walkRegularFiles(root: string, current: string, output: string[]): void {
+function walkRegularFiles(root: string, current: string, output: string[], prefix = ''): void {
   if (!existsSync(current)) return;
   const stat = lstatSync(current);
   // Package managers such as Bun can materialize dependency files as
@@ -69,35 +69,54 @@ function walkRegularFiles(root: string, current: string, output: string[]): void
   // regular files beneath its own immutable package root.
   if (stat.isSymbolicLink()) {
     const target = statSync(current);
-    if (target.isFile()) output.push(relative(root, current).split('\\').join('/'));
+    if (target.isFile()) {
+      const relativePath = relative(root, current).split('\\').join('/');
+      output.push(prefix ? `${prefix}/${relativePath}` : relativePath);
+    }
     return;
   }
   if (stat.isFile()) {
-    output.push(relative(root, current).split('\\').join('/'));
+    const relativePath = relative(root, current).split('\\').join('/');
+    output.push(prefix ? `${prefix}/${relativePath}` : relativePath);
     return;
   }
   if (!stat.isDirectory()) return;
-  for (const entry of readdirSync(current).sort()) walkRegularFiles(root, join(current, entry), output);
+  for (const entry of readdirSync(current).sort()) walkRegularFiles(root, join(current, entry), output, prefix);
+}
+
+function packageSourcePath(packageRoot: string, path: string, dependencyRoot = packageRoot): string {
+  return path === 'node_modules' || path.startsWith('node_modules/')
+    ? join(resolve(dependencyRoot), path)
+    : join(resolve(packageRoot), path);
 }
 
 function packageFileIndex(
   packageRoot: string,
   roots: readonly string[],
   files: readonly string[],
+  dependencyRoot = packageRoot,
 ): PackageRuntimeFileRecord[] {
   const root = resolve(packageRoot);
+  const dependencies = resolve(dependencyRoot);
   const paths: string[] = [];
-  for (const directory of roots) walkRegularFiles(root, join(root, directory), paths);
+  for (const directory of roots) {
+    if (directory === 'node_modules' && dependencies !== root) {
+      const dependencyNodeModules = join(dependencies, 'node_modules');
+      walkRegularFiles(dependencyNodeModules, dependencyNodeModules, paths, 'node_modules');
+    } else {
+      walkRegularFiles(root, join(root, directory), paths);
+    }
+  }
   for (const file of files) walkRegularFiles(root, join(root, file), paths);
   return [...new Set(paths)].sort().map((path) => {
-    const bytes = readFileSync(join(root, path));
+    const bytes = readFileSync(packageSourcePath(root, path, dependencies));
     return { path, sha256: sha256(bytes), bytes: bytes.length };
   });
 }
 
-export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
+export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot(), dependencyRoot = packageRoot): PackageRuntimeFileRecord[] {
   const root = resolve(packageRoot);
-  const records = packageFileIndex(root, PACKAGE_RUNTIME_ROOTS, PACKAGE_RUNTIME_FILES);
+  const records = packageFileIndex(root, PACKAGE_RUNTIME_ROOTS, PACKAGE_RUNTIME_FILES, dependencyRoot);
   const paths = new Set(records.map((record) => record.path));
   if (!paths.has('package.json') || !paths.has('bin/forge-runtime.mjs')) {
     throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
@@ -152,10 +171,15 @@ function assertPackageRuntimeSnapshot(snapshotRoot: string, records: PackageRunt
   }
 }
 
-export function stagePackageRuntimeSnapshot(sourceRoot: string, snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
+export function stagePackageRuntimeSnapshot(
+  sourceRoot: string,
+  snapshotRoot: string,
+  records: PackageRuntimeFileRecord[],
+  dependencyRoot = sourceRoot,
+): void {
   mkdirSync(snapshotRoot, { recursive: false, mode: 0o700 });
   for (const record of records) {
-    const source = join(sourceRoot, record.path);
+    const source = packageSourcePath(sourceRoot, record.path, dependencyRoot);
     const link = lstatSync(source);
     const stat = link.isSymbolicLink() ? statSync(source) : link;
     if (!stat.isFile()) throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);

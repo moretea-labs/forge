@@ -40,7 +40,7 @@ import {
   writePackageRuntimeSystemdUserService,
 } from '../root/package-runtime-service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
-import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
+import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   abortRuntimeReleaseActivation,
   commitRuntimeReleaseActivation,
@@ -3944,11 +3944,13 @@ export async function prepareConfiguredRuntimeReleaseSession(
 
     try {
       assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-      const staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
-        controllerHome: candidateLane.controllerHome,
-        sourceRoot,
-        sourceRepositoryId,
-      });
+      const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
+        (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
+          controllerHome: candidateLane.controllerHome,
+          sourceRoot: frozenSourceRoot,
+          dependencyRoot: sourceRoot,
+          sourceRepositoryId,
+        }));
       assertRuntimeReleaseFiles(staged);
       if (staged.sourceCommit !== sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_CHANGED_DURING_BUILD');
       const candidateRelease: ReleaseSessionCandidateRelease = {
@@ -4039,9 +4041,10 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
     }
     const candidate = session.candidateRelease;
     if (!candidate) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+    const frozenSourceRevision = session.sourceRevision;
+    const stableRelease = session.stableRelease;
     try {
-      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      if (configuredSourceRevision(sourceRoot) !== session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_CHANGED');
+      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
       const manifest = loadRuntimeReleaseManifest(candidate.manifestPath, session.candidate.controllerHome);
       if (
         manifest.deploymentScope !== 'portable'
@@ -4051,32 +4054,36 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
         || runtimeReleaseTreeSha256(dirname(candidate.manifestPath)) !== candidate.treeSha256
       ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
 
-      const receipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
-      for (const gate of RELEASE_SESSION_STATIC_GATES) {
-        assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-        if (configuredSourceRevision(sourceRoot) !== session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_CHANGED');
-        const startedAt = Date.now();
-        const result = spawnSync(resolveBunExecutable(), gate.args, {
-          cwd: sourceRoot,
-          env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
-          encoding: 'utf8',
-          timeout: gate.timeoutMs,
-          maxBuffer: 8 * 1024 * 1024,
-        });
-        const durationMs = Date.now() - startedAt;
-        if (result.error || result.status !== 0) {
-          const detail = result.error instanceof Error
-            ? result.error.message
-            : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
-          throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
+      const receipts = withRuntimeReleaseSourceSnapshot({
+        sourceRoot,
+        sourceRevision: frozenSourceRevision,
+      }, frozenSourceRoot => {
+        const gateReceipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
+        for (const gate of RELEASE_SESSION_STATIC_GATES) {
+          assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+          const startedAt = Date.now();
+          const result = spawnSync(resolveBunExecutable(), gate.args, {
+            cwd: frozenSourceRoot,
+            env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
+            encoding: 'utf8',
+            timeout: gate.timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+          });
+          const durationMs = Date.now() - startedAt;
+          if (result.error || result.status !== 0) {
+            const detail = result.error instanceof Error
+              ? result.error.message
+              : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
+            throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
+          }
+          gateReceipts.push({
+            id: gate.id,
+            kind: 'static_gate',
+            summary: `${gate.id} passed on frozen source ${frozenSourceRevision} in ${durationMs}ms`,
+          });
         }
-        if (configuredSourceRevision(sourceRoot) !== session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_CHANGED');
-        receipts.push({
-          id: gate.id,
-          kind: 'static_gate',
-          summary: `${gate.id} passed on source ${session.sourceRevision} in ${durationMs}ms`,
-        });
-      }
+        return gateReceipts;
+      });
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       session = advanceReleaseSession({
         controllerHome: config.controllerHome,
