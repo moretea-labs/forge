@@ -29,6 +29,7 @@ export interface AutomaticControllerLearningResult {
   storedMemoryIds: string[];
   consolidatedMemoryIds: string[];
   promotedMemoryIds: string[];
+  requirementCandidateIds: string[];
   skipped: string[];
 }
 
@@ -174,6 +175,108 @@ function reusableEngineeringPattern(candidate: ConsolidatedLearning): boolean {
     && sourceRounds.size >= 3
     && candidate.memory.facets.includes('automatic')
     && concepts.some(concept => concept.startsWith('forge.execution-quality.') || concept === 'forge.engineering-blocker');
+}
+
+function requirementCandidatePattern(memory: MemoryUnit): boolean {
+  if (memory.facets.includes('valence.positive')) return false;
+  return memory.facets.some(facet => [
+    'repeated_root_cause',
+    'suspected_regression',
+    'failure',
+    'correction',
+    'regressed',
+    'engineering-blocker',
+  ].includes(facet));
+}
+
+function workspaceRequirementCandidateAuthority(input: {
+  scope: ScopeRef;
+  sourceMemories: readonly MemoryUnit[];
+}): CognitiveWriteAuthorityPort {
+  const sourceIds = new Set(input.sourceMemories.map(memory => memory.id));
+  const evidence = new Set(input.sourceMemories.flatMap(memory => [
+    ...memory.provenance.evidenceRefs,
+    ...memory.counterEvidenceRefs,
+  ]));
+  return {
+    assertMemoryWrite(memory) {
+      const sourceId = memory.provenance.sourceId?.replace(/^cognitive-requirement-candidate:/, '');
+      if (!sameScope(memory.scope, input.scope)
+        || !memory.id.startsWith('candidate:')
+        || memory.provenance.sourceKind !== 'system'
+        || !sourceId
+        || !sourceIds.has(sourceId)
+        || memory.provenance.sourceWorkId
+        || memory.provenance.sourceRoundId) {
+        throw new Error('COGNITION_REQUIREMENT_CANDIDATE_AUTHORITY_INVALID');
+      }
+    },
+    assertEdgeWrite() {
+      throw new Error('COGNITION_REQUIREMENT_CANDIDATE_EDGE_NOT_ALLOWED');
+    },
+    evidenceAvailable(ref, scope) {
+      return sameScope(scope, input.scope) && evidence.has(ref);
+    },
+  };
+}
+
+function materializeRequirementCandidates(input: {
+  controllerHome: string;
+  workspaceScope: ScopeRef;
+  promotedMemoryIds: readonly string[];
+  now: string;
+}): string[] {
+  if (!input.promotedMemoryIds.length) return [];
+  const store = cognitionMemoryStore(input.controllerHome);
+  const sources = input.promotedMemoryIds
+    .map(id => store.read(input.workspaceScope, id))
+    .filter((memory): memory is MemoryUnit => Boolean(memory))
+    .filter(requirementCandidatePattern);
+  if (!sources.length) return [];
+  const authority = workspaceRequirementCandidateAuthority({
+    scope: input.workspaceScope,
+    sourceMemories: sources,
+  });
+  const candidates: string[] = [];
+  for (const source of sources) {
+    const key = createHash('sha256')
+      .update(`${input.workspaceScope.id}:${source.id}`)
+      .digest('hex')
+      .slice(0, 32);
+    const id = `candidate:${key}`;
+    if (!store.read(input.workspaceScope, id)) {
+      recordCognitiveMemory(store, authority, {
+        id,
+        scope: input.workspaceScope,
+        facets: [...new Set([
+          'candidate-finding',
+          'requirement-candidate',
+          'advisory',
+          'engineering-improvement',
+          ...source.facets,
+        ])].slice(0, 16),
+        canonicalText: `Candidate finding for normal Requirement promotion only; do not apply as policy or implementation authority. Corroborated Workspace engineering pattern: ${source.canonicalText}`.slice(0, 8_192),
+        concepts: [...new Set([
+          'forge.requirement-candidate',
+          'forge.engineering-improvement',
+          ...source.concepts,
+        ])].slice(0, 64),
+        provenance: {
+          sourceKind: 'system',
+          sourceId: `cognitive-requirement-candidate:${source.id}`,
+          recordedAt: input.now,
+          evidenceRefs: source.provenance.evidenceRefs,
+        },
+        confidence: source.confidence,
+        utility: source.utility,
+        tier: 'warm',
+        validFrom: input.now,
+        counterEvidenceRefs: source.counterEvidenceRefs,
+      });
+    }
+    candidates.push(id);
+  }
+  return [...new Set(candidates)];
 }
 
 function promoteConsolidatedLearning(input: {
@@ -480,10 +583,19 @@ export function persistAutomaticControllerRoundLearning(input: {
         now: observedAt,
       })
     : [];
+  const requirementCandidateIds = workspaceScope
+    ? materializeRequirementCandidates({
+        controllerHome: input.controllerHome,
+        workspaceScope,
+        promotedMemoryIds,
+        now: observedAt,
+      })
+    : [];
   return {
     storedMemoryIds: [...new Set(stored.map(memory => memory.id))],
     consolidatedMemoryIds: consolidated.map(candidate => candidate.memory.id),
     promotedMemoryIds,
+    requirementCandidateIds,
     skipped,
   };
 }

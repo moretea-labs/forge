@@ -29,7 +29,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
-import { recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
+import { prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
 import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
@@ -577,6 +577,7 @@ describe('connected assistant learning loops', () => {
       storedMemoryIds: [],
       consolidatedMemoryIds: [],
       promotedMemoryIds: [],
+      requirementCandidateIds: [],
       skipped: [],
     });
     expect(payload.data.relay).toMatchObject({
@@ -595,6 +596,7 @@ describe('connected assistant learning loops', () => {
     const fx = fixture('workspace-learning', { knowledge: false });
     let previousOwner: ControllerSession | undefined;
     let promotedMemoryId: string | undefined;
+    let requirementCandidateId: string | undefined;
 
     for (let index = 1; index <= 3; index += 1) {
       fx.setNow(time(index * 10));
@@ -618,11 +620,15 @@ describe('connected assistant learning loops', () => {
         }],
         now: time(index * 10 + 2),
       });
-      if (index < 3) expect(learning.promotedMemoryIds).toEqual([]);
-      else {
+      if (index < 3) {
+        expect(learning.promotedMemoryIds).toEqual([]);
+        expect(learning.requirementCandidateIds).toEqual([]);
+      } else {
         expect(learning.consolidatedMemoryIds.length).toBeGreaterThan(0);
         expect(learning.promotedMemoryIds).toHaveLength(1);
+        expect(learning.requirementCandidateIds).toHaveLength(1);
         promotedMemoryId = learning.promotedMemoryIds[0];
+        requirementCandidateId = learning.requirementCandidateIds[0];
       }
       previousOwner = round.owner;
     }
@@ -678,9 +684,29 @@ describe('connected assistant learning loops', () => {
       scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
       id: promotedMemoryId!,
     });
+    const requirementCandidateItemId = memoryAddressKey({
+      scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
+      id: requirementCandidateId!,
+    });
     expect(consumerContext?.snapshot.items).toContainEqual(expect.objectContaining({
       kind: 'knowledge',
       itemId: promotedItemId,
+    }));
+    expect(consumerContext?.snapshot.items).toContainEqual(expect.objectContaining({
+      kind: 'knowledge',
+      itemId: requirementCandidateItemId,
+    }));
+    const resolvedConsumerContext = prepareAssistantWorkContext({
+      controllerHome: fx.controllerHome,
+      repoId: consumerRepository.repoId,
+      workId: consumerWorkId,
+      query: 'forge.requirement-candidate repeated root cause',
+      now: time(32),
+    });
+    expect(resolvedConsumerContext?.items).toContainEqual(expect.objectContaining({
+      kind: 'knowledge',
+      id: requirementCandidateItemId,
+      text: expect.stringContaining('[memory:candidate-finding,requirement-candidate,advisory'),
     }));
   });
 

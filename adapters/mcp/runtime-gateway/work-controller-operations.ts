@@ -322,6 +322,7 @@ export async function callRhWorkControllerOperation(
             storedMemoryIds: [],
             consolidatedMemoryIds: [],
             promotedMemoryIds: [],
+            requirementCandidateIds: [],
             skipped: [],
           };
         }
