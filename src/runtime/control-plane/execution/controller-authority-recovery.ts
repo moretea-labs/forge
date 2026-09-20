@@ -144,6 +144,7 @@ export function recoverControllerAuthority(input: {
     workId: input.workId,
     requestedBy: input.requestedBy,
     recoveryReason: input.recoveryReason,
+    allowCanonicalRuntimeMigration: true,
     identity: {
       controllerId: input.identity.controllerId,
       controllerType: input.identity.controllerType,

@@ -88,6 +88,8 @@ export interface RecoverControllerRoundRelayAuthorityInput {
   requestedBy?: string;
   recoveryReason?: string;
   identity: ControllerRoundRelayIdentity;
+  /** Set only after the caller proves this identity is served by the live canonical Runtime. */
+  allowCanonicalRuntimeMigration?: boolean;
 }
 
 /** Legacy ControllerRound rows predate explicit controllerType and were ChatGPT-only. */
@@ -1337,10 +1339,13 @@ export function recoverControllerRoundRelayAuthority(
     if (currentOwner) {
       const ownerPrincipal = controllerSessionPrincipalId(currentOwner);
       const ownerInstanceId = currentOwner.controllerInstanceId?.trim() || '';
-      if (currentOwner.controllerId !== input.identity.controllerId
-        || currentOwner.controllerType !== input.identity.controllerType
-        || ownerPrincipal !== input.identity.principalId
-        || ownerInstanceId !== input.identity.controllerInstanceId) {
+      const samePrincipalOwner = currentOwner.controllerId === input.identity.controllerId
+        && currentOwner.controllerType === input.identity.controllerType
+        && ownerPrincipal === input.identity.principalId;
+      const sameRuntimeOwner = ownerInstanceId === input.identity.controllerInstanceId;
+      const canonicalRuntimeMigration = input.allowCanonicalRuntimeMigration === true
+        && ownerInstanceId !== input.identity.controllerInstanceId;
+      if (!samePrincipalOwner || (!sameRuntimeOwner && !canonicalRuntimeMigration)) {
         throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
       }
       const released = releaseObservedControllerSession(options, {
