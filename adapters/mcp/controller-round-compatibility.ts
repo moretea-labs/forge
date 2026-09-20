@@ -4,6 +4,7 @@ import {
 } from '../../packages/kernel/controller/api/index';
 
 const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
+const CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY = 'controller.current_conversation.enroll';
 const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
 export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
@@ -18,6 +19,16 @@ export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
 export type ControllerRoundCompatibilityOperation = (typeof CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS)[number];
 export const CONTROLLER_ROUND_REVIEW_DECISIONS = ['approved', 'changes_required', 'blocked'] as const;
 export type ControllerRoundReviewDecision = (typeof CONTROLLER_ROUND_REVIEW_DECISIONS)[number];
+
+export function parseCurrentConversationEnrollmentCompatibilityCapability(
+  operation: string,
+  capabilityId: unknown,
+): { disposition: 'continue_immediately'; enrollCurrentConversation: true } | undefined {
+  if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
+  const normalized = capabilityId.trim();
+  if (normalized !== CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY) return undefined;
+  return { disposition: 'continue_immediately', enrollCurrentConversation: true };
+}
 
 export function parseControllerDispositionCompatibilityCapability(
   operation: string,

@@ -62,6 +62,7 @@ describe('handoff and facade contracts', () => {
     const properties = rhWork?.inputSchema.properties as Record<string, { description?: string; enum?: string[] }> | undefined;
     expect(properties).toHaveProperty('controller_authority_id');
     expect(properties?.capability_id?.description).toContain('controller.authority.recover:<workId>');
+    expect(properties?.capability_id?.description).toContain('controller.current_conversation.enroll');
     expect(properties?.capability_id?.description).toContain('plan.step.retry:<workId>');
   });
 

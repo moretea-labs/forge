@@ -1,6 +1,7 @@
 import {
   parseControllerDispositionCompatibilityCapability,
   parseControllerRoundCompatibilityCapability,
+  parseCurrentConversationEnrollmentCompatibilityCapability,
   parsePlanObligationCompatibilityCapability,
 } from '../controller-round-compatibility';
 import { parseFrozenSemanticCompatibilityCapability } from '../frozen-client-semantic-compatibility';
@@ -29,6 +30,7 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
       : '';
   let frozenImplementationReview: { decision: 'approved' | 'changes_required' | 'blocked'; workId: string } | undefined;
   let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
+  let frozenCurrentConversationEnrollment: ReturnType<typeof parseCurrentConversationEnrollmentCompatibilityCapability>;
   let frozenControllerRoundOperation: ReturnType<typeof parseControllerRoundCompatibilityCapability>;
   let frozenPlanObligationDispositions: ReturnType<typeof parsePlanObligationCompatibilityCapability>;
   let frozenSemanticOperation: ReturnType<typeof parseFrozenSemanticCompatibilityCapability>;
@@ -48,12 +50,23 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
       }
     }
     frozenControllerDisposition = parseControllerDispositionCompatibilityCapability(requestedOperation, args.capability_id);
+    frozenCurrentConversationEnrollment = parseCurrentConversationEnrollmentCompatibilityCapability(requestedOperation, args.capability_id);
     frozenControllerRoundOperation = parseControllerRoundCompatibilityCapability(requestedOperation, args.capability_id);
     frozenPlanObligationDispositions = parsePlanObligationCompatibilityCapability(requestedOperation, args.capability_id);
     frozenSemanticOperation = parseFrozenSemanticCompatibilityCapability(requestedOperation, args.capability_id);
     if (frozenControllerDisposition
       && (args.relay_scope_id !== undefined || (frozenControllerDisposition.authorityId && args.controller_authority_id !== undefined))) {
       throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_CONFLICT');
+    }
+    if (frozenCurrentConversationEnrollment) {
+      const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+      const explicitRequirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+      if (!explicitWorkId || !explicitRequirementId) {
+        throw new Error('CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY_SCOPE_REQUIRED: work_id and requirement_id must remain explicit');
+      }
+      if (args.disposition !== undefined || args.enroll_current_conversation !== undefined) {
+        throw new Error('CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY_CONFLICT');
+      }
     }
     if (frozenPlanObligationDispositions && Array.isArray(args.obligation_dispositions)) {
       throw new Error('PLAN_OBLIGATION_COMPATIBILITY_CONFLICT');
@@ -101,6 +114,10 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     args.disposition = frozenControllerDisposition.disposition;
     if (frozenControllerDisposition.authorityId) args.controller_authority_id = frozenControllerDisposition.authorityId;
   }
+  if (frozenCurrentConversationEnrollment) {
+    args.disposition = frozenCurrentConversationEnrollment.disposition;
+    args.enroll_current_conversation = true;
+  }
   if (frozenPlanObligationDispositions) args.obligation_dispositions = frozenPlanObligationDispositions;
   if (frozenSemanticOperation?.operation === 'plan_create') {
     args.obligation_dispositions = frozenSemanticOperation.args.obligation_dispositions;
@@ -128,7 +145,7 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
   const frozenSemanticFacadeOperation = frozenSemanticOperation?.operation === 'work_review'
     ? 'review'
     : frozenSemanticOperation?.operation;
-  const operation = frozenSemanticFacadeOperation ?? frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
+  const operation = frozenSemanticFacadeOperation ?? frozenControllerRoundOperation?.operation ?? ((frozenControllerDisposition || frozenCurrentConversationEnrollment)
     ? 'controller_disposition'
     : frozenImplementationReview ? 'review'
     : scheduleIdOverride ? 'schedule_delete' : requestedOperation);

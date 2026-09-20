@@ -33,9 +33,11 @@ import {
   getControllerRoundRelay,
   parseControllerDispositionCompatibilityCapability,
   parseControllerRoundCompatibilityCapability,
+  parseCurrentConversationEnrollmentCompatibilityCapability,
   rearmControllerRoundAfterProviderRecovery,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
 import { decideControllerRoundTransition } from '../../packages/kernel/controller/domain/controller-round-transition-policy';
 import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
@@ -2232,6 +2234,36 @@ describe('scheduled external Controller wake', () => {
     expect(parseControllerDispositionCompatibilityCapability('repair', 'schedule.delete:SCH-1')).toBeUndefined();
     expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:invalid:goal:work-compat')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
     expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:goal_complete:')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
+    expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_conversation.enroll')).toEqual({
+      disposition: 'continue_immediately', enrollCurrentConversation: true,
+    });
+    expect(parseCurrentConversationEnrollmentCompatibilityCapability('continue', 'controller.current_conversation.enroll')).toBeUndefined();
+    expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_conversation.enroll:unexpected')).toBeUndefined();
+  });
+
+  test('maps frozen current-conversation enrollment into the canonical controller disposition without caller-supplied identity', () => {
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair',
+      capability_id: 'controller.current_conversation.enroll',
+      work_id: 'work-current-conversation-compat',
+      requirement_id: 'REQ-current-conversation-compat',
+    })).toMatchObject({
+      ok: true,
+      operation: 'controller_disposition',
+      args: {
+        work_id: 'work-current-conversation-compat',
+        requirement_id: 'REQ-current-conversation-compat',
+        disposition: 'continue_immediately',
+        enroll_current_conversation: true,
+      },
+    });
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair', capability_id: 'controller.current_conversation.enroll', work_id: 'work-current-conversation-compat',
+    })).toMatchObject({ ok: false, summary: expect.stringContaining('CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY_SCOPE_REQUIRED') });
+    expect(normalizeRhWorkInputCompatibility({
+      operation: 'repair', capability_id: 'controller.current_conversation.enroll', work_id: 'work-current-conversation-compat',
+      requirement_id: 'REQ-current-conversation-compat', disposition: 'continue_immediately',
+    })).toMatchObject({ ok: false, summary: 'CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY_CONFLICT' });
   });
 
   test('parses only fenced frozen-schema controller round lifecycle compatibility capabilities', () => {
