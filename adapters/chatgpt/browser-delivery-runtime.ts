@@ -4,13 +4,13 @@ import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types'
 import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
 import { controllerPluginRepository, executeControllerScopedPluginAction, getControllerPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import {
-  CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT,
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   ChatgptProviderDeliveryError,
   chatgptProviderPageFailure,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
+  type ChatgptProviderPageFailureCode,
 } from './provider-delivery';
 
 const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
@@ -183,7 +183,7 @@ export function chatgptOutboundMessageMatchesPrompt(
 
 export function chatgptAutomationDeliveryFailure(
   bodyText: string | undefined,
-): typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined {
+): ChatgptProviderPageFailureCode | undefined {
   return chatgptProviderPageFailure(bodyText);
 }
 
@@ -287,7 +287,7 @@ async function chatgptDeliveryFailureOnPage(
   workId: string,
   browserSessionId: string,
   timeoutMs?: number,
-): Promise<typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined> {
+): Promise<ChatgptProviderPageFailureCode | undefined> {
   const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
     session_id: browserSessionId,
     selector: 'body',

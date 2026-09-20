@@ -5,6 +5,11 @@ export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN = 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN';
 export const CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT = 'CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT';
+export const CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE = 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE';
+
+export type ChatgptProviderPageFailureCode =
+  | typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
+  | typeof CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE;
 
 function normalizeChatgptProviderPageText(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -13,8 +18,11 @@ function normalizeChatgptProviderPageText(value: string): string {
 /** Shared provider-page failure detection used by both direct delivery and durable Supervisor observation. */
 export function chatgptProviderPageFailure(
   bodyText: string | undefined,
-): typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined {
+): ChatgptProviderPageFailureCode | undefined {
   const normalized = normalizeChatgptProviderPageText(bodyText ?? '');
+  if (normalized.includes('resume stream unavailable')) {
+    return CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE;
+  }
   return normalized.includes('message delivery timed out') && normalized.includes('please try again')
     ? CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
     : undefined;
@@ -92,6 +100,7 @@ export function classifyChatgptProviderFailure(
     normalized.includes('OUTCOME_UNKNOWN')
     || normalized.includes('SUBMISSION_NOT_CONFIRMED')
     || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT')
+    || normalized.includes('RESPONSE_STREAM_UNAVAILABLE')
   ) return 'outcome_unknown';
   if (CHATGPT_WAIT_FOR_USER_MARKERS.some((marker) => normalized.includes(marker))) return 'wait_for_user';
   return 'failed';

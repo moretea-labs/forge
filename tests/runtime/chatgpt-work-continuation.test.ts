@@ -15,7 +15,7 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { chatgptAutomationDeliveryFailure, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
@@ -697,8 +697,11 @@ describe('ChatGPT Work conversation binding', () => {
       generationInProgress: true,
     })).toBe(true);
     expect(chatgptAutomationDeliveryFailure('Message delivery timed out. Please try again.')).toBe(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT);
+    expect(chatgptAutomationDeliveryFailure('Resume stream unavailable')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+    expect(chatgptAutomationDeliveryFailure('  RESUME\nstream   unavailable  ')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
     expect(chatgptAutomationDeliveryFailure('ChatGPT')).toBeUndefined();
     expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT)).toBe('outcome_unknown');
+    expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE)).toBe('outcome_unknown');
   });
 
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
