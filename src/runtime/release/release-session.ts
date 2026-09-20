@@ -308,16 +308,13 @@ export function migrateReleaseSessionState(
         const updatedAtMs = Date.parse(raw.updatedAt);
         const successors = (stableSuccessors.get(candidateKey) ?? [])
           .filter((entry) => entry.sessionId !== id && Date.parse(entry.createdAt) >= updatedAtMs);
-        if (successors.length > 1) {
-          throw new Error(`RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_AMBIGUOUS: ${id}`);
-        }
         const previousAuthorityProof = Boolean(previousKey && candidateKey === previousKey);
         if (successors.length === 0 && !previousAuthorityProof) {
           throw new Error(`RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_UNPROVEN: ${id}`);
         }
         migratedPhase = 'known_good';
-        const proof = successors.length === 1
-          ? `successor ReleaseSession ${successors[0]!.sessionId} uses Candidate B as Stable A`
+        const proof = successors.length > 0
+          ? `${successors.length} later ReleaseSession attempt(s) use exact Candidate B as Stable A; first=${successors[0]!.sessionId}`
           : 'current RuntimeReleaseAuthority.previous references Candidate B';
         const receiptId = `migration:historical-known-good:${id}`;
         migratedReceipts = raw.receipts.some((receipt) => receipt.id === receiptId)

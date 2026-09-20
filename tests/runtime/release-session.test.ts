@@ -400,7 +400,7 @@ describe('Recovery ReleaseSession', () => {
     });
   });
 
-  test('fails closed when historical soaking acceptance is unproven or branched', () => {
+  test('accepts repeated exact Stable-A successor attempts and fails closed only when historical acceptance is unproven', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-historical-ambiguous-'));
     roots.push(home);
     const fx = lanes(home);
@@ -445,7 +445,12 @@ describe('Recovery ReleaseSession', () => {
         updatedAt: '2026-09-20T01:00:00.000Z',
       }, null, 2));
     }
-    expect(() => migrateReleaseSessionState(home)).toThrow('RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_AMBIGUOUS');
+    const repeatedProof = migrateReleaseSessionState(home);
+    expect(repeatedProof.migratedSessionIds).toContain(fx.candidate.sessionId);
+    expect(readReleaseSession(home, fx.candidate.sessionId)).toMatchObject({
+      semanticEpoch: 2,
+      phase: 'known_good',
+    });
   });
 
   test('migrates the observed transitional schema-2 failed session exactly once without changing durable state', () => {
