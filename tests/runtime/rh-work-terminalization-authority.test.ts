@@ -2620,6 +2620,38 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
   }, 15_000);
 
+  test('explicit user relay recovery migrates the same principal from a superseded Runtime to the live canonical Runtime', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-relay-runtime-migration';
+    const workId = 'work-relay-runtime-migration';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId: 'runtime-old', sessionId: 'transport-old' },
+      bindingId: 'binding-runtime-migration',
+    });
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-old', 'runtime-old'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, session_id: opened.authorityId },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: 'runtime-old' });
+
+    publishCurrentRuntime(fx.controllerHome, 'runtime-new');
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-new', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(recovered.status).toBe('ok');
+    expect(String(recovered.data?.controllerAuthorityId ?? '')).toStartWith('cra_');
+    expect(recovered.data?.relayScopeId).toBe(opened.relayScopeId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+  }, 15_000);
+
   test('provider recovery requires exact authority and fresh confirmed probe evidence before rearming the same blocked round', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
