@@ -2188,6 +2188,11 @@ async function finalizeWorkInternal(
       verificationWorkspaceFingerprint: exactValidationInput?.workspaceFingerprint,
       targetBranch: resolveWorkDeliveryTargetBranch(current, validated.worktreeRepository.defaultBranch, explicitTargetBranch),
     });
+    const reviewRequiredForCandidate = workRequiresImplementationReview(
+      contract.workKind,
+      preCommitReviewCandidate.changedPaths,
+      contract.engineeringContext?.riskClass,
+    );
     const reviewedCommitPaths = normalizeImplementationReviewChangedPaths(preCommitReviewCandidate.changedPaths);
     const exactCommitPaths = normalizeImplementationReviewChangedPaths(commitPaths);
     if (JSON.stringify(reviewedCommitPaths) !== JSON.stringify(exactCommitPaths)) {
@@ -2232,7 +2237,7 @@ async function finalizeWorkInternal(
         : postCommitInput.fingerprint,
       failureReason: undefined,
     }));
-    if (reviewedContentPreservedAcrossCommit && prepareReviewCandidate) {
+    if (reviewedContentPreservedAcrossCommit && (prepareReviewCandidate || !reviewRequiredForCandidate)) {
       const verificationTransfer = planWorkVerificationAcrossContentEquivalentCommit({
         controllerHome: ctx.controllerHome,
         repository: validated.worktreeRepository,
@@ -2265,8 +2270,12 @@ async function finalizeWorkInternal(
       }
       validationPreservedAcrossCommit = true;
       appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
-        title: 'verification authority preserved while preparing exact implementation-review candidate',
-        summary: `The exact Work content was committed as ${postCommitInput.head}; ${verificationTransfer.reusableCheckIds.length}/${checks.length} non-Git-sensitive Process receipt(s) were transferred without deriving implementation-review authority.`,
+        title: prepareReviewCandidate
+          ? 'verification authority preserved while preparing exact implementation-review candidate'
+          : 'verification authority preserved across low-risk content-equivalent commit',
+        summary: prepareReviewCandidate
+          ? `The exact Work content was committed as ${postCommitInput.head}; ${verificationTransfer.reusableCheckIds.length}/${checks.length} non-Git-sensitive Process receipt(s) were transferred without deriving implementation-review authority.`
+          : `The exact low-risk Work content was committed as ${postCommitInput.head}; ${verificationTransfer.reusableCheckIds.length}/${checks.length} reusable verification receipt(s) were transferred and no implementation-review authority was invented because policy does not require one.`,
         detailLevel: 'summary',
       });
     } else if (reviewedContentPreservedAcrossCommit) {
