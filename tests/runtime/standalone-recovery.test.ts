@@ -1786,6 +1786,7 @@ describe('standalone recovery on canonical Runtime', () => {
       'verify_runtime_release_session_static',
       'verify_runtime_release_session_candidate',
       'cutover_runtime_release_session',
+      'cancel_runtime_release_session',
       'rollback_runtime_release_session',
       'promote_runtime_release_session_known_good',
     ]));
@@ -1848,6 +1849,7 @@ describe('standalone recovery on canonical Runtime', () => {
       'release-session-static-verify',
       'release-session-candidate-verify',
       'release-session-cutover',
+      'release-session-cancel',
       'release-session-rollback',
       'release-session-known-good',
     ]));

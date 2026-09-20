@@ -297,6 +297,7 @@ export type RecoveryMutationAction =
   | 'release_session_static_verify'
   | 'release_session_candidate_boot'
   | 'release_session_cutover'
+  | 'release_session_cancel'
   | 'release_session_rollback'
   | 'release_session_known_good'
   | 'restart_primary_connector'
@@ -4696,6 +4697,86 @@ export async function cutoverConfiguredRuntimeReleaseSession(
     }
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  return locked.value;
+}
+
+
+export async function cancelConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_cancel',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase === 'failed') {
+      return { ok: true as const, attempted: false, noOp: true, detail: 'ReleaseSession is already terminal failed', releaseSession: session };
+    }
+    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_CANCEL_AFTER_CUTOVER_FORBIDDEN: ${session.phase}; use exact ReleaseSession rollback`,
+        releaseSession: session,
+      };
+    }
+    if (session.phase === 'known_good' || session.phase === 'rolled_back') {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_CANCEL_TERMINAL: ${session.phase}`,
+        releaseSession: session,
+      };
+    }
+
+    const priorPhase = session.phase;
+    if (['candidate_booted', 'candidate_verified', 'cutover_eligible'].includes(session.phase)) {
+      const retirement = await stopReleaseSessionCandidateService(session);
+      if (!retirement.ok) {
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `RELEASE_SESSION_CANCEL_CANDIDATE_RETIRE_FAILED: ${retirement.detail}`,
+          releaseSession: session,
+        };
+      }
+    }
+
+    session = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'failed',
+      receipts: [{
+        id: 'candidate_cancelled',
+        kind: 'candidate_canary',
+        summary: 'Candidate B was explicitly retired before cutover because the frozen candidate was superseded or rejected',
+      }],
+    });
+    const cleanup = cleanupRetiredCandidateLane(config, session);
+    audit(config, cleanup.ok ? 'release_session_cancelled' : 'release_session_cancelled_cleanup_failed', {
+      sessionId,
+      priorPhase,
+      candidateControllerHome: session.candidate.controllerHome,
+      cleanupDetail: cleanup.detail,
+    });
+    return {
+      ok: cleanup.ok,
+      attempted: true,
+      detail: cleanup.ok
+        ? 'ReleaseSession Candidate B was terminalized failed and its isolated lane was retired before cutover; Stable A remained unchanged'
+        : `ReleaseSession was terminalized failed but Candidate B lane cleanup failed: ${cleanup.detail}`,
+      releaseSession: session,
+    };
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
   return locked.value;
 }
 

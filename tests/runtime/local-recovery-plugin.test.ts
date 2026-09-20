@@ -136,6 +136,7 @@ test('ReleaseSession actions expose only the exact session id and provider-owned
     'verify_runtime_release_session_static',
     'verify_runtime_release_session_candidate',
     'cutover_runtime_release_session',
+    'cancel_runtime_release_session',
     'rollback_runtime_release_session',
     'promote_runtime_release_session_known_good',
   ]) {
