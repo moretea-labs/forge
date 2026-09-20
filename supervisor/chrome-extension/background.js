@@ -145,8 +145,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void refreshAuthorizedTabs().catch(() => undefined); });
 chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void refreshAuthorizedTabs().catch(() => undefined); });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void refreshAuthorizedTabs().catch(() => undefined); });
-let refreshTimer;
-function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => void refreshAuthorizedTabs().catch(() => undefined), 500); }
+let refreshInFlight;
+let refreshQueued = false;
+function scheduleRefresh() {
+  refreshQueued = true;
+  if (refreshInFlight) return;
+  const drain = async () => {
+    while (refreshQueued) {
+      refreshQueued = false;
+      await refreshAuthorizedTabs().catch(() => undefined);
+    }
+  };
+  refreshInFlight = drain().finally(() => {
+    refreshInFlight = undefined;
+    if (refreshQueued) scheduleRefresh();
+  });
+}
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) scheduleRefresh(); });
 chrome.tabs.onActivated.addListener(() => scheduleRefresh());
 chrome.tabs.onRemoved.addListener(() => scheduleRefresh());
