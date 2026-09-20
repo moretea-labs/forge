@@ -45,7 +45,7 @@ export async function startWorkflowSupervisorRuntime(
     forgeWorkflowSupervisorValidators(),
     forgeWorkflowSupervisorLifecycleHooks(controllerHome),
   );
-  const discovery = new WorkflowSupervisorEphemeralDiscovery(store);
+  const discovery = new WorkflowSupervisorEphemeralDiscovery();
   const server = createWorkflowSupervisorServer({
     controlPlane,
     socketPath,

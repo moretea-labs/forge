@@ -1051,7 +1051,7 @@ requireText('supervisor/forge-validators.ts', "requirement.state !== 'done'");
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:requirement:${requirementId}`');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:conversation:${conversationId}`');
 forbid('supervisor/client.ts', /task_has_effect|taskHasAnyEffect/, 'Supervisor boundary is derived from canonical Work+conversation facts; do not add a second ownership projection RPC');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');

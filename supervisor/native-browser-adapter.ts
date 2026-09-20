@@ -278,6 +278,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       }
     }
     this.discovery.update(conversations, 'native-browser');
+    this.control.recordBrowserDiscovery('native-browser', this.discovery.sourceConversations('native-browser'));
   }
 
   private async cleanupInactive(tasks: WorkflowSupervisorBrowserTask[]): Promise<void> {

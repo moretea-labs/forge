@@ -33,6 +33,11 @@ export class WorkflowSupervisorControlPlane {
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  browserDiscoverySnapshot() { return this.store.discoverySnapshot(); }
+  recordBrowserDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]) {
+    const snapshot = this.store.recordDiscovery(source, conversations);
+    return { ...snapshot, ...this.reconcileDiscoveredConversations(snapshot.conversations) };
+  }
   browserProjectScopes(): WorkflowSupervisorProjectScope[] {
     const scopes = new Map<string, WorkflowSupervisorProjectScope>();
     for (const task of this.store.listTasks()) {

@@ -5,7 +5,6 @@ import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import type { WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation } from './types';
-import type { WorkflowSupervisorStore } from './store';
 
 interface RpcRequest { id: string; method: string; params: Record<string, unknown> }
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -156,7 +155,6 @@ export async function reconcileWorkflowSupervisorSocket(input: {
 }
 export class WorkflowSupervisorEphemeralDiscovery {
   private readonly bySource = new Map<string, WorkflowSupervisorDiscoveredConversation[]>();
-  constructor(private readonly store?: WorkflowSupervisorStore) {}
   update(value: unknown, source = 'browser-extension'): WorkflowSupervisorDiscoverySnapshot {
     if (!Array.isArray(value) || value.length > MAX_DISCOVERED_CONVERSATIONS) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_INVALID');
     const seen = new Set<string>();
@@ -187,12 +185,13 @@ export class WorkflowSupervisorEphemeralDiscovery {
         ...(projectUrl ? { projectUrl } : {}),
       });
     }
-    if (this.store) return this.store.recordDiscovery(source, conversations);
     this.bySource.set(source, conversations);
     return this.get();
   }
+  sourceConversations(source: string): WorkflowSupervisorDiscoveredConversation[] {
+    return structuredClone(this.bySource.get(source) ?? []);
+  }
   get(): WorkflowSupervisorDiscoverySnapshot {
-    if (this.store) return this.store.discoverySnapshot();
     const byConversation = new Map<string, WorkflowSupervisorDiscoveredConversation>();
     for (const conversations of this.bySource.values()) for (const conversation of conversations) {
       const current = byConversation.get(conversation.conversationId);
@@ -257,10 +256,11 @@ export function createWorkflowSupervisorServer(input: { controlPlane: WorkflowSu
 async function dispatch(control: WorkflowSupervisorControlPlane, discovery: WorkflowSupervisorEphemeralDiscovery, req: RpcRequest): Promise<unknown> {
   const p = req.params;
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
-  if (req.method === 'browser_discovery') return discovery.get();
+  if (req.method === 'browser_discovery') return control.browserDiscoverySnapshot();
   if (req.method === 'browser_discovery_update') {
-    const snapshot = discovery.update(p.conversations, typeof p.source === 'string' && p.source.trim() ? p.source.trim() : 'chrome-extension');
-    return { ...snapshot, ...control.reconcileDiscoveredConversations(snapshot.conversations) };
+    const source = typeof p.source === 'string' && p.source.trim() ? p.source.trim() : 'chrome-extension';
+    discovery.update(p.conversations, source);
+    return control.recordBrowserDiscovery(source, discovery.sourceConversations(source));
   }
   if (req.method === 'browser_project_scopes') return { projects: control.browserProjectScopes() };
   if (req.method === 'browser_tasks') return { tasks: control.browserTasks() };

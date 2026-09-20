@@ -116,7 +116,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const fx = fixture();
     const supervisorHome = join(fx.root, 'durable-supervisor-discovery');
     const firstStore = new WorkflowSupervisorStore(supervisorHome);
-    const firstDiscovery = new WorkflowSupervisorEphemeralDiscovery(firstStore);
+    const firstControl = new WorkflowSupervisorControlPlane(firstStore);
+    const firstDiscovery = new WorkflowSupervisorEphemeralDiscovery();
     firstDiscovery.update([{
       conversation_id: '11111111-2222-3333-4444-555555555555',
       canonical_url: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
@@ -124,10 +125,12 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       project_title: 'forge',
       project_url: 'https://chatgpt.com/g/g-p-forge/project',
     }], 'chrome-extension');
+    firstControl.recordBrowserDiscovery('chrome-extension', firstDiscovery.sourceConversations('chrome-extension'));
     firstStore.close();
 
     const reopened = new WorkflowSupervisorStore(supervisorHome);
-    const snapshot = new WorkflowSupervisorEphemeralDiscovery(reopened).get();
+    const reopenedControl = new WorkflowSupervisorControlPlane(reopened);
+    const snapshot = reopenedControl.browserDiscoverySnapshot();
     expect(snapshot.conversations).toEqual([{
       conversationId: '11111111-2222-3333-4444-555555555555',
       canonicalUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
