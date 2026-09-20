@@ -12,7 +12,7 @@ import {
   type ControlPlaneRecord,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
-import { controllerSessionBlocksRecovery, getControllerSession, releaseObservedControllerSession } from './controller-session-store';
+import { controllerSessionBlocksRecovery, controllerSessionPrincipalId, getControllerSession, releaseObservedControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
@@ -1327,8 +1327,30 @@ export function recoverControllerRoundRelayAuthority(
     if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
     }
-    if (activeWorks.some((entry) => Boolean(getControllerSession(options, entry.workId)))) {
+    const claimedWorks = activeWorks
+      .map((entry) => ({ work: entry, owner: getControllerSession(options, entry.workId) }))
+      .filter((entry): entry is typeof entry & { owner: NonNullable<typeof entry.owner> } => Boolean(entry.owner));
+    if (claimedWorks.some((entry) => entry.work.workId !== workId)) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
+    }
+    const currentOwner = claimedWorks.find((entry) => entry.work.workId === workId)?.owner;
+    if (currentOwner) {
+      const ownerPrincipal = controllerSessionPrincipalId(currentOwner);
+      const ownerInstanceId = currentOwner.controllerInstanceId?.trim() || '';
+      if (currentOwner.controllerId !== input.identity.controllerId
+        || currentOwner.controllerType !== input.identity.controllerType
+        || ownerPrincipal !== input.identity.principalId
+        || ownerInstanceId !== input.identity.controllerInstanceId) {
+        throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
+      }
+      const released = releaseObservedControllerSession(options, {
+        workId,
+        actor: `controller-relay-explicit-authority-recovery:${workId}`,
+        owner: currentOwner,
+      });
+      if (!released.allowed) {
+        throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}:${released.reason}`);
+      }
     }
 
     return applyControllerRoundTransition(options, current, {
