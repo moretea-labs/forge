@@ -115,7 +115,7 @@ describe('single Route Policy authority', () => {
       workBoundProcessEvidenceIds: ['proc-exact-work-bound-success'],
     }, { workId: workId! });
     expect(continued.status).toBe('ok');
-    expect(continued.data).toMatchObject({ nextStep: 'review' });
+    expect(continued.data).toMatchObject({ nextStep: 'finalize' });
   });
   test('returns the identical replayable RouteDecision through the remaining adapters', () => {
     const input = sharedInput();
