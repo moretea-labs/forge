@@ -3360,6 +3360,55 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
   }, 15_000);
 
+  test('explicit user cleanup releases only the current same-owner claim from an already blocked relay', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-blocked-relay-owner-cleanup';
+    const principalId = 'principal-blocked-relay-owner-cleanup';
+    const runtimeInstanceId = 'runtime-blocked-relay-owner-cleanup';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId: 'transport-blocked-relay-owner-cleanup',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      maxFailures: 1,
+      identity: {
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        principalId,
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: owner.sessionId,
+      },
+    });
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'synthetic provider failure' })!;
+    expect(blocked.status).toBe('blocked');
+
+    const foreign = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-foreign-blocked-cleanup', 'transport-foreign-blocked-cleanup', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, requested_by: 'user' },
+    ));
+    expect(foreign.status).toBe('blocked');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, claimGeneration: owner.claimGeneration });
+
+    const released = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-current-blocked-cleanup', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, requested_by: 'user' },
+    ));
+    expect(released.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'blocked', authorityId: blocked.authorityId });
+  }, 15_000);
+
   test('current canonical Runtime migrates the same principal before release while the old Runtime stays fenced', async () => {
     const fx = fixture();
     const workId = 'work-runtime-migration-release';
