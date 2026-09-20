@@ -12,7 +12,7 @@ import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { gitSnapshot } from '../../../src/cli/repository/inspector';
 import { runStandaloneChatgptPrompt } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
-import { getChatgptWorkConversationBinding } from '../../chatgpt/work-conversation-binding-store';
+import { chatgptControllerRoundBinding } from '../../../src/runtime/root/controller-round-composition';
 import {
   buildRecoveryAuditRecord,
   writeRecoveryAuditRecord,
@@ -64,7 +64,7 @@ export async function recoverControllerRoundAfterVerifiedProviderRepair(input: C
   if (getControllerSession(store, workId)) throw new Error(`CONTROLLER_PROVIDER_RECOVERY_ACTIVE_CLAIM: ${workId}`);
 
   const probe = input.probe ?? runStandaloneChatgptPrompt;
-  const binding = getChatgptWorkConversationBinding(store, workId);
+  const binding = chatgptControllerRoundBinding(store, workId);
   const authorizationGrantRefs = binding?.authorizationGrantRefs ?? [];
   const nonce = randomUUID();
   const probeResult = await probe({
