@@ -12,6 +12,7 @@ import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { gitSnapshot } from '../../../src/cli/repository/inspector';
 import { runStandaloneChatgptPrompt } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
+import { getChatgptWorkConversationBinding } from '../../chatgpt/work-conversation-binding-store';
 import {
   buildRecoveryAuditRecord,
   writeRecoveryAuditRecord,
@@ -63,6 +64,8 @@ export async function recoverControllerRoundAfterVerifiedProviderRepair(input: C
   if (getControllerSession(store, workId)) throw new Error(`CONTROLLER_PROVIDER_RECOVERY_ACTIVE_CLAIM: ${workId}`);
 
   const probe = input.probe ?? runStandaloneChatgptPrompt;
+  const binding = getChatgptWorkConversationBinding(store, workId);
+  const authorizationGrantRefs = binding?.authorizationGrantRefs ?? [];
   const nonce = randomUUID();
   const probeResult = await probe({
     controllerHome: input.controllerHome,
@@ -72,6 +75,7 @@ export async function recoverControllerRoundAfterVerifiedProviderRepair(input: C
     prompt: `Forge provider recovery probe ${nonce}. Reply with ACK only. Do not invoke tools or modify external state.`,
     tabPolicy: 'new',
     timeoutMs: input.timeoutMs ?? 60_000,
+    authorizationGrantRefs,
   });
   if (probeResult.status !== 'dispatched' || probeResult.providerDeliveryStatus !== 'dispatch_confirmed') {
     const code = probeResult.error?.code ?? `CHATGPT_PROVIDER_${probeResult.providerDeliveryStatus?.toUpperCase() ?? 'PROBE_FAILED'}`;
@@ -98,6 +102,7 @@ export async function recoverControllerRoundAfterVerifiedProviderRepair(input: C
         providerDeliveryStatus: probeResult.providerDeliveryStatus,
         browserSessionId: probeResult.browserSessionId,
         executionPreferenceVerified: probeResult.executionPreferenceVerified,
+        authorizationGrantRefCount: authorizationGrantRefs.length,
       },
     }],
     at: verifiedAt,

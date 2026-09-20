@@ -138,6 +138,8 @@ export interface StandaloneChatgptPromptInput {
   reasoning?: ChatgptAutomationReasoning;
   tabPolicy?: ChatgptAutomationTabPolicy;
   timeoutMs?: number;
+  /** Explicit Browser grant refs already authorized by the owning durable workflow/controller binding. */
+  authorizationGrantRefs?: readonly string[];
 }
 
 function workflowToolAttributionInstruction(input: WorkChatgptContinuationInput): string {
@@ -261,20 +263,27 @@ export async function runStandaloneChatgptPrompt(
     ? stableChatgptWorkBridgeSessionId(input.repoId, browserScopeId)
     : resolveStandaloneChatgptBrowserSessionId(input);
   const targetUrl = seedUrl ?? 'https://chatgpt.com/';
+  const authorizationGrantRefs = new Set(
+    (input.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean),
+  );
 
   try {
-    const delivery = await host.dispatch({
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-      repoRoot: input.repoRoot ?? process.cwd(),
-      workId: browserScopeId,
-      prompt: input.prompt,
-      browserSessionId: sessionId,
-      targetUrl,
-      model,
-      reasoning,
-      timeoutMs: input.timeoutMs,
-    });
+    const delivery = await withChatgptBrowserActionOrigin(
+      { surface: 'chatgpt-action', actor: 'chatgpt-standalone-prompt' },
+      () => host.dispatch({
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
+        repoRoot: input.repoRoot ?? process.cwd(),
+        workId: browserScopeId,
+        prompt: input.prompt,
+        browserSessionId: sessionId,
+        targetUrl,
+        model,
+        reasoning,
+        timeoutMs: input.timeoutMs,
+      }),
+      authorizationGrantRefs,
+    );
     if (delivery.status !== 'dispatch_confirmed') {
       return {
         status: 'failed',
@@ -286,6 +295,7 @@ export async function runStandaloneChatgptPrompt(
         reasoning,
         tabPolicy,
         executionPreferenceVerified: delivery.executionPreferenceVerified,
+        authorizationGrantRefs: [...authorizationGrantRefs],
         providerDeliveryStatus: delivery.status,
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
@@ -323,6 +333,7 @@ export async function runStandaloneChatgptPrompt(
       reasoning,
       tabPolicy,
       executionPreferenceVerified: false,
+      authorizationGrantRefs: [...authorizationGrantRefs],
       error: {
         code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : bridgeRuntime ? 'CHATGPT_BRIDGE_DISPATCH_FAILED' : 'CHATGPT_CONTROLLER_BROWSER_FAILED',
         message: error instanceof Error ? error.message : String(error),

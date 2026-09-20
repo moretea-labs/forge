@@ -43,6 +43,7 @@ import { createRequirement } from '../../src/runtime/control-plane/persistence/r
 import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 import { recoverControllerRoundAfterVerifiedProviderRepair } from '../../adapters/mcp/runtime-gateway/work-adapter';
+import { bindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 import { listRecoveryAuditRecords } from '../../src/runtime/recovery/store';
 
 const roots: string[] = [];
@@ -2684,6 +2685,12 @@ describe('rh_work terminalization authority', () => {
 
     const workId = 'work-provider-recovery-success';
     const { opened, blocked } = blockRound(workId);
+    bindChatgptWorkConversation(store, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/provider-recovery-bound-work',
+      latestBrowserSessionId: 'provider-recovery-bound-session',
+      authorizationGrantRefs: ['browser-grant-exact-work'],
+    });
     let wrongAuthorityProbeCalls = 0;
     await expect(recoverControllerRoundAfterVerifiedProviderRepair({
       controllerHome: fx.controllerHome,
@@ -2708,6 +2715,7 @@ describe('rh_work terminalization authority', () => {
     })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_SCOPE_MISMATCH');
     expect(wrongAuthorityProbeCalls).toBe(0);
 
+    let recoveredProbeGrantRefs: readonly string[] | undefined;
     const recovered = await recoverControllerRoundAfterVerifiedProviderRepair({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -2715,9 +2723,13 @@ describe('rh_work terminalization authority', () => {
       workId,
       relayScopeId: opened.relayScopeId,
       authorityId: opened.authorityId!,
-      probe: confirmedProbe,
+      probe: async (probeInput) => {
+        recoveredProbeGrantRefs = probeInput.authorizationGrantRefs;
+        return confirmedProbe();
+      },
       now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
     });
+    expect(recoveredProbeGrantRefs).toEqual(['browser-grant-exact-work']);
     expect(recovered.relay).toMatchObject({
       status: 'dispatching',
       relayScopeId: opened.relayScopeId,
@@ -2729,7 +2741,7 @@ describe('rh_work terminalization authority', () => {
     });
     expect(recovered.audit.id.startsWith('REC-')).toBe(true);
     expect(recovered.audit).toMatchObject({ result: 'succeeded', actionId: 'recovery.controller_provider_probe' });
-    expect(recovered.audit.evidence[0]).toMatchObject({ source: 'chatgpt_provider_recovery_probe', details: { workId, relayScopeId: opened.relayScopeId, controllerAuthorityId: opened.authorityId, blockedUpdatedAt: blocked.updatedAt, provider: 'controller-browser', providerDeliveryStatus: 'dispatch_confirmed' } });
+    expect(recovered.audit.evidence[0]).toMatchObject({ source: 'chatgpt_provider_recovery_probe', details: { workId, relayScopeId: opened.relayScopeId, controllerAuthorityId: opened.authorityId, blockedUpdatedAt: blocked.updatedAt, provider: 'controller-browser', providerDeliveryStatus: 'dispatch_confirmed', authorizationGrantRefCount: 1 } });
     expect(listRecoveryAuditRecords(fx.controllerHome, fx.repository.repoId).map((entry) => entry.id)).toContain(recovered.audit.id);
 
     const nonBlockedWorkId = 'work-provider-recovery-non-blocked';
