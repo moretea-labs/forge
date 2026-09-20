@@ -21,6 +21,7 @@ import { assertAutomatedOperationAllowed } from '../../../src/runtime/control-pl
 import { ensureControllerDispositionContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { completeRequirementGoal } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
+import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork } from '../../../src/runtime/root/workflow-supervisor-composition';
 import {
   acknowledgeControllerRoundClaim,
   claimControllerRoundSession,
@@ -224,7 +225,46 @@ export async function callRhWorkControllerOperation(
       const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
       const work = getWorkContract(store, workId);
       if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-      const currentRelay = getControllerRoundRelay(store, workId);
+      let currentRelay = getControllerRoundRelay(store, workId);
+      const currentOwner = getControllerSession(store, workId);
+      let supervisorEnrollment: Awaited<ReturnType<typeof ensureWorkflowSupervisorEnrollmentForWork>> | undefined;
+      if (args.enroll_current_conversation === true) {
+        if (disposition !== 'continue_immediately') throw new Error('WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_ENROLLMENT_REQUIRES_CONTINUE');
+        if (!currentOwner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${workId}`);
+        if (currentOwner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${workId}`);
+        const bound = await bindCurrentWorkflowSupervisorConversationForWork(store, workId);
+        if (bound.status !== 'bound') throw new Error(bound.reason ?? `WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_${bound.status.toUpperCase()}`);
+        if (!currentRelay) {
+          const principalId = controllerSessionPrincipalId(currentOwner);
+          currentRelay = beginInitialControllerRoundDispatch(store, {
+            workId,
+            requirementId: work.requirementId,
+            bindingId: bound.binding.bindingId,
+            identity: {
+              controllerId: currentOwner.controllerId,
+              controllerType: 'chatgpt',
+              principalId,
+              controllerInstanceId: currentOwner.controllerInstanceId?.trim() || identity.controllerInstanceId,
+              sessionId: currentOwner.sessionId,
+            },
+          });
+          currentRelay = finishControllerRoundRelayDispatch(store, {
+            workId,
+            ok: true,
+            bindingId: bound.binding.bindingId,
+            providerDispatchReceiptId: `current-conversation-adopted:${bound.binding.conversationId}`,
+          }) ?? currentRelay;
+          currentRelay = acknowledgeControllerRoundClaim(store, {
+            workId,
+            session: currentOwner,
+            assistantContextSnapshot: prepareControllerAssistantContextBundle(store, workId)?.snapshot ?? null,
+          }) ?? currentRelay;
+        }
+        supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
+        if (supervisorEnrollment.status !== 'enrolled') {
+          throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_ENROLLMENT_${supervisorEnrollment.status.toUpperCase()}`);
+        }
+      }
       const automaticLearningRoundId = currentRelay?.status === 'claimed'
         ? `${currentRelay.relayScopeId}:${currentRelay.roundCount}`
         : undefined;
@@ -236,7 +276,6 @@ export async function callRhWorkControllerOperation(
         && disposition === 'continue_immediately'
         && Boolean(currentRelay?.successorWorkId);
       const terminalRoundClosure = terminalGoalComplete || terminalSuccessorContinuation;
-      const currentOwner = getControllerSession(store, workId);
       if (!currentOwner && terminalRoundClosure) {
         assertFacadeControllerRoundAuthority(ctx, store, workId, args);
       }
@@ -356,7 +395,7 @@ export async function callRhWorkControllerOperation(
           : continuationSchedule
             ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
             : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
-        data: { relay, ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(automaticLearning ? { automaticLearning } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
+        data: { relay, ...(supervisorEnrollment ? { supervisorEnrollment } : {}), ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(automaticLearning ? { automaticLearning } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
         warnings: automaticLearningWarning ? [automaticLearningWarning] : [],
       }) as unknown as Record<string, unknown>, relay.status === 'blocked');
     } catch (error) {

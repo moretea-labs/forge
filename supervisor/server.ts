@@ -155,10 +155,12 @@ export async function reconcileWorkflowSupervisorSocket(input: {
 }
 export class WorkflowSupervisorEphemeralDiscovery {
   private readonly bySource = new Map<string, WorkflowSupervisorDiscoveredConversation[]>();
+  private readonly currentBySource = new Map<string, { conversationId: string; observedAtMs: number }>();
   update(value: unknown, source = 'browser-extension'): WorkflowSupervisorDiscoverySnapshot {
     if (!Array.isArray(value) || value.length > MAX_DISCOVERED_CONVERSATIONS) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_INVALID');
     const seen = new Set<string>();
     const conversations: WorkflowSupervisorDiscoveredConversation[] = [];
+    let currentConversationId: string | undefined;
     for (const entry of value) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_INVALID');
       const record = entry as Record<string, unknown>;
@@ -169,6 +171,12 @@ export class WorkflowSupervisorEphemeralDiscovery {
       const rawTitle = typeof record.title === 'string' ? record.title.trim() : '';
       const rawProjectTitle = typeof record.project_title === 'string' ? record.project_title.trim() : '';
       const rawProjectUrl = typeof record.project_url === 'string' ? record.project_url.trim() : '';
+      if (record.is_current === true) {
+        if (currentConversationId && currentConversationId !== identity.conversationId) {
+          throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_CURRENT_AMBIGUOUS');
+        }
+        currentConversationId = identity.conversationId;
+      }
       let projectUrl: string | undefined;
       if (rawProjectUrl) {
         let parsed: URL;
@@ -186,7 +194,15 @@ export class WorkflowSupervisorEphemeralDiscovery {
       });
     }
     this.bySource.set(source, conversations);
+    if (currentConversationId) this.currentBySource.set(source, { conversationId: currentConversationId, observedAtMs: Date.now() });
+    else this.currentBySource.delete(source);
     return this.get();
+  }
+  currentConversation(source = 'chrome-extension', maxAgeMs = 90_000): WorkflowSupervisorDiscoveredConversation | undefined {
+    const current = this.currentBySource.get(source);
+    if (!current || Date.now() - current.observedAtMs > maxAgeMs) return undefined;
+    const conversation = (this.bySource.get(source) ?? []).find((entry) => entry.conversationId === current.conversationId);
+    return conversation ? structuredClone(conversation) : undefined;
   }
   sourceConversations(source: string): WorkflowSupervisorDiscoveredConversation[] {
     return structuredClone(this.bySource.get(source) ?? []);
@@ -257,6 +273,7 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   const p = req.params;
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
   if (req.method === 'browser_discovery') return control.browserDiscoverySnapshot();
+  if (req.method === 'browser_current_conversation') return { conversation: discovery.currentConversation('chrome-extension') };
   if (req.method === 'browser_discovery_update') {
     const source = typeof p.source === 'string' && p.source.trim() ? p.source.trim() : 'chrome-extension';
     discovery.update(p.conversations, source);

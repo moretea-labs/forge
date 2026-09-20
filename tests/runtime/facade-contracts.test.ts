@@ -32,6 +32,7 @@ describe('handoff and facade contracts', () => {
     expect(properties).toHaveProperty('checkout_id');
     expect(properties?.operation?.enum).toContain('controller_disposition');
     expect(properties).toHaveProperty('disposition');
+    expect(properties).toHaveProperty('enroll_current_conversation');
     expect(properties).toHaveProperty('relay_scope_id');
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });

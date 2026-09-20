@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -34,6 +34,11 @@ async function rpc<T>(forgeHome: string, method: string, params: Record<string, 
     });
     socket.once('connect', () => socket.write(`${JSON.stringify({ id, method, params })}\n`));
   });
+}
+
+export async function getWorkflowSupervisorCurrentConversation(forgeHome: string): Promise<WorkflowSupervisorDiscoveredConversation | undefined> {
+  const result = await rpc<{ conversation?: WorkflowSupervisorDiscoveredConversation }>(forgeHome, 'browser_current_conversation', {});
+  return result.conversation;
 }
 
 export async function registerWorkflowSupervisorTask(forgeHome: string, input: WorkflowSupervisorTaskInput): Promise<WorkflowSupervisorTask> {

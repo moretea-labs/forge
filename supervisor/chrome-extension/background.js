@@ -70,7 +70,7 @@ async function discoveryScan(tabId, projectTitles) {
   try { return await tabMessage(tabId, { type: 'forge-workflow-supervisor-discovery-scan', projectTitles }); }
   catch { return {}; }
 }
-async function publishDiscovery(tabs, projectConversations = []) {
+async function publishDiscovery(tabs, projectConversations = [], currentTabId) {
   const seen = new Set();
   const conversations = [];
   const append = (entry) => {
@@ -82,13 +82,14 @@ async function publishDiscovery(tabs, projectConversations = []) {
     const identity = core.parseConversation(tab.url ?? '');
     if (!identity) continue;
     const title = String(tab.title ?? '').trim();
-    append({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}) });
+    append({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}), ...(tab.id === currentTabId ? { is_current: true } : {}) });
   }
   for (const entry of projectConversations) append(entry);
   return nativeRpc('browser_discovery_update', { source: 'chrome-extension', conversations });
 }
 async function refreshAuthorizedTabs() {
   const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  const [currentTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
   const scopeResult = await nativeRpc('browser_project_scopes').catch(() => ({ projects: [] }));
   const projectScopes = Array.isArray(scopeResult?.projects) ? scopeResult.projects.filter((entry) => typeof entry?.title === 'string' && entry.title.trim()) : [];
   const projectTitles = [...new Set(projectScopes.map((entry) => entry.title.trim()))];
@@ -124,7 +125,7 @@ async function refreshAuthorizedTabs() {
       });
     }
   }
-  await publishDiscovery(tabs, projectConversations).catch(() => undefined);
+  await publishDiscovery(tabs, projectConversations, currentTab?.id).catch(() => undefined);
   const result = await nativeRpc('browser_tasks');
   const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
   for (const task of tasks) {
@@ -147,6 +148,8 @@ chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void re
 let refreshTimer;
 function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => void refreshAuthorizedTabs().catch(() => undefined), 500); }
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) scheduleRefresh(); });
+chrome.tabs.onActivated.addListener(() => scheduleRefresh());
 chrome.tabs.onRemoved.addListener(() => scheduleRefresh());
+chrome.windows.onFocusChanged.addListener(() => scheduleRefresh());
 chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 void refreshAuthorizedTabs().catch(() => undefined);

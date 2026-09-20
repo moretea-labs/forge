@@ -112,6 +112,41 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
   });
 
+  test('keeps the browser-observed current conversation ephemeral, exact, and unambiguous', () => {
+    const discovery = new WorkflowSupervisorEphemeralDiscovery();
+    const currentId = '22222222-3333-4444-5555-666666666666';
+    const otherId = '77777777-8888-9999-aaaa-bbbbbbbbbbbb';
+    discovery.update([
+      {
+        conversation_id: currentId,
+        canonical_url: `https://chatgpt.com/c/${currentId}`,
+        title: 'Current Forge conversation',
+        is_current: true,
+      },
+      {
+        conversation_id: otherId,
+        canonical_url: `https://chatgpt.com/c/${otherId}`,
+        title: 'Other conversation',
+      },
+    ], 'chrome-extension');
+
+    expect(discovery.currentConversation('chrome-extension')).toEqual({
+      conversationId: currentId,
+      canonicalUrl: `https://chatgpt.com/c/${currentId}`,
+      title: 'Current Forge conversation',
+    });
+
+    expect(() => discovery.update([
+      { conversation_id: currentId, canonical_url: `https://chatgpt.com/c/${currentId}`, is_current: true },
+      { conversation_id: otherId, canonical_url: `https://chatgpt.com/c/${otherId}`, is_current: true },
+    ], 'chrome-extension')).toThrow('WORKFLOW_SUPERVISOR_DISCOVERY_CURRENT_AMBIGUOUS');
+
+    discovery.update([
+      { conversation_id: currentId, canonical_url: `https://chatgpt.com/c/${currentId}` },
+    ], 'chrome-extension');
+    expect(discovery.currentConversation('chrome-extension')).toBeUndefined();
+  });
+
   test('persists project conversation discovery across Supervisor store reopen without turning discovery into lifecycle authority', () => {
     const fx = fixture();
     const supervisorHome = join(fx.root, 'durable-supervisor-discovery');

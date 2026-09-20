@@ -18,7 +18,7 @@ import {
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { withControlPlaneReadDatabase } from '../control-plane/persistence/sqlite-store';
-import { registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment, reserveWorkflowSupervisorSchedulerRecovery } from '../../../supervisor/client';
+import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment, reserveWorkflowSupervisorSchedulerRecovery } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 
@@ -30,6 +30,7 @@ export type WorkflowSupervisorBoundary =
 export type WorkflowSupervisorEnrollmentStatus =
   | 'not_eligible'
   | 'conversation_pending'
+  | 'current_conversation_unbound'
   | 'daemon_unavailable'
   | 'enrolled'
   | 'lower_layer_not_ready';
@@ -308,6 +309,31 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     assistantTurnCommitted: (task, completion) => settleForgeWorkflowSupervisorTurn(controllerHome, task, completion),
   };
 }
+export async function bindCurrentWorkflowSupervisorConversationForWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+): Promise<
+  | { status: 'bound'; binding: ChatgptWorkConversationBinding }
+  | { status: 'not_eligible' | 'current_conversation_unbound' | 'daemon_unavailable'; reason?: string }
+> {
+  const work = getWorkContract(options, workId);
+  if (!work?.requirementId) return { status: 'not_eligible' };
+  const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
+  if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', reason: 'WORKFLOW_SUPERVISOR_DAEMON_UNAVAILABLE' };
+  const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
+  if (!current) return { status: 'current_conversation_unbound', reason: 'WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_UNBOUND' };
+  const existing = getChatgptWorkConversationBinding(options, workId);
+  if (existing && existing.conversationId !== current.conversationId) {
+    throw new Error(`WORKFLOW_SUPERVISOR_CURRENT_CONVERSATION_CONFLICT:${workId}:${existing.conversationId}:${current.conversationId}`);
+  }
+  const binding = existing ?? bindChatgptWorkConversation(options, {
+    workId,
+    conversationUrl: current.canonicalUrl,
+    localAlias: current.title,
+  });
+  return { status: 'bound', binding };
+}
+
 export async function ensureWorkflowSupervisorEnrollmentForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
