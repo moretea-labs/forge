@@ -16,27 +16,27 @@ import { buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, typ
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { controllerPluginRepository, getAssistantPluginManifest, listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot } from "../../../src/runtime/control-plane/facade";
-import { getWorkContract, readActiveWorkCandidates, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { currentControllerInstanceId } from "../../../src/runtime/control-plane/execution/session-store";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
 import { invalidFacadeOperation, repositoryExecutionReadiness, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 
-const RH_CONTEXT_CURRENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
-function timestampIsCurrent(value: string | undefined, cutoffMs: number): boolean {
+function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean {
   if (!value) return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && timestamp >= cutoffMs;
 }
 
-function isCurrentRhContextWork(
+function isRecentRhContextWork(
   contract: { status: string; updatedAt?: string },
   cutoffMs: number,
 ): boolean {
   if (contract.status === 'running') return true;
   if (contract.status !== 'ready' && contract.status !== 'open' && contract.status !== 'blocked') return false;
-  return timestampIsCurrent(contract.updatedAt, cutoffMs);
+  return timestampIsRecent(contract.updatedAt, cutoffMs);
 }
 
 function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | undefined {
@@ -598,20 +598,25 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       ? readActiveWorkCandidates({ ...store, limit: 20 })
       : { contracts: [], invalid: [] as InvalidActiveWorkCandidate[] };
     const activeContractScan = activeWorkProjection.contracts;
-    const currentCutoffMs = Date.now() - RH_CONTEXT_CURRENT_WINDOW_MS;
-    const currentContractScan = isSummary
-      ? activeContractScan.filter((contract) => isCurrentRhContextWork(contract, currentCutoffMs))
+    const currentLineageWorkIds = work
+      ? currentTaskLineageWorkIds([work.workId], readWorkContractStore(store).contracts)
+      : new Set<string>();
+    const recentActivityCutoffMs = Date.now() - RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS;
+    const recentActiveContractScan = isSummary
+      ? activeContractScan.filter((contract) => isRecentRhContextWork(contract, recentActivityCutoffMs))
       : activeContractScan;
-    const activeContracts = isSummary ? currentContractScan.slice(0, 3) : activeContractScan;
+    const activeContracts = isSummary ? recentActiveContractScan.slice(0, 3) : activeContractScan;
     const recentJobs = !isSummary && (operation === 'list' || !workId)
       ? listExecutionJobs(ctx.controllerHome, repository.repoId, 20)
-        .filter((job) => timestampIsCurrent(job.updatedAt, currentCutoffMs))
+        .filter((job) => timestampIsRecent(job.updatedAt, recentActivityCutoffMs))
         .slice(0, 5)
       : [];
     const processScan = isSummary
       ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
       : listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
-    const relevantProcesses = processScan.filter((process) => workId ? process.workId === workId : timestampIsCurrent(process.updatedAt, currentCutoffMs));
+    const relevantProcesses = processScan.filter((process) => work
+      ? Boolean(process.workId && currentLineageWorkIds.has(process.workId))
+      : timestampIsRecent(process.updatedAt, recentActivityCutoffMs));
     const liveProcessIds = new Set(processRuntimeResourceDiagnostics().activeProcessIds);
     const activeProcesses = relevantProcesses.filter((process) => liveProcessIds.has(process.processId) && isManagedProcessActive(process));
     const workController = work ? getControllerSession(store, work.workId) : undefined;
@@ -637,10 +642,15 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       .map((check) => ({ id: check.id, description: check.description, source: check.source }));
     const pendingAttention = listHandoffItems({ ...store, status: 'pending', limit: isSummary ? 20 : 5 });
     const currentAttentionScan = listHandoffAttentionItems(store, isSummary ? 20 : 5);
-    const workAttention = work ? currentAttentionScan.find((item) => item.workId === work.workId) : undefined;
-    const currentAttentionItems = isSummary
-      ? currentAttentionScan.slice(0, 3)
-      : currentAttentionScan;
+    const workAttentionItems = work
+      ? currentAttentionScan.filter((item) => Boolean(item.workId && currentLineageWorkIds.has(item.workId)))
+      : [];
+    const workAttention = workAttentionItems[0];
+    const currentAttentionItems = work
+      ? workAttentionItems
+      : isSummary
+        ? currentAttentionScan.slice(0, 3)
+        : currentAttentionScan;
     const attention = isSummary
       ? currentAttentionItems.map((item) => ({
         id: item.id,
@@ -700,14 +710,13 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       activeController: workController ? { controllerType: workController.controllerType, sessionId: workController.sessionId, leaseExpiresAt: workController.leaseExpiresAt } : undefined,
       activeProcesses: activeProcesses.slice(0, 3).map((process) => ({ processId: process.processId, workId: process.workId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
       recentProcesses: relevantProcesses.slice(0, 5).map((process) => ({ processId: process.processId, workId: process.workId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
+      currentTask: work ? currentTaskSemanticProjectionForWork(work) : undefined,
       activeWork: activeContracts.map((entry) => ({
+        relation: 'repository_inventory' as const,
+        relevance: ['ownership', 'conflict', 'release_admission'] as const,
         workId: entry.workId,
         status: entry.status,
         mode: entry.mode,
-        objective: entry.objective.slice(0, 160),
-        semantics: buildWorkContinuationSnapshot(entry).semantics,
-        reconciliationRequired: buildWorkContinuationSnapshot(entry).reconciliationRequired,
-        nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
       })),
       invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
       activeAttention: attention,
@@ -715,21 +724,23 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         availableChecks: checks.length,
         selectedChecks: selectedChecks.length,
         capabilityInventoryDeferred: true,
-        activeWork: currentContractScan.length,
+        activeWork: recentActiveContractScan.length,
         activeWorkShown: activeContracts.length,
+        recentActiveWork: recentActiveContractScan.length,
         invalidActiveWork: activeWorkProjection.invalid.length,
         invalidActiveWorkShown: Math.min(activeWorkProjection.invalid.length, 3),
         storedNonTerminalWork: activeContractScan.length,
-        currentWork: currentContractScan.length,
-        historicalNonTerminalWork: Math.max(0, activeContractScan.length - currentContractScan.length),
-        currentAttention: currentAttentionScan.length,
+        currentWork: work ? 1 : 0,
+        historicalNonTerminalWork: Math.max(0, activeContractScan.length - recentActiveContractScan.length),
+        currentAttention: work ? workAttentionItems.length : 0,
+        repositoryAttention: currentAttentionScan.length,
         currentAttentionShown: attention.length,
         activeProcesses: activeProcesses.length,
         recentProcesses: relevantProcesses.length,
         historicalProcessScanDeferred: true,
         pendingAttentionScanned: pendingAttention.length,
         historicalPendingAttention: Math.max(0, pendingAttention.length - currentAttentionScan.length),
-        omittedCurrentAttention: Math.max(0, currentAttentionScan.length - attention.length),
+        omittedCurrentAttention: Math.max(0, (work ? workAttentionItems.length : 0) - attention.length),
         omittedPendingAttention: Math.max(0, pendingAttention.length - attention.length),
       },
       historicalExecutionJobsIncluded: false,
@@ -762,6 +773,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         domainSchemaLoading: 'static_stable_surface',
         dynamicDomainSchemaLoadingSupported: false,
       },
+      currentTask: work ? currentTaskSemanticProjectionForWork(work) : undefined,
       work: work ? { ...work, continuation: buildWorkContinuationSnapshot(work) } : undefined,
       executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
       executionState: work ? (workAttention ? 'blocked' : activeProcesses.length > 0 ? 'executing' : workController ? 'controller_active' : 'waiting_trigger') : undefined,
@@ -769,11 +781,11 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       activeProcesses: activeProcesses.slice(0, 10),
       recentProcesses: relevantProcesses.slice(0, 20),
       activeWork: activeContracts.map((entry) => ({
+        relation: 'repository_inventory' as const,
+        relevance: ['ownership', 'conflict', 'release_admission'] as const,
         workId: entry.workId,
         status: entry.status,
         mode: entry.mode,
-        objective: entry.objective.slice(0, 240),
-        continuation: buildWorkContinuationSnapshot(entry),
       })),
       invalidActiveWork: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
       recentExecutionJobs: recentJobs.map(summarizeWorkListItem),

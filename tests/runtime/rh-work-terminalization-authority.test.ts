@@ -1597,38 +1597,44 @@ describe('rh_work terminalization authority', () => {
     expect(released.status).toBe('ok');
   }, 15_000);
 
-  test('Requirement-scoped frozen claim preserves the exact durable authority on a non-origin Work and rejects unrelated Work inference', async () => {
+  test('Requirement-scoped frozen claim follows explicit Work lineage and never aliases sibling Work', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const requirementId = 'REQ-frozen-requirement-authority';
     const otherRequirementId = 'REQ-frozen-requirement-authority-other';
+    const parentWorkId = 'work-frozen-requirement-parent';
     const originWorkId = 'work-frozen-requirement-origin';
     const siblingWorkId = 'work-frozen-requirement-sibling';
+    const successorWorkId = 'work-frozen-requirement-successor';
     const unrelatedWorkId = 'work-frozen-requirement-unrelated';
     const runtimeInstanceId = 'runtime-frozen-requirement';
     const principalId = 'principal-frozen-requirement';
     createRequirement({ controllerHome: fx.controllerHome }, {
       requirementId,
       title: 'Frozen Requirement authority',
-      outcomeStatement: 'One durable ControllerRound authority governs mechanically related Work across transport rollover.',
+      outcomeStatement: 'One durable ControllerRound authority follows only explicit Work lineage across transport rollover.',
     });
     createRequirement({ controllerHome: fx.controllerHome }, {
       requirementId: otherRequirementId,
       title: 'Unrelated frozen Requirement authority',
       outcomeStatement: 'Unrelated Work cannot inherit another Requirement ControllerRound authority.',
     });
-    for (const [workId, linkedRequirementId] of [
-      [originWorkId, requirementId],
-      [siblingWorkId, requirementId],
-      [unrelatedWorkId, otherRequirementId],
+    for (const input of [
+      { workId: parentWorkId, linkedRequirementId: requirementId },
+      { workId: originWorkId, linkedRequirementId: requirementId, parentWorkId },
+      { workId: siblingWorkId, linkedRequirementId: requirementId, parentWorkId },
+      { workId: successorWorkId, linkedRequirementId: requirementId, predecessorWorkId: originWorkId },
+      { workId: unrelatedWorkId, linkedRequirementId: otherRequirementId },
     ] as const) {
       createWorkContract(store, {
-        workId,
+        workId: input.workId,
         repoId: fx.repository.repoId,
-        requirementId: linkedRequirementId,
+        requirementId: input.linkedRequirementId,
+        ...('parentWorkId' in input && input.parentWorkId ? { parentWorkId: input.parentWorkId } : {}),
+        ...('predecessorWorkId' in input && input.predecessorWorkId ? { predecessorWorkId: input.predecessorWorkId } : {}),
         mode: 'goal_workloop',
-        objective: `durable authority regression for ${workId}`,
-        acceptanceCriteria: ['preserve durable semantic authority'],
+        objective: `durable authority regression for ${input.workId}`,
+        acceptanceCriteria: ['preserve exact durable semantic authority'],
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],
@@ -1658,32 +1664,41 @@ describe('rh_work terminalization authority', () => {
     });
     const capabilityId = `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`;
 
+    const sibling = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-sibling', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: siblingWorkId, capability_id: capabilityId },
+    ));
+    expect(sibling.status).toBe('blocked');
+    expect(sibling.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND');
+    expect(getControllerSession(store, siblingWorkId)).toBeUndefined();
+
     const first = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-a', runtimeInstanceId),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'repair', work_id: siblingWorkId, capability_id: capabilityId },
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: successorWorkId, capability_id: capabilityId },
     ));
     expect(first.status).toBe('ok');
     expect(first.data.controllerAuthorityId).toBe(relay.authorityId);
     expect(first.data.controllerAuthorityCarrier).toBe('controller_authority_id');
-    expect(getControllerSession(store, siblingWorkId)?.sessionId).toBe('transport-frozen-requirement-a');
+    expect(getControllerSession(store, successorWorkId)?.sessionId).toBe('transport-frozen-requirement-a');
 
     const second = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-b', runtimeInstanceId),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'repair', work_id: siblingWorkId, capability_id: capabilityId },
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: successorWorkId, capability_id: capabilityId },
     ));
     expect(second.status).toBe('ok');
     expect(second.data.controllerAuthorityId).toBe(relay.authorityId);
-    expect(getControllerSession(store, siblingWorkId)?.sessionId).toBe('transport-frozen-requirement-b');
+    expect(getControllerSession(store, successorWorkId)?.sessionId).toBe('transport-frozen-requirement-b');
 
-    const rejected = structured(await callRuntimeTool(
+    const unrelated = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-c', runtimeInstanceId),
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'repair', work_id: unrelatedWorkId, capability_id: capabilityId },
     ));
-    expect(rejected.status).toBe('blocked');
-    expect(rejected.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND');
+    expect(unrelated.status).toBe('blocked');
+    expect(unrelated.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND');
     expect(getControllerSession(store, unrelatedWorkId)).toBeUndefined();
   }, 15_000);
 
@@ -2190,6 +2205,59 @@ describe('rh_work terminalization authority', () => {
     expect(replay.outcome).toBe('wait_for_user');
     expect(resumeCalls).toBe(1);
   }, 15_000);
+
+  test('Requirement-scoped Controller fingerprint ignores sibling Work outside the explicit current-task lineage', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const requirementId = 'REQ-current-task-fingerprint';
+    const originWorkId = 'work-current-task-origin';
+    const siblingWorkId = 'work-current-task-sibling';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Current task fingerprint isolation',
+      outcomeStatement: 'Sibling Work in one Goal must not become current-task state.',
+    });
+    for (const [workId, objective] of [
+      [originWorkId, 'Execute the exact current task.'],
+      [siblingWorkId, 'Execute an unrelated sibling objective in the same Goal.'],
+    ] as const) {
+      createWorkContract(store, {
+        workId,
+        repoId: fx.repository.repoId,
+        requirementId,
+        mode: 'goal_workloop',
+        objective,
+        acceptanceCriteria: ['Keep exact task lineage isolated.'],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        workKind: 'local_effect',
+        status: 'ready',
+      });
+    }
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId: originWorkId,
+      requirementId,
+      relayScopeId: `requirement:${requirementId}`,
+      identity: {
+        controllerId: 'controller-current-task-isolation',
+        controllerType: 'chatgpt',
+        principalId: 'principal-current-task-isolation',
+        controllerInstanceId: 'runtime-current-task-isolation',
+        sessionId: 'transport-current-task-isolation',
+      },
+    });
+    const baseline = readControllerRoundSemanticStateFingerprint(store, originWorkId);
+    expect(baseline).toBe(relay.stateFingerprint);
+
+    recordWorkEvidenceState(store, siblingWorkId, 'partial');
+    expect(readControllerRoundSemanticStateFingerprint(store, originWorkId)).toBe(baseline);
+
+    recordWorkEvidenceState(store, originWorkId, 'partial');
+    expect(readControllerRoundSemanticStateFingerprint(store, originWorkId)).not.toBe(baseline);
+  });
 
   test('semantic wait suppresses unchanged scheduled provider dispatch and wakes once after semantic state changes', async () => {
     const fx = fixture();

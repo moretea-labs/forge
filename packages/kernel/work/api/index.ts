@@ -4,6 +4,7 @@ export * from '../domain/implementation-review';
 export * from '../domain/admission-policy';
 export * from '../domain/check-receipt';
 export * from '../domain/context-closure-receipt';
+export * from '../domain/current-task-lineage';
 export * from '../domain/execution-snapshot';
 export * from '../domain/execution-concurrency';
 export * from '../domain/engineering-contracts';

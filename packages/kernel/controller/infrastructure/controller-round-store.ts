@@ -14,7 +14,7 @@ import {
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
 import { controllerSessionBlocksRecovery, controllerSessionPrincipalId, getControllerSession, releaseObservedControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
+import { currentTaskLineageWorkIds, getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityAdjustmentResult, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
@@ -230,7 +230,11 @@ export function resolveRequirementControllerRoundRelayForWork(
     && Boolean(entry.requirementId)
     && `requirement:${entry.requirementId}` === relayScopeId);
   if (!candidate) return undefined;
-  return relevantWork(options, candidate).some((work) => work.workId === workId) ? candidate : undefined;
+  const target = getWorkContract(options, workId);
+  if (!target) return undefined;
+  if (candidate.requirementId && target.requirementId !== candidate.requirementId) return undefined;
+  const all = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
+  return currentTaskLineageWorkIds([candidate.originWorkId], all).has(workId) ? candidate : undefined;
 }
 
 function relayHistory(options: ControllerRoundRelayStoreOptions, relayScopeId: string): ControllerRoundRelayRecord[] {
@@ -295,32 +299,7 @@ function relevantWork(
   allWorkContracts: readonly WorkContract[] = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts,
 ): WorkContract[] {
   const all = allWorkContracts;
-  const linkedWorkIds = new Set([
-    record.originWorkId,
-    ...relayHistory(options, record.relayScopeId).map((entry) => entry.originWorkId),
-  ]);
-  if (record.requirementId) {
-    for (const work of all) {
-      if (work.requirementId === record.requirementId) linkedWorkIds.add(work.workId);
-    }
-  }
-  let expanded = true;
-  while (expanded) {
-    expanded = false;
-    for (const work of all) {
-      if (linkedWorkIds.has(work.workId)) {
-        if (work.parentWorkId && !linkedWorkIds.has(work.parentWorkId)) {
-          linkedWorkIds.add(work.parentWorkId);
-          expanded = true;
-        }
-        continue;
-      }
-      if (work.parentWorkId && linkedWorkIds.has(work.parentWorkId)) {
-        linkedWorkIds.add(work.workId);
-        expanded = true;
-      }
-    }
-  }
+  const linkedWorkIds = currentTaskLineageWorkIds([record.originWorkId], all);
   return all
     .filter((work) => linkedWorkIds.has(work.workId))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -331,32 +310,13 @@ function relayMayHaveActiveWork(
   record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
   activeWorkSnapshot: ReturnType<typeof readActiveWorkCandidates>,
 ): boolean {
-  // Invalid active candidates remain fail-closed: the canonical aggregate read
-  // below must report the same semantic error rather than silently skipping a
-  // potentially related Work.
-  if (activeWorkSnapshot.invalid.length > 0) return true;
-
-  const linkedWorkIds = new Set([
-    record.originWorkId,
-    ...relayHistory(options, record.relayScopeId).map((entry) => entry.originWorkId),
-  ]);
-  if (record.requirementId) {
-    return activeWorkSnapshot.contracts.some((work) => work.requirementId === record.requirementId);
-  }
-
-  const activeById = new Map(activeWorkSnapshot.contracts.map((work) => [work.workId, work] as const));
-  for (const work of activeWorkSnapshot.contracts) {
-    if (linkedWorkIds.has(work.workId)) return true;
-    const visited = new Set<string>();
-    let parentWorkId = work.parentWorkId;
-    while (parentWorkId && !visited.has(parentWorkId)) {
-      if (linkedWorkIds.has(parentWorkId)) return true;
-      visited.add(parentWorkId);
-      parentWorkId = activeById.get(parentWorkId)?.parentWorkId
-        ?? getWorkContract(options, parentWorkId)?.parentWorkId;
-    }
-  }
-  return false;
+  const all = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
+  const linkedWorkIds = currentTaskLineageWorkIds([record.originWorkId], all);
+  // Malformed repository siblings are not current-task authority. Stay
+  // conservative only when the malformed row is itself already in the exact
+  // explicit lineage; unrelated invalid inventory remains conflict metadata.
+  if (activeWorkSnapshot.invalid.some((work) => linkedWorkIds.has(work.workId))) return true;
+  return activeWorkSnapshot.contracts.some((work) => linkedWorkIds.has(work.workId));
 }
 
 function relevantHandoffs(

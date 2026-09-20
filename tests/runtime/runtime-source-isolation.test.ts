@@ -734,6 +734,91 @@ printf 'BUILD SUCCEEDED\\n'
     expect(getHandoffItem(store, stale.id)?.status).toBe('pending');
   });
 
+  test('rh_context exact Work projects one current task and keeps unrelated repository attention out of that task', async () => {
+    const business = tempRoot('forge-context-current-task-lineage-');
+    const controllerHome = tempRoot('forge-home-context-current-task-lineage-');
+    initGitRepo(business, 'context-current-task-lineage');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Current Task Lineage' });
+    const currentWork = createProjectionWork(controllerHome, repository, 'work-context-current-task');
+    const unrelatedWork = createProjectionWork(controllerHome, repository, 'work-context-unrelated-task');
+    const store = { controllerHome, repoId: repository.repoId };
+    const currentHandoff = createHandoffItem(store, {
+      id: 'handoff-current-task-only',
+      repoId: repository.repoId,
+      workId: currentWork.workId,
+      title: 'Current task decision',
+      severity: 'needs_review',
+      reason: 'Belongs to the exact requested Work.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Current task attention.',
+      currentState: { repoId: repository.repoId, workId: currentWork.workId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'Inspect current task only.',
+      recommendedPrompt: 'Inspect current task only.',
+      suggestedNextActions: [],
+    });
+    const unrelatedHandoff = createHandoffItem(store, {
+      id: 'handoff-unrelated-task',
+      repoId: repository.repoId,
+      workId: unrelatedWork.workId,
+      title: 'Unrelated task decision',
+      severity: 'needs_review',
+      reason: 'Must remain repository inventory, not current-task context.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Unrelated task attention.',
+      currentState: { repoId: repository.repoId, workId: unrelatedWork.workId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'Do not inject into current task.',
+      recommendedPrompt: 'Review only from the unrelated Work.',
+      suggestedNextActions: [],
+    });
+
+    const exactPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'get',
+      work_id: currentWork.workId,
+      detail_level: 'summary',
+    }));
+    const exact = exactPayload.data as {
+      currentTask?: { workId?: string; objective?: string };
+      activeAttention?: Array<{ id?: string; workId?: string }>;
+      counts?: { currentWork?: number; currentAttention?: number; repositoryAttention?: number };
+    };
+    expect(exact.currentTask).toMatchObject({ workId: currentWork.workId, objective: currentWork.objective });
+    expect(exact.activeAttention).toEqual([expect.objectContaining({ id: currentHandoff.id, workId: currentWork.workId })]);
+    expect(exact.activeAttention?.some((item) => item.id === unrelatedHandoff.id)).toBe(false);
+    expect(exact.counts).toMatchObject({ currentWork: 1, currentAttention: 1, repositoryAttention: 2 });
+
+    const repositoryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'get',
+      detail_level: 'summary',
+    }));
+    const repositoryContext = repositoryPayload.data as {
+      currentTask?: unknown;
+      activeWork?: Array<{
+        workId?: string;
+        relation?: string;
+        relevance?: string[];
+        objective?: string;
+        continuation?: unknown;
+        nextSafeAction?: unknown;
+      }>;
+      counts?: { currentWork?: number };
+    };
+    expect(repositoryContext.currentTask).toBeUndefined();
+    expect(repositoryContext.counts?.currentWork).toBe(0);
+    const currentInventory = repositoryContext.activeWork?.find((item) => item.workId === currentWork.workId);
+    expect(currentInventory).toMatchObject({
+      relation: 'repository_inventory',
+      relevance: ['ownership', 'conflict', 'release_admission'],
+    });
+    expect(currentInventory).not.toHaveProperty('objective');
+    expect(currentInventory).not.toHaveProperty('continuation');
+    expect(currentInventory).not.toHaveProperty('nextSafeAction');
+  });
+
   test('rh_context Work summary defers plugin capability and historical process hydration', async () => {
     const business = tempRoot('forge-context-summary-fast-');
     const controllerHome = tempRoot('forge-home-context-summary-fast-');

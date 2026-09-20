@@ -9,7 +9,7 @@ import {
   resumeControllerRoundOccurrence,
 } from '../../../../packages/kernel/controller/api/index';
 import { projectAutonomousGoalProgression, type ProgressionWorkSnapshot } from '../../../../packages/kernel/progression/api/index';
-import { getWorkContract, listWorkContracts } from '../../../../packages/kernel/work/api/index';
+import { currentTaskSemanticProjectionForWork, getWorkContract, listWorkContracts } from '../../../../packages/kernel/work/api/index';
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { listPlanContracts } from '../facade/plan-contract-store';
 import { readRequirement } from '../persistence/requirement-store';
@@ -51,11 +51,12 @@ function planlessOccurrenceId(workId: string, updatedAt: string): string {
 }
 
 function workSnapshot(work: NonNullable<ReturnType<typeof getWorkContract>>): ProgressionWorkSnapshot {
+  const currentTask = currentTaskSemanticProjectionForWork(work);
   return {
-    workId: work.workId,
-    requirementId: work.requirementId,
-    planId: work.planId,
-    planStepId: work.planStepId,
+    workId: currentTask.workId,
+    requirementId: currentTask.requirementId,
+    planId: currentTask.planId,
+    planStepId: currentTask.planStepId,
     status: work.status,
     baseRevision: work.baseRevision,
     completionTargetRevision: work.completionReceipt && 'targetRevision' in work.completionReceipt
@@ -128,12 +129,13 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         continue;
       }
 
+      const currentTask = currentTaskSemanticProjectionForWork(work);
       let occurrenceId: string;
-      let relayScopeId = work.requirementId ? 'requirement:' + work.requirementId : undefined;
-      let continuationHint = 'Resume exact Work ' + work.workId + '; scheduler observed no active execution or live Controller owner and no explicit wait.';
+      let relayScopeId = currentTask.requirementId ? 'requirement:' + currentTask.requirementId : undefined;
+      let continuationHint = 'Resume exact Work ' + currentTask.workId + '; scheduler observed no active execution or live Controller owner and no explicit wait.';
 
-      if (work.planId) {
-        const plan = plansById.get(work.planId);
+      if (currentTask.planId) {
+        const plan = plansById.get(currentTask.planId);
         if (!plan) { skip(skippedByReason, 'current_plan_missing'); continue; }
         const requirementRecord = plan.requirementId
           ? readRequirement({ controllerHome: input.controllerHome }, plan.requirementId)
