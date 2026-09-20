@@ -92,11 +92,11 @@ import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } fr
 import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 
-import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu } from '../../src/runtime/standalone-recovery/performance';
+import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
 
 function idleCpuDependencies() {
   let elapsed = 0;
-  const base = Date.now() - 360_000;
+  const base = Date.now() - 60_000;
   return {
     readCpu: () => ({ cpuMs: 0, processStartTime: 'fixture-process-start' }),
     monotonicNow: () => elapsed,
@@ -4511,10 +4511,13 @@ describe('Recovery explicit performance acceptance', () => {
   test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
     const deps = idleCpuDependencies();
     const evidence = await measureRuntimePerformance(() => identity, deps);
-    expect(evidence).toMatchObject({ policy: 'idle-cpu-v1', sampleCount: 30, warmupMs: 60_000, durationMs: 300_000, meanCpuPercent: 0 });
+    expect(evidence).toMatchObject({ policy: 'runaway-cpu-v2', sampleCount: 10, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0 });
     expect(() => assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
-    expect(() => assertRuntimePerformanceEvidence({ ...evidence, p95CpuPercent: 11 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 10.34, p95CpuPercent: 31.09 }, identity)).not.toThrow();
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 90.64, p95CpuPercent: 104.72 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: RECOVERY_RUNAWAY_MEAN_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
     const busy = idleCpuDependencies();
     await expect(measureRuntimePerformance(() => identity, {
       ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
@@ -4524,7 +4527,7 @@ describe('Recovery explicit performance acceptance', () => {
       ...idleCpuDependencies(), readCpu: () => ({ cpuMs: 0, processStartTime: String(readings++) }),
     })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     const changed = idleCpuDependencies();
-    await expect(measureRuntimePerformance(() => ({ ...identity, authorityRevision: changed.monotonicNow() > 60_000 ? 4 : 3 }), changed))
+    await expect(measureRuntimePerformance(() => ({ ...identity, authorityRevision: changed.monotonicNow() > 10_000 ? 4 : 3 }), changed))
       .rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     await expect(measureRuntimePerformance(() => identity, {
       ...idleCpuDependencies(), readCpu: () => { throw new Error('sample unavailable'); },
@@ -4560,19 +4563,19 @@ describe('Recovery explicit performance acceptance', () => {
           requestId: `test-probe-${sleepCount}`,
         });
         expect(probe.acquired).toBe(true);
-        if (sleepCount === 36) heldFinalLock = probe;
+        if (sleepCount === 12) heldFinalLock = probe;
         else if (probe.acquired) probe.handle.close();
         await deps.sleep(ms);
       },
     });
     await expect(pending).rejects.toThrow('Recovery mutation already in progress');
-    expect(sleepCount).toBe(36);
+    expect(sleepCount).toBe(12);
     expect(heldFinalLock?.acquired).toBe(true);
     if (heldFinalLock?.acquired) heldFinalLock.handle.close();
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
 
     const attested = await attestKnownGood(config);
-    expect(attested.performance?.sampleCount).toBe(30);
+    expect(attested.performance?.sampleCount).toBe(10);
   });
 
   test('functional health cannot attest a busy Runtime; explicit rollback of an attested live Runtime still requires stop', async () => {
@@ -4589,7 +4592,7 @@ describe('Recovery explicit performance acceptance', () => {
     })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
     const attested = await attestKnownGood(config);
-    expect(attested.performance?.sampleCount).toBe(30);
+    expect(attested.performance?.sampleCount).toBe(10);
     const result = await rollbackPrevious(config, 'explicit performance regression');
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('stop the complete Canonical Runtime');
