@@ -583,15 +583,29 @@ export async function callRhWorkControllerOperation(
         const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
         const relayStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
         const existingBinding = chatgptControllerRoundBinding(relayStore, workId);
-        const relay = beginInitialControllerRoundDispatch(
-          relayStore,
-          {
-            workId,
-            identity: authenticatedFacadeControllerIdentity(ctx, args),
-            requirementId: work.requirementId,
-            bindingId: existingBinding?.bindingId,
-          },
-        );
+        let relay: ControllerRoundRelayRecord;
+        try {
+          relay = beginInitialControllerRoundDispatch(
+            relayStore,
+            {
+              workId,
+              identity: authenticatedFacadeControllerIdentity(ctx, args),
+              requirementId: work.requirementId,
+              bindingId: existingBinding?.bindingId,
+            },
+          );
+        } catch (error) {
+          if (!(error instanceof Error) || !error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')) throw error;
+          const existing = getControllerRoundRelay(relayStore, workId);
+          const resumable = existing
+            && existing.originWorkId === workId
+            && existing.controllerType === 'chatgpt'
+            && ['pending_release', 'dispatching'].includes(existing.status)
+            && Boolean(existing.authorityId)
+            && !existing.providerDispatchStartedAt;
+          if (!resumable) throw error;
+          relay = existing;
+        }
         if (relay.status === 'blocked') {
           throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
         }
