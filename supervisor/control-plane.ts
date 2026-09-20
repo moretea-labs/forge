@@ -107,18 +107,22 @@ export class WorkflowSupervisorControlPlane {
     });
     return { recorded: true };
   }
-  browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
+  browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     if (!this.browserTaskActiveForExternalEffect(task)) return { state: 'inactive' };
     const sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
     if (!sourceEffect) return { state: 'none' };
     const recoveryId = effectId();
-    const recoveryReason = `Applied Supervisor effect ${sourceEffect.effectId} reached a provider-idle turn without a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`;
+    const providerFailureCode = input.providerFailureCode?.trim();
+    const recoveryReason = providerFailureCode
+      ? `Applied Supervisor effect ${sourceEffect.effectId} ended with provider failure ${providerFailureCode} before a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`
+      : `Applied Supervisor effect ${sourceEffect.effectId} reached a provider-idle turn without a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`;
     return this.store.observeProviderTurn({
       taskId: task.taskId,
       effectId: sourceEffect.effectId,
       generating: input.generating,
-      assistantDigest: sha256(input.latestAssistantResponse),
+      assistantDigest: sha256(`${input.latestAssistantResponse}\n${input.providerActivityText ?? ''}`),
+      providerFailureCode,
       observedAtMs: input.observedAtMs,
       graceMs: input.graceMs,
       maxRecoveryDepth: 2,

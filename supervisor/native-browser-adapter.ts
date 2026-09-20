@@ -8,6 +8,7 @@ import {
   type MacOsBrowserTabInventoryEntry,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
+import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
 import { renderEffectMarker, sha256, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from './protocol';
@@ -18,6 +19,8 @@ const OWNER_PREFIX = 'forge-workflow-supervisor:';
 const DEFAULT_INTERVAL_MS = 1_000;
 const IDLE_INTERVAL_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_PROVIDER_FAILURE_SCAN_CHARS = 250_000;
+const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
 
 export interface WorkflowSupervisorNativePage {
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
@@ -29,6 +32,9 @@ export interface WorkflowSupervisorNativeSnapshot {
   latestUserText: string;
   pageText?: string;
   latestAssistantResponse: string;
+  providerActivityText: string;
+  providerFailureText: string;
+  latestTurnRole?: 'user' | 'assistant';
   isGenerating: boolean;
 }
 export interface WorkflowSupervisorNativeSnapshotOptions {
@@ -89,14 +95,24 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     const includeUserHistory = ${JSON.stringify(includeUserHistory)};
     const includePageText = ${JSON.stringify(includePageText)};
     const userTexts = includeUserHistory ? allTexts('[data-message-author-role="user"]') : undefined;
+    const roleNodes = Array.from(nodes('[data-message-author-role="user"], [data-message-author-role="assistant"]'));
+    const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
+    const latestTurn = (() => {
+      const turns = nodes('[data-testid^="conversation-turn-"]');
+      return turns.length ? text(turns[turns.length - 1]).slice(-${MAX_PROVIDER_ACTIVITY_CHARS}) : '';
+    })();
+    const liveProviderStatus = allTexts('[role="alert"], [aria-live="assertive"], [aria-live="polite"]').slice(-8).join('\\n');
     const snapshot = {
       url: String(location.href || ''),
       title: String(document.title || ''),
       latestUserText: userTexts ? userTexts.join('\\n') : latestText('[data-message-author-role="user"]'),
       latestAssistantResponse: latestText('[data-message-author-role="assistant"]'),
-      isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"]')),
+      providerActivityText: latestTurn,
+      providerFailureText: (latestTurn + '\\n' + liveProviderStatus).slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
+      latestTurnRole: latestRoleNode?.getAttribute?.('data-message-author-role') || undefined,
+      isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')),
     };
-    if (includePageText) snapshot.pageText = String(document.body?.innerText ?? document.body?.textContent ?? '').trim();
+    if (includePageText) snapshot.pageText = String(document.body?.innerText ?? document.body?.textContent ?? '').trim().slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS});
     return snapshot;
   })()`);
 }
@@ -228,20 +244,31 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         await this.observeAssistant(task, snapshot);
-        this.control.browserObserveProviderTurn({
-          conversationId: task.conversationId,
-          conversationUrl: task.conversationUrl,
-          generating: snapshot.isGenerating,
-          latestAssistantResponse: snapshot.latestAssistantResponse,
-          observedAtMs: this.deps.nowMs(),
-          graceMs: this.deps.providerIdleGraceMs,
-        });
-        // A provider turn owns the composer while it is generating. Do not
-        // mutate the composer or classify the temporarily absent send control
-        // as an unknown external effect; wait for the same exact page to become
-        // idle and let the durable effect remain pending.
-        if (snapshot.isGenerating) continue;
-        const poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        const providerTurnPending = snapshot.isGenerating || snapshot.latestTurnRole === 'user';
+        const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+        if (!poll.command) {
+          // Provider failure evidence is scoped to the latest turn plus current
+          // live status regions. Historical page text must never poison a later turn.
+          this.control.browserObserveProviderTurn({
+            conversationId: task.conversationId,
+            conversationUrl: task.conversationUrl,
+            generating: providerFailureCode ? false : providerTurnPending,
+            latestAssistantResponse: snapshot.latestAssistantResponse,
+            providerActivityText: snapshot.providerActivityText,
+            providerFailureCode,
+            observedAtMs: this.deps.nowMs(),
+            graceMs: this.deps.providerIdleGraceMs,
+          });
+          // Explicit provider failure is causal evidence that the prior provider
+          // turn ended; bounded recovery may therefore dispatch a new effect.
+          if (providerTurnPending && !providerFailureCode) continue;
+          poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        }
+        // A provider turn owns the composer while it is generating or while the
+        // latest committed conversation role is still the user. Absence of a
+        // Stop button alone is never enough to declare the provider idle.
+        if (providerTurnPending && !providerFailureCode) continue;
         if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command, task);
       } catch (error) {
         this.deps.onError(error);

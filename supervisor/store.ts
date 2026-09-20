@@ -248,6 +248,7 @@ export class WorkflowSupervisorStore {
     effectId: string;
     generating: boolean;
     assistantDigest: string;
+    providerFailureCode?: string;
     observedAtMs: number;
     graceMs: number;
     maxRecoveryDepth: number;
@@ -267,8 +268,29 @@ export class WorkflowSupervisorStore {
       const completed = statement(db, 'SELECT 1 AS ok FROM completions WHERE task_id = ? AND source_effect_id = ? LIMIT 1', (s) => s.get(input.taskId, effect.effectId));
       if (!applied || completed) return { state: 'none' };
       const recoveryOrigin = `provider-recovery:${effect.effectId}`;
+      const providerFailureCode = input.providerFailureCode?.trim().slice(0, 128);
+      if (providerFailureCode) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(
+          input.taskId,
+          `assistant-provider-failed:${effect.effectId}:${providerFailureCode}`,
+          'assistant_provider_failed',
+          effect.effectId,
+          json({ code: providerFailureCode, assistant_digest: digest }),
+          observedAt,
+        ));
+      }
       const existingRecovery = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(recoveryOrigin)) as Record<string, unknown> | undefined;
       if (existingRecovery) return { state: 'recovery_reserved', recoveryEffect: effectFromRow(existingRecovery) };
+      if (providerFailureCode) {
+        const depth = providerRecoveryDepth(db, effect.effectId);
+        if (depth >= maxRecoveryDepth) {
+          statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ depth, max_recovery_depth: maxRecoveryDepth, assistant_digest: digest, provider_failure_code: providerFailureCode }), observedAt));
+          return { state: 'exhausted' };
+        }
+        const recoveryEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.recovery.effectId, kind: 'recovery', originKey: recoveryOrigin, prompt: input.recovery.prompt });
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-reserved:${effect.effectId}`, 'assistant_recovery_reserved', effect.effectId, json({ recovery_effect_id: recoveryEffect.effectId, recovery_depth: depth + 1, provider_failure_code: providerFailureCode }), observedAt));
+        return { state: 'recovery_reserved', recoveryEffect };
+      }
 
       const latest = statement(db, `SELECT event_id,kind,payload_json,occurred_at FROM events
         WHERE effect_id = ? AND kind IN ('assistant_provider_generating','assistant_provider_idle')

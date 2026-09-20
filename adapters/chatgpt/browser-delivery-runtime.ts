@@ -7,6 +7,7 @@ import {
   CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT,
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   ChatgptProviderDeliveryError,
+  chatgptProviderPageFailure,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
@@ -183,10 +184,7 @@ export function chatgptOutboundMessageMatchesPrompt(
 export function chatgptAutomationDeliveryFailure(
   bodyText: string | undefined,
 ): typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined {
-  const normalized = normalizeChatgptOutboundText(bodyText ?? '').toLowerCase();
-  return normalized.includes('message delivery timed out') && normalized.includes('please try again')
-    ? CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
-    : undefined;
+  return chatgptProviderPageFailure(bodyText);
 }
 
 export function chatgptSubmissionSettlementWaitBudget(timeoutMs?: number): number {

@@ -14,7 +14,7 @@ afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, f
 function home(): string { const value = mkdtempSync(join(tmpdir(), 'forge-supervisor-native-browser-')); roots.push(value); return value; }
 
 class FakePage implements WorkflowSupervisorNativePage {
-  owner = ''; latestUserText = ''; pageText = ''; latestAssistantResponse = ''; isGenerating = false; closed = false;
+  owner = ''; latestUserText = ''; pageText = ''; latestAssistantResponse = ''; providerActivityText = ''; providerFailureText = ''; latestTurnRole: 'user' | 'assistant' | undefined; isGenerating = false; closed = false;
   constructor(readonly ref: MacOsBrowserTabRef, public url: string, public title = 'ChatGPT') {}
   async evaluate<T>(): Promise<T> { throw new Error('fake evaluate should be replaced by adapter dependencies'); }
   tabRef(): MacOsBrowserTabRef { return { ...this.ref }; }
@@ -34,7 +34,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     },
   });
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
-  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let nowMs = 1_000_000; const errors: string[] = [];
+  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let nowMs = 1_000_000; const errors: string[] = []; const dispatchedPrompts: string[] = [];
   const dependencies: Partial<WorkflowSupervisorNativeBrowserDependencies> = {
     platform: 'darwin',
     listTabs: async () => pages.filter((page) => !page.closed).map(inventory),
@@ -48,14 +48,18 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     writeOwner: async (page, marker) => { (page as FakePage).owner = marker; },
     snapshot: async (page) => {
       const value = page as FakePage;
-      return { url: value.url, title: value.title, latestUserText: value.latestUserText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, isGenerating: value.isGenerating };
+      return { url: value.url, title: value.title, latestUserText: value.latestUserText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, providerActivityText: value.providerActivityText, providerFailureText: value.providerFailureText, latestTurnRole: value.latestTurnRole, isGenerating: value.isGenerating };
     },
     dispatchPrompt: async (page, prompt) => {
       dispatchAttempts += 1;
+      dispatchedPrompts.push(prompt);
       if (preSubmitFailureReason && dispatchAttempts === 1) return { dispatched: false, reason: preSubmitFailureReason };
       if (!providerConfirmed) {
         if (pageTextOnly) (page as FakePage).pageText = `${prompt}${dispatchedUserSuffix}`;
-        else (page as FakePage).latestUserText = `${prompt}${dispatchedUserSuffix}`;
+        else {
+          (page as FakePage).latestUserText = `${prompt}${dispatchedUserSuffix}`;
+          (page as FakePage).latestTurnRole = 'user';
+        }
       }
       return { dispatched: true, ...(providerConfirmed ? { confirmed: true } : {}) };
     },
@@ -64,7 +68,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     sleep: async () => undefined,
     onError: (error) => { errors.push(error instanceof Error ? error.message : String(error)); },
   };
-  return { control, discovery, pages, errors, settlements, adapter: new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies), created: () => created, dispatchAttempts: () => dispatchAttempts, advance: (ms: number) => { nowMs += ms; } };
+  return { control, discovery, pages, errors, settlements, dispatchedPrompts, adapter: new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies), created: () => created, dispatchAttempts: () => dispatchAttempts, advance: (ms: number) => { nowMs += ms; } };
 }
 function register(control: WorkflowSupervisorControlPlane, conversationId: string) {
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
@@ -140,6 +144,8 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command?.mode).toBe('send');
 
     page.isGenerating = false;
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = 'provider turn completed without supervisor block';
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(1);
     expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
@@ -211,6 +217,8 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.dispatchAttempts()).toBe(1);
 
     page.isGenerating = false;
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = 'provider turn completed without supervisor block';
     await h.adapter.runOnce();
     h.advance(999);
     await h.adapter.runOnce();
@@ -223,12 +231,16 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
     expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
 
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = 'first recovery provider turn completed without supervisor block';
     await h.adapter.runOnce();
     h.advance(1_000);
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(3);
     const secondRecovery = h.control.store.latestAppliedEffectWithoutCompletion(`task-${conversationId}`)!;
     expect(secondRecovery.kind).toBe('recovery');
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = 'second recovery provider turn completed without supervisor block';
     await h.adapter.runOnce();
     h.advance(1_000);
     await h.adapter.runOnce();
@@ -240,6 +252,52 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserTasks()).toEqual([]);
     expect(h.errors).toEqual([]);
   });
+  test('does not infer provider idle from a missing Stop control while the latest committed role is still user', async () => {
+    const conversationId = '17171717-2828-3939-5050-616161616161';
+    const h = harness();
+    register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    expect(page.latestTurnRole).toBe('user');
+    h.advance(5_000);
+    await h.adapter.runOnce();
+    h.advance(5_000);
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(1);
+    expect(h.errors).toEqual([]);
+  });
+
+  test('ignores historical timeout text outside the latest provider turn and live status evidence', async () => {
+    const conversationId = '19191919-3030-4141-5252-636363636363';
+    const h = harness();
+    register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    page.pageText = 'Message delivery timed out. Please try again.';
+    h.advance(5_000);
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(1);
+    expect(h.errors).toEqual([]);
+  });
+
+  test('turns explicit provider delivery timeout into bounded unique recovery effects without replaying an applied effect', async () => {
+    const conversationId = '18181818-2929-4040-5151-626262626262';
+    const h = harness();
+    register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    page.providerFailureText = 'Message delivery timed out. Please try again.';
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(3);
+    const effectIds = h.dispatchedPrompts.map((prompt) => /<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt)?.[1]);
+    expect(effectIds.filter(Boolean)).toHaveLength(3);
+    expect(new Set(effectIds.filter(Boolean)).size).toBe(3);
+    expect(h.control.browserTasks()).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
   test('observes a committed CONTINUE response and dispatches the successor effect in the same loop', async () => {
     const conversationId = '99999999-8888-7777-6666-555555555555';
     const h = harness([], 'controller_authority_id=ctrl_next relay_scope_id=requirement:REQ-next', false, '', '\\n展开'); const { conversationUrl, effect } = register(h.control, conversationId);
@@ -247,6 +305,8 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     const firstPrompt = page.latestUserText;
     page.latestAssistantResponse = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', source_effect_id: effect.effectId, checkpoint: 'native checkpoint', reason: 'continue', evidence: ['native transport'] })}\n${SUPERVISOR_BLOCK_END}`;
+    page.latestTurnRole = 'assistant';
+    page.providerActivityText = page.latestAssistantResponse;
     await h.adapter.runOnce();
     expect(page.latestUserText).not.toBe(firstPrompt);
     expect(page.latestUserText).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
