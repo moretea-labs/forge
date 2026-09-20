@@ -16,7 +16,7 @@ import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { backupControlPlaneDatabase, inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { forgeRuntimeServicePaths, writeForgeRuntimeServiceConfig } from '../../src/runtime/root/service';
-import { advanceReleaseSession, createReleaseSession, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import { advanceReleaseSession, createReleaseSession, recordReleaseSessionTransaction, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
 const homes: string[] = [];
@@ -121,7 +121,7 @@ function writeRuntimeAuthority(
 ): void {
   const releasesRoot = join(home, 'runtime', 'releases');
   const authority = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'committed',
     revision: 2,
     fencingToken: 'test-token',
@@ -249,8 +249,41 @@ describe('ReleaseSession candidate retention integration', () => {
     });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_eligible' });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_attempting' });
+    const transactionAt = new Date(NOW).toISOString();
+    retired = recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      transaction: {
+        schemaVersion: 1,
+        operationId: 'retention-cutover',
+        candidateReleaseId: retiredRelease.releaseId,
+        cutoverAuthorityRevision: stableRelease.authorityRevision + 1,
+        rollbackRelease: {
+          releaseId: stableRelease.releaseId,
+          artifactIdentity: stableRelease.artifactIdentity,
+          manifestPath: join(home, 'runtime', 'releases', stableRelease.releaseId, 'manifest.json'),
+          manifestSha256: stableRelease.manifestSha256,
+          workerProtocolVersion: stableRelease.workerProtocolVersion,
+          publishedAt: transactionAt,
+          databaseBackup: {
+            path: join(home, 'runtime', 'releases', 'backups', 'retention-stable.sqlite'),
+            schemaVersion: 1,
+            createdAt: transactionAt,
+          },
+        },
+        startedAt: transactionAt,
+      },
+    });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_committed' });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'soaking' });
+    retired = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      phase: 'known_good',
+      receipts: [{ id: 'retention-known-good', kind: 'known_good', summary: 'terminalize retired retention fixture' }],
+    });
 
     const resumableLane = candidate('release-resumable-12345678', 8767);
     mkdirSync(resumableLane.controllerHome, { recursive: true });
@@ -297,7 +330,7 @@ describe('ReleaseSession candidate retention integration', () => {
       orphanDirectoryCount: 1,
       removedPaths: [`candidate-runtime-lanes/${retiredLane.sessionId}`],
       byPhase: {
-        soaking: { observedCount: 1, reclaimableCount: 1, removedCount: 1 },
+        known_good: { observedCount: 1, reclaimableCount: 1, removedCount: 1 },
         built: { observedCount: 1, retainedCount: 1, removedCount: 0 },
         authority_missing: { observedCount: 1, retainedCount: 1 },
       },

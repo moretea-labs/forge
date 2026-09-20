@@ -7,6 +7,7 @@ import { spawnSync } from 'child_process';
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
+import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import {
   activateConvergenceWorkAdmission,
@@ -546,6 +547,31 @@ describe('canonical single Runtime', () => {
 
     await runtime.stop('TEST_CLEANUP');
     expect(monitorStopped).toBe(true);
+  });
+
+  test('migrates complete release durable state before binding active Runtime authority', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-release-state-migration-order' });
+    const order: string[] = [];
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      migrateReleaseState: () => { order.push('migrate'); },
+      ensureReleaseAuthority: (controllerHome, manifestPath) => {
+        order.push('ensure');
+        return ensureActiveRuntimeRelease(controllerHome, manifestPath);
+      },
+      startScheduler: () => inertScheduler(),
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9877/mcp',
+        host: '127.0.0.1',
+        port: 9877,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+
+    expect(order.slice(0, 2)).toEqual(['migrate', 'ensure']);
   });
 
   test('Runtime Root rotates an exact source snapshot on every startup', async () => {

@@ -9,8 +9,9 @@ export interface ReleaseDurableStateMigration {
 /**
  * One migration boundary for all persisted Runtime release semantics.
  * Runtime and Recovery cross this boundary before they declare themselves ready
- * or consume ReleaseSession state. Supported historical shapes are rewritten
- * once; steady-state readers remain current-schema-only.
+ * or consume ReleaseSession state. RuntimeReleaseAuthority upgrades its storage
+ * schema; ReleaseSession keeps downgrade-readable wire schema 1 while migrating
+ * once to semanticEpoch 2. Steady-state readers consume only the current model.
  */
 export function migrateReleaseDurableState(controllerHome: string): ReleaseDurableStateMigration {
   const authority = migrateRuntimeReleaseAuthorityState(controllerHome);

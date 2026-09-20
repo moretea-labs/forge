@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { decideConfiguredRuntimeReleaseAction } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -263,7 +263,8 @@ describe('Recovery ReleaseSession', () => {
     const first = migrateReleaseSessionState(home, { readAuthority: () => authority });
     expect(first).toMatchObject({ migratedSessionIds: [sessionId], currentSessionIds: [], inspected: 1 });
     expect(readReleaseSession(home, sessionId)).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 1,
+      semanticEpoch: 2,
       phase: 'soaking',
       revision: 9,
       transaction: {
@@ -278,6 +279,91 @@ describe('Recovery ReleaseSession', () => {
 
     const second = migrateReleaseSessionState(home, { readAuthority: () => authority });
     expect(second).toMatchObject({ migratedSessionIds: [], currentSessionIds: [sessionId], inspected: 1 });
+  });
+
+  test('migrates a historical known-good session with its exact rollback transaction evidence', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-known-good-migration-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    const candidateRelease = release(candidate, 'abc123');
+    const sessionId = candidate.sessionId;
+    const root = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(root, { recursive: true });
+    const updatedAt = '2026-09-20T00:00:00.000Z';
+    writeFileSync(join(root, `${sessionId}.json`), JSON.stringify({
+      schemaVersion: 1,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      candidateRelease,
+      sourceRevision: 'abc123',
+      phase: 'known_good',
+      revision: 9,
+      receipts: [],
+      createdAt: updatedAt,
+      updatedAt,
+    }, null, 2));
+    const rollbackRelease = {
+      releaseId: stableRelease.releaseId,
+      artifactIdentity: stableRelease.artifactIdentity,
+      manifestPath: join(home, 'runtime', 'releases', stableRelease.releaseId, 'manifest.json'),
+      manifestSha256: stableRelease.manifestSha256,
+      workerProtocolVersion: stableRelease.workerProtocolVersion,
+      publishedAt: updatedAt,
+      databaseBackup: {
+        path: join(home, 'runtime', 'releases', 'backups', 'stable.sqlite'),
+        schemaVersion: 1,
+        createdAt: updatedAt,
+      },
+    };
+    const authority = {
+      schemaVersion: 2 as const,
+      status: 'committed' as const,
+      revision: stableRelease.authorityRevision + 1,
+      fencingToken: 'fence-known-good',
+      active: {
+        releaseId: candidateRelease.releaseId,
+        artifactIdentity: candidateRelease.artifactIdentity,
+        manifestPath: candidateRelease.manifestPath,
+        manifestSha256: candidateRelease.manifestSha256,
+        workerProtocolVersion: stableRelease.workerProtocolVersion,
+        publishedAt: updatedAt,
+      },
+      previous: rollbackRelease,
+      operationId: 'known-good-migration',
+      committedAt: updatedAt,
+    };
+
+    migrateReleaseSessionState(home, { readAuthority: () => authority });
+
+    expect(readReleaseSession(home, sessionId)).toMatchObject({
+      semanticEpoch: 2,
+      phase: 'known_good',
+      transaction: {
+        candidateReleaseId: candidateRelease.releaseId,
+        rollbackRelease: { releaseId: stableRelease.releaseId },
+      },
+    });
+  });
+
+  test('keeps the current semantic model readable by the previous schema-1 Recovery wire reader', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-wire-compat-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    const session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: 'abc123',
+    });
+    const raw = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'release-sessions', `${session.sessionId}.json`), 'utf8')) as Record<string, unknown>;
+    expect(raw.schemaVersion).toBe(1);
+    expect(raw.semanticEpoch).toBe(2);
+    expect(raw.sessionId).toBe(session.sessionId);
+    expect(RELEASE_SESSION_PHASES.includes(raw.phase as any)).toBe(true);
   });
 
   test('fences stale observers and never lets them advance the current session', () => {

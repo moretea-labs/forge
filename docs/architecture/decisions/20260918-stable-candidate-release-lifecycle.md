@@ -96,6 +96,15 @@ coordinator state. Only one non-terminal ReleaseSession may exist per Forge
 instance. An interrupted `source_frozen` preparation resumes that same session
 when the frozen source and Stable A identity still match.
 
+ReleaseSession separates wire compatibility from semantic authority. Its
+storage `schemaVersion` remains 1 so the immediately previous Recovery release
+can still inventory the record after an exact rollback; current code requires
+`semanticEpoch=2`. The migration boundary rewrites legacy epoch-1/epoch-less
+records once and thereafter steady-state code consumes only epoch 2. The
+`transaction` field is additive on the wire and ignored by the prior reader.
+RuntimeReleaseAuthority schema 2 is the physical active/previous pointer plus
+rollback SQLite artifact only; it carries no ReleaseSession transaction state.
+
 ```text
 source_frozen → built → static_verified → candidate_booted
   → candidate_verified → cutover_eligible → cutover_attempting
@@ -121,7 +130,8 @@ summaries, never tokens, raw database payloads or browser messages.
 | `runtime-incarnation.json` | Canonical Runtime ownership acquisition | latest epoch; superseded generations remain stale | next owner CAS-reconciles |
 | Supervisor socket owner evidence | Canonical Runtime/Supervisor composition | deleted with socket; ephemeral | probe then remove only stale non-connectable socket |
 | known-good bundle | Standalone Recovery | bounded live attestations; prune only after state commit | validate release + DB + service contract offline |
-| ReleaseSession | Release domain / stateless ReleaseCoordinator | `known_good`, `rolled_back`, `failed`; bounded session retention is physical cleanup | revision CAS resumes the same session; Recovery provider executes physical effects |
+| RuntimeReleaseAuthority | Runtime Root physical release store | schema 2; active/previous release identity and previous SQLite backup only | physical publish/rollback; no release-phase or transaction intent |
+| ReleaseSession | Release domain / stateless ReleaseCoordinator | wire schema 1 + current semantic epoch 2; `known_good`, `rolled_back`, `failed`; bounded session retention is physical cleanup | revision CAS resumes the same session; Recovery provider executes physical effects |
 | Candidate B Home | ReleaseSession semantic authority / Recovery physical provider | explicit terminal cleanup only after evidence retention | no deletion/rebuild of A; B can be inspected independently |
 | Process Runtime terminal lease | Process Runtime lease authority | terminal evidence and lease release are separate idempotent phases | terminal observation/wait/cancel and full maintenance retry exact lease release until settled |
 

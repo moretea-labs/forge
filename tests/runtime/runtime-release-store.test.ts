@@ -49,7 +49,7 @@ describe('whole Runtime release store', () => {
     expect(() => ensureActiveRuntimeRelease(fx.controllerHome, second)).toThrow(/RUNTIME_RELEASE_AUTHORITY_MISMATCH/);
   });
 
-  test('migrates v1 authority once and strips historical ReleaseSession identity from physical activation', () => {
+  test('migrates v1 authority once and removes historical activation state from the physical pointer store', () => {
     const fx = fixture();
     const first = fx.manifest('release-a', 'artifact-a');
     const second = fx.manifest('release-b', 'artifact-b');

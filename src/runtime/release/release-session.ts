@@ -64,7 +64,10 @@ export interface ReleaseSessionTransaction {
 }
 
 export interface ReleaseSession {
-  schemaVersion: 2;
+  /** Wire/storage schema remains readable by the previous Recovery release. */
+  schemaVersion: 1;
+  /** Current semantic model. Legacy records omit this field (or carry epoch 1). */
+  semanticEpoch: 2;
   sessionId: string;
   stable: StableExecutionLane;
   stableRelease: ReleaseSessionStableRelease;
@@ -110,7 +113,7 @@ function sameStableRelease(session: Pick<ReleaseSession, 'stableRelease'>, relea
 
 function validTransaction(session: ReleaseSession): boolean {
   const transaction = session.transaction;
-  if (!transaction) return !['cutover_committed', 'soaking'].includes(session.phase);
+  if (!transaction) return !['cutover_committed', 'soaking', 'known_good'].includes(session.phase);
   const rollback = transaction.rollbackRelease;
   return transaction.schemaVersion === 1
     && Boolean(transaction.operationId?.trim())
@@ -131,7 +134,8 @@ function validTransaction(session: ReleaseSession): boolean {
 
 function assertCurrentSession(value: ReleaseSession, sessionId: string): ReleaseSession {
   if (
-    value.schemaVersion !== 2
+    value.schemaVersion !== 1
+    || value.semanticEpoch !== 2
     || value.sessionId !== sessionId
     || !RELEASE_SESSION_PHASES.includes(value.phase)
     || !Number.isInteger(value.revision)
@@ -147,7 +151,10 @@ export interface ReleaseSessionStateMigration {
   inspected: number;
 }
 
-type LegacyReleaseSessionV1 = Omit<ReleaseSession, 'schemaVersion' | 'transaction'> & { schemaVersion: 1 };
+type LegacyReleaseSessionV1 = Omit<ReleaseSession, 'semanticEpoch' | 'transaction'> & {
+  schemaVersion: 1;
+  semanticEpoch?: 1;
+};
 
 export function migrateReleaseSessionState(
   controllerHome: string,
@@ -168,7 +175,7 @@ export function migrateReleaseSessionState(
     } catch {
       throw new Error(`RELEASE_SESSION_MIGRATION_INVALID_JSON: ${id}`);
     }
-    if (raw.schemaVersion === 2) {
+    if (raw.schemaVersion === 1 && raw.semanticEpoch === 2) {
       let current = raw as ReleaseSession;
       if (
         !current.transaction
@@ -203,12 +210,17 @@ export function migrateReleaseSessionState(
       }
       continue;
     }
-    if (raw.schemaVersion !== 1 || raw.sessionId !== id || !RELEASE_SESSION_PHASES.includes(raw.phase)) {
+    if (
+      raw.schemaVersion !== 1
+      || (raw.semanticEpoch !== undefined && raw.semanticEpoch !== 1)
+      || raw.sessionId !== id
+      || !RELEASE_SESSION_PHASES.includes(raw.phase)
+    ) {
       throw new Error(`RELEASE_SESSION_MIGRATION_UNSUPPORTED_SCHEMA: ${id}`);
     }
 
     let transaction: ReleaseSessionTransaction | undefined;
-    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(raw.phase)) {
+    if (['cutover_attempting', 'cutover_committed', 'soaking', 'known_good'].includes(raw.phase)) {
       const candidate = raw.candidateRelease;
       const previous = authority?.previous;
       if (
@@ -232,7 +244,8 @@ export function migrateReleaseSessionState(
     }
     const migrated = assertCurrentSession({
       ...raw,
-      schemaVersion: 2,
+      schemaVersion: 1,
+      semanticEpoch: 2,
       ...(transaction ? { transaction } : {}),
     } as ReleaseSession, id);
     writeSession(path, migrated);
@@ -342,7 +355,8 @@ export function createReleaseSession(input: {
   if (resolve(input.stable.controllerHome) === resolve(input.candidate.controllerHome)) throw new Error('RELEASE_SESSION_LANE_COLLISION');
   const timestamp = new Date().toISOString();
   const session: ReleaseSession = {
-    schemaVersion: 2,
+    schemaVersion: 1,
+    semanticEpoch: 2,
     sessionId,
     stable: input.stable,
     stableRelease: input.stableRelease,
