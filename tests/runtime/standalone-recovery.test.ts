@@ -1377,6 +1377,8 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   const sourceRevision = committedRecoverySource(sourceRoot);
+  writeFileSync(join(sourceRoot, 'README.md'), 'dirty concurrent source bytes must not enter Candidate B\n');
+  writeFileSync(join(sourceRoot, 'UNTRACKED-CONCURRENT.txt'), 'also excluded\n');
   const baseline = verifiedManifest(home, 'release-baseline');
   ensureActiveRuntimeRelease(home, baseline.path);
   const runtime = await runtimeServer();
@@ -1395,6 +1397,11 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
       stagedFrom = input.sourceRoot;
       candidateHome = input.controllerHome;
       expect(input.sourceRepositoryId).toBe('repo_source_fixture');
+      expect(resolve(input.sourceRoot)).not.toBe(resolve(sourceRoot));
+      expect(resolve(input.dependencyRoot ?? '')).toBe(resolve(sourceRoot));
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(sourceRevision);
+      expect(readFileSync(join(input.sourceRoot, 'README.md'), 'utf8')).toBe('recovery source\n');
+      expect(existsSync(join(input.sourceRoot, 'UNTRACKED-CONCURRENT.txt'))).toBe(false);
       expect(resolve(input.controllerHome)).not.toBe(resolve(home));
       const operationLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
       expect(operationLock).toMatchObject({
@@ -1438,7 +1445,7 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
       throw new Error('compatibility alias must never activate Stable A');
     },
   }, 'recovery-gateway:stage-request-1');
-  expect(stagedFrom).toBe(resolve(sourceRoot));
+  expect(stagedFrom).not.toBe(resolve(sourceRoot));
   expect(candidateHome).not.toBe(resolve(home));
   expect(activationCalled).toBe(false);
   expect(result).toMatchObject({

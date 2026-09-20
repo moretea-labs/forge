@@ -5,7 +5,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { homedir, hostname } from 'os';
 import { createServer as createNetServer } from 'net';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
-import { assertStorageHeadroom } from '../shared/storage-capacity';
+import { assertStorageHeadroom, STORAGE_WARNING_BYTES } from '../shared/storage-capacity';
 import { resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import { backupControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
 import { observeRuntimeStatus, readRuntimeStartupFailureEvidence } from '../root/status';
@@ -70,6 +70,7 @@ import { createCandidateExecutionLane, readStableExecutionLane } from '../root/r
 import {
   advanceReleaseSession,
   createReleaseSession,
+  listReleaseSessions,
   readReleaseSession,
   type ReleaseSession,
   type ReleaseSessionCandidateRelease,
@@ -3838,22 +3839,20 @@ function configuredSourceRevision(sourceRoot: string): string {
     ...runtimeAuthorityFreeEnvironment(process.env),
     PATH: recoveryCommandPath(),
   };
-  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'HEAD'], {
+  // ReleaseSession source authority is the exact committed Git object selected
+  // internally by Recovery. The configured checkout is only an object/dependency
+  // provider: concurrent working-tree edits are intentionally non-authoritative
+  // and are excluded by the detached immutable source snapshot used below.
+  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}'], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
   });
-  if (head.status !== 0 || !/^[a-f0-9]{40}$/i.test((head.stdout ?? '').trim())) {
+  const revision = (head.stdout ?? '').trim();
+  if (head.status !== 0 || !/^[a-f0-9]{40}$/i.test(revision)) {
     throw new Error('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
   }
-  const dirty = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain=v1', '--untracked-files=no'], {
-    encoding: 'utf8',
-    env,
-    timeout: 10_000,
-  });
-  if (dirty.status !== 0) throw new Error('RELEASE_SESSION_SOURCE_STATUS_UNAVAILABLE');
-  if ((dirty.stdout ?? '').trim()) throw new Error('RELEASE_SESSION_SOURCE_NOT_CLEAN');
-  return (head.stdout ?? '').trim();
+  return revision;
 }
 
 async function allocateCandidateLoopbackPort(stablePort: number): Promise<number> {
@@ -3924,6 +3923,65 @@ export async function prepareConfiguredRuntimeReleaseSession(
     const stable = readStableExecutionLane(config.controllerHome);
     const stableRelease = stableReleaseSessionIdentity(config);
     const sourceRevision = configuredSourceRevision(sourceRoot);
+
+    // One Recovery lock owns semantic supersession. A new multi-GiB Candidate B
+    // must not accumulate beside unresolved pre-cutover candidates from earlier
+    // attempts. Historical soak records whose candidate is no longer Stable A
+    // are harmless evidence and do not block a new prepare.
+    const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
+    if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+      };
+    }
+    for (const existing of [...inventory.sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
+      if (existing.phase === 'failed' || existing.phase === 'rolled_back' || existing.phase === 'known_good') continue;
+      if (existing.phase === 'cutover_attempting' || existing.phase === 'cutover_committed') {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_PREPARE_REQUIRES_RECONCILIATION: ${existing.sessionId}:${existing.phase}`,
+          releaseSession: existing,
+        };
+      }
+      if (existing.phase === 'soaking') {
+        const candidate = existing.candidateRelease;
+        const candidateIsCurrentStable = Boolean(candidate
+          && candidate.releaseId === stableRelease.releaseId
+          && candidate.artifactIdentity === stableRelease.artifactIdentity);
+        if (candidateIsCurrentStable) {
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: `RELEASE_SESSION_PREPARE_REQUIRES_SOAK_RESOLUTION: ${existing.sessionId}`,
+            releaseSession: existing,
+          };
+        }
+        continue;
+      }
+      const superseded = await cancelReleaseSessionUnderLock(
+        config,
+        existing,
+        'superseded by a newer Recovery-owned release preparation',
+      );
+      if (!superseded.ok) return superseded;
+    }
+
+    // Candidate B currently costs several GiB because it contains a consistent
+    // SQLite snapshot plus an immutable Runtime tree. Preserve the host warning
+    // reserve *after* admitting a conservative 4 GiB candidate budget.
+    const candidateRoot = join(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes');
+    assertStorageHeadroom(candidateRoot, {
+      operation: 'release_session_prepare',
+      requiredBytes: 4 * 1024 ** 3,
+      reserveBytes: STORAGE_WARNING_BYTES,
+    });
+
     const sessionId = `release-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const candidatePort = await allocateCandidateLoopbackPort(stable.port);
     const candidateLane = createCandidateExecutionLane({
@@ -4708,6 +4766,76 @@ export async function cutoverConfiguredRuntimeReleaseSession(
 }
 
 
+async function cancelReleaseSessionUnderLock(
+  config: RecoveryConfig,
+  initialSession: ReleaseSession,
+  reason: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  let session = initialSession;
+  if (session.phase === 'failed') {
+    return { ok: true, attempted: false, noOp: true, detail: 'ReleaseSession is already terminal failed', releaseSession: session };
+  }
+  if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: `RELEASE_SESSION_CANCEL_AFTER_CUTOVER_FORBIDDEN: ${session.phase}; use exact ReleaseSession rollback/soak resolution`,
+      releaseSession: session,
+    };
+  }
+  if (session.phase === 'known_good' || session.phase === 'rolled_back') {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: `RELEASE_SESSION_CANCEL_TERMINAL: ${session.phase}`,
+      releaseSession: session,
+    };
+  }
+
+  const priorPhase = session.phase;
+  if (['candidate_booted', 'candidate_verified', 'cutover_eligible'].includes(session.phase)) {
+    const retirement = await stopReleaseSessionCandidateService(session);
+    if (!retirement.ok) {
+      return {
+        ok: false,
+        attempted: true,
+        detail: `RELEASE_SESSION_CANCEL_CANDIDATE_RETIRE_FAILED: ${retirement.detail}`,
+        releaseSession: session,
+      };
+    }
+  }
+
+  session = advanceReleaseSession({
+    controllerHome: config.controllerHome,
+    sessionId: session.sessionId,
+    expectedRevision: session.revision,
+    phase: 'failed',
+    receipts: [{
+      id: 'candidate_cancelled',
+      kind: 'candidate_canary',
+      summary: `Candidate B was retired before cutover: ${reason}`.slice(0, 500),
+    }],
+  });
+  const cleanup = cleanupRetiredCandidateLane(config, session);
+  audit(config, cleanup.ok ? 'release_session_cancelled' : 'release_session_cancelled_cleanup_failed', {
+    sessionId: session.sessionId,
+    priorPhase,
+    candidateControllerHome: session.candidate.controllerHome,
+    reason,
+    cleanupDetail: cleanup.detail,
+  });
+  return {
+    ok: cleanup.ok,
+    attempted: true,
+    detail: cleanup.ok
+      ? 'ReleaseSession Candidate B was terminalized failed and its isolated lane was retired before cutover; Stable A remained unchanged'
+      : `ReleaseSession was terminalized failed but Candidate B lane cleanup failed: ${cleanup.detail}`,
+    releaseSession: session,
+  };
+}
+
 export async function cancelConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   sessionId: string,
@@ -4717,69 +4845,9 @@ export async function cancelConfiguredRuntimeReleaseSession(
     action: 'release_session_cancel',
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
   }, async () => {
-    let session = readReleaseSession(config.controllerHome, sessionId);
+    const session = readReleaseSession(config.controllerHome, sessionId);
     if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
-    if (session.phase === 'failed') {
-      return { ok: true as const, attempted: false, noOp: true, detail: 'ReleaseSession is already terminal failed', releaseSession: session };
-    }
-    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
-      return {
-        ok: false as const,
-        attempted: false,
-        noOp: true,
-        detail: `RELEASE_SESSION_CANCEL_AFTER_CUTOVER_FORBIDDEN: ${session.phase}; use exact ReleaseSession rollback`,
-        releaseSession: session,
-      };
-    }
-    if (session.phase === 'known_good' || session.phase === 'rolled_back') {
-      return {
-        ok: false as const,
-        attempted: false,
-        noOp: true,
-        detail: `RELEASE_SESSION_CANCEL_TERMINAL: ${session.phase}`,
-        releaseSession: session,
-      };
-    }
-
-    const priorPhase = session.phase;
-    if (['candidate_booted', 'candidate_verified', 'cutover_eligible'].includes(session.phase)) {
-      const retirement = await stopReleaseSessionCandidateService(session);
-      if (!retirement.ok) {
-        return {
-          ok: false as const,
-          attempted: true,
-          detail: `RELEASE_SESSION_CANCEL_CANDIDATE_RETIRE_FAILED: ${retirement.detail}`,
-          releaseSession: session,
-        };
-      }
-    }
-
-    session = advanceReleaseSession({
-      controllerHome: config.controllerHome,
-      sessionId,
-      expectedRevision: session.revision,
-      phase: 'failed',
-      receipts: [{
-        id: 'candidate_cancelled',
-        kind: 'candidate_canary',
-        summary: 'Candidate B was explicitly retired before cutover because the frozen candidate was superseded or rejected',
-      }],
-    });
-    const cleanup = cleanupRetiredCandidateLane(config, session);
-    audit(config, cleanup.ok ? 'release_session_cancelled' : 'release_session_cancelled_cleanup_failed', {
-      sessionId,
-      priorPhase,
-      candidateControllerHome: session.candidate.controllerHome,
-      cleanupDetail: cleanup.detail,
-    });
-    return {
-      ok: cleanup.ok,
-      attempted: true,
-      detail: cleanup.ok
-        ? 'ReleaseSession Candidate B was terminalized failed and its isolated lane was retired before cutover; Stable A remained unchanged'
-        : `ReleaseSession was terminalized failed but Candidate B lane cleanup failed: ${cleanup.detail}`,
-      releaseSession: session,
-    };
+    return cancelReleaseSessionUnderLock(config, session, 'explicit Recovery cancellation');
   });
   if (!locked.acquired) {
     return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
