@@ -188,6 +188,8 @@ describe('canonical single Runtime', () => {
       runtimeInstanceId: 'runtime-jsc-heap-diagnostics',
       releaseId: 'release-test-1',
     });
+    expect(diagnostics.gc).toMatchObject({ forced: true, kind: 'full' });
+    expect(typeof diagnostics.gc?.durationMs).toBe('number');
     expect(typeof diagnostics.heap?.objectCount).toBe('number');
     expect(Array.isArray(diagnostics.heap?.topObjectTypes)).toBe(true);
     expect(typeof diagnostics.memoryUsage?.current).toBe('number');
@@ -196,11 +198,13 @@ describe('canonical single Runtime', () => {
     expect(process.listenerCount('SIGUSR2')).toBe(listenersBefore);
   });
 
-  test('SIGUSR1 JSC sampling profiler remains dormant, starts once, and unregisters on stop', async () => {
+  test('SIGUSR1 JSC sampling profile is bounded, coalesces overlap, and unregisters on stop', async () => {
     if (process.platform === 'win32') return;
     const fixture = createFixture({ runtimeInstanceId: 'runtime-jsc-sampling-profiler' });
+    const diagnosticsPath = join(fixture.controllerHome, 'diagnostics', 'jsc-sampling-profile.json');
     const listenersBefore = process.listenerCount('SIGUSR1');
-    const starts: string[] = [];
+    const captures: Array<{ durationMs: number; sampleIntervalUs: number }> = [];
+    let releaseCapture: (() => void) | undefined;
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       startScheduler: () => inertScheduler(),
       startLocalBridge: async () => undefined,
@@ -209,23 +213,63 @@ describe('canonical single Runtime', () => {
       stopLightweightProcesses: async () => 0,
       stopContextReadHelpers: async () => undefined,
       computeToolSurfaceFingerprint: () => 'test-fingerprint',
-      startJscSamplingProfiler: async (directory) => { starts.push(directory); },
+      captureJscSamplingProfile: async (options) => {
+        captures.push(options);
+        await new Promise<void>((resolve) => { releaseCapture = resolve; });
+        return {
+          requestedDurationMs: options.durationMs,
+          elapsedMs: options.durationMs,
+          sampleIntervalUs: options.sampleIntervalUs,
+          functions: 'functions',
+          bytecodes: 'bytecodes',
+          stackTraces: {
+            interval: 0.001,
+            totalTraceCount: 1,
+            retainedTraceCount: 1,
+            traces: [{ timestamp: 1, frames: [{ functionName: 'trace' }] }],
+            sources: [{ sourceId: 1 }],
+          },
+        };
+      },
     });
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
 
     await runtime.start();
     expect(process.listenerCount('SIGUSR1')).toBe(listenersBefore + 1);
-    expect(starts).toEqual([]);
+    expect(captures).toEqual([]);
 
     process.emit('SIGUSR1', 'SIGUSR1');
-    for (let attempt = 0; attempt < 100 && starts.length === 0; attempt += 1) {
-      await Bun.sleep(1);
-    }
-    expect(starts).toEqual([join(fixture.controllerHome, 'diagnostics', 'jsc-profile')]);
+    for (let attempt = 0; attempt < 100 && captures.length === 0; attempt += 1) await Bun.sleep(1);
+    expect(captures).toEqual([{ durationMs: 2_000, sampleIntervalUs: 1_000 }]);
 
     process.emit('SIGUSR1', 'SIGUSR1');
     await Bun.sleep(5);
-    expect(starts).toHaveLength(1);
+    expect(captures).toHaveLength(1);
+
+    releaseCapture?.();
+    for (let attempt = 0; attempt < 100 && !existsSync(diagnosticsPath); attempt += 1) await Bun.sleep(1);
+    expect(existsSync(diagnosticsPath)).toBe(true);
+    expect(JSON.parse(readFileSync(diagnosticsPath, 'utf8'))).toMatchObject({
+      schemaVersion: 1,
+      bounded: true,
+      runtimeInstanceId: 'runtime-jsc-sampling-profiler',
+      requestedDurationMs: 2_000,
+      sampleIntervalUs: 1_000,
+      functions: 'functions',
+      bytecodes: 'bytecodes',
+      stackTraces: {
+        interval: 0.001,
+        totalTraceCount: 1,
+        retainedTraceCount: 1,
+        traces: [{ timestamp: 1, frames: [{ functionName: 'trace' }] }],
+        sources: [{ sourceId: 1 }],
+      },
+    });
+
+    process.emit('SIGUSR1', 'SIGUSR1');
+    for (let attempt = 0; attempt < 100 && captures.length < 2; attempt += 1) await Bun.sleep(1);
+    expect(captures).toHaveLength(2);
+    releaseCapture?.();
 
     await runtime.stop('TEST_JSC_SAMPLING_PROFILER_STOP');
     expect(process.listenerCount('SIGUSR1')).toBe(listenersBefore);
