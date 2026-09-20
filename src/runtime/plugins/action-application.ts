@@ -1,6 +1,6 @@
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import type { ProcessHandle } from '../execution/process-runtime/types';
-import { startLightweightPluginAction, waitLightweightPluginAction } from './lightweight-action';
+import { startManagedPluginAction, waitManagedPluginAction } from './lightweight-action';
 import {
   executeAssistantPluginDirectNonPersistent,
   executeAssistantPluginReadDirect,
@@ -29,14 +29,14 @@ export type AssistantPluginActionApplicationResult =
       result: Record<string, unknown>;
     }
   | {
-      kind: 'lightweight_running';
+      kind: 'managed_running';
       manifest: AssistantPluginManifest;
       action?: AssistantPluginActionDescriptor;
       requestId: string;
       process: ProcessHandle;
     }
   | {
-      kind: 'lightweight_failed';
+      kind: 'managed_failed';
       manifest: AssistantPluginManifest;
       action?: AssistantPluginActionDescriptor;
       requestId: string;
@@ -88,9 +88,9 @@ export async function executeAssistantPluginActionApplication(input: {
     };
   }
 
-  if (input.repository.repoId !== '__controller__' && action?.executionMode === 'lightweight_process') {
+  if (action) {
     const timeoutMs = Math.max(1_000, input.request.timeoutMs ?? action.defaultTimeoutMs ?? 10 * 60_000);
-    let { handle } = await startLightweightPluginAction({
+    let { handle } = await startManagedPluginAction({
       controllerHome: input.controllerHome,
       repository: input.repository,
       request: input.request,
@@ -98,7 +98,7 @@ export async function executeAssistantPluginActionApplication(input: {
       timeoutMs,
     });
     if (!handle.completed && input.wait === true) {
-      handle = await waitLightweightPluginAction(
+      handle = await waitManagedPluginAction(
         input.controllerHome,
         input.repository.repoId,
         handle.processId,
@@ -108,7 +108,7 @@ export async function executeAssistantPluginActionApplication(input: {
     }
     if (!handle.completed) {
       return {
-        kind: 'lightweight_running',
+        kind: 'managed_running',
         manifest,
         action,
         requestId: input.request.requestId,
@@ -117,15 +117,16 @@ export async function executeAssistantPluginActionApplication(input: {
     }
     if (!handle.ok) {
       return {
-        kind: 'lightweight_failed',
+        kind: 'managed_failed',
         manifest,
         action,
         requestId: input.request.requestId,
         process: handle,
       };
     }
-    // The sidecar writes the authoritative receipt. Re-enter the deterministic
-    // store with the same request id to read/bind that receipt without replay.
+    // The durable sidecar writes the authoritative receipt. Re-enter the
+    // deterministic store with the same request id to bind/read it without
+    // replaying the provider effect.
   }
 
   return {

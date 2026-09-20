@@ -111,6 +111,7 @@ Persistent Work/Process state is reserved for actual continuity requirements: sc
 
 Remote or non-idempotent effects are explicit boundaries. Ambiguous outcomes are reported as `outcome_unknown`; Forge must not silently replay a non-idempotent remote operation.
 The low-level repository command facade classifies these operations as `durable` but does not dispatch them: it returns `not_started` with `never_auto_retry`. A typed provider action or explicitly owned Durable Workflow must perform the effect and reconcile remote state before any retry after an ambiguous result.
+Effectful plugin/provider actions follow the same continuity rule. Before provider dispatch, Forge binds the stable `request_id` to one durable Process identity; the MCP/ChatGPT stream is only an observation channel. Read-only actions and explicitly `direct_non_persistent` actions may remain direct, but every other effectful plugin action executes through the managed Process sidecar. Interactive timeout, stream interruption, MCP session replacement, or Runtime rotation must reattach to the same Process/receipt and must never reacquire the provider resource for a duplicate dispatch. `apply_mode=async` requests zero interactive wait and returns the durable Process/result reference immediately. A terminal sidecar writes the authoritative plugin receipt, after which repeating the same `request_id` deterministically reads/binds that receipt without replay.
 
 ## Work and Plan
 

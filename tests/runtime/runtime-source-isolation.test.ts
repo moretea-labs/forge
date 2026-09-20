@@ -25,8 +25,10 @@ import {
   resolveLightweightPluginActionRuntimeInvocation,
   startLightweightPluginAction,
   waitLightweightPluginAction,
+  startManagedPluginAction,
+  waitManagedPluginAction,
 } from '../../src/runtime/plugins/lightweight-action';
-import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { controllerPluginRepository, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
@@ -263,6 +265,78 @@ printf 'BUILD SUCCEEDED\\n'
       else process.env.FORGE_RELEASE_PATH = previousReleasePath;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+    }
+  });
+
+  test('controller-scoped plugin execution binds one durable Process before observation and reattaches by request id', async () => {
+    const controllerHome = tempRoot('forge-home-controller-plugin-managed-');
+    const releaseRoot = tempRoot('forge-release-controller-plugin-managed-');
+    ensureControllerHome(controllerHome);
+    const sidecar = join(releaseRoot, 'forge-plugin-action-sidecar');
+    writeFileSync(sidecar, `#!/bin/sh
+sleep 1
+printf '{"ok":true}\\n'
+`, { mode: 0o700 });
+
+    const previousReleasePath = process.env.FORGE_RELEASE_PATH;
+    process.env.FORGE_RELEASE_PATH = releaseRoot;
+    const repository = controllerPluginRepository(controllerHome);
+    const request = {
+      pluginId: 'controller-fixture',
+      actionId: 'slow-effect',
+      requestId: 'controller-managed-plugin-once',
+      args: { value: 1 },
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    try {
+      const first = await startManagedPluginAction({
+        controllerHome,
+        repository,
+        request,
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      });
+      expect(first.handle.completed).not.toBe(true);
+      expect(first.handle.route).toBe('managed');
+
+      const second = await startManagedPluginAction({
+        controllerHome,
+        repository,
+        request,
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      });
+      expect(second.handle.processId).toBe(first.handle.processId);
+      expect(second.handle.deduplicated).toBe(true);
+
+      await expect(startManagedPluginAction({
+        controllerHome,
+        repository,
+        request: { ...request, args: { value: 2 } },
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+
+      const completed = await waitManagedPluginAction(
+        controllerHome,
+        repository.repoId,
+        first.handle.processId,
+        10_000,
+      );
+      expect(completed.completed).toBe(true);
+      expect(completed.ok).toBe(true);
+      expect(completed.processId).toBe(first.handle.processId);
+
+      await expect(startManagedPluginAction({
+        controllerHome,
+        repository,
+        request: { ...request, args: { value: 3 } },
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+    } finally {
+      if (previousReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
+      else process.env.FORGE_RELEASE_PATH = previousReleasePath;
     }
   });
 

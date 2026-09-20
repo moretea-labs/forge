@@ -2,8 +2,9 @@
 import { createHash } from 'crypto';
 import { readFileSync, rmSync } from 'fs';
 import { getRepository } from '../../cli/repositories/registry';
+import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import type { AssistantPluginActionRequest } from './types';
-import { submitAssistantPluginAction } from './store';
+import { controllerPluginRepository, submitAssistantPluginAction } from './store';
 
 interface Envelope {
   schemaVersion: 1;
@@ -30,7 +31,9 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
     }
     const envelope = JSON.parse(bytes) as Envelope;
     if (envelope.schemaVersion !== 1) throw new Error('PLUGIN_ACTION_REQUEST_VERSION_UNSUPPORTED');
-    const repository = getRepository(envelope.repoId, envelope.controllerHome);
+    const repository = envelope.repoId === CONTROLLER_SCOPE_REPO_ID
+      ? controllerPluginRepository(envelope.controllerHome)
+      : getRepository(envelope.repoId, envelope.controllerHome);
     const submitted = await submitAssistantPluginAction(
       envelope.controllerHome,
       repository,

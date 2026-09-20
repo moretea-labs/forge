@@ -150,8 +150,8 @@ export async function callPluginAdapter(
         controllerHome: ctx.controllerHome,
         repository,
         request,
-        interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : 750,
-        wait: args.wait === true,
+        interactiveWaitMs: args.apply_mode === 'async' ? 0 : (typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : 750),
+        wait: args.apply_mode === 'async' ? false : args.wait === true,
         waitMs: typeof args.wait_ms === 'number' ? args.wait_ms : 15_000,
       });
 
@@ -209,12 +209,12 @@ export async function callPluginAdapter(
         });
       }
 
-      if (application.kind === 'lightweight_running') {
+      if (application.kind === 'managed_running') {
         return result({
           accepted: true,
           direct: false,
-          durable: false,
-          mode: 'lightweight_process',
+          durable: true,
+          mode: 'process_managed',
           plugin: summarizePluginActionReceipt(application.manifest),
           action: application.action ? {
             actionId: application.action.actionId,
@@ -226,17 +226,18 @@ export async function callPluginAdapter(
           requestId,
           process: application.process,
           resultRef: { kind: 'process_logs', processId: application.process.processId },
-          next: 'The typed plugin action is isolated from the Canonical Runtime. Use process_wait on processId; after completion, call plugin_action_execute again with the same request_id to retrieve the deduplicated structured receipt.',
+          observation: { status: 'in_progress', outcome: 'unknown_until_process_terminal', retryPolicy: 'reattach_same_request_id' },
+          next: 'Execution is durably detached from this MCP stream. Observe processId/resultRef; after terminal completion, call plugin_action_execute with the same request_id to retrieve the deduplicated structured receipt. Never redispatch with a new request id because observation was interrupted.',
         });
       }
 
-      if (application.kind === 'lightweight_failed') {
+      if (application.kind === 'managed_failed') {
         const handle = application.process;
         return result({
           accepted: true,
           direct: false,
-          durable: false,
-          mode: 'lightweight_process',
+          durable: true,
+          mode: 'process_managed',
           requestId,
           process: handle,
           error: {
