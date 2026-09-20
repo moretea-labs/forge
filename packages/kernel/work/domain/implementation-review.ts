@@ -279,12 +279,13 @@ export function validateImplementationReviewRecord(review: WorkImplementationRev
  */
 export function evaluateImplementationReviewGate(input: {
   workKind: string;
+  riskClass?: EngineeringRiskClass;
   reviews?: readonly WorkImplementationReviewRecord[];
   candidate: ImplementationReviewCandidateIdentity;
 }): ImplementationReviewGateResult {
-  const required = workRequiresImplementationReview(input.workKind, input.candidate.changedPaths);
+  const required = workRequiresImplementationReview(input.workKind, input.candidate.changedPaths, input.riskClass);
   if (!required) {
-    return { required: false, approved: true, reason: 'Implementation review is not required for this source-free Work candidate.' };
+    return { required: false, approved: true, reason: 'Implementation review is not required for this Work candidate under the current risk policy.' };
   }
 
   const review = latestImplementationReview(input.reviews);
@@ -349,6 +350,7 @@ export function assertImplementationReviewPreDeliveryBoundary(input: {
   repoId: string;
   workId: string;
   workKind: string;
+  riskClass?: EngineeringRiskClass;
   reviews?: readonly WorkImplementationReviewRecord[];
   candidate: ImplementationReviewCandidateIdentity;
   requiredCheckIds: readonly string[];
@@ -366,7 +368,7 @@ export function assertImplementationReviewPreDeliveryBoundary(input: {
     || !sameEvidenceIdentity(verification.evidence, input.candidate.verificationEvidence)) {
     throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
   }
-  const gate = evaluateImplementationReviewGate({ workKind: input.workKind, reviews: input.reviews, candidate: input.candidate });
+  const gate = evaluateImplementationReviewGate({ workKind: input.workKind, riskClass: input.riskClass, reviews: input.reviews, candidate: input.candidate });
   if (!gate.approved) throw new Error(`${gate.code ?? 'WORK_IMPLEMENTATION_REVIEW_REQUIRED'}: ${gate.reason}`);
   if (gate.review && gate.review.workId !== input.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_MISMATCH');
   return gate.review;

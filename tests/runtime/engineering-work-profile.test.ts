@@ -7,7 +7,7 @@ import {
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/work/domain/engineering-profile';
-import { workRequiresImplementationReview } from '../../packages/kernel/work/domain/implementation-review';
+import { assertImplementationReviewPreDeliveryBoundary, evaluateImplementationReviewGate, workRequiresImplementationReview } from '../../packages/kernel/work/domain/implementation-review';
 import { loadProjectEngineeringContract } from '../../src/runtime/context/project-engineering-contract';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
 
@@ -40,6 +40,23 @@ describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {
     expect(workRequiresImplementationReview('repository_change', ['src/index.ts'], 'critical')).toBe(true);
     expect(workRequiresImplementationReview('repository_change', ['src/index.ts'])).toBe(true);
     expect(workRequiresImplementationReview('local_effect', ['src/index.ts'], 'low')).toBe(true);
+  });
+
+  test('carries low engineering risk through the canonical physical review boundary', () => {
+    const candidate = {
+      sourceRevision: 'revision-low',
+      workspaceFingerprint: 'workspace-low',
+      verificationWorkspaceFingerprint: 'verification-low',
+      changedPaths: ['src/index.ts'],
+      verificationEvidence: [],
+      architectureEvidence: [],
+    };
+    expect(evaluateImplementationReviewGate({ workKind: 'repository_change', riskClass: 'low', candidate })).toMatchObject({ required: false, approved: true });
+    expect(evaluateImplementationReviewGate({ workKind: 'repository_change', riskClass: 'normal', candidate })).toMatchObject({ required: true, approved: false, code: 'WORK_IMPLEMENTATION_REVIEW_REQUIRED' });
+    expect(() => assertImplementationReviewPreDeliveryBoundary({
+      repoId: 'repo-low', workId: 'work-low', workKind: 'repository_change', riskClass: 'low', candidate,
+      requiredCheckIds: [], verificationRecords: [],
+    })).not.toThrow();
   });
 
   test('records normal evidence gaps without blocking but fails high-risk mutation closed', () => {

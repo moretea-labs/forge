@@ -306,6 +306,7 @@ export async function callRhWorkControllerOperation(
     try {
       const workId = String(args.work_id ?? '').trim();
       const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
+      let explicitBlockedRelayCleanup = false;
       try {
         assertFacadeControllerRoundAuthority(ctx, store, workId, args);
       } catch (error) {
@@ -320,7 +321,19 @@ export async function callRhWorkControllerOperation(
           && runtime.running
           && runtime.runtimeInstanceId === identity.controllerInstanceId,
         );
-        if (!samePrincipalCanonicalRuntimeMigration) throw error;
+        const blockedRelay = getControllerRoundRelay(store, workId);
+        explicitBlockedRelayCleanup = Boolean(
+          args.requested_by === 'user'
+          && blockedRelay?.status === 'blocked'
+          && observed
+          && observed.controllerId === identity.controllerId
+          && observed.controllerType === identity.controllerType
+          && controllerSessionPrincipalId(observed) === identity.principalId
+          && (observed.controllerInstanceId?.trim() || '') === identity.controllerInstanceId
+          && runtime.running
+          && runtime.runtimeInstanceId === identity.controllerInstanceId,
+        );
+        if (!samePrincipalCanonicalRuntimeMigration && !explicitBlockedRelayCleanup) throw error;
       }
       const observedOwner = getControllerSession(store, workId);
       const work = getWorkContract(store, workId);
@@ -343,7 +356,7 @@ export async function callRhWorkControllerOperation(
         }
       }
       const owner = observedOwner
-        ? terminalWork
+        ? (terminalWork || explicitBlockedRelayCleanup)
           ? (() => {
               const ownerPrincipal = observedOwner.principalId?.trim() || observedOwner.controllerId;
               const ownerInstanceId = observedOwner.controllerInstanceId?.trim() || '';

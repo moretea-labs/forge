@@ -522,6 +522,7 @@ function assertPhysicalImplementationReviewGate(input: {
     repoId: input.contract.repoId,
     workId: input.contract.workId,
     workKind: input.contract.workKind,
+    riskClass: input.contract.engineeringContext?.riskClass,
     reviews: input.contract.implementationReviews,
     candidate,
     requiredCheckIds: input.contract.checks,
@@ -576,6 +577,7 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
     repoId: input.contract.repoId,
     workId: input.contract.workId,
     workKind: input.contract.workKind,
+    riskClass: input.contract.engineeringContext?.riskClass,
     reviews: input.contract.implementationReviews,
     candidate: {
       sourceRevision: branchHead,
@@ -600,17 +602,18 @@ function assertCleanedCompletionImplementationReviewGate(input: {
   target: RepositoryRecord;
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
-}): NonNullable<ReturnType<typeof latestImplementationReview>> {
+}): ReturnType<typeof latestImplementationReview> {
   const deliveryRevision = input.handle.expectedHead ?? input.handle.baseCommit;
   if (!deliveryRevision) throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
   const review = latestImplementationReview(input.contract.implementationReviews);
+  const changedPaths = implementationReviewCommittedChangedPaths({
+    repository: input.target, handle: input.handle, contract: input.contract, head: deliveryRevision, review,
+  });
+  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths, input.contract.engineeringContext?.riskClass)) return undefined;
   if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
   if (review.sourceRevision !== deliveryRevision) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery source revision changed');
   }
-  const changedPaths = implementationReviewCommittedChangedPaths({
-    repository: input.target, handle: input.handle, contract: input.contract, head: deliveryRevision, review,
-  });
   const reviewedPaths = normalizeImplementationReviewChangedPaths(review.changedPaths);
   if (implementationReviewChangedPathDigest(reviewedPaths) !== implementationReviewChangedPathDigest(changedPaths)) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery changed-path identity changed');
@@ -630,6 +633,7 @@ function assertCleanedCompletionImplementationReviewGate(input: {
     repoId: input.contract.repoId,
     workId: input.contract.workId,
     workKind: input.contract.workKind,
+    riskClass: input.contract.engineeringContext?.riskClass,
     reviews: input.contract.implementationReviews,
     candidate: {
       sourceRevision: deliveryRevision,
@@ -1646,15 +1650,17 @@ async function finalizeWorkInternal(
       const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
       const target = selectWorkFinalizationTarget(repository, current);
       const durableReview = assertCleanedCompletionImplementationReviewGate({ target, handle: current, contract: terminalContract });
-      const reconciledContract = reconcileApprovedWorkImplementationReviewProjection(
-        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
-        terminalContract.workId,
-        {
-          reviewId: durableReview.reviewId,
-          sourceRevision: durableReview.sourceRevision,
-          changedPathDigest: durableReview.changedPathDigest,
-        },
-      );
+      const reconciledContract = durableReview
+        ? reconcileApprovedWorkImplementationReviewProjection(
+            { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+            terminalContract.workId,
+            {
+              reviewId: durableReview.reviewId,
+              sourceRevision: durableReview.sourceRevision,
+              changedPathDigest: durableReview.changedPathDigest,
+            },
+          )
+        : terminalContract;
       completeFinalizedWorkContract({
         ctx, handle: current, contract: reconciledContract, args, terminalizationOwner, outcome: 'completed_changed',
       });
