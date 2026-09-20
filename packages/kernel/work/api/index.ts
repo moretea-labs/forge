@@ -10,6 +10,7 @@ export * from '../domain/execution-concurrency';
 export * from '../domain/engineering-contracts';
 export * from '../domain/engineering-design';
 export * from '../domain/engineering-profile';
+export * from '../domain/evaluation-promotion-receipt';
 export * from '../domain/project-engineering-contract';
 export * from '../domain/repository-completion-receipt';
 export * from '../domain/state-machine';

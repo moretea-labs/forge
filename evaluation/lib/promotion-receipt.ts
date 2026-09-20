@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
+  buildEvaluationPromotionReceipt,
+  validateEvaluationPromotionReceipt,
+  type EvaluationPromotionReceipt,
+} from '../../packages/kernel/work/api/index.ts';
+import {
   buildCrossVersionPairedStatistics,
   type CrossVersionPairedStatistics,
 } from './metrics.ts';
@@ -21,32 +26,7 @@ import {
   type V2CertificationManifest,
 } from './certification.ts';
 
-export const EVALUATION_PROMOTION_RECEIPT_SCHEMA = 'forge-evaluation-promotion-receipt/v1' as const;
-export const EVALUATION_PROMOTION_RECEIPT_AUTHORITY = 'evaluation_evidence_only' as const;
-
-export interface EvaluationPromotionReceipt {
-  schemaVersion: typeof EVALUATION_PROMOTION_RECEIPT_SCHEMA;
-  authority: typeof EVALUATION_PROMOTION_RECEIPT_AUTHORITY;
-  receiptId: string;
-  baseline: EvaluationCandidateIdentity;
-  candidate: EvaluationCandidateIdentity;
-  evidence: {
-    paired: {
-      protocolDigest: string;
-      environmentFingerprint: string;
-      pairCount: number;
-      evidenceDigest: string;
-    };
-    shadow: {
-      protocolDigest: string;
-      pairedScenarioCount: number;
-      evidenceDigest: string;
-    };
-    certification?: {
-      manifestDigest: string;
-    };
-  };
-}
+export type { EvaluationPromotionReceipt } from '../../packages/kernel/work/api/index.ts';
 
 export interface EvaluationPromotionInput {
   baseline: EvaluationCandidateIdentity;
@@ -226,9 +206,9 @@ export function mintEvaluationPromotionReceipt(input: EvaluationPromotionInput):
     certificationManifestDigest = assertCertificationIdentity(baseline, candidate, certification);
   }
 
-  const core = {
-    schemaVersion: EVALUATION_PROMOTION_RECEIPT_SCHEMA,
-    authority: EVALUATION_PROMOTION_RECEIPT_AUTHORITY,
+  return buildEvaluationPromotionReceipt({
+    schemaVersion: 'forge-evaluation-promotion-receipt/v1',
+    authority: 'evaluation_evidence_only',
     baseline,
     candidate,
     evidence: {
@@ -253,16 +233,9 @@ export function mintEvaluationPromotionReceipt(input: EvaluationPromotionInput):
         certification: { manifestDigest: certificationManifestDigest },
       } : {}),
     },
-  } as const;
-  const receiptId = `evaluation-promotion:${digest(EVALUATION_PROMOTION_RECEIPT_SCHEMA, core)}`;
-  return deepFreeze({ ...core, receiptId });
+  });
 }
 
 export function promotionReceiptReference(receipt: EvaluationPromotionReceipt): string {
-  if (receipt.schemaVersion !== EVALUATION_PROMOTION_RECEIPT_SCHEMA
-    || receipt.authority !== EVALUATION_PROMOTION_RECEIPT_AUTHORITY
-    || !receipt.receiptId.startsWith('evaluation-promotion:sha256:')) {
-    throw new Error('EVALUATION_PROMOTION_RECEIPT_INVALID');
-  }
-  return receipt.receiptId;
+  return validateEvaluationPromotionReceipt(receipt).receiptId;
 }

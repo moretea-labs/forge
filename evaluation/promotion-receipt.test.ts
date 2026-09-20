@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import {
+  evaluationPromotionReceiptArchitectureEvidence,
+  validateEvaluationPromotionReceipt,
+} from '../packages/kernel/work/api/index';
 import type { PairedCandidateRun } from './lib/candidate-runner.ts';
 import {
   REQUIRED_ARMS,
@@ -29,7 +30,6 @@ import {
   mintEvaluationPromotionReceipt,
   promotionReceiptReference,
 } from './lib/promotion-receipt.ts';
-import { createRequirement, readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 
 const candidateCommit = 'a'.repeat(40);
 const baselineCommit = 'b'.repeat(40);
@@ -306,20 +306,23 @@ describe('evaluation promotion receipt', () => {
     expect(() => mintEvaluationPromotionReceipt(mismatched)).toThrow('EVALUATION_PROMOTION_CERTIFICATION_PROTOCOL_MISMATCH');
   });
 
-  test('feeds normal Requirement evidence by reference without creating a second lifecycle authority', () => {
+  test('projects only the exact evaluated candidate into Work review architecture evidence', () => {
     const receipt = mintEvaluationPromotionReceipt(promotionInput());
-    const home = mkdtempSync(join(tmpdir(), 'forge-promotion-requirement-'));
-    try {
-      const requirement = createRequirement({ controllerHome: home }, {
-        requirementId: 'REQ-evaluated-strategy-change',
-        title: 'Apply evaluated strategy change',
-        outcomeStatement: 'The evaluated change proceeds through normal Requirement, Plan and Work authority.',
-        requiredDeliveryReferences: [promotionReceiptReference(receipt)],
-      });
-      expect(requirement.requiredDeliveryReferences).toEqual([receipt.receiptId]);
-      expect(readRequirement({ controllerHome: home }, requirement.requirementId)?.value.state).toBe('planned');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    expect(validateEvaluationPromotionReceipt(receipt)).toEqual(receipt);
+    expect(evaluationPromotionReceiptArchitectureEvidence(receipt, candidateCommit)).toEqual({
+      evidenceId: receipt.receiptId,
+      digest: receipt.receiptId.slice('evaluation-promotion:'.length),
+    });
+    expect(() => evaluationPromotionReceiptArchitectureEvidence(receipt, 'f'.repeat(40)))
+      .toThrow('EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH');
+
+    const tampered = {
+      ...receipt,
+      evidence: {
+        ...receipt.evidence,
+        shadow: { ...receipt.evidence.shadow, pairedScenarioCount: receipt.evidence.shadow.pairedScenarioCount + 1 },
+      },
+    };
+    expect(() => validateEvaluationPromotionReceipt(tampered)).toThrow('EVALUATION_PROMOTION_RECEIPT_ID_INVALID');
   });
 });

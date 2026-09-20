@@ -14,6 +14,7 @@ import {
   buildEngineeringContextReceipt,
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
+  evaluationPromotionReceiptArchitectureEvidence,
   appendVerificationRecord,
   appendWorkEvidence,
   appendWorkHandoffRef,
@@ -32,6 +33,7 @@ import {
   transitionWorkContractPhase,
   updateWorkContract,
   type EngineeringAdmissionEvidence,
+  type EvaluationPromotionReceipt,
   type WorkContractStoreOptions,
 } from '../../../../packages/kernel/work/api/index';
 import {
@@ -203,6 +205,8 @@ export interface GoalWorkloopReviewInput {
   decision: ImplementationReviewDecision;
   rationale: string;
   findings?: WorkImplementationReviewFinding[];
+  /** Trusted evaluator output only. Raw MCP review arguments never populate this field. */
+  evaluationPromotionReceipt?: EvaluationPromotionReceipt;
 }
 
 export interface GoalWorkloopFinalizeInput {
@@ -224,6 +228,7 @@ function nowIso(ctx: GoalWorkloopContext): string {
 function currentImplementationReviewCandidate(
   ctx: GoalWorkloopContext,
   work: WorkContract,
+  architectureEvidenceOverride?: ImplementationReviewCandidateIdentity['architectureEvidence'],
 ): ImplementationReviewCandidateIdentity {
   const sourceRevision = ctx.sourceRevision?.trim() ?? '';
   const verificationWorkspaceFingerprint = ctx.workspaceFingerprint?.trim() ?? '';
@@ -245,13 +250,17 @@ function currentImplementationReviewCandidate(
   if (verification.missingCheckIds.length > 0) {
     throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
   }
+  const latestReview = latestImplementationReview(work.implementationReviews);
+  const retainedArchitectureEvidence = latestReview?.sourceRevision === sourceRevision
+    ? latestReview.architectureEvidence
+    : [];
   return {
     sourceRevision,
     workspaceFingerprint,
     verificationWorkspaceFingerprint,
     changedPaths,
     verificationEvidence: verification.evidence,
-    architectureEvidence: [],
+    architectureEvidence: architectureEvidenceOverride ?? retainedArchitectureEvidence,
   };
 }
 
@@ -2424,7 +2433,10 @@ export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     return buildFacadeResult({ status: 'blocked', summary: 'WORK_IMPLEMENTATION_REVIEW_RATIONALE_REQUIRED: explicit review rationale is required.', data: { work: summarizeWorkContract(work) } });
   }
   try {
-    const candidate = currentImplementationReviewCandidate(ctx, work);
+    const promotionEvidence = input.evaluationPromotionReceipt
+      ? [evaluationPromotionReceiptArchitectureEvidence(input.evaluationPromotionReceipt, ctx.sourceRevision?.trim() ?? '')]
+      : undefined;
+    const candidate = currentImplementationReviewCandidate(ctx, work, promotionEvidence);
     recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: [...candidate.changedPaths] });
     work = getWorkContract(ctx.workStore, work.workId) ?? work;
     if (work.phase !== 'review') {
@@ -2874,6 +2886,11 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
 export interface GoalWorkloopTrustedInput {
   /** Runtime-composed source-bound evidence. This channel is intentionally separate from raw MCP/tool arguments. */
   verifiedEngineeringEvidence?: EngineeringAdmissionEvidence;
+  /**
+   * Evaluator-minted evidence for one exact candidate. Kept off the raw MCP
+   * argument surface so callers cannot manufacture architecture evidence.
+   */
+  evaluationPromotionReceipt?: EvaluationPromotionReceipt;
 }
 
 export function runGoalWorkloop(
@@ -3010,6 +3027,7 @@ export function runGoalWorkloop(
                 ...(typeof value.symbol === 'string' ? { symbol: value.symbol } : {}),
               }))
           : undefined,
+        evaluationPromotionReceipt: trusted.evaluationPromotionReceipt,
       });
     }
     case 'finalize':

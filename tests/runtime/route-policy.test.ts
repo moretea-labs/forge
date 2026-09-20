@@ -14,6 +14,7 @@ import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, c
 import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { buildEvaluationPromotionReceipt } from '../../packages/kernel/work/api/index';
 import { getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
@@ -78,6 +79,125 @@ function sharedInput(overrides: Partial<RoutePolicyInput> = {}): RoutePolicyInpu
     ...overrides,
   };
 }
+test('trusted evaluation promotion receipt becomes exact implementation-review architecture evidence and survives finalize comparison', () => {
+  const root = temp('promotion-review-evidence-');
+  const workStore = { root: join(root, 'work') };
+  const handoffStore = { root: join(root, 'handoff') };
+  const sourceRevision = 'a'.repeat(40);
+  const workId = 'work-promotion-review-evidence';
+  createWorkContract(workStore, {
+    workId,
+    repoId: 'repo-promotion-review-evidence',
+    mode: 'goal_workloop',
+    objective: 'Review an evaluator-proven candidate without creating a second lifecycle.',
+    acceptanceCriteria: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false },
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    requestedBy: 'chatgpt',
+    status: 'running',
+    workKind: 'completed_no_change',
+  });
+  transitionWorkContractPhase(workStore, workId, {
+    status: 'running',
+    phase: 'verification',
+    state: 'satisfied',
+    summary: 'Exact no-change candidate verified.',
+  });
+  requestWorkImplementationReview(workStore, workId, 'Evaluator-proven candidate requires Controller review.');
+
+  const receipt = buildEvaluationPromotionReceipt({
+    schemaVersion: 'forge-evaluation-promotion-receipt/v1',
+    authority: 'evaluation_evidence_only',
+    baseline: {
+      schemaVersion: 'forge-candidate-identity/v1',
+      candidateId: 'baseline',
+      versionLabel: 'baseline',
+      artifactDigest: 'sha256:baseline',
+      sourceRevision: 'b'.repeat(40),
+      executionSurface: 'public_mcp',
+    },
+    candidate: {
+      schemaVersion: 'forge-candidate-identity/v1',
+      candidateId: 'candidate',
+      versionLabel: 'candidate',
+      artifactDigest: 'sha256:candidate',
+      sourceRevision,
+      executionSurface: 'public_mcp',
+    },
+    evidence: {
+      paired: {
+        protocolDigest: 'sha256:paired-protocol',
+        environmentFingerprint: 'sha256:environment',
+        pairCount: 3,
+        evidenceDigest: 'sha256:paired-evidence',
+      },
+      shadow: {
+        protocolDigest: 'sha256:shadow-protocol',
+        pairedScenarioCount: 2,
+        evidenceDigest: 'sha256:shadow-evidence',
+      },
+    },
+  });
+  const context = {
+    workStore,
+    handoffStore,
+    repoId: 'repo-promotion-review-evidence',
+    principalId: 'principal-reviewer',
+    sourceRevision,
+    workspaceFingerprint: 'workspace-verification',
+    implementationReviewWorkspaceFingerprint: 'workspace-review',
+    workspaceChangedPaths: [],
+  };
+
+  const reviewed = runGoalWorkloop(context, 'review', {
+    work_id: workId,
+    review_decision: 'approved',
+    review_rationale: 'Exact evaluator-proven candidate is approved.',
+  }, { evaluationPromotionReceipt: receipt });
+  expect(reviewed.status).toBe('ok');
+  const stored = getWorkContract(workStore, workId)!;
+  expect(stored.implementationReviews.at(-1)?.architectureEvidence).toEqual([{
+    evidenceId: receipt.receiptId,
+    digest: receipt.receiptId.slice('evaluation-promotion:'.length),
+  }]);
+
+  const finalized = finalizeGoalWorkloop(context, { workId });
+  expect(finalized.summary).not.toContain('WORK_IMPLEMENTATION_REVIEW_STALE');
+  expect(finalized.summary).not.toContain('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+
+  const staleWorkId = 'work-promotion-review-stale';
+  createWorkContract(workStore, {
+    workId: staleWorkId,
+    repoId: 'repo-promotion-review-evidence',
+    mode: 'goal_workloop',
+    objective: 'Reject promotion evidence from another candidate revision.',
+    acceptanceCriteria: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false },
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    requestedBy: 'chatgpt',
+    status: 'running',
+    workKind: 'completed_no_change',
+  });
+  transitionWorkContractPhase(workStore, staleWorkId, {
+    status: 'running',
+    phase: 'verification',
+    state: 'satisfied',
+    summary: 'Candidate verified.',
+  });
+  requestWorkImplementationReview(workStore, staleWorkId, 'Review required.');
+  const mismatched = runGoalWorkloop({ ...context, sourceRevision: 'c'.repeat(40) }, 'review', {
+    work_id: staleWorkId,
+    review_decision: 'approved',
+    review_rationale: 'Must not accept evidence for another revision.',
+  }, { evaluationPromotionReceipt: receipt });
+  expect(mismatched.status).toBe('blocked');
+  expect(mismatched.summary).toContain('EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH');
+});
+
 describe('single Route Policy authority', () => {
   test('advances a no-check repository Work only with source changes plus exact durable Process evidence', () => {
     const root = temp('forge-no-check-process-evidence-');
