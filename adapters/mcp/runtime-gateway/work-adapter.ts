@@ -1350,10 +1350,10 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (operation === 'start' && String(args.work_relation ?? '').trim() === 'continue') {
             const predecessorWorkId = String(args.related_work_id ?? '').trim();
             const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
-            if (predecessorWork?.status === 'completed') {
-              const relay = getControllerRoundRelay(store, predecessorWorkId);
-              if (!relay || !['claimed', 'pending_release'].includes(relay.status)) {
-                const facade = buildFacadeResult({ status: 'blocked', summary: `TERMINAL_SUCCESSOR_CONTROLLER_ROUND_REQUIRED: ${predecessorWorkId}:${relay?.status ?? 'missing'}`, data: { operation, executionStarted: false, predecessorWorkId } });
+            const relay = predecessorWork?.status === 'completed' ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
+            if (predecessorWork?.status === 'completed' && relay) {
+              if (!['claimed', 'pending_release', 'failed'].includes(relay.status)) {
+                const facade = buildFacadeResult({ status: 'blocked', summary: `TERMINAL_SUCCESSOR_CONTROLLER_ROUND_REQUIRED: ${predecessorWorkId}:${relay.status}`, data: { operation, executionStarted: false, predecessorWorkId } });
                 return result(facade as unknown as Record<string, unknown>, true);
               }
               const workKind = typeof args.work_kind === 'string' ? args.work_kind.trim() : '';

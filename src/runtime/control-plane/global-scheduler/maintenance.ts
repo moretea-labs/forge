@@ -241,6 +241,10 @@ export async function runSchedulerControllerRoundRecovery(input: {
           continue;
         }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
+        const predecessorBinding = !binding && record.predecessorWorkId
+          ? getChatgptWorkConversationBinding(store, record.predecessorWorkId)
+          : undefined;
+        const deliveryBinding = binding ?? predecessorBinding;
         if (!record.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${record.relayScopeId}`);
         const dispatchingRecord = beginControllerRoundProviderDispatch(store, {
           workId: record.originWorkId,
@@ -256,8 +260,9 @@ export async function runSchedulerControllerRoundRecovery(input: {
           prompt: renderChatgptControllerRoundPrompt(store, dispatchingRecord, { exactOriginWork: !dispatchingRecord.requirementId }),
           controllerAuthorityId: dispatchingRecord.authorityId,
           relayScopeId: dispatchingRecord.relayScopeId,
-          browserSessionId: binding?.latestBrowserSessionId,
-          conversationUrl: binding?.conversationUrl,
+          browserSessionId: deliveryBinding?.latestBrowserSessionId,
+          conversationUrl: deliveryBinding?.conversationUrl,
+          authorizationGrantRefs: deliveryBinding?.authorizationGrantRefs,
           model: 'gpt-5.6',
           reasoning: 'high',
           tabPolicy: 'auto',

@@ -554,9 +554,10 @@ export function bindControllerRoundSuccessorWork(
   if (!initial) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${predecessor.workId}`);
   return relayLock(options, initial.value.relayScopeId, `controller-relay-bind-successor:${input.identity.controllerId}`, () => {
     const current = readRelayRecord(options, predecessor.workId);
-    if (!current || current.value.status !== 'claimed') {
-      throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_REQUIRES_CLAIMED_ROUND: ${predecessor.workId}:${current?.value.status ?? 'missing'}`);
+    if (!current || !['claimed', 'failed'].includes(current.value.status)) {
+      throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_REQUIRES_ACTIVE_OR_FAILED_PRECLAIM_ROUND: ${predecessor.workId}:${current?.value.status ?? 'missing'}`);
     }
+    const failedPreclaim = current.value.status === 'failed';
     const expectedAuthorityId = current.value.authorityId?.trim() || '';
     const requestedAuthorityId = input.controllerAuthorityId?.trim() || '';
     if (expectedAuthorityId) {
@@ -566,19 +567,29 @@ export function bindControllerRoundSuccessorWork(
       if (!principalId || current.value.controllerId !== input.identity.controllerId || current.value.principalId !== principalId) {
         throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_AUTHORITY_MISMATCH: ${predecessor.workId}`);
       }
-      if (relayControllerType(current.value) !== input.identity.controllerType || current.value.claimGeneration < 1) {
+      if (relayControllerType(current.value) !== input.identity.controllerType) {
         throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_AUTHORITY_MISMATCH: ${predecessor.workId}`);
       }
       const liveOwner = getControllerSession(options, predecessor.workId);
-      if (liveOwner) {
-        const livePrincipal = liveOwner.principalId?.trim() || liveOwner.controllerId;
-        if (liveOwner.controllerId !== input.identity.controllerId
-          || liveOwner.controllerType !== input.identity.controllerType
-          || livePrincipal !== principalId) {
+      if (failedPreclaim) {
+        if (current.value.lifecycleStage !== 'dispatching' || current.value.claimGeneration !== 0 || liveOwner) {
+          throw new Error(`CONTROLLER_RELAY_FAILED_SUCCESSOR_HANDOFF_PRECLAIM_REQUIRED: ${predecessor.workId}`);
+        }
+      } else {
+        if (current.value.claimGeneration < 1) {
           throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_AUTHORITY_MISMATCH: ${predecessor.workId}`);
+        }
+        if (liveOwner) {
+          const livePrincipal = liveOwner.principalId?.trim() || liveOwner.controllerId;
+          if (liveOwner.controllerId !== input.identity.controllerId
+            || liveOwner.controllerType !== input.identity.controllerType
+            || livePrincipal !== principalId) {
+            throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_AUTHORITY_MISMATCH: ${predecessor.workId}`);
+          }
         }
       }
     } else {
+        if (failedPreclaim) throw new Error(`CONTROLLER_RELAY_SUCCESSOR_BIND_AUTHORITY_REQUIRED: ${predecessor.workId}`);
       // Legacy claimed rounds have no opaque per-round capability. Preserve only
       // their exact live owner epoch; rollover is available after the round has
       // been upgraded by the canonical launcher/recovery path.
@@ -590,6 +601,44 @@ export function bindControllerRoundSuccessorWork(
       }
     }
     const successor = assertControllerRoundSuccessorLineage(options, predecessor, input.successorWorkId.trim());
+    if (failedPreclaim) {
+      const at = nowIso(options);
+      const successorStateFingerprint = mechanicalStateFingerprint(options, successor, current.value.requirementId, current.value.relayScopeId, current.value.handoffId);
+      return withControlPlaneTransaction(options.controllerHome, (database) => {
+        const predecessorRelay = readControlPlaneRecordWithinTransaction<ControllerRoundRelayRecord>(
+          database, NAMESPACE, options.repoId, predecessor.workId,
+        );
+        if (!predecessorRelay || predecessorRelay.value.status !== 'failed' || predecessorRelay.value.claimGeneration !== 0) {
+          throw new Error(`CONTROLLER_RELAY_FAILED_SUCCESSOR_HANDOFF_STALE: ${predecessor.workId}`);
+        }
+        const existingSuccessorRelay = readControlPlaneRecordWithinTransaction<ControllerRoundRelayRecord>(
+          database, NAMESPACE, options.repoId, successor.workId,
+        );
+        if (existingSuccessorRelay) {
+          if (existingSuccessorRelay.value.relayScopeId === current.value.relayScopeId
+            && ['dispatching', 'dispatched', 'claimed'].includes(existingSuccessorRelay.value.status)) {
+            return existingSuccessorRelay.value;
+          }
+          throw new Error(`CONTROLLER_RELAY_SUCCESSOR_ALREADY_HAS_ROUND: ${successor.workId}`);
+        }
+        const decision = atomicTransitionDecisionOrThrow(decideControllerRoundTransition(predecessorRelay.value, {
+          type: 'failed_dispatch_successor_handoff',
+          at,
+          successorWorkId: successor.workId,
+          successorStateFingerprint,
+          proposedAuthorityId: newControllerRoundAuthorityId(),
+        }));
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: NAMESPACE, scope: options.repoId, key: predecessor.workId, schemaVersion: SCHEMA_VERSION,
+          value: decision.next, action: decision.action, expectedRevision: predecessorRelay.revision,
+        });
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: NAMESPACE, scope: options.repoId, key: decision.relatedWorkId, schemaVersion: SCHEMA_VERSION,
+          value: decision.relatedNext, action: decision.relatedAction, expectedRevision: null,
+        });
+        return decision.relatedNext;
+      });
+    }
     return applyControllerRoundTransition(options, current, {
       type: 'successor_bound', at: nowIso(options), successorWorkId: successor.workId,
     });
