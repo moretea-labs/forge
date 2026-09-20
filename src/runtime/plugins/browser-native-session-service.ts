@@ -1,9 +1,9 @@
 import { AssistantPluginError } from './errors';
 import {
-  closeMacOsBrowserOwnedTab,
+  closeResolvedMacOsBrowserOwnedTab,
   listMacOsBrowserTabs,
   macOsBrowserPageHandleStale,
-  readMacOsBrowserOwnedTabMetadata,
+  readResolvedMacOsBrowserOwnedTabMetadata,
   type MacOsBrowserProduct,
 } from './browser-macos-bridge';
 import { listSavedBrowserSessions, removeBrowserSession } from './browser-session-store';
@@ -17,6 +17,12 @@ export interface NativeOwnedSessionInspection {
   prunedCount: number;
   closedInvalidCount: number;
   failedCleanupCount: number;
+}
+
+const MAX_NATIVE_INVENTORY_TIMEOUT_MS = 3_000;
+
+function nativeInventoryTimeoutMs(timeoutMs: number): number {
+  return Math.max(1, Math.min(timeoutMs, MAX_NATIVE_INVENTORY_TIMEOUT_MS));
 }
 
 export function nativeTabInventoryUnsupported(error: unknown): boolean {
@@ -75,7 +81,7 @@ export async function inspectNativeOwnedSessions(input: {
     let inventory = inventories.get(product);
     if (!inventory) {
       try {
-        inventory = await listMacOsBrowserTabs(product, timeoutMs);
+        inventory = await listMacOsBrowserTabs(product, nativeInventoryTimeoutMs(timeoutMs));
       } catch (error) {
         inventory = error instanceof Error ? error : new Error(String(error));
       }
@@ -89,9 +95,9 @@ export async function inspectNativeOwnedSessions(input: {
       }
 
       const ref = { windowId: tab.windowId!, tabId: tab.tabId! };
-      let metadata: Awaited<ReturnType<typeof readMacOsBrowserOwnedTabMetadata>>;
+      let metadata: Awaited<ReturnType<typeof readResolvedMacOsBrowserOwnedTabMetadata>>;
       try {
-        metadata = await readMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
+        metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
       } catch (metadataError) {
         if (macOsBrowserPageHandleStale(metadataError)) {
           const pruned = input.pruneDead === true;
@@ -113,7 +119,7 @@ export async function inspectNativeOwnedSessions(input: {
         deadCount += group.length;
         if (input.pruneDead === true) {
           try {
-            await closeMacOsBrowserOwnedTab(product, ref, timeoutMs);
+            await closeResolvedMacOsBrowserOwnedTab(product, ref, timeoutMs);
             for (const session of group) removeBrowserSession(repoRoot, session.sessionId);
             prunedCount += group.length;
             closedInvalidCount += 1;
@@ -149,7 +155,11 @@ export async function inspectNativeOwnedSessions(input: {
       deadCount += group.length;
       if (input.pruneDead === true) {
         try {
-          await closeMacOsBrowserOwnedTab(product, { windowId: tab.windowId!, tabId: tab.tabId! }, timeoutMs);
+          await closeResolvedMacOsBrowserOwnedTab(
+            product,
+            { windowId: live.windowId, tabId: live.tabId },
+            timeoutMs,
+          );
           for (const session of group) removeBrowserSession(repoRoot, session.sessionId);
           prunedCount += group.length;
           closedInvalidCount += 1;
@@ -189,20 +199,27 @@ export async function closeTrackedNativeOwnedSession(
   const ref = { windowId: tab.windowId, tabId: tab.tabId };
   let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
   try {
-    inventory = await listMacOsBrowserTabs(browser.browserProduct, timeoutMs);
+    inventory = await listMacOsBrowserTabs(browser.browserProduct, nativeInventoryTimeoutMs(timeoutMs));
   } catch (error) {
     if (!nativeTabInventoryUnsupported(error)) throw error;
     try {
-      await readMacOsBrowserOwnedTabMetadata(browser.browserProduct, ref, timeoutMs);
+      await readResolvedMacOsBrowserOwnedTabMetadata(browser.browserProduct, ref, timeoutMs);
     } catch (metadataError) {
       if (macOsBrowserPageHandleStale(metadataError)) return { resourceClosed: false, resourceAlreadyMissing: true };
       throw metadataError;
     }
   }
-  if (inventory && !inventory.tabs.some((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId)) {
-    return { resourceClosed: false, resourceAlreadyMissing: true };
+  if (inventory) {
+    const live = inventory.tabs.find((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
+    if (!live) return { resourceClosed: false, resourceAlreadyMissing: true };
+    await closeResolvedMacOsBrowserOwnedTab(
+      browser.browserProduct,
+      { windowId: live.windowId, tabId: live.tabId },
+      timeoutMs,
+    );
+    return { resourceClosed: true, resourceAlreadyMissing: false };
   }
-  await closeMacOsBrowserOwnedTab(browser.browserProduct, ref, timeoutMs);
+  await closeResolvedMacOsBrowserOwnedTab(browser.browserProduct, ref, timeoutMs);
   return { resourceClosed: true, resourceAlreadyMissing: false };
 }
 
