@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
@@ -408,7 +408,12 @@ async function withAssistantPluginResourceLeases<T>(
   }));
   if (claims.length === 0) return operation();
 
-  const ownerJobId = `plugin:${request.requestId}`;
+  // requestId is the semantic idempotency key, but before its receipt/index is
+  // persisted two concurrent replays can enter this function. Give each live
+  // invocation a distinct lease owner so the later replay contends on the
+  // first invocation's declared resource instead of silently accumulating a
+  // second same-owner lease and then failing exact release with LEASE_SET_MISMATCH.
+  const ownerJobId = `plugin:${request.requestId}:${randomUUID()}`;
   const timeoutMs = Math.max(5_000, Math.min(10 * 60_000, request.timeoutMs ?? action.defaultTimeoutMs));
   const acquisition = acquireExecutionLeases(controllerHome, repository.repoId, ownerJobId, claims, {
     ttlMs: timeoutMs + 60_000,
