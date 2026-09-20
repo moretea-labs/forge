@@ -18,6 +18,7 @@ import {
   ensureChatgptExecutionPreference,
   ensureControllerChatgptBrowser,
   navigateWorkConversation,
+  settleWorkChatgptAutomationTab,
   submitChatgptPrompt,
   withChatgptBrowserActionOrigin,
 } from '../../../../adapters/chatgpt/browser-delivery-runtime';
@@ -103,6 +104,8 @@ export interface WorkChatgptContinuationDependencies {
   bridgeRuntime?: boolean;
   browserHost?: ChatgptProviderDeliveryHost;
   wslHost?: ChatgptProviderDeliveryHost;
+  /** Test seam plus one canonical resource-settlement owner for known Browser delivery failures. */
+  settleBrowserTab?: typeof settleWorkChatgptAutomationTab;
 }
 
 export interface WorkChatgptContinuationResult {
@@ -467,6 +470,20 @@ export async function runWorkChatgptContinuation(
           });
     }
     if (delivery.status !== 'dispatch_confirmed') {
+      // Only a proven provider failure is safe to settle immediately. An
+      // outcome-unknown send remains fenced for exact ControllerRound claim
+      // reconciliation, and wait-for-user retains the page for the explicit
+      // provider action. This keeps semantic ambiguity separate from ephemeral
+      // Browser resource ownership without replaying a possibly committed send.
+      const tabCleanup = delivery.provider === 'controller-browser' && delivery.status === 'failed'
+        ? await (dependencies.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
+            controllerHome: input.controllerHome,
+            workId: input.workId,
+            browserSessionId: delivery.browserSessionId,
+            timeoutMs: input.timeoutMs,
+            authorizationGrantRefs: [...authorizationGrantRefs],
+          })
+        : undefined;
       return {
         status: 'failed',
         provider: delivery.provider,
@@ -481,6 +498,8 @@ export async function runWorkChatgptContinuation(
         executionPreferenceVerified: delivery.executionPreferenceVerified,
         authorizationGrantRefs: [...authorizationGrantRefs],
         providerDeliveryStatus: delivery.status,
+        ...(tabCleanup ? { tabCleanupStatus: tabCleanup.status } : {}),
+        ...(tabCleanup?.error ? { tabCleanupError: tabCleanup.error } : {}),
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
     }

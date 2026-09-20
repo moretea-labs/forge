@@ -892,7 +892,12 @@ export async function submitChatgptPrompt(
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
   const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
-  const failureCode = submitOutcomeUnknown || (observedNewOutbound && hasConversationIdentity)
+  // A fresh /c/<id> is provider-side evidence that the send may have committed
+  // even when DOM observation lagged. Keep that ambiguity fenced. Conversely,
+  // a known-success click that never produced either an outbound message or a
+  // conversation identity is a confirmed delivery failure and its ephemeral
+  // Browser resource may be settled by the Work delivery owner.
+  const failureCode = submitOutcomeUnknown || hasConversationIdentity
     ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN
     : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED';
   throw new ChatgptProviderDeliveryError(

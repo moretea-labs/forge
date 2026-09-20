@@ -57,8 +57,14 @@ export function createChatgptBrowserDeliveryHost(operations: ChatgptBrowserDeliv
         };
       } catch (error) {
         const providerError = chatgptProviderError(error, 'CHATGPT_CONTROLLER_BROWSER_FAILED');
+        // SUBMISSION_NOT_CONFIRMED is only a known failure when no provider-side
+        // conversation identity appeared. A new /c/<id> means the send may have
+        // committed despite lagging DOM confirmation, so preserve outcome_unknown.
+        const status = providerError.code === 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED' && providerError.conversationUrl
+          ? 'outcome_unknown'
+          : classifyChatgptProviderFailure(providerError.code, providerError.message);
         return {
-          status: classifyChatgptProviderFailure(providerError.code, providerError.message),
+          status,
           provider: 'controller-browser',
           browserSessionId: effectiveBrowserSessionId,
           conversationUrl: providerError.conversationUrl ?? input.targetUrl,

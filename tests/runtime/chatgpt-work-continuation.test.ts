@@ -189,7 +189,7 @@ describe('ChatGPT provider delivery classification', () => {
 
   test('separates ambiguous mutation, user blockers, and ordinary provider failure', () => {
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN')).toBe('outcome_unknown');
-    expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED')).toBe('outcome_unknown');
+    expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED')).toBe('failed');
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_PERMISSION_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_BRIDGE_DISPATCH_FAILED')).toBe('failed');
@@ -975,8 +975,9 @@ describe('ChatGPT Work conversation binding', () => {
           error: { code: 'CHATGPT_BRIDGE_DISPATCH_FAILED', message: 'known provider failure' },
         }),
       },
+      settleBrowserTab: async () => ({ status: 'closed' as const }),
     });
-    expect(ordinaryFailure).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed' });
+    expect(ordinaryFailure).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed', tabCleanupStatus: 'closed' });
     expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-NO-BINDING')).toBeUndefined();
 
     const knownFailureWithConversation = await runWorkChatgptContinuation({
@@ -999,8 +1000,9 @@ describe('ChatGPT Work conversation binding', () => {
           error: { code: 'CHATGPT_BRIDGE_DISPATCH_FAILED', message: 'known provider failure with an observed page' },
         }),
       },
+      settleBrowserTab: async () => ({ status: 'closed' as const }),
     });
-    expect(knownFailureWithConversation).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed' });
+    expect(knownFailureWithConversation).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed', tabCleanupStatus: 'closed' });
     expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-VALID-CONVERSATION')).toBeUndefined();
   });
 
@@ -1109,7 +1111,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(browserRuntime).toContain('settleWorkChatgptAutomationTab');
     const workContinuation = source.slice(source.indexOf('export async function runWorkChatgptContinuation'));
     expect(workContinuation).not.toContain('closeChatgptAutomationTabAfterDispatch(');
-    expect(workContinuation).not.toContain('tabCleanupStatus: tabCleanup.status');
+    expect(workContinuation).toContain("delivery.provider === 'controller-browser' && delivery.status === 'failed'");
+    expect(workContinuation).toContain('dependencies.settleBrowserTab ?? settleWorkChatgptAutomationTab');
+    expect(workContinuation).toContain('tabCleanupStatus: tabCleanup.status');
     expect(browserRuntime).toContain("'PLUGIN_BROWSER_SESSION_STATE_LOST'");
     expect(browserRuntime).toContain("'PLUGIN_SESSION_NOT_FOUND'");
     expect(source).toContain('runStandaloneChatgptPrompt');
@@ -1533,6 +1537,7 @@ describe('provider dispatch outcome-unknown fence', () => {
     const continuation = readFileSync(join(process.cwd(), 'packages/kernel/controller/application/continuation-service.ts'), 'utf8');
     expect(providerDelivery).toContain("CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN");
     expect(browserRuntime).toContain('submitOutcomeUnknown = true');
+    expect(browserRuntime).toContain('submitOutcomeUnknown || hasConversationIdentity');
     expect(browserRuntime).toContain("'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'");
     expect(host).toContain('CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
     expect(continuation).toContain('const outcomeUnknown =');

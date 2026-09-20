@@ -16,15 +16,22 @@ import {
   beginControllerRoundProviderDispatch,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
+  listControllerRoundRelaysByBlocker,
 } from '../../../../packages/kernel/controller/api/index';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
-import { runWorkChatgptContinuation } from '../launcher/chatgpt-work-continuation';
+import { runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../launcher/chatgpt-work-continuation';
 import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
-import { renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
+import { getChatgptControllerRoundSettlement } from '../../../../adapters/chatgpt/controller-round-settlement-store';
+import { recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
+// A provider-ambiguous ControllerRound remains durable and claimable, but its
+// Forge-owned Chrome tab is not durable authority. Give an in-flight ChatGPT
+// turn a bounded claim window, then release the ephemeral resource without
+// replaying or clearing the semantic outcome-unknown fence.
+const CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS = 5 * 60_000;
 
 export function planSchedulerPeriodicMaintenance(input: {
   nowMs: number;
@@ -109,6 +116,32 @@ export async function runSchedulerPeriodicCleanup(input: {
       }
     } catch (error) {
       console.error('[forge cleanup] Computer interaction-target retention failed:', error);
+    }
+    for (const repository of input.repositories) {
+      const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
+      for (const relay of listControllerRoundRelaysByBlocker(store, 'provider_dispatch_outcome_unknown', 16)) {
+        const blockedAtMs = Date.parse(relay.updatedAt);
+        if (!Number.isFinite(blockedAtMs) || input.nowMs - blockedAtMs < CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS) continue;
+        const existingSettlement = getChatgptControllerRoundSettlement(store, {
+          workId: relay.originWorkId,
+          relayScopeId: relay.relayScopeId,
+        });
+        if (existingSettlement && ['closed', 'preserved_user_owned', 'session_closed'].includes(existingSettlement.status)) continue;
+        const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
+        if (!binding?.latestBrowserSessionId) continue;
+        const settlement = await settleWorkChatgptAutomationTab({
+          controllerHome: input.controllerHome,
+          workId: relay.originWorkId,
+          browserSessionId: binding.latestBrowserSessionId,
+          authorizationGrantRefs: binding.authorizationGrantRefs,
+        });
+        recordChatgptControllerRoundTabSettlement(store, {
+          workId: relay.originWorkId,
+          relayScopeId: relay.relayScopeId,
+          status: settlement.status,
+          error: settlement.error?.message,
+        });
+      }
     }
   }
 

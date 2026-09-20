@@ -41,6 +41,7 @@ import {
   controllerRoundProviderEffectId,
   controllerRoundRelayClaimable,
   decideControllerRoundTransition,
+  type ControllerRoundBlockerClass,
   type ControllerRoundTransitionDecision,
   type ControllerRoundTransitionEvent,
 } from '../domain/controller-round-transition-policy';
@@ -297,6 +298,18 @@ function latestRelayRecordsByScope(options: ControllerRoundRelayStoreOptions): C
     latestRelayRecordsCache.delete(oldest);
   }
   return records;
+}
+
+/** Read-only current relay projection for bounded lifecycle/resource reconciliation. */
+export function listControllerRoundRelaysByBlocker(
+  options: ControllerRoundRelayStoreOptions,
+  blocker: ControllerRoundBlockerClass,
+  limit = 16,
+): ControllerRoundRelayRecord[] {
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  return latestRelayRecordsByScope(options)
+    .filter((record) => controllerRoundBlockerClass(record) === blocker)
+    .slice(0, boundedLimit);
 }
 
 

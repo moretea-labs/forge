@@ -98,7 +98,6 @@ export function classifyChatgptProviderFailure(
   const normalized = `${code ?? ''}\n${message ?? ''}`.toUpperCase();
   if (
     normalized.includes('OUTCOME_UNKNOWN')
-    || normalized.includes('SUBMISSION_NOT_CONFIRMED')
     || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT')
     || normalized.includes('RESPONSE_STREAM_UNAVAILABLE')
   ) return 'outcome_unknown';
