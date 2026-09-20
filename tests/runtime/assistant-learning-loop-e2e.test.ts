@@ -20,12 +20,14 @@ import {
   type ControllerSession,
 } from '../../packages/kernel/controller/api/index';
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
+import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
 import { recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
+import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 
 const roots: string[] = [];
@@ -314,8 +316,9 @@ describe('connected assistant learning loops', () => {
     closeContinue(fx, second);
     fx.setNow(time(5 + 24 * 60 + 10));
     const third = claimReleasedRound(fx, second.owner, 3);
-    const recalled = third.bundle?.snapshot.items.find((item) => item.kind === 'experience' && item.itemId === experience.id);
-    expect(recalled).toMatchObject({ kind: 'experience', itemId: experience.id, revision: 1 });
+    const experienceItemId = memoryAddressKey({ scope: experience.scope, id: experience.id });
+    const recalled = third.bundle?.snapshot.items.find((item) => item.kind === 'experience' && item.itemId === experienceItemId);
+    expect(recalled).toMatchObject({ kind: 'experience', itemId: experienceItemId, revision: 1 });
     const settled = submitControllerRoundDisposition(fx.store, {
       workId: fx.workId,
       identity: relayIdentity(third.owner),
@@ -323,12 +326,12 @@ describe('connected assistant learning loops', () => {
       relayScopeId: third.relay.relayScopeId,
       ...(third.bundle ? {
         assistantContextDigest: third.bundle.snapshot.digest,
-        assistantContextUsage: contextUsage(third.bundle, experience.id),
+        assistantContextUsage: contextUsage(third.bundle, experienceItemId),
       } : {}),
     });
     expect(settled.status).toBe('waiting');
     expect(settled.observationWindow?.at(-1)?.assistantContextUsage).toContainEqual(expect.objectContaining({
-      kind: 'experience', itemId: experience.id, decision: 'used',
+      kind: 'experience', itemId: experienceItemId, decision: 'used',
     }));
   });
 
@@ -415,8 +418,9 @@ describe('connected assistant learning loops', () => {
 
     fx.setNow(time(70));
     const seventh = claimReleasedRound(fx, sixth.owner, 7);
-    const recalled = seventh.bundle?.snapshot.items.find((item) => item.kind === 'experience' && item.itemId === experience.id);
-    expect(recalled).toMatchObject({ kind: 'experience', itemId: experience.id, revision: 1 });
+    const experienceItemId = memoryAddressKey({ scope: experience.scope, id: experience.id });
+    const recalled = seventh.bundle?.snapshot.items.find((item) => item.kind === 'experience' && item.itemId === experienceItemId);
+    expect(recalled).toMatchObject({ kind: 'experience', itemId: experienceItemId, revision: 1 });
     const settled = submitControllerRoundDisposition(fx.store, {
       workId: fx.workId,
       identity: relayIdentity(seventh.owner),
@@ -424,14 +428,63 @@ describe('connected assistant learning loops', () => {
       relayScopeId: seventh.relay.relayScopeId,
       ...(seventh.bundle ? {
         assistantContextDigest: seventh.bundle.snapshot.digest,
-        assistantContextUsage: contextUsage(seventh.bundle, experience.id),
+        assistantContextUsage: contextUsage(seventh.bundle, experienceItemId),
       } : {}),
     });
     expect(settled.status).toBe('waiting');
     expect(settled.observationWindow?.at(-1)?.assistantContextUsage).toContainEqual(expect.objectContaining({
-      kind: 'experience', itemId: experience.id, decision: 'used',
+      kind: 'experience', itemId: experienceItemId, decision: 'used',
     }));
   });
+  test('closed execution-quality evidence automatically becomes durable cognitive memory and is recalled next round', () => {
+    const fx = fixture('automatic-cognition', { knowledge: false });
+    fx.setNow(time(10));
+    const first = claimInitialRound(fx, 1);
+    appendVerificationRecord(fx.store, fx.workId, verificationRecord(fx, 'receipt-auto-1', time(11), 'stable'));
+    closeContinue(fx, first);
+
+    fx.setNow(time(20));
+    const second = claimReleasedRound(fx, first.owner, 2);
+    appendVerificationRecord(fx.store, fx.workId, verificationRecord(fx, 'receipt-auto-2', time(21), 'stable'));
+    closeContinue(fx, second);
+
+    fx.setNow(time(30));
+    const third = claimReleasedRound(fx, second.owner, 3);
+    appendVerificationRecord(fx.store, fx.workId, verificationRecord(fx, 'receipt-auto-3', time(31), 'stable'));
+    closeContinue(fx, third);
+
+    fx.setNow(time(40));
+    const fourth = claimReleasedRound(fx, third.owner, 4);
+    const qualityContext = readControllerRoundContextSnapshot(fx.store, fourth.relay);
+    const signal = qualityContext.executionQualitySignals?.find((item) => item.code === 'repeated_verification');
+    expect(signal).toBeDefined();
+    const sourceRoundId = `${fourth.relay.relayScopeId}:${fourth.relay.roundCount}`;
+    closeContinue(fx, fourth);
+
+    const learning = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId,
+      signals: [signal!],
+      now: time(41),
+    });
+    expect(learning.storedMemoryIds).toHaveLength(1);
+    expect(learning.skipped).toEqual([]);
+
+    fx.setNow(time(50));
+    const fifth = claimReleasedRound(fx, fourth.owner, 5);
+    const memoryItemId = memoryAddressKey({
+      scope: { schemaVersion: 1, kind: 'project', id: 'project-learning-loop' },
+      id: learning.storedMemoryIds[0]!,
+    });
+    expect(fifth.bundle?.snapshot.items).toContainEqual(expect.objectContaining({
+      kind: 'knowledge',
+      itemId: memoryItemId,
+      revision: 1,
+    }));
+  });
+
   test('ControllerRound context excludes unbound handoff noise but retains Work-bound and explicit user handoffs', () => {
     const fx = fixture('handoff-context-scope', { knowledge: false });
     const round = claimInitialRound(fx, 1);
