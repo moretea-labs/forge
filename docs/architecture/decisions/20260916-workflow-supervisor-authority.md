@@ -98,6 +98,10 @@ Every supervised ChatGPT turn ends with exactly one machine-readable terminal bl
 <<<FORGE_WORKFLOW_SUPERVISOR_V1>>>
 {
   "action": "CONTINUE",
+  "conversation_id": "<exact ChatGPT conversation id>",
+  "task_id": "<stable conversation-scoped Supervisor task id>",
+  "supervisor_state": "running",
+  "active_scope": "requirement:<id>",
   "source_effect_id": "fx_...",
   "checkpoint": "...",
   "reason": "...",
@@ -114,7 +118,7 @@ Every supervised ChatGPT turn ends with exactly one machine-readable terminal bl
 
 The exact `<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>` marker is required before the Supervisor accepts the turn as committed. Prompt delivery, `Stop generating`, spinner/loading state, button state, DOM stability, a text-stability timer, Work completion, ControllerRound closure, or transport disconnection are not assistant-turn commit authority.
 
-Every Supervisor-rendered enrollment or continuation message also carries a machine-readable marker containing its daemon-minted `submission_effect_id`. The assistant may only echo that immutable causal identity as `source_effect_id` in the terminal block; it does not mint, rewrite or interpret the id as executable prompt authority. A completion is commit-eligible only when `source_effect_id` matches the exact applied outbound effect for the exact task and conversation.
+Every newly rendered Supervisor enrollment or continuation message also carries a machine-readable marker containing its daemon-minted `submission_effect_id` and instructs the assistant to echo exact `conversation_id`, stable `task_id`, `supervisor_state`, and `active_scope` together with `source_effect_id`. `supervisor_state` is redundant by design (`CONTINUE -> running`, `DONE -> done`, `NEEDS_USER -> needs_user`) so each response is independently classifiable. `active_scope` identifies the current durable lower-layer relay authority, normally `requirement:<id>` or `goal:<id>`; it never replaces that authority. The assistant may only echo these immutable/observed identities; it does not mint, rewrite or interpret them as executable prompt authority. A completion is commit-eligible only when `source_effect_id` matches the exact applied outbound effect for the exact task and conversation and the echoed identities match the registered task/scope. Already-reserved pre-upgrade effects remain parse-compatible so a Runtime upgrade does not strand an unknown remote effect.
 
 The Supervisor never executes arbitrary model-provided `next_prompt`. Enrollment, normal continuation, recovery correction and stagnation correction use Supervisor-owned fixed templates. The normal continuation semantics are:
 
@@ -142,7 +146,7 @@ The long-lived Supervisor authority hosted by Canonical Runtime is the **only du
 
 V1 owns a dedicated `supervisor.sqlite` authority under the Forge user-data root instead of reusing `control-plane.sqlite`, generic `control_plane_records`, the declarative `workflow_run` namespace, or a collection of mutable status JSON files. It reuses only the runtime-neutral SQLite mechanics already proven by Forge: Bun/Node driver adaptation, WAL, foreign keys, bounded busy waiting, lifecycle integrity checks, statement finalization and short `BEGIN IMMEDIATE` write transactions.
 
-The core schema keeps the exactly-once invariants relational rather than burying them in opaque JSON payloads. It has explicit task, append-oriented event and outbound-effect facts (`tasks`, `events`, `effects` or schema-equivalent names), with database-level uniqueness for committed completion fingerprints and for the one successor effect derived from a committed completion. Durable journal facts include at least:
+The core schema keeps the exactly-once invariants relational rather than burying them in opaque JSON payloads. It has explicit task, append-oriented event and outbound-effect facts (`tasks`, `events`, `effects` or schema-equivalent names), with database-level uniqueness for committed completion fingerprints and for the one successor effect derived from a committed completion. Supervisor task identity is stable per exact conversation; Requirement and Work changes advance `active_scope` rather than minting a second outer-turn identity for the same conversation. Bounded discovered-conversation metadata may be persisted in the same Supervisor database so Runtime/browser restarts do not erase project inventory, but discovery rows are observations only and cannot reserve effects or terminalize a task by themselves. Durable journal facts include at least:
 
 - enrollment / turn submission intent;
 - assistant turn committed;
@@ -182,17 +186,19 @@ The crash windows before reservation, after reservation/before send, after send/
 
 ## ChatGPT Web adapter boundary
 
-The Chrome Extension is an execution adapter, not a state authority. It may:
+The Chrome Extension is an execution/discovery adapter, not a state authority. It may:
 
 - locate or open only an allowlisted exact conversation id/URL;
-- read the final complete assistant response, its echoed `source_effect_id`, and forward bounded evidence;
+- obtain repository-derived ChatGPT Project scopes from the Supervisor and scan visible project links for canonical `/c/<id>` conversation identities;
+- publish bounded project/conversation discovery observations; the Supervisor alone decides whether an unbound discovered conversation receives one enrollment effect;
+- read the final complete assistant response, its echoed identity/state fields and `source_effect_id`, and forward bounded evidence;
 - submit only a daemon-authorized fixed prompt containing the marker for one exact `submission_effect_id`;
 - observe whether that exact effect marker/fixed outbound message is present for reconciliation;
 - rediscover a closed/discarded tab without changing durable task identity.
 
-It must not select durable tasks by mutable title, open the Supervisor database, decide `CONTINUE/DONE/NEEDS_USER`, invent prompts, weaken Forge gates, or depend on private ChatGPT APIs. Transient generation UI may help avoid pointless reads but is never commit evidence.
+It must not select durable tasks by mutable title, open the Supervisor database, decide `CONTINUE/DONE/NEEDS_USER`, invent prompts, weaken Forge gates, or depend on private ChatGPT APIs. A repository/project title is only a bounded discovery selector; exact conversation URL/id becomes the stable execution target before any enrollment effect exists. Transient generation UI may help avoid pointless reads but is never commit evidence.
 
-Existing conversations require an explicit enrollment handshake. The Supervisor first persists exact conversation identity, original objective and contracts, then reserves one fixed enrollment effect that tells subsequent assistant turns to emit the completion block. A pre-enrollment response without the END marker is never retroactively imported as a committed supervised turn.
+Existing conversations require an explicit enrollment handshake. A conversation may be explicitly bound by a current Work or discovered inside the repository-derived ChatGPT Project scope. In either case the Supervisor persists exact conversation identity and one conversation-stable task, then reserves one fixed enrollment effect. A discovered conversation that has not yet recovered a durable Requirement must use a bootstrap enrollment turn that recovers the original task from conversation history plus Forge durable state and emits the exact `active_scope` before repository mutation. Repeated project scans never reserve a second bootstrap for an already enrolled conversation. A pre-enrollment response without the END marker is never retroactively imported as a committed supervised turn.
 
 ## Relationship to existing Forge continuation
 
@@ -212,9 +218,9 @@ Only after P0/P1 evidence should P2 perform cross-Work strategy comparison, poli
 
 ## First P0 canary
 
-The first live canary is the Avela repository with exactly three current development ChatGPT conversations enrolled by exact conversation id/URL. The two promotion conversations are explicitly excluded.
+The current P0 canary also exercises the Forge ChatGPT Project itself: the adapter must discover the repository-matched project conversations by exact `/c/<id>` identity, persist the inventory across Runtime restart, enroll each unbound nonterminal conversation at most once, and allow each conversation to recover its own durable `active_scope`. The historical Avela three-conversation canary remains valid evidence for exact-conversation isolation; promotion/excluded conversations must remain outside any configured discovery scope.
 
-P0 is not complete when Forge can send one automatic `continue`. It is complete only after the real canary demonstrates multi-turn unattended progress with no user continuation messages, correct conversation isolation, no duplicate continuation, restart recovery, technical-failure recovery, MCP-session replacement, validated `DONE`, and validated `NEEDS_USER`, without lowering Forge verification/review/authorization gates.
+P0 is not complete when Forge can send one automatic `continue` or merely list browser tabs. It is complete only after a real project/conversation canary demonstrates multi-turn unattended progress with no user continuation messages, correct conversation isolation, no duplicate bootstrap/continuation, restart recovery, technical-failure recovery, MCP-session replacement, validated `DONE`, and validated `NEEDS_USER`, without lowering Forge verification/review/authorization gates.
 
 ## Consequences
 

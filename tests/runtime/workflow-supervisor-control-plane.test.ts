@@ -8,12 +8,13 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, finishControllerRoundRelayDispatch, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
 import { cancelWorkContract, createWorkContract, implementationReviewChangedPathDigest, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../packages/kernel/work/api/index';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { forgeWorkflowSupervisorLifecycleHooks, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
+import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { renderSupervisorPrompt } from '../../supervisor/protocol';
+import { parseSupervisorCompletion, renderSupervisorPrompt, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
-import { reconcileWorkflowSupervisorSocket } from '../../supervisor/server';
+import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { bindChatgptWorkConversation, getChatgptWorkConversationBinding } from '../../adapters/chatgpt/work-conversation-binding-store';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -51,6 +52,139 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).toContain('"CONTINUE", "DONE", or "NEEDS_USER"');
     expect(prompt).toContain('"WAIT", "RETRY", and every other value are invalid');
     expect(prompt).toContain('Use CONTINUE for any non-terminal state');
+    expect(prompt).toContain('conversation_id="abababab-cdcd-efef-1212-343434343434"');
+    expect(prompt).toContain('task_id="task-supervisor-action-contract"');
+    expect(prompt).toContain('supervisor_state="running"');
+    const parsed = parseSupervisorCompletion(`${SUPERVISOR_BLOCK_START}\n${JSON.stringify({
+      action: 'CONTINUE', conversation_id: 'abababab-cdcd-efef-1212-343434343434', task_id: 'task-supervisor-action-contract',
+      supervisor_state: 'running', active_scope: 'requirement:REQ-protocol', source_effect_id: 'fx_12345678',
+      checkpoint: 'protocol-ready', reason: 'continue', evidence: ['identity-bound'],
+    })}\n${SUPERVISOR_BLOCK_END}`);
+    expect(parsed.proposal).toMatchObject({ conversationId: 'abababab-cdcd-efef-1212-343434343434', taskId: 'task-supervisor-action-contract', supervisorState: 'running', activeScope: 'requirement:REQ-protocol' });
+  });
+
+  test('inherits a Supervisor conversation only across explicit predecessor lineage, never across Requirement siblings', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-exact-conversation-lineage';
+    const predecessorWorkId = 'work-supervisor-conversation-predecessor';
+    const siblingWorkId = 'work-supervisor-conversation-sibling';
+    const successorWorkId = 'work-supervisor-conversation-successor';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Exact current conversation lineage',
+      outcomeStatement: 'Never substitute an historical sibling conversation for the current controller conversation.',
+    });
+    const create = (workId: string, predecessorWorkIdValue?: string) => createWorkContract(fx.store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      requirementId,
+      ...(predecessorWorkIdValue ? { predecessorWorkId: predecessorWorkIdValue } : {}),
+      mode: 'goal_workloop',
+      objective: `Exercise exact conversation lineage for ${workId}.`,
+      acceptanceCriteria: ['only explicit predecessor lineage may inherit a conversation'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    create(predecessorWorkId);
+    create(siblingWorkId);
+    create(successorWorkId, predecessorWorkId);
+    bindChatgptWorkConversation(fx.store, {
+      workId: predecessorWorkId,
+      conversationUrl: 'https://chatgpt.com/c/exact-conversation-lineage',
+      latestBrowserSessionId: 'forge-chatgpt-work-exact-lineage',
+    });
+
+    expect(inheritWorkflowSupervisorConversationBinding(fx.store, predecessorWorkId, siblingWorkId)).toBeUndefined();
+    expect(getChatgptWorkConversationBinding(fx.store, siblingWorkId)).toBeUndefined();
+    expect(workflowSupervisorBoundaryForWork(fx.store, siblingWorkId)).toEqual({
+      status: 'conversation_pending',
+      reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED',
+    });
+
+    const inherited = inheritWorkflowSupervisorConversationBinding(fx.store, predecessorWorkId, successorWorkId);
+    expect(inherited?.conversationId).toBe('exact-conversation-lineage');
+    expect(workflowSupervisorBoundaryForWork(fx.store, successorWorkId)).toMatchObject({
+      status: 'outer_turn',
+      requirementId,
+      conversationId: 'exact-conversation-lineage',
+    });
+  });
+
+  test('persists project conversation discovery across Supervisor store reopen without turning discovery into lifecycle authority', () => {
+    const fx = fixture();
+    const supervisorHome = join(fx.root, 'durable-supervisor-discovery');
+    const firstStore = new WorkflowSupervisorStore(supervisorHome);
+    const firstDiscovery = new WorkflowSupervisorEphemeralDiscovery(firstStore);
+    firstDiscovery.update([{
+      conversation_id: '11111111-2222-3333-4444-555555555555',
+      canonical_url: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      title: 'Forge durable discovery',
+      project_title: 'forge',
+      project_url: 'https://chatgpt.com/g/g-p-forge/project',
+    }], 'chrome-extension');
+    firstStore.close();
+
+    const reopened = new WorkflowSupervisorStore(supervisorHome);
+    const snapshot = new WorkflowSupervisorEphemeralDiscovery(reopened).get();
+    expect(snapshot.conversations).toEqual([{
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      canonicalUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      title: 'Forge durable discovery',
+      projectTitle: 'forge',
+      projectUrl: 'https://chatgpt.com/g/g-p-forge/project',
+    }]);
+    expect(reopened.listTasks()).toEqual([]);
+    reopened.close();
+  });
+
+  test('bootstraps a discovered project conversation exactly once and keeps its conversation-stable task during Requirement takeover', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'project-bootstrap-supervisor'));
+    const seedConversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const seedTaskId = 'forge:seed';
+    const control = new WorkflowSupervisorControlPlane(store, {}, {
+      projectScopeForTask: () => ({ title: 'forge', repoId: fx.repository.repoId, controllerHome: fx.controllerHome }),
+      discoveredConversationTask: (conversation, scope) => ({
+        taskId: `forge:${scope.repoId}:conversation:${conversation.conversationId}`,
+        conversationId: conversation.conversationId,
+        conversationUrl: conversation.canonicalUrl,
+        objective: 'Recover the existing Forge conversation goal.',
+        completionContract: { kind: 'forge_dynamic_requirement_done', repo_id: scope.repoId, controller_home: scope.controllerHome },
+        continuationPolicy: { kind: 'forge_project_conversation_outer_turn', repo_id: scope.repoId, controller_home: scope.controllerHome },
+        userBlockerPolicy: { kind: 'forge_dynamic_requirement_waiting_for_user', repo_id: scope.repoId, controller_home: scope.controllerHome },
+      }),
+    });
+    control.registerTask({
+      taskId: seedTaskId, conversationId: seedConversationId, conversationUrl: `https://chatgpt.com/c/${seedConversationId}`,
+      objective: 'Seed project scope.', completionContract: { repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+      continuationPolicy: {}, userBlockerPolicy: {},
+    });
+    const discovered = {
+      conversationId: '12121212-3434-5656-7878-909090909090',
+      canonicalUrl: 'https://chatgpt.com/c/12121212-3434-5656-7878-909090909090',
+      projectTitle: 'Forge', projectUrl: 'https://chatgpt.com/g/g-p-forge/project', title: 'Existing Forge work',
+    };
+    const first = control.reconcileDiscoveredConversations([discovered]);
+    expect(first.enrolled).toHaveLength(1);
+    const bootstrap = store.getTaskByConversationId(discovered.conversationId)!;
+    expect(bootstrap.taskId).toBe(`forge:${fx.repository.repoId}:conversation:${discovered.conversationId}`);
+    expect(control.reconcileDiscoveredConversations([discovered]).enrolled).toEqual([]);
+    expect(store.nextBrowserEffect(bootstrap.taskId)?.effect.effectId).toBe(first.enrolled[0]!.effectId);
+
+    const takeover = control.registerTask({
+      taskId: bootstrap.taskId,
+      conversationId: discovered.conversationId,
+      conversationUrl: discovered.canonicalUrl,
+      objective: 'Concrete Requirement-owned continuation.',
+      completionContract: { kind: 'forge_requirement_done', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-takeover' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-takeover' },
+    });
+    expect(takeover.taskId).toBe(bootstrap.taskId);
+    expect(takeover.continuationPolicy.kind).toBe('forge_project_conversation_outer_turn');
+    store.close();
   });
 
   test('requires a prepared lower ControllerRound before treating an outer turn as runnable', () => {

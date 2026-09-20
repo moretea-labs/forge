@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId } from './protocol';
 import { WorkflowSupervisorStore } from './store';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
 
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
 const rejectUnconfigured = async (): Promise<WorkflowContractValidation> => ({ valid: false, reason: 'validator_unconfigured' });
@@ -33,6 +33,37 @@ export class WorkflowSupervisorControlPlane {
   }
   getTask(taskId: string): WorkflowSupervisorTask | undefined { return this.store.getTask(taskId); }
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
+  browserProjectScopes(): WorkflowSupervisorProjectScope[] {
+    const scopes = new Map<string, WorkflowSupervisorProjectScope>();
+    for (const task of this.store.listTasks()) {
+      const scope = this.hooks.projectScopeForTask?.(task);
+      if (!scope?.title.trim()) continue;
+      const normalized: WorkflowSupervisorProjectScope = {
+        title: scope.title.trim().slice(0, 512),
+        ...(scope.repoId?.trim() ? { repoId: scope.repoId.trim().slice(0, 256) } : {}),
+        ...(scope.controllerHome?.trim() ? { controllerHome: scope.controllerHome.trim().slice(0, 2048) } : {}),
+      };
+      const key = `${normalized.title.toLocaleLowerCase()}\n${normalized.repoId ?? ''}\n${normalized.controllerHome ?? ''}`;
+      scopes.set(key, normalized);
+    }
+    return [...scopes.values()];
+  }
+  reconcileDiscoveredConversations(conversations: readonly WorkflowSupervisorDiscoveredConversation[]): { enrolled: Array<{ taskId: string; effectId: string; conversationId: string }> } {
+    const projectScopes = this.browserProjectScopes();
+    const enrolled: Array<{ taskId: string; effectId: string; conversationId: string }> = [];
+    for (const conversation of conversations) {
+      if (!conversation.projectTitle?.trim() || this.store.getTaskByConversationId(conversation.conversationId)) continue;
+      const matches = projectScopes.filter((scope) => scope.title.trim().toLocaleLowerCase() === conversation.projectTitle!.trim().toLocaleLowerCase());
+      if (matches.length !== 1) continue;
+      const input = this.hooks.discoveredConversationTask?.(conversation, matches[0]!);
+      if (!input) continue;
+      if (input.conversationId !== conversation.conversationId || input.conversationUrl !== conversation.canonicalUrl) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_BOOTSTRAP_IDENTITY_MISMATCH');
+      const task = this.registerTask(input);
+      const effect = this.reserveEnrollment(task.taskId);
+      enrolled.push({ taskId: task.taskId, effectId: effect.effectId, conversationId: task.conversationId });
+    }
+    return { enrolled };
+  }
   browserTasks(): WorkflowSupervisorBrowserTask[] {
     return this.store.listTasks().filter((task) => {
       if (this.store.terminalAction(task.taskId)) return false;
@@ -140,6 +171,19 @@ export class WorkflowSupervisorControlPlane {
     const parsed = parseSupervisorCompletion(input.responseText);
     const sourceEffect = this.store.getEffect(parsed.proposal.sourceEffectId);
     if (!sourceEffect || sourceEffect.taskId !== task.taskId || !this.store.effectApplied(sourceEffect.effectId)) throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
+    const explicitIdentityProtocol = sourceEffect.prompt.includes('conversation_id=') && sourceEffect.prompt.includes('task_id=') && sourceEffect.prompt.includes('supervisor_state');
+    if (parsed.proposal.conversationId && parsed.proposal.conversationId !== task.conversationId) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_CONVERSATION_MISMATCH');
+    if (parsed.proposal.taskId && parsed.proposal.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TASK_MISMATCH');
+    if (explicitIdentityProtocol && !parsed.proposal.conversationId) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_CONVERSATION_ID_REQUIRED');
+    if (explicitIdentityProtocol && !parsed.proposal.taskId) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TASK_ID_REQUIRED');
+    if (explicitIdentityProtocol && !parsed.proposal.supervisorState) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_STATE_REQUIRED');
+    if (explicitIdentityProtocol && !parsed.proposal.activeScope) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_ACTIVE_SCOPE_REQUIRED');
+    const expectedScope = typeof task.completionContract.requirement_id === 'string' && task.completionContract.requirement_id.trim()
+      ? `requirement:${task.completionContract.requirement_id.trim()}`
+      : typeof task.continuationPolicy.active_scope === 'string' && task.continuationPolicy.active_scope.trim()
+        ? task.continuationPolicy.active_scope.trim()
+        : undefined;
+    if (expectedScope && parsed.proposal.activeScope && parsed.proposal.activeScope !== expectedScope) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_ACTIVE_SCOPE_MISMATCH');
     const responseSha256 = sha256(input.responseText);
     const controlBlockSha256 = sha256(parsed.controlBlock);
     const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, parsed.proposal.sourceEffectId, responseSha256, controlBlockSha256));

@@ -66,21 +66,65 @@ async function handlePage(message, sender) {
   const poll = await nativeRpc('browser_poll', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl });
   if (poll?.command) await act(tabId, identity, poll.command);
 }
-async function publishDiscovery(tabs) {
+async function discoveryScan(tabId, projectTitles) {
+  try { return await tabMessage(tabId, { type: 'forge-workflow-supervisor-discovery-scan', projectTitles }); }
+  catch { return {}; }
+}
+async function publishDiscovery(tabs, projectConversations = []) {
   const seen = new Set();
   const conversations = [];
+  const append = (entry) => {
+    if (!entry?.conversation_id || seen.has(entry.conversation_id) || conversations.length >= 512) return;
+    seen.add(entry.conversation_id);
+    conversations.push(entry);
+  };
   for (const tab of tabs) {
     const identity = core.parseConversation(tab.url ?? '');
-    if (!identity || seen.has(identity.conversationId) || conversations.length >= 64) continue;
-    seen.add(identity.conversationId);
+    if (!identity) continue;
     const title = String(tab.title ?? '').trim();
-    conversations.push({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}) });
+    append({ conversation_id: identity.conversationId, canonical_url: identity.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}) });
   }
-  return nativeRpc('browser_discovery_update', { conversations });
+  for (const entry of projectConversations) append(entry);
+  return nativeRpc('browser_discovery_update', { source: 'chrome-extension', conversations });
 }
 async function refreshAuthorizedTabs() {
   const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
-  await publishDiscovery(tabs).catch(() => undefined);
+  const scopeResult = await nativeRpc('browser_project_scopes').catch(() => ({ projects: [] }));
+  const projectScopes = Array.isArray(scopeResult?.projects) ? scopeResult.projects.filter((entry) => typeof entry?.title === 'string' && entry.title.trim()) : [];
+  const projectTitles = [...new Set(projectScopes.map((entry) => entry.title.trim()))];
+  const scans = [];
+  for (const tab of tabs) if (tab.id) scans.push({ tab, scan: await discoveryScan(tab.id, projectTitles) });
+  const projectLinks = new Map();
+  for (const { scan } of scans) for (const project of Array.isArray(scan?.projects) ? scan.projects : []) {
+    const title = String(project?.title ?? '').trim();
+    const url = String(project?.url ?? '').trim();
+    if (title && url) projectLinks.set(title.toLocaleLowerCase(), { title, url });
+  }
+  const projectConversations = [];
+  for (const scope of projectScopes) {
+    const project = projectLinks.get(scope.title.trim().toLocaleLowerCase());
+    if (!project) continue;
+    let projectTab = tabs.find((tab) => String(tab.url ?? '') === project.url);
+    if (!projectTab) {
+      projectTab = await chrome.tabs.create({ url: project.url, active: false });
+      continue;
+    }
+    if (!projectTab.id) continue;
+    const scan = await discoveryScan(projectTab.id, projectTitles);
+    for (const conversation of Array.isArray(scan?.conversations) ? scan.conversations : []) {
+      const identity = core.parseConversation(conversation?.canonicalUrl ?? '');
+      if (!identity) continue;
+      const title = String(conversation?.title ?? '').trim();
+      projectConversations.push({
+        conversation_id: identity.conversationId,
+        canonical_url: identity.canonicalUrl,
+        ...(title ? { title: title.slice(0, 512) } : {}),
+        project_title: scope.title.trim(),
+        project_url: project.url,
+      });
+    }
+  }
+  await publishDiscovery(tabs, projectConversations).catch(() => undefined);
   const result = await nativeRpc('browser_tasks');
   const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
   for (const task of tasks) {
@@ -100,5 +144,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void refreshAuthorizedTabs().catch(() => undefined); });
 chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void refreshAuthorizedTabs().catch(() => undefined); });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void refreshAuthorizedTabs().catch(() => undefined); });
+let refreshTimer;
+function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => void refreshAuthorizedTabs().catch(() => undefined), 500); }
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) scheduleRefresh(); });
+chrome.tabs.onRemoved.addListener(() => scheduleRefresh());
 chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 void refreshAuthorizedTabs().catch(() => undefined);

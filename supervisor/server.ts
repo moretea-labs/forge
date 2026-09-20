@@ -4,21 +4,13 @@ import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
+import type { WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation } from './types';
+import type { WorkflowSupervisorStore } from './store';
 
 interface RpcRequest { id: string; method: string; params: Record<string, unknown> }
 const MAX_REQUEST_BYTES = 1024 * 1024;
-const MAX_DISCOVERED_CONVERSATIONS = 64;
+const MAX_DISCOVERED_CONVERSATIONS = 512;
 const MAX_DISCOVERY_TITLE_CHARS = 512;
-
-export interface WorkflowSupervisorDiscoveredConversation {
-  conversationId: string;
-  canonicalUrl: string;
-  title?: string;
-}
-export interface WorkflowSupervisorDiscoverySnapshot {
-  observedAt: string;
-  conversations: WorkflowSupervisorDiscoveredConversation[];
-}
 
 /** Ephemeral socket binding to the Canonical Runtime's durable incarnation. */
 export interface WorkflowSupervisorWriterIdentity {
@@ -163,8 +155,9 @@ export async function reconcileWorkflowSupervisorSocket(input: {
   }
 }
 export class WorkflowSupervisorEphemeralDiscovery {
-  private snapshot: WorkflowSupervisorDiscoverySnapshot = { observedAt: '', conversations: [] };
-  update(value: unknown): WorkflowSupervisorDiscoverySnapshot {
+  private readonly bySource = new Map<string, WorkflowSupervisorDiscoveredConversation[]>();
+  constructor(private readonly store?: WorkflowSupervisorStore) {}
+  update(value: unknown, source = 'browser-extension'): WorkflowSupervisorDiscoverySnapshot {
     if (!Array.isArray(value) || value.length > MAX_DISCOVERED_CONVERSATIONS) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_INVALID');
     const seen = new Set<string>();
     const conversations: WorkflowSupervisorDiscoveredConversation[] = [];
@@ -176,12 +169,38 @@ export class WorkflowSupervisorEphemeralDiscovery {
       if (seen.has(identity.conversationId)) continue;
       seen.add(identity.conversationId);
       const rawTitle = typeof record.title === 'string' ? record.title.trim() : '';
-      conversations.push({ conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl, ...(rawTitle ? { title: rawTitle.slice(0, MAX_DISCOVERY_TITLE_CHARS) } : {}) });
+      const rawProjectTitle = typeof record.project_title === 'string' ? record.project_title.trim() : '';
+      const rawProjectUrl = typeof record.project_url === 'string' ? record.project_url.trim() : '';
+      let projectUrl: string | undefined;
+      if (rawProjectUrl) {
+        let parsed: URL;
+        try { parsed = new URL(rawProjectUrl); } catch { throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_PROJECT_URL_INVALID'); }
+        if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com') throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_PROJECT_URL_INVALID');
+        parsed.hash = '';
+        projectUrl = parsed.toString();
+      }
+      conversations.push({
+        conversationId: identity.conversationId,
+        canonicalUrl: identity.canonicalUrl,
+        ...(rawTitle ? { title: rawTitle.slice(0, MAX_DISCOVERY_TITLE_CHARS) } : {}),
+        ...(rawProjectTitle ? { projectTitle: rawProjectTitle.slice(0, MAX_DISCOVERY_TITLE_CHARS) } : {}),
+        ...(projectUrl ? { projectUrl } : {}),
+      });
     }
-    this.snapshot = { observedAt: new Date().toISOString(), conversations };
+    if (this.store) return this.store.recordDiscovery(source, conversations);
+    this.bySource.set(source, conversations);
     return this.get();
   }
-  get(): WorkflowSupervisorDiscoverySnapshot { return structuredClone(this.snapshot); }
+  get(): WorkflowSupervisorDiscoverySnapshot {
+    if (this.store) return this.store.discoverySnapshot();
+    const byConversation = new Map<string, WorkflowSupervisorDiscoveredConversation>();
+    for (const conversations of this.bySource.values()) for (const conversation of conversations) {
+      const current = byConversation.get(conversation.conversationId);
+      if (!current) byConversation.set(conversation.conversationId, conversation);
+      else if (!current.projectTitle && conversation.projectTitle) byConversation.set(conversation.conversationId, { ...current, ...conversation });
+    }
+    return { observedAt: this.bySource.size > 0 ? new Date().toISOString() : '', conversations: [...byConversation.values()] };
+  }
 }
 
 function request(value: unknown): RpcRequest {
@@ -239,7 +258,11 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   const p = req.params;
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
   if (req.method === 'browser_discovery') return discovery.get();
-  if (req.method === 'browser_discovery_update') return discovery.update(p.conversations);
+  if (req.method === 'browser_discovery_update') {
+    const snapshot = discovery.update(p.conversations, typeof p.source === 'string' && p.source.trim() ? p.source.trim() : 'chrome-extension');
+    return { ...snapshot, ...control.reconcileDiscoveredConversations(snapshot.conversations) };
+  }
+  if (req.method === 'browser_project_scopes') return { projects: control.browserProjectScopes() };
   if (req.method === 'browser_tasks') return { tasks: control.browserTasks() };
   if (req.method === 'browser_poll') return control.browserPoll({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url') });
   if (req.method === 'browser_begin_effect') return control.browserBeginEffect({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), effectId: text(p, 'effect_id'), dispatchId: text(p, 'dispatch_id'), dispatchGeneration: positiveInteger(p, 'dispatch_generation'), evidence: object(p.evidence) });

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
@@ -22,7 +23,8 @@ import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 
 export type WorkflowSupervisorBoundary =
-  | { status: 'not_eligible' | 'conversation_pending' }
+  | { status: 'not_eligible' }
+  | { status: 'conversation_pending'; reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' }
   | { status: 'outer_turn'; taskId: string; requirementId: string; conversationId: string; conversationUrl: string };
 
 export type WorkflowSupervisorEnrollmentStatus =
@@ -47,8 +49,8 @@ export function workflowSupervisorLowerLayerReadyForWork(
   return { ready: true, workId: relay.originWorkId };
 }
 
-function taskIdForRequirement(repoId: string, requirementId: string): string {
-  return `forge:${repoId}:requirement:${requirementId}`;
+function taskIdForConversation(repoId: string, conversationId: string): string {
+  return `forge:${repoId}:conversation:${conversationId}`;
 }
 
 /**
@@ -64,10 +66,10 @@ export function workflowSupervisorBoundaryForWork(
   const work = getWorkContract(options, workId);
   if (!work?.requirementId) return { status: 'not_eligible' };
   const binding = getChatgptWorkConversationBinding(options, workId);
-  if (!binding) return { status: 'conversation_pending' };
+  if (!binding) return { status: 'conversation_pending', reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' };
   return {
     status: 'outer_turn',
-    taskId: taskIdForRequirement(options.repoId, work.requirementId),
+    taskId: taskIdForConversation(options.repoId, binding.conversationId),
     requirementId: work.requirementId,
     conversationId: binding.conversationId,
     conversationUrl: binding.conversationUrl,
@@ -83,6 +85,11 @@ export function inheritWorkflowSupervisorConversationBinding(
   const sourceWork = getWorkContract(options, fromWorkId);
   const targetWork = getWorkContract(options, toWorkId);
   if (!sourceWork?.requirementId || sourceWork.requirementId !== targetWork?.requirementId) return undefined;
+  // Requirement membership is goal identity, not conversation lineage. Only an
+  // explicit Work predecessor edge proves that the successor belongs to the
+  // same logical controller conversation. Sibling Works must bind their own
+  // current conversation instead of silently reusing historical delivery.
+  if (targetWork?.predecessorWorkId?.trim() !== fromWorkId) return undefined;
   const source = getChatgptWorkConversationBinding(options, fromWorkId);
   if (!source) return undefined;
   const existing = getChatgptWorkConversationBinding(options, toWorkId);
@@ -112,9 +119,10 @@ async function settleForgeWorkflowSupervisorTurn(
   completion: WorkflowSupervisorCompletion,
 ): Promise<WorkflowSupervisorTurnSettlement> {
   const repoId = workflowSupervisorContractText(task, 'repo_id');
-  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  const dynamicRequirementId = completion.proposal.activeScope?.startsWith('requirement:') ? completion.proposal.activeScope.slice('requirement:'.length).trim() : undefined;
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id') ?? dynamicRequirementId;
   const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || !requirementId || !taskControllerHome) return { continuationAllowed: true };
+  if (!repoId || !requirementId || !taskControllerHome) return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_ACTIVE_REQUIREMENT_SCOPE_REQUIRED' };
   if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
 
   const store = { controllerHome, repoId };
@@ -275,6 +283,27 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
+    discoveredConversationTask: (conversation, scope) => {
+      if (!scope.repoId || !scope.controllerHome || scope.controllerHome !== controllerHome || !conversation.projectTitle) return undefined;
+      return {
+        taskId: taskIdForConversation(scope.repoId, conversation.conversationId),
+        conversationId: conversation.conversationId,
+        conversationUrl: conversation.canonicalUrl,
+        objective: 'Continue the existing original Forge task in this ChatGPT Project conversation. Recover the exact active Requirement and Work from conversation history plus durable Forge state. Before repository mutation, recover or establish the exact Requirement-backed ControllerRound. Do not restart completed work; if the original goal is already complete, validate durable Requirement acceptance and return DONE.',
+        completionContract: { kind: 'forge_dynamic_requirement_done', controller_home: controllerHome, repo_id: scope.repoId },
+        continuationPolicy: { kind: 'forge_project_conversation_outer_turn', controller_home: controllerHome, repo_id: scope.repoId, chatgpt_project_title: scope.title },
+        userBlockerPolicy: { kind: 'forge_dynamic_requirement_waiting_for_user', controller_home: controllerHome, repo_id: scope.repoId },
+      };
+    },
+    projectScopeForTask: (task) => {
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+      if (!repoId || !taskControllerHome || taskControllerHome !== controllerHome) return undefined;
+      try {
+        const repository = getRepository(repoId, controllerHome);
+        return { title: repository.displayName, repoId, controllerHome };
+      } catch { return undefined; }
+    },
     browserTaskActive,
     assistantTurnCommitted: (task, completion) => settleForgeWorkflowSupervisorTurn(controllerHome, task, completion),
   };
@@ -285,14 +314,16 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
   input: { schedulerRecoveryKey?: string } = {},
 ): Promise<{ status: WorkflowSupervisorEnrollmentStatus; taskId?: string; effectId?: string; reason?: string }> {
   const boundary = workflowSupervisorBoundaryForWork(options, workId);
-  if (boundary.status !== 'outer_turn') return { status: boundary.status };
+  if (boundary.status !== 'outer_turn') {
+    return { status: boundary.status, ...('reason' in boundary ? { reason: boundary.reason } : {}) };
+  }
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId: boundary.taskId };
   const lowerLayer = workflowSupervisorLowerLayerReadyForWork(options, workId);
   if (!lowerLayer.ready) return { status: 'lower_layer_not_ready', reason: lowerLayer.reason };
   const requirement = readRequirement({ controllerHome: options.controllerHome }, boundary.requirementId)?.value;
   if (!requirement) return { status: 'not_eligible' };
-  await registerWorkflowSupervisorTask(forgeHome, {
+  const registeredTask = await registerWorkflowSupervisorTask(forgeHome, {
     taskId: boundary.taskId,
     conversationId: boundary.conversationId,
     conversationUrl: boundary.conversationUrl,
@@ -317,7 +348,7 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
       requirement_id: requirement.requirementId,
     },
   });
-  const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, boundary.taskId);
-  const schedulerRecovery = await reserveWorkflowSupervisorSchedulerRecovery(forgeHome, boundary.taskId, input.schedulerRecoveryKey);
-  return { status: 'enrolled', taskId: boundary.taskId, effectId: schedulerRecovery?.effectId ?? effect.effectId };
+  const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId);
+  const schedulerRecovery = await reserveWorkflowSupervisorSchedulerRecovery(forgeHome, registeredTask.taskId, input.schedulerRecoveryKey);
+  return { status: 'enrolled', taskId: registeredTask.taskId, effectId: schedulerRecovery?.effectId ?? effect.effectId };
 }

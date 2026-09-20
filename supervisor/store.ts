@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
 interface Database { exec(sql: string): void; prepare(sql: string): Statement; close(): void }
@@ -66,6 +66,12 @@ function openDatabase(forgeHome?: string): Database {
       kind TEXT NOT NULL, effect_id TEXT, completion_fingerprint TEXT, payload_json TEXT NOT NULL, occurred_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS events_task_order ON events(task_id, event_id);
+    CREATE TABLE IF NOT EXISTS discovered_conversations (
+      source TEXT NOT NULL, conversation_id TEXT NOT NULL, canonical_url TEXT NOT NULL, title TEXT,
+      project_title TEXT, project_url TEXT, observed_at TEXT NOT NULL,
+      PRIMARY KEY(source, conversation_id)
+    );
+    CREATE INDEX IF NOT EXISTS discovered_conversations_observed ON discovered_conversations(observed_at, conversation_id);
     INSERT OR IGNORE INTO supervisor_schema(version, applied_at) VALUES (1, datetime('now'));
   `);
   const schema = statement(db, 'SELECT MAX(version) AS version FROM supervisor_schema', (s) => s.get()) as { version?: number } | undefined;
@@ -153,13 +159,69 @@ export class WorkflowSupervisorStore {
   }
   private read<T>(fn: (db: Database) => T): T { return fn(this.database()); }
 
+  recordDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]): WorkflowSupervisorDiscoverySnapshot {
+    const normalizedSource = source.trim();
+    if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(normalizedSource)) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_SOURCE_INVALID');
+    const observedAt = now();
+    this.transaction((db) => {
+      for (const conversation of conversations) {
+        statement(db, `INSERT INTO discovered_conversations(source,conversation_id,canonical_url,title,project_title,project_url,observed_at)
+          VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(source,conversation_id) DO UPDATE SET canonical_url=excluded.canonical_url,title=excluded.title,
+            project_title=COALESCE(excluded.project_title,discovered_conversations.project_title),
+            project_url=COALESCE(excluded.project_url,discovered_conversations.project_url),observed_at=excluded.observed_at`,
+        (s) => s.run(normalizedSource, conversation.conversationId, conversation.canonicalUrl, conversation.title ?? null, conversation.projectTitle ?? null, conversation.projectUrl ?? null, observedAt));
+      }
+    });
+    return this.discoverySnapshot();
+  }
+
+  discoverySnapshot(): WorkflowSupervisorDiscoverySnapshot {
+    return this.read((db) => {
+      const rows = statement(db, 'SELECT * FROM discovered_conversations ORDER BY observed_at DESC, conversation_id, source', (s) => s.all()) as Record<string, unknown>[];
+      const byConversation = new Map<string, WorkflowSupervisorDiscoveredConversation>();
+      let observedAt = '';
+      for (const row of rows) {
+        const conversationId = String(row.conversation_id ?? '');
+        const canonicalUrl = String(row.canonical_url ?? '');
+        const rowObservedAt = String(row.observed_at ?? '');
+        if (rowObservedAt > observedAt) observedAt = rowObservedAt;
+        const current = byConversation.get(conversationId);
+        const candidate: WorkflowSupervisorDiscoveredConversation = {
+          conversationId,
+          canonicalUrl,
+          ...(row.title ? { title: String(row.title) } : {}),
+          ...(row.project_title ? { projectTitle: String(row.project_title) } : {}),
+          ...(row.project_url ? { projectUrl: String(row.project_url) } : {}),
+        };
+        if (!current) byConversation.set(conversationId, candidate);
+        else if (!current.projectTitle && candidate.projectTitle) byConversation.set(conversationId, { ...current, projectTitle: candidate.projectTitle, ...(candidate.projectUrl ? { projectUrl: candidate.projectUrl } : {}) });
+      }
+      return { observedAt, conversations: [...byConversation.values()] };
+    });
+  }
+
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask {
     return this.transaction((db) => {
       const createdAt = now();
       statement(db, 'INSERT OR IGNORE INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (s) => s.run(input.taskId, input.conversationId, input.conversationUrl, input.objective, json(input.completionContract), json(input.continuationPolicy), json(input.userBlockerPolicy), createdAt));
-      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
-      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+      let row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) {
+        row = statement(db, 'SELECT * FROM tasks WHERE conversation_id = ?', (s) => s.get(input.conversationId)) as Record<string, unknown> | undefined;
+        if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+        const existing = taskFromRow(row);
+        if (existing.conversationUrl !== input.conversationUrl) throw new Error('WORKFLOW_SUPERVISOR_TASK_CONVERSATION_CONFLICT');
+        const existingRepo = typeof existing.completionContract.repo_id === 'string' ? existing.completionContract.repo_id : existing.continuationPolicy.repo_id;
+        const incomingRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+        if (typeof existingRepo === 'string' && typeof incomingRepo === 'string' && existingRepo !== incomingRepo) throw new Error('WORKFLOW_SUPERVISOR_TASK_REPOSITORY_CONFLICT');
+        return existing;
+      }
       const task = taskFromRow(row);
+      const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
+      const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+      const projectBootstrap = task.continuationPolicy.kind === 'forge_project_conversation_outer_turn';
+      if (projectBootstrap && task.conversationId === input.conversationId && task.conversationUrl === input.conversationUrl
+        && (!taskRepo || !inputRepo || taskRepo === inputRepo)) return task;
       if (task.conversationId !== input.conversationId
         || task.conversationUrl !== input.conversationUrl
         || task.objective !== input.objective

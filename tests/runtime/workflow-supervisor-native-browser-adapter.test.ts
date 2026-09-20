@@ -73,8 +73,9 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
 }
 function register(control: WorkflowSupervisorControlPlane, conversationId: string) {
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
-  control.registerTask({ taskId: `task-${conversationId}`, conversationId, conversationUrl, objective: 'Continue the Forge task.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
-  return { conversationUrl, effect: control.reserveEnrollment(`task-${conversationId}`) };
+  const taskId = `task-${conversationId}`;
+  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Continue the Forge task.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  return { taskId, conversationUrl, effect: control.reserveEnrollment(taskId) };
 }
 
 describe('Workflow Supervisor macOS native browser adapter', () => {
@@ -317,11 +318,11 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
 
   test('observes a committed CONTINUE response and dispatches the successor effect in the same loop', async () => {
     const conversationId = '99999999-8888-7777-6666-555555555555';
-    const h = harness([], 'controller_authority_id=ctrl_next relay_scope_id=requirement:REQ-next', false, '', '\\n展开'); const { conversationUrl, effect } = register(h.control, conversationId);
+    const h = harness([], 'controller_authority_id=ctrl_next relay_scope_id=requirement:REQ-next', false, '', '\\n展开'); const { taskId, conversationUrl, effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     const firstPrompt = page.latestUserText;
-    page.latestAssistantResponse = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', source_effect_id: effect.effectId, checkpoint: 'native checkpoint', reason: 'continue', evidence: ['native transport'] })}\n${SUPERVISOR_BLOCK_END}`;
+    page.latestAssistantResponse = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', conversation_id: conversationId, task_id: taskId, supervisor_state: 'running', active_scope: 'requirement:REQ-next', source_effect_id: effect.effectId, checkpoint: 'native checkpoint', reason: 'continue', evidence: ['native transport'] })}\n${SUPERVISOR_BLOCK_END}`;
     page.latestTurnRole = 'assistant';
     page.providerActivityText = page.latestAssistantResponse;
     await h.adapter.runOnce();

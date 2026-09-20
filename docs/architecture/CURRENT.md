@@ -8,16 +8,19 @@ This file is the sole maintained architecture authority for the current Forge ru
 
 Forge is an executable AI harness for a semantic controller. The controller owns requirement interpretation, repository understanding, implementation decisions and review. Forge supplies fast context retrieval, deterministic local execution, provider actions, bounded verification, evidence, and durable lower-layer continuity. Forge verification and evidence are factual inputs, not semantic acceptance rules.
 
-Long-running autonomous operation adds one higher lifecycle authority: **Workflow Supervisor** owns cross-assistant-turn scheduling for an original Goal after the current ChatGPT/MCP call stack has ended. ChatGPT still owns semantic reasoning and emits a bounded `CONTINUE | DONE | NEEDS_USER` proposal; `DONE` and `NEEDS_USER` become terminal only after the configured completion/blocker contracts validate authoritative evidence. Work, ControllerRound, Scheduler and MCP/session recovery remain lower-layer authorities and must not impersonate this outer turn scheduler. See [Workflow Supervisor authority](decisions/20260916-workflow-supervisor-authority.md). V1 persists this authority only in `${FORGE_HOME:-~/.forge}/supervisor/supervisor.sqlite`; Controller Home, `control-plane.sqlite`, and the declarative `workflow_run` namespace are lower-layer authorities and are not Supervisor storage.
+Long-running autonomous operation adds one higher lifecycle authority: **Workflow Supervisor** owns cross-assistant-turn scheduling for an original Goal after the current ChatGPT/MCP call stack has ended. The stable outer-turn identity is the exact logical conversation, not a Requirement, Work, MCP request, Browser tab, or provider session; current Requirement/Work authority is projected as that conversation's `active_scope`. ChatGPT still owns semantic reasoning and emits a bounded `CONTINUE | DONE | NEEDS_USER` proposal; newly rendered Supervisor turns must self-identify with exact `conversation_id`, stable `task_id`, `supervisor_state`, `active_scope`, and the daemon-minted `source_effect_id`. `DONE` and `NEEDS_USER` become terminal only after the configured completion/blocker contracts validate authoritative evidence. Work, ControllerRound, Scheduler and MCP/session recovery remain lower-layer authorities and must not impersonate this outer turn scheduler. See [Workflow Supervisor authority](decisions/20260916-workflow-supervisor-authority.md). V1 persists this authority only in `${FORGE_HOME:-~/.forge}/supervisor/supervisor.sqlite`; Controller Home, `control-plane.sqlite`, and the declarative `workflow_run` namespace are lower-layer authorities and are not Supervisor storage.
 
 ```text
-Original Goal / logical WorkflowRun
-  -> Workflow Supervisor (cross-turn durable authority)
+Original Goal / exact logical conversation
+  -> Workflow Supervisor (cross-turn durable authority; conversation-stable task)
+  -> active Requirement/Work scope
   -> Semantic Controller / ChatGPT turn
   -> Context + Thin Execution Harness / Forge Work
   -> Verification / Evidence
   -> Provider / External Effect boundary
 ```
+
+Project/browser discovery is a projection into that one authority, not another scheduler. A ChatGPT Project adapter may discover exact `/c/<id>` conversation identities for a repository-derived project scope, persist bounded discovery metadata, and bootstrap one enrollment effect for an unbound conversation. Repeated discovery converges on the same conversation-stable Supervisor task. A mutable project title may select a discovery scope but never becomes conversation, Goal, Requirement, Work, or terminalization authority. Browser tabs, DOM, Accessibility, Native Messaging and project pages remain replaceable transports.
 
 Quality is prioritized over interactive performance; performance is prioritized over durability machinery that does not materially improve ordinary coding.
 

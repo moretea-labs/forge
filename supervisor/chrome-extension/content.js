@@ -6,6 +6,36 @@
   const COMPOSER = 'div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"]';
   const SEND = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
   const identity = () => core.parseConversation(location.href);
+  const absoluteChatgptUrl = (href) => {
+    try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
+    catch { return undefined; }
+  };
+  const discoverProjectLinks = (titles) => {
+    const wanted = new Map((Array.isArray(titles) ? titles : []).map((title) => [core.normalizeText(title).toLocaleLowerCase(), core.normalizeText(title)]).filter(([key]) => key));
+    const seen = new Set();
+    const projects = [];
+    for (const anchor of document.querySelectorAll('a[href]')) {
+      const title = core.normalizeText(anchor.innerText ?? anchor.textContent);
+      const matched = wanted.get(title.toLocaleLowerCase());
+      const url = absoluteChatgptUrl(anchor.getAttribute('href'));
+      if (!matched || !url || seen.has(`${matched}\n${url}`)) continue;
+      seen.add(`${matched}\n${url}`);
+      projects.push({ title: matched, url });
+    }
+    return projects;
+  };
+  const discoverConversationLinks = () => {
+    const seen = new Set();
+    const conversations = [];
+    for (const anchor of document.querySelectorAll('a[href]')) {
+      const parsed = core.parseConversation(absoluteChatgptUrl(anchor.getAttribute('href')) ?? '');
+      if (!parsed || seen.has(parsed.conversationId)) continue;
+      seen.add(parsed.conversationId);
+      const title = core.normalizeText(anchor.innerText ?? anchor.textContent);
+      conversations.push({ conversationId: parsed.conversationId, canonicalUrl: parsed.canonicalUrl, ...(title ? { title: title.slice(0, 512) } : {}) });
+    }
+    return conversations;
+  };
   const latestText = (selector) => {
     const nodes = document.querySelectorAll(selector);
     const node = nodes.item(nodes.length - 1);
@@ -49,6 +79,10 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-workflow-supervisor-scan') { notify(); return false; }
+    if (message.type === 'forge-workflow-supervisor-discovery-scan') {
+      sendResponse({ projects: discoverProjectLinks(message.projectTitles), conversations: discoverConversationLinks(), pageUrl: location.href });
+      return false;
+    }
     if (message.type === 'forge-workflow-supervisor-snapshot') { sendResponse(reconciliationSnapshot(String(message.effectId ?? ''))); return false; }
     if (message.type !== 'forge-workflow-supervisor-effect') return false;
     execute(message).then(sendResponse, (error) => sendResponse({ outcome: 'unknown', evidence: { reason: String(error?.message ?? error) } }));

@@ -1,14 +1,15 @@
 import { isLegacyMachineRequirementWait, readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
-import type { WorkflowContractValidation, WorkflowSupervisorTask, WorkflowSupervisorValidators } from './types';
+import type { WorkflowContractValidation, WorkflowSupervisorProposal, WorkflowSupervisorTask, WorkflowSupervisorValidators } from './types';
 
 function contractText(task: WorkflowSupervisorTask, key: string): string | undefined {
   const value = task.completionContract[key] ?? task.userBlockerPolicy[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function requirementFor(task: WorkflowSupervisorTask) {
+function requirementFor(task: WorkflowSupervisorTask, proposal?: WorkflowSupervisorProposal) {
   const controllerHome = contractText(task, 'controller_home');
-  const requirementId = contractText(task, 'requirement_id');
+  const dynamicRequirementId = proposal?.activeScope?.startsWith('requirement:') ? proposal.activeScope.slice('requirement:'.length).trim() : undefined;
+  const requirementId = contractText(task, 'requirement_id') ?? dynamicRequirementId;
   if (!controllerHome || !requirementId) return undefined;
   return readRequirement({ controllerHome }, requirementId)?.value;
 }
@@ -22,18 +23,18 @@ function unsupported(reason: string): WorkflowContractValidation { return { vali
  */
 export function forgeWorkflowSupervisorValidators(): WorkflowSupervisorValidators {
   return {
-    completionContract: async (task) => {
-      if (task.completionContract.kind !== 'forge_requirement_done') return unsupported('completion_contract_kind_unsupported');
-      const requirement = requirementFor(task);
+    completionContract: async (task, proposal) => {
+      if (!['forge_requirement_done', 'forge_dynamic_requirement_done'].includes(String(task.completionContract.kind ?? ''))) return unsupported('completion_contract_kind_unsupported');
+      const requirement = requirementFor(task, proposal);
       if (!requirement) return unsupported('requirement_not_found');
       if (requirement.state !== 'done' || !requirement.semanticAcceptance) {
         return { valid: false, reason: `requirement_not_semantically_done:${requirement.state}`, evidence: requirement.auditRefs.slice(-8) };
       }
       return { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
     },
-    userBlockerPolicy: async (task) => {
-      if (task.userBlockerPolicy.kind !== 'forge_requirement_waiting_for_user') return unsupported('user_blocker_policy_kind_unsupported');
-      const requirement = requirementFor(task);
+    userBlockerPolicy: async (task, proposal) => {
+      if (!['forge_requirement_waiting_for_user', 'forge_dynamic_requirement_waiting_for_user'].includes(String(task.userBlockerPolicy.kind ?? ''))) return unsupported('user_blocker_policy_kind_unsupported');
+      const requirement = requirementFor(task, proposal);
       if (!requirement) return unsupported('requirement_not_found');
       const genuineUserWait = requirement.state === 'waiting_for_user'
         && requirement.needsAttention

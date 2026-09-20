@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisorTask } from './types';
+import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisorState, WorkflowSupervisorTask } from './types';
 
 export const SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
@@ -34,7 +34,7 @@ export function parseSupervisorCompletion(responseText: string): { proposal: Wor
   try { parsed = JSON.parse(jsonText); } catch { throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_JSON_INVALID'); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_INVALID');
   const record = parsed as Record<string, unknown>;
-  const allowed = new Set(['action', 'source_effect_id', 'checkpoint', 'reason', 'evidence']);
+  const allowed = new Set(['action', 'source_effect_id', 'checkpoint', 'reason', 'evidence', 'conversation_id', 'task_id', 'supervisor_state', 'active_scope']);
   if (Object.keys(record).some((key) => !allowed.has(key))) throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_FIELD_INVALID');
   const action = boundedString(record.action, 'ACTION', 32);
   if (!['CONTINUE', 'DONE', 'NEEDS_USER'].includes(action)) throw new Error('WORKFLOW_SUPERVISOR_ACTION_INVALID');
@@ -43,8 +43,25 @@ export function parseSupervisorCompletion(responseText: string): { proposal: Wor
   const reason = boundedString(record.reason, 'REASON', 2_000);
   if (!Array.isArray(record.evidence) || record.evidence.length > 16) throw new Error('WORKFLOW_SUPERVISOR_EVIDENCE_INVALID');
   const evidence = record.evidence.map((value) => boundedString(value, 'EVIDENCE_ITEM', 1_000));
+  const conversationId = record.conversation_id === undefined ? undefined : boundedString(record.conversation_id, 'CONVERSATION_ID', 256);
+  const taskId = record.task_id === undefined ? undefined : boundedString(record.task_id, 'TASK_ID', 512);
+  const supervisorState = record.supervisor_state === undefined ? undefined : boundedString(record.supervisor_state, 'SUPERVISOR_STATE', 32) as WorkflowSupervisorState;
+  const activeScope = record.active_scope === undefined ? undefined : boundedString(record.active_scope, 'ACTIVE_SCOPE', 512);
+  if (supervisorState && !['running', 'done', 'needs_user'].includes(supervisorState)) throw new Error('WORKFLOW_SUPERVISOR_STATE_INVALID');
+  const expectedState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
+  if (supervisorState && supervisorState !== expectedState) throw new Error('WORKFLOW_SUPERVISOR_STATE_ACTION_MISMATCH');
+  if (activeScope && !/^(?:requirement|goal):[^\\s]{1,480}$/.test(activeScope)) throw new Error('WORKFLOW_SUPERVISOR_ACTIVE_SCOPE_INVALID');
   const controlBlock = responseText.slice(start, end + SUPERVISOR_BLOCK_END.length);
-  return { proposal: { action: action as WorkflowSupervisorProposal['action'], sourceEffectId, checkpoint, reason, evidence }, controlBlock };
+  return {
+    proposal: {
+      action: action as WorkflowSupervisorProposal['action'], sourceEffectId, checkpoint, reason, evidence,
+      ...(conversationId ? { conversationId } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(supervisorState ? { supervisorState } : {}),
+      ...(activeScope ? { activeScope } : {}),
+    },
+    controlBlock,
+  };
 }
 
 function objective(task: WorkflowSupervisorTask): string {
@@ -66,11 +83,22 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
     ? `Forge lower-layer continuation contract (machine-generated):\n${lowerLayerContext.trim().slice(0, 16_000)}`
     : '';
   const actionContractLine = 'The action field is an exact enum: "CONTINUE", "DONE", or "NEEDS_USER". "WAIT", "RETRY", and every other value are invalid. Use CONTINUE for any non-terminal state that still has autonomous work or an internal wait/retry path; use NEEDS_USER only when the configured user-blocker policy requires a genuine user decision; use DONE only when the completion contract is satisfied.';
+  const explicitScope = typeof task.completionContract.requirement_id === 'string' && task.completionContract.requirement_id.trim()
+    ? `requirement:${task.completionContract.requirement_id.trim()}`
+    : typeof task.continuationPolicy.active_scope === 'string' && task.continuationPolicy.active_scope.trim()
+      ? task.continuationPolicy.active_scope.trim()
+      : undefined;
+  const stateContractLine = 'Set supervisor_state="running" with CONTINUE, "done" with DONE, and "needs_user" with NEEDS_USER.';
+  const scopeContractLine = explicitScope
+    ? `The block must echo active_scope=${JSON.stringify(explicitScope)}.`
+    : 'The block must include active_scope using the exact durable Forge relay scope recovered in this turn, for example requirement:<id> or goal:<id>. Never guess a scope.';
   return [marker, mode, `Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
     'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.',
     actionContractLine,
+    stateContractLine,
+    scopeContractLine,
     `End this turn with exactly one ${SUPERVISOR_BLOCK_START} JSON block and ${SUPERVISOR_BLOCK_END}.`,
-    `The block must echo source_effect_id=${JSON.stringify(effectId)}. Do not invent next_prompt content.`].filter(Boolean).join('\n');
+    `The block must echo conversation_id=${JSON.stringify(task.conversationId)}, task_id=${JSON.stringify(task.taskId)}, and source_effect_id=${JSON.stringify(effectId)}. Do not invent next_prompt content.`].filter(Boolean).join('\n');
 }
 
 export function sha256(value: string): string { return createHash('sha256').update(value).digest('hex'); }

@@ -1,4 +1,5 @@
 export type WorkflowSupervisorAction = 'CONTINUE' | 'DONE' | 'NEEDS_USER';
+export type WorkflowSupervisorState = 'running' | 'done' | 'needs_user';
 export type WorkflowEffectKind = 'enrollment' | 'continuation' | 'correction' | 'recovery';
 export type WorkflowEffectOutcome = 'applied' | 'not_applied' | 'unknown';
 
@@ -8,6 +9,14 @@ export interface WorkflowSupervisorProposal {
   checkpoint: string;
   reason: string;
   evidence: string[];
+  /** Required by newly-rendered prompts; optional only for already-reserved legacy effects. */
+  conversationId?: string;
+  /** Stable Supervisor task identity, distinct from lower-layer Work authority. */
+  taskId?: string;
+  /** Redundant with action by design so a response carries an explicit machine state. */
+  supervisorState?: WorkflowSupervisorState;
+  /** Exact durable lower-layer relay scope such as requirement:<id> or goal:<id>. */
+  activeScope?: string;
 }
 
 export interface WorkflowSupervisorTaskInput {
@@ -61,6 +70,10 @@ export interface WorkflowSupervisorTurnSettlement {
 }
 
 export interface WorkflowSupervisorLifecycleHooks {
+  /** Derived project identity used only for browser discovery; never a lifecycle authority. */
+  projectScopeForTask?(task: WorkflowSupervisorTask): WorkflowSupervisorProjectScope | undefined;
+  /** Build the one bounded enrollment task for a newly discovered project conversation. */
+  discoveredConversationTask?(conversation: WorkflowSupervisorDiscoveredConversation, scope: WorkflowSupervisorProjectScope): WorkflowSupervisorTaskInput | undefined;
   /** Derived from canonical lower-layer lifecycle facts; must not create a second task lifecycle authority. */
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
   /** Idempotent: browser/recovery observation may replay the same completion fingerprint. */
@@ -89,6 +102,25 @@ export interface WorkflowSupervisorBrowserTask {
   taskId: string;
   conversationId: string;
   conversationUrl: string;
+}
+
+export interface WorkflowSupervisorDiscoveredConversation {
+  conversationId: string;
+  canonicalUrl: string;
+  title?: string;
+  projectTitle?: string;
+  projectUrl?: string;
+}
+
+export interface WorkflowSupervisorDiscoverySnapshot {
+  observedAt: string;
+  conversations: WorkflowSupervisorDiscoveredConversation[];
+}
+
+export interface WorkflowSupervisorProjectScope {
+  title: string;
+  repoId?: string;
+  controllerHome?: string;
 }
 
 export interface WorkflowSupervisorBrowserCommand {
