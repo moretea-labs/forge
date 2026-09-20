@@ -113,7 +113,7 @@ function sameStableRelease(session: Pick<ReleaseSession, 'stableRelease'>, relea
 
 function validTransaction(session: ReleaseSession): boolean {
   const transaction = session.transaction;
-  if (!transaction) return !['cutover_committed', 'soaking', 'known_good'].includes(session.phase);
+  if (!transaction) return !['cutover_committed', 'soaking'].includes(session.phase);
   const rollback = transaction.rollbackRelease;
   return transaction.schemaVersion === 1
     && Boolean(transaction.operationId?.trim())
@@ -163,6 +163,41 @@ type TransitionalReleaseSessionV2 = Omit<ReleaseSession, 'schemaVersion' | 'sema
 
 type MigratableReleaseSession = ReleaseSession | LegacyReleaseSessionV1 | TransitionalReleaseSessionV2;
 
+function releaseIdentityKey(release: {
+  releaseId?: string;
+  artifactIdentity?: string;
+  manifestSha256?: string;
+} | undefined): string | undefined {
+  const releaseId = release?.releaseId?.trim() || '';
+  const artifactIdentity = release?.artifactIdentity?.trim() || '';
+  const manifestSha256 = release?.manifestSha256?.trim() || '';
+  if (!releaseId || !artifactIdentity || !manifestSha256) return undefined;
+  return `${releaseId}\u0000${artifactIdentity}\u0000${manifestSha256}`;
+}
+
+function basicMigratableSessionShape(raw: MigratableReleaseSession, id: string): boolean {
+  const schemaSupported = (raw.schemaVersion === 1 && (raw.semanticEpoch === undefined || raw.semanticEpoch === 1 || raw.semanticEpoch === 2))
+    || (raw.schemaVersion === 2 && raw.semanticEpoch === undefined);
+  return schemaSupported
+    && raw.sessionId === id
+    && RELEASE_SESSION_PHASES.includes(raw.phase)
+    && Number.isFinite(Date.parse(raw.createdAt))
+    && Number.isFinite(Date.parse(raw.updatedAt));
+}
+
+function historicalAcceptanceReceipt(
+  sessionId: string,
+  recordedAt: string,
+  proof: string,
+): ReleaseSessionReceipt {
+  return {
+    id: `migration:historical-known-good:${sessionId}`,
+    kind: 'known_good',
+    recordedAt,
+    summary: `Legacy soaking state reconciled as known-good from exact durable release lineage: ${proof}.`,
+  };
+}
+
 export function migrateReleaseSessionState(
   controllerHome: string,
   dependencies: { readAuthority?: () => RuntimeReleaseAuthority | undefined } = {},
@@ -173,15 +208,28 @@ export function migrateReleaseSessionState(
   const migratedSessionIds: string[] = [];
   const currentSessionIds: string[] = [];
   const names = readdirSync(root).filter((name) => name.endsWith('.json')).sort();
-  for (const name of names) {
+  const parsed = names.map((name) => {
     const id = name.slice(0, -'.json'.length);
     const path = sessionPath(controllerHome, validSessionId(id));
-    let raw: MigratableReleaseSession;
     try {
-      raw = JSON.parse(readFileSync(path, 'utf8')) as MigratableReleaseSession;
+      return { id, path, raw: JSON.parse(readFileSync(path, 'utf8')) as MigratableReleaseSession };
     } catch {
       throw new Error(`RELEASE_SESSION_MIGRATION_INVALID_JSON: ${id}`);
     }
+  });
+  const stableSuccessors = new Map<string, Array<{ sessionId: string; createdAt: string }>>();
+  for (const entry of parsed) {
+    if (!basicMigratableSessionShape(entry.raw, entry.id)) continue;
+    const stableKey = releaseIdentityKey(entry.raw.stableRelease);
+    if (!stableKey) continue;
+    const existing = stableSuccessors.get(stableKey) ?? [];
+    existing.push({ sessionId: entry.id, createdAt: entry.raw.createdAt });
+    stableSuccessors.set(stableKey, existing);
+  }
+  const activeKey = releaseIdentityKey(authority?.active);
+  const previousKey = releaseIdentityKey(authority?.previous);
+
+  for (const { id, path, raw } of parsed) {
     if (raw.schemaVersion === 1 && raw.semanticEpoch === 2) {
       let current = raw as ReleaseSession;
       if (
@@ -221,43 +269,70 @@ export function migrateReleaseSessionState(
       && (raw.semanticEpoch === undefined || raw.semanticEpoch === 1);
     const transitionalV2 = raw.schemaVersion === 2
       && raw.semanticEpoch === undefined;
-    if (
-      (!legacyV1 && !transitionalV2)
-      || raw.sessionId !== id
-      || !RELEASE_SESSION_PHASES.includes(raw.phase)
-    ) {
+    if ((!legacyV1 && !transitionalV2) || !basicMigratableSessionShape(raw, id)) {
       throw new Error(`RELEASE_SESSION_MIGRATION_UNSUPPORTED_SCHEMA: ${id}`);
     }
 
     let transaction: ReleaseSessionTransaction | undefined = 'transaction' in raw
       ? raw.transaction
       : undefined;
+    let migratedPhase = raw.phase;
+    let migratedReceipts = raw.receipts;
+    const candidateKey = releaseIdentityKey(raw.candidateRelease);
+    const candidateIsActive = Boolean(candidateKey && activeKey && candidateKey === activeKey);
     if (!transaction && ['cutover_attempting', 'cutover_committed', 'soaking', 'known_good'].includes(raw.phase)) {
       const candidate = raw.candidateRelease;
       const previous = authority?.previous;
       if (
-        !candidate
-        || !authority
-        || authority.active.releaseId !== candidate.releaseId
-        || authority.active.artifactIdentity !== candidate.artifactIdentity
-        || !previous?.databaseBackup
-        || previous.releaseId !== raw.stableRelease.releaseId
-        || previous.artifactIdentity !== raw.stableRelease.artifactIdentity
-        || previous.manifestSha256 !== raw.stableRelease.manifestSha256
-      ) throw new Error(`RELEASE_SESSION_MIGRATION_AUTHORITY_MISMATCH: ${id}`);
-      transaction = {
-        schemaVersion: 1,
-        operationId: `migration:${id}:${authority.revision}`,
-        candidateReleaseId: candidate.releaseId,
-        cutoverAuthorityRevision: authority.revision,
-        rollbackRelease: previous,
-        startedAt: raw.updatedAt,
-      };
+        candidateIsActive
+        && candidate
+        && authority
+        && previous?.databaseBackup
+        && previous.releaseId === raw.stableRelease.releaseId
+        && previous.artifactIdentity === raw.stableRelease.artifactIdentity
+        && previous.manifestSha256 === raw.stableRelease.manifestSha256
+      ) {
+        transaction = {
+          schemaVersion: 1,
+          operationId: `migration:${id}:${authority.revision}`,
+          candidateReleaseId: candidate.releaseId,
+          cutoverAuthorityRevision: authority.revision,
+          rollbackRelease: previous,
+          startedAt: raw.updatedAt,
+        };
+      } else if (raw.phase === 'known_good') {
+        // Historical terminal acceptance needs no live rollback authority. Keep
+        // exact transaction evidence when it is reconstructable above, but do
+        // not invent obsolete rollback state for already-terminal sessions.
+      } else if (raw.phase === 'soaking' && candidateKey && !candidateIsActive) {
+        const updatedAtMs = Date.parse(raw.updatedAt);
+        const successors = (stableSuccessors.get(candidateKey) ?? [])
+          .filter((entry) => entry.sessionId !== id && Date.parse(entry.createdAt) >= updatedAtMs);
+        if (successors.length > 1) {
+          throw new Error(`RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_AMBIGUOUS: ${id}`);
+        }
+        const previousAuthorityProof = Boolean(previousKey && candidateKey === previousKey);
+        if (successors.length === 0 && !previousAuthorityProof) {
+          throw new Error(`RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_UNPROVEN: ${id}`);
+        }
+        migratedPhase = 'known_good';
+        const proof = successors.length === 1
+          ? `successor ReleaseSession ${successors[0]!.sessionId} uses Candidate B as Stable A`
+          : 'current RuntimeReleaseAuthority.previous references Candidate B';
+        const receiptId = `migration:historical-known-good:${id}`;
+        migratedReceipts = raw.receipts.some((receipt) => receipt.id === receiptId)
+          ? raw.receipts
+          : [...raw.receipts, historicalAcceptanceReceipt(id, raw.updatedAt, proof)];
+      } else {
+        throw new Error(`RELEASE_SESSION_MIGRATION_AUTHORITY_MISMATCH: ${id}`);
+      }
     }
     const migrated = assertCurrentSession({
       ...raw,
       schemaVersion: 1,
       semanticEpoch: 2,
+      phase: migratedPhase,
+      receipts: migratedReceipts,
       ...(transaction ? { transaction } : {}),
     } as ReleaseSession, id);
     writeSession(path, migrated);

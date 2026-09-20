@@ -281,6 +281,173 @@ describe('Recovery ReleaseSession', () => {
     expect(second).toMatchObject({ migratedSessionIds: [], currentSessionIds: [sessionId], inspected: 1 });
   });
 
+  test('terminalizes historical legacy soaking only when exact durable release lineage proves acceptance', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-historical-soak-migration-'));
+    roots.push(home);
+    const firstFx = lanes(home);
+    const secondStable: ReleaseSessionStableRelease = {
+      ...firstFx.stableRelease,
+      authorityRevision: firstFx.stableRelease.authorityRevision + 1,
+      releaseId: firstFx.candidateRelease.releaseId,
+      artifactIdentity: firstFx.candidateRelease.artifactIdentity,
+      manifestSha256: firstFx.candidateRelease.manifestSha256,
+    };
+    const secondCandidateLane: CandidateExecutionLane = {
+      ...firstFx.candidate,
+      sessionId: 'release-session-successor-1234',
+      controllerHome: join(home, 'candidate-successor'),
+      port: firstFx.candidate.port + 1,
+    };
+    const now = '2026-09-20T00:00:00.000Z';
+    const later = '2026-09-20T01:00:00.000Z';
+    const root = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, `${firstFx.candidate.sessionId}.json`), JSON.stringify({
+      schemaVersion: 1,
+      sessionId: firstFx.candidate.sessionId,
+      stable: firstFx.stable,
+      stableRelease: firstFx.stableRelease,
+      candidate: firstFx.candidate,
+      candidateRelease: firstFx.candidateRelease,
+      sourceRevision: 'historical-a',
+      phase: 'soaking',
+      revision: 9,
+      receipts: [],
+      createdAt: now,
+      updatedAt: now,
+    }, null, 2));
+    writeFileSync(join(root, `${secondCandidateLane.sessionId}.json`), JSON.stringify({
+      schemaVersion: 1,
+      sessionId: secondCandidateLane.sessionId,
+      stable: firstFx.stable,
+      stableRelease: secondStable,
+      candidate: secondCandidateLane,
+      sourceRevision: 'historical-b',
+      phase: 'source_frozen',
+      revision: 1,
+      receipts: [],
+      createdAt: later,
+      updatedAt: later,
+    }, null, 2));
+
+    const migrated = migrateReleaseSessionState(home);
+    expect(migrated.migratedSessionIds.sort()).toEqual([
+      firstFx.candidate.sessionId,
+      secondCandidateLane.sessionId,
+    ].sort());
+    expect(readReleaseSession(home, firstFx.candidate.sessionId)).toMatchObject({
+      schemaVersion: 1,
+      semanticEpoch: 2,
+      phase: 'known_good',
+      receipts: [{
+        id: `migration:historical-known-good:${firstFx.candidate.sessionId}`,
+        kind: 'known_good',
+      }],
+    });
+    expect(readReleaseSession(home, firstFx.candidate.sessionId)?.transaction).toBeUndefined();
+  });
+
+  test('uses current authority previous as terminal historical acceptance proof', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-previous-proof-'));
+    roots.push(home);
+    const fx = lanes(home);
+    const now = '2026-09-20T00:00:00.000Z';
+    const root = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, `${fx.candidate.sessionId}.json`), JSON.stringify({
+      schemaVersion: 1,
+      sessionId: fx.candidate.sessionId,
+      stable: fx.stable,
+      stableRelease: fx.stableRelease,
+      candidate: fx.candidate,
+      candidateRelease: fx.candidateRelease,
+      sourceRevision: 'historical-previous',
+      phase: 'soaking',
+      revision: 9,
+      receipts: [],
+      createdAt: now,
+      updatedAt: now,
+    }, null, 2));
+    const authority: RuntimeReleaseAuthority = {
+      schemaVersion: 2,
+      status: 'committed',
+      revision: 9,
+      fencingToken: 'f'.repeat(64),
+      active: {
+        releaseId: 'release-current-active',
+        artifactIdentity: 'sha256:current-active',
+        manifestPath: join(home, 'runtime', 'releases', 'current', 'manifest.json'),
+        manifestSha256: 'e'.repeat(64),
+        workerProtocolVersion: 1,
+        publishedAt: now,
+      },
+      previous: {
+        releaseId: fx.candidateRelease.releaseId,
+        artifactIdentity: fx.candidateRelease.artifactIdentity,
+        manifestPath: fx.candidateRelease.manifestPath,
+        manifestSha256: fx.candidateRelease.manifestSha256,
+        workerProtocolVersion: 1,
+        publishedAt: now,
+        databaseBackup: { path: join(home, 'runtime', 'releases', 'backups', 'previous.sqlite'), schemaVersion: 1, createdAt: now },
+      },
+      operationId: 'current-cutover',
+      committedAt: now,
+    };
+    migrateReleaseSessionState(home, { readAuthority: () => authority });
+    expect(readReleaseSession(home, fx.candidate.sessionId)).toMatchObject({
+      semanticEpoch: 2,
+      phase: 'known_good',
+    });
+  });
+
+  test('fails closed when historical soaking acceptance is unproven or branched', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-historical-ambiguous-'));
+    roots.push(home);
+    const fx = lanes(home);
+    const now = '2026-09-20T00:00:00.000Z';
+    const root = join(home, 'recovery', 'state', 'release-sessions');
+    mkdirSync(root, { recursive: true });
+    const historical = {
+      schemaVersion: 1,
+      sessionId: fx.candidate.sessionId,
+      stable: fx.stable,
+      stableRelease: fx.stableRelease,
+      candidate: fx.candidate,
+      candidateRelease: fx.candidateRelease,
+      sourceRevision: 'historical-unproven',
+      phase: 'soaking',
+      revision: 9,
+      receipts: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    writeFileSync(join(root, `${fx.candidate.sessionId}.json`), JSON.stringify(historical, null, 2));
+    expect(() => migrateReleaseSessionState(home)).toThrow('RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_UNPROVEN');
+
+    const successorStable: ReleaseSessionStableRelease = {
+      ...fx.stableRelease,
+      releaseId: fx.candidateRelease.releaseId,
+      artifactIdentity: fx.candidateRelease.artifactIdentity,
+      manifestSha256: fx.candidateRelease.manifestSha256,
+    };
+    for (const [index, id] of ['release-session-branch-a-1234', 'release-session-branch-b-1234'].entries()) {
+      writeFileSync(join(root, `${id}.json`), JSON.stringify({
+        schemaVersion: 1,
+        sessionId: id,
+        stable: fx.stable,
+        stableRelease: successorStable,
+        candidate: { ...fx.candidate, sessionId: id, controllerHome: join(home, `branch-${index}`), port: fx.candidate.port + index + 1 },
+        sourceRevision: `branch-${index}`,
+        phase: 'source_frozen',
+        revision: 1,
+        receipts: [],
+        createdAt: '2026-09-20T01:00:00.000Z',
+        updatedAt: '2026-09-20T01:00:00.000Z',
+      }, null, 2));
+    }
+    expect(() => migrateReleaseSessionState(home)).toThrow('RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_AMBIGUOUS');
+  });
+
   test('migrates the observed transitional schema-2 failed session exactly once without changing durable state', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-schema2-migration-'));
     roots.push(home);
