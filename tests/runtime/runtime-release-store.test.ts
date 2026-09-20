@@ -48,6 +48,20 @@ describe('whole Runtime release store', () => {
     expect(() => ensureActiveRuntimeRelease(fx.controllerHome, second)).toThrow(/RUNTIME_RELEASE_AUTHORITY_MISMATCH/);
   });
 
+  test('reads the wire-compatible schema 2 authority left by a newer Runtime', () => {
+    const fx = fixture();
+    const first = fx.manifest('release-a', 'artifact-a');
+    ensureActiveRuntimeRelease(fx.controllerHome, first);
+    const authorityPath = join(fx.controllerHome, 'runtime', 'releases', 'authority.json');
+    const authority = JSON.parse(readFileSync(authorityPath, 'utf8')) as Record<string, unknown>;
+    writeFileSync(authorityPath, `${JSON.stringify({ ...authority, schemaVersion: 2 }, null, 2)}\n`);
+
+    expect(readRuntimeReleaseAuthority(fx.controllerHome)).toMatchObject({
+      schemaVersion: 2,
+      active: { releaseId: 'release-a' },
+    });
+  });
+
   test('publishes and rolls back the whole Runtime with database backups', () => {
     const fx = fixture();
     const first = fx.manifest('release-a', 'artifact-a');

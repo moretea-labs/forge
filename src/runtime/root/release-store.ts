@@ -46,7 +46,13 @@ export interface RuntimeReleaseActivationTransaction {
 }
 
 export interface RuntimeReleaseAuthority {
-  schemaVersion: 1;
+  /**
+   * Schema 2 is wire-compatible with schema 1 and may be left behind by a
+   * newer Runtime release during a downgrade/recovery boundary. Accept it on
+   * read so the canonical writer can safely converge the authority back to
+   * schema 1 on its next mutation.
+   */
+  schemaVersion: 1 | 2;
   status: 'committed';
   revision: number;
   fencingToken: string;
@@ -204,7 +210,7 @@ function inspectRuntimeReleaseAuthority(controllerHome: string): RuntimeReleaseA
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as RuntimeReleaseAuthority;
     if (
-      value.schemaVersion !== 1
+      (value.schemaVersion !== 1 && value.schemaVersion !== 2)
       || value.status !== 'committed'
       || !Number.isInteger(value.revision)
       || value.revision < 1
