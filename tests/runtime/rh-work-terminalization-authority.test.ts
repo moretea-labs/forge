@@ -1108,7 +1108,7 @@ describe('rh_work terminalization authority', () => {
       constraints: { requireWorktree: true, directMainProhibited: true },
       allowedPaths: [],
       forbiddenPaths: [],
-      checks: [],
+      checks: ['check:declared-after-resume'],
       requestedBy: 'chatgpt',
       status: 'running',
       phase: 'implementation',
@@ -1178,6 +1178,8 @@ describe('rh_work terminalization authority', () => {
     const work = getWorkContract(store, workId)!;
     const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
     expect(work.status).toBe('running');
+    expect(work.checks).toEqual(['check:declared-after-resume']);
+    expect(work.checkRefs).toHaveLength(0);
     expect(work.checkoutId).toBeDefined();
     expect(work.worktreeRef).toBeDefined();
     expect(work.checkoutId).not.toBe(oldCheckoutId);

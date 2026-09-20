@@ -450,8 +450,10 @@ export function ensureRunningRepositoryWorkCheckout(
   }
 
   const actualChangedPaths = work.scopeEvidence?.actualChangedPaths;
+  // `work.checks` is a declaration of verification obligations, not evidence
+  // that any verification or repository mutation already occurred. Only
+  // durable checkRefs participate in the zero-delta recovery proof.
   if (!actualChangedPaths || actualChangedPaths.length !== 0
-    || work.checks.length !== 0
     || work.checkRefs.length !== 0
     || work.evidenceState !== 'none') {
     throw new Error(`WORK_CONTINUE_ZERO_DELTA_PROOF_REQUIRED: ${workId}`);
