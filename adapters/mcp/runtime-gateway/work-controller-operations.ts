@@ -31,6 +31,7 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getControllerSession,
+  readControllerRoundContextSnapshot,
   getRetainedControllerSession,
   mintControllerSessionAuthority,
   reconcileControllerRoundAfterAbandonedRelease,
@@ -48,6 +49,7 @@ import {
   dispatchedChatgptRelayAuthorizesStaleControllerRecovery,
   runtimeIdentitySnapshot,
 } from './controller-authority-adapter';
+import { persistAutomaticControllerRoundLearning } from '../../../src/runtime/context/automatic-learning';
 
 const RH_WORK_CONTROLLER_OPERATIONS = new Set([
   'controller_get_owner',
@@ -200,6 +202,12 @@ export async function callRhWorkControllerOperation(
       const work = getWorkContract(store, workId);
       if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
       const currentRelay = getControllerRoundRelay(store, workId);
+      const automaticLearningRoundId = currentRelay?.status === 'claimed'
+        ? `${currentRelay.relayScopeId}:${currentRelay.roundCount}`
+        : undefined;
+      const automaticLearningSignals = currentRelay?.status === 'claimed'
+        ? readControllerRoundContextSnapshot(store, currentRelay).executionQualitySignals ?? []
+        : [];
       const terminalGoalComplete = work.status === 'completed' && disposition === 'goal_complete';
       const terminalSuccessorContinuation = work.status === 'completed'
         && disposition === 'continue_immediately'
@@ -283,6 +291,31 @@ export async function callRhWorkControllerOperation(
           }
         }
       }
+      let automaticLearning;
+      if (automaticLearningRoundId) {
+        const adjustmentFingerprints = Array.isArray(args.execution_quality_adjustment_results)
+          ? args.execution_quality_adjustment_results
+            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+            .map(item => typeof item.fingerprint === 'string' ? item.fingerprint.trim() : '')
+            .filter(Boolean)
+          : [];
+        try {
+          automaticLearning = persistAutomaticControllerRoundLearning({
+            controllerHome: ctx.controllerHome,
+            repoId: repository.repoId,
+            workId,
+            sourceRoundId: automaticLearningRoundId,
+            signals: automaticLearningSignals,
+            adjustmentFingerprints,
+          });
+        } catch (error) {
+          automaticLearning = {
+            storedMemoryIds: [],
+            consolidatedMemoryIds: [],
+            skipped: [`automatic_learning_failed:${error instanceof Error ? error.message : String(error)}`],
+          };
+        }
+      }
       const continuationSchedule = ensureControllerDispositionContinuation(
         ctx.controllerHome,
         repository.repoId,
@@ -295,7 +328,7 @@ export async function callRhWorkControllerOperation(
           : continuationSchedule
             ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
             : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
-        data: { relay, ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
+        data: { relay, ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(automaticLearning ? { automaticLearning } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
       }) as unknown as Record<string, unknown>, relay.status === 'blocked');
     } catch (error) {
       return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller disposition failed.', data: {} }) as unknown as Record<string, unknown>, true);

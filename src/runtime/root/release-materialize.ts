@@ -92,6 +92,7 @@ export interface CandidateRuntimeReleaseStagerDependencies {
     bunExecutable: string;
     scriptPath: string;
     sourceRoot: string;
+    dependencyRoot: string;
     controllerHome: string;
     expectedHead: string;
     sourceRepositoryId: string;
@@ -103,6 +104,50 @@ function gitText(root: string, args: string[]): string {
   const result = runProcess('git', ['-C', root, ...args], { timeoutMs: 15_000, maxOutputBytes: 128 * 1024 });
   if (!result.ok) throw new Error(`RUNTIME_RELEASE_GIT_FAILED: ${result.stderr || result.stdout || result.error}`.slice(0, 2_000));
   return result.stdout.trim();
+}
+
+/**
+ * Materialize one exact tracked Git revision into a detached temporary worktree.
+ * The mutable source checkout remains only the object/dependency provider and may
+ * advance while the callback runs. Lifecycle/Runtime authority is untouched.
+ */
+export function withRuntimeReleaseSourceSnapshot<T>(input: {
+  sourceRoot: string;
+  sourceRevision: string;
+}, operation: (snapshotRoot: string) => T): T {
+  const sourceRoot = resolve(input.sourceRoot);
+  const requestedRevision = input.sourceRevision.trim();
+  if (!/^[a-f0-9]{40}$/i.test(requestedRevision)) throw new Error('RUNTIME_RELEASE_SOURCE_REVISION_INVALID');
+  const resolvedRevision = gitText(sourceRoot, ['rev-parse', '--verify', `${requestedRevision}^{commit}`]);
+  if (resolvedRevision !== requestedRevision) throw new Error('RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH');
+  const snapshotsRoot = join(sourceRoot, '.forge', 'runtime-release-source-snapshots');
+  mkdirSync(snapshotsRoot, { recursive: true, mode: 0o700 });
+  const snapshotRoot = join(snapshotsRoot, `${requestedRevision}-${process.pid}-${randomUUID().slice(0, 8)}`);
+  const materialized = runProcess('git', ['-C', sourceRoot, 'worktree', 'add', '--detach', '--force', snapshotRoot, requestedRevision], {
+    timeoutMs: 60_000,
+    maxOutputBytes: 128 * 1024,
+  });
+  if (!materialized.ok) {
+    throw new Error(`RUNTIME_RELEASE_SOURCE_SNAPSHOT_FAILED: ${materialized.stderr || materialized.stdout || materialized.error}`.slice(0, 2_000));
+  }
+  try {
+    if (gitText(snapshotRoot, ['rev-parse', '--verify', 'HEAD']) !== requestedRevision) {
+      throw new Error('RUNTIME_RELEASE_SOURCE_SNAPSHOT_REVISION_MISMATCH');
+    }
+    if (gitText(snapshotRoot, ['status', '--porcelain=v1', '--untracked-files=no'])) {
+      throw new Error('RUNTIME_RELEASE_SOURCE_SNAPSHOT_DIRTY');
+    }
+    return operation(snapshotRoot);
+  } finally {
+    const removed = runProcess('git', ['-C', sourceRoot, 'worktree', 'remove', '--force', snapshotRoot], {
+      timeoutMs: 60_000,
+      maxOutputBytes: 128 * 1024,
+    });
+    if (!removed.ok) {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      runProcess('git', ['-C', sourceRoot, 'worktree', 'prune'], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+    }
+  }
 }
 
 function sha256(path: string): string {
@@ -261,10 +306,12 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
 export function stageRuntimeReleaseFromCandidateSource(input: {
   controllerHome: string;
   sourceRoot: string;
+  dependencyRoot?: string;
   sourceRepositoryId: string;
 }, dependencies: CandidateRuntimeReleaseStagerDependencies = {}): StagedRuntimeRelease {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot);
+  const dependencyRoot = resolve(input.dependencyRoot ?? input.sourceRoot);
   const sourceRepositoryId = input.sourceRepositoryId.trim();
   if (!sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_REQUIRED');
   const expectedHead = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
@@ -282,10 +329,11 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     request.scriptPath,
     '--controller-home', request.controllerHome,
     '--source-root', request.sourceRoot,
+    '--dependency-root', request.dependencyRoot,
     '--expected-head', request.expectedHead,
     '--source-repository-id', request.sourceRepositoryId,
   ], { cwd: request.sourceRoot, timeoutMs: 600_000, maxOutputBytes: 512 * 1024 }));
-  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, controllerHome, expectedHead, sourceRepositoryId });
+  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, dependencyRoot, controllerHome, expectedHead, sourceRepositoryId });
   if (!executed.ok) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGE_FAILED: ${executed.stderr || executed.stdout || executed.error}`.slice(0, 2_000));
   }
@@ -454,9 +502,11 @@ function defaultMaterializeCodeGraphRuntime(input: {
 export function stageRuntimeRelease(input: {
   controllerHome: string;
   sourceRoot: string;
+  dependencyRoot?: string;
   sourceRepositoryId?: string;
 }, dependencies: RuntimeReleaseMaterializerDependencies = {}): StagedRuntimeRelease {
   const sourceRoot = resolve(input.sourceRoot);
+  const dependencyRoot = resolve(input.dependencyRoot ?? input.sourceRoot);
   const sourceRepositoryId = input.sourceRepositoryId?.trim();
   if (input.sourceRepositoryId !== undefined && !sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_INVALID');
   const sourceCommit = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
@@ -697,8 +747,8 @@ export function stageRuntimeRelease(input: {
     // compatibility projection can be removed together with the fallback.
     const packageRoot = 'package' as const;
     const packagePath = join(staging, packageRoot);
-    const packageRecords = packageRuntimeFileIndex(sourceRoot);
-    stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords);
+    const packageRecords = packageRuntimeFileIndex(sourceRoot, dependencyRoot);
+    stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords, dependencyRoot);
     const packageArtifactIdentity = `sha256:${sha256Directory(packagePath)}`;
 
     const manifest = {

@@ -40,7 +40,7 @@ import {
   writePackageRuntimeSystemdUserService,
 } from '../root/package-runtime-service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
-import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
+import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   abortRuntimeReleaseActivation,
   commitRuntimeReleaseActivation,
@@ -297,6 +297,7 @@ export type RecoveryMutationAction =
   | 'release_session_static_verify'
   | 'release_session_candidate_boot'
   | 'release_session_cutover'
+  | 'release_session_cancel'
   | 'release_session_rollback'
   | 'release_session_known_good'
   | 'restart_primary_connector'
@@ -3943,11 +3944,13 @@ export async function prepareConfiguredRuntimeReleaseSession(
 
     try {
       assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-      const staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
-        controllerHome: candidateLane.controllerHome,
-        sourceRoot,
-        sourceRepositoryId,
-      });
+      const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
+        (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
+          controllerHome: candidateLane.controllerHome,
+          sourceRoot: frozenSourceRoot,
+          dependencyRoot: sourceRoot,
+          sourceRepositoryId,
+        }));
       assertRuntimeReleaseFiles(staged);
       if (staged.sourceCommit !== sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_CHANGED_DURING_BUILD');
       const candidateRelease: ReleaseSessionCandidateRelease = {
@@ -4038,9 +4041,10 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
     }
     const candidate = session.candidateRelease;
     if (!candidate) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+    const frozenSourceRevision = session.sourceRevision;
+    const stableRelease = session.stableRelease;
     try {
-      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      if (configuredSourceRevision(sourceRoot) !== session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_CHANGED');
+      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
       const manifest = loadRuntimeReleaseManifest(candidate.manifestPath, session.candidate.controllerHome);
       if (
         manifest.deploymentScope !== 'portable'
@@ -4050,32 +4054,36 @@ export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
         || runtimeReleaseTreeSha256(dirname(candidate.manifestPath)) !== candidate.treeSha256
       ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
 
-      const receipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
-      for (const gate of RELEASE_SESSION_STATIC_GATES) {
-        assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-        if (configuredSourceRevision(sourceRoot) !== session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_CHANGED');
-        const startedAt = Date.now();
-        const result = spawnSync(resolveBunExecutable(), gate.args, {
-          cwd: sourceRoot,
-          env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
-          encoding: 'utf8',
-          timeout: gate.timeoutMs,
-          maxBuffer: 8 * 1024 * 1024,
-        });
-        const durationMs = Date.now() - startedAt;
-        if (result.error || result.status !== 0) {
-          const detail = result.error instanceof Error
-            ? result.error.message
-            : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
-          throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
+      const receipts = withRuntimeReleaseSourceSnapshot({
+        sourceRoot,
+        sourceRevision: frozenSourceRevision,
+      }, frozenSourceRoot => {
+        const gateReceipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
+        for (const gate of RELEASE_SESSION_STATIC_GATES) {
+          assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+          const startedAt = Date.now();
+          const result = spawnSync(resolveBunExecutable(), gate.args, {
+            cwd: frozenSourceRoot,
+            env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
+            encoding: 'utf8',
+            timeout: gate.timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+          });
+          const durationMs = Date.now() - startedAt;
+          if (result.error || result.status !== 0) {
+            const detail = result.error instanceof Error
+              ? result.error.message
+              : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
+            throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
+          }
+          gateReceipts.push({
+            id: gate.id,
+            kind: 'static_gate',
+            summary: `${gate.id} passed on frozen source ${frozenSourceRevision} in ${durationMs}ms`,
+          });
         }
-        if (configuredSourceRevision(sourceRoot) !== session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_CHANGED');
-        receipts.push({
-          id: gate.id,
-          kind: 'static_gate',
-          summary: `${gate.id} passed on source ${session.sourceRevision} in ${durationMs}ms`,
-        });
-      }
+        return gateReceipts;
+      });
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       session = advanceReleaseSession({
         controllerHome: config.controllerHome,
@@ -4696,6 +4704,86 @@ export async function cutoverConfiguredRuntimeReleaseSession(
     }
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  return locked.value;
+}
+
+
+export async function cancelConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_cancel',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase === 'failed') {
+      return { ok: true as const, attempted: false, noOp: true, detail: 'ReleaseSession is already terminal failed', releaseSession: session };
+    }
+    if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_CANCEL_AFTER_CUTOVER_FORBIDDEN: ${session.phase}; use exact ReleaseSession rollback`,
+        releaseSession: session,
+      };
+    }
+    if (session.phase === 'known_good' || session.phase === 'rolled_back') {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_CANCEL_TERMINAL: ${session.phase}`,
+        releaseSession: session,
+      };
+    }
+
+    const priorPhase = session.phase;
+    if (['candidate_booted', 'candidate_verified', 'cutover_eligible'].includes(session.phase)) {
+      const retirement = await stopReleaseSessionCandidateService(session);
+      if (!retirement.ok) {
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `RELEASE_SESSION_CANCEL_CANDIDATE_RETIRE_FAILED: ${retirement.detail}`,
+          releaseSession: session,
+        };
+      }
+    }
+
+    session = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'failed',
+      receipts: [{
+        id: 'candidate_cancelled',
+        kind: 'candidate_canary',
+        summary: 'Candidate B was explicitly retired before cutover because the frozen candidate was superseded or rejected',
+      }],
+    });
+    const cleanup = cleanupRetiredCandidateLane(config, session);
+    audit(config, cleanup.ok ? 'release_session_cancelled' : 'release_session_cancelled_cleanup_failed', {
+      sessionId,
+      priorPhase,
+      candidateControllerHome: session.candidate.controllerHome,
+      cleanupDetail: cleanup.detail,
+    });
+    return {
+      ok: cleanup.ok,
+      attempted: true,
+      detail: cleanup.ok
+        ? 'ReleaseSession Candidate B was terminalized failed and its isolated lane was retired before cutover; Stable A remained unchanged'
+        : `ReleaseSession was terminalized failed but Candidate B lane cleanup failed: ${cleanup.detail}`,
+      releaseSession: session,
+    };
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
   return locked.value;
 }
 

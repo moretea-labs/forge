@@ -10,6 +10,7 @@ import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
   bootAndVerifyConfiguredRuntimeReleaseSessionCandidate,
+  cancelConfiguredRuntimeReleaseSession,
   cutoverConfiguredRuntimeReleaseSession,
   assertRecoveryMutationIdentity,
   attestKnownGood,
@@ -89,6 +90,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'release-session-static-verify',
   'release-session-candidate-verify',
   'release-session-cutover',
+  'release-session-cancel',
   'release-session-rollback',
   'release-session-known-good',
   'migrate-controller-home-worker',
@@ -177,6 +179,12 @@ async function cli(): Promise<void> {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       output(await cutoverConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`));
+      return;
+    }
+    case 'release-session-cancel': {
+      const sessionId = option('--session-id');
+      if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      output(await cancelConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`));
       return;
     }
     case 'release-session-rollback': {
@@ -358,6 +366,7 @@ export const RECOVERY_TOOLS = [
   { name: 'verify_runtime_release_session_static', description: 'Run canonical static gates on the frozen source revision and advance only that exact ReleaseSession.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'verify_runtime_release_session_candidate', description: 'Boot Candidate B in its isolated ControllerHome/service/port, run whole-Runtime and Recovery restart canaries, and mark the session cutover-eligible while Stable A stays active.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'cutover_runtime_release_session', description: 'Perform the single fenced cutover attempt for a cutover-eligible ReleaseSession using the byte-identical verified Candidate B artifact. Failed cutover restores exact Stable A and terminalizes without retry.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
+  { name: 'cancel_runtime_release_session', description: 'Retire a superseded or rejected Candidate B before cutover, terminalizing the ReleaseSession with the existing failed state and leaving Stable A unchanged.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'rollback_runtime_release_session', description: 'Abort the exact in-flight ReleaseSession activation transaction and restore its frozen Stable A whole-Runtime release plus SQLite backup.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'promote_runtime_release_session_known_good', description: 'After committed cutover soak, require full verification and performance observation, create a recoverable release+SQLite+service bundle, and terminalize the ReleaseSession known-good.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'migrate_controller_home', description: 'Schedule a Linux-only standalone Recovery transaction that relocates this Forge installation to the stable user-level Controller Home, reinstalls immutable Runtime/Connector/Recovery owners, verifies them, and rolls back on failure.', inputSchema: mutationInputSchema({ canonical_source_root: { type: 'string', minLength: 1, maxLength: 1024 }, expected_source_revision: { type: 'string', minLength: 7, maxLength: 80 } }, ['canonical_source_root', 'expected_source_revision']) },
@@ -755,6 +764,12 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       assertRecoveryGatewayMutationIdentity(config, args);
       if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       return mutationResponse(config, await cutoverConfiguredRuntimeReleaseSession(config, args.session_id.trim(), `recovery-gateway:${args.request_id}`));
+    }
+    case 'cancel_runtime_release_session': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      assertRecoveryGatewayMutationIdentity(config, args);
+      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      return mutationResponse(config, await cancelConfiguredRuntimeReleaseSession(config, args.session_id.trim(), `recovery-gateway:${args.request_id}`));
     }
     case 'rollback_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
