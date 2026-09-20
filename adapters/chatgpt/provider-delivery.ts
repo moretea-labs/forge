@@ -6,6 +6,20 @@ export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN = 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN';
 export const CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT = 'CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT';
 
+function normalizeChatgptProviderPageText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** Shared provider-page failure detection used by both direct delivery and durable Supervisor observation. */
+export function chatgptProviderPageFailure(
+  bodyText: string | undefined,
+): typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT | undefined {
+  const normalized = normalizeChatgptProviderPageText(bodyText ?? '');
+  return normalized.includes('message delivery timed out') && normalized.includes('please try again')
+    ? CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
+    : undefined;
+}
+
 export type ChatgptAutomationReasoning = 'medium' | 'high' | 'xhigh';
 export type ChatgptAutomationTabPolicy = 'auto' | 'reuse' | 'new';
 export type ChatgptAutomationTabCleanupStatus = 'closed' | 'preserved_user_owned' | 'session_closed' | 'failed';
