@@ -91,6 +91,7 @@ import {
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
+import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
 
@@ -2039,8 +2040,26 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(verified.ok).toBe(true);
     expect(verified.probes.active_gateway).toMatchObject({ ok: true, detail: 'HTTP 200' });
     expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, detail: 'HTTP 401 OAuth challenge' });
+
+    const realTransport = createRecoveryHttpTransport(home);
+    const rawExternalTimeoutTransport = {
+      request: async (request: Parameters<typeof realTransport.request>[0]) => {
+        const authorization = Object.entries(request.headers ?? {}).some(([name, value]) => name.toLowerCase() === 'authorization' && Boolean(value));
+        if (request.url === runtime.endpoint && request.method === 'POST' && !authorization) throw new Error('RECOVERY_HTTP_TIMEOUT');
+        return realTransport.request(request);
+      },
+    };
+    const semanticMcpVerified = await verifyStableRuntime(config, rawExternalTimeoutTransport);
+    expect(semanticMcpVerified.probes.external_mcp_http).toMatchObject({ ok: false, detail: 'RECOVERY_HTTP_TIMEOUT' });
+    expect(semanticMcpVerified.probes.mcp_initialize).toMatchObject({ ok: true });
+    expect(semanticMcpVerified.probes.mcp_read_only_call).toMatchObject({ ok: true });
+    expect(semanticMcpVerified.ok).toBe(true);
+
     const failedTransport = { request: async () => ({ ok: false, status: 503, headers: {}, body: '' }) };
-    await verifyStableRuntime(config, failedTransport); await verifyStableRuntime(config, failedTransport);
+    const failedProtocol = await verifyStableRuntime(config, failedTransport);
+    expect(failedProtocol.ok).toBe(false);
+    expect(failedProtocol.probes.mcp_initialize).toMatchObject({ ok: false });
+    await verifyStableRuntime(config, failedTransport);
     const diagnostics = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'watchdog-diagnostics.json'), 'utf8')); expect(diagnostics.entries).toHaveLength(1);
     expect(diagnostics.entries[0]).toMatchObject({ components: expect.arrayContaining(['gateway', 'public_mcp']), occurrences: 2, failedProbes: expect.arrayContaining([expect.objectContaining({ name: 'active_gateway', status: 503 })]) });
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);

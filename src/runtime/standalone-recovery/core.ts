@@ -1473,8 +1473,16 @@ export async function verifyStableRuntime(
   const recoveryTunnelRuntime = await probeOpenAiRecoveryTunnel(config);
   if (recoveryTunnelRuntime) probes.recovery_tunnel_runtime = recoveryTunnelRuntime;
   if (options.probeMcpProtocol !== false) Object.assign(probes, await probeMcp(config, transport));
+  const mcpProtocolProbeNames = ['mcp_initialize', 'mcp_initialized_notification', 'mcp_tools_list', 'mcp_read_only_call', 'mcp_session_close'] as const;
+  const mcpProtocolHealthy = options.probeMcpProtocol !== false
+    && mcpProtocolProbeNames.every((name) => probes[name]?.ok === true);
   const coreChecks = Object.entries(probes)
     .filter(([name]) => !name.startsWith('recovery_'))
+    // The unauthenticated public initialize probe remains diagnostic and is the
+    // authority for dedicated external/tunnel verification. Once the stronger
+    // authenticated MCP session completes end-to-end, that raw reachability
+    // probe cannot independently veto full stable Runtime verification.
+    .filter(([name]) => !(name === 'external_mcp_http' && mcpProtocolHealthy))
     .every(([, entry]) => entry.ok);
   const runtimeHealthy = observation.running && observation.ready && !observation.stale;
   const coherent = Boolean(
