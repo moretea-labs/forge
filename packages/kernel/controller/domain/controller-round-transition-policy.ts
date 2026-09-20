@@ -41,6 +41,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'successor_bound'; at: string; successorWorkId: string }
   | { type: 'controller_release_observed'; at: string; proposedAuthorityId: string }
   | { type: 'successor_release_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
+  | { type: 'failed_dispatch_successor_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
   | { type: 'terminal_work_observed'; at: string; error: string }
   | { type: 'abandoned_release_observed'; at: string; error: string }
   | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean; reason?: string };
@@ -332,6 +333,68 @@ export function decideControllerRoundTransition(
       if (current.successorWorkId && current.successorWorkId !== event.successorWorkId) return { kind: 'reject', code: `CONTROLLER_RELAY_SUCCESSOR_ALREADY_BOUND:${current.successorWorkId}` };
       return accept(current, { successorWorkId: event.successorWorkId, updatedAt: event.at }, 'controller_round_successor_work_bound');
     }
+    case 'failed_dispatch_successor_handoff': {
+      if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (current.status !== 'failed') return { kind: 'reject', code: `CONTROLLER_RELAY_FAILED_SUCCESSOR_HANDOFF_STATE_INVALID:${current.status}` };
+      if (current.lifecycleStage !== 'dispatching' || current.claimGeneration !== 0) {
+        return { kind: 'reject', code: 'CONTROLLER_RELAY_FAILED_SUCCESSOR_HANDOFF_PRECLAIM_REQUIRED' };
+      }
+      if (current.successorWorkId && current.successorWorkId !== event.successorWorkId) {
+        return { kind: 'reject', code: `CONTROLLER_RELAY_SUCCESSOR_ALREADY_BOUND:${current.successorWorkId}` };
+      }
+      const nextRoundCount = current.roundCount + 1;
+      if (nextRoundCount > current.maxRounds) {
+        return { kind: 'reject', code: `CONTROLLER_RELAY_ROUND_BUDGET_EXHAUSTED:${nextRoundCount}>${current.maxRounds}` };
+      }
+      const handedOff: ControllerRoundRelayRecord = {
+        ...current,
+        successorWorkId: event.successorWorkId,
+        status: 'handed_off',
+        lifecycleStage: 'semantic_round_closed',
+        authorityId: undefined,
+        updatedAt: event.at,
+      };
+      const successor: ControllerRoundRelayRecord = {
+        ...current,
+        originWorkId: event.successorWorkId,
+        predecessorWorkId: current.originWorkId,
+        successorWorkId: undefined,
+        status: 'dispatching',
+        lifecycleStage: 'dispatching',
+        authorityId: event.proposedAuthorityId,
+        stateFingerprint: event.successorStateFingerprint,
+        roundCount: nextRoundCount,
+        repeatedStateCount: 0,
+        consecutiveFailures: 0,
+        controllerInstanceId: '',
+        sessionId: '',
+        claimGeneration: 0,
+        assistantContextSnapshot: undefined,
+        controllerTurnCompletionEvidenceId: undefined,
+        controllerTurnSettledAt: undefined,
+        bindingId: undefined,
+        providerDispatchEffectId: undefined,
+        providerDispatchAttempt: 0,
+        providerDispatchStartedAt: undefined,
+        providerDispatchReceiptId: undefined,
+        blockedReason: undefined,
+        failureClass: undefined,
+        lastError: undefined,
+        nextRecoveryAt: undefined,
+        dispatchedAt: undefined,
+        claimedAt: undefined,
+        updatedAt: event.at,
+      };
+      return {
+        kind: 'accept_atomic',
+        next: handedOff,
+        action: 'controller_round_failed_preclaim_successor_handoff_closed',
+        relatedWorkId: event.successorWorkId,
+        relatedNext: successor,
+        relatedAction: 'controller_round_relay_successor_dispatch_begin',
+      };
+    }
+
     case 'successor_release_handoff': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status !== 'pending_release') return { kind: 'reject', code: `CONTROLLER_RELAY_SUCCESSOR_HANDOFF_STATE_INVALID:${current.status}` };

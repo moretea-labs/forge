@@ -4120,6 +4120,143 @@ describe('rh_work terminalization authority', () => {
     });
   }, 20_000);
 
+  test('terminal continuation leaves relay-free predecessors on normal admission and atomically hands off failed pre-claim relays', async () => {
+    const completeRequirementWork = (fx: ReturnType<typeof fixture>, requirementId: string, workId: string, principalId: string) => {
+      const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+      const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+      createRequirement({ controllerHome: fx.controllerHome }, {
+        requirementId,
+        title: 'Terminal continuation regression',
+        outcomeStatement: 'Continue one completed Requirement Work without duplicating controller authority.',
+      });
+      createWorkContract(store, {
+        workId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+        objective: 'complete predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: targetRevision,
+      });
+      const recordedAt = '2026-09-20T00:10:00.000Z';
+      transitionWorkContractPhase(store, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Predecessor verified.' });
+      requestWorkImplementationReview(store, workId, 'Predecessor review required.');
+      recordWorkImplementationReview(store, workId, {
+        schemaVersion: 1, reviewId: `REV-${workId}`, workId, reviewerPrincipalId: principalId, reviewerControllerSessionId: `review-${workId}`,
+        decision: 'approved', rationale: 'Reviewed predecessor.', findings: [], sourceRevision: targetRevision,
+        workspaceFingerprint: `content-${workId}`, verificationWorkspaceFingerprint: `verification-${workId}`, changedPaths: [],
+        changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'predecessor delivered',
+        verificationEvidence: [], architectureEvidence: [], recordedAt,
+      });
+      recordWorkCompletionReceipt(store, workId, {
+        schemaVersion: 1, receiptId: `receipt-${workId}`, source: 'controller_work', issueId: 'requirement-stage',
+        taskId: workId, workId, targetBranch: 'main', targetRevision, changedPaths: [],
+        delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+        cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
+      }, 'completed_no_change', 'completed_no_change');
+      expect(getWorkContract(store, workId)?.status).toBe('completed');
+      return { store, targetRevision };
+    };
+
+    const plain = fixture();
+    const plainPrincipal = 'principal-terminal-no-relay';
+    const plainWorkId = 'work-terminal-no-relay';
+    const plainRequirementId = 'REQ-terminal-no-relay';
+    const plainContext = completeRequirementWork(plain, plainRequirementId, plainWorkId, plainPrincipal);
+    expect(getControllerRoundRelay(plainContext.store, plainWorkId)).toBeUndefined();
+    const plainStarted = structured(await callRuntimeTool(
+      ctx(plain.controllerHome, plain.repository, plainPrincipal, 'transport-terminal-no-relay', 'runtime-terminal-no-relay'),
+      'rh_work',
+      {
+        repo_id: plain.repository.repoId,
+        operation: 'start',
+        objective: 'Continue after a completed predecessor that never had a ControllerRound.',
+        requirement_id: plainRequirementId,
+        related_work_id: plainWorkId,
+        work_relation: 'continue',
+        work_kind: 'completed_no_change',
+        scope_clear: true,
+        requires_recovery: true,
+      },
+    ));
+    expect(plainStarted.status).toBe('ok');
+    expect(plainStarted.data.ownershipClaimed).toBe(true);
+    expect(String(plainStarted.data.work?.workId ?? '')).not.toBe(plainWorkId);
+
+    const failed = fixture();
+    const failedPrincipal = 'principal-terminal-failed-preclaim';
+    const failedWorkId = 'work-terminal-failed-preclaim';
+    const failedRequirementId = 'REQ-terminal-failed-preclaim';
+    const failedStore = { controllerHome: failed.controllerHome, repoId: failed.repository.repoId };
+    const failedTargetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: failed.repoRoot, encoding: 'utf8' }).trim();
+    createRequirement({ controllerHome: failed.controllerHome }, {
+      requirementId: failedRequirementId,
+      title: 'Failed pre-claim successor handoff',
+      outcomeStatement: 'Continue from a provider dispatch failure after the predecessor is independently completed.',
+    });
+    createWorkContract(failedStore, {
+      workId: failedWorkId, repoId: failed.repository.repoId, requirementId: failedRequirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      objective: 'complete failed-dispatch predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: failedTargetRevision,
+    });
+    const opened = beginInitialControllerRoundDispatch(failedStore, {
+      workId: failedWorkId,
+      identity: {
+        controllerId: failedPrincipal, controllerType: 'chatgpt', principalId: failedPrincipal,
+        controllerInstanceId: 'runtime-terminal-failed-preclaim', sessionId: 'occ-terminal-failed-preclaim',
+      },
+    });
+    expect(finishControllerRoundRelayDispatch(failedStore, {
+      workId: failedWorkId, ok: false, recovery: false, error: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+    })).toMatchObject({ status: 'failed', claimGeneration: 0, lifecycleStage: 'dispatching' });
+
+    const failedRecordedAt = '2026-09-20T00:11:00.000Z';
+    transitionWorkContractPhase(failedStore, failedWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Failed-dispatch predecessor verified independently.' });
+    requestWorkImplementationReview(failedStore, failedWorkId, 'Failed-dispatch predecessor review required.');
+    recordWorkImplementationReview(failedStore, failedWorkId, {
+      schemaVersion: 1, reviewId: 'REV-terminal-failed-preclaim', workId: failedWorkId, reviewerPrincipalId: failedPrincipal, reviewerControllerSessionId: 'review-terminal-failed-preclaim',
+      decision: 'approved', rationale: 'Reviewed failed-dispatch predecessor.', findings: [], sourceRevision: failedTargetRevision,
+      workspaceFingerprint: 'content-terminal-failed-preclaim', verificationWorkspaceFingerprint: 'verification-terminal-failed-preclaim', changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'predecessor delivered',
+      verificationEvidence: [], architectureEvidence: [], recordedAt: failedRecordedAt,
+    });
+    recordWorkCompletionReceipt(failedStore, failedWorkId, {
+      schemaVersion: 1, receiptId: 'receipt-terminal-failed-preclaim', source: 'controller_work', issueId: 'requirement-stage',
+      taskId: failedWorkId, workId: failedWorkId, targetBranch: 'main', targetRevision: failedTargetRevision, changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt: failedRecordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: failedRecordedAt }, verifiedAt: failedRecordedAt, recordedAt: failedRecordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+
+    const failedStarted = structured(await callRuntimeTool(
+      ctx(failed.controllerHome, failed.repository, failedPrincipal, 'transport-terminal-failed-preclaim-rotated', 'runtime-terminal-failed-preclaim-rotated'),
+      'rh_work',
+      {
+        repo_id: failed.repository.repoId,
+        operation: 'start',
+        objective: 'Continue from the failed pre-claim predecessor.',
+        requirement_id: failedRequirementId,
+        related_work_id: failedWorkId,
+        work_relation: 'continue',
+        work_kind: 'completed_no_change',
+        controller_authority_id: opened.authorityId,
+        relay_scope_id: opened.relayScopeId,
+        scope_clear: true,
+        requires_recovery: true,
+      },
+    ));
+    expect(failedStarted.status).toBe('ok');
+    expect(failedStarted.data.ownershipClaimed).toBe(false);
+    const successorWorkId = String(failedStarted.data.successorWorkId ?? failedStarted.data.work?.workId ?? '');
+    expect(successorWorkId).toMatch(/^work-/);
+    const predecessorRelay = getControllerRoundRelay(failedStore, failedWorkId)!;
+    expect(predecessorRelay).toMatchObject({ status: 'handed_off', successorWorkId });
+    expect(predecessorRelay.authorityId).toBeUndefined();
+    const successorRelay = getControllerRoundRelay(failedStore, successorWorkId)!;
+    expect(successorRelay).toMatchObject({
+      status: 'dispatching', originWorkId: successorWorkId, predecessorWorkId: failedWorkId,
+      relayScopeId: opened.relayScopeId, claimGeneration: 0,
+    });
+    expect(successorRelay.authorityId).toBeTruthy();
+    expect(successorRelay.authorityId).not.toBe(opened.authorityId);
+    expect(getControllerSession(failedStore, successorWorkId)).toBeUndefined();
+  }, 30_000);
+
   test('plan_accept_step fails closed when multiple successor Plan steps are ready', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
