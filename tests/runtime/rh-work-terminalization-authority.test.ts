@@ -27,7 +27,7 @@ import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/exec
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
-import { invalidateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { invalidateExecutionSession, readExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
@@ -2927,6 +2927,219 @@ describe('rh_work terminalization authority', () => {
     }));
     expect(missingAuthority.status).toBe('blocked');
     expect(missingAuthority.summary).toContain('CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_REQUIRED');
+  }, 15_000);
+
+  test('initial ControllerRound begin idempotently reuses the same unsubmitted relay for the same authenticated controller principal', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-initial-relay-idempotent-begin';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const first = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-initial-relay',
+        controllerType: 'chatgpt',
+        principalId: 'principal-initial-relay',
+        controllerInstanceId: 'runtime-initial-relay-a',
+        sessionId: 'session-initial-relay-a',
+      },
+    });
+    const resumed = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-initial-relay',
+        controllerType: 'chatgpt',
+        principalId: 'principal-initial-relay',
+        controllerInstanceId: 'runtime-initial-relay-b',
+        sessionId: 'session-initial-relay-b',
+      },
+    });
+
+    expect(resumed).toEqual(first);
+    expect(resumed.authorityId).toBe(first.authorityId);
+    expect(resumed.roundCount).toBe(1);
+    expect(() => beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-initial-relay',
+        controllerType: 'chatgpt',
+        principalId: 'foreign-principal',
+        controllerInstanceId: 'runtime-initial-relay-c',
+        sessionId: 'session-initial-relay-c',
+      },
+    })).toThrow('CONTROLLER_RELAY_ROUND_ALREADY_OPEN');
+  });
+
+  test('explicit user authority rekey preserves a consecutive-failures provider block until evidence-gated provider recovery succeeds', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-provider-block-rekey';
+    const runtimeInstanceId = 'runtime-provider-block-rekey';
+    const workId = 'work-provider-block-rekey';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        principalId,
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: 'launcher-provider-block-rekey',
+      },
+      maxFailures: 3,
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+    finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' })!;
+    expect(blocked).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'consecutive_failures:3>=3',
+      consecutiveFailures: 3,
+      providerFailureTotal: 3,
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.authority.recover:${workId}`,
+        requested_by: 'user',
+      },
+    ));
+    const recoveredAuthority = String(recovered.data?.controllerAuthorityId ?? '');
+    expect(recovered.status).toBe('ok');
+    expect(recoveredAuthority).toStartWith('cra_');
+    expect(recoveredAuthority).not.toBe(opened.authorityId);
+    expect(recovered.data?.relay).toMatchObject({
+      status: 'blocked',
+      blockedReason: blocked.blockedReason,
+      consecutiveFailures: 3,
+      providerFailureTotal: 3,
+      relayScopeId: opened.relayScopeId,
+      authorityId: recoveredAuthority,
+    });
+    expect(recovered.data?.relay?.failureClass).toBe(blocked.failureClass);
+    expect(recovered.data?.relay?.lastError).toBe(blocked.lastError);
+    expect(recovered.data?.relay?.providerRecoveryEpoch).toBe(blocked.providerRecoveryEpoch);
+    expect(recovered.data?.relay?.providerRecoveryEvidenceId).toBe(blocked.providerRecoveryEvidenceId);
+    expect(recovered.data?.relay?.providerDispatchEffectId).toBe(blocked.providerDispatchEffectId);
+    expect(recovered.data?.relay?.providerDispatchReceiptId).toBe(blocked.providerDispatchReceiptId);
+
+    const prematureClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey-claim', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: recoveredAuthority,
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(prematureClaim.status).toBe('blocked');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: 'transport-provider-block-rekey-claim',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+    })).toBeUndefined();
+
+    const providerRecovered = await recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: opened.relayScopeId,
+      authorityId: recoveredAuthority,
+      probe: async () => ({
+        status: 'dispatched' as const,
+        provider: 'controller-browser' as const,
+        browserSessionId: 'provider-block-rekey-probe',
+        conversationUrl: 'https://chatgpt.com/c/provider-block-rekey-probe',
+        resumedFromBinding: false,
+        model: 'gpt-5.6',
+        reasoning: 'high' as const,
+        tabPolicy: 'new' as const,
+        executionPreferenceVerified: true,
+        providerDeliveryStatus: 'dispatch_confirmed' as const,
+      }),
+      now: () => new Date(Date.parse(String(recovered.data?.relay?.updatedAt ?? blocked.updatedAt)) + 1_000).toISOString(),
+    });
+    expect(providerRecovered.relay).toMatchObject({
+      status: 'dispatching',
+      authorityId: recoveredAuthority,
+      relayScopeId: opened.relayScopeId,
+      consecutiveFailures: 0,
+      providerFailureTotal: 3,
+      providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: providerRecovered.audit.id,
+    });
+
+    const wrongTypeClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey-wrong-type', runtimeInstanceId, 'codex'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_type: 'codex',
+        controller_authority_id: recoveredAuthority,
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(wrongTypeClaim.status).toBe('blocked');
+    expect(wrongTypeClaim.summary).toContain('CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getRetainedControllerSession(store, workId)).toBeUndefined();
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: 'transport-provider-block-rekey-wrong-type',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+    })).toBeUndefined();
+
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey-claimed', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: recoveredAuthority,
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(claimed.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: recoveredAuthority,
+      relayScopeId: opened.relayScopeId,
+      consecutiveFailures: 0,
+      providerFailureTotal: 3,
+      providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: providerRecovered.audit.id,
+    });
+    expect(getControllerSession(store, workId)).toMatchObject({
+      workId,
+      controllerId: principalId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      sessionId: 'transport-provider-block-rekey-claimed',
+    });
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: 'transport-provider-block-rekey-claimed',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+    })).toMatchObject({
+      activeWorkId: workId,
+      controllerInstanceId: runtimeInstanceId,
+    });
   }, 15_000);
 
   test('frozen rh_work compatibility maps explicit review intent to the canonical implementation-review handler', async () => {

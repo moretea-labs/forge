@@ -1256,7 +1256,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
           }
   
-          let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
+          let resumedControllerSession: ReturnType<typeof bindFacadeControllerOwnership> | undefined;
           let cancelledWorkReauthorized = false;
           let reconstructedCancelledCheckout = false;
           let reconstructedRunningCheckout = false;

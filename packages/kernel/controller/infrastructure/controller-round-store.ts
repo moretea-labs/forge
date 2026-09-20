@@ -12,7 +12,17 @@ import {
   type ControlPlaneRecord,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { workHasActiveExecution } from '../../../../src/runtime/execution/work-activity';
-import { controllerSessionBlocksRecovery, controllerSessionPrincipalId, getControllerSession, releaseObservedControllerSession } from './controller-session-store';
+import {
+  assertControllerSessionWorkClaimable,
+  controllerSessionBlocksRecovery,
+  controllerSessionPrincipalId,
+  getControllerSession,
+  releaseObservedControllerSession,
+  resumeControllerSessionWithinTransaction,
+  withControllerSessionMutationLock,
+  type ClaimedControllerSession,
+  type ControllerSessionClaimInput,
+} from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { currentTaskLineageWorkIds, getWorkContract, readActiveWorkCandidates, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
@@ -29,6 +39,7 @@ import {
 import {
   controllerRoundBlockerClass,
   controllerRoundProviderEffectId,
+  controllerRoundRelayClaimable,
   decideControllerRoundTransition,
   type ControllerRoundTransitionDecision,
   type ControllerRoundTransitionEvent,
@@ -933,6 +944,21 @@ export function beginInitialControllerRoundDispatch(
     if (existing && existing.value.relayScopeId !== relayScopeId) {
       throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: Work ${work.workId} is already bound to ${existing.value.relayScopeId}`);
     }
+    if (existing) {
+      const requestedControllerId = input.identity.controllerId.trim().slice(0, 240) || 'controller-host';
+      const requestedPrincipalId = input.identity.principalId.trim().slice(0, 240) || requestedControllerId;
+      const reusableUnsubmittedRelay = existing.value.originWorkId === work.workId
+        && ['pending_release', 'dispatching'].includes(existing.value.status)
+        && existing.value.controllerId === requestedControllerId
+        && relayControllerType(existing.value) === input.identity.controllerType
+        && existing.value.principalId === requestedPrincipalId
+        && Boolean(existing.value.authorityId?.trim())
+        && !existing.value.providerDispatchEffectId
+        && !existing.value.providerDispatchStartedAt
+        && !existing.value.providerDispatchReceiptId
+        && (existing.value.providerDispatchAttempt ?? 0) === 0;
+      if (reusableUnsubmittedRelay) return existing.value;
+    }
     const previous = relayHistory(options, relayScopeId)[0];
     const abandonedReleasedRound = previous?.status === 'failed' && previous.failureClass === 'abandoned_release';
     const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
@@ -1155,6 +1181,90 @@ export function finishControllerRoundRelayDispatch(
   });
 }
 
+export interface ClaimControllerRoundSessionInput {
+  workId: string;
+  relayWorkId: string;
+  sessionClaim: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string };
+  assistantContextSnapshot?: AssistantContextSnapshot | null;
+}
+
+/**
+ * Atomically claim one relay-bound Work. Relay claimability is rechecked inside
+ * the same BEGIN IMMEDIATE transaction that persists ControllerSession ownership.
+ * A Requirement-scope inherited relay is fenced but not rewritten for a sibling Work.
+ */
+export function claimControllerRoundSession(
+  options: ControllerRoundRelayStoreOptions,
+  input: ClaimControllerRoundSessionInput,
+): { session: ClaimedControllerSession; relay?: ControllerRoundRelayRecord } {
+  const relayWorkId = input.relayWorkId.trim();
+  const initial = readRelayRecord(options, relayWorkId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${relayWorkId}`);
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-session-claim:${input.sessionClaim.controllerId}`, () => {
+    const lockedRelay = readRelayRecord(options, relayWorkId);
+    if (!lockedRelay || !controllerRoundRelayClaimable(lockedRelay.value)) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_STATE_INVALID:${lockedRelay?.value.status ?? 'missing'}`);
+    }
+    const repeatedStateFingerprint = controllerRoundBlockerClass(lockedRelay.value) === 'repeated_state'
+      ? (() => {
+          const work = getWorkContract(options, input.workId);
+          if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_CONTROLLER_CLAIM_TERMINAL: ${input.workId}:${work?.status ?? 'missing'}`);
+          return mechanicalStateFingerprint(options, work, lockedRelay.value.requirementId, lockedRelay.value.relayScopeId, lockedRelay.value.handoffId);
+        })()
+      : undefined;
+    return withControllerSessionMutationLock(options, input.workId, `controller-relay-session-claim:${input.sessionClaim.controllerId}`, () => {
+      assertControllerSessionWorkClaimable(options, input.workId);
+      return withControlPlaneTransaction(options.controllerHome, (database) => {
+        const current = readControlPlaneRecordWithinTransaction<ControllerRoundRelayRecord>(
+          database, NAMESPACE, options.repoId, relayWorkId,
+        );
+        if (!current || !controllerRoundRelayClaimable(current.value)) {
+          throw new Error(`CONTROLLER_RELAY_CLAIM_STATE_INVALID:${current?.value.status ?? 'missing'}`);
+        }
+        if (input.sessionClaim.controllerType !== relayControllerType(current.value)) {
+          throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${input.workId}`);
+        }
+        const session = resumeControllerSessionWithinTransaction(database, options, input.sessionClaim);
+        if (relayWorkId !== input.workId) return { session };
+
+        const at = nowIso(options);
+        const blocker = controllerRoundBlockerClass(current.value);
+        const event: ControllerRoundTransitionEvent = blocker === 'repeated_state'
+          ? {
+              type: 'semantic_state_changed', at,
+              stateFingerprint: repeatedStateFingerprint!, session,
+              principalId: input.sessionClaim.principalId,
+              controllerInstanceId: input.sessionClaim.controllerInstanceId,
+            }
+          : {
+              type: 'controller_claim_observed', at, session,
+              principalId: input.sessionClaim.principalId,
+              controllerInstanceId: input.sessionClaim.controllerInstanceId,
+            };
+        const decided = transitionDecisionOrThrow(decideControllerRoundTransition(current.value, event));
+        let next = decided.record;
+        const requested = input.assistantContextSnapshot;
+        if (requested !== undefined && !sameAssistantContextSnapshot(next.assistantContextSnapshot, requested)) {
+          if (next.assistantContextSnapshot) throw new Error(`CONTROLLER_ASSISTANT_CONTEXT_CLAIM_MISMATCH: ${input.workId}`);
+          if (requested !== null) next = { ...next, assistantContextSnapshot: requested, updatedAt: at };
+        }
+        if (decided.changed || next !== decided.record) {
+          writeControlPlaneRecordWithinTransaction(database, {
+            namespace: NAMESPACE,
+            scope: options.repoId,
+            key: relayWorkId,
+            schemaVersion: SCHEMA_VERSION,
+            value: next,
+            action: decided.action ?? 'controller_round_relay_claim_acknowledged',
+            expectedRevision: current.revision,
+          });
+        }
+        return { session, relay: next };
+      });
+    });
+  });
+}
+
 export function acknowledgeControllerRoundClaim(
   options: ControllerRoundRelayStoreOptions,
   input: { workId: string; session: ControllerSession; assistantContextSnapshot?: AssistantContextSnapshot | null },
@@ -1174,10 +1284,7 @@ export function acknowledgeControllerRoundClaim(
       && sameAssistantContextSnapshot(current.value.assistantContextSnapshot, input.assistantContextSnapshot)) return current.value;
 
     const blocker = controllerRoundBlockerClass(current.value);
-    const policyClaimable = ['dispatching', 'dispatched', 'claimed'].includes(current.value.status)
-      || blocker === 'provider_dispatch_outcome_unknown'
-      || blocker === 'repeated_state';
-    if (!policyClaimable) return current.value;
+    if (!controllerRoundRelayClaimable(current.value)) return current.value;
 
     const owner = getControllerSession(options, input.workId);
     const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
@@ -1253,11 +1360,12 @@ export function recoverControllerRoundRelayAuthority(
   }
   const recoverableStatuses: readonly ControllerRoundRelayStatus[] = ['pending_release', 'dispatching', 'dispatched', 'claimed', 'failed'];
   const initialRepeatedStateBlock = initial.value.status === 'blocked' && initial.value.blockedReason?.startsWith('repeated_state:');
+  const initialConsecutiveFailureBlock = controllerRoundBlockerClass(initial.value) === 'consecutive_failures';
   const initialRecoveryReason = input.recoveryReason?.trim() ?? '';
   if (initialRepeatedStateBlock && !initialRecoveryReason) {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_REASON_REQUIRED: ${workId}; repeated-state recovery must state why the bounded recovery is being opened.`);
   }
-  if (!recoverableStatuses.includes(initial.value.status) && !initialRepeatedStateBlock) {
+  if (!recoverableStatuses.includes(initial.value.status) && !initialRepeatedStateBlock && !initialConsecutiveFailureBlock) {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_STATE_INVALID: ${workId}:${initial.value.status}`);
   }
 
@@ -1269,10 +1377,11 @@ export function recoverControllerRoundRelayAuthority(
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_NOT_CURRENT: ${workId}`);
     }
     const currentRepeatedStateBlock = current.value.status === 'blocked' && current.value.blockedReason?.startsWith('repeated_state:');
+    const currentConsecutiveFailureBlock = controllerRoundBlockerClass(current.value) === 'consecutive_failures';
     if (currentRepeatedStateBlock && !initialRecoveryReason) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_REASON_REQUIRED: ${workId}; repeated-state recovery must state why the bounded recovery is being opened.`);
     }
-    if (!recoverableStatuses.includes(current.value.status) && !currentRepeatedStateBlock) {
+    if (!recoverableStatuses.includes(current.value.status) && !currentRepeatedStateBlock && !currentConsecutiveFailureBlock) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_STATE_INVALID: ${workId}:${current.value.status}`);
     }
     if (relayControllerType(current.value) !== input.identity.controllerType
@@ -1296,6 +1405,9 @@ export function recoverControllerRoundRelayAuthority(
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
     }
     const currentOwner = claimedWorks.find((entry) => entry.work.workId === workId)?.owner;
+    if (currentConsecutiveFailureBlock && currentOwner) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
+    }
     if (currentOwner) {
       const ownerPrincipal = controllerSessionPrincipalId(currentOwner);
       const ownerInstanceId = currentOwner.controllerInstanceId?.trim() || '';
@@ -1321,6 +1433,7 @@ export function recoverControllerRoundRelayAuthority(
     return applyControllerRoundTransition(options, current, {
       type: 'authority_recovery_requested', at: nowIso(options), proposedAuthorityId: newControllerRoundAuthorityId(),
       keepsConfirmedDispatch: current.value.status === 'dispatched',
+      preserveBlockedState: currentConsecutiveFailureBlock,
       ...(initialRecoveryReason ? { reason: initialRecoveryReason } : {}),
     });
   });

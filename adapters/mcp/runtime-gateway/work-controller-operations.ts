@@ -23,8 +23,10 @@ import { completeRequirementGoal } from '../../../src/runtime/control-plane/faca
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 import {
   acknowledgeControllerRoundClaim,
+  claimControllerRoundSession,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
+  controllerRoundRelayClaimable,
   controllerSessionAuthorityDigest,
   controllerSessionAuthorityMatches,
   controllerSessionPrincipalId,
@@ -109,6 +111,10 @@ export async function callRhWorkControllerOperation(
           throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND: ${workId}:${requestedRelayScopeId}`);
         }
       }
+      const claimRelay = dispatchedRelay ?? authorizedRelay;
+      if (claimRelay && !controllerRoundRelayClaimable(claimRelay)) {
+        throw new Error(`CONTROLLER_RELAY_CLAIM_STATE_INVALID:${claimRelay.status}`);
+      }
       const inheritedRequirementAuthority = !dispatchedRelay?.authorityId?.trim() && authorizedRelay?.authorityId?.trim()
         ? {
             authorityId: authorizedRelay.authorityId!.trim(),
@@ -133,26 +139,36 @@ export async function callRhWorkControllerOperation(
           || controllerSessionPrincipalId(observedOwner!) !== identity.principalId
         )
         && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(store, workId, dispatchedRelay, identity.controllerType);
-      const session = existingDirectAuthority
+      const sessionClaim = {
+        workId,
+        controllerId: identity.controllerId,
+        controllerType: identity.controllerType,
+        sessionId: identity.sessionId,
+        ...(sessionAuthority ? { authorityDigest: sessionAuthority.authorityDigest } : {}),
+        principalId: identity.principalId,
+        controllerInstanceId: identity.controllerInstanceId,
+        ...(crossOwnerRecovery
+          ? {
+              expectedClaimGeneration: observedOwner!.claimGeneration,
+              allowStaleRecovery: true,
+            }
+          : {}),
+        leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+      };
+      const assistantContextBundle = prepareControllerAssistantContextBundle(store, workId);
+      const relayClaim = claimRelay
+        ? claimControllerRoundSession(store, {
+            workId,
+            relayWorkId: claimRelay.originWorkId,
+            sessionClaim,
+            assistantContextSnapshot: assistantContextBundle?.snapshot ?? null,
+          })
+        : undefined;
+      const session = relayClaim?.session ?? (existingDirectAuthority
         ? bindFacadeControllerOwnership(ctx, store, workId, identity, {
             leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
           })
-        : resumeControllerSession(store, {
-            workId,
-            controllerId: identity.controllerId,
-            controllerType: identity.controllerType,
-            sessionId: identity.sessionId,
-            ...(sessionAuthority ? { authorityDigest: sessionAuthority.authorityDigest } : {}),
-            principalId: identity.principalId,
-            controllerInstanceId: identity.controllerInstanceId,
-            ...(crossOwnerRecovery
-              ? {
-                  expectedClaimGeneration: observedOwner!.claimGeneration,
-                  allowStaleRecovery: true,
-                }
-              : {}),
-            leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-          });
+        : resumeControllerSession(store, sessionClaim));
       if (session.controllerType !== 'human') ensureScheduledControllerBindingForWork(store, { workId, session, args });
       const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);
       const executionSession = startExecutionSession(ctx.controllerHome, {
@@ -172,11 +188,12 @@ export async function callRhWorkControllerOperation(
         permissionSnapshotVersion,
         lastValidatedAt: new Date().toISOString(),
       });
-      const assistantContextBundle = prepareControllerAssistantContextBundle(store, workId);
-      const relay = acknowledgeControllerRoundClaim(
-        { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-        { workId, session, assistantContextSnapshot: assistantContextBundle?.snapshot ?? null },
-      );
+      const relay = relayClaim?.relay ?? (claimRelay
+        ? undefined
+        : acknowledgeControllerRoundClaim(
+            { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+            { workId, session, assistantContextSnapshot: assistantContextBundle?.snapshot ?? null },
+          ));
       return result(buildFacadeResult({
         summary: relay?.status === 'claimed'
           ? `Controller ${session.controllerId} claimed ${session.workId}; the dispatched ChatGPT round is mechanically acknowledged and still requires an explicit semantic disposition.`
@@ -583,29 +600,15 @@ export async function callRhWorkControllerOperation(
         const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
         const relayStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
         const existingBinding = chatgptControllerRoundBinding(relayStore, workId);
-        let relay: ControllerRoundRelayRecord;
-        try {
-          relay = beginInitialControllerRoundDispatch(
-            relayStore,
-            {
-              workId,
-              identity: authenticatedFacadeControllerIdentity(ctx, args),
-              requirementId: work.requirementId,
-              bindingId: existingBinding?.bindingId,
-            },
-          );
-        } catch (error) {
-          if (!(error instanceof Error) || !error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')) throw error;
-          const existing = getControllerRoundRelay(relayStore, workId);
-          const resumable = existing
-            && existing.originWorkId === workId
-            && existing.controllerType === 'chatgpt'
-            && ['pending_release', 'dispatching'].includes(existing.status)
-            && Boolean(existing.authorityId)
-            && !existing.providerDispatchStartedAt;
-          if (!resumable) throw error;
-          relay = existing;
-        }
+        const relay = beginInitialControllerRoundDispatch(
+          relayStore,
+          {
+            workId,
+            identity: authenticatedFacadeControllerIdentity(ctx, args),
+            requirementId: work.requirementId,
+            bindingId: existingBinding?.bindingId,
+          },
+        );
         if (relay.status === 'blocked') {
           throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
         }

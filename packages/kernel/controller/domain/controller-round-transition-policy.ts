@@ -24,6 +24,13 @@ export function controllerRoundBlockerClass(record: Pick<ControllerRoundRelayRec
   return undefined;
 }
 
+/** Read-only claim admission shared by transport preflight and durable relay acknowledgement. */
+export function controllerRoundRelayClaimable(record: Pick<ControllerRoundRelayRecord, 'status' | 'blockedReason'>): boolean {
+  if (['dispatching', 'dispatched', 'claimed'].includes(record.status)) return true;
+  const blocker = controllerRoundBlockerClass(record);
+  return blocker === 'provider_dispatch_outcome_unknown' || blocker === 'repeated_state';
+}
+
 export type ControllerRoundTransitionEvent =
   | { type: 'occurrence_requested'; at: string; repoId: string; relayScopeId: string; originWorkId: string; requirementId?: string; identity: ControllerRoundRelayIdentity; stateFingerprint: string; proposedAuthorityId: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; bindingId?: string; occurrenceId?: string; abandonedReleaseRecovery: boolean; allowSemanticWaitRecovery?: boolean }
   | { type: 'provider_dispatch_started'; at: string; providerDispatchEffectId: string; bindingId?: string }
@@ -44,7 +51,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'failed_dispatch_successor_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
   | { type: 'terminal_work_observed'; at: string; error: string }
   | { type: 'abandoned_release_observed'; at: string; error: string }
-  | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean; reason?: string };
+  | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean; preserveBlockedState?: boolean; reason?: string };
 
 export type ControllerRoundTransitionDecision =
   | { kind: 'accept'; next: ControllerRoundRelayRecord; action: string }
@@ -425,6 +432,14 @@ export function decideControllerRoundTransition(
     }
     case 'authority_recovery_requested': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (event.preserveBlockedState) {
+        if (current.status !== 'blocked') return { kind: 'reject', code: `CONTROLLER_RELAY_AUTHORITY_REKEY_BLOCKED_STATE_REQUIRED:${current.status}` };
+        return accept(current, {
+          authorityId: event.proposedAuthorityId,
+          ...(event.reason ? { reason: event.reason } : {}),
+          updatedAt: event.at,
+        }, 'controller_round_relay_explicit_authority_rekeyed_while_blocked');
+      }
       return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, blockedReason: undefined, claimedAt: undefined, nextRecoveryAt: undefined, ...(event.reason ? { reason: event.reason } : {}), ...(event.keepsConfirmedDispatch ? {} : { providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }), updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
     }
   }

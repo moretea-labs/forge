@@ -1131,10 +1131,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
     expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
     expect(launcherStart).toContain('relayScopeId: relay.relayScopeId');
-    expect(launcherStart).toContain("error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')");
-    expect(launcherStart).toContain("['pending_release', 'dispatching'].includes(existing.status)");
-    expect(launcherStart).toContain("existing.controllerType === 'chatgpt'");
-    expect(launcherStart).toContain('!existing.providerDispatchStartedAt');
+    expect(launcherStart).not.toContain("error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')");
+    expect(launcherStart).not.toContain("['pending_release', 'dispatching'].includes(existing.status)");
+    expect(launcherStart).toContain('const relay = beginInitialControllerRoundDispatch(');
     expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched;");
     expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
