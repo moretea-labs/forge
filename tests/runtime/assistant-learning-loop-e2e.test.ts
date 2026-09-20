@@ -21,6 +21,7 @@ import {
 } from '../../packages/kernel/controller/api/index';
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
+import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
@@ -29,6 +30,7 @@ import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/ass
 import { recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
 import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -75,6 +77,21 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
   execFileSync('git', ['add', '.'], { cwd: repoRoot });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: name });
+  const instance = ensureForgeInstanceIdentity({
+    controllerHome,
+    preferredInstanceId: `forge-learning-${name.replace(/[^A-Za-z0-9._:-]+/g, '-').slice(0, 120)}`,
+    now: () => time(0),
+    label: 'Learning Loop Test',
+  });
+  const workspaceId = 'workspace-learning-loop';
+  writeWorkspaceIdentity({ controllerHome, value: { workspaceId, title: 'Learning Loop Workspace' } });
+  writeProjectIdentity({ controllerHome, value: { projectId: 'project-learning-loop', workspaceId, displayName: 'Learning Loop Project' } });
+  writeProjectPlacement({ controllerHome, value: {
+    projectId: 'project-learning-loop',
+    forgeInstanceId: instance.instanceId,
+    repositoryId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+  } });
   let now = time(0);
   const store = { controllerHome, repoId: repository.repoId, now: () => now };
   const workId = `work-${name}`;
@@ -94,7 +111,7 @@ function fixture(name: string, options: { knowledge?: boolean } = {}) {
     status: 'running',
   });
   return {
-    controllerHome, repoRoot, repository, store, workId,
+    controllerHome, repoRoot, repository, store, workId, workspaceId, forgeInstanceId: instance.instanceId,
     setNow(value: string) { now = value; },
   };
 }
@@ -482,6 +499,99 @@ describe('connected assistant learning loops', () => {
       kind: 'knowledge',
       itemId: memoryItemId,
       revision: 1,
+    }));
+  });
+
+  test('promotes corroborated engineering learning to Workspace and recalls it in a sibling Project', () => {
+    const fx = fixture('workspace-learning', { knowledge: false });
+    let previousOwner: ControllerSession | undefined;
+    let promotedMemoryId: string | undefined;
+
+    for (let index = 1; index <= 3; index += 1) {
+      fx.setNow(time(index * 10));
+      const round = index === 1
+        ? claimInitialRound(fx, index)
+        : claimReleasedRound(fx, previousOwner!, index);
+      const receiptId = `receipt-root-cause-${index}`;
+      appendVerificationRecord(fx.store, fx.workId, verificationRecord(fx, receiptId, time(index * 10 + 1), `root-cause-${index}`));
+      const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
+      closeContinue(fx, round);
+      const learning = persistAutomaticControllerRoundLearning({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        workId: fx.workId,
+        sourceRoundId,
+        signals: [{
+          code: 'repeated_root_cause',
+          fingerprint: `root-cause-pattern-${index}`,
+          evidenceRefs: [receiptId],
+          observation: 'Related symptoms share one architecture root cause; batch the correction instead of patching each symptom.',
+        }],
+        now: time(index * 10 + 2),
+      });
+      if (index < 3) expect(learning.promotedMemoryIds).toEqual([]);
+      else {
+        expect(learning.consolidatedMemoryIds.length).toBeGreaterThan(0);
+        expect(learning.promotedMemoryIds).toHaveLength(1);
+        promotedMemoryId = learning.promotedMemoryIds[0];
+      }
+      previousOwner = round.owner;
+    }
+
+    const consumerRoot = mkdtempSync(join(tmpdir(), 'forge-learning-loop-consumer-'));
+    roots.push(consumerRoot);
+    mkdirSync(join(consumerRoot, '.forge'), { recursive: true });
+    writeFileSync(join(consumerRoot, 'README.md'), 'consumer project\n');
+    writeFileSync(join(consumerRoot, '.forge', 'project-engineering.json'), JSON.stringify({
+      schemaVersion: 1,
+      contractId: 'learning-consumer',
+      contractVersion: '1',
+      projectId: 'project-learning-consumer',
+      authority: { product: ['README.md'], architecture: [], source: ['src/**'] },
+      quality: { ux: [], performance: [], nonRegression: [] },
+      checks: [], journeys: [], platforms: [], tooling: [], skillRefs: [], exceptions: [],
+    }, null, 2));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: consumerRoot });
+    execFileSync('git', ['config', 'user.email', 'learning-loop@example.test'], { cwd: consumerRoot });
+    execFileSync('git', ['config', 'user.name', 'Learning Loop Test'], { cwd: consumerRoot });
+    execFileSync('git', ['add', '.'], { cwd: consumerRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: consumerRoot });
+    const consumerRepository = registerRepository({ path: consumerRoot, controllerHome: fx.controllerHome, displayName: 'learning consumer' });
+    writeProjectIdentity({ controllerHome: fx.controllerHome, value: {
+      projectId: 'project-learning-consumer',
+      workspaceId: fx.workspaceId,
+      displayName: 'Learning Consumer Project',
+    } });
+    writeProjectPlacement({ controllerHome: fx.controllerHome, value: {
+      projectId: 'project-learning-consumer',
+      forgeInstanceId: fx.forgeInstanceId,
+      repositoryId: consumerRepository.repoId,
+      checkoutId: consumerRepository.activeCheckoutId,
+    } });
+    const consumerWorkId = 'work-learning-consumer';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: consumerRepository.repoId }, {
+      workId: consumerWorkId,
+      repoId: consumerRepository.repoId,
+      checkoutId: consumerRepository.activeCheckoutId,
+      scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-learning-consumer' },
+      mode: 'goal_workloop',
+      objective: 'Apply forge.execution-quality.repeated_root_cause guidance to avoid symptom-by-symptom patches.',
+      acceptanceCriteria: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false },
+      allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'chatgpt', status: 'running',
+    });
+
+    const consumerContext = prepareControllerAssistantContextBundle({
+      controllerHome: fx.controllerHome,
+      repoId: consumerRepository.repoId,
+    }, consumerWorkId);
+    const promotedItemId = memoryAddressKey({
+      scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
+      id: promotedMemoryId!,
+    });
+    expect(consumerContext?.snapshot.items).toContainEqual(expect.objectContaining({
+      kind: 'knowledge',
+      itemId: promotedItemId,
     }));
   });
 

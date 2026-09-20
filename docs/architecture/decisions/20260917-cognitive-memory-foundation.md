@@ -46,6 +46,14 @@ Consolidation compresses **representation**, not provenance. Repeated memories m
 
 Hot/warm/cold are retrieval/retention hints, not three durable authorities. Working memory is intentionally small; long-term storage is not capped to an arbitrary `1000` learned facts. Capacity pressure is handled by compact indexes, CAS de-duplication, consolidation and bounded activation rather than deleting knowledge merely to imitate human forgetting.
 
+### Cross-project promotion
+
+Raw Controller learning remains Work/Project-local. Portable `WorkspaceIdentity` is the existing cross-Project semantic boundary; no `global`/organization memory scope or second policy store is introduced. A Project memory may be promoted into Workspace memory only after consolidation has at least three evidence-bearing automatic-learning sources from at least three distinct Controller rounds, and only for Forge engineering concepts such as execution-quality or engineering-blocker patterns. Promotion preserves source evidence and project provenance, while sibling Projects in the same Workspace include the Workspace scope in cognitive activation.
+
+Workspace memory is advisory learned guidance. This bounded scope promotion is only a memory projection and is not the strategy/policy promotion described by the evolution boundary below; it creates no promotion receipt and acquires no lifecycle or acceptance authority. Project product/domain contracts, authored architecture, authorization and verification gates remain higher semantic authority and are never rewritten by learning. A single symptom, one Controller round, arbitrary project content or application-specific business knowledge cannot self-promote across Projects. Explicit human-authored engineering rules may be committed directly to repository authority; heuristic learning never impersonates that authority.
+
+Automatic learning is part of Controller-round closure but is not Controller lifecycle authority. If post-disposition learning fails, the already-durable disposition remains authoritative and the failure must be surfaced explicitly for repair; it must not be hidden as an ordinary skipped lesson, and it must not roll back or replay the semantic disposition.
+
 ## Transport and encoding
 
 Internal representation may use SQLite native columns, BLOBs, compact graph structures, vector encodings, bitmaps, varints or other machine-oriented formats when benchmarks justify them. The ChatGPT/MCP boundary remains compact semantic structured data. Base64-wrapped bytecode or machine code is not a model-facing optimization.

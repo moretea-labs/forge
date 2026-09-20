@@ -17,6 +17,7 @@ import {
 import { getWorkContract, type WorkContract } from '../../../packages/kernel/work/api/index';
 import {
   canonicalWorkflowEvidenceAvailable,
+  cognitiveScopesForWork,
   experienceScopesForWork,
 } from '../control-plane/persistence/experience-store';
 import {
@@ -27,6 +28,7 @@ import {
 export interface AutomaticControllerLearningResult {
   storedMemoryIds: string[];
   consolidatedMemoryIds: string[];
+  promotedMemoryIds: string[];
   skipped: string[];
 }
 
@@ -122,6 +124,106 @@ function consolidationAuthority(input: {
       return sameScope(scope, input.scope) && evidence.has(ref);
     },
   };
+}
+
+interface ConsolidatedLearning {
+  memory: MemoryUnit;
+  supportingMemories: MemoryUnit[];
+}
+
+function workspacePromotionScope(work: WorkContract, controllerHome: string, projectScope: ScopeRef): ScopeRef | undefined {
+  if (projectScope.kind !== 'project') return undefined;
+  return cognitiveScopesForWork(work, controllerHome).find(scope => scope.kind === 'workspace');
+}
+
+function workspacePromotionAuthority(input: {
+  scope: ScopeRef;
+  projectScope: ScopeRef;
+  sourceMemories: readonly MemoryUnit[];
+}): CognitiveWriteAuthorityPort {
+  const evidence = new Set(input.sourceMemories.flatMap(memory => [
+    ...memory.provenance.evidenceRefs,
+    ...memory.counterEvidenceRefs,
+  ]));
+  return {
+    assertMemoryWrite(memory) {
+      if (!sameScope(memory.scope, input.scope)
+        || !memory.id.startsWith('promoted:')
+        || memory.provenance.sourceKind !== 'system'
+        || !memory.provenance.sourceId?.startsWith(`project-learning-promotion:${input.projectScope.id}:`)
+        || memory.provenance.sourceWorkId
+        || memory.provenance.sourceRoundId) {
+        throw new Error('COGNITION_WORKSPACE_PROMOTION_AUTHORITY_INVALID');
+      }
+    },
+    assertEdgeWrite() {
+      throw new Error('COGNITION_WORKSPACE_PROMOTION_EDGE_NOT_ALLOWED');
+    },
+    evidenceAvailable(ref, scope) {
+      return sameScope(scope, input.scope) && evidence.has(ref);
+    },
+  };
+}
+
+function reusableEngineeringPattern(candidate: ConsolidatedLearning): boolean {
+  const sourceRounds = new Set(candidate.supportingMemories
+    .map(memory => memory.provenance.sourceRoundId)
+    .filter((value): value is string => Boolean(value)));
+  const concepts = candidate.memory.concepts;
+  return candidate.supportingMemories.length >= 3
+    && sourceRounds.size >= 3
+    && candidate.memory.facets.includes('automatic')
+    && concepts.some(concept => concept.startsWith('forge.execution-quality.') || concept === 'forge.engineering-blocker');
+}
+
+function promoteConsolidatedLearning(input: {
+  controllerHome: string;
+  workspaceScope: ScopeRef;
+  projectScope: ScopeRef;
+  candidates: readonly ConsolidatedLearning[];
+  now: string;
+}): string[] {
+  const promotable = input.candidates.filter(reusableEngineeringPattern);
+  if (!promotable.length) return [];
+  const sourceMemories = promotable.map(candidate => candidate.memory);
+  const authority = workspacePromotionAuthority({
+    scope: input.workspaceScope,
+    projectScope: input.projectScope,
+    sourceMemories,
+  });
+  const store = cognitionMemoryStore(input.controllerHome);
+  const promoted: string[] = [];
+  for (const candidate of promotable) {
+    const source = candidate.memory;
+    const key = createHash('sha256')
+      .update(`${input.workspaceScope.id}:${input.projectScope.id}:${source.id}`)
+      .digest('hex')
+      .slice(0, 32);
+    const id = `promoted:${key}`;
+    const existing = store.read(input.workspaceScope, id);
+    if (!existing) {
+      recordCognitiveMemory(store, authority, {
+        id,
+        scope: input.workspaceScope,
+        facets: [...new Set(['knowledge', 'pattern', 'engineering-principle', 'cross-project', ...source.facets])].slice(0, 16),
+        canonicalText: source.canonicalText,
+        concepts: source.concepts,
+        provenance: {
+          sourceKind: 'system',
+          sourceId: `project-learning-promotion:${input.projectScope.id}:${source.id}`,
+          recordedAt: input.now,
+          evidenceRefs: source.provenance.evidenceRefs,
+        },
+        confidence: source.confidence,
+        utility: Math.min(1, source.utility + 0.05),
+        tier: 'warm',
+        validFrom: input.now,
+        counterEvidenceRefs: source.counterEvidenceRefs,
+      });
+    }
+    promoted.push(id);
+  }
+  return [...new Set(promoted)];
 }
 
 function persistDraft(
@@ -245,7 +347,7 @@ function consolidateAffectedConcepts(
   scope: ScopeRef,
   concepts: readonly string[],
   now: string,
-): string[] {
+): ConsolidatedLearning[] {
   const uniqueConcepts = normalizedConcepts(concepts);
   if (!uniqueConcepts.length) return [];
   const sourceMemories = cognitionReadPort(controllerHome)
@@ -255,19 +357,24 @@ function consolidateAffectedConcepts(
   const result = consolidateMemories(scope, sourceMemories, now);
   const store = cognitionMemoryStore(controllerHome);
   const authority = consolidationAuthority({ scope, sourceMemories });
-  const persisted: string[] = [];
+  const persisted = new Map<string, ConsolidatedLearning>();
   for (const candidate of result.candidates) {
-    if (!store.read(scope, candidate.memory.id)) {
+    let memory = store.read(scope, candidate.memory.id);
+    if (!memory) {
       const { schemaVersion: _schemaVersion, revision: _revision, ...draft } = candidate.memory;
-      recordCognitiveMemory(store, authority, draft);
+      memory = recordCognitiveMemory(store, authority, draft);
     }
-    persisted.push(candidate.memory.id);
+    const supportingIds = new Set(candidate.supportingIds);
+    persisted.set(memory.id, {
+      memory,
+      supportingMemories: sourceMemories.filter(source => supportingIds.has(source.id)),
+    });
   }
   for (const edge of result.edges) {
     const { schemaVersion: _schemaVersion, ...draft } = edge;
     recordCognitiveMemoryEdge(store, authority, draft);
   }
-  return [...new Set(persisted)];
+  return [...persisted.values()];
 }
 
 export function persistAutomaticControllerRoundLearning(input: {
@@ -362,10 +469,21 @@ export function persistAutomaticControllerRoundLearning(input: {
   }
 
   const concepts = stored.flatMap(memory => memory.concepts);
-  const consolidatedMemoryIds = consolidateAffectedConcepts(input.controllerHome, scope, concepts, observedAt);
+  const consolidated = consolidateAffectedConcepts(input.controllerHome, scope, concepts, observedAt);
+  const workspaceScope = workspacePromotionScope(work, input.controllerHome, scope);
+  const promotedMemoryIds = workspaceScope
+    ? promoteConsolidatedLearning({
+        controllerHome: input.controllerHome,
+        workspaceScope,
+        projectScope: scope,
+        candidates: consolidated,
+        now: observedAt,
+      })
+    : [];
   return {
     storedMemoryIds: [...new Set(stored.map(memory => memory.id))],
-    consolidatedMemoryIds,
+    consolidatedMemoryIds: consolidated.map(candidate => candidate.memory.id),
+    promotedMemoryIds,
     skipped,
   };
 }

@@ -292,6 +292,7 @@ export async function callRhWorkControllerOperation(
         }
       }
       let automaticLearning;
+      let automaticLearningWarning: string | undefined;
       if (automaticLearningRoundId) {
         const adjustmentFingerprints = Array.isArray(args.execution_quality_adjustment_results)
           ? args.execution_quality_adjustment_results
@@ -309,10 +310,13 @@ export async function callRhWorkControllerOperation(
             adjustmentFingerprints,
           });
         } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          automaticLearningWarning = `Automatic learning failed after the Controller disposition was durably recorded: ${reason}`;
           automaticLearning = {
             storedMemoryIds: [],
             consolidatedMemoryIds: [],
-            skipped: [`automatic_learning_failed:${error instanceof Error ? error.message : String(error)}`],
+            promotedMemoryIds: [],
+            skipped: [],
           };
         }
       }
@@ -329,6 +333,7 @@ export async function callRhWorkControllerOperation(
             ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
             : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
         data: { relay, ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(automaticLearning ? { automaticLearning } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
+        warnings: automaticLearningWarning ? [automaticLearningWarning] : [],
       }) as unknown as Record<string, unknown>, relay.status === 'blocked');
     } catch (error) {
       return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller disposition failed.', data: {} }) as unknown as Record<string, unknown>, true);

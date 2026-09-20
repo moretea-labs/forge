@@ -29,7 +29,9 @@
       "Do not introduce a second durable writer for Requirement, Plan, Work, ControllerRound, Workflow Supervisor, or repository execution state.",
       "Do not weaken registered verification, implementation review, approval, or repository safety gates to obtain progress.",
       "External effects with ambiguous outcome must reconcile before retry; blind replay is forbidden.",
-      "Architecture authority and implementation must remain synchronized."
+      "Architecture authority and implementation must remain synchronized.",
+      "Use root-cause-first batch convergence: cluster related symptoms before mutation and prefer one coherent common-cause correction over symptom-by-symptom patches; emergency containment must remain narrow and return to root-cause closure.",
+      "Cognitive learning may guide future Work only through portable semantic scope and must not silently override product/domain contracts, architecture authority, authorization, or verification gates."
     ]
   },
   "checks": [

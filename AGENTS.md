@@ -13,6 +13,14 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - The Controller UI is an auxiliary configuration/state utility behind ChatGPT: Overview, Work, Automations, Capabilities, Repositories, Settings, and System. It presents durable user-facing state and hides Issue/Task/Run internals unless diagnostics require them.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
 
+## Root-Cause-First Learning Discipline
+
+- Treat a newly observed failure or inefficiency as evidence, not an automatic patch trigger. Accumulate and cluster related symptoms by violated invariant, semantic owner, authority, and lifecycle before changing source.
+- Default learning loop: `observe -> cluster -> identify common root cause -> one coherent correction -> whole-diff review -> focused verification -> institutionalize the reusable rule/capability`.
+- Project-local observations remain local evidence. Only corroborated, repeated Forge engineering patterns may be promoted through Cognitive Plane into portable Workspace guidance for sibling Projects; learned guidance never silently overrides product/domain contracts, architecture authority, authorization, or verification gates.
+- Emergency containment is narrow: active security exposure, data corruption/loss, production-wide outage, or a foundational blocker that prevents safe investigation may receive the smallest reversible containment first. Containment must be recorded as such and followed by root-cause closure; it is never the final architecture.
+- When a learned pattern can recur, prefer strengthening the existing typed contract, workflow, architecture rule, or gate over retaining a prose-only lesson. Do not create a second learning store, policy authority, lifecycle owner, fallback, or project-specific helper.
+
 ## Mandatory Delivery Transaction
 
 ### Current Task Lineage Isolation

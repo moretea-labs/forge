@@ -12,6 +12,14 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Ordinary local risk levels are metadata, not permission gates. There is no approval queue and no `approve_risk` handshake. Only an explicitly destructive or irreversible operation requires authorization in the same request.
 - The Controller UI is hierarchical: Overview, Work, Activity, and Settings. Work is organized as Issue -> Task -> Execution instead of exposing every technical record as a top-level destination.
 - Hard runtime boundaries remain for secrets, credentials, Git internals, concurrent write conflicts, out-of-scope writes when a scope is declared, and remote or irreversible side effects.
+## Root-Cause-First Learning Discipline
+
+- Treat a newly observed failure or inefficiency as evidence, not an automatic patch trigger. Accumulate and cluster related symptoms by violated invariant, semantic owner, authority, and lifecycle before changing source.
+- Default learning loop: `observe -> cluster -> identify common root cause -> one coherent correction -> whole-diff review -> focused verification -> institutionalize the reusable rule/capability`.
+- Project-local observations remain local evidence. Only corroborated, repeated Forge engineering patterns may be promoted through Cognitive Plane into portable Workspace guidance for sibling Projects; learned guidance never silently overrides product/domain contracts, architecture authority, authorization, or verification gates.
+- Emergency containment is narrow: active security exposure, data corruption/loss, production-wide outage, or a foundational blocker that prevents safe investigation may receive the smallest reversible containment first. Containment must be recorded as such and followed by root-cause closure; it is never the final architecture.
+- When a learned pattern can recur, prefer strengthening the existing typed contract, workflow, architecture rule, or gate over retaining a prose-only lesson. Do not create a second learning store, policy authority, lifecycle owner, fallback, or project-specific helper.
+
 ## Canonical Workflow Authority
 
 - Root `forge.config.json` is the modern declarative opt-in marker. It selects Controller Home Runtime authority; it is not a mirror of mutable state.

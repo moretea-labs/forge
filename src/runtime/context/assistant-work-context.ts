@@ -5,7 +5,7 @@ import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
 import { memoryUnitFromExperience, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
-import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
+import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, cognitiveScopesForWork, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
 import { activateCognitiveMemory, cognitionMemoryStore } from '../control-plane/persistence/cognition-store';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
@@ -62,8 +62,9 @@ export function prepareAssistantWorkContext(input: {
   const repository = getRepository(input.repoId, input.controllerHome);
   const repoRoot = repository.checkouts.find(checkout => checkout.checkoutId === work.checkoutId)?.canonicalRoot ?? repository.canonicalRoot;
   // Semantic Project identity comes from Work lineage/portable placement. The engineering contract is an optional knowledge-source contract, not identity authority.
-  const scopes = experienceScopesForWork(work, input.controllerHome);
-  const boundProject = scopes.find(scope => scope.kind === 'project')?.id;
+  const experienceScopes = experienceScopesForWork(work, input.controllerHome);
+  const cognitiveScopes = cognitiveScopesForWork(work, input.controllerHome);
+  const boundProject = experienceScopes.find(scope => scope.kind === 'project')?.id;
   // Project knowledge is optional enrichment. Generic cognition authority is
   // scoped by Work lineage and must remain available even when no Project is bound.
   const loaded = boundProject
@@ -77,9 +78,9 @@ export function prepareAssistantWorkContext(input: {
     declared: sources.map(source => source.applicability),
     published: publicationApplicability(input.controllerHome, work.workId),
   });
-  const experiences = queryExperiences(controllerExperienceStore({ controllerHome: input.controllerHome, repoId: input.repoId, ...(input.now ? { now: () => input.now! } : {}) }), { scopes, applicability: applicability.value, now });
+  const experiences = queryExperiences(controllerExperienceStore({ controllerHome: input.controllerHome, repoId: input.repoId, ...(input.now ? { now: () => input.now! } : {}) }), { scopes: experienceScopes, applicability: applicability.value, now });
   const query = input.query ?? work.objective;
-  const activation = activateCognitiveMemory(input.controllerHome, scopes, query, { now, transientMemories: experiences.records.map(memoryUnitFromExperience) });
+  const activation = activateCognitiveMemory(input.controllerHome, cognitiveScopes, query, { now, transientMemories: experiences.records.map(memoryUnitFromExperience) });
   return resolveAssistantContext({ ...(boundProject ? { projectId: boundProject } : {}), query,
     sources,
     knowledge: fileKnowledgeSourcePort({ repoRoot, brainRoot: configuredBrainRoot(), sourceRevision: 'working-tree' }),

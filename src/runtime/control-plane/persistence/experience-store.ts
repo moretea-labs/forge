@@ -14,12 +14,28 @@ export const EXPERIENCE_NAMESPACE = 'assistant_experience';
 export const OUTCOME_OBSERVATION_NAMESPACE = 'assistant_outcome_observation';
 export interface ExperienceWriteIdentity { workId: string; controllerId: string; authorityId: string }
 
+function resolvedProjectForWork(work: WorkContract, controllerHome?: string) {
+  if (!controllerHome) return undefined;
+  const instance = readForgeInstanceIdentity(controllerHome);
+  if (!instance) return undefined;
+  const declaredProject = work.scopeRef?.kind === 'project'
+    ? work.scopeRef.id
+    : work.engineeringContext?.projectContractReceipt?.projectId;
+  return resolveProjectForRepositoryPlacement({
+    controllerHome,
+    forgeInstanceId: instance.instanceId,
+    repositoryId: work.repoId,
+    checkoutId: work.checkoutId,
+    projectId: declaredProject,
+  });
+}
+
 export function experienceScopesForWork(work: WorkContract, controllerHome?: string): ScopeRef[] {
   const scopes: ScopeRef[] = [{ schemaVersion: 1, kind: 'work', id: work.workId }];
-  const declaredProject = work.scopeRef?.kind === 'project' ? work.scopeRef.id : work.engineeringContext?.projectContractReceipt?.projectId;
-  const instance = controllerHome ? readForgeInstanceIdentity(controllerHome) : undefined;
-  const projectId = controllerHome && instance ? resolveProjectForRepositoryPlacement({ controllerHome,
-    forgeInstanceId: instance.instanceId, repositoryId: work.repoId, checkoutId: work.checkoutId, projectId: declaredProject })?.projectId ?? declaredProject : declaredProject;
+  const declaredProject = work.scopeRef?.kind === 'project'
+    ? work.scopeRef.id
+    : work.engineeringContext?.projectContractReceipt?.projectId;
+  const projectId = resolvedProjectForWork(work, controllerHome)?.projectId ?? declaredProject;
   if (projectId) scopes.push({ schemaVersion: 1, kind: 'project', id: projectId });
   if (work.requirementId) scopes.push({ schemaVersion: 1, kind: 'requirement', id: work.requirementId });
   if (work.planId) scopes.push({ schemaVersion: 1, kind: 'plan', id: work.planId });
@@ -28,14 +44,33 @@ export function experienceScopesForWork(work: WorkContract, controllerHome?: str
   return scopes;
 }
 
-function matchesScope(work: WorkContract, scope: ScopeRef, controllerHome: string): boolean {
+/**
+ * Cognitive recall may include portable Workspace guidance shared by sibling
+ * Projects. Raw Controller/Experience writes deliberately remain limited to
+ * experienceScopesForWork so project-local observations cannot bypass
+ * evidence-backed promotion into cross-project memory.
+ */
+export function cognitiveScopesForWork(work: WorkContract, controllerHome?: string): ScopeRef[] {
+  const scopes = experienceScopesForWork(work, controllerHome);
+  const workspaceId = resolvedProjectForWork(work, controllerHome)?.workspaceId;
+  if (workspaceId && !scopes.some(scope => scope.kind === 'workspace' && scope.id === workspaceId)) {
+    scopes.push({ schemaVersion: 1, kind: 'workspace', id: workspaceId });
+  }
+  return scopes;
+}
+
+function matchesExperienceScope(work: WorkContract, scope: ScopeRef, controllerHome: string): boolean {
   return experienceScopesForWork(work, controllerHome).some(candidate => candidate.kind === scope.kind && candidate.id === scope.id);
+}
+
+function matchesCognitiveScope(work: WorkContract, scope: ScopeRef, controllerHome: string): boolean {
+  return cognitiveScopesForWork(work, controllerHome).some(candidate => candidate.kind === scope.kind && candidate.id === scope.id);
 }
 
 export function canonicalWorkflowEvidenceAvailable(input: { controllerHome: string; repoId: string }, ref: string, scope: ScopeRef, sourceWorkId: string): boolean {
   try {
     const source = getWorkContract(input, sourceWorkId);
-    if (!source || !matchesScope(source, scope, input.controllerHome)) return false;
+    if (!source || !matchesCognitiveScope(source, scope, input.controllerHome)) return false;
     const linked = source.evidenceRefs.find(item => item.evidenceId === ref || item.artifactId === ref);
     if (linked) {
       if (ref.startsWith('ART-')) {
@@ -62,7 +97,7 @@ export function assertMemoryWriteAuthority(input: { controllerHome: string; repo
   const identity = input.identity;
   if (!identity) throw new Error('EXPERIENCE_CONTROLLER_REQUIRED');
   const current = getWorkContract(input, identity.workId), source = getWorkContract(input, sourceWorkId);
-  if (!current || isTerminalWorkContractStatus(current.status) || !source || !matchesScope(current, scope, input.controllerHome) || !matchesScope(source, scope, input.controllerHome)) throw new Error('EXPERIENCE_WORK_SCOPE_MISMATCH');
+  if (!current || isTerminalWorkContractStatus(current.status) || !source || !matchesExperienceScope(current, scope, input.controllerHome) || !matchesExperienceScope(source, scope, input.controllerHome)) throw new Error('EXPERIENCE_WORK_SCOPE_MISMATCH');
   const owner = getControllerSession(input, identity.workId);
   if (!owner || owner.controllerId !== identity.controllerId) throw new Error('EXPERIENCE_CONTROLLER_NOT_OWNER');
   const relay = getControllerRoundRelay(input, identity.workId);
