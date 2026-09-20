@@ -284,8 +284,7 @@ describe('Recovery ReleaseSession', () => {
   test('migrates a historical known-good session with its exact rollback transaction evidence', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-known-good-migration-'));
     roots.push(home);
-    const { stable, stableRelease, candidate } = lanes(home);
-    const candidateRelease = release(candidate, 'abc123');
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     const sessionId = candidate.sessionId;
     const root = join(home, 'recovery', 'state', 'release-sessions');
     mkdirSync(root, { recursive: true });
