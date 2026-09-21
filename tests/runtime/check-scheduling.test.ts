@@ -66,7 +66,7 @@ describe('check execution scheduling', () => {
       && right.resourceKey === 'build-cache:repo-test')).toBe(true);
   });
 
-  test('allows proven isolated read-only benchmarks to overlap static analysis', () => {
+  test('serializes compiler-intensive TypeScript latency gates even when both are source-read-only', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-check-effects-'));
     try {
       writeFileSync(join(root, 'package.json'), JSON.stringify({
@@ -83,12 +83,15 @@ describe('check execution scheduling', () => {
         checkoutId: 'checkout-test',
       });
 
-      expect(schedule.waves).toEqual([{
-        wave: 1,
-        checkIds: ['package:check:type', 'package:check:typescript-navigation'],
-        parallelSafe: true,
-      }]);
-      expect(schedule.conflicts).toEqual([]);
+      expect(schedule.waves).toEqual([
+        { wave: 1, checkIds: ['package:check:type'], parallelSafe: false },
+        { wave: 2, checkIds: ['package:check:typescript-navigation'], parallelSafe: false },
+      ]);
+      expect(schedule.conflicts).toHaveLength(1);
+      expect(schedule.conflicts[0]!.resources).toContainEqual({
+        left: { resourceKey: 'heavy-check:repo-test', mode: 'exclusive' },
+        right: { resourceKey: 'heavy-check:repo-test', mode: 'exclusive' },
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

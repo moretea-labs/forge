@@ -343,7 +343,7 @@ describe('runtime release materialization', () => {
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
     }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
-    expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'scheduler_worker', 'periodic_cleanup']);
+    expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'typescript_navigation', 'scheduler_worker', 'periodic_cleanup']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
   });
@@ -471,6 +471,9 @@ describe('runtime release materialization', () => {
     expect(existsSync(checkRunnerPath)).toBe(true);
     expect(readFileSync(checkRunnerPath, 'utf8')).toBe('check-runner-binary');
     expect(staged.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
+    const typescriptNavigationPath = join(staged.releasePath, 'forge-typescript-navigation');
+    expect(existsSync(typescriptNavigationPath)).toBe(true);
+    expect(staged.typescriptNavigationArtifactIdentity).toMatch(/^sha256:/);
     const runtimeBundlePath = join(staged.releasePath, 'forge-runtime-bundle.js');
     expect(existsSync(runtimeBundlePath)).toBe(true);
     expect(readFileSync(runtimeBundlePath, 'utf8')).toBe('runtime-bundle');
@@ -502,6 +505,8 @@ describe('runtime release materialization', () => {
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
     expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
+    expect(manifest.typescriptNavigationEntrypoint).toBe('forge-typescript-navigation');
+    expect(manifest.typescriptNavigationArtifactIdentity).toBe(staged.typescriptNavigationArtifactIdentity);
     expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');
     expect(manifest.externalPluginProbeArtifactIdentity).toBe(staged.externalPluginProbeArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'codegraph-node'))).toBe(true);

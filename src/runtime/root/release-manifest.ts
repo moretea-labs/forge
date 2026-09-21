@@ -200,6 +200,12 @@ export function loadRuntimeReleaseManifest(
     identityField: 'checkRunnerArtifactIdentity',
     canonicalEntry: 'forge-check-runner',
   });
+  const typescriptNavigation = optionalRuntimeComponent({
+    value,
+    entryField: 'typescriptNavigationEntrypoint',
+    identityField: 'typescriptNavigationArtifactIdentity',
+    canonicalEntry: 'forge-typescript-navigation',
+  });
   const schedulerWorker = optionalRuntimeComponent({
     value,
     entryField: 'schedulerWorkerEntrypoint',
@@ -320,6 +326,7 @@ export function loadRuntimeReleaseManifest(
     ...(workflowSupervisorNativeHost ?? {}),
     ...(processRunner ?? {}),
     ...(checkRunner ?? {}),
+    ...(typescriptNavigation ?? {}),
     ...(schedulerWorker ?? {}),
     ...(periodicCleanup ?? {}),
     ...(pluginActionSidecar ?? {}),
@@ -345,7 +352,7 @@ export interface RuntimeReleaseExecutionSurface {
   manifest: RuntimeReleaseManifest;
   releaseRoot: string;
   entries: Array<{
-    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'scheduler_worker' | 'periodic_cleanup';
+    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'typescript_navigation' | 'scheduler_worker' | 'periodic_cleanup';
     path: string;
     artifactIdentity: string;
     canary: 'runtime_interpreter' | 'process_runtime';
@@ -392,6 +399,12 @@ export function assertRuntimeReleaseExecutionSurface(
       artifactIdentity: manifest.checkRunnerArtifactIdentity,
       canary: 'process_runtime',
     },
+    ...(manifest.typescriptNavigationEntrypoint && manifest.typescriptNavigationArtifactIdentity ? [{
+      name: 'typescript_navigation' as const,
+      path: join(releaseRoot, manifest.typescriptNavigationEntrypoint),
+      artifactIdentity: manifest.typescriptNavigationArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
     ...(manifest.schedulerWorkerEntrypoint && manifest.schedulerWorkerArtifactIdentity ? [{
       name: 'scheduler_worker' as const,
       path: join(releaseRoot, manifest.schedulerWorkerEntrypoint),

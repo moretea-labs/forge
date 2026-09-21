@@ -1,5 +1,5 @@
 import { extname } from 'path';
-import { navigateTypeScriptSymbol } from './typescript-navigation';
+import { navigateTypeScriptInSidecar } from './typescript-navigation-process';
 import { navigateSwiftSymbols } from './swift-navigation';
 import { GenericLspSemanticProvider, type GenericLspProviderDescriptor } from './generic-lsp-provider';
 
@@ -25,39 +25,11 @@ const typeScriptProvider: SemanticNavigationProvider = {
     return extensionSupported && (!request.language || request.language.toLowerCase() === 'typescript');
   },
   async navigate(repoRoot, requests, access) {
-    return requests.map((request) => {
-      let policyDeniedReads = 0;
-      try {
-        const result = navigateTypeScriptSymbol(repoRoot, {
-          navigation: request.navigation,
-          path: request.path,
-          line: request.line,
-          column: request.column,
-          tsconfigPath: request.tsconfigPath,
-        }, {
-          cacheScope: access.cacheScope,
-          sourceIdentity: access.sourceIdentity,
-          allowRepositoryPath: (relativePath) => {
-            const allowed = access.allowRepositoryPath(relativePath);
-            if (!allowed) policyDeniedReads += 1;
-            return allowed;
-          },
-        });
-        return {
-          ok: true,
-          result: {
-            providerId: 'typescript-language-service',
-            language: 'typescript',
-            navigation: result.navigation,
-            target: result.target,
-            locations: result.locations,
-            policyDeniedReads,
-          },
-        } satisfies SemanticNavigationOutcome;
-      } catch (error) {
-        return { ok: false, code: 'SEMANTIC_NAVIGATION_FAILED', message: error instanceof Error ? error.message : String(error) } satisfies SemanticNavigationOutcome;
-      }
-    });
+    // A Forge-sized TypeScript LanguageService can return its live heap after
+    // dispose() while JSC/WebKit keeps the expanded allocator resident. Keep
+    // that allocator lifetime out of the canonical Runtime: one bounded batch
+    // runs in one short-lived sidecar and the OS reclaims it on process exit.
+    return navigateTypeScriptInSidecar(repoRoot, requests, access);
   },
 };
 

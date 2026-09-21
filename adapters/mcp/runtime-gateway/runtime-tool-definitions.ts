@@ -66,7 +66,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     semantic_navigation: {
       type: 'array',
       maxItems: 8,
-      description: 'Optional bounded semantic navigation through the provider registry. TypeScript uses the in-process Language Service; Swift uses SourceKit-LSP only with existing build settings; registered generic LSP providers currently cover Rust, Go, Python, and C/C++ when their language-server executable and project root markers already exist. Providers start lazily only for explicit semantic requests; Forge never installs a server, triggers a build, or treats language-server output as source authority.',
+      description: 'Optional bounded semantic navigation through the provider registry. TypeScript uses a short-lived release-owned Language Service sidecar so compiler/project allocator growth never remains resident in the canonical Runtime; Swift uses SourceKit-LSP only with existing build settings; registered generic LSP providers currently cover Rust, Go, Python, and C/C++ when their language-server executable and project root markers already exist. Providers start lazily only for explicit semantic requests; Forge never installs a server, triggers a build, or treats language-server output as source authority.',
       items: {
         type: 'object',
         required: ['navigation', 'path', 'line', 'column'],

@@ -67,6 +67,9 @@ export interface RuntimeReleaseManifest {
   processRunnerArtifactIdentity?: string;
   checkRunnerEntrypoint?: 'forge-check-runner';
   checkRunnerArtifactIdentity?: string;
+  /** Disposable TypeScript LanguageService process; never retained by the canonical Runtime. */
+  typescriptNavigationEntrypoint?: 'forge-typescript-navigation';
+  typescriptNavigationArtifactIdentity?: string;
   schedulerWorkerEntrypoint?: 'forge-scheduler-worker';
   schedulerWorkerArtifactIdentity?: string;
   periodicCleanupEntrypoint?: 'forge-periodic-cleanup';

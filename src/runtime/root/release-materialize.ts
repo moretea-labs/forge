@@ -43,6 +43,7 @@ export interface StagedRuntimeRelease {
   workflowSupervisorNativeHostArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
+  typescriptNavigationArtifactIdentity?: string;
   schedulerWorkerArtifactIdentity?: string;
   periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarArtifactIdentity?: string;
@@ -699,6 +700,19 @@ export function stageRuntimeRelease(input: {
     chmodSync(checkRunnerPath, 0o700);
     const checkRunnerArtifactIdentity = `sha256:${sha256(checkRunnerPath)}`;
 
+    const typescriptNavigationEntrypoint = 'forge-typescript-navigation' as const;
+    const typescriptNavigationPath = join(staging, typescriptNavigationEntrypoint);
+    const typescriptNavigationCompile = compileBinary({
+      sourceRoot,
+      outputPath: typescriptNavigationPath,
+      entryPath: join(sourceRoot, 'adapters/mcp/runtime-gateway/typescript-navigation-sidecar.ts'),
+    });
+    if (!typescriptNavigationCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_TYPESCRIPT_NAVIGATION_BUILD_FAILED: ${typescriptNavigationCompile.stderr || typescriptNavigationCompile.stdout || typescriptNavigationCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(typescriptNavigationPath, 0o700);
+    const typescriptNavigationArtifactIdentity = `sha256:${sha256(typescriptNavigationPath)}`;
+
     const schedulerWorkerEntrypoint = 'forge-scheduler-worker' as const;
     const schedulerWorkerPath = join(staging, schedulerWorkerEntrypoint);
     const schedulerWorkerCompile = compileBinary({
@@ -818,6 +832,8 @@ export function stageRuntimeRelease(input: {
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
       checkRunnerArtifactIdentity,
+      typescriptNavigationEntrypoint,
+      typescriptNavigationArtifactIdentity,
       schedulerWorkerEntrypoint,
       schedulerWorkerArtifactIdentity,
       periodicCleanupEntrypoint,
@@ -869,6 +885,7 @@ export function stageRuntimeRelease(input: {
       workflowSupervisorNativeHostArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
+      typescriptNavigationArtifactIdentity,
       schedulerWorkerArtifactIdentity,
       periodicCleanupArtifactIdentity,
       pluginActionSidecarArtifactIdentity,
@@ -1092,6 +1109,7 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   assertComponentFile({ path: join(release.releasePath, 'forge-workflow-supervisor-native-host'), identity: release.workflowSupervisorNativeHostArtifactIdentity, missingCode: 'RUNTIME_RELEASE_WORKFLOW_SUPERVISOR_NATIVE_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'process-runner.js'), identity: release.processRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PROCESS_RUNNER_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-check-runner'), identity: release.checkRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CHECK_RUNNER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-typescript-navigation'), identity: release.typescriptNavigationArtifactIdentity, missingCode: 'RUNTIME_RELEASE_TYPESCRIPT_NAVIGATION_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-scheduler-worker'), identity: release.schedulerWorkerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_SCHEDULER_WORKER_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-periodic-cleanup'), identity: release.periodicCleanupArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PERIODIC_CLEANUP_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-plugin-action-sidecar'), identity: release.pluginActionSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING', executable: true });

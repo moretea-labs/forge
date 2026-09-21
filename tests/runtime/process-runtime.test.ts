@@ -2152,9 +2152,9 @@ APPLESCRIPT`;
     ]));
   });
 
-  test('typecheck check does not take heavy-check exclusive', () => {
+  test('typecheck check takes heavy-check exclusive to isolate compiler-intensive latency gates', () => {
     const claims = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
-    expect(claims.some((c) => c.resourceKey.startsWith('heavy-check:'))).toBe(false);
+    expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
   });
 
   test('release check takes heavy-check exclusive', () => {

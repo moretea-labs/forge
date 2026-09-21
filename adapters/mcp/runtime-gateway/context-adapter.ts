@@ -291,6 +291,12 @@ async function rhContextSemanticNavigation(
     cacheScope: `mcp:${semanticAccessScope}`,
     sourceIdentity: sourceFingerprintBefore,
     profile: policy.profile,
+    readPolicy: {
+      profile: policy.profile,
+      readGlobs: [...policy.readGlobs],
+      denyGlobs: [...policy.denyGlobs],
+      maxFileBytes: policy.maxFileBytes,
+    },
     allowRepositoryPath,
   });
 
@@ -300,6 +306,15 @@ async function rhContextSemanticNavigation(
       continue;
     }
     const semantic = outcome.result;
+    const sidecarDeniedReads = Math.max(0, Number(semantic.policyDeniedReads ?? 0));
+    policyDeniedReads += sidecarDeniedReads;
+    const sidecarDeniedSamples = semantic.details?.policyDeniedReadSamples;
+    if (Array.isArray(sidecarDeniedSamples)) {
+      for (const sample of sidecarDeniedSamples) {
+        if (policyDeniedReadSamples.size >= 20) break;
+        if (typeof sample === 'string' && sample.trim()) policyDeniedReadSamples.add(sample);
+      }
+    }
     const allowedLocations = semantic.locations.filter((location) => {
       const decision = resolveMcpPath(repoRoot, location.path, policy, 'read');
       if (decision.ok) return true;

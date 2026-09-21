@@ -32,10 +32,19 @@ export type SemanticNavigationOutcome =
   | { ok: true; result: SemanticNavigationResult }
   | { ok: false; code: string; message: string };
 
+export interface SemanticNavigationReadPolicy {
+  profile: string;
+  readGlobs: readonly string[];
+  denyGlobs: readonly string[];
+  maxFileBytes: number;
+}
+
 export interface SemanticNavigationAccess {
   cacheScope: string;
   sourceIdentity?: string;
   profile: string;
+  /** Serializable policy used by disposable semantic sidecars. */
+  readPolicy?: SemanticNavigationReadPolicy;
   allowRepositoryPath(relativePath: string): boolean;
 }
 
