@@ -25,6 +25,7 @@ import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
 import {
   inspectKnownGoodRecoveryBundle,
   knownGoodRecoveryBundleRoot,
+  sha256FileBounded,
   type KnownGoodRecoveryBundle,
 } from '../root/known-good-recovery';
 import { systemdUserUnitName, systemdUserUnitPath } from '../../cli/controller/systemd-user';
@@ -616,24 +617,34 @@ function previousAuthorityRelease(config: RecoveryConfig): ReleaseEvidence | und
   return releaseEvidence(config.controllerHome, authority?.previous, authority);
 }
 
-function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+function sameReleaseIdentity(left: ReleaseEvidence, right: ReleaseEvidence): boolean {
+  return left.path === right.path
+    && left.revision === right.revision
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256
+    && left.workerProtocolVersion === right.workerProtocolVersion;
+}
+
+function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
   if (!entry || !entry.attestedAt || !entry.releaseFencingTokenSha256 || typeof entry.controllerHome !== 'string') return undefined;
+  // Legacy metadata-only attestations are audit history, not recoverable authority.
+  // The cheap tier requires durable bundle identity but never reads bundle contents.
+  if (!entry.recoveryBundle || entry.recoveryBundle.schemaVersion !== 1) return undefined;
   if (resolve(entry.controllerHome) !== resolve(config.controllerHome)) return undefined;
-  try { inspectKnownGoodRecoveryBundle(config.controllerHome, entry); }
-  catch { return undefined; }
   const authority = releaseAuthority(config);
   const candidates = [
     releaseEvidence(config.controllerHome, authority?.active, authority),
     releaseEvidence(config.controllerHome, authority?.previous, authority),
   ].filter((item): item is ReleaseEvidence => Boolean(item));
-  const matched = candidates.find((release) =>
-    release.path === entry.path
-    && release.revision === entry.revision
-    && release.artifactIdentity === entry.artifactIdentity
-    && release.manifestSha256 === entry.manifestSha256
-    && release.workerProtocolVersion === entry.workerProtocolVersion,
-  );
-  return matched ? entry : undefined;
+  return candidates.some((release) => sameReleaseIdentity(release, entry)) ? entry : undefined;
+}
+
+function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  const attested = knownGoodAttestationEvidence(config, entry);
+  if (!attested) return undefined;
+  try { inspectKnownGoodRecoveryBundle(config.controllerHome, attested); }
+  catch { return undefined; }
+  return attested;
 }
 
 function knownGood(config: RecoveryConfig): KnownGoodStore {
@@ -668,11 +679,14 @@ function inspectKnownGoodRecoverability(config: RecoveryConfig): {
   return { available, unavailable };
 }
 
+function matchingKnownGoodAttestation(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  if (!release) return undefined;
+  return knownGoodAttestationEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
+}
+
 function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
   if (!release) return undefined;
-  return knownGoodEvidence(config, knownGood(config).releases.find((entry) =>
-    entry.revision === release.revision && entry.manifestSha256 === release.manifestSha256 && entry.path === release.path,
-  ));
+  return knownGoodEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
 }
 
 function sameReleaseEvidenceIdentity(left: ReleaseEvidence | undefined, right: ReleaseEvidence | undefined): boolean {
@@ -1554,10 +1568,6 @@ function recoveryBundleId(): string {
   return `attestation-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
 }
 
-function sha256File(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
-}
-
 /**
  * Build a self-contained, Recovery-owned restore point before publishing its
  * attestation.  The copy is intentionally made while the full Runtime is
@@ -1591,12 +1601,12 @@ function createKnownGoodRecoveryBundle(config: RecoveryConfig): KnownGoodRecover
       root,
       database: {
         path: databasePath,
-        sha256: sha256File(databasePath),
+        sha256: sha256FileBounded(databasePath),
         schemaVersion: database.schemaVersion,
         recordCount: database.recordCount,
         auditEventCount: database.auditEventCount,
       },
-      serviceContract: { path: serviceContractPath, sha256: sha256File(serviceContractPath) },
+      serviceContract: { path: serviceContractPath, sha256: sha256FileBounded(serviceContractPath) },
       createdAt: new Date().toISOString(),
     };
   } catch (error) {
@@ -1893,7 +1903,9 @@ async function observeWatchdogHealthTier(
     releases: {
       active,
       previous,
-      knownGood: matchingKnownGood(config, active),
+      // This tier reports durable attestation identity only. Physical bundle
+      // integrity is deliberately reserved for strict verification boundaries.
+      knownGood: matchingKnownGoodAttestation(config, active),
       coherent,
     },
     probes,

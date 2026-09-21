@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { inspectControlPlaneDatabaseFile, type ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest } from './release-manifest';
@@ -44,8 +44,23 @@ export interface InspectedKnownGoodRecoveryBundle {
   serviceConfig: ForgeRuntimeServiceConfig;
 }
 
-function sha256File(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+const SHA256_FILE_CHUNK_BYTES = 1024 * 1024;
+
+/** Hash arbitrarily large Recovery artifacts without allocating the whole file. */
+export function sha256FileBounded(path: string): string {
+  const descriptor = openSync(path, 'r');
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(SHA256_FILE_CHUNK_BYTES);
+  try {
+    for (;;) {
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return hash.digest('hex');
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function canonical(path: string): string {
@@ -128,12 +143,12 @@ export function inspectKnownGoodRecoveryBundle(
     manifest.releaseId !== entry.revision
     || manifest.artifactIdentity !== entry.artifactIdentity
     || manifest.workerProtocolVersion !== entry.workerProtocolVersion
-    || sha256File(manifestPath) !== entry.manifestSha256
+    || sha256FileBounded(manifestPath) !== entry.manifestSha256
   ) throw new Error('KNOWN_GOOD_RELEASE_IDENTITY_MISMATCH');
 
   const bundle = validateRecoveryBundleShape(entry, home);
   if (!existsSync(bundle.database.path)) throw new Error('KNOWN_GOOD_RECOVERY_DATABASE_MISSING');
-  if (sha256File(bundle.database.path) !== bundle.database.sha256) throw new Error('KNOWN_GOOD_RECOVERY_DATABASE_HASH_MISMATCH');
+  if (sha256FileBounded(bundle.database.path) !== bundle.database.sha256) throw new Error('KNOWN_GOOD_RECOVERY_DATABASE_HASH_MISMATCH');
   const database = inspectControlPlaneDatabaseFile(bundle.database.path);
   if (
     database.schemaVersion !== bundle.database.schemaVersion
@@ -142,7 +157,7 @@ export function inspectKnownGoodRecoveryBundle(
   ) throw new Error('KNOWN_GOOD_RECOVERY_DATABASE_INSPECTION_MISMATCH');
 
   if (!existsSync(bundle.serviceContract.path)) throw new Error('KNOWN_GOOD_RECOVERY_SERVICE_CONTRACT_MISSING');
-  if (sha256File(bundle.serviceContract.path) !== bundle.serviceContract.sha256) {
+  if (sha256FileBounded(bundle.serviceContract.path) !== bundle.serviceContract.sha256) {
     throw new Error('KNOWN_GOOD_RECOVERY_SERVICE_CONTRACT_HASH_MISMATCH');
   }
   let rawContract: unknown;

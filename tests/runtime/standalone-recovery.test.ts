@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
+import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
@@ -1753,6 +1754,15 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('hashes Recovery files with bounded chunks while preserving SHA-256 semantics', () => {
+    const home = controllerHome();
+    const path = join(home, 'bounded-sha256-fixture.bin');
+    const content = Buffer.alloc((2 * 1024 * 1024) + 137, 0x5a);
+    writeFileSync(path, content);
+
+    expect(sha256FileBounded(path)).toBe(createHash('sha256').update(content).digest('hex'));
+  });
+
   test('verifies and attests the single active whole-Runtime release', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-a', 'artifact-a');
@@ -2153,6 +2163,34 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(tick.verify.probes.external_mcp_http).toBeUndefined();
     expect(tick.verify.probes.mcp_initialize).toBeUndefined();
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
+  });
+
+  test('Watchdog cheap healthy ticks use attestation identity without inspecting known-good bundle contents', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-watchdog-attested-cheap', 'artifact-watchdog-attested-cheap');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-watchdog-attested-cheap',
+      'artifact-watchdog-attested-cheap',
+      new Date(Date.now() - watchdogRuntimeStartupGraceMs(config) - 1_000).toISOString(),
+    );
+    const attested = await attestKnownGood(config);
+    rmSync(attested.recoveryBundle!.database.path);
+    const lastFullVerifyAt = Date.now();
+
+    const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false, lastFullVerifyAt });
+    expect(tick.decision.action).toBe('healthy');
+    expect(tick.state.lastFullVerifyAt).toBe(lastFullVerifyAt);
+    expect(tick.verify.releases.knownGood).toMatchObject({ revision: 'release-watchdog-attested-cheap' });
+
+    const strict = await verifyStableRuntime(config);
+    expect(strict.releases.knownGood).toBeUndefined();
+    expect(strict.probes.recovery_known_good_recoverability).toMatchObject({ ok: false });
   });
 
   test('probes cheap Connector transport readiness at /transport-ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
