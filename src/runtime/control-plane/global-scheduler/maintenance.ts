@@ -26,6 +26,8 @@ import { getChatgptControllerRoundSettlement } from '../../../../adapters/chatgp
 import { recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 import { classifySchedulerProviderFailure, ensureSchedulerProviderUserActionHandoff } from './autonomous-continuation';
+import { ensureControllerDispositionContinuation } from '../../workflow/schedules/work-continuation';
+import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
 
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
@@ -34,6 +36,34 @@ const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
 // turn a bounded claim window, then release the ephemeral resource without
 // replaying or clearing the semantic outcome-unknown fence.
 const CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS = 5 * 60_000;
+
+function registerSchedulerFailure(input: {
+  controllerHome: string;
+  source: 'progression' | 'maintenance';
+  prefix: string;
+  message: string;
+  observationId: string;
+  repoId?: string;
+  workId?: string;
+  atMs?: number;
+}): void {
+  try {
+    maybeRegisterForgeActionableFailureRepair({
+      controllerHome: input.controllerHome,
+      observation: {
+        observationId: input.observationId,
+        source: input.source,
+        code: deriveForgeActionableFailureCode(input.prefix, input.message),
+        message: input.message,
+        at: new Date(input.atMs ?? Date.now()).toISOString(),
+        repoId: input.repoId,
+        workId: input.workId,
+      },
+    });
+  } catch {
+    // Repair promotion is evidence-side reconciliation, not the owning maintenance result.
+  }
+}
 
 export function planSchedulerPeriodicMaintenance(input: {
   nowMs: number;
@@ -88,12 +118,36 @@ export async function runSchedulerPeriodicCleanup(input: {
       protectedControllerPid: input.controllerPid,
     });
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    registerSchedulerFailure({
+      controllerHome: input.controllerHome,
+      source: 'maintenance',
+      prefix: 'RUNTIME_CLEANUP_FAILED',
+      message: reason,
+      observationId: `maintenance:runtime-cleanup:${plan.periodicSequence}`,
+      atMs: input.nowMs,
+    });
     console.error('[forge cleanup] periodic cleanup failed:', error);
   }
   try {
     await input.terminalWorkCleanup(input.controllerHome, { nowMs: input.nowMs });
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    registerSchedulerFailure({
+      controllerHome: input.controllerHome,
+      source: 'maintenance',
+      prefix: 'TERMINAL_WORK_CLEANUP_FAILED',
+      message: reason,
+      observationId: `maintenance:terminal-work-cleanup:${plan.periodicSequence}`,
+      atMs: input.nowMs,
+    });
     console.error('[forge cleanup] terminal Work cleanup failed:', error);
+  }
+
+  try {
+    maybeRegisterFailedReleaseSessionRepairs({ controllerHome: input.controllerHome, now: () => input.nowMs });
+  } catch (error) {
+    console.error('[forge cleanup] release failure repair reconciliation failed:', error);
   }
 
   // Browser/computer tombstones are retention state. Their lifecycle truth is
@@ -162,7 +216,19 @@ export async function runSchedulerPeriodicCleanup(input: {
   if (plan.processGcRepositoryIndex !== undefined) {
     const processRepo = input.repositories[plan.processGcRepositoryIndex]!;
     const result = input.processGc({ controllerHome: input.controllerHome, repoId: processRepo.repoId });
-    if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
+    if (!result.ok) {
+      const reason = result.error ?? 'unknown error';
+      registerSchedulerFailure({
+        controllerHome: input.controllerHome,
+        source: 'maintenance',
+        prefix: 'PROCESS_GC_FAILED',
+        message: reason,
+        observationId: `maintenance:process-gc:${processRepo.repoId}:${plan.periodicSequence}`,
+        repoId: processRepo.repoId,
+        atMs: input.nowMs,
+      });
+      console.error('[forge cleanup] Process GC failed:', reason);
+    }
   }
 
   if (!plan.runDeepRetention) return;
@@ -264,6 +330,15 @@ export async function runSchedulerControllerRoundRecovery(input: {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       failed += 1;
+      registerSchedulerFailure({
+        controllerHome: input.controllerHome,
+        source: 'progression',
+        prefix: 'CONTROLLER_RELAY_SCAN_FAILED',
+        message: reason,
+        observationId: `progression:relay-scan:${repository.repoId}:${input.nowMs}`,
+        repoId: repository.repoId,
+        atMs: input.nowMs,
+      });
       console.error(`[forge controller relay] stalled round scan failed for ${repository.repoId}:`, reason);
       continue;
     }
@@ -324,11 +399,22 @@ export async function runSchedulerControllerRoundRecovery(input: {
             const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
               workId: record.originWorkId, relayScopeId: record.relayScopeId, authorityId: record.authorityId, reason,
             });
-            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+            const waiting = finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+            if (waiting) ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, waiting);
             continue;
           }
           if (disposition === 'failed') {
             finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason });
+            registerSchedulerFailure({
+              controllerHome: input.controllerHome,
+              source: 'progression',
+              prefix: 'CONTROLLER_RELAY_RECOVERY_FAILED',
+              message: reason,
+              observationId: `progression:relay:${record.originWorkId}:${record.updatedAt}:failed`,
+              repoId: repository.repoId,
+              workId: record.originWorkId,
+              atMs: input.nowMs,
+            });
             failed += 1;
             continue;
           }
@@ -348,7 +434,8 @@ export async function runSchedulerControllerRoundRecovery(input: {
           const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
             workId: record.originWorkId, relayScopeId: record.relayScopeId, authorityId: record.authorityId, reason,
           });
-          finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+          const waiting = finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+          if (waiting) ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, waiting);
         } else {
           finishControllerRoundRelayDispatch(store, {
             workId: record.originWorkId,

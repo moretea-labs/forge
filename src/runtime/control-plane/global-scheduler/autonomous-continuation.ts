@@ -21,6 +21,8 @@ import {
   ensureWorkflowSupervisorEnrollmentForWork,
   workflowSupervisorBoundaryForWork,
 } from '../../root/workflow-supervisor-composition';
+import { ensureControllerDispositionContinuation } from '../../workflow/schedules/work-continuation';
+import { deriveForgeActionableFailureCode, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
 
 const DEFAULT_MAX_CONTINUATIONS = 2;
 const RUNNABLE_WORK_STATUSES = new Set(['open', 'running', 'ready']);
@@ -324,6 +326,10 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
           },
           host,
         );
+        const settledRound = getControllerRoundRelay(store, work.workId);
+        if (settledRound?.status === 'waiting_for_user' && settledRound.handoffId) {
+          ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, settledRound);
+        }
         if (resumed.outcome === 'dispatched') {
           dispatched += 1;
           materialized += 1;
@@ -333,6 +339,26 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       } catch (error) {
         failed += 1;
         const reason = error instanceof Error ? error.message : String(error);
+        const disposition = classifySchedulerProviderFailure(reason);
+        if (disposition === 'retryable' || disposition === 'failed') {
+          try {
+            maybeRegisterForgeActionableFailureRepair({
+              controllerHome: input.controllerHome,
+              now: () => input.nowMs,
+              observation: {
+                observationId: `progression:liveness:${repository.repoId}:${work.workId}:${input.nowMs}`,
+                source: 'progression',
+                code: deriveForgeActionableFailureCode('SCHEDULER_AUTONOMOUS_CONTINUATION_FAILED', reason),
+                message: reason,
+                at: new Date(input.nowMs).toISOString(),
+                repoId: repository.repoId,
+                workId: work.workId,
+              },
+            });
+          } catch {
+            // Repair promotion is evidence-side reconciliation; liveness remains the owner.
+          }
+        }
         console.error('[forge liveness] autonomous continuation failed for ' + repository.repoId + '/' + work.workId + ':', reason);
       }
     }
