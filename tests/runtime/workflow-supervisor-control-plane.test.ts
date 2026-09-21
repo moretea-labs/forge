@@ -222,6 +222,63 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('upgrades one matching legacy project-bootstrap task through explicit Requirement enrollment without duplicating its effect', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'legacy-explicit-enrollment-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(store);
+    const conversationId = '24242424-4646-6868-9090-020202020202';
+    const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    const requirementId = 'REQ-explicit-current-conversation-upgrade';
+    const legacy = control.registerTask({
+      taskId,
+      conversationId,
+      conversationUrl,
+      objective: 'Legacy discovery bootstrap.',
+      completionContract: { kind: 'forge_dynamic_requirement_done', repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+      continuationPolicy: { kind: 'forge_project_conversation_outer_turn', repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+      userBlockerPolicy: { kind: 'forge_dynamic_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+    });
+    const originalEffect = control.reserveEnrollment(taskId);
+
+    const upgraded = control.registerTask({
+      taskId,
+      conversationId,
+      conversationUrl,
+      objective: 'Complete the exact Requirement through this conversation.',
+      completionContract: { kind: 'forge_requirement_done', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: requirementId },
+      continuationPolicy: {
+        kind: 'forge_goal_outer_turn',
+        exact_conversation_id: conversationId,
+        exact_conversation_url: conversationUrl,
+        lower_layer_continuation_owner: 'controller_round',
+        outer_turn_owner: 'workflow_supervisor',
+      },
+      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: requirementId },
+    });
+    const repeatedEffect = control.reserveEnrollment(taskId);
+
+    expect(upgraded.createdAt).toBe(legacy.createdAt);
+    expect(upgraded.objective).toBe('Complete the exact Requirement through this conversation.');
+    expect(upgraded.completionContract).toMatchObject({ kind: 'forge_requirement_done', repo_id: fx.repository.repoId, requirement_id: requirementId });
+    expect(upgraded.continuationPolicy).toMatchObject({ kind: 'forge_goal_outer_turn', exact_conversation_id: conversationId, exact_conversation_url: conversationUrl });
+    expect(upgraded.userBlockerPolicy).toMatchObject({ kind: 'forge_requirement_waiting_for_user', requirement_id: requirementId });
+    expect(repeatedEffect.effectId).toBe(originalEffect.effectId);
+    expect(store.listTasks()).toHaveLength(1);
+    expect(store.nextBrowserEffect(taskId)?.effect.effectId).toBe(originalEffect.effectId);
+
+    expect(() => control.registerTask({
+      taskId,
+      conversationId,
+      conversationUrl,
+      objective: 'Malformed explicit enrollment must fail closed.',
+      completionContract: { kind: 'forge_requirement_done', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-other' },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', exact_conversation_id: conversationId, exact_conversation_url: conversationUrl },
+      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-mismatch' },
+    })).toThrow('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
+    store.close();
+  });
+
   test('requires a prepared lower ControllerRound before treating an outer turn as runnable', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-lower-layer-readiness';

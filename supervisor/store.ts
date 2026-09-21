@@ -86,6 +86,24 @@ function taskFromRow(row: Record<string, unknown>): WorkflowSupervisorTask {
     userBlockerPolicy: JSON.parse(String(row.user_blocker_policy_json)) as Record<string, unknown>, createdAt: String(row.created_at),
   };
 }
+
+function boundedText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function explicitRequirementTaskUpgrade(input: WorkflowSupervisorTaskInput): { requirementId: string; repoId: string } | undefined {
+  if (input.completionContract.kind !== 'forge_requirement_done'
+    || input.continuationPolicy.kind !== 'forge_goal_outer_turn'
+    || input.userBlockerPolicy.kind !== 'forge_requirement_waiting_for_user') return undefined;
+  const requirementId = boundedText(input.completionContract.requirement_id);
+  const blockerRequirementId = boundedText(input.userBlockerPolicy.requirement_id);
+  const repoId = boundedText(input.completionContract.repo_id);
+  const blockerRepoId = boundedText(input.userBlockerPolicy.repo_id);
+  if (!requirementId || blockerRequirementId !== requirementId || !repoId || blockerRepoId !== repoId) return undefined;
+  if (boundedText(input.continuationPolicy.exact_conversation_id) !== input.conversationId
+    || boundedText(input.continuationPolicy.exact_conversation_url) !== input.conversationUrl) return undefined;
+  return { requirementId, repoId };
+}
 function effectFromRow(row: Record<string, unknown>): WorkflowSupervisorEffect {
   return { effectId: String(row.effect_id), taskId: String(row.task_id), kind: String(row.kind) as WorkflowEffectKind,
     ...(row.source_completion_fingerprint ? { sourceCompletionFingerprint: String(row.source_completion_fingerprint) } : {}), prompt: String(row.prompt_text), createdAt: String(row.created_at) };
@@ -220,8 +238,31 @@ export class WorkflowSupervisorStore {
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
       const projectBootstrap = task.continuationPolicy.kind === 'forge_project_conversation_outer_turn';
-      if (projectBootstrap && task.conversationId === input.conversationId && task.conversationUrl === input.conversationUrl
-        && (!taskRepo || !inputRepo || taskRepo === inputRepo)) return task;
+      const sameProjectBootstrapIdentity = projectBootstrap
+        && task.conversationId === input.conversationId
+        && task.conversationUrl === input.conversationUrl
+        && (!taskRepo || !inputRepo || taskRepo === inputRepo);
+      if (sameProjectBootstrapIdentity) {
+        const explicitRequirementUpgrade = explicitRequirementTaskUpgrade(input);
+        if (input.continuationPolicy.kind === 'forge_goal_outer_turn') {
+          if (!explicitRequirementUpgrade || !taskRepo || taskRepo !== explicitRequirementUpgrade.repoId) {
+            throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
+          }
+          statement(db, `UPDATE tasks
+            SET objective = ?, completion_contract_json = ?, continuation_policy_json = ?, user_blocker_policy_json = ?
+            WHERE task_id = ?`, (s) => s.run(
+            input.objective,
+            json(input.completionContract),
+            json(input.continuationPolicy),
+            json(input.userBlockerPolicy),
+            input.taskId,
+          ));
+          const upgraded = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
+          if (!upgraded) throw new Error('WORKFLOW_SUPERVISOR_TASK_PERSIST_FAILED');
+          return taskFromRow(upgraded);
+        }
+        return task;
+      }
       if (task.conversationId !== input.conversationId
         || task.conversationUrl !== input.conversationUrl
         || task.objective !== input.objective
