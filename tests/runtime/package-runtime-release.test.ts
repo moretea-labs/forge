@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
+import { materializePackageRuntimeRelease, packageRuntimeFileIndex } from '../../src/runtime/root/package-runtime-release';
 import { assertStorageHeadroom, readStorageCapacity } from '../../src/runtime/shared/storage-capacity';
 
 const roots: string[] = [];
@@ -31,6 +31,13 @@ function fixture(): { home: string; packageRoot: string } {
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+  writeFileSync(join(packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'), 'throw new Error(\"benchmark only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'check-release-readiness.sh'), 'exit 99\n');
+  writeFileSync(join(packageRoot, 'scripts', 'public-release.ts'), 'throw new Error(\"release management only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'stage-runtime-release.ts'), 'throw new Error(\"release staging only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'route-nl-vs-ts-eval.ts'), 'throw new Error(\"evaluation only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'verify-forge-runtime.sh'), 'exit 0\n');
+  writeFileSync(join(packageRoot, 'scripts', 'bootstrap-runtime-maintenance-recovery.sh'), 'exit 0\n');
   mkdirSync(join(packageRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'), 'export const linked = 1;\n');
@@ -64,6 +71,25 @@ describe('package Runtime release immutability', () => {
 
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
     expect(launched.status).toBe(0);
+  });
+
+  test('excludes non-runtime evaluation and release helpers while retaining runtime and recovery scripts', () => {
+    const { home, packageRoot } = fixture();
+    const paths = new Set(packageRuntimeFileIndex(packageRoot).map((record) => record.path));
+
+    expect(paths.has('scripts/benchmark-cognitive-memory-activation.ts')).toBe(false);
+    expect(paths.has('scripts/check-release-readiness.sh')).toBe(false);
+    expect(paths.has('scripts/public-release.ts')).toBe(false);
+    expect(paths.has('scripts/stage-runtime-release.ts')).toBe(false);
+    expect(paths.has('scripts/route-nl-vs-ts-eval.ts')).toBe(false);
+    expect(paths.has('scripts/verify-forge-runtime.sh')).toBe(true);
+    expect(paths.has('scripts/bootstrap-runtime-maintenance-recovery.sh')).toBe(true);
+
+    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'non-runtime-exclusion' });
+    expect(existsSync(join(release.packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'))).toBe(false);
+    expect(existsSync(join(release.packageRoot, 'scripts', 'public-release.ts'))).toBe(false);
+    expect(existsSync(join(release.packageRoot, 'scripts', 'verify-forge-runtime.sh'))).toBe(true);
+    expect(existsSync(join(release.packageRoot, 'scripts', 'bootstrap-runtime-maintenance-recovery.sh'))).toBe(true);
   });
 
   test('fails closed when bytes inside an existing immutable package snapshot change', () => {

@@ -49,6 +49,19 @@ const COMPILED_RUNTIME_PACKAGE_FILES = [
 ] as const;
 const PACKAGE_RUNTIME_STAGING_RESERVE_BYTES = 256 * 1024 * 1024;
 
+function isNonRuntimePackageHelper(path: string): boolean {
+  if (path.startsWith('scripts/benchmark-')) return true;
+  if (path.startsWith('scripts/check-release-')) return true;
+  if (path.startsWith('scripts/public-release')) return true;
+  return path === 'scripts/route-nl-vs-ts-eval.ts'
+    || path === 'scripts/check-npm-release.sh'
+    || path === 'scripts/check-public-release-surface.sh'
+    || path === 'scripts/check-tarball-install-smoke.sh'
+    || path === 'scripts/publish-release-tarball.sh'
+    || path === 'scripts/stage-runtime-release.ts'
+    || path === 'scripts/package-source-archive.sh';
+}
+
 function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -116,7 +129,8 @@ function packageFileIndex(
 
 export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot(), dependencyRoot = packageRoot): PackageRuntimeFileRecord[] {
   const root = resolve(packageRoot);
-  const records = packageFileIndex(root, PACKAGE_RUNTIME_ROOTS, PACKAGE_RUNTIME_FILES, dependencyRoot);
+  const records = packageFileIndex(root, PACKAGE_RUNTIME_ROOTS, PACKAGE_RUNTIME_FILES, dependencyRoot)
+    .filter((record) => !isNonRuntimePackageHelper(record.path));
   const paths = new Set(records.map((record) => record.path));
   if (!paths.has('package.json') || !paths.has('bin/forge-runtime.mjs')) {
     throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
