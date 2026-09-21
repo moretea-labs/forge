@@ -37,6 +37,20 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });
 
+  test('keeps controller learning drafts bounded and provenance server-owned', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
+    const learning = properties?.learning_signals;
+    expect(learning?.maxItems).toBe(8);
+    expect(learning?.items?.additionalProperties).toBe(false);
+    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project']);
+    expect(learning?.items?.properties).not.toHaveProperty('source_work_id');
+    expect(learning?.items?.properties).not.toHaveProperty('source_round_id');
+    expect(learning?.items?.properties).not.toHaveProperty('observed_at');
+    expect(learning?.items?.properties).not.toHaveProperty('source_kind');
+    expect(learning?.items?.properties).not.toHaveProperty('id');
+  });
+
   test('derives stable rh_work schema and suggested-action admission from one operation ABI', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;

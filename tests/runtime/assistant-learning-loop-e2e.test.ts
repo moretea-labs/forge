@@ -506,6 +506,92 @@ describe('connected assistant learning loops', () => {
     }));
   });
 
+  test('persists Controller-extracted semantic learning after disposition and recalls it on the next round', async () => {
+    const fx = fixture('controller-semantic-learning', { knowledge: false });
+    fx.setNow(new Date().toISOString());
+    const round = claimInitialRound(fx, 1);
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: fx.repoRoot,
+      principalId: round.owner.principalId ?? round.owner.controllerId,
+      sessionId: round.owner.sessionId,
+      controllerInstanceId: round.owner.controllerInstanceId,
+      controllerType: 'chatgpt' as const,
+      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      toolset: 'core',
+    } as unknown as MultiRepositoryMcpToolContext;
+    const signal = {
+      scope_kind: 'project',
+      kind: 'principle',
+      valence: 'positive',
+      summary: '小红书推广决策应使用真实观察指标，不猜测互动数据。',
+      concepts: ['xiaohongshu', 'promotion.real-metrics', 'evidence.observed'],
+      facets: ['marketing-principle'],
+      admission_source: 'explicit_human',
+      portability: 'local',
+      salience: 0.95,
+      confidence: 0.94,
+      utility: 0.86,
+    };
+
+    const result = await callRhWorkControllerOperation(ctx, fx.repository, 'controller_disposition', {
+      work_id: fx.workId,
+      disposition: 'continue_immediately',
+      controller_authority_id: round.relay.authorityId,
+      relay_scope_id: round.relay.relayScopeId,
+      learning_signals: [signal],
+      ...(round.bundle ? {
+        assistant_context_digest: round.bundle.snapshot.digest,
+        assistant_context_usage: contextUsage(round.bundle),
+      } : {}),
+    });
+    expect(result).toBeTruthy();
+    const payload = result!.structuredContent as Record<string, any>;
+    expect(payload.status, JSON.stringify(payload)).toBe('ok');
+    expect(payload.warnings).toEqual([]);
+    expect(payload.data.relay.status).toBe('pending_release');
+    expect(payload.data.automaticLearning.storedMemoryIds).toHaveLength(1);
+    const learnedId = payload.data.automaticLearning.storedMemoryIds[0] as string;
+    const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
+
+    const retry = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId,
+      signals: [],
+      controllerSignals: [{
+        scopeKind: 'project',
+        kind: 'principle',
+        valence: 'positive',
+        summary: signal.summary,
+        concepts: signal.concepts,
+        facets: signal.facets,
+        admissionSource: 'explicit_human',
+        portability: 'local',
+        salience: signal.salience,
+        confidence: signal.confidence,
+        utility: signal.utility,
+        evidenceRefs: [],
+        counterEvidenceRefs: [],
+      }],
+    });
+    expect(retry.storedMemoryIds).toEqual([learnedId]);
+
+    releaseControllerSession(fx.store, fx.workId, round.owner.controllerId);
+    fx.setNow(new Date().toISOString());
+    const nextRound = claimReleasedRound(fx, round.owner, 2);
+    const learnedItemId = memoryAddressKey({
+      scope: { schemaVersion: 1, kind: 'project', id: 'project-learning-loop' },
+      id: learnedId,
+    });
+    expect(nextRound.bundle?.snapshot.items).toContainEqual(expect.objectContaining({
+      kind: 'knowledge',
+      itemId: learnedItemId,
+      revision: 1,
+    }));
+  });
+
   test('surfaces automatic learning failure after durable disposition without rolling back or disguising it as skipped', async () => {
     const fx = fixture('transport-learning-warning', { knowledge: false });
     const workId = 'work-transport-learning-warning-unbound';

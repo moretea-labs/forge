@@ -52,7 +52,7 @@ import {
   dispatchedChatgptRelayAuthorizesStaleControllerRecovery,
   runtimeIdentitySnapshot,
 } from './controller-authority-adapter';
-import { persistAutomaticControllerRoundLearning } from '../../../src/runtime/context/automatic-learning';
+import { parseControllerLearningSignalDrafts, persistAutomaticControllerRoundLearning } from '../../../src/runtime/context/automatic-learning';
 
 const RH_WORK_CONTROLLER_OPERATIONS = new Set([
   'controller_get_owner',
@@ -307,8 +307,14 @@ export async function callRhWorkControllerOperation(
           throw new Error(supervisorEnrollment.reason ?? `WORKFLOW_SUPERVISOR_ENROLLMENT_${supervisorEnrollment.status.toUpperCase()}`);
         }
       }
-      const automaticLearningRoundId = currentRelay?.status === 'claimed'
+      const currentLearningRoundRef = currentRelay
         ? `${currentRelay.relayScopeId}:${currentRelay.roundCount}`
+        : undefined;
+      const automaticLearningRoundId = currentLearningRoundRef && (
+        currentRelay?.status === 'claimed'
+        || currentRelay?.observationWindow?.some(observation => observation.roundRef === currentLearningRoundRef)
+      )
+        ? currentLearningRoundRef
         : undefined;
       const automaticLearningSignals = currentRelay?.status === 'claimed'
         ? readControllerRoundContextSnapshot(store, currentRelay).executionQualitySignals ?? []
@@ -405,12 +411,14 @@ export async function callRhWorkControllerOperation(
             .filter(Boolean)
           : [];
         try {
+          const controllerSignals = parseControllerLearningSignalDrafts(args.learning_signals);
           automaticLearning = persistAutomaticControllerRoundLearning({
             controllerHome: ctx.controllerHome,
             repoId: repository.repoId,
             workId,
             sourceRoundId: automaticLearningRoundId,
             signals: automaticLearningSignals,
+            controllerSignals,
             adjustmentFingerprints,
           });
         } catch (error) {

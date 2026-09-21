@@ -33,6 +33,101 @@ export interface AutomaticControllerLearningResult {
   skipped: string[];
 }
 
+export type ControllerLearningScopeKind = 'work' | 'requirement' | 'project';
+export type ControllerLearningAdmissionSource = 'explicit_human' | 'controller_observation' | 'system_inference';
+
+/**
+ * Model-authored semantic draft only. Identity, time, source Work/Round and source kind
+ * are intentionally absent and are derived from the exact ControllerRound by Forge.
+ */
+export interface ControllerLearningSignalDraft {
+  scopeKind: ControllerLearningScopeKind;
+  kind: LearningSignal['kind'];
+  valence: LearningSignal['valence'];
+  summary: string;
+  concepts: string[];
+  facets: string[];
+  admissionSource: ControllerLearningAdmissionSource;
+  portability: LearningSignal['portability'];
+  salience: number;
+  confidence: number;
+  utility: number;
+  evidenceRefs: string[];
+  counterEvidenceRefs: string[];
+  expiresAt?: string;
+}
+
+const CONTROLLER_LEARNING_FIELDS = new Set([
+  'scope_kind', 'kind', 'valence', 'summary', 'concepts', 'facets', 'admission_source',
+  'portability', 'salience', 'confidence', 'utility', 'evidence_refs', 'counter_evidence_refs', 'expires_at',
+]);
+const CONTROLLER_LEARNING_KINDS: readonly LearningSignal['kind'][] = [
+  'knowledge', 'success', 'failure', 'novelty', 'correction', 'contradiction', 'pattern', 'preference', 'principle', 'procedure',
+];
+const CONTROLLER_LEARNING_VALENCES: readonly LearningSignal['valence'][] = ['positive', 'negative', 'neutral'];
+const CONTROLLER_LEARNING_ADMISSION_SOURCES: readonly ControllerLearningAdmissionSource[] = ['explicit_human', 'controller_observation', 'system_inference'];
+const CONTROLLER_LEARNING_SCOPE_KINDS: readonly ControllerLearningScopeKind[] = ['work', 'requirement', 'project'];
+
+function boundedScore(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`COGNITION_CONTROLLER_LEARNING_${label}_INVALID`);
+  }
+  return value;
+}
+
+function boundedStrings(value: unknown, label: string, maxItems: number, maxLength: number, required = false): string[] {
+  if (value === undefined && !required) return [];
+  if (!Array.isArray(value) || (required && value.length === 0) || value.length > maxItems) {
+    throw new Error(`COGNITION_CONTROLLER_LEARNING_${label}_INVALID`);
+  }
+  const normalized = value.map(item => typeof item === 'string' ? item.trim() : '');
+  if (normalized.some(item => !item || item.length > maxLength) || new Set(normalized).size !== normalized.length) {
+    throw new Error(`COGNITION_CONTROLLER_LEARNING_${label}_INVALID`);
+  }
+  return normalized;
+}
+
+/** Validate the frozen MCP draft shape after disposition so learning errors never roll back lifecycle state. */
+export function parseControllerLearningSignalDrafts(value: unknown): ControllerLearningSignalDraft[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 8) throw new Error('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`COGNITION_CONTROLLER_LEARNING_SIGNAL_INVALID:${index}`);
+    const raw = entry as Record<string, unknown>;
+    if (Object.keys(raw).some(key => !CONTROLLER_LEARNING_FIELDS.has(key))) throw new Error(`COGNITION_CONTROLLER_LEARNING_SIGNAL_FIELD_INVALID:${index}`);
+    const scopeKind = raw.scope_kind;
+    const kind = raw.kind;
+    const valence = raw.valence;
+    const admissionSource = raw.admission_source;
+    const portability = raw.portability;
+    const summary = typeof raw.summary === 'string' ? raw.summary.trim().replace(/\s+/g, ' ') : '';
+    if (!CONTROLLER_LEARNING_SCOPE_KINDS.includes(scopeKind as ControllerLearningScopeKind)) throw new Error(`COGNITION_CONTROLLER_LEARNING_SCOPE_INVALID:${index}`);
+    if (!CONTROLLER_LEARNING_KINDS.includes(kind as LearningSignal['kind'])) throw new Error(`COGNITION_CONTROLLER_LEARNING_KIND_INVALID:${index}`);
+    if (!CONTROLLER_LEARNING_VALENCES.includes(valence as LearningSignal['valence'])) throw new Error(`COGNITION_CONTROLLER_LEARNING_VALENCE_INVALID:${index}`);
+    if (!CONTROLLER_LEARNING_ADMISSION_SOURCES.includes(admissionSource as ControllerLearningAdmissionSource)) throw new Error(`COGNITION_CONTROLLER_LEARNING_ADMISSION_INVALID:${index}`);
+    if (portability !== 'local' && portability !== 'portable') throw new Error(`COGNITION_CONTROLLER_LEARNING_PORTABILITY_INVALID:${index}`);
+    if (!summary || summary.length > 2_000) throw new Error(`COGNITION_CONTROLLER_LEARNING_SUMMARY_INVALID:${index}`);
+    const expiresAt = typeof raw.expires_at === 'string' && raw.expires_at.trim() ? raw.expires_at.trim() : undefined;
+    if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) throw new Error(`COGNITION_CONTROLLER_LEARNING_EXPIRY_INVALID:${index}`);
+    return {
+      scopeKind: scopeKind as ControllerLearningScopeKind,
+      kind: kind as LearningSignal['kind'],
+      valence: valence as LearningSignal['valence'],
+      summary,
+      concepts: boundedStrings(raw.concepts, 'CONCEPTS', 32, 256, true),
+      facets: boundedStrings(raw.facets, 'FACETS', 12, 128),
+      admissionSource: admissionSource as ControllerLearningAdmissionSource,
+      portability: portability as LearningSignal['portability'],
+      salience: boundedScore(raw.salience, 'SALIENCE'),
+      confidence: boundedScore(raw.confidence, 'CONFIDENCE'),
+      utility: boundedScore(raw.utility, 'UTILITY'),
+      evidenceRefs: boundedStrings(raw.evidence_refs, 'EVIDENCE', 16, 512),
+      counterEvidenceRefs: boundedStrings(raw.counter_evidence_refs, 'COUNTER_EVIDENCE', 16, 512),
+      ...(expiresAt ? { expiresAt } : {}),
+    };
+  });
+}
+
 function sameScope(left: ScopeRef, right: ScopeRef): boolean {
   return left.kind === right.kind && left.id === right.id;
 }
@@ -42,6 +137,10 @@ function preferredLearningScope(work: WorkContract, controllerHome: string): Sco
   return scopes.find(scope => scope.kind === 'project')
     ?? scopes.find(scope => scope.kind === 'requirement')
     ?? scopes[0]!;
+}
+
+function controllerLearningScope(work: WorkContract, controllerHome: string, kind: ControllerLearningScopeKind): ScopeRef | undefined {
+  return experienceScopesForWork(work, controllerHome).find(scope => scope.kind === kind);
 }
 
 function normalizedConcepts(values: readonly string[]): string[] {
@@ -380,6 +479,52 @@ function signalLearningDraft(input: {
   return memoryDraftFromLearningSignal(learning);
 }
 
+function controllerLearningDraft(input: {
+  signal: ControllerLearningSignalDraft;
+  work: WorkContract;
+  scope: ScopeRef;
+  sourceRoundId: string;
+  observedAt: string;
+}): MemoryUnitDraft {
+  const concepts = normalizedConcepts(input.signal.concepts);
+  const facets = [...new Set(input.signal.facets.map(value => value.trim()).filter(Boolean))].slice(0, 12);
+  const semanticIdentity = JSON.stringify({
+    sourceRoundId: input.sourceRoundId,
+    scope: `${input.scope.kind}:${input.scope.id}`,
+    kind: input.signal.kind,
+    valence: input.signal.valence,
+    summary: input.signal.summary,
+    concepts: [...concepts].sort(),
+    admissionSource: input.signal.admissionSource,
+    portability: input.signal.portability,
+  });
+  const id = signalId('controller', semanticIdentity);
+  const learning: LearningSignal = {
+    schemaVersion: 1,
+    id,
+    scope: input.scope,
+    kind: input.signal.kind,
+    valence: input.signal.valence,
+    summary: input.signal.summary,
+    concepts,
+    facets,
+    admissionSource: input.signal.admissionSource,
+    portability: input.signal.portability,
+    salience: input.signal.salience,
+    confidence: input.signal.confidence,
+    utility: input.signal.utility,
+    sourceKind: 'controller',
+    sourceId: `controller-learning:${id.slice(id.lastIndexOf(':') + 1)}`,
+    sourceWorkId: input.work.workId,
+    sourceRoundId: input.sourceRoundId,
+    observedAt: input.observedAt,
+    evidenceRefs: input.signal.evidenceRefs,
+    counterEvidenceRefs: input.signal.counterEvidenceRefs,
+    ...(input.signal.expiresAt ? { expiresAt: input.signal.expiresAt } : {}),
+  };
+  return memoryDraftFromLearningSignal(learning);
+}
+
 function blockerLearningDraft(input: {
   blocker: NonNullable<NonNullable<WorkContract['engineeringContext']>['blockerDispositions']>[number];
   work: WorkContract;
@@ -495,6 +640,7 @@ export function persistAutomaticControllerRoundLearning(input: {
   workId: string;
   sourceRoundId: string;
   signals: readonly ExecutionQualitySignal[];
+  controllerSignals?: readonly ControllerLearningSignalDraft[];
   adjustmentFingerprints?: readonly string[];
   now?: string;
 }): AutomaticControllerLearningResult {
@@ -514,6 +660,33 @@ export function persistAutomaticControllerRoundLearning(input: {
   });
   const stored: MemoryUnit[] = [];
   const skipped: string[] = [];
+
+  for (const signal of (input.controllerSignals ?? []).slice(0, 8)) {
+    const signalScope = controllerLearningScope(work, input.controllerHome, signal.scopeKind);
+    if (!signalScope) {
+      skipped.push(`controller:${signal.kind}:scope_unavailable:${signal.scopeKind}`);
+      continue;
+    }
+    const refs = [...new Set(signal.evidenceRefs)].slice(0, 16);
+    const counterRefs = [...new Set(signal.counterEvidenceRefs)].slice(0, 16);
+    const evidenceAvailable = [...refs, ...counterRefs].every(ref => canonicalWorkflowEvidenceAvailable(
+      { controllerHome: input.controllerHome, repoId: input.repoId },
+      ref,
+      signalScope,
+      work.workId,
+    ));
+    if (!evidenceAvailable) {
+      skipped.push(`controller:${signal.kind}:evidence_unavailable`);
+      continue;
+    }
+    stored.push(persistDraft(input.controllerHome, authority, controllerLearningDraft({
+      signal: { ...signal, evidenceRefs: refs, counterEvidenceRefs: counterRefs },
+      work,
+      scope: signalScope,
+      sourceRoundId: input.sourceRoundId,
+      observedAt,
+    })));
+  }
 
   for (const signal of input.signals.slice(0, 8)) {
     const refs = [...new Set(signal.evidenceRefs)].slice(0, 64);
