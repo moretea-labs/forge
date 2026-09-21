@@ -73,6 +73,20 @@ export interface RevokePluginCapabilityAuthorizationInput {
   now?: Date;
 }
 
+export interface ReconcilePluginCapabilityAuthorizationsInput {
+  retiredOwnerScopes?: readonly string[];
+  now?: Date;
+}
+
+export interface ReconcilePluginCapabilityAuthorizationsResult {
+  removedRetiredOwner: number;
+  removedRevoked: number;
+  removedExpired: number;
+  removedTotal: number;
+  remaining: number;
+  changed: boolean;
+}
+
 const RISK_RANK: Record<AssistantPluginActionRisk, number> = {
   readonly: 0,
   workspace_write: 1,
@@ -349,6 +363,64 @@ export function revokePluginCapabilityAuthorization(
         store.grants[index] = revoked;
         saveStore(controllerHome, store);
         return revoked;
+      },
+      5_000,
+    );
+  } catch (error) {
+    if (error instanceof ControllerLockContentionError) {
+      throw new PluginCapabilityAuthorizationGrantError('PLUGIN_CAPABILITY_GRANT_STORE_BUSY', error.message);
+    }
+    throw error;
+  }
+}
+
+export function reconcilePluginCapabilityAuthorizations(
+  controllerHome: string,
+  input: ReconcilePluginCapabilityAuthorizationsInput = {},
+): ReconcilePluginCapabilityAuthorizationsResult {
+  const retiredOwnerScopes = new Set(
+    (input.retiredOwnerScopes ?? [])
+      .map((ownerScope) => required(ownerScope, 'retiredOwnerScopes[]')),
+  );
+  const nowMs = (input.now ?? new Date()).getTime();
+  try {
+    return withControllerLock(
+      controllerHome,
+      { scope: 'global', resource: 'plugin-capability-authorization-grants' },
+      'plugin-capability-reconcile',
+      () => {
+        const store = loadStore(controllerHome);
+        let removedRetiredOwner = 0;
+        let removedRevoked = 0;
+        let removedExpired = 0;
+        const grants = store.grants.filter((grant) => {
+          if (retiredOwnerScopes.has(grant.ownerScope)) {
+            removedRetiredOwner += 1;
+            return false;
+          }
+          if (grant.revokedAt) {
+            removedRevoked += 1;
+            return false;
+          }
+          if (Date.parse(grant.expiresAt) <= nowMs) {
+            removedExpired += 1;
+            return false;
+          }
+          return true;
+        });
+        const removedTotal = removedRetiredOwner + removedRevoked + removedExpired;
+        if (removedTotal > 0) {
+          store.grants = grants;
+          saveStore(controllerHome, store);
+        }
+        return {
+          removedRetiredOwner,
+          removedRevoked,
+          removedExpired,
+          removedTotal,
+          remaining: grants.length,
+          changed: removedTotal > 0,
+        };
       },
       5_000,
     );
