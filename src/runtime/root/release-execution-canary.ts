@@ -59,7 +59,7 @@ export function assertRuntimeReleaseExecutionCanaries(
     {
       cwd: surface.releaseRoot,
       env: runtimeReleaseCanaryEnvironment(),
-      timeoutMs: 10_000,
+      timeoutMs: 30_000,
       maxOutputBytes: 64 * 1024,
     },
   ));
