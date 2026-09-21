@@ -212,6 +212,7 @@ export async function startManagedPluginAction(input: {
     executionIdentity,
     workId: input.request.workId,
     commandId: `plugin-action:${input.request.requestId}`,
+    trustedRuntimeChild: 'plugin_action_sidecar',
     command: {
       kind: 'argv',
       executable: invocation.executable,

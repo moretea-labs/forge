@@ -1489,6 +1489,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     repoId: input.repoId,
     controllerHome: input.controllerHome,
     command,
+    ...(input.trustedRuntimeChild ? { trustedRuntimeChild: input.trustedRuntimeChild } : {}),
     timeoutMs,
     maxStdoutBytes: maxOutputBytes,
     maxStderrBytes: maxOutputBytes,

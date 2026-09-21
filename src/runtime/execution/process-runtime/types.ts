@@ -306,6 +306,8 @@ export interface SpawnManagedProcessInput {
   resourceClaims?: ProcessResourceClaim[];
   checkExecution?: ProcessCheckExecutionIdentity;
   origin?: ManagedProcessRecord['origin'];
+  /** Runtime-owned child allowed to rebind only the exact current Runtime write authority. */
+  trustedRuntimeChild?: 'plugin_action_sidecar';
   runtimeInstanceId?: string;
   releaseAuthorityRevision?: number;
   releaseId?: string;

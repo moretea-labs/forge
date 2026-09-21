@@ -88,6 +88,16 @@ function claimFromAuthority(
   };
 }
 
+export function currentRuntimeWriteClaimEnvironment(controllerHome: string): Record<string, string> {
+  const home = resolveControllerHome(controllerHome);
+  const owner = readRuntimeOwner(home);
+  const authority = readRuntimeReleaseAuthority(home);
+  if (!owner || !authority) {
+    throw new Error('RUNTIME_WRITE_CLAIM_BIND_FAILED: Runtime owner or release authority is missing');
+  }
+  return runtimeWriteClaimEnvironment(claimFromAuthority(home, owner, authority));
+}
+
 export function runtimeWriteClaimEnvironment(claim: RuntimeWriteClaim): Record<string, string> {
   if (claim.unmanaged) return {};
   return {
