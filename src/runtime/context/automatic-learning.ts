@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
+import { getRepository } from '../../cli/repositories/registry';
 import {
   cognitiveTerms,
   consolidateMemories,
@@ -21,6 +22,8 @@ import {
   canonicalWorkflowEvidenceAvailable,
   cognitiveScopesForWork,
   experienceScopesForWork,
+  recordClosedRoundExperience,
+  recordClosedRoundOutcomeObservation,
 } from '../control-plane/persistence/experience-store';
 import {
   cognitionMemoryStore,
@@ -32,6 +35,8 @@ export interface AutomaticControllerLearningResult {
   consolidatedMemoryIds: string[];
   promotedMemoryIds: string[];
   requirementCandidateIds: string[];
+  repairOutcomeObservationIds?: string[];
+  repairExperienceIds?: string[];
   skipped: string[];
 }
 
@@ -596,6 +601,123 @@ function persistDraft(
   return recordCognitiveMemory(store, authority, draft);
 }
 
+function currentPassedVerificationEvidence(work: WorkContract): Array<{ checkId: string; receiptId: string; recordedAt: string }> {
+  const latest = new Map<string, WorkContract['checkRefs'][number]>();
+  for (const record of work.checkRefs) {
+    if (!latest.has(record.checkId)) latest.set(record.checkId, record);
+  }
+  return [...latest.values()].flatMap(record => {
+    const receiptId = record.receipt?.status === 'passed' ? record.receipt.receiptId?.trim() : '';
+    if (record.outcome !== 'valid_pass' || record.staleReason || !receiptId) return [];
+    return [{ checkId: record.checkId, receiptId, recordedAt: record.recordedAt }];
+  }).sort((left, right) => left.checkId.localeCompare(right.checkId));
+}
+
+function persistVerifiedRepairLearning(input: {
+  controllerHome: string;
+  repoId: string;
+  work: WorkContract;
+  scope: ScopeRef;
+  sourceRoundId: string;
+  observedAt: string;
+  cognitionAuthority: CognitiveWriteAuthorityPort;
+}): { outcomeId?: string; experienceId?: string; memory?: MemoryUnit; skipped?: string } {
+  if (!input.work.requestId?.startsWith('forge-incident-repair:')) return {};
+  if (input.work.phaseEvidence.verification.state !== 'satisfied') return { skipped: 'repair:verification_not_satisfied' };
+  const evidence = currentPassedVerificationEvidence(input.work);
+  if (!evidence.length) return { skipped: 'repair:current_passed_verification_evidence_unavailable' };
+  const repository = getRepository(input.repoId, input.controllerHome);
+  const github = repository.github;
+  if (!github?.owner?.trim() || !github.repo?.trim()) return { skipped: 'repair:repository_https_identity_unavailable' };
+
+  const observedAtMs = Date.parse(input.observedAt);
+  const windowStart = evidence
+    .map(item => item.recordedAt)
+    .filter(value => Number.isFinite(Date.parse(value)) && Date.parse(value) <= observedAtMs)
+    .sort()[0] ?? input.observedAt;
+  const digest = createHash('sha256')
+    .update(`${input.work.workId}\0${input.sourceRoundId}\0${evidence.map(item => item.receiptId).join(',')}`)
+    .digest('hex')
+    .slice(0, 24);
+  const outcomeId = `repair-outcome:${digest}`;
+  const experienceId = `repair-experience:${digest}`;
+  const memoryId = `learning:auto:repair:${digest}`;
+  const source = { workId: input.work.workId, sourceRoundId: input.sourceRoundId };
+  const evidenceRefs = [...new Set(evidence.map(item => item.receiptId))].slice(0, 30);
+  const statement = `Verified recurrent Forge repair candidate ${input.work.requestId} passed ${evidence.length} current checks for "${input.work.objective.slice(0, 900)}". This is evidence-backed advisory learning; mandatory approval, verification, release, and known-good gates remain authoritative.`;
+
+  const outcome = recordClosedRoundOutcomeObservation({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    authority: source,
+    observation: {
+      schemaVersion: 1,
+      id: outcomeId,
+      scope: input.scope,
+      sourceWorkId: input.work.workId,
+      sourceRoundId: input.sourceRoundId,
+      evidenceRef: evidenceRefs[0]!,
+      remoteObject: {
+        id: `${github.owner}/${github.repo}`,
+        url: `https://github.com/${github.owner}/${github.repo}`,
+        account: github.owner,
+        channel: 'repository',
+      },
+      observedAt: input.observedAt,
+      window: { start: windowStart, end: input.observedAt },
+      metrics: [
+        { name: 'current_verification_checks_passed', unit: 'checks', value: evidence.length, cumulative: false },
+        { name: 'verification_gate_satisfied', unit: 'boolean', value: 1, cumulative: false },
+      ],
+    },
+    now: input.observedAt,
+  });
+
+  const experience = recordClosedRoundExperience({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    authority: source,
+    record: {
+      schemaVersion: 1,
+      revision: 1,
+      id: experienceId,
+      scope: input.scope,
+      applicability: {},
+      kind: 'lesson',
+      statement,
+      evidenceRefs: [outcome.id, ...evidenceRefs].slice(0, 32),
+      sourceWorkId: input.work.workId,
+      sourceRoundId: input.sourceRoundId,
+      recordedAt: input.observedAt,
+      durableRationale: 'Verified repair evidence may guide future Forge diagnosis, but learned guidance is advisory and cannot alter mandatory checks, approval, release, or known-good authority.',
+      counterEvidenceRefs: [],
+    },
+    now: input.observedAt,
+  });
+
+  const memory = persistDraft(input.controllerHome, input.cognitionAuthority, {
+    id: memoryId,
+    scope: input.scope,
+    facets: ['automatic', 'verified-repair', 'outcome-backed'],
+    canonicalText: statement,
+    concepts: normalizedConcepts(['forge.repair', 'forge.incident-repair', 'forge.verified-repair', ...(input.work.engineeringContext?.semanticScope?.keys ?? [])]),
+    provenance: {
+      sourceKind: 'outcome',
+      sourceId: outcome.id,
+      sourceWorkId: input.work.workId,
+      sourceRoundId: input.sourceRoundId,
+      recordedAt: input.observedAt,
+      evidenceRefs: [outcome.id, ...evidenceRefs].slice(0, 32),
+    },
+    confidence: 1,
+    utility: 0.9,
+    tier: 'warm',
+    validFrom: input.observedAt,
+    counterEvidenceRefs: [],
+  });
+  return { outcomeId: outcome.id, experienceId: experience.id, memory };
+}
+
 function signalLearningDraft(input: {
   signal: ExecutionQualitySignal;
   work: WorkContract;
@@ -825,6 +947,26 @@ export function persistAutomaticControllerRoundLearning(input: {
   });
   const stored: MemoryUnit[] = [];
   const skipped: string[] = [];
+  const repairOutcomeObservationIds: string[] = [];
+  const repairExperienceIds: string[] = [];
+
+  try {
+    const repair = persistVerifiedRepairLearning({
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+      work,
+      scope,
+      sourceRoundId: input.sourceRoundId,
+      observedAt,
+      cognitionAuthority: authority,
+    });
+    if (repair.skipped) skipped.push(repair.skipped);
+    if (repair.outcomeId) repairOutcomeObservationIds.push(repair.outcomeId);
+    if (repair.experienceId) repairExperienceIds.push(repair.experienceId);
+    if (repair.memory && !stored.some(memory => memory.id === repair.memory!.id)) stored.push(repair.memory);
+  } catch (error) {
+    skipped.push(`repair:${error instanceof Error ? error.message : 'learning_failed'}`);
+  }
 
   for (const signal of (input.controllerSignals ?? []).slice(0, 8)) {
     const signalScope = controllerLearningScope(work, input.controllerHome, signal.scopeKind);
@@ -950,6 +1092,8 @@ export function persistAutomaticControllerRoundLearning(input: {
     consolidatedMemoryIds: consolidated.map(candidate => candidate.memory.id),
     promotedMemoryIds,
     requirementCandidateIds,
+    ...(repairOutcomeObservationIds.length ? { repairOutcomeObservationIds } : {}),
+    ...(repairExperienceIds.length ? { repairExperienceIds } : {}),
     skipped,
   };
 }
