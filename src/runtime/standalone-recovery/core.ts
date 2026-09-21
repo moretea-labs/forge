@@ -1,4 +1,5 @@
 import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerformanceIdentity, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
+import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
@@ -1688,6 +1689,82 @@ function runtimePerformanceIdentity(config: RecoveryConfig): RuntimePerformanceI
   };
 }
 
+export const RECOVERY_INTERNAL_PERFORMANCE_COMMAND = '__measure-runtime-performance';
+
+export async function measureConfiguredRuntimePerformance(
+  config: RecoveryConfig,
+  dependencies: RuntimePerformanceDependencies = {},
+): Promise<RuntimePerformanceEvidence> {
+  return await measureRuntimePerformance(() => runtimePerformanceIdentity(config), dependencies);
+}
+
+function hasRuntimePerformanceTestSeam(dependencies: RuntimePerformanceDependencies): boolean {
+  return dependencies.readCpu !== undefined
+    || dependencies.monotonicNow !== undefined
+    || dependencies.wallNow !== undefined
+    || dependencies.sleep !== undefined;
+}
+
+async function measureRuntimePerformanceIsolated(
+  config: RecoveryConfig,
+  expectedIdentity: RuntimePerformanceIdentity,
+): Promise<RuntimePerformanceEvidence> {
+  const recoveryBefore = readCurrentRecoveryRelease(config.controllerHome);
+  if (!recoveryBefore) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: current immutable Recovery release unavailable');
+  const executable = join(recoveryBefore.releasePath, 'forge-recovery');
+  if (!existsSync(executable)) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: immutable Recovery sampler executable unavailable');
+
+  const result = await runBoundedChild(
+    executable,
+    [RECOVERY_INTERNAL_PERFORMANCE_COMMAND, '--controller-home', config.controllerHome],
+    {
+      timeoutMs: 100_000,
+      maxOutputBytes: 32 * 1024,
+      forwardSignals: false,
+      env: runtimeAuthorityFreeEnvironment(process.env),
+    },
+  );
+  if (result.status !== 0 || result.failureCode || result.timedOut) {
+    const detail = result.failureCode ?? result.error ?? (result.stderr.trim() || `exit=${result.status}`);
+    throw new Error(`RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler failed (${detail.slice(0, 240)})`);
+  }
+
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(result.stdout);
+  } catch {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned malformed evidence');
+  }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
+  }
+  const parsed = envelope as { schemaVersion?: unknown; ok?: unknown; evidence?: unknown; error?: unknown };
+  if (parsed.schemaVersion !== 1 || typeof parsed.ok !== 'boolean') {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
+  }
+  if (!parsed.ok) {
+    const detail = typeof parsed.error === 'string' ? parsed.error : '';
+    if (/^RECOVERY_PERFORMANCE_(?:UNKNOWN|REJECTED):/.test(detail)) throw new Error(detail);
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned an unclassified failure');
+  }
+  if (!parsed.evidence || typeof parsed.evidence !== 'object' || Array.isArray(parsed.evidence)) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler omitted performance evidence');
+  }
+  const performance = parsed.evidence as RuntimePerformanceEvidence;
+  assertRuntimePerformanceEvidence(performance, expectedIdentity);
+
+  const recoveryAfter = readCurrentRecoveryRelease(config.controllerHome);
+  if (!recoveryAfter
+    || recoveryAfter.releaseRevision !== recoveryBefore.releaseRevision
+    || recoveryAfter.manifestSha256 !== recoveryBefore.manifestSha256) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Recovery release changed during performance observation');
+  }
+  if (!samePerformanceIdentity(expectedIdentity, runtimePerformanceIdentity(config))) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after performance observation');
+  }
+  return performance;
+}
+
 export async function attestKnownGood(
   config: RecoveryConfig,
   dependencies: RuntimePerformanceDependencies = {},
@@ -1701,17 +1778,20 @@ export async function attestKnownGood(
     throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed during functional verification');
   }
 
-  // Performance observation is read-only and deliberately stays outside the
-  // single Recovery mutation lock. Runtime/release identity is fenced on every
-  // sample; a concurrent restart/rollback/activation therefore invalidates the
-  // evidence instead of being blocked for the six-minute observation window.
-  const performance = await measureRuntimePerformance(() => {
-    const current = runtimePerformanceIdentity(config);
-    if (!samePerformanceIdentity(verifiedIdentity, current)) {
-      throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after functional verification');
-    }
-    return current;
-  }, dependencies);
+  // Production observation executes in one short-lived child of the exact
+  // immutable Recovery release so Gateway/watchdog work in the persistent
+  // daemon cannot stretch the sampler's monotonic windows. Explicit dependency
+  // hooks remain the in-process test seam only. Both paths stay read-only and
+  // outside the Recovery mutation lock; exact Runtime identity remains fenced.
+  const performance = hasRuntimePerformanceTestSeam(dependencies)
+    ? await measureRuntimePerformance(() => {
+        const current = runtimePerformanceIdentity(config);
+        if (!samePerformanceIdentity(verifiedIdentity, current)) {
+          throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after functional verification');
+        }
+        return current;
+      }, dependencies)
+    : await measureRuntimePerformanceIsolated(config, verifiedIdentity);
 
   const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
     const verified = await verifyStableRuntime(config);

@@ -14,6 +14,8 @@ import {
   cutoverConfiguredRuntimeReleaseSession,
   assertRecoveryMutationIdentity,
   attestKnownGood,
+  measureConfiguredRuntimePerformance,
+  RECOVERY_INTERNAL_PERFORMANCE_COMMAND,
   diagnose,
   gatewayToken,
   listReleases,
@@ -139,6 +141,21 @@ async function cli(): Promise<void> {
     }
     if (executableRole === 'gateway') await startGateway(config);
     else await startWatchdog(config);
+    return;
+  }
+  if (command === RECOVERY_INTERNAL_PERFORMANCE_COMMAND) {
+    try {
+      output({ schemaVersion: 1, ok: true, evidence: await measureConfiguredRuntimePerformance(config) });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      output({
+        schemaVersion: 1,
+        ok: false,
+        error: /^RECOVERY_PERFORMANCE_(?:UNKNOWN|REJECTED):/.test(detail)
+          ? detail
+          : 'RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler failed',
+      });
+    }
     return;
   }
   switch (command) {
