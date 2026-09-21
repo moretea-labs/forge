@@ -332,15 +332,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
-        properties: {
-          interaction_id: { type: 'string' },
-          terminate_owned_pid: {
-            type: 'integer',
-            minimum: 1,
-            maximum: 2_147_483_647,
-            description: 'Exact provider-launched process id that the durable Computer target authority has decided is no longer used by another active target.',
-          },
-        },
+        properties: { interaction_id: { type: 'string' } },
         required: ['interaction_id'],
         additionalProperties: false,
       },
@@ -455,7 +447,15 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
-        properties: { interaction_id: { type: 'string' } },
+        properties: {
+          interaction_id: { type: 'string' },
+          terminate_owned_pid: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 2_147_483_647,
+            description: 'Exact provider-launched process id that the durable Computer target authority has decided is no longer used by another active target.',
+          },
+        },
         required: ['interaction_id'],
         additionalProperties: false,
       },

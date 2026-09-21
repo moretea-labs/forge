@@ -39,6 +39,24 @@ function registerProvider(home: string, options: { version?: string; enabled?: b
 }
 
 describe('Computer product facade', () => {
+  test('exposes exact-pid cleanup on the typed Desktop Operator close contract', () => {
+    const registration = createDesktopOperatorRegistrationInput({
+      socketPath: '/tmp/forge-desktop-operator.sock',
+      pluginVersion: '0.4.4',
+      protocolVersion: '1.0',
+    });
+    const close = registration.actions.find((action) => action.actionId === 'desktop_session_close');
+    expect(close?.argumentsSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        interaction_id: { type: 'string' },
+        terminate_owned_pid: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },
+      },
+      required: ['interaction_id'],
+      additionalProperties: false,
+    });
+  });
+
   test('reports Windows as unavailable without inventing a Computer capability from host browser discovery', () => {
     const home = controllerHome();
     const status = readComputerStatus({ controllerHome: home, platform: 'win32' });
