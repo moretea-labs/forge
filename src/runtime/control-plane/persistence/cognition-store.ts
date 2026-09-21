@@ -530,6 +530,114 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
   };
 }
 
+
+export interface CognitiveAuditQuery {
+  scopes: readonly ScopeRef[];
+  query?: string;
+  memoryId?: string;
+  concept?: string;
+  facet?: string;
+  sourceKind?: MemoryUnit['provenance']['sourceKind'];
+  sourceWorkId?: string;
+  limit?: number;
+}
+
+export interface CognitiveAuditEntry {
+  memory: MemoryUnit;
+  relations: MemoryEdge[];
+}
+
+export interface CognitiveAuditResult {
+  items: CognitiveAuditEntry[];
+  inspected: number;
+  truncated: boolean;
+}
+
+function auditEdgeFromRow(row: Record<string, unknown>): MemoryEdge {
+  return validateMemoryEdge({
+    schemaVersion: 1,
+    id: row.edge_id as string,
+    scope: { schemaVersion: 1, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string },
+    fromId: row.from_memory_id as string,
+    toId: row.to_memory_id as string,
+    relation: row.relation as string,
+    weight: Number(row.weight),
+    evidenceRefs: JSON.parse(row.evidence_json as string) as string[],
+    ...(row.source_work_id ? { sourceWorkId: row.source_work_id as string } : {}),
+    ...(row.source_round_id ? { sourceRoundId: row.source_round_id as string } : {}),
+    recordedAt: row.recorded_at as string,
+    ...(row.expires_at ? { expiresAt: row.expires_at as string } : {}),
+    ...(row.retracted_at ? { retractedAt: row.retracted_at as string } : {}),
+  });
+}
+
+export function auditCognitiveMemory(controllerHome: string, input: CognitiveAuditQuery): CognitiveAuditResult {
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 24), 100));
+  const uniqueScopes = [...new Map(input.scopes.map(scope => [`${scope.kind}:${scope.id}`, scope])).values()].slice(0, 32);
+  if (!uniqueScopes.length) return { items: [], inspected: 0, truncated: false };
+  return withControlPlaneReadDatabase(controllerHome, database => {
+    if (!canonicalSchemaAvailable(database)) return { items: [], inspected: 0, truncated: false };
+    const scopePredicate = uniqueScopes.map(() => '(scope_kind = ? AND scope_id = ?)').join(' OR ');
+    const params: unknown[] = uniqueScopes.flatMap(scope => [scope.kind, scope.id]);
+    const clauses = [`(${scopePredicate})`];
+    if (input.memoryId?.trim()) {
+      clauses.push('memory_id = ?');
+      params.push(input.memoryId.trim());
+    }
+    if (input.sourceKind) {
+      clauses.push('source_kind = ?');
+      params.push(input.sourceKind);
+    }
+    if (input.sourceWorkId?.trim()) {
+      clauses.push('source_work_id = ?');
+      params.push(input.sourceWorkId.trim());
+    }
+    const scanLimit = Math.min(512, Math.max(limit * 8, 64));
+    const rows = statement(database, `
+      SELECT * FROM cognition_memory_units
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY utility DESC, confidence DESC, recorded_at DESC, scope_kind ASC, scope_id ASC, memory_id ASC
+      LIMIT ?`, prepared => prepared.all(...params, scanLimit) as Array<Record<string, unknown>>);
+    const query = input.query?.trim().toLocaleLowerCase('en-US') ?? '';
+    const concept = input.concept?.trim();
+    const facet = input.facet?.trim();
+    const memories = rows.map(row => {
+      const scope = { schemaVersion: 1 as const, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string };
+      const refs = evidenceFor(database, scope, row.memory_id as string);
+      return rowToMemory(row, refs.evidence, refs.counter);
+    }).filter(memory => !concept || memory.concepts.includes(concept))
+      .filter(memory => !facet || memory.facets.includes(facet))
+      .filter(memory => !query || [
+        memory.id,
+        memory.canonicalText,
+        ...memory.concepts,
+        ...memory.facets,
+        memory.provenance.sourceId ?? '',
+        memory.provenance.sourceWorkId ?? '',
+        memory.provenance.sourceRoundId ?? '',
+      ].join('\n').toLocaleLowerCase('en-US').includes(query));
+    const selected = memories.slice(0, limit);
+    const relationRows = selected.length ? statement(database, `
+      SELECT * FROM cognition_memory_edges
+      WHERE ${selected.map(() => '(scope_kind = ? AND scope_id = ? AND (from_memory_id = ? OR to_memory_id = ?))').join(' OR ')}
+      ORDER BY recorded_at DESC, weight DESC, edge_id ASC
+      LIMIT 512`, prepared => prepared.all(...selected.flatMap(memory => [
+        memory.scope.kind, memory.scope.id, memory.id, memory.id,
+      ])) as Array<Record<string, unknown>>) : [];
+    const relations = relationRows.map(auditEdgeFromRow);
+    return {
+      items: selected.map(memory => ({
+        memory,
+        relations: relations.filter(edge => edge.scope.kind === memory.scope.kind
+          && edge.scope.id === memory.scope.id
+          && (edge.fromId === memory.id || edge.toId === memory.id)).slice(0, 32),
+      })),
+      inspected: rows.length,
+      truncated: memories.length > limit || rows.length >= scanLimit,
+    };
+  });
+}
+
 export function cognitionReadPort(controllerHome: string): CognitiveReadPort {
   return {
     readByIds: (scopes, ids) => withControlPlaneReadDatabase(controllerHome, database => readPortForDatabase(database).readByIds(scopes, ids)),

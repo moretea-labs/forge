@@ -32,6 +32,10 @@ import { controllerPluginRepository, submitAssistantPluginAction } from '../../s
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
+import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
+import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
@@ -930,6 +934,79 @@ printf '{"ok":true}\\n'
     expect(data.capabilityInventory).toEqual(expect.objectContaining({ mode: 'detail_only', deferred: true }));
     expect(data.counts).toEqual(expect.objectContaining({ capabilityInventoryDeferred: true, historicalProcessScanDeferred: true }));
     expect('capabilityCount' in data).toBe(false);
+  });
+
+  test('rh_context knowledge-only search audits learned memory within current Project and Workspace scopes', async () => {
+    const business = tempRoot('forge-context-knowledge-audit-');
+    const controllerHome = tempRoot('forge-home-context-knowledge-audit-');
+    initGitRepo(business, 'context-knowledge-audit');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Knowledge Audit' });
+    const instance = ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-context-knowledge-audit' });
+    writeWorkspaceIdentity({ controllerHome, value: { workspaceId: 'workspace-audit', title: 'Audit Workspace' } });
+    writeProjectIdentity({ controllerHome, value: { projectId: 'project-audit', workspaceId: 'workspace-audit', displayName: 'Audit Project' } });
+    writeProjectPlacement({ controllerHome, value: {
+      projectId: 'project-audit',
+      forgeInstanceId: instance.instanceId,
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    } });
+    const auditScope = { schemaVersion: 1 as const, kind: 'project' as const, id: 'project-audit' };
+    const authority: CognitiveWriteAuthorityPort = {
+      assertMemoryWrite() {},
+      assertEdgeWrite() {},
+      evidenceAvailable() { return true; },
+    };
+    recordCognitiveMemory(cognitionMemoryStore(controllerHome), authority, {
+      id: 'mem:rh-context-audit',
+      scope: auditScope,
+      facets: ['knowledge', 'principle', 'product-design'],
+      canonicalText: 'Interaction should be self explanatory; copy explains invisible rules.',
+      concepts: ['product.interaction', 'copy.invisible-rules'],
+      provenance: {
+        sourceKind: 'controller',
+        sourceId: 'controller-learning:audit',
+        sourceWorkId: 'work-audit-source',
+        sourceRoundId: 'round-audit-source',
+        recordedAt: '2026-09-21T00:00:00.000Z',
+        evidenceRefs: ['E-AUDIT'],
+      },
+      confidence: 0.94,
+      utility: 0.88,
+      tier: 'warm',
+      validFrom: '2026-09-21T00:00:00.000Z',
+      counterEvidenceRefs: [],
+    });
+
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'search',
+      knowledge_query: 'self explanatory',
+      knowledge_concept: 'product.interaction',
+      knowledge_limit: 8,
+      detail_level: 'detail',
+    }));
+    const data = payload.data as { cognitionAudit?: {
+      readonly?: boolean;
+      advisoryOnly?: boolean;
+      authorityBoundary?: string;
+      scopes?: Array<{ kind?: string; id?: string }>;
+      items?: Array<{ memory?: { id?: string; confidence?: number; provenance?: { sourceRoundId?: string } }; activation?: { reasons?: unknown[] } }>;
+    } };
+    expect(data.cognitionAudit).toMatchObject({ readonly: true, advisoryOnly: true });
+    expect(data.cognitionAudit?.authorityBoundary).toContain('never overrides');
+    expect(data.cognitionAudit?.scopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'project', id: 'project-audit' }),
+      expect.objectContaining({ kind: 'workspace', id: 'workspace-audit' }),
+    ]));
+    expect(data.cognitionAudit?.items).toContainEqual(expect.objectContaining({
+      memory: expect.objectContaining({
+        id: 'mem:rh-context-audit',
+        confidence: 0.94,
+        provenance: expect.objectContaining({ sourceRoundId: 'round-audit-source' }),
+      }),
+      activation: expect.objectContaining({ reasons: expect.any(Array) }),
+    }));
   });
 
   test('rh_context search exposes multi-wave readiness and folds semantic failures into mutation readiness', async () => {

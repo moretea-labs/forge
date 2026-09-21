@@ -30,7 +30,7 @@ import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/pers
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
 import { cognitiveUsageFeedbackForContext, prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
-import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
+import { parseControllerLearningSignalDrafts, persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
@@ -634,6 +634,62 @@ describe('connected assistant learning loops', () => {
       scopes: [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
       projectId: 'project-learning-loop',
     })).toEqual(feedback);
+  });
+
+  test('admits explicit portable human teaching directly to Workspace but rejects inferred Workspace writes', () => {
+    const fx = fixture('portable-human-teaching', { knowledge: false });
+    fx.setNow(time(10));
+    const round = claimInitialRound(fx, 1);
+    const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
+    closeContinue(fx, round);
+    const learning = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId,
+      signals: [],
+      controllerSignals: [{
+        scopeKind: 'workspace',
+        kind: 'principle',
+        valence: 'positive',
+        summary: 'Copy explains invisible rules, not interaction that should be self explanatory.',
+        concepts: ['product.interaction.self-explanatory', 'copy.invisible-rules'],
+        facets: ['product-design'],
+        admissionSource: 'explicit_human',
+        portability: 'portable',
+        salience: 0.98,
+        confidence: 0.96,
+        utility: 0.9,
+        evidenceRefs: [],
+        counterEvidenceRefs: [],
+      }],
+      now: time(12),
+    });
+    expect(learning.storedMemoryIds).toHaveLength(1);
+    const workspaceMemory = cognitionReadPort(fx.controllerHome).readByIds(
+      [{ schemaVersion: 1, kind: 'workspace', id: fx.workspaceId }],
+      learning.storedMemoryIds,
+    )[0];
+    expect(workspaceMemory).toMatchObject({
+      id: learning.storedMemoryIds[0],
+      scope: { kind: 'workspace', id: fx.workspaceId },
+    });
+    expect(workspaceMemory?.facets).toContain('source.explicit_human');
+    expect(workspaceMemory?.facets).toContain('portability.portable');
+
+    expect(() => parseControllerLearningSignalDrafts([{
+      scope_kind: 'workspace',
+      kind: 'principle',
+      valence: 'positive',
+      summary: 'Inferred guidance must not jump to Workspace.',
+      concepts: ['unsafe.workspace-promotion'],
+      facets: [],
+      admission_source: 'controller_observation',
+      portability: 'portable',
+      salience: 0.8,
+      confidence: 0.7,
+      utility: 0.6,
+    }])).toThrow('COGNITION_CONTROLLER_LEARNING_WORKSPACE_REQUIRES_EXPLICIT_PORTABLE_HUMAN:0');
   });
 
   test('automatically associates paraphrased learning across rounds and consolidates after two corroborating sources', () => {

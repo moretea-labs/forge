@@ -35,7 +35,7 @@ export interface AutomaticControllerLearningResult {
   skipped: string[];
 }
 
-export type ControllerLearningScopeKind = 'work' | 'requirement' | 'project';
+export type ControllerLearningScopeKind = 'work' | 'requirement' | 'project' | 'workspace';
 export type ControllerLearningAdmissionSource = 'explicit_human' | 'controller_observation' | 'system_inference';
 
 /**
@@ -68,7 +68,7 @@ const CONTROLLER_LEARNING_KINDS: readonly LearningSignal['kind'][] = [
 ];
 const CONTROLLER_LEARNING_VALENCES: readonly LearningSignal['valence'][] = ['positive', 'negative', 'neutral'];
 const CONTROLLER_LEARNING_ADMISSION_SOURCES: readonly ControllerLearningAdmissionSource[] = ['explicit_human', 'controller_observation', 'system_inference'];
-const CONTROLLER_LEARNING_SCOPE_KINDS: readonly ControllerLearningScopeKind[] = ['work', 'requirement', 'project'];
+const CONTROLLER_LEARNING_SCOPE_KINDS: readonly ControllerLearningScopeKind[] = ['work', 'requirement', 'project', 'workspace'];
 
 function boundedScore(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
@@ -108,6 +108,9 @@ export function parseControllerLearningSignalDrafts(value: unknown): ControllerL
     if (!CONTROLLER_LEARNING_VALENCES.includes(valence as LearningSignal['valence'])) throw new Error(`COGNITION_CONTROLLER_LEARNING_VALENCE_INVALID:${index}`);
     if (!CONTROLLER_LEARNING_ADMISSION_SOURCES.includes(admissionSource as ControllerLearningAdmissionSource)) throw new Error(`COGNITION_CONTROLLER_LEARNING_ADMISSION_INVALID:${index}`);
     if (portability !== 'local' && portability !== 'portable') throw new Error(`COGNITION_CONTROLLER_LEARNING_PORTABILITY_INVALID:${index}`);
+    if (scopeKind === 'workspace' && (admissionSource !== 'explicit_human' || portability !== 'portable')) {
+      throw new Error(`COGNITION_CONTROLLER_LEARNING_WORKSPACE_REQUIRES_EXPLICIT_PORTABLE_HUMAN:${index}`);
+    }
     if (!summary || summary.length > 2_000) throw new Error(`COGNITION_CONTROLLER_LEARNING_SUMMARY_INVALID:${index}`);
     const expiresAt = typeof raw.expires_at === 'string' && raw.expires_at.trim() ? raw.expires_at.trim() : undefined;
     if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) throw new Error(`COGNITION_CONTROLLER_LEARNING_EXPIRY_INVALID:${index}`);
@@ -142,7 +145,8 @@ function preferredLearningScope(work: WorkContract, controllerHome: string): Sco
 }
 
 function controllerLearningScope(work: WorkContract, controllerHome: string, kind: ControllerLearningScopeKind): ScopeRef | undefined {
-  return experienceScopesForWork(work, controllerHome).find(scope => scope.kind === kind);
+  const scopes = kind === 'workspace' ? cognitiveScopesForWork(work, controllerHome) : experienceScopesForWork(work, controllerHome);
+  return scopes.find(scope => scope.kind === kind);
 }
 
 function normalizedConcepts(values: readonly string[]): string[] {
@@ -165,12 +169,17 @@ function roundDerivedAuthority(input: {
   sourceRoundId: string;
 }): CognitiveWriteAuthorityPort {
   const allowedScopes = experienceScopesForWork(input.work, input.controllerHome);
-  const scopeAllowed = (scope: ScopeRef) => allowedScopes.some(candidate => sameScope(candidate, scope));
+  const workspaceScopes = cognitiveScopesForWork(input.work, input.controllerHome).filter(scope => scope.kind === 'workspace');
+  const localScopeAllowed = (scope: ScopeRef) => allowedScopes.some(candidate => sameScope(candidate, scope));
+  const scopeAllowed = (memory: MemoryUnit) => localScopeAllowed(memory.scope)
+    || workspaceScopes.some(candidate => sameScope(candidate, memory.scope))
+      && memory.facets.includes('source.explicit_human')
+      && memory.facets.includes('portability.portable');
   return {
     assertMemoryWrite(memory) {
       if (memory.provenance.sourceWorkId !== input.work.workId
         || memory.provenance.sourceRoundId !== input.sourceRoundId
-        || !scopeAllowed(memory.scope)
+        || !scopeAllowed(memory)
         || !sourceRoundObserved({
           controllerHome: input.controllerHome,
           repoId: input.repoId,
@@ -184,8 +193,9 @@ function roundDerivedAuthority(input: {
       throw new Error('COGNITION_AUTOMATIC_LEARNING_EDGE_NOT_ALLOWED');
     },
     evidenceAvailable(ref, scope, sourceWorkId) {
+      const scopeReadable = localScopeAllowed(scope) || workspaceScopes.some(candidate => sameScope(candidate, scope));
       return sourceWorkId === input.work.workId
-        && scopeAllowed(scope)
+        && scopeReadable
         && canonicalWorkflowEvidenceAvailable(
           { controllerHome: input.controllerHome, repoId: input.repoId },
           ref,

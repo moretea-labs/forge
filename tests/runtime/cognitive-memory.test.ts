@@ -16,6 +16,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { withControlPlaneTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   activateCognitiveMemory,
+  auditCognitiveMemory,
   cognitionMemoryStore,
   cognitionReadPort,
   putCognitivePayload,
@@ -159,6 +160,30 @@ describe('generic cognitive memory', () => {
     expect(item.memory.counterEvidenceRefs).toEqual([]);
     expect(item.memory.confidence).toBe(memory.confidence);
     expect(item.reasons).toContainEqual(expect.objectContaining({ signal: 'conflict', detail: 'counter-evidence:0;feedback-conflict:1;stale:1' }));
+  });
+
+  test('audits canonical memory with provenance and relations through bounded read-only filters', () => {
+    const fx = fixture();
+    const first = recordCognitiveMemory(fx.store, fx.authority, draft('mem:audit-first', 'Interaction should be self explanatory.', ['product.interaction'], 'E-1'));
+    const second = recordCognitiveMemory(fx.store, fx.authority, draft('mem:audit-second', 'Copy explains invisible rules.', ['copy.invisible-rules'], 'E-2'));
+    recordCognitiveMemoryEdge(fx.store, fx.authority, {
+      id: 'edge:audit-support', scope, fromId: first.id, toId: second.id, relation: 'supports',
+      weight: 0.9, evidenceRefs: ['E-3'], recordedAt: at,
+    });
+    const audit = auditCognitiveMemory(fx.controllerHome, {
+      scopes: [scope], concept: 'product.interaction', sourceKind: 'external', limit: 8,
+    });
+    expect(audit.items).toHaveLength(1);
+    expect(audit.items[0]?.memory).toMatchObject({
+      id: first.id,
+      confidence: first.confidence,
+      utility: first.utility,
+      provenance: { sourceKind: 'external', evidenceRefs: ['E-1'] },
+    });
+    expect(audit.items[0]?.relations).toContainEqual(expect.objectContaining({
+      id: 'edge:audit-support', relation: 'supports', toId: second.id,
+    }));
+    expect(audit.truncated).toBe(false);
   });
 
   test('uses one revisioned canonical record and rebuildable derived indexes', () => {

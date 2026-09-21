@@ -17,8 +17,14 @@ import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { controllerPluginRepository, getAssistantPluginManifest, listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot } from "../../../src/runtime/control-plane/facade";
 import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { readForgeInstanceIdentity, type ScopeRef } from "../../../packages/kernel/identity/api/index";
+import { memoryAddressKey } from "../../../packages/kernel/cognition/api/index";
 import { currentControllerInstanceId } from "../../../src/runtime/control-plane/execution/session-store";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
+import { resolveProjectForRepositoryPlacement } from "../../../src/runtime/control-plane/workspace/workspace-store";
+import { cognitiveScopesForWork } from "../../../src/runtime/control-plane/persistence/experience-store";
+import { activateCognitiveMemory, auditCognitiveMemory } from "../../../src/runtime/control-plane/persistence/cognition-store";
+import { cognitiveUsageFeedbackForContext } from "../../../src/runtime/context/assistant-work-context";
 import { invalidFacadeOperation, repositoryExecutionReadiness, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 
@@ -47,6 +53,120 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
   }
   const transportSession = ctx.sessionId?.trim();
   return transportSession ? `transport:${transportSession}` : undefined;
+}
+
+function rhContextKnowledgeAuditRequested(args: Record<string, unknown>): boolean {
+  return [
+    'knowledge_query', 'knowledge_memory_id', 'knowledge_scope_kind', 'knowledge_scope_id',
+    'knowledge_concept', 'knowledge_facet', 'knowledge_source_kind', 'knowledge_source_work_id',
+  ].some(key => typeof args[key] === 'string' && String(args[key]).trim().length > 0)
+    || typeof args.knowledge_limit === 'number';
+}
+
+function rhContextKnowledgeScopes(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  workId: string | undefined,
+): { scopes: ScopeRef[]; projectId?: string; gaps: string[] } {
+  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const work = workId ? getWorkContract(store, workId) : undefined;
+  if (work) {
+    const scopes = cognitiveScopesForWork(work, ctx.controllerHome);
+    return { scopes, projectId: scopes.find(scope => scope.kind === 'project')?.id, gaps: [] };
+  }
+  const instance = readForgeInstanceIdentity(ctx.controllerHome);
+  if (!instance) return { scopes: [], gaps: ['forge_instance_identity_unavailable'] };
+  const project = resolveProjectForRepositoryPlacement({
+    controllerHome: ctx.controllerHome,
+    forgeInstanceId: instance.instanceId,
+    repositoryId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+  });
+  if (!project) return { scopes: [], gaps: ['project_placement_unavailable'] };
+  return {
+    projectId: project.projectId,
+    scopes: [
+      { schemaVersion: 1, kind: 'project', id: project.projectId },
+      { schemaVersion: 1, kind: 'workspace', id: project.workspaceId },
+    ],
+    gaps: [],
+  };
+}
+
+function rhContextKnowledgeAudit(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
+  const resolved = rhContextKnowledgeScopes(ctx, repository, workId);
+  const requestedKind = typeof args.knowledge_scope_kind === 'string' ? args.knowledge_scope_kind.trim() : '';
+  const requestedId = typeof args.knowledge_scope_id === 'string' ? args.knowledge_scope_id.trim() : '';
+  const scopes = resolved.scopes.filter(scope =>
+    (!requestedKind || scope.kind === requestedKind) && (!requestedId || scope.id === requestedId));
+  const scopeMismatch = resolved.scopes.length > 0 && scopes.length === 0 && Boolean(requestedKind || requestedId);
+  const rawQuery = typeof args.knowledge_query === 'string' ? args.knowledge_query.trim() : '';
+  const query = rawQuery === '*' ? '' : rawQuery;
+  const audit = auditCognitiveMemory(ctx.controllerHome, {
+    scopes,
+    ...(query ? { query } : {}),
+    ...(typeof args.knowledge_memory_id === 'string' && args.knowledge_memory_id.trim()
+      ? { memoryId: args.knowledge_memory_id.trim() } : {}),
+    ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim()
+      ? { concept: args.knowledge_concept.trim() } : {}),
+    ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim()
+      ? { facet: args.knowledge_facet.trim() } : {}),
+    ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim()
+      ? { sourceKind: args.knowledge_source_kind.trim() as 'experience' | 'outcome' | 'knowledge' | 'controller' | 'system' | 'external' } : {}),
+    ...(typeof args.knowledge_source_work_id === 'string' && args.knowledge_source_work_id.trim()
+      ? { sourceWorkId: args.knowledge_source_work_id.trim() } : {}),
+    ...(typeof args.knowledge_limit === 'number' ? { limit: args.knowledge_limit } : {}),
+  });
+  const usage = cognitiveUsageFeedbackForContext({
+    controllerHome: ctx.controllerHome,
+    repoId: repository.repoId,
+    scopes,
+    ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
+  });
+  const usageByAddress = new Map(usage.map(item => [memoryAddressKey(item.address), item]));
+  const activation = query
+    ? activateCognitiveMemory(ctx.controllerHome, scopes, query, {
+        maxItems: Math.min(32, Math.max(1, typeof args.knowledge_limit === 'number' ? Math.trunc(args.knowledge_limit) : 24)),
+        usageFeedback: usage,
+      })
+    : undefined;
+  const activationByAddress = new Map((activation?.items ?? []).map(item => [
+    memoryAddressKey({ scope: item.memory.scope, id: item.memory.id }),
+    { score: item.score, reasons: item.reasons, activationPath: item.activationPath },
+  ]));
+  return {
+    readonly: true,
+    advisoryOnly: true,
+    authorityBoundary: 'Learned memory never overrides project contracts, authorization, verification, Requirement/Plan/Work, or semantic acceptance.',
+    scopes,
+    filters: {
+      ...(rawQuery ? { query: rawQuery } : {}),
+      ...(requestedKind ? { scopeKind: requestedKind } : {}),
+      ...(requestedId ? { scopeId: requestedId } : {}),
+      ...(typeof args.knowledge_memory_id === 'string' && args.knowledge_memory_id.trim() ? { memoryId: args.knowledge_memory_id.trim() } : {}),
+      ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim() ? { concept: args.knowledge_concept.trim() } : {}),
+      ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim() ? { facet: args.knowledge_facet.trim() } : {}),
+      ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim() ? { sourceKind: args.knowledge_source_kind.trim() } : {}),
+      ...(typeof args.knowledge_source_work_id === 'string' && args.knowledge_source_work_id.trim() ? { sourceWorkId: args.knowledge_source_work_id.trim() } : {}),
+    },
+    items: audit.items.map(entry => {
+      const address = memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id });
+      return {
+        memory: entry.memory,
+        relations: entry.relations,
+        recentUsage: usageByAddress.get(address),
+        activation: activationByAddress.get(address),
+      };
+    }),
+    inspected: audit.inspected,
+    truncated: audit.truncated,
+    gaps: [...resolved.gaps, ...(scopeMismatch ? ['requested_cognitive_scope_not_reachable'] : [])],
+  };
 }
 
 const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
@@ -302,14 +422,33 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
     }
     if (operation === 'search') {
       const query = typeof args.query === 'string' ? args.query.trim() : '';
-      if (!query) {
+      const knowledgeAuditRequested = rhContextKnowledgeAuditRequested(args);
+      if (!query && !knowledgeAuditRequested) {
         const facade = buildFacadeResult({
           status: 'failed',
-          summary: 'rh_context.search requires a non-empty query.',
+          summary: 'rh_context.search requires a non-empty code query or explicit knowledge audit fields.',
           data: { operation, repoId: repository.repoId },
           suggestedNextActions: [],
         });
         return result(facade as unknown as Record<string, unknown>, true);
+      }
+      const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
+      if (!query && cognitionAudit) {
+        const items = Array.isArray(cognitionAudit.items) ? cognitionAudit.items : [];
+        const facade = buildFacadeResult({
+          status: 'ok',
+          summary: `Retrieved ${items.length} bounded learned-memory audit item(s).`,
+          data: { operation, repoId: repository.repoId, cognitionAudit },
+          warnings: [],
+          suggestedNextActions: [],
+          detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+          rawAvailable: false,
+        });
+        // cognitionAudit is already bounded by scope/item/relation/usage/activation budgets.
+        // Preserve its nested provenance and reasoning rather than letting generic facade depth
+        // bounding turn the read-only audit contract into opaque "[bounded-depth]" markers.
+        (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
+        return result(facade as unknown as Record<string, unknown>);
       }
       const legacySemanticQuery = rhContextLegacySemanticQuery(query);
       const retrievalQuery = legacySemanticQuery.retrievalQuery;
@@ -446,6 +585,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           omitted: pack.omitted,
           limits: pack.limits,
           contextContract: pack.contextContract,
+          ...(cognitionAudit ? { cognitionAudit } : {}),
           ...(executionReadiness ? {
             executionReadiness,
             registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
@@ -468,6 +608,9 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
       // the exact full receipt digest supplied by the Controller during engineering re-entry.
       (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
+      if (cognitionAudit) {
+        (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
+      }
       return result(facade as unknown as Record<string, unknown>);
     }
     const startedAt = performance.now();
