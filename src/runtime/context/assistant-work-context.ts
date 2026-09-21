@@ -11,6 +11,7 @@ import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-sto
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
 import { fileKnowledgeSourcePort, renderAssistantContext, resolveAssistantContext, type AssistantContextResolution } from './assistant-context';
+import { applyCognitiveSkillCanary } from './cognitive-skill-canary';
 
 function rejectionFeedbackClass(reason: string): 'irrelevant' | 'stale' | 'contradicted' {
   const normalized = reason.trim().toLocaleLowerCase('en-US');
@@ -146,10 +147,11 @@ export function prepareAssistantWorkContext(input: {
     transientMemories: experiences.records.map(memoryUnitFromExperience),
     usageFeedback,
   });
-  return resolveAssistantContext({ ...(boundProject ? { projectId: boundProject } : {}), query,
+  const context = resolveAssistantContext({ ...(boundProject ? { projectId: boundProject } : {}), query,
     sources,
     knowledge: fileKnowledgeSourcePort({ repoRoot, brainRoot: configuredBrainRoot(), sourceRevision: 'working-tree' }),
     experiences: experiences.records, activation, gaps: [...experiences.gaps, ...(applicability.conflict ? ['assistant_context_applicability_conflict'] : [])], applicability: applicability.value, now });
+  return applyCognitiveSkillCanary(context);
 }
 
 export function renderAssistantWorkContext(input: Parameters<typeof prepareAssistantWorkContext>[0]): string | undefined {
