@@ -2,15 +2,70 @@ import { getRepository } from '../../cli/repositories/registry';
 import { configuredBrainRoot } from '../../cli/commands/brain-root';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
-import { getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay, getControllerSession, listCurrentControllerRoundRelays } from '../../../packages/kernel/controller/api/index';
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
-import { memoryUnitFromExperience, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
+import { memoryAddressKey, memoryUnitFromExperience, parseMemoryAddressKey, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveUsageFeedback, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
 import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, cognitiveScopesForWork, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
 import { activateCognitiveMemory, cognitionMemoryStore } from '../control-plane/persistence/cognition-store';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
 import { fileKnowledgeSourcePort, renderAssistantContext, resolveAssistantContext, type AssistantContextResolution } from './assistant-context';
+
+function rejectionFeedbackClass(reason: string): 'irrelevant' | 'stale' | 'contradicted' {
+  const normalized = reason.trim().toLocaleLowerCase('en-US');
+  if (/^\[?(stale|superseded)\]?\b/.test(normalized)
+    || /\b(stale|outdated|superseded|obsolete)\b/.test(normalized)
+    || /(过时|失效|已被替代|已取代)/.test(reason)) return 'stale';
+  if (/^\[?(contradicted|conflict)\]?\b/.test(normalized)
+    || /\b(contradict|contradicted|conflict|conflicting)\b/.test(normalized)
+    || /(矛盾|冲突|反证)/.test(reason)) return 'contradicted';
+  return 'irrelevant';
+}
+
+/**
+ * Canonical truth remains ControllerRound observationWindow. This is a bounded,
+ * rebuildable retrieval projection computed on demand, not a second usage store.
+ */
+export function cognitiveUsageFeedbackForContext(input: {
+  controllerHome: string;
+  repoId: string;
+  scopes: readonly ScopeRef[];
+  projectId?: string;
+}): CognitiveUsageFeedback[] {
+  const allowedScopes = new Set(input.scopes.map(scope => `${scope.kind}:${scope.id}`));
+  const feedback = new Map<string, CognitiveUsageFeedback>();
+  const seen = new Set<string>();
+  for (const relay of listCurrentControllerRoundRelays({ controllerHome: input.controllerHome, repoId: input.repoId }, 100)) {
+    for (const observation of (relay.observationWindow ?? []).slice(-8)) {
+      if (input.projectId && observation.assistantContext?.projectId !== input.projectId) continue;
+      const delivered = new Set((observation.assistantContext?.items ?? [])
+        .filter(item => item.kind === 'knowledge')
+        .map(item => item.itemId));
+      for (const usage of observation.assistantContextUsage ?? []) {
+        if (usage.kind !== 'knowledge' || !delivered.has(usage.itemId)) continue;
+        const address = parseMemoryAddressKey(usage.itemId);
+        if (!address || !allowedScopes.has(`${address.scope.kind}:${address.scope.id}`)) continue;
+        const observationKey = `${observation.roundRef}:${usage.kind}:${usage.itemId}`;
+        if (seen.has(observationKey)) continue;
+        seen.add(observationKey);
+        const key = memoryAddressKey(address);
+        const current = feedback.get(key) ?? { address, usedCount: 0, rejectedCount: 0, conflictCount: 0, staleCount: 0 };
+        if (usage.decision === 'used') current.usedCount += 1;
+        else {
+          current.rejectedCount += 1;
+          const classification = rejectionFeedbackClass(usage.reason);
+          if (classification === 'stale') current.staleCount += 1;
+          else if (classification === 'contradicted') current.conflictCount += 1;
+        }
+        feedback.set(key, current);
+      }
+    }
+  }
+  return [...feedback.values()]
+    .sort((left, right) => memoryAddressKey(left.address).localeCompare(memoryAddressKey(right.address)))
+    .slice(0, 256);
+}
 
 function cleanApplicability(value: ExperienceApplicability | undefined): ExperienceApplicability | undefined {
   if (!value) return undefined;
@@ -80,7 +135,17 @@ export function prepareAssistantWorkContext(input: {
   });
   const experiences = queryExperiences(controllerExperienceStore({ controllerHome: input.controllerHome, repoId: input.repoId, ...(input.now ? { now: () => input.now! } : {}) }), { scopes: experienceScopes, applicability: applicability.value, now });
   const query = input.query ?? work.objective;
-  const activation = activateCognitiveMemory(input.controllerHome, cognitiveScopes, query, { now, transientMemories: experiences.records.map(memoryUnitFromExperience) });
+  const usageFeedback = cognitiveUsageFeedbackForContext({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    scopes: cognitiveScopes,
+    ...(boundProject ? { projectId: boundProject } : {}),
+  });
+  const activation = activateCognitiveMemory(input.controllerHome, cognitiveScopes, query, {
+    now,
+    transientMemories: experiences.records.map(memoryUnitFromExperience),
+    usageFeedback,
+  });
   return resolveAssistantContext({ ...(boundProject ? { projectId: boundProject } : {}), query,
     sources,
     knowledge: fileKnowledgeSourcePort({ repoRoot, brainRoot: configuredBrainRoot(), sourceRevision: 'working-tree' }),

@@ -29,7 +29,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/controller-round-composition';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
-import { prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
+import { cognitiveUsageFeedbackForContext, prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
 import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -591,6 +591,49 @@ describe('connected assistant learning loops', () => {
       itemId: learnedItemId,
       revision: 1,
     }));
+
+    appendVerificationRecord(fx.store, fx.workId, verificationRecord(
+      fx,
+      'receipt-feedback-progress',
+      new Date().toISOString(),
+      'feedback-progress',
+    ));
+    closeContinue(fx, nextRound, { usedItemId: learnedItemId });
+
+    fx.setNow(new Date().toISOString());
+    const staleRound = claimReleasedRound(fx, nextRound.owner, 3);
+    const staleUsage = staleRound.bundle?.snapshot.items.map(item => ({
+      kind: item.kind,
+      itemId: item.itemId,
+      decision: 'rejected' as const,
+      reason: item.itemId === learnedItemId ? '[stale] New evidence supersedes this guidance.' : 'Not relevant to this round.',
+    }));
+    const staleDisposition = submitControllerRoundDisposition(fx.store, {
+      workId: fx.workId,
+      identity: relayIdentity(staleRound.owner),
+      disposition: 'wait',
+      relayScopeId: staleRound.relay.relayScopeId,
+      ...(staleRound.bundle ? {
+        assistantContextDigest: staleRound.bundle.snapshot.digest,
+        assistantContextUsage: staleUsage!,
+      } : {}),
+    });
+    expect(staleDisposition.status).toBe('waiting');
+
+    const feedback = cognitiveUsageFeedbackForContext({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      scopes: [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
+      projectId: 'project-learning-loop',
+    });
+    const learnedFeedback = feedback.find(item => memoryAddressKey(item.address) === learnedItemId);
+    expect(learnedFeedback).toMatchObject({ usedCount: 1, rejectedCount: 1, staleCount: 1, conflictCount: 0 });
+    expect(cognitiveUsageFeedbackForContext({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      scopes: [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
+      projectId: 'project-learning-loop',
+    })).toEqual(feedback);
   });
 
   test('automatically associates paraphrased learning across rounds and consolidates after two corroborating sources', () => {

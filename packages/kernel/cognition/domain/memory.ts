@@ -91,7 +91,7 @@ export interface CognitiveIR {
 }
 
 export interface ActivationReason {
-  signal: 'exact' | 'graph' | 'lexical' | 'semantic' | 'recency' | 'utility' | 'confidence' | 'conflict';
+  signal: 'exact' | 'graph' | 'lexical' | 'semantic' | 'recency' | 'utility' | 'confidence' | 'conflict' | 'usage';
   score: number;
   detail: string;
 }
@@ -157,6 +157,21 @@ export function memoryAddressKey(address: MemoryAddress): string {
   validateCognitiveScope(address.scope);
   requireText(address.id, 'MEMORY_ID', 512);
   return JSON.stringify([address.scope.kind, address.scope.id, address.id]);
+}
+
+export function parseMemoryAddressKey(value: string): MemoryAddress | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 3 || parsed.some(item => typeof item !== 'string')) return undefined;
+    const [kind, scopeId, id] = parsed as [ScopeRef['kind'], string, string];
+    if (!VALID_SCOPE_KINDS.includes(kind) || !scopeId.trim() || !id.trim()) return undefined;
+    const address = { scope: { schemaVersion: 1 as const, kind, id: scopeId }, id };
+    validateCognitiveScope(address.scope);
+    requireText(address.id, 'MEMORY_ID', 512);
+    return address;
+  } catch {
+    return undefined;
+  }
 }
 
 export function memoryAddressOf(memory: MemoryUnit): MemoryAddress {

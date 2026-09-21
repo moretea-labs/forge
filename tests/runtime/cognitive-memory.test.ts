@@ -128,6 +128,39 @@ describe('generic cognitive memory', () => {
     expect(oldToNew).toBeGreaterThan(newToOld);
   });
 
+  test('applies used and rejected feedback to retrieval utility without mutating factual confidence', () => {
+    const fx = fixture();
+    const used = recordCognitiveMemory(fx.store, fx.authority, draft('mem:feedback-used', 'Reusable interaction guidance.', ['feedback.topic'], 'E-1'));
+    const rejected = recordCognitiveMemory(fx.store, fx.authority, draft('mem:feedback-rejected', 'Alternative interaction guidance.', ['feedback.topic'], 'E-2'));
+    const pack = activateCognitiveMemory(fx.controllerHome, [scope], 'feedback.topic', {
+      seedConcepts: ['feedback.topic'], now: at, maxItems: 8,
+      usageFeedback: [
+        { address: { scope, id: used.id }, usedCount: 2, rejectedCount: 0, conflictCount: 0, staleCount: 0 },
+        { address: { scope, id: rejected.id }, usedCount: 0, rejectedCount: 2, conflictCount: 0, staleCount: 0 },
+      ],
+    });
+    const usedItem = pack.items.find(item => item.memory.id === used.id)!;
+    const rejectedItem = pack.items.find(item => item.memory.id === rejected.id)!;
+    expect(usedItem.score).toBeGreaterThan(rejectedItem.score);
+    expect(usedItem.memory.confidence).toBe(used.confidence);
+    expect(rejectedItem.memory.confidence).toBe(rejected.confidence);
+    expect(usedItem.reasons).toContainEqual(expect.objectContaining({ signal: 'usage', detail: 'used:2;rejected:0' }));
+    expect(rejectedItem.reasons).toContainEqual(expect.objectContaining({ signal: 'usage', detail: 'used:0;rejected:2' }));
+  });
+
+  test('routes stale or contradicted usage feedback through explainable conflict ranking', () => {
+    const fx = fixture();
+    const memory = recordCognitiveMemory(fx.store, fx.authority, draft('mem:feedback-stale', 'Previously relevant guidance.', ['feedback.stale'], 'E-1'));
+    const pack = activateCognitiveMemory(fx.controllerHome, [scope], 'feedback.stale', {
+      seedConcepts: ['feedback.stale'], now: at,
+      usageFeedback: [{ address: { scope, id: memory.id }, usedCount: 0, rejectedCount: 1, conflictCount: 1, staleCount: 1 }],
+    });
+    const item = pack.items.find(candidate => candidate.memory.id === memory.id)!;
+    expect(item.memory.counterEvidenceRefs).toEqual([]);
+    expect(item.memory.confidence).toBe(memory.confidence);
+    expect(item.reasons).toContainEqual(expect.objectContaining({ signal: 'conflict', detail: 'counter-evidence:0;feedback-conflict:1;stale:1' }));
+  });
+
   test('uses one revisioned canonical record and rebuildable derived indexes', () => {
     const fx = fixture();
     const first = recordCognitiveMemory(fx.store, fx.authority, draft('mem:revision', 'First observation.', ['knowledge.revision'], 'E-1'));

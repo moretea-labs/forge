@@ -29,6 +29,14 @@ export interface CognitiveSemanticIndex {
   search(query: string, scopes: readonly ScopeRef[], limit: number): SemanticCandidate[];
 }
 
+export interface CognitiveUsageFeedback {
+  address: MemoryAddress;
+  usedCount: number;
+  rejectedCount: number;
+  conflictCount: number;
+  staleCount: number;
+}
+
 export interface ActivationOptions {
   maxItems?: number;
   maxCandidates?: number;
@@ -39,6 +47,8 @@ export interface ActivationOptions {
   seedMemoryIds?: string[];
   seedConcepts?: string[];
   transientMemories?: readonly MemoryUnit[];
+  /** Rebuildable retrieval feedback derived from canonical ControllerRound observations. */
+  usageFeedback?: readonly CognitiveUsageFeedback[];
 }
 
 const DEFAULT_ITEMS = 16;
@@ -114,6 +124,10 @@ export function activateMemory(
   const seedConcepts = [...new Set([...(options.seedConcepts ?? []), ...inferredConcepts])].slice(0, 64);
   const candidates = new Map<string, ActivationItem>();
   const gaps: string[] = [];
+  const usageByAddress = new Map((options.usageFeedback ?? []).slice(0, 256).map(feedback => [
+    memoryAddressKey(feedback.address),
+    feedback,
+  ]));
 
   for (const memory of options.transientMemories ?? []) {
     if (!active(memory, now)) continue;
@@ -205,12 +219,29 @@ export function activateMemory(
   for (const item of candidates.values()) {
     const recency = recencyScore(item.memory, now);
     const confidenceContribution = item.memory.confidence * 0.25;
-    const conflictPenalty = Math.min(0.2, item.memory.counterEvidenceRefs.length * 0.04);
-    item.score += recency * 0.15 + item.memory.utility * 0.25 + confidenceContribution - conflictPenalty;
+    const storedConflictPenalty = Math.min(0.2, item.memory.counterEvidenceRefs.length * 0.04);
+    const feedback = usageByAddress.get(memoryAddressKey(memoryAddressOf(item.memory)));
+    const usedBoost = Math.min(0.3, (feedback?.usedCount ?? 0) * 0.06);
+    const rejectedPenalty = Math.min(0.25, (feedback?.rejectedCount ?? 0) * 0.05);
+    const feedbackConflictPenalty = Math.min(0.2, ((feedback?.conflictCount ?? 0) + (feedback?.staleCount ?? 0)) * 0.08);
+    const usageAdjustment = usedBoost - rejectedPenalty - feedbackConflictPenalty;
+    item.score += recency * 0.15 + item.memory.utility * 0.25 + confidenceContribution - storedConflictPenalty + usageAdjustment;
     addReason(item, { signal: 'recency', score: recency, detail: 'temporal-decay' });
     addReason(item, { signal: 'utility', score: item.memory.utility, detail: 'stored-utility' });
     addReason(item, { signal: 'confidence', score: item.memory.confidence, detail: 'stored-confidence' });
-    if (conflictPenalty) addReason(item, { signal: 'conflict', score: conflictPenalty, detail: `counter-evidence:${item.memory.counterEvidenceRefs.length}` });
+    if (feedback && (feedback.usedCount || feedback.rejectedCount)) addReason(item, {
+      signal: 'usage',
+      score: Math.abs(usageAdjustment),
+      detail: `used:${feedback.usedCount};rejected:${feedback.rejectedCount}`,
+    });
+    const conflictPenalty = storedConflictPenalty + feedbackConflictPenalty;
+    if (conflictPenalty) addReason(item, {
+      signal: 'conflict',
+      score: conflictPenalty,
+      detail: feedbackConflictPenalty
+        ? `counter-evidence:${item.memory.counterEvidenceRefs.length};feedback-conflict:${feedback?.conflictCount ?? 0};stale:${feedback?.staleCount ?? 0}`
+        : `counter-evidence:${item.memory.counterEvidenceRefs.length}`,
+    });
   }
 
   const ranked = [...candidates.values()].sort((a, b) =>
