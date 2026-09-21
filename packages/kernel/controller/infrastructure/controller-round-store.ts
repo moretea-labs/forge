@@ -1199,6 +1199,7 @@ export interface ClaimControllerRoundSessionInput {
   relayWorkId: string;
   sessionClaim: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string };
   assistantContextSnapshot?: AssistantContextSnapshot | null;
+  allowUserResume?: boolean;
 }
 
 /**
@@ -1215,7 +1216,7 @@ export function claimControllerRoundSession(
   if (!initial) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${relayWorkId}`);
   return relayLock(options, initial.value.relayScopeId, `controller-relay-session-claim:${input.sessionClaim.controllerId}`, () => {
     const lockedRelay = readRelayRecord(options, relayWorkId);
-    if (!lockedRelay || !controllerRoundRelayClaimable(lockedRelay.value)) {
+    if (!lockedRelay || !controllerRoundRelayClaimable(lockedRelay.value, { allowUserResume: input.allowUserResume })) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_STATE_INVALID:${lockedRelay?.value.status ?? 'missing'}`);
     }
     const repeatedStateFingerprint = controllerRoundBlockerClass(lockedRelay.value) === 'repeated_state'
@@ -1231,7 +1232,7 @@ export function claimControllerRoundSession(
         const current = readControlPlaneRecordWithinTransaction<ControllerRoundRelayRecord>(
           database, NAMESPACE, options.repoId, relayWorkId,
         );
-        if (!current || !controllerRoundRelayClaimable(current.value)) {
+        if (!current || !controllerRoundRelayClaimable(current.value, { allowUserResume: input.allowUserResume })) {
           throw new Error(`CONTROLLER_RELAY_CLAIM_STATE_INVALID:${current?.value.status ?? 'missing'}`);
         }
         if (input.sessionClaim.controllerType !== relayControllerType(current.value)) {
@@ -1253,6 +1254,7 @@ export function claimControllerRoundSession(
               type: 'controller_claim_observed', at, session,
               principalId: input.sessionClaim.principalId,
               controllerInstanceId: input.sessionClaim.controllerInstanceId,
+              ...(input.allowUserResume ? { userResume: true } : {}),
             };
         const decided = transitionDecisionOrThrow(decideControllerRoundTransition(current.value, event));
         let next = decided.record;

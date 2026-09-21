@@ -25,8 +25,12 @@ export function controllerRoundBlockerClass(record: Pick<ControllerRoundRelayRec
 }
 
 /** Read-only claim admission shared by transport preflight and durable relay acknowledgement. */
-export function controllerRoundRelayClaimable(record: Pick<ControllerRoundRelayRecord, 'status' | 'blockedReason'>): boolean {
+export function controllerRoundRelayClaimable(
+  record: Pick<ControllerRoundRelayRecord, 'status' | 'blockedReason'>,
+  options: { allowUserResume?: boolean } = {},
+): boolean {
   if (['dispatching', 'dispatched', 'claimed'].includes(record.status)) return true;
+  if (record.status === 'waiting_for_user' && options.allowUserResume === true) return true;
   const blocker = controllerRoundBlockerClass(record);
   return blocker === 'provider_dispatch_outcome_unknown' || blocker === 'repeated_state';
 }
@@ -38,7 +42,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'provider_dispatch_failed'; at: string; error: string; recovery: boolean; nextRecoveryAt?: string }
   | { type: 'provider_dispatch_outcome_unknown'; at: string; error: string; providerDispatchEffectId: string }
   | { type: 'provider_user_action_required'; at: string; error: string; handoffId: string }
-  | { type: 'controller_claim_observed'; at: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
+  | { type: 'controller_claim_observed'; at: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string; userResume?: boolean }
   | { type: 'controller_turn_settled'; at: string; stateFingerprint: string; completionEvidenceId: string; blockingHandoffId?: string }
   | { type: 'semantic_state_changed'; at: string; stateFingerprint: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
   | { type: 'stalled_round_observed'; at: string; stateFingerprint: string; proposedAuthorityId: string; lastError?: string }
@@ -227,6 +231,17 @@ export function decideControllerRoundTransition(
       if (blocker === 'provider_dispatch_outcome_unknown') {
         if (!current.providerDispatchEffectId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED' };
         return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, consecutiveFailures: 0, blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined, claimedAt: event.at, updatedAt: event.at }, 'controller_round_relay_claim_confirmed_unknown_dispatch');
+      }
+      if (current.status === 'waiting_for_user' && event.userResume === true) {
+        return accept(current, {
+          status: 'claimed', lifecycleStage: 'controller_claimed',
+          controllerId: event.session.controllerId, controllerType: event.session.controllerType,
+          principalId: event.principalId, controllerInstanceId: event.controllerInstanceId,
+          sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration,
+          disposition: undefined, handoffId: undefined, blockedReason: undefined,
+          failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined,
+          claimedAt: event.at, updatedAt: event.at,
+        }, 'controller_round_relay_user_resumed');
       }
       if (!['dispatching', 'dispatched'].includes(current.status)) return { kind: 'reject', code: `CONTROLLER_RELAY_CLAIM_STATE_INVALID:${current.status}` };
       return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, claimedAt: event.at, updatedAt: event.at, failureClass: undefined, lastError: undefined }, 'controller_round_relay_claim_acknowledged');

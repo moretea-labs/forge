@@ -2384,6 +2384,123 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
   }, 15_000);
 
+  test('explicit user continuation reclaims an exact waiting_for_user relay without weakening its authority fence', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-explicit-user-resume';
+    const principalId = 'principal-explicit-user-resume';
+    const runtimeInstanceId = 'runtime-explicit-user-resume';
+    const relayScopeId = `goal:${workId}`;
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId: 'transport-explicit-user-resume-initial',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      providerDispatchReceiptId: 'dispatch-before-explicit-user-resume',
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+    const handoffId = 'handoff-explicit-user-resume';
+    createHandoffItem(store, {
+      id: handoffId,
+      repoId: fx.repository.repoId,
+      workId,
+      title: 'User decision required',
+      severity: 'needs_review',
+      reason: 'EXPLICIT_USER_CONTINUATION_REQUIRED',
+      creationReason: 'missing_authorization',
+      summary: 'Wait for an explicit user continuation.',
+      currentState: { repoId: fx.repository.repoId, workId, statusSummary: 'waiting for user' },
+      evidenceRefs: [],
+      recommendedDecision: 'continue',
+      recommendedPrompt: 'Continue the exact Work.',
+      suggestedNextActions: [],
+    });
+    const waiting = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+      disposition: 'wait_for_user',
+      handoffId,
+      reason: 'Explicit user continuation required.',
+    });
+    expect(waiting).toMatchObject({ status: 'waiting_for_user', handoffId, authorityId: relay.authorityId });
+    expect(releaseObservedControllerSession(store, {
+      workId,
+      actor: 'test-explicit-user-resume-release',
+      owner,
+    }).allowed).toBe(true);
+
+    const automatedClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-automated-resume', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: relay.authorityId,
+        relay_scope_id: relayScopeId,
+        requested_by: 'chatgpt',
+      },
+    ));
+    expect(automatedClaim.status).toBe('blocked');
+    expect(automatedClaim.summary).toContain('CONTROLLER_RELAY_CLAIM_STATE_INVALID:waiting_for_user');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const resumed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-user-resume', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: relay.authorityId,
+        relay_scope_id: relayScopeId,
+        requested_by: 'user',
+      },
+    ));
+    expect(resumed.status).toBe('ok');
+    expect(resumed.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: relay.authorityId,
+      relayScopeId,
+      roundCount: waiting.roundCount,
+      repeatedStateCount: waiting.repeatedStateCount,
+    });
+    expect(resumed.data?.relay?.handoffId).toBeUndefined();
+    expect(resumed.data?.relay?.disposition).toBeUndefined();
+    expect(getControllerSession(store, workId)).toMatchObject({
+      controllerId: principalId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      sessionId: 'transport-user-resume',
+    });
+  }, 15_000);
+
   test('Supervisor recovery re-arms an unchanged semantic wait without dispatching the provider itself', () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

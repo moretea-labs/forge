@@ -113,7 +113,8 @@ export async function callRhWorkControllerOperation(
         }
       }
       const claimRelay = dispatchedRelay ?? authorizedRelay;
-      if (claimRelay && !controllerRoundRelayClaimable(claimRelay)) {
+      const allowUserResume = claimRelay?.status === 'waiting_for_user' && args.requested_by === 'user';
+      if (claimRelay && !controllerRoundRelayClaimable(claimRelay, { allowUserResume })) {
         throw new Error(`CONTROLLER_RELAY_CLAIM_STATE_INVALID:${claimRelay.status}`);
       }
       const inheritedRequirementAuthority = !dispatchedRelay?.authorityId?.trim() && authorizedRelay?.authorityId?.trim()
@@ -163,6 +164,7 @@ export async function callRhWorkControllerOperation(
             relayWorkId: claimRelay.originWorkId,
             sessionClaim,
             assistantContextSnapshot: assistantContextBundle?.snapshot ?? null,
+            ...(allowUserResume ? { allowUserResume: true } : {}),
           })
         : undefined;
       const session = relayClaim?.session ?? (existingDirectAuthority
