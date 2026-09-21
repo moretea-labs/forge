@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import type {
+  ComputerApplicationLaunchProvenance,
   ComputerApplicationStableIdentity,
   ComputerApplicationTarget,
   ComputerApplicationTargetLease,
@@ -56,7 +57,24 @@ function normalizeProviderBinding(binding: ComputerProviderTargetBinding): Compu
   if (!providerId) throw new Error('COMPUTER_TARGET_PROVIDER_ID_REQUIRED');
   if (!providerSessionId) throw new Error('COMPUTER_TARGET_PROVIDER_SESSION_ID_REQUIRED');
   if (!observedAt || !Number.isFinite(Date.parse(observedAt))) throw new Error('COMPUTER_TARGET_PROVIDER_OBSERVED_AT_INVALID');
-  return { providerId, providerSessionId, observedAt };
+  const processId = binding.processId;
+  if (processId !== undefined && (!Number.isInteger(processId) || processId <= 0 || processId > 2_147_483_647)) {
+    throw new Error(`COMPUTER_TARGET_PROVIDER_PROCESS_ID_INVALID: ${String(processId)}`);
+  }
+  return { providerId, providerSessionId, observedAt, ...(processId !== undefined ? { processId } : {}) };
+}
+
+function normalizeApplicationLaunchProvenance(
+  provenance: ComputerApplicationLaunchProvenance,
+): ComputerApplicationLaunchProvenance {
+  if (provenance.kind === 'preexisting') return { kind: 'preexisting' };
+  if (provenance.kind !== 'provider_launched'
+      || !Number.isInteger(provenance.processId)
+      || provenance.processId <= 0
+      || provenance.processId > 2_147_483_647) {
+    throw new Error('COMPUTER_TARGET_LAUNCH_PROVENANCE_INVALID');
+  }
+  return { kind: 'provider_launched', processId: provenance.processId };
 }
 
 function normalizeSurfaceStableIdentity(identity: ComputerSurfaceStableIdentity): ComputerSurfaceStableIdentity {
@@ -389,7 +407,11 @@ export function createComputerInteractionTargetAuthority(
 
   function create(
     controllerHome: string,
-    input: { stableIdentity: ComputerApplicationStableIdentity; providerBinding?: ComputerProviderTargetBinding },
+    input: {
+      stableIdentity: ComputerApplicationStableIdentity;
+      launchProvenance?: ComputerApplicationLaunchProvenance;
+      providerBinding?: ComputerProviderTargetBinding;
+    },
   ): ComputerApplicationTarget {
     const at = now();
     const targetId = `computer_target_${randomUUID().replaceAll('-', '')}`;
@@ -398,6 +420,7 @@ export function createComputerInteractionTargetAuthority(
       targetId,
       kind: 'application',
       stableIdentity: normalizeStableIdentity(input.stableIdentity),
+      ...(input.launchProvenance ? { launchProvenance: normalizeApplicationLaunchProvenance(input.launchProvenance) } : {}),
       ...(input.providerBinding ? { providerBinding: normalizeProviderBinding(input.providerBinding) } : {}),
       createdAt: at,
       updatedAt: at,
@@ -423,6 +446,15 @@ export function createComputerInteractionTargetAuthority(
     const target = get(controllerHome, targetId);
     if (!target) throw new Error(`COMPUTER_TARGET_NOT_FOUND: ${targetId}`);
     return target;
+  }
+
+  function listAllApplications(controllerHome: string): ComputerApplicationTarget[] {
+    return persistence.listAll<ComputerInteractionTargetEntry>(controllerHome, {
+      namespace: COMPUTER_TARGET_NAMESPACE,
+      scope: COMPUTER_TARGET_SCOPE,
+    })
+      .filter((record) => record.value.status === 'active' && record.value.target.kind === 'application')
+      .map((record) => structuredClone(record.value.target as ComputerApplicationTarget));
   }
 
   async function withLease<T>(
@@ -926,6 +958,7 @@ export function createComputerInteractionTargetAuthority(
     create,
     get,
     require: requireTarget,
+    listAllApplications,
     withLease,
     createSurface,
     upsertSurface,

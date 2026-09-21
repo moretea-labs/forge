@@ -332,7 +332,15 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
-        properties: { interaction_id: { type: 'string' } },
+        properties: {
+          interaction_id: { type: 'string' },
+          terminate_owned_pid: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 2_147_483_647,
+            description: 'Exact provider-launched process id that the durable Computer target authority has decided is no longer used by another active target.',
+          },
+        },
         required: ['interaction_id'],
         additionalProperties: false,
       },
@@ -436,7 +444,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_session_close',
       title: 'Close desktop session',
-      description: 'Close one Desktop Operator interaction session without terminating the target application.',
+      description: 'Close one Desktop Operator interaction session. Application termination is disabled by default and requires an exact Controller-owned process id.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'none',

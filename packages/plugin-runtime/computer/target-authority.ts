@@ -8,7 +8,13 @@ export interface ComputerProviderTargetBinding {
   providerId: string;
   providerSessionId: string;
   observedAt: string;
+  /** Rebuildable exact native process observation for cross-target lifecycle fencing. */
+  processId?: number;
 }
+
+export type ComputerApplicationLaunchProvenance =
+  | { kind: 'preexisting' }
+  | { kind: 'provider_launched'; processId: number };
 
 export type ComputerSurfaceType = 'browser-tab' | 'browser-page';
 export type ComputerSurfaceOwnership = 'plugin_owned' | 'user_owned' | 'provider_owned';
@@ -52,6 +58,8 @@ export interface ComputerApplicationTarget {
   targetId: string;
   kind: 'application';
   stableIdentity: ComputerApplicationStableIdentity;
+  /** Durable launch fact. Missing means a legacy provider supplied no trustworthy provenance. */
+  launchProvenance?: ComputerApplicationLaunchProvenance;
   providerBinding?: ComputerProviderTargetBinding;
   createdAt: string;
   updatedAt: string;
@@ -146,10 +154,15 @@ export interface ComputerInteractionTargetCleanupReport {
 export interface ComputerInteractionTargetAuthorityPort {
   create(
     controllerHome: string,
-    input: { stableIdentity: ComputerApplicationStableIdentity; providerBinding?: ComputerProviderTargetBinding },
+    input: {
+      stableIdentity: ComputerApplicationStableIdentity;
+      launchProvenance?: ComputerApplicationLaunchProvenance;
+      providerBinding?: ComputerProviderTargetBinding;
+    },
   ): ComputerApplicationTarget;
   get(controllerHome: string, targetId: string): ComputerApplicationTarget | undefined;
   require(controllerHome: string, targetId: string): ComputerApplicationTarget;
+  listAllApplications(controllerHome: string): ComputerApplicationTarget[];
   withLease<T>(
     controllerHome: string,
     targetId: string,

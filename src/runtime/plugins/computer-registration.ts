@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import type {
+  ComputerApplicationLaunchProvenance,
   ComputerApplicationTarget,
   ComputerApplicationStableIdentity,
   ComputerApplicationTargetLease,
@@ -618,10 +619,12 @@ async function rebindProviderSession(
       { retryable: false, details: { targetId: target.targetId, stableIdentity: target.stableIdentity } },
     );
   }
+  const processId = providerProcessId(rebound);
   lease.bind({
     providerId: DESKTOP_PROVIDER_ID,
     providerSessionId: interactionId,
     observedAt: new Date().toISOString(),
+    ...(processId !== undefined ? { processId } : {}),
   });
   return interactionId;
 }
@@ -636,6 +639,55 @@ async function ensureProviderBinding(
     return target.providerBinding.providerSessionId;
   }
   return rebindProviderSession(input, lease, provider);
+}
+
+function providerProcessId(result: Record<string, unknown>): number | undefined {
+  const value = result.pid ?? result.process_id;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_TARGET_PROCESS_ID_INVALID',
+      'Native Computer provider returned an invalid application process identifier.',
+      { retryable: false, details: { processId: value } },
+    );
+  }
+  return value;
+}
+
+function explicitLaunchProvenanceFromProviderResult(
+  result: Record<string, unknown>,
+  processId: number | undefined,
+): ComputerApplicationLaunchProvenance | undefined {
+  const rawOwnership = result.applicationOwnership ?? result.application_ownership;
+  const rawOwnedPid = result.ownedProcessIdentifier ?? result.owned_process_identifier;
+  if (rawOwnership === undefined && rawOwnedPid === undefined) return undefined;
+  if (rawOwnership === 'preexisting' && rawOwnedPid === undefined) return { kind: 'preexisting' };
+  if (rawOwnership === 'provider_launched'
+      && typeof rawOwnedPid === 'number'
+      && Number.isInteger(rawOwnedPid)
+      && rawOwnedPid > 0
+      && rawOwnedPid <= 2_147_483_647
+      && processId === rawOwnedPid) {
+    return { kind: 'provider_launched', processId: rawOwnedPid };
+  }
+  throw new AssistantPluginError(
+    'PLUGIN_COMPUTER_TARGET_LAUNCH_PROVENANCE_INVALID',
+    'Native Computer provider returned inconsistent application launch provenance.',
+    { retryable: false, details: { applicationOwnership: rawOwnership, ownedProcessIdentifier: rawOwnedPid, processId } },
+  );
+}
+
+function inheritedLaunchProvenance(
+  controllerHome: string,
+  processId: number | undefined,
+): ComputerApplicationLaunchProvenance | undefined {
+  if (processId === undefined) return undefined;
+  const owner = computerTargetAuthority.listAllApplications(controllerHome).find((target) =>
+    target.launchProvenance?.kind === 'provider_launched'
+    && target.launchProvenance.processId === processId
+    && target.providerBinding?.processId === processId,
+  );
+  return owner ? { kind: 'provider_launched', processId } : undefined;
 }
 
 function stableIdentityFromProviderResult(
@@ -689,10 +741,35 @@ async function openDesktopTarget(
     }
     throw error;
   }
+  let processId: number | undefined;
+  let explicitProvenance: ComputerApplicationLaunchProvenance | undefined;
   try {
+    processId = providerProcessId(opened);
+    explicitProvenance = explicitLaunchProvenanceFromProviderResult(opened, processId);
+  } catch (error) {
+    try {
+      await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: interactionId }, 'target-open-provenance-compensate'));
+    } catch (cleanupError) {
+      throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_LAUNCH_PROVENANCE_CLEANUP_UNKNOWN', 'Computer target launch provenance was invalid and provider-session cleanup could not be confirmed.', {
+        retryable: false,
+        details: { cause: error instanceof Error ? error.message : String(error), cleanupCause: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) },
+      });
+    }
+    throw error;
+  }
+  try {
+    const launchProvenance = explicitProvenance?.kind === 'provider_launched'
+      ? explicitProvenance
+      : inheritedLaunchProvenance(input.controllerHome, processId) ?? explicitProvenance;
     const target = computerTargetAuthority.create(input.controllerHome, {
       stableIdentity,
-      providerBinding: { providerId: DESKTOP_PROVIDER_ID, providerSessionId: interactionId, observedAt: new Date().toISOString() },
+      ...(launchProvenance ? { launchProvenance } : {}),
+      providerBinding: {
+        providerId: DESKTOP_PROVIDER_ID,
+        providerSessionId: interactionId,
+        observedAt: new Date().toISOString(),
+        ...(processId !== undefined ? { processId } : {}),
+      },
     });
     return {
       targetId: target.targetId,
@@ -730,7 +807,27 @@ async function closeDesktopTarget(
         );
       }
       if (provider) {
-        await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: target.providerBinding.providerSessionId }, 'target-close-provider'));
+        const activeTargets = computerTargetAuthority.listAllApplications(input.controllerHome);
+        const anotherActiveTargetUsesBinding = activeTargets.some((candidate) =>
+          candidate.targetId !== target.targetId
+          && candidate.providerBinding?.providerId === target.providerBinding?.providerId
+          && candidate.providerBinding?.providerSessionId === target.providerBinding?.providerSessionId,
+        );
+        if (!anotherActiveTargetUsesBinding) {
+          const ownedProcessId = target.launchProvenance?.kind === 'provider_launched'
+            ? target.launchProvenance.processId
+            : undefined;
+          const anotherActiveTargetUsesOwnedProcess = ownedProcessId !== undefined
+            && activeTargets.some((candidate) =>
+              candidate.targetId !== target.targetId && candidate.providerBinding?.processId === ownedProcessId,
+            );
+          await provider.executeAction(providerInput(input, 'desktop_session_close', {
+            interaction_id: target.providerBinding.providerSessionId,
+            ...(ownedProcessId !== undefined && !anotherActiveTargetUsesOwnedProcess
+              ? { terminate_owned_pid: ownedProcessId }
+              : {}),
+          }, 'target-close-provider'));
+        }
       }
       // A missing registration is authoritative absence only because provider uninstall
       // must stop/remove its native lifecycle before the registration is deleted.
