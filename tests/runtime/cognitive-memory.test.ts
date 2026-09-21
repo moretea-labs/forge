@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   consolidateMemories,
+  inferMemoryAssociation,
   memoryDraftFromLearningSignal,
   recordCognitiveMemory,
   recordCognitiveMemoryEdge,
@@ -69,6 +70,62 @@ describe('generic cognitive memory', () => {
     expect(pack.items.map(item => item.memory.id)).toContain(second.id);
     expect(pack.items.find(item => item.memory.id === second.id)?.reasons.some(reason => reason.signal === 'graph')).toBe(true);
     expect(pack.estimatedBytes).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  test('infers semantic support, contradiction, analogy, and supersession from canonical memory data', () => {
+    const base = { ...draft('mem:base', 'Interaction should be self explanatory; copy explains invisible rules.', ['product.interaction.self-explanatory', 'copy.invisible-rules'], 'E-1'), facets: ['knowledge', 'principle', 'valence.positive'] } as MemoryUnitDraft;
+    const related = { ...draft('mem:related', 'Controls and state should communicate how the interface works without tutorial prose.', ['product.interaction.affordance', 'copy.invisible-rules'], 'E-2'), facets: ['knowledge', 'principle', 'valence.positive'] } as MemoryUnitDraft;
+    const contradiction = { ...draft('mem:contradiction', 'This observation conflicts with the prior interaction guidance.', ['product.interaction.affordance', 'copy.invisible-rules'], 'E-3'), facets: ['knowledge', 'contradiction', 'valence.negative'] } as MemoryUnitDraft;
+    const correction = { ...draft('mem:correction', 'Corrected guidance supersedes the earlier interaction wording.', ['product.interaction.self-explanatory', 'copy.invisible-rules'], 'E-4'), facets: ['knowledge', 'correction', 'valence.positive'] } as MemoryUnitDraft;
+    const analogous = { ...draft('mem:analogous', 'A visible workflow should reduce explanation burden.', ['product.workflow.affordance', 'copy.visible-state'], 'E-2'), facets: ['knowledge', 'principle', 'valence.positive'] } as MemoryUnitDraft;
+    const asUnit = (value: MemoryUnitDraft): MemoryUnit => ({ ...value, schemaVersion: 1, revision: 1 });
+
+    expect(inferMemoryAssociation(asUnit(base), asUnit(related))?.relation).toBe('supports');
+    expect(inferMemoryAssociation(asUnit(contradiction), asUnit(related))?.relation).toBe('contradicts');
+    expect(inferMemoryAssociation(asUnit(correction), asUnit(base))?.relation).toBe('supersedes');
+    expect(inferMemoryAssociation(asUnit(analogous), asUnit(related))?.relation).toBe('analogous_to');
+  });
+
+  test('consolidates two corroborating memories without concatenating raw source text', () => {
+    const first = { ...draft('mem:source-a', 'Prefer interaction affordance over explanatory prose.', ['product.interaction', 'copy.invisible-rules'], 'E-1'), provenance: { ...draft('x', 'x', ['x'], 'E-1').provenance, sourceRoundId: 'round:1' } } as MemoryUnitDraft;
+    const second = { ...draft('mem:source-b', 'Use visible state and flow to make controls self explanatory.', ['product.interaction', 'ui.visible-state'], 'E-2'), provenance: { ...draft('y', 'y', ['y'], 'E-2').provenance, sourceRoundId: 'round:2' } } as MemoryUnitDraft;
+    const units = [first, second].map(value => ({ ...value, schemaVersion: 1 as const, revision: 1 }));
+    const result = consolidateMemories(scope, units, at);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.supportingIds).toEqual(['mem:source-a', 'mem:source-b']);
+    expect([first.canonicalText, second.canonicalText]).toContain(result.candidates[0]!.memory.canonicalText);
+    expect(result.candidates[0]!.memory.canonicalText).not.toContain(' | ');
+    expect(result.candidates[0]!.memory.confidence).toBeGreaterThan(0.85);
+    expect(result.edges.map(edge => edge.relation)).toEqual(['derived_from', 'derived_from']);
+  });
+
+  test('ranks graph propagation by relation semantics and keeps conflict explainable', () => {
+    const fx = fixture();
+    const seed = recordCognitiveMemory(fx.store, fx.authority, draft('mem:relation-seed', 'Interaction guidance seed.', ['relation.seed'], 'E-1'));
+    const support = recordCognitiveMemory(fx.store, fx.authority, draft('mem:relation-support', 'Supported guidance.', ['relation.support'], 'E-2'));
+    const analogy = recordCognitiveMemory(fx.store, fx.authority, draft('mem:relation-analogy', 'Analogous guidance.', ['relation.analogy'], 'E-2'));
+    const conflict = recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:relation-conflict', 'Conflicting guidance.', ['relation.conflict'], 'E-3'), counterEvidenceRefs: ['E-4'] });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:relation-support', scope, fromId: seed.id, toId: support.id, relation: 'supports', weight: 1, evidenceRefs: ['E-1'], recordedAt: at });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:relation-analogy', scope, fromId: seed.id, toId: analogy.id, relation: 'analogous_to', weight: 1, evidenceRefs: ['E-1'], recordedAt: at });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:relation-conflict', scope, fromId: seed.id, toId: conflict.id, relation: 'contradicts', weight: 1, evidenceRefs: ['E-1'], recordedAt: at });
+    const pack = activateCognitiveMemory(fx.controllerHome, [scope], 'relation.seed', { seedConcepts: ['relation.seed'], maxItems: 8, maxGraphDepth: 1, now: at });
+    const scores = new Map(pack.items.map(item => [item.memory.id, item.score]));
+    expect(scores.get(support.id)!).toBeGreaterThan(scores.get(analogy.id)!);
+    expect(scores.get(analogy.id)!).toBeGreaterThan(scores.get(conflict.id)!);
+    expect(pack.items.find(item => item.memory.id === conflict.id)?.reasons).toContainEqual(expect.objectContaining({ signal: 'graph', detail: 'contradicts@1' }));
+    expect(pack.items.find(item => item.memory.id === conflict.id)?.reasons).toContainEqual(expect.objectContaining({ signal: 'conflict' }));
+  });
+
+  test('supersedes edges prefer the correcting memory when traversed from old knowledge', () => {
+    const fx = fixture();
+    const old = recordCognitiveMemory(fx.store, fx.authority, draft('mem:old-guidance', 'Old guidance.', ['guidance.topic'], 'E-1'));
+    const corrected = recordCognitiveMemory(fx.store, fx.authority, { ...draft('mem:new-guidance', 'Corrected guidance.', ['guidance.corrected'], 'E-2'), facets: ['knowledge', 'correction'] });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, { id: 'edge:supersedes-direction', scope, fromId: corrected.id, toId: old.id, relation: 'supersedes', weight: 1, evidenceRefs: ['E-3'], recordedAt: at });
+    const fromOld = activateCognitiveMemory(fx.controllerHome, [scope], '', { seedMemoryIds: [old.id], maxItems: 8, maxGraphDepth: 1, now: at });
+    const fromNew = activateCognitiveMemory(fx.controllerHome, [scope], '', { seedMemoryIds: [corrected.id], maxItems: 8, maxGraphDepth: 1, now: at });
+    const oldToNew = fromOld.items.find(item => item.memory.id === corrected.id)?.reasons.find(reason => reason.detail === 'supersedes@1')?.score ?? 0;
+    const newToOld = fromNew.items.find(item => item.memory.id === old.id)?.reasons.find(reason => reason.detail === 'supersedes@1')?.score ?? 0;
+    expect(oldToNew).toBeGreaterThan(newToOld);
   });
 
   test('uses one revisioned canonical record and rebuildable derived indexes', () => {

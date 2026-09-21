@@ -31,6 +31,7 @@ import { prepareControllerAssistantContextBundle } from '../../src/runtime/root/
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
 import { prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
 import { persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
+import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRhWorkControllerOperation } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
@@ -590,6 +591,62 @@ describe('connected assistant learning loops', () => {
       itemId: learnedItemId,
       revision: 1,
     }));
+  });
+
+  test('automatically associates paraphrased learning across rounds and consolidates after two corroborating sources', () => {
+    const fx = fixture('automatic-association', { knowledge: false });
+    const projectScope = { schemaVersion: 1 as const, kind: 'project' as const, id: 'project-learning-loop' };
+
+    fx.setNow(time(10));
+    const firstRound = claimInitialRound(fx, 1);
+    const firstRoundId = `${firstRound.relay.relayScopeId}:${firstRound.relay.roundCount}`;
+    closeContinue(fx, firstRound);
+    const first = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId: firstRoundId,
+      signals: [],
+      controllerSignals: [{
+        scopeKind: 'project', kind: 'principle', valence: 'positive',
+        summary: '交互本身应该说明如何使用，说明文案只解释用户看不见的规则。',
+        concepts: ['product.interaction', 'copy.invisible-rules', 'ui.self-explanatory'],
+        facets: ['product-design'], admissionSource: 'explicit_human', portability: 'local',
+        salience: 0.95, confidence: 0.94, utility: 0.86, evidenceRefs: [], counterEvidenceRefs: [],
+      }],
+      now: time(12),
+    });
+    expect(first.storedMemoryIds).toHaveLength(1);
+    expect(first.consolidatedMemoryIds).toEqual([]);
+
+    fx.setNow(time(20));
+    const secondRound = claimReleasedRound(fx, firstRound.owner, 2);
+    const secondRoundId = `${secondRound.relay.relayScopeId}:${secondRound.relay.roundCount}`;
+    closeContinue(fx, secondRound);
+    const second = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId: secondRoundId,
+      signals: [],
+      controllerSignals: [{
+        scopeKind: 'project', kind: 'principle', valence: 'positive',
+        summary: '移动端应通过控件、状态和流程让操作自解释，不要用教程文字补偿模糊交互。',
+        concepts: ['product.interaction', 'ui.visible-state', 'copy.invisible-rules'],
+        facets: ['product-design'], admissionSource: 'controller_observation', portability: 'local',
+        salience: 0.88, confidence: 0.82, utility: 0.8, evidenceRefs: [], counterEvidenceRefs: [],
+      }],
+      now: time(22),
+    });
+    expect(second.storedMemoryIds).toHaveLength(1);
+    expect(second.consolidatedMemoryIds.length).toBeGreaterThan(0);
+
+    const neighbors = cognitionReadPort(fx.controllerHome).neighbors([
+      { scope: projectScope, id: second.storedMemoryIds[0]! },
+    ], 32, time(22));
+    const relation = neighbors.find(item => item.memory.id === first.storedMemoryIds[0]!)?.edge.relation;
+    expect(relation).toBeDefined();
+    expect(['supports', 'analogous_to']).toContain(relation!);
   });
 
   test('surfaces automatic learning failure after durable disposition without rolling back or disguising it as skipped', async () => {

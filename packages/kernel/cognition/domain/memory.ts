@@ -91,7 +91,7 @@ export interface CognitiveIR {
 }
 
 export interface ActivationReason {
-  signal: 'exact' | 'graph' | 'lexical' | 'semantic' | 'recency' | 'utility';
+  signal: 'exact' | 'graph' | 'lexical' | 'semantic' | 'recency' | 'utility' | 'confidence' | 'conflict';
   score: number;
   detail: string;
 }

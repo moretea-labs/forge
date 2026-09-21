@@ -75,6 +75,15 @@ function addReason(item: ActivationItem, reason: ActivationReason): void {
   else item.reasons.push(reason);
 }
 
+function graphRelationFactor(edge: MemoryEdge, from: MemoryAddress): number {
+  if (edge.relation === 'supports') return 1;
+  if (edge.relation === 'derived_from') return 0.85;
+  if (edge.relation === 'analogous_to') return 0.55;
+  if (edge.relation === 'contradicts') return 0.4;
+  if (edge.relation === 'supersedes') return from.id === edge.toId ? 1 : 0.2;
+  return 0.65;
+}
+
 function ensureCandidate(map: Map<string, ActivationItem>, memory: MemoryUnit): ActivationItem {
   const key = memoryAddressKey(memoryAddressOf(memory));
   let item = map.get(key);
@@ -177,7 +186,8 @@ export function activateMemory(
     for (const { edge, from, memory } of port.neighbors(frontier, Math.min(maxCandidates * 2, 512), activeAt)) {
       if (!active(memory, now) || edge.retractedAt || edge.expiresAt && Date.parse(edge.expiresAt) <= now) continue;
       const source = candidates.get(memoryAddressKey(from));
-      const propagated = Math.max(0.01, (source?.score ?? 0.5) * edge.weight * (1 / (depth + 0.5)));
+      const relationFactor = graphRelationFactor(edge, from);
+      const propagated = Math.max(0.01, (source?.score ?? 0.5) * edge.weight * relationFactor * (1 / (depth + 0.5)));
       const item = ensureCandidate(candidates, memory);
       item.score += propagated;
       addReason(item, { signal: 'graph', score: propagated, detail: `${edge.relation}@${depth}` });
@@ -194,9 +204,13 @@ export function activateMemory(
 
   for (const item of candidates.values()) {
     const recency = recencyScore(item.memory, now);
-    item.score += recency * 0.15 + item.memory.utility * 0.25 + item.memory.confidence * 0.25;
+    const confidenceContribution = item.memory.confidence * 0.25;
+    const conflictPenalty = Math.min(0.2, item.memory.counterEvidenceRefs.length * 0.04);
+    item.score += recency * 0.15 + item.memory.utility * 0.25 + confidenceContribution - conflictPenalty;
     addReason(item, { signal: 'recency', score: recency, detail: 'temporal-decay' });
     addReason(item, { signal: 'utility', score: item.memory.utility, detail: 'stored-utility' });
+    addReason(item, { signal: 'confidence', score: item.memory.confidence, detail: 'stored-confidence' });
+    if (conflictPenalty) addReason(item, { signal: 'conflict', score: conflictPenalty, detail: `counter-evidence:${item.memory.counterEvidenceRefs.length}` });
   }
 
   const ranked = [...candidates.values()].sort((a, b) =>

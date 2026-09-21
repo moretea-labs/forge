@@ -1,7 +1,9 @@
 import { createHash } from 'crypto';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import {
+  cognitiveTerms,
   consolidateMemories,
+  inferMemoryAssociation,
   memoryDraftFromLearningSignal,
   recordCognitiveMemory,
   recordCognitiveMemoryEdge,
@@ -224,6 +226,151 @@ function consolidationAuthority(input: {
       return sameScope(scope, input.scope) && evidence.has(ref);
     },
   };
+}
+
+function associationAuthority(input: {
+  controllerHome: string;
+  repoId: string;
+  work: WorkContract;
+  scope: ScopeRef;
+  sourceRoundId: string;
+  sourceMemories: readonly MemoryUnit[];
+  relatedMemories: readonly MemoryUnit[];
+}): CognitiveWriteAuthorityPort {
+  const sourceIds = new Set(input.sourceMemories.map(memory => memory.id));
+  const relatedIds = new Set(input.relatedMemories.map(memory => memory.id));
+  const evidence = new Set([...input.sourceMemories, ...input.relatedMemories].flatMap(memory => [
+    ...memory.provenance.evidenceRefs,
+    ...memory.counterEvidenceRefs,
+  ]));
+  const allowedRelations = new Set(['supports', 'contradicts', 'analogous_to', 'supersedes']);
+  return {
+    assertMemoryWrite() {
+      throw new Error('COGNITION_AUTOMATIC_ASSOCIATION_MEMORY_NOT_ALLOWED');
+    },
+    assertEdgeWrite(edge) {
+      if (!sameScope(edge.scope, input.scope)
+        || edge.sourceWorkId !== input.work.workId
+        || edge.sourceRoundId !== input.sourceRoundId
+        || !sourceIds.has(edge.fromId)
+        || !relatedIds.has(edge.toId)
+        || !allowedRelations.has(edge.relation)
+        || !sourceRoundObserved({
+          controllerHome: input.controllerHome,
+          repoId: input.repoId,
+          workId: input.work.workId,
+          sourceRoundId: input.sourceRoundId,
+        })) {
+        throw new Error('COGNITION_AUTOMATIC_ASSOCIATION_AUTHORITY_INVALID');
+      }
+    },
+    evidenceAvailable(ref, scope) {
+      return sameScope(scope, input.scope) && evidence.has(ref);
+    },
+  };
+}
+
+function associationCandidates(controllerHome: string, memory: MemoryUnit, now: string): MemoryUnit[] {
+  const port = cognitionReadPort(controllerHome);
+  const candidates = new Map<string, MemoryUnit>();
+  for (const candidate of port.exactByConcept([memory.scope], memory.concepts, 48, now)) candidates.set(candidate.id, candidate);
+  const terms = [...cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}`)].slice(0, 48);
+  for (const candidate of port.lexical([memory.scope], terms, 64, now)) candidates.set(candidate.id, candidate);
+  return [...candidates.values()]
+    .filter(candidate => candidate.id !== memory.id)
+    .filter(candidate => !candidate.id.startsWith('consolidated:') && !candidate.id.startsWith('promoted:') && !candidate.id.startsWith('candidate:'))
+    .slice(0, 64);
+}
+
+function associateStoredMemories(input: {
+  controllerHome: string;
+  repoId: string;
+  work: WorkContract;
+  sourceRoundId: string;
+  memories: readonly MemoryUnit[];
+  now: string;
+}): void {
+  const store = cognitionMemoryStore(input.controllerHome);
+  const currentIds = new Set(input.memories.map(memory => memory.id));
+  const seenPairs = new Set<string>();
+  const drafts: Array<{
+    scope: ScopeRef; from: MemoryUnit; to: MemoryUnit; relation: string; weight: number; evidenceRefs: string[];
+  }> = [];
+  for (const current of [...input.memories].sort((a, b) => a.id.localeCompare(b.id))) {
+    for (const candidate of associationCandidates(input.controllerHome, current, input.now)) {
+      const pairKey = [current.id, candidate.id].sort().join('|');
+      if (seenPairs.has(`${current.scope.kind}:${current.scope.id}:${pairKey}`)) continue;
+      seenPairs.add(`${current.scope.kind}:${current.scope.id}:${pairKey}`);
+
+      let from = current;
+      let to = candidate;
+      if (currentIds.has(candidate.id)) {
+        const candidateCorrection = candidate.facets.includes('correction');
+        const currentCorrection = current.facets.includes('correction');
+        if ((candidateCorrection && !currentCorrection)
+          || (candidateCorrection === currentCorrection && candidate.id.localeCompare(current.id) < 0)) {
+          from = candidate;
+          to = current;
+        }
+      }
+      if (!currentIds.has(from.id)) continue;
+      const association = inferMemoryAssociation(from, to);
+      if (!association) continue;
+      drafts.push({
+        scope: from.scope,
+        from,
+        to,
+        relation: association.relation,
+        weight: association.weight,
+        evidenceRefs: [...new Set([
+          ...from.provenance.evidenceRefs,
+          ...from.counterEvidenceRefs,
+          ...to.provenance.evidenceRefs,
+          ...to.counterEvidenceRefs,
+        ])].slice(0, 64),
+      });
+    }
+  }
+
+  const byScope = new Map<string, typeof drafts>();
+  for (const draft of drafts) {
+    const key = `${draft.scope.kind}:${draft.scope.id}`;
+    const group = byScope.get(key) ?? [];
+    group.push(draft);
+    byScope.set(key, group);
+  }
+  for (const group of byScope.values()) {
+    const scope = group[0]!.scope;
+    const sourceMemories = [...new Map(group.map(item => [item.from.id, item.from])).values()];
+    const relatedMemories = [...new Map(group.map(item => [item.to.id, item.to])).values()];
+    const authority = associationAuthority({
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+      work: input.work,
+      scope,
+      sourceRoundId: input.sourceRoundId,
+      sourceMemories,
+      relatedMemories,
+    });
+    for (const draft of group) {
+      const key = createHash('sha256')
+        .update(`${scope.kind}:${scope.id}:${draft.from.id}:${draft.relation}:${draft.to.id}`)
+        .digest('hex')
+        .slice(0, 28);
+      recordCognitiveMemoryEdge(store, authority, {
+        id: `edge:auto-association:${key}`,
+        scope,
+        fromId: draft.from.id,
+        toId: draft.to.id,
+        relation: draft.relation,
+        weight: draft.weight,
+        evidenceRefs: draft.evidenceRefs,
+        sourceWorkId: input.work.workId,
+        sourceRoundId: input.sourceRoundId,
+        recordedAt: input.now,
+      });
+    }
+  }
 }
 
 interface ConsolidatedLearning {
@@ -599,18 +746,26 @@ function adjustmentLearningDraft(input: {
   return memoryDraftFromLearningSignal(learning);
 }
 
-function consolidateAffectedConcepts(
+function consolidateAffectedMemories(
   controllerHome: string,
   scope: ScopeRef,
-  concepts: readonly string[],
+  triggers: readonly MemoryUnit[],
   now: string,
 ): ConsolidatedLearning[] {
-  const uniqueConcepts = normalizedConcepts(concepts);
-  if (!uniqueConcepts.length) return [];
-  const sourceMemories = cognitionReadPort(controllerHome)
-    .exactByConcept([scope], uniqueConcepts, 128, now)
-    .filter(memory => memory.id.startsWith('learning:auto:'));
-  if (sourceMemories.length < 3) return [];
+  const relevantTriggers = triggers.filter(memory => sameScope(memory.scope, scope));
+  if (!relevantTriggers.length) return [];
+  const port = cognitionReadPort(controllerHome);
+  const sources = new Map<string, MemoryUnit>();
+  for (const trigger of relevantTriggers) {
+    sources.set(trigger.id, trigger);
+    for (const memory of port.exactByConcept([scope], trigger.concepts, 64, now)) sources.set(memory.id, memory);
+    const terms = [...cognitiveTerms(`${trigger.canonicalText}\n${trigger.concepts.join(' ')}`)].slice(0, 48);
+    for (const memory of port.lexical([scope], terms, 64, now)) sources.set(memory.id, memory);
+  }
+  const sourceMemories = [...sources.values()]
+    .filter(memory => memory.id.startsWith('learning:auto:'))
+    .slice(0, 128);
+  if (sourceMemories.length < 2) return [];
   const result = consolidateMemories(scope, sourceMemories, now);
   const store = cognitionMemoryStore(controllerHome);
   const authority = consolidationAuthority({ scope, sourceMemories });
@@ -753,8 +908,15 @@ export function persistAutomaticControllerRoundLearning(input: {
     stored.push(persistDraft(input.controllerHome, authority, draft));
   }
 
-  const concepts = stored.flatMap(memory => memory.concepts);
-  const consolidated = consolidateAffectedConcepts(input.controllerHome, scope, concepts, observedAt);
+  associateStoredMemories({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    work,
+    sourceRoundId: input.sourceRoundId,
+    memories: stored,
+    now: observedAt,
+  });
+  const consolidated = consolidateAffectedMemories(input.controllerHome, scope, stored, observedAt);
   const workspaceScope = workspacePromotionScope(work, input.controllerHome, scope);
   const promotedMemoryIds = workspaceScope
     ? promoteConsolidatedLearning({
