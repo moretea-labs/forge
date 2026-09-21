@@ -157,12 +157,83 @@ describe('generic cognitive memory', () => {
   });
 
   test('encodes success and knowledge as first-class learning signals instead of failure-only lessons', () => {
-    const success = memoryDraftFromLearningSignal({ schemaVersion: 1, id: 'success-1', scope, kind: 'success', valence: 'positive', summary: 'A scene-based teaching series produced better retention.', concepts: ['learning.scene', 'learning.retention'], salience: 0.9, confidence: 0.8, sourceKind: 'external', observedAt: at, evidenceRefs: ['E-1'] });
-    const knowledge = memoryDraftFromLearningSignal({ schemaVersion: 1, id: 'knowledge-1', scope, kind: 'knowledge', valence: 'neutral', summary: 'Model-facing memory should remain semantic rather than bytecode.', concepts: ['memory.transport', 'model.semantic'], salience: 0.7, confidence: 0.95, sourceKind: 'knowledge', observedAt: at, evidenceRefs: ['E-2'] });
+    const success = memoryDraftFromLearningSignal({ schemaVersion: 1, id: 'success-1', scope, kind: 'success', valence: 'positive', summary: 'A scene-based teaching series produced better retention.', concepts: ['learning.scene', 'learning.retention'], admissionSource: 'verified_outcome', portability: 'local', salience: 0.9, confidence: 0.8, utility: 0.74, sourceKind: 'external', observedAt: at, evidenceRefs: ['E-1'] });
+    const knowledge = memoryDraftFromLearningSignal({ schemaVersion: 1, id: 'knowledge-1', scope, kind: 'knowledge', valence: 'neutral', summary: 'Model-facing memory should remain semantic rather than bytecode.', concepts: ['memory.transport', 'model.semantic'], admissionSource: 'explicit_human', portability: 'local', salience: 0.7, confidence: 0.95, utility: 0.42, sourceKind: 'knowledge', observedAt: at, evidenceRefs: ['E-2'] });
     expect(success.facets).toContain('success');
     expect(success.facets).toContain('valence.positive');
+    expect(success.facets).toContain('source.verified_outcome');
     expect(success.tier).toBe('warm');
     expect(knowledge.facets).toContain('knowledge');
+    expect(knowledge.facets).toContain('source.explicit_human');
+    expect(knowledge.confidence).toBe(0.95);
+    expect(knowledge.utility).toBe(0.42);
     expect(knowledge.tier).toBe('warm');
+  });
+
+  test('admits one explicit human teaching immediately as advisory memory and recalls it without repetition', () => {
+    const fx = fixture();
+    const teaching = memoryDraftFromLearningSignal({
+      schemaVersion: 1,
+      id: 'teaching-self-explanatory-interaction',
+      scope,
+      kind: 'principle',
+      valence: 'positive',
+      summary: 'Copy should explain invisible rules, not interaction that should be self-evident from structure, state, and feedback.',
+      concepts: ['product.interaction', 'copy.invisible-rules', 'ui.self-explanatory'],
+      facets: ['product-design'],
+      admissionSource: 'explicit_human',
+      portability: 'local',
+      salience: 0.96,
+      confidence: 0.94,
+      utility: 0.61,
+      sourceKind: 'controller',
+      sourceId: 'explicit-user-teaching:test',
+      observedAt: at,
+      evidenceRefs: ['E-1'],
+    });
+    const stored = recordCognitiveMemory(fx.store, fx.authority, teaching);
+    const pack = activateCognitiveMemory(fx.controllerHome, [scope], 'self explanatory product interaction', {
+      seedConcepts: ['product.interaction'],
+      now: at,
+    });
+    expect(stored.facets).toContain('admission.advisory');
+    expect(stored.facets).toContain('source.explicit_human');
+    expect(stored.confidence).toBe(0.94);
+    expect(stored.utility).toBe(0.61);
+    expect(pack.items.map(item => item.memory.id)).toContain(stored.id);
+  });
+
+  test('keeps single-round inferred learning local and reserves portable intent for explicit human teaching', () => {
+    const workspaceScope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: 'workspace-cognition' };
+    const base = {
+      schemaVersion: 1 as const,
+      id: 'single-round-inference',
+      scope,
+      kind: 'pattern' as const,
+      valence: 'neutral' as const,
+      summary: 'One round suggests a reusable engineering heuristic.',
+      concepts: ['engineering.heuristic'],
+      admissionSource: 'system_inference' as const,
+      portability: 'local' as const,
+      salience: 0.7,
+      confidence: 0.6,
+      utility: 0.55,
+      sourceKind: 'system' as const,
+      observedAt: at,
+      evidenceRefs: ['E-1'],
+    };
+    expect(memoryDraftFromLearningSignal(base).scope).toEqual(scope);
+    expect(() => memoryDraftFromLearningSignal({ ...base, scope: workspaceScope })).toThrow('COGNITION_LEARNING_AUTOMATIC_SCOPE_INVALID');
+    expect(() => memoryDraftFromLearningSignal({ ...base, portability: 'portable' })).toThrow('COGNITION_LEARNING_PORTABILITY_REQUIRES_EXPLICIT_HUMAN');
+
+    const portableTeaching = memoryDraftFromLearningSignal({
+      ...base,
+      id: 'portable-human-teaching',
+      scope: workspaceScope,
+      admissionSource: 'explicit_human',
+      portability: 'portable',
+      confidence: 0.95,
+    });
+    expect(portableTeaching.facets).toContain('portability.portable');
   });
 });

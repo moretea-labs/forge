@@ -8,6 +8,17 @@ The previous assistant learning loop persisted bounded `ExperienceRecord` and `O
 
 Forge needs a domain-independent cognitive substrate that can learn from good examples, successful practice, explicit knowledge, novelty, corrections, contradictions, preferences, principles and procedures as well as failures. It must improve retrieval and information density without creating a second lifecycle/authority system.
 
+## Learning admission is not authority promotion
+
+Forge follows **learn early, trust gradually**. A bounded, high-signal observation may become advisory Cognitive Memory immediately; repetition is not an admission prerequisite. Repeated independent evidence is used to strengthen, generalize, consolidate, or promote knowledge across scopes. It does not decide whether a useful local observation is allowed to be remembered at all.
+
+`LearningSignal.admissionSource` records why a signal is admissible (`explicit_human`, `controller_observation`, `verified_outcome`, `execution_quality`, or `system_inference`). `portability` records semantic intent, not write authority. Automatically inferred single-round learning is restricted to Work, Requirement, or Project scope. Portable intent is reserved for explicit human teaching, and any actual Workspace write still requires the existing Cognitive write authority and promotion rules.
+
+Confidence and utility are deliberately orthogonal. `confidence` measures evidentiary/semantic strength of the claim. `utility` is the initial retrieval-usefulness prior and may later be adjusted by context usage feedback without changing factual confidence. `salience` is only extraction-time importance. None of these scores grants policy authority.
+
+Cognitive Memory remains advisory. Hard invariants continue to live in normal repository/project authority such as AGENTS, project contracts, architecture decisions, Requirements, Plans, Work acceptance, authorization, and verification gates. Learning never promotes itself into those authorities.
+
+
 ## Authority boundary
 
 The Cognitive Plane owns knowledge representation, association, consolidation and model projection. It does **not** own Requirement, Plan, Work, ControllerRound, Scheduler, safety, authorization, acceptance or repository lifecycle decisions. A cognitive record can advise a Controller; it cannot terminalize Work, bypass fencing or mutate hard policy.
