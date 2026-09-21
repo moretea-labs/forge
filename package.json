@@ -94,7 +94,7 @@
     "benchmark:quality-harness": "bun scripts/benchmark-quality-harness.ts",
     "benchmark:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:quality-harness": "bun scripts/benchmark-quality-harness.ts",
-    "check:evaluation-framework": "bun test ./tests/evaluation-framework.test.ts && bun test ./evaluation/protocol.test.ts && bun test ./evaluation/candidate-runner.test.ts && bun test ./evaluation/calibration.test.ts && bun test ./evaluation/certification.test.ts && bun test ./evaluation/public-mcp-runner.test.ts",
+    "check:evaluation-framework": "bun test ./tests/evaluation-framework.test.ts && bun test ./evaluation/protocol.test.ts && bun test ./evaluation/candidate-runner.test.ts && bun test ./evaluation/calibration.test.ts && bun test ./evaluation/certification.test.ts && bun test ./evaluation/public-mcp-runner.test.ts && bun test ./evaluation/cognitive-skill-retirement.test.ts",
     "check:v2-certification": "bun evaluation/check-v2-certification.ts",
     "check:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:typescript-navigation": "bun scripts/benchmark-typescript-navigation.ts",
