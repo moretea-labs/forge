@@ -598,7 +598,8 @@ export function auditCognitiveMemory(controllerHome: string, input: CognitiveAud
       WHERE ${clauses.join(' AND ')}
       ORDER BY utility DESC, confidence DESC, recorded_at DESC, scope_kind ASC, scope_id ASC, memory_id ASC
       LIMIT ?`, prepared => prepared.all(...params, scanLimit) as Array<Record<string, unknown>>);
-    const query = input.query?.trim().toLocaleLowerCase('en-US') ?? '';
+    const exactMemoryId = input.memoryId?.trim();
+    const queryTerms = cognitiveTerms(input.query?.slice(0, 8_192) ?? '');
     const concept = input.concept?.trim();
     const facet = input.facet?.trim();
     const memories = rows.map(row => {
@@ -607,15 +608,20 @@ export function auditCognitiveMemory(controllerHome: string, input: CognitiveAud
       return rowToMemory(row, refs.evidence, refs.counter);
     }).filter(memory => !concept || memory.concepts.includes(concept))
       .filter(memory => !facet || memory.facets.includes(facet))
-      .filter(memory => !query || [
-        memory.id,
-        memory.canonicalText,
-        ...memory.concepts,
-        ...memory.facets,
-        memory.provenance.sourceId ?? '',
-        memory.provenance.sourceWorkId ?? '',
-        memory.provenance.sourceRoundId ?? '',
-      ].join('\n').toLocaleLowerCase('en-US').includes(query));
+      .filter(memory => {
+        if (!queryTerms.size || exactMemoryId === memory.id) return true;
+        const terms = cognitiveTerms([
+          memory.id,
+          memory.canonicalText,
+          ...memory.concepts,
+          ...memory.facets,
+          memory.provenance.sourceId ?? '',
+          memory.provenance.sourceWorkId ?? '',
+          memory.provenance.sourceRoundId ?? '',
+        ].join('\n'));
+        for (const term of queryTerms) if (terms.has(term)) return true;
+        return false;
+      });
     const selected = memories.slice(0, limit);
     const relationRows = selected.length ? statement(database, `
       SELECT * FROM cognition_memory_edges

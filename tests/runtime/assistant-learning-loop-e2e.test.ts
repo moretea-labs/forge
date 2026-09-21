@@ -32,6 +32,7 @@ import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/ass
 import { cognitiveUsageFeedbackForContext, prepareAssistantWorkContext, recordControllerExperience, recordControllerOutcome } from '../../src/runtime/context/assistant-work-context';
 import { parseControllerLearningSignalDrafts, persistAutomaticControllerRoundLearning } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
+import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRhWorkControllerOperation } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
@@ -636,59 +637,178 @@ describe('connected assistant learning loops', () => {
     })).toEqual(feedback);
   });
 
-  test('admits explicit portable human teaching directly to Workspace but rejects inferred Workspace writes', () => {
+  test('closes portable product-design learning from Controller teaching through sibling recall, usage, and audit', async () => {
     const fx = fixture('portable-human-teaching', { knowledge: false });
-    fx.setNow(time(10));
+    const sourceNow = new Date().toISOString();
+    fx.setNow(sourceNow);
     const round = claimInitialRound(fx, 1);
     const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
-    closeContinue(fx, round);
-    const learning = persistAutomaticControllerRoundLearning({
+    const sourceCtx = {
       controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      workId: fx.workId,
-      sourceRoundId,
-      signals: [],
-      controllerSignals: [{
-        scopeKind: 'workspace',
-        kind: 'principle',
-        valence: 'positive',
-        summary: 'Copy explains invisible rules, not interaction that should be self explanatory.',
-        concepts: ['product.interaction.self-explanatory', 'copy.invisible-rules'],
-        facets: ['product-design'],
-        admissionSource: 'explicit_human',
-        portability: 'portable',
-        salience: 0.98,
-        confidence: 0.96,
-        utility: 0.9,
-        evidenceRefs: [],
-        counterEvidenceRefs: [],
-      }],
-      now: time(12),
-    });
-    expect(learning.storedMemoryIds).toHaveLength(1);
-    const workspaceMemory = cognitionReadPort(fx.controllerHome).readByIds(
-      [{ schemaVersion: 1, kind: 'workspace', id: fx.workspaceId }],
-      learning.storedMemoryIds,
-    )[0];
-    expect(workspaceMemory).toMatchObject({
-      id: learning.storedMemoryIds[0],
-      scope: { kind: 'workspace', id: fx.workspaceId },
-    });
-    expect(workspaceMemory?.facets).toContain('source.explicit_human');
-    expect(workspaceMemory?.facets).toContain('portability.portable');
-
-    expect(() => parseControllerLearningSignalDrafts([{
+      repoRoot: fx.repoRoot,
+      principalId: round.owner.principalId ?? round.owner.controllerId,
+      sessionId: round.owner.sessionId,
+      controllerInstanceId: round.owner.controllerInstanceId,
+      controllerType: 'chatgpt' as const,
+      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      toolset: 'core',
+    } as unknown as MultiRepositoryMcpToolContext;
+    const signal = {
       scope_kind: 'workspace',
       kind: 'principle',
       valence: 'positive',
-      summary: 'Inferred guidance must not jump to Workspace.',
-      concepts: ['unsafe.workspace-promotion'],
-      facets: [],
-      admission_source: 'controller_observation',
+      summary: 'Copy explains invisible rules, not interaction that should be self explanatory.',
+      concepts: ['product.interaction.self-explanatory', 'copy.invisible-rules'],
+      facets: ['product-design'],
+      admission_source: 'explicit_human',
       portability: 'portable',
-      salience: 0.8,
-      confidence: 0.7,
-      utility: 0.6,
+      salience: 0.98,
+      confidence: 0.96,
+      utility: 0.9,
+    };
+    const sourceDisposition = await callRhWorkControllerOperation(sourceCtx, fx.repository, 'controller_disposition', {
+      work_id: fx.workId,
+      disposition: 'continue_immediately',
+      controller_authority_id: round.relay.authorityId,
+      relay_scope_id: round.relay.relayScopeId,
+      learning_signals: [signal],
+      ...(round.bundle ? {
+        assistant_context_digest: round.bundle.snapshot.digest,
+        assistant_context_usage: contextUsage(round.bundle),
+      } : {}),
+    });
+    expect(sourceDisposition).toBeTruthy();
+    const sourcePayload = sourceDisposition!.structuredContent as Record<string, any>;
+    expect(sourcePayload.status, JSON.stringify(sourcePayload)).toBe('ok');
+    expect(sourcePayload.data.automaticLearning.storedMemoryIds).toHaveLength(1);
+    const learnedId = sourcePayload.data.automaticLearning.storedMemoryIds[0] as string;
+    const learnedItemId = memoryAddressKey({
+      scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
+      id: learnedId,
+    });
+    const workspaceMemory = cognitionReadPort(fx.controllerHome).readByIds(
+      [{ schemaVersion: 1, kind: 'workspace', id: fx.workspaceId }], [learnedId],
+    )[0];
+    expect(workspaceMemory).toMatchObject({
+      id: learnedId,
+      scope: { kind: 'workspace', id: fx.workspaceId },
+      provenance: { sourceWorkId: fx.workId, sourceRoundId },
+    });
+    expect(workspaceMemory?.facets).toContain('source.explicit_human');
+    expect(workspaceMemory?.facets).toContain('portability.portable');
+    releaseControllerSession(fx.store, fx.workId, round.owner.controllerId);
+
+    const consumerRoot = mkdtempSync(join(tmpdir(), 'forge-product-principle-consumer-'));
+    roots.push(consumerRoot);
+    mkdirSync(join(consumerRoot, '.forge'), { recursive: true });
+    writeFileSync(join(consumerRoot, 'README.md'), 'product design consumer\n');
+    writeFileSync(join(consumerRoot, '.forge', 'project-engineering.json'), JSON.stringify({
+      schemaVersion: 1,
+      contractId: 'product-principle-consumer',
+      contractVersion: '1',
+      projectId: 'project-product-principle-consumer',
+      authority: { product: ['README.md'], architecture: [], source: ['src/**'] },
+      quality: { ux: [], performance: [], nonRegression: [] },
+      checks: [], journeys: [], platforms: [], tooling: [], skillRefs: [], exceptions: [],
+    }, null, 2));
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: consumerRoot });
+    execFileSync('git', ['config', 'user.email', 'learning-loop@example.test'], { cwd: consumerRoot });
+    execFileSync('git', ['config', 'user.name', 'Learning Loop Test'], { cwd: consumerRoot });
+    execFileSync('git', ['add', '.'], { cwd: consumerRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: consumerRoot });
+    const consumerRepository = registerRepository({ path: consumerRoot, controllerHome: fx.controllerHome, displayName: 'product principle consumer' });
+    writeProjectIdentity({ controllerHome: fx.controllerHome, value: {
+      projectId: 'project-product-principle-consumer', workspaceId: fx.workspaceId, displayName: 'Product Principle Consumer',
+    } });
+    writeProjectPlacement({ controllerHome: fx.controllerHome, value: {
+      projectId: 'project-product-principle-consumer', forgeInstanceId: fx.forgeInstanceId,
+      repositoryId: consumerRepository.repoId, checkoutId: consumerRepository.activeCheckoutId,
+    } });
+    const consumerWorkId = 'work-product-principle-consumer';
+    let consumerNow = new Date(Date.parse(sourceNow) + 60_000).toISOString();
+    const consumerStore = { controllerHome: fx.controllerHome, repoId: consumerRepository.repoId, now: () => consumerNow };
+    createWorkContract(consumerStore, {
+      workId: consumerWorkId,
+      repoId: consumerRepository.repoId,
+      checkoutId: consumerRepository.activeCheckoutId,
+      scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-product-principle-consumer' },
+      mode: 'goal_workloop',
+      objective: 'Design mobile settings so controls, visible state, and flow make operation understandable; reserve explanatory copy for invisible rules and consequences.',
+      acceptanceCriteria: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false },
+      allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'chatgpt', status: 'running',
+    });
+    const consumerIdentity = {
+      controllerId: 'chatgpt-product-consumer', controllerType: 'chatgpt' as const,
+      principalId: 'chatgpt-product-consumer', controllerInstanceId: 'runtime-product-consumer', sessionId: 'session-product-consumer',
+    };
+    const consumerDispatch = beginInitialControllerRoundDispatch(consumerStore, {
+      workId: consumerWorkId, occurrenceId: 'occurrence-product-consumer', identity: consumerIdentity,
+      maxRounds: 8, maxRepeatedState: 4, maxFailures: 3,
+    });
+    expect(consumerDispatch.status).toBe('dispatching');
+    finishControllerRoundRelayDispatch(consumerStore, { workId: consumerWorkId, ok: true, providerDispatchReceiptId: 'dispatch-product-consumer' });
+    const consumerOwner = claimControllerSession(consumerStore, { ...consumerIdentity, workId: consumerWorkId, leaseMs: 60_000 });
+    const consumerBundle = prepareControllerAssistantContextBundle(consumerStore, consumerWorkId);
+    const consumerRelay = acknowledgeControllerRoundClaim(consumerStore, {
+      workId: consumerWorkId, session: consumerOwner, assistantContextSnapshot: consumerBundle?.snapshot,
+    });
+    expect(consumerRelay?.status).toBe('claimed');
+    expect(consumerBundle?.snapshot.items).toContainEqual(expect.objectContaining({ kind: 'knowledge', itemId: learnedItemId }));
+    const beforeUse = prepareAssistantWorkContext({
+      controllerHome: fx.controllerHome, repoId: consumerRepository.repoId, workId: consumerWorkId,
+      query: 'controls visible state flow self explanatory invisible rules', now: consumerNow,
+    });
+    const recalledBeforeUse = beforeUse?.items.find(item => item.id === learnedItemId);
+    expect(recalledBeforeUse?.activation?.reasons.some(reason => reason.startsWith('lexical:') || reason.startsWith('exact:'))).toBe(true);
+    const consumerDisposition = submitControllerRoundDisposition(consumerStore, {
+      workId: consumerWorkId,
+      identity: relayIdentity(consumerOwner),
+      disposition: 'wait',
+      relayScopeId: consumerRelay!.relayScopeId,
+      ...(consumerBundle ? {
+        assistantContextDigest: consumerBundle.snapshot.digest,
+        assistantContextUsage: contextUsage(consumerBundle, learnedItemId),
+      } : {}),
+    });
+    expect(consumerDisposition.status).toBe('waiting');
+    consumerNow = new Date(Date.parse(sourceNow) + 120_000).toISOString();
+    const afterUse = prepareAssistantWorkContext({
+      controllerHome: fx.controllerHome, repoId: consumerRepository.repoId, workId: consumerWorkId,
+      query: 'controls visible state flow self explanatory invisible rules', now: consumerNow,
+    });
+    expect(afterUse?.items.find(item => item.id === learnedItemId)?.activation?.reasons).toContain('usage:used:1;rejected:0');
+
+    const auditCtx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: consumerRoot,
+      policy: getMcpPolicy('controller', { repoRoot: consumerRoot }),
+      toolset: 'core',
+      enableChatgptBrowser: false,
+      explicitRepository: consumerRepository,
+    } as unknown as MultiRepositoryMcpToolContext;
+    const auditResult = await callRuntimeTool(auditCtx, 'rh_context', {
+      repo_id: consumerRepository.repoId,
+      operation: 'search',
+      work_id: consumerWorkId,
+      knowledge_query: 'controls visible state invisible rules',
+      knowledge_memory_id: learnedId,
+      knowledge_limit: 8,
+      detail_level: 'detail',
+    });
+    expect(auditResult).toBeTruthy();
+    const auditPayload = auditResult!.structuredContent as Record<string, any>;
+    const audited = auditPayload.data.cognitionAudit.items.find((item: any) => item.memory.id === learnedId);
+    expect(audited).toMatchObject({
+      memory: { provenance: { sourceWorkId: fx.workId, sourceRoundId } },
+      recentUsage: { usedCount: 1, rejectedCount: 0 },
+    });
+    expect(audited.activation.reasons).toContainEqual(expect.objectContaining({ signal: 'usage', detail: 'used:1;rejected:0' }));
+
+    expect(() => parseControllerLearningSignalDrafts([{
+      scope_kind: 'workspace', kind: 'principle', valence: 'positive',
+      summary: 'Inferred guidance must not jump to Workspace.', concepts: ['unsafe.workspace-promotion'], facets: [],
+      admission_source: 'controller_observation', portability: 'portable', salience: 0.8, confidence: 0.7, utility: 0.6,
     }])).toThrow('COGNITION_CONTROLLER_LEARNING_WORKSPACE_REQUIRES_EXPLICIT_PORTABLE_HUMAN:0');
   });
 

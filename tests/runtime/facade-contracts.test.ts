@@ -43,7 +43,9 @@ describe('handoff and facade contracts', () => {
     const learning = properties?.learning_signals;
     expect(learning?.maxItems).toBe(8);
     expect(learning?.items?.additionalProperties).toBe(false);
-    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project']);
+    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project', 'workspace']);
+    expect(learning?.items?.properties?.admission_source?.enum).toContain('explicit_human');
+    expect(learning?.items?.properties?.portability?.enum).toContain('portable');
     expect(learning?.items?.properties).not.toHaveProperty('source_work_id');
     expect(learning?.items?.properties).not.toHaveProperty('source_round_id');
     expect(learning?.items?.properties).not.toHaveProperty('observed_at');
