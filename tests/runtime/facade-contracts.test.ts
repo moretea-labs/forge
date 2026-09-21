@@ -345,7 +345,7 @@ describe('handoff and facade contracts', () => {
   test('routes typed plugin capabilities through the real plugin executor instead of rh_work', () => {
     const capabilities = listCapabilityDescriptors([]);
     expect(capabilities.find((entry) => entry.capabilityId === 'platform.ios')?.exposedVia).toBe('plugin_action_execute');
-    expect(capabilities.find((entry) => entry.capabilityId === 'plugin.browser')?.exposedVia).toBe('plugin_action_execute');
+    expect(capabilities.some((entry) => entry.capabilityId === 'plugin.browser')).toBe(false);
     const iosGroup = summarizeCapabilityGroups([]).find((entry) => entry.group === 'ios');
     expect(iosGroup?.executionSurfaces).toEqual(['plugin_action_execute']);
     expect(iosGroup?.facadeTools).toEqual([]);
@@ -360,7 +360,6 @@ describe('handoff and facade contracts', () => {
     expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
-      'browser',
       'controller',
       'evidence',
       'git',
@@ -421,8 +420,9 @@ describe('handoff and facade contracts', () => {
 
     const browser = searchCapabilityDescriptors('browser login authentication', manifests, 12);
     const browserIds = browser.map((entry) => entry.capabilityId);
-    expect(browserIds).toContain('plugin.browser');
+    expect(browserIds).not.toContain('plugin.browser');
     expect(browserIds).toContain('plugin.native_computer.observe_ui');
+    expect(browserIds).toContain('plugin.native_computer.press_ui');
     expect(browser.find((entry) => entry.capabilityId === 'plugin.native_computer.observe_ui')?.descriptor.exposedVia).toBe('plugin_action_execute');
   });
 
