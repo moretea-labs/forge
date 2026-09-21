@@ -25,6 +25,7 @@ import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/
 import { getChatgptControllerRoundSettlement } from '../../../../adapters/chatgpt/controller-round-settlement-store';
 import { recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
+import { classifySchedulerProviderFailure, ensureSchedulerProviderUserActionHandoff } from './autonomous-continuation';
 
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
@@ -310,7 +311,29 @@ export async function runSchedulerControllerRoundRecovery(input: {
           tabPolicy: 'auto',
           timeoutMs: 30_000,
         });
-        if (result.status === 'failed') throw new Error(result.error?.message ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED');
+        if (result.status === 'failed') {
+          const reason = result.error?.message ?? result.error?.code ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED';
+          const disposition = classifySchedulerProviderFailure(reason);
+          if (disposition === 'outcome_unknown') {
+            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason, outcomeUnknown: true });
+            failed += 1;
+            continue;
+          }
+          if (disposition === 'wait_for_user') {
+            if (!record.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${record.relayScopeId}`);
+            const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+              workId: record.originWorkId, relayScopeId: record.relayScopeId, authorityId: record.authorityId, reason,
+            });
+            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+            continue;
+          }
+          if (disposition === 'failed') {
+            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason });
+            failed += 1;
+            continue;
+          }
+          throw new Error(reason);
+        }
         const updatedBinding = getChatgptWorkConversationBinding(store, record.originWorkId);
         finishControllerRoundRelayDispatch(store, {
           workId: record.originWorkId,
@@ -320,13 +343,22 @@ export async function runSchedulerControllerRoundRecovery(input: {
         dispatched += 1;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        finishControllerRoundRelayDispatch(store, {
-          workId: record.originWorkId,
-          ok: false,
-          error: reason,
-          recovery: true,
-          nowMs: input.nowMs,
-        });
+        const disposition = classifySchedulerProviderFailure(reason);
+        if (disposition === 'wait_for_user' && record.authorityId) {
+          const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+            workId: record.originWorkId, relayScopeId: record.relayScopeId, authorityId: record.authorityId, reason,
+          });
+          finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+        } else {
+          finishControllerRoundRelayDispatch(store, {
+            workId: record.originWorkId,
+            ok: false,
+            error: reason,
+            outcomeUnknown: disposition === 'outcome_unknown',
+            recovery: disposition === 'retryable',
+            nowMs: input.nowMs,
+          });
+        }
         failed += 1;
         console.error(`[forge controller relay] stalled round recovery failed for ${record.relayScopeId}:`, reason);
       }

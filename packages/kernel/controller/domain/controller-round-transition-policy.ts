@@ -40,6 +40,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'provider_dispatch_started'; at: string; providerDispatchEffectId: string; bindingId?: string }
   | { type: 'provider_dispatch_succeeded'; at: string; providerDispatchEffectId: string; bindingId?: string; providerDispatchReceiptId?: string }
   | { type: 'provider_dispatch_failed'; at: string; error: string; recovery: boolean; nextRecoveryAt?: string }
+  | { type: 'provider_retry_requested'; at: string; occurrenceId?: string }
   | { type: 'provider_dispatch_outcome_unknown'; at: string; error: string; providerDispatchEffectId: string }
   | { type: 'provider_user_action_required'; at: string; error: string; handoffId: string }
   | { type: 'controller_claim_observed'; at: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string; userResume?: boolean }
@@ -194,6 +195,22 @@ export function decideControllerRoundTransition(
         ...(blocked ? {} : { providerDispatchEffectId: undefined, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }),
         nextRecoveryAt: blocked ? undefined : event.nextRecoveryAt, updatedAt: event.at,
       }, blocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled');
+    }
+    case 'provider_retry_requested': {
+      if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (current.status !== 'failed') return { kind: 'reject', code: `CONTROLLER_RELAY_PROVIDER_RETRY_STATE_INVALID:${current.status}` };
+      if (current.consecutiveFailures >= current.maxFailures) return { kind: 'reject', code: `CONTROLLER_RELAY_PROVIDER_RETRY_BUDGET_EXHAUSTED:${current.consecutiveFailures}>=${current.maxFailures}` };
+      const occurrenceId = event.occurrenceId?.trim() || current.occurrenceId;
+      if (current.occurrenceId && occurrenceId && current.occurrenceId !== occurrenceId) {
+        return { kind: 'reject', code: `CONTROLLER_RELAY_PROVIDER_RETRY_OCCURRENCE_MISMATCH:${current.occurrenceId}` };
+      }
+      return accept(current, {
+        status: 'dispatching', lifecycleStage: 'dispatching',
+        ...(occurrenceId ? { occurrenceId } : {}),
+        providerDispatchEffectId: undefined, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
+        nextRecoveryAt: undefined, blockedReason: undefined, failureClass: undefined, lastError: undefined,
+        reason: 'provider_retry_requested', updatedAt: event.at,
+      }, 'controller_round_relay_provider_retry_begin');
     }
     case 'provider_environment_recovered': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };

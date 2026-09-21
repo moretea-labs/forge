@@ -11,6 +11,7 @@ import {
   getRequirementControllerRoundRelay,
   readControllerRoundSemanticStateFingerprint,
   reconcileControllerRoundAfterTerminalWork,
+  retryFailedControllerRoundProviderDispatch,
   type ControllerRoundRelayStoreOptions,
 } from '../infrastructure/controller-round-store';
 import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession } from '../infrastructure/controller-session-store';
@@ -109,6 +110,19 @@ export function prepareControllerRoundOccurrence(
   }
 
   let relay = getControllerRoundRelay(options, work.workId);
+
+  if (relay?.status === 'failed') {
+    if (relay.relayScopeId !== canonicalRelayScopeId) throw new Error(`CONTROLLER_CONTINUATION_OCCURRENCE_IDENTITY_CONFLICT:${input.occurrenceId}`);
+    if (relay.occurrenceId && relay.occurrenceId !== input.occurrenceId) throw new Error(`CONTROLLER_CONTINUATION_FAILED_OCCURRENCE_MISMATCH:${relay.occurrenceId}`);
+    if (!relay.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${relay.relayScopeId}`);
+    relay = retryFailedControllerRoundProviderDispatch(options, {
+      workId: work.workId,
+      relayScopeId: canonicalRelayScopeId,
+      authorityId: relay.authorityId,
+      expectedUpdatedAt: relay.updatedAt,
+      occurrenceId: input.occurrenceId,
+    });
+  }
 
   if (relay?.occurrenceId === input.occurrenceId) {
     if (relay.relayScopeId !== canonicalRelayScopeId) throw new Error(`CONTROLLER_CONTINUATION_OCCURRENCE_IDENTITY_CONFLICT:${input.occurrenceId}`);
@@ -245,7 +259,7 @@ export async function resumeControllerRoundOccurrence(
         const waiting = finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, waitForUser: true, handoffId: result.handoffId, error: reason }) ?? relay;
         return { relay: waiting, outcome: 'wait_for_user', reused: false, reason };
       }
-      const rejected = finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, error: reason }) ?? relay;
+      const rejected = finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, error: reason, recovery: result.recoverable === true }) ?? relay;
       return { relay: rejected, outcome: 'rejected', reused: false, reason };
     }
     const dispatched = finishControllerRoundRelayDispatch(options, {

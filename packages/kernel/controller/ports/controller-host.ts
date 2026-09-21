@@ -8,6 +8,8 @@ export interface ControllerHostResumeResult {
   waitForUser?: boolean;
   /** Durable user-action Handoff created by the provider adapter when waitForUser=true. */
   handoffId?: string;
+  /** Known non-ambiguous provider failure that may retry the same semantic round under its existing failure budget. */
+  recoverable?: boolean;
 }
 
 /** Provider-neutral continuation port. Implementations live in adapters/*. */

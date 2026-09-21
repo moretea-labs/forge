@@ -174,7 +174,7 @@ export function projectAutonomousGoalProgression(
       if (round?.status === 'goal_complete') {
         return decision(snapshot, 'blocked_invalid_state', 'CONTROLLER_ROUND_TERMINAL_CONTRADICTION', { planStepId: step.id, workId: work.workId });
       }
-      if (round && (IN_FLIGHT_ROUND_STATUSES.has(round.status) || round.status === 'blocked' || round.status === 'failed')) {
+      if (round && (IN_FLIGHT_ROUND_STATUSES.has(round.status) || round.status === 'blocked')) {
         return decision(snapshot, 'wait_current_work', 'CONTROLLER_ROUND_IN_FLIGHT', { planStepId: step.id, workId: work.workId });
       }
       return decision(snapshot, 'continue_current_work', 'WORK_READY_TO_CONTINUE', { planStepId: step.id, workId: work.workId });

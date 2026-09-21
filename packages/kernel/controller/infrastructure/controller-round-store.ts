@@ -1463,6 +1463,41 @@ export function recoverControllerRoundRelayAuthority(
   });
 }
 
+export interface RetryFailedControllerRoundProviderDispatchInput {
+  workId: string;
+  relayScopeId: string;
+  authorityId: string;
+  expectedUpdatedAt: string;
+  occurrenceId?: string;
+}
+
+/** Retry one known, non-ambiguous provider failure without creating a new semantic round or authority. */
+export function retryFailedControllerRoundProviderDispatch(
+  options: ControllerRoundRelayStoreOptions,
+  input: RetryFailedControllerRoundProviderDispatchInput,
+): ControllerRoundRelayRecord {
+  const workId = input.workId.trim();
+  const initial = readRelayRecord(options, workId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_RELAY_REQUIRED:${workId}`);
+  if (initial.value.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_SCOPE_MISMATCH:${workId}`);
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-provider-retry:${workId}`, () => {
+    const current = readRelayRecord(options, workId);
+    if (!current) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_RELAY_REQUIRED:${workId}`);
+    if (current.value.updatedAt !== input.expectedUpdatedAt.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_STALE:${workId}`);
+    if (current.value.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_SCOPE_MISMATCH:${workId}`);
+    if ((current.value.authorityId?.trim() || '') !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_AUTHORITY_MISMATCH:${workId}`);
+    const work = getWorkContract(options, workId);
+    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_WORK_TERMINAL:${workId}:${work?.status ?? 'missing'}`);
+    const requirement = requirementForRelay(options, current.value.requirementId);
+    if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_REQUIREMENT_TERMINAL:${requirement.state}`);
+    if (workHasActiveExecution(options.controllerHome, options.repoId, workId)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_ACTIVE_EXECUTION:${workId}`);
+    if (getControllerSession(options, workId)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RETRY_ACTIVE_CLAIM:${workId}`);
+    return applyControllerRoundTransition(options, current, {
+      type: 'provider_retry_requested', at: nowIso(options), occurrenceId: input.occurrenceId?.trim() || undefined,
+    });
+  });
+}
+
 export interface RearmControllerRoundAfterProviderRecoveryInput {
   workId: string;
   relayScopeId: string;

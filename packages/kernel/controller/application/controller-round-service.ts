@@ -18,6 +18,7 @@ export {
   listCurrentControllerRoundRelays,
   readControllerRoundContextSnapshot,
   readControllerRoundSemanticStateFingerprint,
+  retryFailedControllerRoundProviderDispatch,
   rearmControllerRoundAfterProviderRecovery,
   reconcileControllerRoundAfterAbandonedRelease,
   reconcileControllerRoundAfterTerminalWork,
@@ -31,6 +32,7 @@ export {
   type ControllerRoundContextSnapshot,
   type ControllerRoundRelayStoreOptions,
   type RecoverControllerRoundRelayAuthorityInput,
+  type RetryFailedControllerRoundProviderDispatchInput,
   type RearmControllerRoundAfterProviderRecoveryInput,
   type SubmitControllerRoundDispositionInput,
 } from '../infrastructure/controller-round-store';

@@ -14,8 +14,9 @@ import { currentTaskSemanticProjectionForWork, getWorkContract, listWorkContract
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { listPlanContracts } from '../facade/plan-contract-store';
 import { readRequirement } from '../persistence/requirement-store';
+import { createHandoffItem, getHandoffItem } from '../facade/handoff-inbox-store';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
-import { controllerHostForScheduledBinding } from '../../root/scheduled-controller-composition';
+import { controllerHostForScheduledBinding, ensureScheduledControllerBindingForWork } from '../../root/scheduled-controller-composition';
 import {
   ensureWorkflowSupervisorEnrollmentForWork,
   workflowSupervisorBoundaryForWork,
@@ -39,12 +40,47 @@ export interface SchedulerAutonomousContinuationDependencies {
   boundaryForWork?: typeof workflowSupervisorBoundaryForWork;
   ensureSupervisorEnrollment?: typeof ensureWorkflowSupervisorEnrollmentForWork;
   hostForBinding?: typeof controllerHostForScheduledBinding;
+  ensureBinding?: typeof ensureScheduledControllerBindingForWork;
   prepareOccurrence?: typeof prepareControllerRoundOccurrence;
   resumeOccurrence?: typeof resumeControllerRoundOccurrence;
 }
 
 function skip(counts: Record<string, number>, reason: string): void {
   counts[reason] = (counts[reason] ?? 0) + 1;
+}
+
+export type SchedulerProviderFailureDisposition = 'outcome_unknown' | 'wait_for_user' | 'retryable' | 'failed';
+
+export function classifySchedulerProviderFailure(reason: string | undefined): SchedulerProviderFailureDisposition {
+  const normalized = (reason ?? '').toUpperCase();
+  if (normalized.includes('OUTCOME_UNKNOWN') || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT') || normalized.includes('RESPONSE_STREAM_UNAVAILABLE')) return 'outcome_unknown';
+  if (normalized.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED') || normalized.includes('AUTHORIZATION_REQUIRED') || normalized.includes('AUTHENTICATION_REQUIRED') || normalized.includes('LOGIN_REQUIRED') || normalized.includes('PERMISSION_REQUIRED') || normalized.includes('CONSENT_REQUIRED') || normalized.includes('CAPABILITY_GRANT')) return 'wait_for_user';
+  if (normalized.includes('CONTROLLER_HOST_KIND_MISMATCH') || normalized.includes('CHATGPT_CONTROLLER_BINDING_NOT_FOUND') || normalized.includes('CONTROLLER_ROUND_CONTEXT_STALE') || normalized.includes('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE')) return 'failed';
+  return 'retryable';
+}
+
+function schedulerProviderUserHandoffId(repoId: string, workId: string, relayScopeId: string, authorityId: string): string {
+  return 'hnd-scheduler-provider-auth-' + createHash('sha256').update([repoId, workId, relayScopeId, authorityId].join('\n')).digest('hex').slice(0, 20);
+}
+
+export function ensureSchedulerProviderUserActionHandoff(
+  options: { controllerHome: string; repoId: string },
+  input: { workId: string; relayScopeId: string; authorityId: string; reason: string },
+): string {
+  const id = schedulerProviderUserHandoffId(options.repoId, input.workId, input.relayScopeId, input.authorityId);
+  const existing = getHandoffItem(options, id);
+  if (existing) return existing.id;
+  return createHandoffItem(options, {
+    id, repoId: options.repoId, workId: input.workId,
+    title: 'Provider authorization required for autonomous continuation',
+    severity: 'needs_review', reason: input.reason, creationReason: 'missing_authorization',
+    summary: 'Autonomous continuation is waiting for one explicit provider authentication, consent, permission, or capability grant.',
+    currentState: { repoId: options.repoId, workId: input.workId, statusSummary: 'waiting for provider authorization', blockedBy: [input.reason] },
+    evidenceRefs: [], blockingDecision: 'Complete the required provider authorization.',
+    recommendedDecision: 'Authorize the existing provider capability, then resolve this Handoff; Forge will continue the same durable Work automatically.',
+    recommendedPrompt: `Authorize provider access for ${input.workId}; no manual continue message is required after the Handoff resolves.`,
+    suggestedNextActions: [],
+  }).id;
 }
 
 function planlessOccurrenceId(workId: string, updatedAt: string): string {
@@ -94,6 +130,7 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
   const boundaryForWork = input.dependencies?.boundaryForWork ?? workflowSupervisorBoundaryForWork;
   const ensureSupervisorEnrollment = input.dependencies?.ensureSupervisorEnrollment ?? ensureWorkflowSupervisorEnrollmentForWork;
   const hostForBinding = input.dependencies?.hostForBinding ?? controllerHostForScheduledBinding;
+  const ensureBinding = input.dependencies?.ensureBinding ?? ensureScheduledControllerBindingForWork;
   const prepareOccurrence = input.dependencies?.prepareOccurrence ?? prepareControllerRoundOccurrence;
   const resumeOccurrence = input.dependencies?.resumeOccurrence ?? resumeControllerRoundOccurrence;
 
@@ -178,7 +215,10 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
           skip(skippedByReason, 'progression:' + progression.reasonCode);
           continue;
         }
-        occurrenceId = progression.idempotencyKey;
+        const existingRound = getControllerRoundRelay(store, work.workId);
+        occurrenceId = existingRound?.status === 'failed' && existingRound.occurrenceId
+          ? existingRound.occurrenceId
+          : progression.idempotencyKey;
         relayScopeId = plan.requirementId ? 'requirement:' + plan.requirementId : relayScopeId;
         continuationHint = 'Resume exact Work ' + work.workId + '; Goal Progression returned ' + progression.reasonCode + ' for ' + plan.planId + '/' + (progression.planStepId ?? 'current-step') + '.';
       } else {
@@ -189,16 +229,25 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         const requirementState = requirementRecord?.value.state;
         if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
         if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
-        if (getControllerRoundRelay(store, work.workId)) { skip(skippedByReason, 'controller_round_present'); continue; }
-        occurrenceId = planlessOccurrenceId(work.workId, work.updatedAt);
+        const existingRound = getControllerRoundRelay(store, work.workId);
+        if (existingRound && existingRound.status !== 'failed') { skip(skippedByReason, 'controller_round_present'); continue; }
+        occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
       }
 
       const retainedSession = getRetainedControllerSession(store, work.workId);
       if (!retainedSession) { skip(skippedByReason, 'retained_controller_session_missing'); continue; }
       if (retainedSession.controllerType === 'human') { skip(skippedByReason, 'human_controller'); continue; }
-      const bindingRecord = getControllerWorkBinding(store, work.workId);
-      if (!bindingRecord) { skip(skippedByReason, 'controller_binding_missing'); continue; }
-      if (bindingRecord.binding.hostKind !== retainedSession.controllerType) { skip(skippedByReason, 'controller_binding_kind_mismatch'); continue; }
+      let binding = getControllerWorkBinding(store, work.workId)?.binding;
+      if (!binding) {
+        try {
+          binding = ensureBinding(store, { workId: work.workId, session: retainedSession, scheduleName: 'autonomous-work-liveness', args: {} });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          skip(skippedByReason, 'controller_binding_recovery_failed:' + reason.split(':', 1)[0]);
+          continue;
+        }
+      }
+      if (binding.hostKind !== retainedSession.controllerType) { skip(skippedByReason, 'controller_binding_kind_mismatch'); continue; }
 
       eligible += 1;
       try {
@@ -218,7 +267,7 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
             const prepared = prepareOccurrence(store, {
               occurrenceId,
               workId: work.workId,
-              controllerBindingId: bindingRecord.binding.bindingId,
+              controllerBindingId: binding.bindingId,
               relayScopeId,
               continuationHint,
             });
@@ -239,20 +288,37 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
           }
         }
 
-        const host = hostForBinding(
+        const rawHost = hostForBinding(
           {
             controllerHome: input.controllerHome,
             repoId: repository.repoId,
             repoRoot: repository.canonicalRoot ?? repository.localRoot,
           },
-          bindingRecord.binding,
+          binding,
         );
+        const host = {
+          resume: async (controllerBinding: typeof binding, roundContext: Parameters<typeof rawHost.resume>[1]) => {
+            const result = await rawHost.resume(controllerBinding, roundContext);
+            if (result.accepted || result.waitForUser || result.recoverable) return result;
+            const disposition = classifySchedulerProviderFailure(result.reason);
+            if (disposition === 'outcome_unknown') throw new Error(`CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN:${result.reason ?? 'provider outcome unknown'}`);
+            if (disposition === 'wait_for_user') {
+              const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+                workId: roundContext.workId, relayScopeId: roundContext.relayScopeId,
+                authorityId: roundContext.authorityId, reason: result.reason ?? 'provider authorization required',
+              });
+              return { ...result, waitForUser: true, handoffId };
+            }
+            if (disposition === 'retryable') return { ...result, recoverable: true };
+            return result;
+          },
+        };
         const resumed = await resumeOccurrence(
           store,
           {
             occurrenceId,
             workId: work.workId,
-            controllerBindingId: bindingRecord.binding.bindingId,
+            controllerBindingId: binding.bindingId,
             relayScopeId,
             continuationHint,
           },
