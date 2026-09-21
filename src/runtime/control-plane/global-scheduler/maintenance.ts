@@ -15,8 +15,9 @@ import type { reconcilePendingEditValidations } from '../execution/edit-validati
 import {
   beginControllerRoundProviderDispatch,
   claimStalledControllerRoundRelays,
+  controllerRoundBlockerClass,
   finishControllerRoundRelayDispatch,
-  listControllerRoundRelaysByBlocker,
+  listCurrentControllerRoundRelays,
 } from '../../../../packages/kernel/controller/api/index';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
 import { runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../launcher/chatgpt-work-continuation';
@@ -119,9 +120,16 @@ export async function runSchedulerPeriodicCleanup(input: {
     }
     for (const repository of input.repositories) {
       const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
-      for (const relay of listControllerRoundRelaysByBlocker(store, 'provider_dispatch_outcome_unknown', 16)) {
-        const blockedAtMs = Date.parse(relay.updatedAt);
-        if (!Number.isFinite(blockedAtMs) || input.nowMs - blockedAtMs < CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS) continue;
+      for (const relay of listCurrentControllerRoundRelays(store, 100)) {
+        const blocker = controllerRoundBlockerClass(relay);
+        const outcomeUnknown = blocker === 'provider_dispatch_outcome_unknown';
+        const durableInactiveRound = ['waiting', 'waiting_for_user', 'goal_complete', 'failed'].includes(relay.status)
+          || (relay.status === 'blocked' && !outcomeUnknown);
+        if (!durableInactiveRound && !outcomeUnknown) continue;
+        if (outcomeUnknown) {
+          const blockedAtMs = Date.parse(relay.updatedAt);
+          if (!Number.isFinite(blockedAtMs) || input.nowMs - blockedAtMs < CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS) continue;
+        }
         const existingSettlement = getChatgptControllerRoundSettlement(store, {
           workId: relay.originWorkId,
           relayScopeId: relay.relayScopeId,

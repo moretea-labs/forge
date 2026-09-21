@@ -921,6 +921,7 @@ describe('ChatGPT Work conversation binding', () => {
     createWorkContract(store, { ...workInput, workId: 'WORK-OUTCOME-UNKNOWN-BINDING', objective: 'Persist observed ChatGPT conversation identity.' });
     createWorkContract(store, { ...workInput, workId: 'WORK-FAILED-NO-BINDING', objective: 'Do not invent a ChatGPT conversation identity.' });
     createWorkContract(store, { ...workInput, workId: 'WORK-FAILED-VALID-CONVERSATION', objective: 'Do not persist a valid conversation URL from a known provider failure.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-THROWN-AFTER-SESSION', objective: 'Settle an exact Forge-owned Browser session after a thrown dispatch error.' });
 
     const outcomeUnknown = await runWorkChatgptContinuation({
       controllerHome,
@@ -1004,6 +1005,28 @@ describe('ChatGPT Work conversation binding', () => {
     });
     expect(knownFailureWithConversation).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed', tabCleanupStatus: 'closed' });
     expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-VALID-CONVERSATION')).toBeUndefined();
+
+    let settledThrownSession = '';
+    const thrownAfterSession = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-THROWN-AFTER-SESSION',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_44444444444444444444444444444444',
+      relayScopeId: 'goal:WORK-THROWN-AFTER-SESSION',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => { throw new Error('CHATGPT_CONTROLLER_BROWSER_FAILED:post-session failure'); },
+      },
+      settleBrowserTab: async ({ browserSessionId }) => {
+        settledThrownSession = browserSessionId;
+        return { status: 'closed' as const };
+      },
+    });
+    expect(thrownAfterSession).toMatchObject({ status: 'failed', tabCleanupStatus: 'closed' });
+    expect(settledThrownSession).toBe(thrownAfterSession.browserSessionId);
   });
 
   test('fresh transport starts from ChatGPT root and CAS-rebinds the durable Work to the newly observed conversation', async () => {

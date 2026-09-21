@@ -4,7 +4,12 @@ import { join } from 'path';
 import { ensureControllerHome } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { GoalDelegation } from '../governance/authorization';
-import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
+import {
+  readControlPlaneRecordWithinTransaction,
+  readOrImportControlPlaneRecord,
+  writeControlPlaneRecord,
+  type SqliteDatabase,
+} from '../persistence/sqlite-store';
 
 export interface ExecutionSessionContext {
   schemaVersion: 1;
@@ -67,6 +72,31 @@ export function peekExecutionSession(controllerHome: string, sessionId: string):
     schemaVersion: 1,
     readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
   })?.value;
+  if (!session) return undefined;
+  return session.sessionId === normalizedSessionId ? session : undefined;
+}
+
+/**
+ * Transaction-safe execution-session projection. It never imports legacy
+ * state while another control-plane write transaction is open. A legacy JSON
+ * file may still be read as evidence and is imported later by the ordinary
+ * non-transactional session path.
+ */
+export function peekExecutionSessionWithinTransaction(
+  database: SqliteDatabase,
+  controllerHome: string,
+  sessionId: string,
+): ExecutionSessionContext | undefined {
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) return undefined;
+  const stored = readControlPlaneRecordWithinTransaction<ExecutionSessionContext>(
+    database,
+    'execution_session',
+    'controller',
+    sanitizeFileComponent(normalizedSessionId),
+  )?.value;
+  const legacyPath = sessionPath(controllerHome, normalizedSessionId);
+  const session = stored ?? (existsSync(legacyPath) ? readJsonFile<ExecutionSessionContext>(legacyPath) : undefined);
   if (!session) return undefined;
   return session.sessionId === normalizedSessionId ? session : undefined;
 }

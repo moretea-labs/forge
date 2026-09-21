@@ -2,7 +2,10 @@ import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
-import { peekExecutionSession } from '../../../../src/runtime/control-plane/execution/session-store';
+import {
+  peekExecutionSession,
+  peekExecutionSessionWithinTransaction,
+} from '../../../../src/runtime/control-plane/execution/session-store';
 import { readJsonFile } from '../../../../src/runtime/shared/json-files';
 import {
   readControlPlaneRecord,
@@ -568,6 +571,7 @@ function resumableControllerSessionPrevious(
   options: ControllerSessionStoreOptions,
   store: ControllerSessionStore,
   input: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string },
+  database?: SqliteDatabase,
 ): ControllerSession | undefined {
   const currentNowMs = optionsNowMs(options);
   const current = activeSession(store, input.workId, currentNowMs);
@@ -577,8 +581,13 @@ function resumableControllerSessionPrevious(
       .filter((entry) => entry.workId === input.workId)
       .sort((left, right) => (right.claimGeneration ?? 0) - (left.claimGeneration ?? 0))[0];
   }
-  const priorExecution = peekExecutionSession(options.controllerHome, current.sessionId);
-  const currentPrincipal = current.principalId?.trim() || priorExecution?.principalId?.trim() || current.controllerId;
+  const explicitPrincipal = current.principalId?.trim();
+  const priorExecution = explicitPrincipal
+    ? undefined
+    : database
+      ? peekExecutionSessionWithinTransaction(database, options.controllerHome, current.sessionId)
+      : peekExecutionSession(options.controllerHome, current.sessionId);
+  const currentPrincipal = explicitPrincipal || priorExecution?.principalId?.trim() || current.controllerId;
   const staleRecoveryAllowed = input.allowStaleRecovery === true
     && input.expectedClaimGeneration !== undefined
     && !sessionBlocksRecovery(options, current, { nowMs: currentNowMs });
@@ -617,7 +626,7 @@ export function resumeControllerSessionWithinTransaction(
   assertIdentity(input);
   if (!input.principalId.trim() || !input.controllerInstanceId.trim()) throw new Error('CONTROLLER_RESUME_AUTHORITY_REQUIRED');
   const storeRecord = readSessionStoreWithinTransaction(database, options);
-  const previous = resumableControllerSessionPrevious(options, storeRecord.value, input);
+  const previous = resumableControllerSessionPrevious(options, storeRecord.value, input, database);
   return persistClaimWithinTransaction(database, options, storeRecord, input, previous);
 }
 

@@ -312,6 +312,15 @@ export function listControllerRoundRelaysByBlocker(
     .slice(0, boundedLimit);
 }
 
+/** Read-only latest relay projection used by bounded lifecycle/resource reconciliation. */
+export function listCurrentControllerRoundRelays(
+  options: ControllerRoundRelayStoreOptions,
+  limit = 100,
+): ControllerRoundRelayRecord[] {
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  return latestRelayRecordsByScope(options).slice(0, boundedLimit);
+}
+
 
 function requirementForRelay(options: ControllerRoundRelayStoreOptions, requirementId: string | undefined) {
   return requirementId ? readRequirement({ controllerHome: options.controllerHome }, requirementId)?.value : undefined;

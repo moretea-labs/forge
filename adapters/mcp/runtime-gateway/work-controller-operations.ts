@@ -123,24 +123,47 @@ export async function callRhWorkControllerOperation(
             authorityDigest: controllerSessionAuthorityDigest(authorizedRelay.authorityId!),
           }
         : undefined;
+      const relayAuthorityId = claimRelay?.authorityId?.trim() || '';
+      const ownerInstanceId = observedOwner?.controllerInstanceId?.trim() || '';
+      const ownerRuntimeChanged = Boolean(observedOwner)
+        && Boolean(ownerInstanceId)
+        && ownerInstanceId !== identity.controllerInstanceId;
+      const relaySessionAuthority = relayAuthorityId
+        && (!observedOwner || Boolean(observedOwner.authorityDigest?.trim()) || ownerRuntimeChanged)
+        ? {
+            authorityId: relayAuthorityId,
+            authorityDigest: controllerSessionAuthorityDigest(relayAuthorityId),
+          }
+        : undefined;
       const existingDirectAuthority = Boolean(observedOwner?.authorityDigest?.trim())
-        && !dispatchedRelay?.authorityId?.trim()
+        && !relayAuthorityId
         && !inheritedRequirementAuthority;
       if (existingDirectAuthority && identity.controllerAuthorityId
         && observedOwner
         && !controllerSessionAuthorityMatches(observedOwner, identity.controllerAuthorityId)) {
         throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
       }
-      const directAuthority = (dispatchedRelay?.authorityId?.trim() || inheritedRequirementAuthority || existingDirectAuthority)
+      const directAuthority = (relayAuthorityId || inheritedRequirementAuthority || existingDirectAuthority)
         ? undefined
         : mintControllerSessionAuthority();
-      const sessionAuthority = inheritedRequirementAuthority ?? directAuthority;
+      const sessionAuthority = relaySessionAuthority ?? inheritedRequirementAuthority ?? directAuthority;
       const crossOwnerRecovery = Boolean(observedOwner)
         && (
           observedOwner!.controllerId !== identity.controllerId
           || controllerSessionPrincipalId(observedOwner!) !== identity.principalId
         )
         && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(store, workId, dispatchedRelay, identity.controllerType);
+      const samePrincipalRuntimeMigration = Boolean(observedOwner)
+        && observedOwner!.controllerId === identity.controllerId
+        && observedOwner!.controllerType === identity.controllerType
+        && controllerSessionPrincipalId(observedOwner!) === identity.principalId
+        && ownerRuntimeChanged;
+      if (samePrincipalRuntimeMigration) {
+        const runtime = runtimeIdentitySnapshot(ctx);
+        if (!runtime.running || runtime.runtimeInstanceId !== identity.controllerInstanceId) {
+          throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}; Runtime rotation must be served by the live canonical Runtime.`);
+        }
+      }
       const sessionClaim = {
         workId,
         controllerId: identity.controllerId,
@@ -149,10 +172,10 @@ export async function callRhWorkControllerOperation(
         ...(sessionAuthority ? { authorityDigest: sessionAuthority.authorityDigest } : {}),
         principalId: identity.principalId,
         controllerInstanceId: identity.controllerInstanceId,
-        ...(crossOwnerRecovery
+        ...((crossOwnerRecovery || samePrincipalRuntimeMigration)
           ? {
               expectedClaimGeneration: observedOwner!.claimGeneration,
-              allowStaleRecovery: true,
+              ...(crossOwnerRecovery ? { allowStaleRecovery: true } : {}),
             }
           : {}),
         leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,

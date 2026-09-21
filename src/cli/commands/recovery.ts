@@ -156,6 +156,51 @@ export interface RecoveryConnectorDependencies {
   tunnelSystemdPid?: (unitName: string) => number | undefined;
   openAiTunnelStatus?: (service: OpenAiSecureTunnelServiceConfig) => OpenAiSecureTunnelRuntimeObservation;
   processAlive?: (pid: number) => boolean;
+  processParentPid?: (pid: number) => number | undefined;
+}
+
+function recoveryProcessParentPid(pid: number): number | undefined {
+  if (process.platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return undefined;
+  const result = spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 2_000,
+    maxBuffer: 8 * 1024,
+  });
+  if (result.status !== 0) return undefined;
+  const parent = Number.parseInt((result.stdout ?? '').trim(), 10);
+  return Number.isInteger(parent) && parent > 0 ? parent : undefined;
+}
+
+/**
+ * launchd may own a tiny wrapper (/usr/bin/env) while Recovery records the
+ * compiled child PID in its runtime identity. Treat only that bounded process
+ * lineage as the same managed service; unrelated live PIDs still fail closed.
+ */
+export function recoveryManagedServiceOwnsRuntimeProcess(
+  managedPid: number | undefined,
+  runtimePid: number | undefined,
+  dependencies: {
+    processAlive?: (pid: number) => boolean;
+    processParentPid?: (pid: number) => number | undefined;
+    maxDepth?: number;
+  } = {},
+): boolean {
+  if (!managedPid || !runtimePid || managedPid <= 0 || runtimePid <= 0) return false;
+  const processAlive = dependencies.processAlive ?? isProcessAlive;
+  if (!processAlive(managedPid) || !processAlive(runtimePid)) return false;
+  if (managedPid === runtimePid) return true;
+  const parentPid = dependencies.processParentPid ?? recoveryProcessParentPid;
+  const maxDepth = Math.max(1, Math.min(Math.trunc(dependencies.maxDepth ?? 8), 32));
+  const visited = new Set<number>([runtimePid]);
+  let current = runtimePid;
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    const parent = parentPid(current);
+    if (!parent || parent <= 0 || visited.has(parent)) return false;
+    if (parent === managedPid) return true;
+    visited.add(parent);
+    current = parent;
+  }
+  return false;
 }
 
 export interface RecoveryConnectorDescriptor {
@@ -218,6 +263,11 @@ export function recoveryConnectorDescriptor(
   const systemdPid = dependencies.systemdPid ?? ((role: 'gateway' | 'watchdog') => systemdUserServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL));
   const managedPid = (role: 'gateway' | 'watchdog') => servicePlatform === 'systemd-user' ? systemdPid(role) : launchdPid(role);
   const processAlive = dependencies.processAlive ?? isProcessAlive;
+  const serviceOwnsRuntimeProcess = (managedPid: number | undefined, runtimePid: number | undefined) =>
+    recoveryManagedServiceOwnsRuntimeProcess(managedPid, runtimePid, {
+      processAlive,
+      processParentPid: dependencies.processParentPid,
+    });
   const configuredTunnel = config.recoveryTunnelService;
   const tunnelService = configuredTunnel?.platform === 'launchd' ? configuredTunnel : undefined;
   const systemdTunnelService = configuredTunnel?.platform === 'systemd-user' ? configuredTunnel : undefined;
@@ -269,18 +319,14 @@ export function recoveryConnectorDescriptor(
   const watchdogManagedPid = managedPid('watchdog');
   const gatewayRunning = Boolean(
     gatewayIdentity
-    && gatewayManagedPid
-    && gatewayIdentity.pid === gatewayManagedPid
-    && processAlive(gatewayIdentity.pid)
+    && serviceOwnsRuntimeProcess(gatewayManagedPid, gatewayIdentity.pid)
     && authority.current
     && gatewayIdentity.releaseRevision === authority.current.releaseRevision
     && gatewayIdentity.manifestSha256 === authority.current.manifestSha256,
   );
   const watchdogRunning = Boolean(
     watchdogIdentity
-    && watchdogManagedPid
-    && watchdogIdentity.pid === watchdogManagedPid
-    && processAlive(watchdogIdentity.pid)
+    && serviceOwnsRuntimeProcess(watchdogManagedPid, watchdogIdentity.pid)
     && authority.current
     && watchdogIdentity.releaseRevision === authority.current.releaseRevision
     && watchdogIdentity.manifestSha256 === authority.current.manifestSha256,

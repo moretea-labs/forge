@@ -527,6 +527,19 @@ export async function runWorkChatgptContinuation(
   } catch (error) {
     const provider = bridgeRuntime ? 'chatgpt-bridge' : 'controller-browser';
     const fallbackSessionId = bridgeRuntime ? deliverySessionId : sessionId;
+    // A provider exception may occur after create_session/navigation already
+    // materialized an exact Forge-owned Browser resource. Settle that exact
+    // session here rather than waiting for a later relay blocker projection.
+    // Browser ownership authority still preserves user-owned tabs.
+    const tabCleanup = provider === 'controller-browser'
+      ? await (dependencies.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
+          controllerHome: input.controllerHome,
+          workId: input.workId,
+          browserSessionId: fallbackSessionId,
+          timeoutMs: input.timeoutMs,
+          authorizationGrantRefs: [...authorizationGrantRefs],
+        })
+      : undefined;
     return {
       status: 'failed',
       provider,
@@ -540,6 +553,8 @@ export async function runWorkChatgptContinuation(
       tabPolicy,
       executionPreferenceVerified: false,
       authorizationGrantRefs: [...authorizationGrantRefs],
+      ...(tabCleanup ? { tabCleanupStatus: tabCleanup.status } : {}),
+      ...(tabCleanup?.error ? { tabCleanupError: tabCleanup.error } : {}),
       error: {
         code: error instanceof ChatgptExecutionPlacementError
           ? error.code

@@ -82,6 +82,7 @@ import {
   assertDistinctRecoveryOpenAiTunnelIdentity,
   recoveryConnectorDescriptor,
   recoveryConnectorHasExternalTransport,
+  recoveryManagedServiceOwnsRuntimeProcess,
   recoveryOpenAiTunnelDefaultAlias,
   verifyRecoveryConnector,
 } from '../../src/cli/commands/recovery';
@@ -4213,6 +4214,20 @@ describe('standalone recovery on canonical Runtime', () => {
     });
     expect(result).toMatchObject({ ok: true, attempted: true });
     expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+  });
+
+  test('accepts a live Recovery runtime child owned by the managed wrapper and rejects unrelated PIDs', () => {
+    const alive = new Set([100, 101, 102, 200]);
+    const parent = new Map([[101, 100], [102, 101], [200, 1]]);
+    const processAlive = (pid: number) => alive.has(pid);
+    const processParentPid = (pid: number) => parent.get(pid);
+
+    expect(recoveryManagedServiceOwnsRuntimeProcess(100, 100, { processAlive, processParentPid })).toBe(true);
+    expect(recoveryManagedServiceOwnsRuntimeProcess(100, 101, { processAlive, processParentPid })).toBe(true);
+    expect(recoveryManagedServiceOwnsRuntimeProcess(100, 102, { processAlive, processParentPid })).toBe(true);
+    expect(recoveryManagedServiceOwnsRuntimeProcess(100, 200, { processAlive, processParentPid })).toBe(false);
+    alive.delete(101);
+    expect(recoveryManagedServiceOwnsRuntimeProcess(100, 101, { processAlive, processParentPid })).toBe(false);
   });
 
   test('describes one independent HTTPS Recovery MCP connector without exposing credentials', () => {
