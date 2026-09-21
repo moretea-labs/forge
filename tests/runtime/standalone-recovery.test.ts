@@ -21,6 +21,7 @@ import {
   resolveRecoveryPackageConnectorExecutable,
   listReleases,
   pinRuntimeRelease,
+  promoteConfiguredRuntimeReleaseSessionKnownGood,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
   repairPublicTunnel,
@@ -68,6 +69,7 @@ import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
 } from '../../src/runtime/root/release-store';
+import { advanceReleaseSession, createReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
@@ -1905,6 +1907,132 @@ describe('standalone recovery on canonical Runtime', () => {
     ]));
     expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');
   });
+
+  test('known-good promotion reconciles an already-attested soaking ReleaseSession without replaying public MCP probes', async () => {
+    const home = controllerHome();
+    const first = manifest(home, 'release-a', 'artifact-a');
+    const second = manifest(home, 'release-b', 'artifact-b');
+    const baselineAuthority = ensureActiveRuntimeRelease(home, first);
+    publishRuntimeRelease(home, second, 'known-good-reconcile-cutover');
+    const cutoverAuthority = readRuntimeReleaseAuthority(home)!;
+    expect(cutoverAuthority.active.releaseId).toBe('release-b');
+    expect(cutoverAuthority.previous?.databaseBackup).toBeDefined();
+
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, cutoverAuthority.active.releaseId, cutoverAuthority.active.artifactIdentity);
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    const attested = await attestKnownGood(config);
+    expect(attested).toMatchObject({
+      revision: cutoverAuthority.active.releaseId,
+      artifactIdentity: cutoverAuthority.active.artifactIdentity,
+      recoveryBundle: {},
+    });
+
+    const sessionId = 'release-known-good-reconcile-12345678';
+    const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+    mkdirSync(candidateHome, { recursive: true });
+    const stable = {
+      schemaVersion: 1 as const,
+      kind: 'stable' as const,
+      controllerHome: home,
+      serviceLabel: 'stable-runtime',
+      port: 8765,
+      authTokenFile: join(home, 'mcp', 'runtime-token'),
+    };
+    const stableRelease = {
+      authorityRevision: baselineAuthority.revision,
+      releaseId: baselineAuthority.active.releaseId,
+      artifactIdentity: baselineAuthority.active.artifactIdentity,
+      manifestSha256: baselineAuthority.active.manifestSha256,
+      workerProtocolVersion: baselineAuthority.active.workerProtocolVersion,
+      releaseFencingTokenSha256: createHash('sha256').update(baselineAuthority.fencingToken).digest('hex'),
+    };
+    const candidate = {
+      schemaVersion: 1 as const,
+      kind: 'candidate' as const,
+      sessionId,
+      controllerHome: candidateHome,
+      serviceLabel: 'candidate-runtime',
+      port: 8766,
+      authTokenFile: join(candidateHome, 'mcp', 'runtime-token'),
+      databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+      sourceStableControllerHome: home,
+      createdAt: new Date().toISOString(),
+    };
+    const candidateRelease = {
+      releaseId: cutoverAuthority.active.releaseId,
+      manifestPath: cutoverAuthority.active.manifestPath,
+      artifactIdentity: cutoverAuthority.active.artifactIdentity,
+      manifestSha256: cutoverAuthority.active.manifestSha256,
+      treeSha256: 'a'.repeat(64),
+      sourceCommit: 'known-good-reconcile-source',
+      sourceRepositoryId: 'repo-known-good-reconcile',
+    };
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: candidateRelease.sourceCommit,
+    });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'static_verified',
+      receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+    });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_verified',
+      receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+    });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+    const rollback = cutoverAuthority.previous!;
+    session = recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId,
+      expectedRevision: session.revision,
+      transaction: {
+        schemaVersion: 1,
+        operationId: 'known-good-reconcile-cutover',
+        candidateReleaseId: candidateRelease.releaseId,
+        cutoverAuthorityRevision: cutoverAuthority.revision,
+        rollbackRelease: {
+          releaseId: rollback.releaseId,
+          artifactIdentity: rollback.artifactIdentity,
+          manifestPath: rollback.manifestPath,
+          manifestSha256: rollback.manifestSha256,
+          workerProtocolVersion: rollback.workerProtocolVersion,
+          publishedAt: rollback.publishedAt,
+          databaseBackup: rollback.databaseBackup!,
+        },
+        startedAt: new Date().toISOString(),
+      },
+    });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'soaking' });
+
+    const failing = await failingPublicGatewayServer();
+    const reconcileConfig = createRecoveryConfig(home, { publicMcpUrl: failing.endpoint });
+    const promoted = await promoteConfiguredRuntimeReleaseSessionKnownGood(
+      reconcileConfig,
+      sessionId,
+      idleCpuDependencies(),
+      'known-good-reconcile',
+    );
+
+    expect(promoted).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'known_good' } });
+    expect(failing.requests).toHaveLength(0);
+  });
+
   test('frozen Recovery clients can use their exported activation schema while partial or wrong explicit identity still fails closed', async () => {
     const home = controllerHome();
     const config = createRecoveryConfig(home);

@@ -675,6 +675,33 @@ function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | un
   ));
 }
 
+function sameReleaseEvidenceIdentity(left: ReleaseEvidence | undefined, right: ReleaseEvidence | undefined): boolean {
+  return Boolean(
+    left
+    && right
+    && left.path === right.path
+    && left.revision === right.revision
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256
+    && left.workerProtocolVersion === right.workerProtocolVersion,
+  );
+}
+
+function liveRuntimeOwnsRelease(config: RecoveryConfig, release: ReleaseEvidence): boolean {
+  const active = activeAuthorityRelease(config);
+  const observed = observeRuntimeStatus(config.controllerHome);
+  const snapshot = observed.snapshot;
+  return Boolean(
+    sameReleaseEvidenceIdentity(active, release)
+    && observed.running
+    && observed.ready
+    && !observed.stale
+    && snapshot
+    && snapshot.releaseId === release.revision
+    && snapshot.artifactIdentity === release.artifactIdentity,
+  );
+}
+
 function runtimePin(config: RecoveryConfig): RuntimePinStore | undefined {
   const path = runtimePinPath(config);
   if (!existsSync(path)) return undefined;
@@ -5115,14 +5142,33 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
 
   let attested: ReleaseEvidence;
   try {
-    const before = await verifyStableRuntime(config);
+    const active = activeAuthorityRelease(config);
     if (
-      !before.ok
-      || before.releases.active?.revision !== candidateRelease.releaseId
-      || before.releases.active?.artifactIdentity !== candidateRelease.artifactIdentity
-      || before.releases.active?.manifestSha256 !== candidateRelease.manifestSha256
+      !active
+      || active.revision !== candidateRelease.releaseId
+      || active.artifactIdentity !== candidateRelease.artifactIdentity
+      || active.manifestSha256 !== candidateRelease.manifestSha256
     ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-    attested = await attestKnownGood(config, dependencies);
+
+    const existingAttestation = matchingKnownGood(config, active);
+    if (existingAttestation) {
+      // A known-good attestation is durable release authority, not a transient
+      // observation. Crash/retry reconciliation must reuse it instead of
+      // replaying performance observation and public MCP probes. The live
+      // Runtime still has to own the exact same release and remain locally
+      // live/ready/non-stale before the ReleaseSession can terminalize.
+      if (!liveRuntimeOwnsRelease(config, existingAttestation)) {
+        throw new Error('RELEASE_SESSION_ATTESTED_RUNTIME_NOT_CURRENT');
+      }
+      attested = existingAttestation;
+    } else {
+      const before = await verifyStableRuntime(config);
+      if (!before.ok) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_VERIFY_FAILED');
+      if (!sameReleaseEvidenceIdentity(before.releases.active, active)) {
+        throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+      }
+      attested = await attestKnownGood(config, dependencies);
+    }
     if (
       attested.revision !== candidateRelease.releaseId
       || attested.artifactIdentity !== candidateRelease.artifactIdentity
@@ -5145,13 +5191,13 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     if (session.phase !== 'soaking') {
       return { ok: false as const, attempted: true, detail: `RELEASE_SESSION_CHANGED_DURING_KNOWN_GOOD_ATTESTATION: ${session.phase}`, releaseSession: session };
     }
-    const current = await verifyStableRuntime(config);
-    if (
-      !current.ok
-      || current.releases.active?.revision !== attested.revision
-      || current.releases.active?.artifactIdentity !== attested.artifactIdentity
-      || current.releases.active?.manifestSha256 !== attested.manifestSha256
-    ) {
+    // The expensive independent verification and performance observation are
+    // already embodied by `attested`. Re-running the full network probe suite
+    // here created a split-brain transaction: the durable recovery bundle could
+    // be published successfully, then one transient Gateway/MCP timeout left the
+    // ReleaseSession permanently soaking. Under the mutation lock, only fence
+    // the identity that could invalidate that attestation.
+    if (!liveRuntimeOwnsRelease(config, attested)) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
     try {
