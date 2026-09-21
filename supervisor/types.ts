@@ -76,6 +76,12 @@ export interface WorkflowSupervisorLifecycleHooks {
   discoveredConversationTask?(conversation: WorkflowSupervisorDiscoveredConversation, scope: WorkflowSupervisorProjectScope): WorkflowSupervisorTaskInput | undefined;
   /** Derived from canonical lower-layer lifecycle facts; must not create a second task lifecycle authority. */
   browserTaskActive?(task: WorkflowSupervisorTask): boolean;
+  /** Idempotent: browser delivery observation may replay the same applied effect. */
+  effectApplied?(
+    task: WorkflowSupervisorTask,
+    effect: WorkflowSupervisorEffect,
+    observation: { observationId: string; evidence?: Record<string, unknown> },
+  ): void;
   /** Idempotent: browser/recovery observation may replay the same completion fingerprint. */
   assistantTurnCommitted?(
     task: WorkflowSupervisorTask,

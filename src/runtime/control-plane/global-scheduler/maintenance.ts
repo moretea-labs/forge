@@ -358,6 +358,12 @@ export async function runSchedulerControllerRoundRecovery(input: {
           });
           continue;
         }
+        if (boundary.status === 'conversation_pending') {
+          // Automatic recovery must never manufacture a replacement ChatGPT
+          // conversation while current-conversation enrollment is unresolved.
+          // An explicit launcher may still create a new conversation by design.
+          continue;
+        }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
         const predecessorBinding = !binding && record.predecessorWorkId
           ? getChatgptWorkConversationBinding(store, record.predecessorWorkId)

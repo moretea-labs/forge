@@ -63,6 +63,11 @@ async function handlePage(message, sender) {
       }
     }
   }
+  // Provider activity is a composer-safety gate only. It never replaces the
+  // exact Supervisor END marker as completion authority. Initial enrollment can
+  // start from an ordinary assistant turn, so wait until that turn is idle
+  // before submitting the first Supervisor effect into this same conversation.
+  if (message.providerTurnPending === true) return;
   const poll = await nativeRpc('browser_poll', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl });
   if (poll?.command) await act(tabId, identity, poll.command);
 }

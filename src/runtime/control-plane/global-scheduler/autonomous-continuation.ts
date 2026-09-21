@@ -288,6 +288,14 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
             }
             continue;
           }
+          if (boundary.status === 'conversation_pending') {
+            // Requirement-backed ChatGPT Work must be explicitly bound to the
+            // current conversation before outer-turn continuation. Never fall
+            // through to the legacy Browser host, which may create a replacement
+            // provider session/conversation and split lifecycle authority.
+            skip(skippedByReason, 'workflow_supervisor:conversation_pending');
+            continue;
+          }
         }
 
         const rawHost = hostForBinding(

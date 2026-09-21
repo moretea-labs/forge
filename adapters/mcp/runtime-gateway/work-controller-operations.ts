@@ -21,7 +21,7 @@ import { assertAutomatedOperationAllowed } from '../../../src/runtime/control-pl
 import { ensureControllerDispositionContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { completeRequirementGoal } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
-import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork } from '../../../src/runtime/root/workflow-supervisor-composition';
+import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork, workflowSupervisorCurrentConversationMatchesWork } from '../../../src/runtime/root/workflow-supervisor-composition';
 import {
   acknowledgeControllerRoundClaim,
   claimControllerRoundSession,
@@ -116,7 +116,22 @@ export async function callRhWorkControllerOperation(
         && preflightRuntime.running
         && preflightRuntime.runtimeInstanceId === identity.controllerInstanceId
       );
-      let authorizedRelay = samePrincipalCanonicalRuntimeMigrationWithoutAuthority
+      const supervisorBoundary = identity.controllerType === 'chatgpt'
+        ? workflowSupervisorBoundaryForWork(store, workId)
+        : { status: 'not_eligible' as const };
+      const supervisorOuterTurnClaimCandidate = Boolean(
+        dispatchedRelay?.status === 'dispatched'
+        && dispatchedRelay.controllerType === 'chatgpt'
+        && identity.controllerType === 'chatgpt'
+        && !identity.controllerAuthorityId
+        && (!requestedRelayScopeId || requestedRelayScopeId === dispatchedRelay.relayScopeId)
+        && supervisorBoundary.status === 'outer_turn'
+        && dispatchedRelay.controllerId === identity.controllerId
+        && dispatchedRelay.principalId === identity.principalId
+      );
+      const supervisorOuterTurnClaimWithoutAuthority = supervisorOuterTurnClaimCandidate
+        && await workflowSupervisorCurrentConversationMatchesWork(store, workId);
+      let authorizedRelay = samePrincipalCanonicalRuntimeMigrationWithoutAuthority || supervisorOuterTurnClaimWithoutAuthority
         ? dispatchedRelay
         : assertFacadeControllerRoundAuthority(ctx, store, workId, args);
       if (!authorizedRelay && identity.controllerAuthorityId && requestedRelayScopeId) {
@@ -570,6 +585,30 @@ export async function callRhWorkControllerOperation(
         : undefined;
       if (relay?.status === 'dispatching') {
         const relayWorkId = relay.originWorkId;
+        if (relay.controllerType === 'chatgpt') {
+          const boundary = workflowSupervisorBoundaryForWork(relayStore, relayWorkId);
+          if (boundary.status === 'outer_turn') {
+            const enrollment = await ensureWorkflowSupervisorEnrollmentForWork(relayStore, relayWorkId);
+            if (enrollment.status !== 'enrolled') {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: enrollment.reason ?? `Workflow Supervisor enrollment is not ready: ${enrollment.status}.`,
+                data: { relay, supervisorEnrollment: enrollment },
+              }) as unknown as Record<string, unknown>, true);
+            }
+            return result(buildFacadeResult({
+              summary: `Controller lease released; Workflow Supervisor owns the next outer ChatGPT turn for ${boundary.conversationId}.`,
+              data: { relay, supervisorEnrollment: enrollment },
+            }) as unknown as Record<string, unknown>);
+          }
+          if (boundary.status === 'conversation_pending') {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: boundary.reason,
+              data: { relay, workflowSupervisorBoundary: boundary },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
         try {
           assertAutomatedOperationAllowed('external_controller_wake', {
             controller_type: 'chatgpt',
@@ -666,6 +705,10 @@ export async function callRhWorkControllerOperation(
       if (controllerType === 'chatgpt') {
         const work = getWorkContract(store, workId);
         if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+        const supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
+        if (supervisorBoundary.status === 'outer_turn') {
+          throw new Error(`WORKFLOW_SUPERVISOR_OUTER_TURN_OWNED:${workId}:${supervisorBoundary.conversationId}`);
+        }
         const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
         const handoff = handoffId ? getHandoffItem(store, handoffId) : undefined;
         const valueForFlag = (flag: string): string | undefined => {

@@ -3,6 +3,7 @@ import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
+  finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getControllerSession,
   getRequirementControllerRoundRelay,
@@ -296,9 +297,43 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       } catch { return undefined; }
     },
     browserTaskActive,
+    effectApplied: (task, effect, observation) => {
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+      const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+      if (!repoId || !requirementId || taskControllerHome !== controllerHome) return;
+      const store = { controllerHome, repoId };
+      const relay = getRequirementControllerRoundRelay(store, requirementId);
+      if (!relay || relay.status !== 'dispatching') return;
+      const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
+      if (boundary.status !== 'outer_turn' || boundary.taskId !== task.taskId || boundary.conversationId !== task.conversationId) return;
+      finishControllerRoundRelayDispatch(store, {
+        workId: relay.originWorkId,
+        ok: true,
+        providerDispatchReceiptId: `workflow-supervisor:${effect.effectId}:${observation.observationId}`,
+      });
+    },
     assistantTurnCommitted: (task, completion) => settleForgeWorkflowSupervisorTurn(controllerHome, task, completion),
   };
 }
+export async function workflowSupervisorCurrentConversationMatchesWork(
+  options: { controllerHome: string; repoId: string },
+  workId: string,
+): Promise<boolean> {
+  const boundary = workflowSupervisorBoundaryForWork(options, workId);
+  if (boundary.status !== 'outer_turn') return false;
+  const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
+  if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return false;
+  try {
+    const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
+    return Boolean(current
+      && current.conversationId === boundary.conversationId
+      && current.canonicalUrl === boundary.conversationUrl);
+  } catch {
+    return false;
+  }
+}
+
 export async function bindCurrentWorkflowSupervisorConversationForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,

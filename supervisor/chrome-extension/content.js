@@ -42,6 +42,15 @@
     return node ? String(node.innerText ?? node.textContent ?? '').trim() : '';
   };
   const latestAssistant = () => { const text = latestText(ASSISTANT); return core.isCommittedAssistantResponse(text) ? text : undefined; };
+  const latestTurnRole = () => {
+    const nodes = document.querySelectorAll(`${USER}, ${ASSISTANT}`);
+    const node = nodes.item(nodes.length - 1);
+    return node?.getAttribute?.('data-message-author-role') ?? undefined;
+  };
+  const providerTurnPending = () => Boolean(
+    document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')
+    || latestTurnRole() === 'user'
+  );
   const exactLatestUser = (prompt) => core.normalizeText(latestText(USER)) === core.normalizeText(prompt);
   const reconciliationSnapshot = (effectId) => ({ latest_user_text: latestText(USER), latest_assistant_response: latestText(ASSISTANT), target_marker_present: core.promptHasEffect(latestText(USER), effectId) });
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,7 +105,12 @@
       const current = identity();
       if (!current) return;
       const assistantResponse = latestAssistant();
-      chrome.runtime.sendMessage({ type: 'forge-workflow-supervisor-page', ...current, ...(assistantResponse ? { assistantResponse } : {}) }, () => void chrome.runtime.lastError);
+      chrome.runtime.sendMessage({
+        type: 'forge-workflow-supervisor-page',
+        ...current,
+        providerTurnPending: providerTurnPending(),
+        ...(assistantResponse ? { assistantResponse } : {}),
+      }, () => void chrome.runtime.lastError);
     }, 200);
   }
   new MutationObserver(notify).observe(document.documentElement, { subtree: true, childList: true, characterData: true });

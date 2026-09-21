@@ -107,7 +107,9 @@ export class WorkflowSupervisorControlPlane {
     const effect = this.store.getEffect(validateEffectId(input.effectId));
     if (!effect || effect.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_TASK_MISMATCH');
     if (input.outcome !== 'not_applied') {
-      this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence: sanitizeBrowserEvidence(input.evidence) });
+      const evidence = sanitizeBrowserEvidence(input.evidence);
+      this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence });
+      if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
       return { recorded: true };
     }
     const pending = this.store.nextBrowserEffect(task.taskId);
