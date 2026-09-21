@@ -60,7 +60,16 @@ export type RuntimeReleaseReconciliationReason =
   | 'active_session'
   | 'source_mismatch'
   | 'source_not_configured'
-  | 'source_current';
+  | 'source_current'
+  | 'source_already_attempted';
+
+export interface RuntimeReleaseSourceState {
+  configured: boolean;
+  sourceRevision?: string;
+  activeSourceCommit?: string;
+}
+
+export type RuntimeReleaseSourceObserver = () => RuntimeReleaseSourceState;
 
 export interface RuntimeReleaseReconciliationDecision {
   required: boolean;
@@ -71,12 +80,35 @@ export interface RuntimeReleaseReconciliationDecision {
 
 const MAX_AUTONOMOUS_RELEASE_ADVANCES = 8;
 
-export function activeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
+function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
   const inventory = listReleaseSessions(controllerHome, { maxEntries: 512 });
   if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
     throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
   }
-  return inventory.sessions.filter((session) => !releaseSessionIsTerminal(session));
+  return inventory.sessions;
+}
+
+export function activeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
+  return completeRuntimeReleaseSessions(controllerHome)
+    .filter((session) => !releaseSessionIsTerminal(session));
+}
+
+function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeReleaseCoordinatorAction {
+  switch (session.phase) {
+    case 'source_frozen': return 'prepare';
+    case 'built': return 'verify_static';
+    case 'static_verified':
+    case 'candidate_booted': return 'verify_candidate';
+    case 'candidate_verified': return 'mark_cutover_eligible';
+    case 'cutover_eligible':
+    case 'cutover_attempting':
+    case 'cutover_committed': return 'cutover';
+    case 'soaking': return 'promote_known_good';
+    case 'known_good':
+    case 'rolled_back':
+    case 'failed':
+      throw new Error(`RELEASE_SESSION_TERMINAL_NOT_ACTIVE: ${session.sessionId}:${session.phase}`);
+  }
 }
 
 export function decideConfiguredRuntimeReleaseAction(controllerHome: string): RuntimeReleaseCoordinatorDecision {
@@ -86,21 +118,7 @@ export function decideConfiguredRuntimeReleaseAction(controllerHome: string): Ru
   }
   const session = active[0];
   if (!session) return { action: 'prepare' };
-  switch (session.phase) {
-    case 'source_frozen': return { action: 'prepare', session };
-    case 'built': return { action: 'verify_static', session };
-    case 'static_verified':
-    case 'candidate_booted': return { action: 'verify_candidate', session };
-    case 'candidate_verified': return { action: 'mark_cutover_eligible', session };
-    case 'cutover_eligible':
-    case 'cutover_attempting':
-    case 'cutover_committed': return { action: 'cutover', session };
-    case 'soaking': return { action: 'promote_known_good', session };
-    case 'known_good':
-    case 'rolled_back':
-    case 'failed':
-      throw new Error(`RELEASE_SESSION_TERMINAL_NOT_ACTIVE: ${session.sessionId}:${session.phase}`);
-  }
+  return { action: runtimeReleaseActionForSession(session), session };
 }
 
 /**
@@ -112,23 +130,42 @@ export function decideConfiguredRuntimeReleaseAction(controllerHome: string): Ru
  */
 export function decideConfiguredRuntimeReleaseReconciliation(
   controllerHome: string,
-  source: { configured: boolean; sourceRevision?: string; activeSourceCommit?: string },
+  observeSource: RuntimeReleaseSourceObserver,
 ): RuntimeReleaseReconciliationDecision {
-  const active = activeRuntimeReleaseSessions(controllerHome);
+  const sessions = completeRuntimeReleaseSessions(controllerHome);
+  const active = sessions.filter((session) => !releaseSessionIsTerminal(session));
   if (active.length > 1) {
     throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
   }
   const session = active[0];
   if (session) {
-    const decision = decideConfiguredRuntimeReleaseAction(controllerHome);
-    return { required: true, reason: 'active_session', action: decision.action, session };
+    return { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session };
   }
+
+  // Source observation may spawn Git. Keep it lazy so an already-active
+  // ReleaseSession can progress entirely from its durable authority without
+  // periodic repository/process churn in the Recovery daemon.
+  const source = observeSource();
   if (!source.configured) return { required: false, reason: 'source_not_configured' };
   const sourceRevision = source.sourceRevision?.trim();
   const activeSourceCommit = source.activeSourceCommit?.trim();
   if (!sourceRevision) throw new Error('RELEASE_AUTOMATION_SOURCE_REVISION_UNKNOWN');
   if (!activeSourceCommit) throw new Error('RELEASE_AUTOMATION_ACTIVE_SOURCE_COMMIT_UNKNOWN');
   if (sourceRevision === activeSourceCommit) return { required: false, reason: 'source_current' };
+
+  // An autonomous release is one attempt per immutable source revision.
+  // A terminal ReleaseSession is durable evidence that this exact commit was
+  // already accepted, failed, or deliberately rolled back. Replaying it every
+  // watchdog interval would turn a safety failure into a release/fork storm.
+  // A human can still start an explicit release; automatic retry resumes when
+  // HEAD changes and therefore produces a new source revision.
+  const priorAttempt = sessions
+    .filter((candidate) => releaseSessionIsTerminal(candidate) && candidate.sourceRevision === sourceRevision)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  if (priorAttempt) {
+    return { required: false, reason: 'source_already_attempted', session: priorAttempt };
+  }
+
   return { required: true, reason: 'source_mismatch', action: 'prepare' };
 }
 

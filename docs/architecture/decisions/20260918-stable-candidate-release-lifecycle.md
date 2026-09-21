@@ -118,9 +118,20 @@ requires Recovery restart, MCP, Scheduler, Supervisor and controller receipts
 from isolated B. `cutover_eligible` is impossible while A and B collide on Home
 or port. `cutover_attempting` permits exactly one fenced production cutover;
 verified return to exact A terminalizes `rolled_back` and is never retried.
+Automatic source reconciliation is also revision-bounded: once an immutable
+source revision has any terminal ReleaseSession, the daemon will not create a
+second automatic ReleaseSession for that same revision. Explicit human release
+operations remain available, and a changed source revision becomes eligible for
+a new automatic attempt. This rule is derived from ReleaseSession history; it
+introduces no retry ledger or second release authority.
+
 Successful cutover enters `soaking`; only the existing full verification +
 performance observation + recoverable release/SQLite/service bundle attestation
-may terminalize `known_good`. The state machine records redacted receipt ids and
+may terminalize `known_good`. A definitive runaway-CPU rejection is an acceptance
+failure, so Recovery executes the existing exact Stable A rollback transaction
+instead of leaving Candidate B in `soaking` for repeated performance sampling.
+Transient/unknown observations remain non-terminal and may be reconciled against
+the same ReleaseSession. The state machine records redacted receipt ids and
 summaries, never tokens, raw database payloads or browser messages.
 
 ## Persistent-state contract
@@ -149,5 +160,7 @@ the service contract records a token *path*, while each B token is an independen
 - private writer environment cannot cross service or child boundaries;
 - stale or missing known-good bundle material cannot protect a release;
 - ReleaseSession cannot advance past static/candidate gates or a stale CAS;
+- no-op automatic reconciliation does not fork a Recovery worker, and terminal source revisions are not autonomously replayed;
+- definitive runaway-CPU rejection restores Stable A through the existing ReleaseSession rollback authority rather than repeating soak measurement;
 - terminal Process observation and full maintenance both reconcile any exact leftover workspace lease; `completed_unknown` cannot permanently fence a checkout;
 - final live release testing remains a separate, one-shot governed operation.

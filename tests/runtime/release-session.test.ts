@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction } from '../../src/runtime/release/release-coordinator';
+import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
@@ -193,6 +193,54 @@ describe('Recovery ReleaseSession', () => {
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_static', session: { revision: session.revision } });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate' });
+  });
+
+  test('automatic reconciliation reads source lazily and never replays a terminal source revision', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-reconcile-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: 'abc123',
+    });
+
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
+      throw new Error('source observation must stay lazy while ReleaseSession is active');
+    })).toMatchObject({
+      required: true,
+      reason: 'active_session',
+      action: 'prepare',
+      session: { sessionId: session.sessionId },
+    });
+
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'failed',
+    });
+
+    let sourceReads = 0;
+    const terminal = decideConfiguredRuntimeReleaseReconciliation(home, () => {
+      sourceReads += 1;
+      return { configured: true, sourceRevision: 'abc123', activeSourceCommit: 'older-stable' };
+    });
+    expect(sourceReads).toBe(1);
+    expect(terminal).toMatchObject({
+      required: false,
+      reason: 'source_already_attempted',
+      session: { sessionId: session.sessionId, phase: 'failed', sourceRevision: 'abc123' },
+    });
+
+    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => ({
+      configured: true,
+      sourceRevision: 'def456',
+      activeSourceCommit: 'older-stable',
+    }))).toMatchObject({ required: true, reason: 'source_mismatch', action: 'prepare' });
   });
 
   test('runs one normal release call through every immediately executable durable phase', async () => {

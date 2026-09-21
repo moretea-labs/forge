@@ -174,8 +174,10 @@ async function cli(): Promise<void> {
   }
   if (command === RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND) {
     try {
-      const source = configuredRuntimeReleaseSourceState(config);
-      const decision = decideConfiguredRuntimeReleaseReconciliation(config.controllerHome, source);
+      const decision = decideConfiguredRuntimeReleaseReconciliation(
+        config.controllerHome,
+        () => configuredRuntimeReleaseSourceState(config),
+      );
       if (!decision.required) {
         output({ schemaVersion: 1, ok: true, attempted: false, noOp: true, decision });
         return;
@@ -886,6 +888,16 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
 }
 
 async function runAutomaticReleaseReconciliationStep(config: RecoveryConfig): Promise<void> {
+  // Most daemon ticks are no-ops. Decide that in the resident process first so
+  // a healthy/current source does not fork a complete Recovery executable every
+  // fifteen seconds merely to rediscover the same result. The short-lived child
+  // remains the mutation boundary whenever a durable release action is needed.
+  const decision = decideConfiguredRuntimeReleaseReconciliation(
+    config.controllerHome,
+    () => configuredRuntimeReleaseSourceState(config),
+  );
+  if (!decision.required) return;
+
   const release = readCurrentRecoveryRelease(config.controllerHome);
   if (!release) throw new Error('RECOVERY_AUTOMATIC_RELEASE_CURRENT_RECOVERY_UNKNOWN');
   const executable = join(release.releasePath, 'forge-recovery');

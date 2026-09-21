@@ -2350,6 +2350,11 @@ export interface PrimaryRuntimeRecoveryDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface RuntimeReleaseKnownGoodDependencies extends RuntimePerformanceDependencies {
+  /** Test/host seam for the existing whole-Runtime rollback transaction. */
+  rollback?: PrimaryRuntimeRecoveryDependencies;
+}
+
 export interface RuntimeReleaseActivationGuard {
   /** External caller identity for audit/lock attribution. */
   requestId?: string;
@@ -5245,7 +5250,7 @@ export async function rollbackConfiguredRuntimeReleaseSession(
 export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   config: RecoveryConfig,
   sessionId: string,
-  dependencies: RuntimePerformanceDependencies = {},
+  dependencies: RuntimeReleaseKnownGoodDependencies = {},
   requestId?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const initial = readReleaseSession(config.controllerHome, sessionId);
@@ -5295,6 +5300,37 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_known_good_failed', { sessionId, detail });
+
+    // A hard runaway-CPU rejection is terminal acceptance evidence, not a
+    // transient observation failure. Keeping Candidate B live in `soaking`
+    // caused the automatic release driver to launch another full 60-second
+    // sampler on every reconciliation cycle. Restore the exact frozen Stable A
+    // through the existing ReleaseSession rollback transaction instead. The
+    // coordinator will then treat this source revision as already attempted and
+    // will not autonomously replay it until source authority changes.
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
+      const rollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        sessionId,
+        dependencies.rollback ?? {},
+        requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
+      );
+      audit(config, 'release_session_known_good_performance_rejected', {
+        sessionId,
+        detail,
+        rollbackOk: rollback.ok,
+        rollbackDetail: rollback.detail,
+      });
+      return {
+        ok: false,
+        attempted: true,
+        detail: rollback.ok
+          ? `${detail}; Candidate B rejected by the Recovery runaway-CPU gate and Stable A restored`
+          : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
+        releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
+      };
+    }
+
     return { ok: false, attempted: true, detail, releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? initial };
   }
 
