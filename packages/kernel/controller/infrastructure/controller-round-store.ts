@@ -67,6 +67,8 @@ export interface SubmitControllerRoundDispositionInput {
   handoffId?: string;
   stateFingerprint?: string;
   reason?: string;
+  /** Exact facade-authenticated authority for completed-Work provider-wait goal closure only. */
+  terminalAuthorityId?: string;
   /** Opaque provider binding owned by a ControllerHost adapter. */
   bindingId?: string;
   maxRounds?: number;
@@ -758,7 +760,17 @@ export function submitControllerRoundDisposition(
     if (existing.value.relayScopeId !== relayScopeId) {
       throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: Work ${work.workId} is already bound to ${existing.value.relayScopeId}`);
     }
-    if (existing.value.status !== 'claimed') {
+    const terminalAuthorityId = bounded(input.terminalAuthorityId, 256);
+    const providerWaitTerminalGoalComplete = terminal
+      && work.status === 'completed'
+      && input.disposition === 'goal_complete'
+      && existing.value.status === 'waiting_for_user'
+      && controllerRoundBlockerClass(existing.value) === 'provider_user_action_required';
+    if (providerWaitTerminalGoalComplete) {
+      if (!terminalAuthorityId || terminalAuthorityId !== existing.value.authorityId) {
+        throw new Error(`CONTROLLER_RELAY_TERMINAL_AUTHORITY_MISMATCH: ${work.workId}`);
+      }
+    } else if (existing.value.status !== 'claimed') {
       throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${existing.value.status}`);
     }
     const terminalSuccessor = terminal
@@ -797,7 +809,7 @@ export function submitControllerRoundDisposition(
           }
           if (existing.value.controllerId !== input.identity.controllerId) throw new Error(`CONTROLLER_RELAY_CLAIM_CONTROLLER_MISMATCH: ${work.workId}`);
           if (existing.value.principalId !== principalId) throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
-          if (existing.value.claimGeneration < 1) throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${work.workId}`);
+          if (existing.value.claimGeneration < 1 && !providerWaitTerminalGoalComplete) throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${work.workId}`);
           return {
             controllerId: existing.value.controllerId,
             controllerType: expectedControllerType,
@@ -898,6 +910,7 @@ export function submitControllerRoundDisposition(
       type: 'semantic_disposition_submitted', at, disposition: input.disposition, stateFingerprint,
       maxRounds: requestedMaxRounds, maxRepeatedState: requestedMaxRepeatedState, maxFailures: requestedMaxFailures,
       controllerSession: authority,
+      ...(providerWaitTerminalGoalComplete ? { terminalGoalComplete: true } : {}),
       qualityDecisions: accumulatedQualityDecisions, qualityAdjustmentResults: accumulatedQualityAdjustmentResults, observationWindow,
       ...(handoffId ? { handoffId } : {}),
       ...(bounded(input.reason, 1_000) ? { reason: bounded(input.reason, 1_000) } : {}),

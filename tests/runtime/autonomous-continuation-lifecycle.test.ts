@@ -646,6 +646,173 @@ describe('autonomous continuation lifecycle', () => {
     expect(launched.prompt).not.toContain('First call rh_work continue');
   });
 
+  test('exact terminal authority closes provider waiting_for_user after physical Work completion without reclaiming it', async () => {
+    const root = temp('forge-terminal-provider-wait-goal-complete-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    const targetRevision = initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'terminal-provider-wait-goal-complete' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const requirementId = 'REQ-TERMINAL-PROVIDER-WAIT-GOAL-COMPLETE';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Terminal provider wait goal closure',
+      outcomeStatement: 'A completed Work can close provider authorization wait with exact Controller authority.',
+    });
+    updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'test_activate_requirement',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    });
+    const workId = 'WORK-TERMINAL-PROVIDER-WAIT-GOAL-COMPLETE';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Complete physical Work while the provider relay waits for user authorization.',
+      acceptanceCriteria: ['Exact terminal authority closes provider wait without reclaiming Work.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+      requirementId,
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      occurrenceId: 'occ-terminal-provider-wait',
+      identity: {
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt', principalId: 'chatgpt-principal',
+        controllerInstanceId: 'runtime-before-wait', sessionId: 'mcp-before-wait',
+      },
+    });
+    const handoffId = 'hnd-terminal-provider-wait';
+    createHandoffItem(store, {
+      id: handoffId,
+      repoId: repository.repoId,
+      workId,
+      title: 'provider authorization required',
+      severity: 'needs_review',
+      reason: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+      creationReason: 'missing_authorization',
+      summary: 'provider authorization required before dispatch',
+      currentState: { repoId: repository.repoId, workId, statusSummary: 'waiting for provider authorization' },
+      evidenceRefs: [],
+      recommendedDecision: 'resume after authorization',
+      recommendedPrompt: 'resume the existing controller round',
+      suggestedNextActions: [],
+    });
+    expect(finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      waitForUser: true,
+      handoffId,
+      error: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+    })).toMatchObject({
+      status: 'waiting_for_user',
+      blockedReason: 'provider_user_action_required',
+      authorityId: opened.authorityId,
+      claimGeneration: 0,
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const recordedAt = '2026-09-21T11:00:00.000Z';
+    transitionWorkContractPhase(store, workId, {
+      status: 'running', phase: 'verification', state: 'satisfied',
+      summary: 'Exact no-change candidate verified while provider authorization wait remains advisory to semantic completion.',
+    });
+    requestWorkImplementationReview(store, workId, 'Terminal provider-wait candidate requires explicit Controller review.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-terminal-provider-wait',
+      workId,
+      reviewerPrincipalId: 'chatgpt-principal',
+      reviewerControllerSessionId: 'mcp-before-wait',
+      decision: 'approved',
+      rationale: 'Physical Work is complete and the only relay blocker is provider authorization unrelated to semantic completion.',
+      findings: [],
+      sourceRevision: targetRevision,
+      workspaceFingerprint: 'terminal-provider-wait-content',
+      verificationWorkspaceFingerprint: 'terminal-provider-wait-verification',
+      changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Exact terminal authority may close provider wait without reclaiming terminal Work.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt,
+    });
+    recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'receipt-terminal-provider-wait',
+      source: 'controller_work',
+      issueId: 'terminal-provider-wait',
+      taskId: workId,
+      workId,
+      targetBranch: 'main',
+      targetRevision,
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    expect(getWorkContract(store, workId)?.status).toBe('completed');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const wrong = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'mcp-after-finalize-wrong-authority',
+        controllerInstanceId: 'runtime-after-finalize',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'repair',
+        capability_id: `controller.disposition:goal_complete:cra_00000000000000000000000000000000:${opened.relayScopeId}`,
+        work_id: workId,
+        requirement_id: requirementId,
+        reason: 'Wrong authority must not close the provider wait.',
+      },
+    ));
+    expect(wrong.status).toBe('blocked');
+
+    const completed = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'mcp-after-finalize',
+        controllerInstanceId: 'runtime-after-finalize',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'repair',
+        capability_id: `controller.disposition:goal_complete:${opened.authorityId}:${opened.relayScopeId}`,
+        work_id: workId,
+        requirement_id: requirementId,
+        reason: 'Physical completion is proven; provider authorization wait does not block semantic Requirement acceptance.',
+      },
+    ));
+    expect(completed.status).toBe('ok');
+    expect(completed.data.requirementAcceptance).toMatchObject({
+      accepted: true,
+      requirement: { requirementId, state: 'done' },
+    });
+    expect(completed.data.relay).toMatchObject({
+      status: 'goal_complete',
+      disposition: 'goal_complete',
+      authorityId: opened.authorityId,
+      claimGeneration: 0,
+      controllerId: 'chatgpt-principal',
+      principalId: 'chatgpt-principal',
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+  });
+
   test('three semantic rounds survive provider conversation and session turnover before goal_complete', () => {
     const root = temp('forge-stage3b-three-round-turnover-');
     const controllerHome = join(root, 'controller');

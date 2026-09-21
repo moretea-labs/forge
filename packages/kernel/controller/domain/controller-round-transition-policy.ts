@@ -49,7 +49,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'stalled_round_observed'; at: string; stateFingerprint: string; proposedAuthorityId: string; lastError?: string }
   | { type: 'provider_environment_recovered'; at: string; evidenceId: string }
   | { type: 'legacy_occurrence_bound'; at: string; occurrenceId: string }
-  | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; controllerSession: Pick<ControllerSession, 'controllerId' | 'controllerType' | 'principalId' | 'controllerInstanceId' | 'sessionId' | 'claimGeneration'>; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; qualityAdjustmentResults?: ControllerRoundRelayRecord['qualityAdjustmentResults']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
+  | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; controllerSession: Pick<ControllerSession, 'controllerId' | 'controllerType' | 'principalId' | 'controllerInstanceId' | 'sessionId' | 'claimGeneration'>; terminalGoalComplete?: boolean; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; qualityAdjustmentResults?: ControllerRoundRelayRecord['qualityAdjustmentResults']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
   | { type: 'successor_bound'; at: string; successorWorkId: string }
   | { type: 'controller_release_observed'; at: string; proposedAuthorityId: string }
   | { type: 'successor_release_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
@@ -323,7 +323,11 @@ export function decideControllerRoundTransition(
     }
     case 'semantic_disposition_submitted': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
-      if (current.status !== 'claimed') return { kind: 'reject', code: `CONTROLLER_RELAY_ROUND_NOT_CLAIMED:${current.status}` };
+      const providerWaitTerminalGoalComplete = event.terminalGoalComplete === true
+        && event.disposition === 'goal_complete'
+        && current.status === 'waiting_for_user'
+        && controllerRoundBlockerClass(current) === 'provider_user_action_required';
+      if (current.status !== 'claimed' && !providerWaitTerminalGoalComplete) return { kind: 'reject', code: `CONTROLLER_RELAY_ROUND_NOT_CLAIMED:${current.status}` };
       const maxRounds = Math.min(current.maxRounds, event.maxRounds);
       const maxRepeatedState = Math.min(current.maxRepeatedState, event.maxRepeatedState);
       const maxFailures = Math.min(current.maxFailures, event.maxFailures);

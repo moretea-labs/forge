@@ -324,9 +324,9 @@ export async function callRhWorkControllerOperation(
         && disposition === 'continue_immediately'
         && Boolean(currentRelay?.successorWorkId);
       const terminalRoundClosure = terminalGoalComplete || terminalSuccessorContinuation;
-      if (!currentOwner && terminalRoundClosure) {
-        assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-      }
+      const terminalAuthorizedRelay = !currentOwner && terminalRoundClosure
+        ? assertFacadeControllerRoundAuthority(ctx, store, workId, args)
+        : undefined;
       if (!currentOwner && !terminalRoundClosure) {
         if (work.status === 'failed' || work.status === 'cancelled' || work.status === 'completed') {
           throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
@@ -361,6 +361,7 @@ export async function callRhWorkControllerOperation(
           requirementId: work.requirementId,
           rationale,
           relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined,
+          terminalAuthorityId: terminalAuthorizedRelay?.authorityId,
           handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
           stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
           bindingId: chatgptBinding?.bindingId,
@@ -389,6 +390,7 @@ export async function callRhWorkControllerOperation(
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
               stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
               reason: typeof args.reason === 'string' ? args.reason : undefined,
+              terminalAuthorityId: terminalAuthorizedRelay?.authorityId,
               bindingId: chatgptBinding?.bindingId,
               maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
               maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
