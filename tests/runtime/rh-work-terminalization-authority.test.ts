@@ -33,7 +33,7 @@ import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-work
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
+import { bindControllerSessionBinding, controllerSessionAuthorityDigest, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -2727,6 +2727,85 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(stopped.status).toBe('ok');
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('same-principal controller_claim preserves exact relay authority across canonical Runtime rotation without chat-driven rekey', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-relay-runtime-rotation';
+    const workId = 'work-relay-runtime-rotation';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        principalId,
+        controllerInstanceId: 'runtime-relay-a',
+        sessionId: 'launcher-relay-runtime-a',
+      },
+      bindingId: 'binding-relay-runtime-rotation',
+    });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: true })).toMatchObject({
+      status: 'dispatched',
+      authorityId: opened.authorityId,
+    });
+
+    const firstClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-runtime-a', 'runtime-relay-a'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        session_id: opened.authorityId,
+      },
+    ));
+    expect(firstClaim.status).toBe('ok');
+    expect(firstClaim.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: opened.authorityId,
+      controllerInstanceId: 'runtime-relay-a',
+    });
+
+    publishCurrentRuntime(fx.controllerHome, 'runtime-relay-b');
+    const migrated = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-runtime-b', 'runtime-relay-b'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+      },
+    ));
+    expect(migrated.status).toBe('ok');
+    expect(migrated.data?.controllerAuthorityId).toBe(opened.authorityId);
+    expect(migrated.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: opened.authorityId,
+      relayScopeId: opened.relayScopeId,
+      controllerInstanceId: 'runtime-relay-b',
+    });
+    expect(migrated.data?.session).toMatchObject({
+      principalId,
+      controllerInstanceId: 'runtime-relay-b',
+      authorityDigest: controllerSessionAuthorityDigest(opened.authorityId!),
+    });
+
+    const staleExplicit = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-runtime-c', 'runtime-relay-b'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: 'cra_00000000000000000000000000000000',
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(staleExplicit.status).toBe('blocked');
+    expect(staleExplicit.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
   }, 15_000);
 
   test('explicit user recovery rekeys an exact relay-bound failed round without resetting budgets or depending on provider dispatch', async () => {

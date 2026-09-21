@@ -32,14 +32,14 @@ afterEach(() => {
 });
 
 describe('browser user-profile authority', () => {
-  test('defaults to the existing user Chrome and disables silent managed fallback', () => {
+  test('defaults to existing user Chromium-family browsers and disables silent managed fallback', () => {
     const details = browserDetails(fixture());
     expect(details.browserMode).toBe('attach_preferred');
     expect(details.profileMode).toBe('repo_local');
     expect(details.browserChannel).toBe('chrome');
     expect(details.cdpAttachFallback).toBe('fail_closed');
     expect(details.nativeAttachMode).toBe('auto');
-    expect(details.nativeBrowserCandidates).toEqual(['chrome']);
+    expect(details.nativeBrowserCandidates).toEqual(['chrome', 'vivaldi']);
     expect(details.provider).not.toBe('playwright-persistent-context');
   });
 
@@ -58,10 +58,10 @@ describe('browser user-profile authority', () => {
     expect(details.profileMode).toBe('repo_local');
     expect(details.profileDir).toBeUndefined();
     expect(details.browserChannel).toBe('chrome');
-    expect(details.nativeBrowserCandidates).toEqual(['chrome']);
+    expect(details.nativeBrowserCandidates).toEqual(['chrome', 'vivaldi']);
   });
 
-  test('migrates repository-local v1 managed or Vivaldi routing to Chrome attach fail-closed defaults', () => {
+  test('migrates repository-local v1 managed routing to Chromium-family attach fail-closed defaults', () => {
     const root = fixture();
     writeJson(join(root, '.forge', 'plugins', 'browser.json'), {
       schemaVersion: 1,
@@ -81,7 +81,7 @@ describe('browser user-profile authority', () => {
     expect(details.profileDir).toBeUndefined();
     expect(details.browserChannel).toBe('chrome');
     expect(details.cdpAttachFallback).toBe('fail_closed');
-    expect(details.nativeBrowserCandidates).toEqual(['chrome']);
+    expect(details.nativeBrowserCandidates).toEqual(['chrome', 'vivaldi']);
   });
 
   test('preserves an explicit current-schema managed override instead of banning intentional isolation', () => {

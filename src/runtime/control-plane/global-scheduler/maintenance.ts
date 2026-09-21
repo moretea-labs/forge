@@ -70,6 +70,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   runtimeCleanup: typeof cleanupControllerRuntimeState;
   terminalWorkCleanup: typeof reconcileTerminalWorkCleanups;
   processGc: typeof gcTerminalProcesses;
+  settleBrowserTab?: typeof settleWorkChatgptAutomationTab;
 }): Promise<void> {
   const plan = planSchedulerPeriodicMaintenance({
     nowMs: input.nowMs,
@@ -137,7 +138,7 @@ export async function runSchedulerPeriodicCleanup(input: {
         if (existingSettlement && ['closed', 'preserved_user_owned', 'session_closed'].includes(existingSettlement.status)) continue;
         const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
         if (!binding?.latestBrowserSessionId) continue;
-        const settlement = await settleWorkChatgptAutomationTab({
+        const settlement = await (input.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
           controllerHome: input.controllerHome,
           workId: relay.originWorkId,
           browserSessionId: binding.latestBrowserSessionId,

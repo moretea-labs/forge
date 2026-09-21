@@ -99,7 +99,7 @@ describe('Workflow Supervisor browser adapter installer', () => {
     expect(repeated.state).toBe('ready');
     expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toEqual(manifest);
   });
-  test('registers the exact native host for Chrome, Chrome for Testing, and Chromium by default', () => {
+  test('registers the exact native host for Chrome, Chrome for Testing, Chromium, and Vivaldi by default', () => {
     const f = fixture();
     const homeDir = temp('forge-supervisor-browser-home-');
     const ready = installWorkflowSupervisorBrowserAdapter(f.controllerHome, {
@@ -111,6 +111,7 @@ describe('Workflow Supervisor browser adapter installer', () => {
       join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts'),
       join(homeDir, 'Library', 'Application Support', 'Google', 'ChromeForTesting', 'NativeMessagingHosts'),
       join(homeDir, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts'),
+      join(homeDir, 'Library', 'Application Support', 'Vivaldi', 'NativeMessagingHosts'),
     ];
     expect(ready.nativeManifestPaths).toEqual(roots.map((root) => join(root, WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME + '.json')));
     for (const root of roots) {

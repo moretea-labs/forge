@@ -18,7 +18,7 @@ import {
   settleControllerRoundAfterTurn,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
+import { runSchedulerControllerRoundRecovery, runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
@@ -26,6 +26,7 @@ import { claimControllerSession, getControllerSession, releaseControllerSession 
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
+import { getChatgptControllerRoundSettlement } from '../../adapters/chatgpt/controller-round-settlement-store';
 import { launchSuperController } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -875,6 +876,99 @@ describe('autonomous continuation lifecycle', () => {
     expect(acknowledgeControllerRoundClaim(store, { workId: successorWorkId, session: successorOwner })).toMatchObject({
       status: 'claimed', originWorkId: successorWorkId, predecessorWorkId,
     });
+  });
+
+  test('periodic restart reconciliation settles leaked Forge tabs exactly once and preserves user-owned tabs exactly once', async () => {
+    const root = temp('forge-autonomous-tab-restart-reconcile-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'tab-restart-reconcile' });
+    const store = { controllerHome, repoId: repository.repoId };
+
+    const createWaitingRound = (workId: string, browserSessionId: string) => {
+      createWorkContract(store, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: 'goal_workloop',
+        objective: 'Keep semantic round durable while ephemeral browser resource is reconciled.',
+        acceptanceCriteria: ['restart cleanup is exactly-once and ownership-safe'],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        status: 'running',
+      });
+      const binding = bindChatgptWorkConversation(store, {
+        workId,
+        conversationUrl: `https://chatgpt.com/c/${workId.toLowerCase()}`,
+        latestBrowserSessionId: browserSessionId,
+      });
+      const identity = {
+        controllerId: `controller-${workId}`,
+        controllerType: 'chatgpt' as const,
+        principalId: `controller-${workId}`,
+        controllerInstanceId: 'runtime-before-restart',
+        sessionId: `session-${workId}`,
+      };
+      const opened = beginInitialControllerRoundDispatch(store, {
+        workId,
+        identity,
+        bindingId: binding.bindingId,
+      });
+      finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: binding.bindingId });
+      const owner = claimControllerSession(store, { workId, ...identity, leaseMs: 60_000 });
+      acknowledgeControllerRoundClaim(store, { workId, session: owner });
+      const waiting = submitControllerRoundDisposition(store, {
+        workId,
+        relayScopeId: opened.relayScopeId,
+        identity,
+        disposition: 'wait',
+        reason: 'Simulate an inactive durable round observed after Runtime restart.',
+      });
+      expect(waiting.status).toBe('waiting');
+      releaseControllerSession(store, workId, owner.controllerId);
+      return waiting;
+    };
+
+    const forgeRelay = createWaitingRound('WORK-TAB-RESTART-FORGE', 'forge-owned-browser-session');
+    const userRelay = createWaitingRound('WORK-TAB-RESTART-USER', 'user-owned-browser-session');
+    const calls: string[] = [];
+    const settleBrowserTab = async (input: { browserSessionId: string }) => {
+      calls.push(input.browserSessionId);
+      return input.browserSessionId === 'user-owned-browser-session'
+        ? { status: 'preserved_user_owned' as const }
+        : { status: 'closed' as const };
+    };
+    const cleanupInput = {
+      controllerHome,
+      controllerPid: process.pid,
+      nowMs: 0,
+      cleanupIntervalMs: 60_000,
+      repositories: [repository],
+      runtimeCleanup: (() => ({ ok: true })) as any,
+      terminalWorkCleanup: (async () => ({ inspected: 0, cleaned: 0, blocked: [] })) as any,
+      processGc: (() => ({ ok: true })) as any,
+      settleBrowserTab: settleBrowserTab as any,
+    };
+
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    expect(calls.sort()).toEqual(['forge-owned-browser-session', 'user-owned-browser-session'].sort());
+    expect(getChatgptControllerRoundSettlement(store, {
+      workId: forgeRelay.originWorkId,
+      relayScopeId: forgeRelay.relayScopeId,
+    })?.status).toBe('closed');
+    expect(getChatgptControllerRoundSettlement(store, {
+      workId: userRelay.originWorkId,
+      relayScopeId: userRelay.relayScopeId,
+    })?.status).toBe('preserved_user_owned');
+
+    calls.length = 0;
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    expect(calls).toEqual([]);
   });
 
   test('stalled ChatGPT Work recovery uses the exact Work continuation with durable bounded backoff', async () => {

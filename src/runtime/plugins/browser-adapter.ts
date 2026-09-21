@@ -109,7 +109,7 @@ type BrowserNativeAttachMode = 'auto' | 'disabled';
 
 const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 2 as const;
 const DEFAULT_USER_BROWSER_CHANNEL: BrowserChannel = 'chrome';
-const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome'];
+const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
 
 interface BrowserPluginConfig {
   schemaVersion: 2;

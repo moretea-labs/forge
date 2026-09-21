@@ -98,10 +98,27 @@ export async function callRhWorkControllerOperation(
           throw new Error(`WORK_CONTROLLER_LAUNCH_IDENTITY_MISMATCH: ${workId}; active Codex launch reservation requires its exact reservation-scoped MCP identity.`);
         }
       }
-      let authorizedRelay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
       const observedOwner = getControllerSession(store, workId);
       const dispatchedRelay = getControllerRoundRelay(store, workId);
       const requestedRelayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
+      const preflightOwnerInstanceId = observedOwner?.controllerInstanceId?.trim() || '';
+      const preflightRuntime = runtimeIdentitySnapshot(ctx);
+      const samePrincipalCanonicalRuntimeMigrationWithoutAuthority = Boolean(
+        dispatchedRelay?.authorityId?.trim()
+        && observedOwner
+        && !identity.controllerAuthorityId
+        && (!requestedRelayScopeId || requestedRelayScopeId === dispatchedRelay.relayScopeId)
+        && observedOwner.controllerId === identity.controllerId
+        && observedOwner.controllerType === identity.controllerType
+        && controllerSessionPrincipalId(observedOwner) === identity.principalId
+        && preflightOwnerInstanceId
+        && preflightOwnerInstanceId !== identity.controllerInstanceId
+        && preflightRuntime.running
+        && preflightRuntime.runtimeInstanceId === identity.controllerInstanceId
+      );
+      let authorizedRelay = samePrincipalCanonicalRuntimeMigrationWithoutAuthority
+        ? dispatchedRelay
+        : assertFacadeControllerRoundAuthority(ctx, store, workId, args);
       if (!authorizedRelay && identity.controllerAuthorityId && requestedRelayScopeId) {
         authorizedRelay = resolveRequirementControllerRoundRelayForWork(store, {
           workId,

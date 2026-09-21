@@ -13,7 +13,7 @@ const EXTENSION_FILES = ['manifest.json', 'background.js', 'content.js', 'core.j
 const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
 
 export interface WorkflowSupervisorBrowserInstallation {
-  browser: 'chrome' | 'chrome-for-testing' | 'chromium' | 'forge-managed';
+  browser: 'chrome' | 'chrome-for-testing' | 'chromium' | 'vivaldi' | 'forge-managed';
   nativeMessagingRoot: string;
 }
 interface ActiveBrowserAdapterRelease {
@@ -73,6 +73,7 @@ function defaultBrowserInstallations(
     { browser: 'chrome', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts') },
     { browser: 'chrome-for-testing', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Google', 'ChromeForTesting', 'NativeMessagingHosts') },
     { browser: 'chromium', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts') },
+    { browser: 'vivaldi', nativeMessagingRoot: join(homeDir, 'Library', 'Application Support', 'Vivaldi', 'NativeMessagingHosts') },
   ];
   if (repository) {
     const browserStateRoot = ensureBrowserStateInControllerHome(controllerHome, repository.repoId, repository.repoRoot);
