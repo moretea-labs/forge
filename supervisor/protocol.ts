@@ -89,6 +89,7 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
       ? task.continuationPolicy.active_scope.trim()
       : undefined;
   const stateContractLine = 'Set supervisor_state="running" with CONTINUE, "done" with DONE, and "needs_user" with NEEDS_USER.';
+  const visibleStatusContractLine = 'Before the final Supervisor control block, include exactly one standalone user-visible status line matching action: CONTINUE => "🔄 仍在执行，无需你操作"; NEEDS_USER => "⏸ 需要你处理，暂时不要关闭会话"; DONE => "✅ 已完成，可以关闭此会话". Never use "已完成" or "可以关闭此会话" for CONTINUE or NEEDS_USER. This line is presentation only; the action and validated durable Forge state remain completion authority.';
   const scopeContractLine = explicitScope
     ? `The block must echo active_scope=${JSON.stringify(explicitScope)}.`
     : 'The block must include active_scope using the exact durable Forge relay scope recovered in this turn, for example requirement:<id> or goal:<id>. Never guess a scope.';
@@ -96,6 +97,7 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
     'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.',
     actionContractLine,
     stateContractLine,
+    visibleStatusContractLine,
     scopeContractLine,
     `End this turn with exactly one ${SUPERVISOR_BLOCK_START} JSON block and ${SUPERVISOR_BLOCK_END}.`,
     `The block must echo conversation_id=${JSON.stringify(task.conversationId)}, task_id=${JSON.stringify(task.taskId)}, and source_effect_id=${JSON.stringify(effectId)}. Do not invent next_prompt content.`].filter(Boolean).join('\n');

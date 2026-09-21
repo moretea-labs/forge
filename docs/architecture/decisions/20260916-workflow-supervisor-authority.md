@@ -116,6 +116,14 @@ Every supervised ChatGPT turn ends with exactly one machine-readable terminal bl
 - `DONE`: a terminal **proposal** that requires `completionContract` validation.
 - `NEEDS_USER`: a blocker **proposal** that requires `userBlockerPolicy` validation.
 
+Each newly rendered Supervisor prompt also requires exactly one concise user-visible status line before the control block, derived only from that same action:
+
+- `CONTINUE` → `🔄 仍在执行，无需你操作`
+- `NEEDS_USER` → `⏸ 需要你处理，暂时不要关闭会话`
+- `DONE` → `✅ 已完成，可以关闭此会话`
+
+This is presentation, not lifecycle authority or persisted state. In particular, completion wording is reserved for `DONE`; a model cannot make work complete by printing it, and the existing `completionContract` validation remains authoritative.
+
 The exact `<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>` marker is required before the Supervisor accepts the turn as committed. Prompt delivery, `Stop generating`, spinner/loading state, button state, DOM stability, a text-stability timer, Work completion, ControllerRound closure, or transport disconnection are not assistant-turn commit authority.
 
 Every newly rendered Supervisor enrollment or continuation message also carries a machine-readable marker containing its daemon-minted `submission_effect_id` and instructs the assistant to echo exact `conversation_id`, stable `task_id`, `supervisor_state`, and `active_scope` together with `source_effect_id`. `supervisor_state` is redundant by design (`CONTINUE -> running`, `DONE -> done`, `NEEDS_USER -> needs_user`) so each response is independently classifiable. `active_scope` identifies the current durable lower-layer relay authority, normally `requirement:<id>` or `goal:<id>`; it never replaces that authority. The assistant may only echo these immutable/observed identities; it does not mint, rewrite or interpret them as executable prompt authority. A completion is commit-eligible only when `source_effect_id` matches the exact applied outbound effect for the exact task and conversation and the echoed identities match the registered task/scope. Already-reserved pre-upgrade effects remain parse-compatible so a Runtime upgrade does not strand an unknown remote effect.
