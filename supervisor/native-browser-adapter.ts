@@ -234,12 +234,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const conversations: Array<{ conversation_id: string; canonical_url: string; title?: string }> = [];
     for (const task of tasks) {
       try {
-        const ensured = await this.ensurePage(task);
+        let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+        // Only an explicit send obligation may create a browser resource.
+        // Reconciliation/observation must attach to an existing exact owned tab;
+        // a user closing the tab is transport loss, not authority to reopen it.
+        const allowCreate = poll.command?.mode === 'send';
+        const ensured = await this.ensurePage(task, allowCreate);
+        if (!ensured) continue;
         let page = ensured.page;
         let snapshot = ensured.snapshot
           ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
         if (!exactConversation(snapshot.url, task)) {
           await this.retireOwnedPage(task, page);
+          if (!allowCreate) continue;
           const replacement = await this.createOwnedPage(task);
           page = replacement.page;
           this.pages.set(task.conversationId, page);
@@ -247,7 +254,6 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         await this.observeAssistant(task, snapshot);
-        let poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         const providerTurnPending = snapshot.isGenerating || snapshot.latestTurnRole === 'user';
         const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
         if (!poll.command) {
@@ -294,10 +300,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async ensurePage(task: WorkflowSupervisorBrowserTask): Promise<{
+  private async ensurePage(task: WorkflowSupervisorBrowserTask, allowCreate: boolean): Promise<{
     page: WorkflowSupervisorNativePage;
     snapshot?: WorkflowSupervisorNativeSnapshot;
-  }> {
+  } | undefined> {
     const marker = ownerMarker(task.conversationId);
     const cached = this.pages.get(task.conversationId);
     if (cached) {
@@ -324,6 +330,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.pages.set(task.conversationId, selected!.page);
       return { page: selected!.page };
     }
+    if (!allowCreate) return undefined;
     const created = await this.createOwnedPage(task);
     this.pages.set(task.conversationId, created.page);
     return created;

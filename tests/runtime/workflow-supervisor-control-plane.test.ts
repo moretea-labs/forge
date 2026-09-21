@@ -177,22 +177,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     reopened.close();
   });
 
-  test('bootstraps a discovered project conversation exactly once and keeps its conversation-stable task during Requirement takeover', () => {
+  test('keeps matching project discovery observation-only and never auto-enrolls historical conversations', () => {
     const fx = fixture();
-    const store = new WorkflowSupervisorStore(join(fx.root, 'project-bootstrap-supervisor'));
+    const store = new WorkflowSupervisorStore(join(fx.root, 'project-discovery-supervisor'));
     const seedConversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const seedTaskId = 'forge:seed';
     const control = new WorkflowSupervisorControlPlane(store, {}, {
       projectScopeForTask: () => ({ title: 'forge', repoId: fx.repository.repoId, controllerHome: fx.controllerHome }),
-      discoveredConversationTask: (conversation, scope) => ({
-        taskId: `forge:${scope.repoId}:conversation:${conversation.conversationId}`,
-        conversationId: conversation.conversationId,
-        conversationUrl: conversation.canonicalUrl,
-        objective: 'Recover the existing Forge conversation goal.',
-        completionContract: { kind: 'forge_dynamic_requirement_done', repo_id: scope.repoId, controller_home: scope.controllerHome },
-        continuationPolicy: { kind: 'forge_project_conversation_outer_turn', repo_id: scope.repoId, controller_home: scope.controllerHome },
-        userBlockerPolicy: { kind: 'forge_dynamic_requirement_waiting_for_user', repo_id: scope.repoId, controller_home: scope.controllerHome },
-      }),
     });
     control.registerTask({
       taskId: seedTaskId, conversationId: seedConversationId, conversationUrl: `https://chatgpt.com/c/${seedConversationId}`,
@@ -204,24 +195,30 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       canonicalUrl: 'https://chatgpt.com/c/12121212-3434-5656-7878-909090909090',
       projectTitle: 'Forge', projectUrl: 'https://chatgpt.com/g/g-p-forge/project', title: 'Existing Forge work',
     };
-    const first = control.reconcileDiscoveredConversations([discovered]);
-    expect(first.enrolled).toHaveLength(1);
-    const bootstrap = store.getTaskByConversationId(discovered.conversationId)!;
-    expect(bootstrap.taskId).toBe(`forge:${fx.repository.repoId}:conversation:${discovered.conversationId}`);
-    expect(control.reconcileDiscoveredConversations([discovered]).enrolled).toEqual([]);
-    expect(store.nextBrowserEffect(bootstrap.taskId)?.effect.effectId).toBe(first.enrolled[0]!.effectId);
+    control.recordBrowserDiscovery('chrome-extension', [discovered]);
+    expect(control.browserDiscoverySnapshot().conversations).toContainEqual(discovered);
+    expect(store.getTaskByConversationId(discovered.conversationId)).toBeUndefined();
+    expect(store.listTasks().map((task) => task.taskId)).toEqual([seedTaskId]);
+    store.close();
+  });
 
-    const takeover = control.registerTask({
-      taskId: bootstrap.taskId,
-      conversationId: discovered.conversationId,
-      conversationUrl: discovered.canonicalUrl,
-      objective: 'Concrete Requirement-owned continuation.',
-      completionContract: { kind: 'forge_requirement_done', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-takeover' },
-      continuationPolicy: { kind: 'forge_goal_outer_turn' },
-      userBlockerPolicy: { kind: 'forge_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome, requirement_id: 'REQ-takeover' },
+  test('treats legacy discovery-bootstrap tasks without Requirement authority as browser-inactive', () => {
+    const fx = fixture();
+    const store = new WorkflowSupervisorStore(join(fx.root, 'legacy-discovery-supervisor'));
+    const control = new WorkflowSupervisorControlPlane(store, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+    const conversationId = '23232323-4545-6767-8989-010101010101';
+    const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+    control.registerTask({
+      taskId,
+      conversationId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Legacy discovery bootstrap.',
+      completionContract: { kind: 'forge_dynamic_requirement_done', repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+      continuationPolicy: { kind: 'forge_project_conversation_outer_turn', repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
+      userBlockerPolicy: { kind: 'forge_dynamic_requirement_waiting_for_user', repo_id: fx.repository.repoId, controller_home: fx.controllerHome },
     });
-    expect(takeover.taskId).toBe(bootstrap.taskId);
-    expect(takeover.continuationPolicy.kind).toBe('forge_project_conversation_outer_turn');
+    control.reserveEnrollment(taskId);
+    expect(control.browserTasks()).toEqual([]);
     store.close();
   });
 

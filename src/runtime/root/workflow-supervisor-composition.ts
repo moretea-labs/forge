@@ -229,7 +229,9 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
     const repoId = workflowSupervisorContractText(task, 'repo_id');
     const requirementId = workflowSupervisorContractText(task, 'requirement_id');
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-    if (!repoId || !requirementId || !taskControllerHome) return true;
+    // A Forge browser task without exact Requirement authority is historical
+    // observation state, not an autonomous continuation obligation.
+    if (!repoId || !requirementId || !taskControllerHome) return false;
     if (taskControllerHome !== controllerHome) return false;
     const nowMs = Date.now();
     const lowerLayerNotReadyUntil = lowerLayerNotReadyUntilByTask.get(task.taskId) ?? 0;
@@ -284,18 +286,6 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
   return {
-    discoveredConversationTask: (conversation, scope) => {
-      if (!scope.repoId || !scope.controllerHome || scope.controllerHome !== controllerHome || !conversation.projectTitle) return undefined;
-      return {
-        taskId: taskIdForConversation(scope.repoId, conversation.conversationId),
-        conversationId: conversation.conversationId,
-        conversationUrl: conversation.canonicalUrl,
-        objective: 'Continue the existing original Forge task in this ChatGPT Project conversation. Recover the exact active Requirement and Work from conversation history plus durable Forge state. Before repository mutation, recover or establish the exact Requirement-backed ControllerRound. Do not restart completed work; if the original goal is already complete, validate durable Requirement acceptance and return DONE.',
-        completionContract: { kind: 'forge_dynamic_requirement_done', controller_home: controllerHome, repo_id: scope.repoId },
-        continuationPolicy: { kind: 'forge_project_conversation_outer_turn', controller_home: controllerHome, repo_id: scope.repoId, chatgpt_project_title: scope.title },
-        userBlockerPolicy: { kind: 'forge_dynamic_requirement_waiting_for_user', controller_home: controllerHome, repo_id: scope.repoId },
-      };
-    },
     projectScopeForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');

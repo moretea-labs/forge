@@ -206,6 +206,24 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });
+  test('does not recreate a closed or missing tab for reconcile-only browser work', async () => {
+    const conversationId = 'abababab-cdcd-efef-1212-343434343434';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const h = harness();
+    const { effect } = register(h.control, conversationId);
+    h.control.store.recordEffectDispatchStarted(effect.effectId, 1, 'lost-transport-dispatch', { surface: 'test' });
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+
+    expect(h.created()).toBe(0);
+    expect(h.dispatchAttempts()).toBe(0);
+    expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+    expect(h.errors).toEqual([]);
+  });
+
   test('recovers only the exact marked tab after Runtime memory loss', async () => {
     const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const url = `https://chatgpt.com/c/${conversationId}`;

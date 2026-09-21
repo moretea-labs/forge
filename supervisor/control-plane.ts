@@ -35,8 +35,9 @@ export class WorkflowSupervisorControlPlane {
   getEffect(id: string): WorkflowSupervisorEffect | undefined { return this.store.getEffect(validateEffectId(id)); }
   browserDiscoverySnapshot() { return this.store.discoverySnapshot(); }
   recordBrowserDiscovery(source: string, conversations: readonly WorkflowSupervisorDiscoveredConversation[]) {
-    const snapshot = this.store.recordDiscovery(source, conversations);
-    return { ...snapshot, ...this.reconcileDiscoveredConversations(snapshot.conversations) };
+    // Discovery is durable observation only. Creating a Supervisor task/effect
+    // requires the explicit Work/current-conversation enrollment path.
+    return this.store.recordDiscovery(source, conversations);
   }
   browserProjectScopes(): WorkflowSupervisorProjectScope[] {
     const scopes = new Map<string, WorkflowSupervisorProjectScope>();
@@ -52,22 +53,6 @@ export class WorkflowSupervisorControlPlane {
       scopes.set(key, normalized);
     }
     return [...scopes.values()];
-  }
-  reconcileDiscoveredConversations(conversations: readonly WorkflowSupervisorDiscoveredConversation[]): { enrolled: Array<{ taskId: string; effectId: string; conversationId: string }> } {
-    const projectScopes = this.browserProjectScopes();
-    const enrolled: Array<{ taskId: string; effectId: string; conversationId: string }> = [];
-    for (const conversation of conversations) {
-      if (!conversation.projectTitle?.trim() || this.store.getTaskByConversationId(conversation.conversationId)) continue;
-      const matches = projectScopes.filter((scope) => scope.title.trim().toLocaleLowerCase() === conversation.projectTitle!.trim().toLocaleLowerCase());
-      if (matches.length !== 1) continue;
-      const input = this.hooks.discoveredConversationTask?.(conversation, matches[0]!);
-      if (!input) continue;
-      if (input.conversationId !== conversation.conversationId || input.conversationUrl !== conversation.canonicalUrl) throw new Error('WORKFLOW_SUPERVISOR_DISCOVERY_BOOTSTRAP_IDENTITY_MISMATCH');
-      const task = this.registerTask(input);
-      const effect = this.reserveEnrollment(task.taskId);
-      enrolled.push({ taskId: task.taskId, effectId: effect.effectId, conversationId: task.conversationId });
-    }
-    return { enrolled };
   }
   browserTasks(): WorkflowSupervisorBrowserTask[] {
     return this.store.listTasks().filter((task) => {
