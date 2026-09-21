@@ -46,7 +46,8 @@ import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promo
 import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
-  rollbackRuntimeRelease,
+  rollbackRuntimeReleaseWithResult,
+  type RuntimeDatabaseRollbackDisposition,
   type RuntimePublishedRelease,
   type RuntimeReleaseAuthority,
 } from '../root/release-store';
@@ -1847,7 +1848,8 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
   }
   const operationId = `recovery-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
   try {
-    const committed = rollbackRuntimeRelease(config.controllerHome, operationId);
+    const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, operationId);
+    const committed = rollbackResult.authority;
     if (
       committed.active.releaseId !== target.revision
       || committed.active.artifactIdentity !== target.artifactIdentity
@@ -1860,11 +1862,16 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
       activeRevision: active.revision,
       restoredRevision: target.revision,
       restoredManifestSha256: target.manifestSha256,
+      databaseDisposition: rollbackResult.databaseDisposition,
+      liveAuditEventCount: rollbackResult.liveAuditEventCount,
+      rollbackAuditEventCount: rollbackResult.rollbackAuditEventCount,
     });
     return {
       ok: true,
       operationId,
-      detail: 'whole-Runtime release and SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it',
+      detail: rollbackResult.databaseDisposition === 'restored_backup'
+        ? 'whole-Runtime release and unchanged SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it'
+        : 'whole-Runtime release restored while newer live SQLite state was preserved; Canonical Runtime remains stopped until its sole launcher starts it',
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'whole-Runtime rollback failed';
@@ -3815,8 +3822,9 @@ async function activateRuntimeReleaseInternal(
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId, detail: activationFailureDetail });
     }
 
-    // Activation failed: stop, restore the previous whole release and its SQLite
-    // backup, restart the one service, and require verification again.
+    // Activation failed: stop and restore the previous whole release. SQLite
+    // rollback is allowed only when the live durable-mutation generation still
+    // equals the captured backup; newer Controller Home state is preserved.
     let rollback: RollbackResult;
     const rollbackStop = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
     if (!rollbackStop.ok) {
@@ -3831,9 +3839,14 @@ async function activateRuntimeReleaseInternal(
         const rollbackOperationId = guard.preserveDatabaseOnFailure
           ? `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`
           : operationId;
+        let rollbackDatabaseDisposition: RuntimeDatabaseRollbackDisposition | 'preserved_by_guard' = 'preserved_by_guard';
         const restored = guard.preserveDatabaseOnFailure && previousActive
           ? publishRuntimeRelease(config.controllerHome, previousActive.manifestPath, rollbackOperationId)
-          : rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+          : (() => {
+            const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, rollbackOperationId);
+            rollbackDatabaseDisposition = rollbackResult.databaseDisposition;
+            return rollbackResult.authority;
+          })();
         if (storageMigration?.migrated) {
           rollbackStoppedRepoLocalControllerHomeStorage(storageMigration);
           audit(config, 'runtime_controller_home_noindex_migration_rolled_back', {
@@ -3862,9 +3875,9 @@ async function activateRuntimeReleaseInternal(
           verifyLocal,
           contractFailureContext: 'after rollback',
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-          successDetail: guard.preserveDatabaseOnFailure
-            ? 'previous Runtime release restored without SQLite rollback, restarted, rebound, and verified'
-            : 'previous whole-Runtime release and SQLite backup restored, restarted, rebound, and verified',
+          successDetail: rollbackDatabaseDisposition === 'restored_backup'
+            ? 'previous whole-Runtime release and unchanged SQLite backup restored, restarted, rebound, and verified'
+            : 'previous Runtime release restored while live SQLite state was preserved, restarted, rebound, and verified',
           afterRuntimeReady: async () => {
             rollbackConnectorBinding = await repairConnectorBinding(config);
             if (rollbackConnectorBinding.ok) return { ok: true, detail: rollbackConnectorBinding.detail };
@@ -5163,8 +5176,11 @@ export async function rollbackConfiguredRuntimeReleaseSession(
     }
 
     let restored: RuntimeReleaseAuthority;
+    let databaseRollbackDisposition: RuntimeDatabaseRollbackDisposition = 'preserved_unversioned_backup';
     try {
-      restored = rollbackRuntimeRelease(config.controllerHome, `release-session-rollback:${session.sessionId}:${Date.now()}`);
+      const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, `release-session-rollback:${session.sessionId}:${Date.now()}`);
+      restored = rollbackResult.authority;
+      databaseRollbackDisposition = rollbackResult.databaseDisposition;
       if (
         restored.active.releaseId !== session.stableRelease.releaseId
         || restored.active.artifactIdentity !== session.stableRelease.artifactIdentity
@@ -5201,7 +5217,9 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
       contractFailureContext: 'after ReleaseSession rollback',
       timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-      successDetail: 'exact Stable A whole-Runtime release and SQLite backup restored, restarted, rebound, and verified',
+      successDetail: databaseRollbackDisposition === 'restored_backup'
+        ? 'exact Stable A whole-Runtime release and unchanged SQLite backup restored, restarted, rebound, and verified'
+        : 'exact Stable A Runtime release restored while newer live SQLite state was preserved, restarted, rebound, and verified',
       afterRuntimeReady: async () => {
         rollbackConnectorBinding = await repairConnectorBinding(config);
         return rollbackConnectorBinding.ok
@@ -5220,7 +5238,9 @@ export async function rollbackConfiguredRuntimeReleaseSession(
         id: restarted.ok ? 'rollback' : 'rollback_failed',
         kind: 'rollback',
         summary: restarted.ok
-          ? `exact Stable A ${latest.stableRelease.releaseId} and its SQLite backup restored from ReleaseSession activation transaction`
+          ? databaseRollbackDisposition === 'restored_backup'
+            ? `exact Stable A ${latest.stableRelease.releaseId} and its unchanged SQLite backup restored from ReleaseSession activation transaction`
+            : `exact Stable A ${latest.stableRelease.releaseId} restored while newer live SQLite state was preserved across rollback`
           : `Stable A authority restored but Runtime verification failed after rollback: ${restarted.detail}`.slice(0, 500),
       }],
     });
@@ -5229,13 +5249,16 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       releaseSessionTransactionOperationId: transaction.operationId,
       restoredStableReleaseId: restored.active.releaseId,
       connectorBindingRepaired: rollbackConnectorBinding?.ok === true,
+      databaseRollbackDisposition,
       detail: restarted.detail,
     });
     return {
       ok: restarted.ok,
       attempted: true,
       detail: restarted.ok
-        ? 'ReleaseSession rollback restored the exact frozen Stable A release, SQLite backup, service binding, and verified Runtime'
+        ? databaseRollbackDisposition === 'restored_backup'
+          ? 'ReleaseSession rollback restored the exact frozen Stable A release, unchanged SQLite backup, service binding, and verified Runtime'
+          : 'ReleaseSession rollback restored the exact frozen Stable A release while preserving newer live SQLite state, service binding, and verified Runtime'
         : `ReleaseSession restored Stable A authority but failed post-rollback Runtime verification: ${restarted.detail}`,
       releaseSession: session,
     };

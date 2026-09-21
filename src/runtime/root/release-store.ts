@@ -21,6 +21,10 @@ export interface RuntimeDatabaseBackup {
   path: string;
   schemaVersion: number;
   createdAt: string;
+  /** Monotonic durable-mutation generation from control_plane_audit. */
+  auditEventCount?: number;
+  /** Diagnostic cardinality captured with the same SQLite snapshot. */
+  recordCount?: number;
 }
 
 export interface RuntimePublishedRelease {
@@ -47,6 +51,18 @@ export interface RuntimeReleaseAuthority {
 export interface RuntimeReleaseStoreDependencies {
   backupDatabase(controllerHome: string, destinationPath: string): ControlPlaneDatabaseInspection;
   restoreDatabase(controllerHome: string, backupPath: string): ControlPlaneDatabaseInspection;
+}
+
+export type RuntimeDatabaseRollbackDisposition =
+  | 'restored_backup'
+  | 'preserved_newer_live_state'
+  | 'preserved_unversioned_backup';
+
+export interface RuntimeReleaseRollbackResult {
+  authority: RuntimeReleaseAuthority;
+  databaseDisposition: RuntimeDatabaseRollbackDisposition;
+  liveAuditEventCount: number;
+  rollbackAuditEventCount?: number;
 }
 
 const DEFAULT_DEPENDENCIES: RuntimeReleaseStoreDependencies = {
@@ -150,6 +166,10 @@ function validRelease(controllerHome: string, release: RuntimePublishedRelease |
         resolve(release.databaseBackup.path) === release.databaseBackup.path
         && Number.isInteger(release.databaseBackup.schemaVersion)
         && Number.isFinite(Date.parse(release.databaseBackup.createdAt))
+        && (release.databaseBackup.auditEventCount === undefined
+          || (Number.isSafeInteger(release.databaseBackup.auditEventCount) && release.databaseBackup.auditEventCount >= 0))
+        && (release.databaseBackup.recordCount === undefined
+          || (Number.isSafeInteger(release.databaseBackup.recordCount) && release.databaseBackup.recordCount >= 0))
       ));
   } catch {
     return false;
@@ -318,7 +338,13 @@ export function publishRuntimeRelease(
     active: { ...candidate, publishedAt: committedAt },
     previous: {
       ...current.active,
-      databaseBackup: { path: resolve(backup), schemaVersion: inspection.schemaVersion, createdAt: committedAt },
+      databaseBackup: {
+        path: resolve(backup),
+        schemaVersion: inspection.schemaVersion,
+        createdAt: committedAt,
+        auditEventCount: inspection.auditEventCount,
+        recordCount: inspection.recordCount,
+      },
     },
     operationId,
     committedAt,
@@ -334,11 +360,11 @@ export function revertInitialRuntimeReleasePublication(controllerHome: string, o
   rmSync(runtimeReleaseAuthorityPath(controllerHome), { force: true });
 }
 
-export function rollbackRuntimeRelease(
+export function rollbackRuntimeReleaseWithResult(
   controllerHome: string,
   operationId: string,
   dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
-): RuntimeReleaseAuthority {
+): RuntimeReleaseRollbackResult {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
   const current = mutableRuntimeReleaseAuthority(controllerHome);
   const target = current?.previous;
@@ -350,10 +376,22 @@ export function rollbackRuntimeRelease(
   );
   const currentBackup = backupPath(controllerHome, current.active.releaseId, operationId);
   const currentInspection = dependencies.backupDatabase(controllerHome, currentBackup);
-  dependencies.restoreDatabase(controllerHome, target.databaseBackup.path);
+  const rollbackAuditEventCount = target.databaseBackup.auditEventCount;
+  if (rollbackAuditEventCount !== undefined && currentInspection.auditEventCount < rollbackAuditEventCount) {
+    rmSync(currentBackup, { force: true });
+    throw new Error(`RUNTIME_RELEASE_DATABASE_GENERATION_REGRESSED: rollback=${rollbackAuditEventCount}; live=${currentInspection.auditEventCount}`);
+  }
+  const databaseDisposition: RuntimeDatabaseRollbackDisposition = rollbackAuditEventCount === undefined
+    ? 'preserved_unversioned_backup'
+    : currentInspection.auditEventCount === rollbackAuditEventCount
+      ? 'restored_backup'
+      : 'preserved_newer_live_state';
+  if (databaseDisposition === 'restored_backup') {
+    dependencies.restoreDatabase(controllerHome, target.databaseBackup.path);
+  }
   const committedAt = new Date().toISOString();
   try {
-    return writeRuntimeReleaseAuthority(controllerHome, {
+    const authority = writeRuntimeReleaseAuthority(controllerHome, {
       schemaVersion: 2,
       status: 'committed',
       revision: current.revision + 1,
@@ -368,15 +406,37 @@ export function rollbackRuntimeRelease(
       },
       previous: {
         ...current.active,
-        databaseBackup: { path: resolve(currentBackup), schemaVersion: currentInspection.schemaVersion, createdAt: committedAt },
+        databaseBackup: {
+          path: resolve(currentBackup),
+          schemaVersion: currentInspection.schemaVersion,
+          createdAt: committedAt,
+          auditEventCount: currentInspection.auditEventCount,
+          recordCount: currentInspection.recordCount,
+        },
       },
       operationId,
       committedAt,
     });
+    return {
+      authority,
+      databaseDisposition,
+      liveAuditEventCount: currentInspection.auditEventCount,
+      ...(rollbackAuditEventCount === undefined ? {} : { rollbackAuditEventCount }),
+    };
   } catch (error) {
-    dependencies.restoreDatabase(controllerHome, currentBackup);
+    if (databaseDisposition === 'restored_backup') {
+      dependencies.restoreDatabase(controllerHome, currentBackup);
+    }
     throw error;
   }
+}
+
+export function rollbackRuntimeRelease(
+  controllerHome: string,
+  operationId: string,
+  dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
+): RuntimeReleaseAuthority {
+  return rollbackRuntimeReleaseWithResult(controllerHome, operationId, dependencies).authority;
 }
 
 export function activeRuntimeReleaseManifest(controllerHome: string): RuntimeReleaseManifest | undefined {
