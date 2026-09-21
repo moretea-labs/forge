@@ -30,7 +30,6 @@ import {
   repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
-  restartRecoveryWatchdog,
   stageAndActivateConfiguredRuntimeRelease,
   unpinRuntimeRelease,
   rollbackPrevious,
@@ -85,6 +84,7 @@ import { runRecoveryControllerHomeMigrationWorker, scheduleRecoveryControllerHom
 
 export const RECOVERY_CLI_COMMANDS = [
   'status',
+  'daemon',
   'verify',
   'verify-external',
   'list-releases',
@@ -143,6 +143,14 @@ async function cli(): Promise<void> {
   }
   switch (command) {
     case 'status': output(await runtimeStatus(config)); return;
+    case 'daemon': {
+      if (process.argv.includes(RECOVERY_RELEASE_ROLE_CANARY_ARG)) {
+        output({ status: 'ok', role: 'daemon', executable: basename(process.execPath) });
+        return;
+      }
+      await startRecoveryDaemon(config);
+      return;
+    }
     case 'verify': output(await verifyStableRuntime(config)); return;
     case 'verify-external': {
       const verified = await verifyStableRuntime(config);
@@ -256,8 +264,8 @@ export function resetWatchdogStateForRecoveryRelease(
   };
 }
 
-async function startWatchdog(config: RecoveryConfig): Promise<void> {
-  const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'watchdog');
+async function startWatchdog(config: RecoveryConfig, daemonIdentity?: RecoveryRuntimeIdentity): Promise<void> {
+  const runtimeIdentity = daemonIdentity ?? writeRecoveryRuntimeIdentity(config.controllerHome, 'watchdog');
   let heartbeat: RecoveryWatchdogHeartbeat = createRecoveryWatchdogHeartbeat(runtimeIdentity);
   const persistHeartbeat = (patch: Partial<RecoveryWatchdogHeartbeat> = {}) => {
     heartbeat = writeRecoveryWatchdogHeartbeat(config.controllerHome, { ...heartbeat, ...patch });
@@ -378,7 +386,7 @@ export const RECOVERY_TOOLS = [
   { name: 'activate_pinned_runtime_release', description: 'Activate the explicitly pinned legacy/home-bound Runtime release without restoring an older SQLite backup; portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['expected_active_release_id', 'expected_authority_revision']) },
   { name: 'stage_and_activate_runtime_release', description: 'Compatibility alias: freeze the fixed configured source, create isolated Candidate B, and build one portable immutable Runtime release into a durable ReleaseSession. It no longer activates Stable A.', inputSchema: mutationInputSchema() },
   { name: 'release_session_status', description: 'Read one durable ReleaseSession and its exact Stable A/Candidate B phase and evidence.', inputSchema: { type: 'object', properties: { session_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['session_id'], additionalProperties: false } },
-  { name: 'advance_runtime_release_session', description: 'Advance the single active normal Runtime ReleaseSession by one phase derived from durable ReleaseSession state, or prepare one candidate when none is active. No Work is created per phase.', inputSchema: mutationInputSchema() },
+  { name: 'advance_runtime_release_session', description: 'Run the single active normal Runtime ReleaseSession autonomously through all immediately executable phases until known-good or a genuine provider/safety boundary. ReleaseSession remains the sole durable progression authority and no Work is created per phase.', inputSchema: mutationInputSchema() },
   { name: 'prepare_runtime_release_session', description: 'Freeze configured source and Stable A authority, create isolated Candidate B, and build a portable byte-identifiable Runtime artifact without stopping Stable A.', inputSchema: mutationInputSchema() },
   { name: 'verify_runtime_release_session_static', description: 'Run canonical static gates on the frozen source revision and advance only that exact ReleaseSession.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
   { name: 'verify_runtime_release_session_candidate', description: 'Boot Candidate B in its isolated ControllerHome/service/port, run whole-Runtime and Recovery restart canaries, and mark the session cutover-eligible while Stable A stays active.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
@@ -827,13 +835,23 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
   }
 }
 
-async function startGateway(config: RecoveryConfig): Promise<void> {
+async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
+  const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'daemon');
+  if (config.installProfile === 'self-healing') {
+    void startWatchdog(config, runtimeIdentity).catch((error) => {
+      process.stderr.write(`Recovery monitor failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    });
+  }
+  await startGateway(config, runtimeIdentity);
+}
+
+async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRuntimeIdentity): Promise<void> {
   const gateway = config.gateway;
   if (!gateway || gateway.host !== '127.0.0.1' || !Number.isInteger(gateway.port) || gateway.port < 1024 || gateway.port > 65535) {
     throw new Error('RECOVERY_GATEWAY_CONFIG_INVALID');
   }
-  let runtimeIdentity: RecoveryRuntimeIdentity | undefined;
-  let watchdogRestartInFlight = false;
+  let runtimeIdentity: RecoveryRuntimeIdentity | undefined = daemonIdentity;
   const recentMutations = new Map<string, number[]>();
   const oauthCodes = new Map<string, PendingOAuthCode>();
   const oauthClients = new Map<string, OAuthClient>();
@@ -863,17 +881,19 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       return;
     }
     if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
-      const watchdog = observeRecoveryWatchdogHealth(config.controllerHome);
+      const watchdog = config.installProfile === 'self-healing'
+        ? observeRecoveryWatchdogHealth(config.controllerHome)
+        : { ok: true, detail: 'Recovery monitor disabled by gateway install profile' };
       json(response, 200, {
         status: watchdog.ok ? 'ok' : 'degraded',
         service: 'forge-standalone-recovery',
         watchdog: {
           ok: watchdog.ok,
           detail: watchdog.detail,
-          pulseAgeMs: watchdog.pulseAgeMs,
-          tickAgeMs: watchdog.tickAgeMs,
-          releaseRevision: watchdog.runtimeIdentity?.releaseRevision,
-          pid: watchdog.runtimeIdentity?.pid,
+          pulseAgeMs: 'pulseAgeMs' in watchdog ? watchdog.pulseAgeMs : undefined,
+          tickAgeMs: 'tickAgeMs' in watchdog ? watchdog.tickAgeMs : undefined,
+          releaseRevision: 'runtimeIdentity' in watchdog ? watchdog.runtimeIdentity?.releaseRevision : runtimeIdentity?.releaseRevision,
+          pid: 'runtimeIdentity' in watchdog ? watchdog.runtimeIdentity?.pid : runtimeIdentity?.pid,
         },
         version: FORGE_VERSION,
         ...(runtimeIdentity ? {
@@ -1026,26 +1046,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     await recoveryMcp.handle(request, response, body);
   });
   await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(gateway.port, gateway.host, () => resolveListen()); });
-  runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');
-  const superviseWatchdog = async () => {
-    if (!runtimeIdentity || watchdogRestartInFlight) return;
-    const watchdog = observeRecoveryWatchdogHealth(config.controllerHome);
-    if (watchdog.ok) return;
-    watchdogRestartInFlight = true;
-    try {
-      const recovery = await restartRecoveryWatchdog(config);
-      auditGateway({
-        watchdog_supervision: recovery.ok ? 'recovered' : 'failed',
-        detail: recovery.detail,
-        attempted: recovery.attempted,
-        serviceTarget: recovery.serviceTarget,
-      });
-    } finally {
-      watchdogRestartInFlight = false;
-    }
-  };
-  const watchdogSupervisor = setInterval(() => { void superviseWatchdog(); }, 15_000);
-  watchdogSupervisor.unref?.();
+  runtimeIdentity ??= writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');
   process.stdout.write(JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port, runtimeIdentity }) + '\n');
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { decideConfiguredRuntimeReleaseAction } from '../../src/runtime/release/release-coordinator';
+import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
@@ -193,6 +193,71 @@ describe('Recovery ReleaseSession', () => {
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_static', session: { revision: session.revision } });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
     expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate' });
+  });
+
+  test('runs one normal release call through every immediately executable durable phase', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-autonomous-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    const config = { controllerHome: home };
+    const provider = {
+      prepare: async () => {
+        let session = readReleaseSession(home, candidate.sessionId)
+          ?? createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+        if (session.phase === 'source_frozen') {
+          session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+        }
+        return { ok: true, attempted: true, detail: 'built', releaseSession: session };
+      },
+      verifyStatic: async (_config: typeof config, sessionId: string) => {
+        const session = readReleaseSession(home, sessionId)!;
+        const advanced = advanceReleaseSession({
+          controllerHome: home,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'static_verified',
+          receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+        });
+        return { ok: true, attempted: true, detail: 'static', releaseSession: advanced };
+      },
+      verifyCandidate: async (_config: typeof config, sessionId: string) => {
+        let session = readReleaseSession(home, sessionId)!;
+        session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+        session = advanceReleaseSession({
+          controllerHome: home,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'candidate_verified',
+          receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+        });
+        return { ok: true, attempted: true, detail: 'candidate', releaseSession: session };
+      },
+      cutover: async (_config: typeof config, sessionId: string) => ({
+        ok: true,
+        attempted: false,
+        noOp: true,
+        detail: 'external cutover safety boundary',
+        releaseSession: readReleaseSession(home, sessionId)!,
+      }),
+      promoteKnownGood: async () => ({ ok: false, attempted: false, noOp: true, detail: 'not reached' }),
+    };
+
+    const result = await advanceConfiguredRuntimeRelease(config, provider);
+    expect(result).toMatchObject({
+      ok: true,
+      releaseSession: { phase: 'cutover_eligible' },
+      releaseRun: {
+        actions: ['prepare', 'verify_static', 'verify_candidate', 'mark_cutover_eligible', 'cutover'],
+        boundary: 'provider_boundary',
+      },
+    });
+    const durableRevision = result.releaseSession!.revision;
+    const retried = await advanceConfiguredRuntimeRelease(config, provider, 'retry-same-release');
+    expect(retried).toMatchObject({
+      ok: true,
+      releaseSession: { phase: 'cutover_eligible', revision: durableRevision },
+      releaseRun: { actions: ['cutover'], boundary: 'provider_boundary' },
+    });
   });
 
   test('keeps Work completion and Watchdog outside normal release authority', () => {

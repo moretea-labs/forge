@@ -32,9 +32,9 @@ import {
 } from '../../cli/controller/systemd-user';
 import { FORGE_VERSION } from '../../version';
 import { initializeStandaloneRecovery, loadRecoveryConfig, normalizeRecoveryInstallProfile, recoveryInstallProfileRoles, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig, type RecoveryInstallProfile, type RecoveryTunnelServiceConfig } from './core';
-import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
+import { RECOVERY_DAEMON_LABEL, RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import { acquireRecoveryOperationLock } from './operation-lock';
-export { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
+export { RECOVERY_DAEMON_LABEL, RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import {
   RECOVERY_RELEASE_BINARIES,
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
@@ -79,7 +79,7 @@ export function retireStaleRecoveryLaunchAgents(
 ): string[] {
   const generatedRoot = join(recoveryRoot(controllerHome), 'launchd');
   if (!existsSync(generatedRoot)) return [];
-  const activeLabels = new Set([RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL]);
+  const activeLabels = new Set([RECOVERY_DAEMON_LABEL]);
   const retired: string[] = [];
   for (const name of readdirSync(generatedRoot)) {
     if (!name.endsWith('.plist')) continue;
@@ -132,6 +132,7 @@ export interface RecoveryActivationVerification {
   ok: boolean;
   expectedReleaseRevision: string;
   failures: string[];
+  daemonPid?: number;
   gatewayPid?: number;
   watchdogPid?: number;
   healthStatus?: number;
@@ -308,8 +309,7 @@ export function stageRecoveryRelease(input: {
     const runCanary = dependencies.runCanary ?? defaultRunCanary;
     const canaries: Array<{ label: string; binaryPath: string; role?: RecoveryRuntimeRole }> = [
       { label: 'primary', binaryPath: primary },
-      { label: 'gateway', binaryPath: join(staging, 'forge-recovery-gateway'), role: 'gateway' },
-      { label: 'watchdog', binaryPath: join(staging, 'forge-recovery-watchdog'), role: 'watchdog' },
+      { label: 'daemon', binaryPath: primary, role: 'daemon' },
     ];
     const canaryDetails: string[] = [];
     for (const canary of canaries) {
@@ -394,9 +394,9 @@ export function recoverySystemdUserUnitInput(
   env: NodeJS.ProcessEnv = process.env,
   productVersion: string = FORGE_VERSION,
 ): SystemdUserUnitInput {
-  const binary = role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog';
+  const binary = role === 'daemon' ? 'forge-recovery' : role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog';
   return {
-    description: role === 'gateway' ? 'Forge Standalone Recovery Gateway' : 'Forge Standalone Recovery Watchdog',
+    description: role === 'daemon' ? 'Forge Standalone Recovery' : role === 'gateway' ? 'Forge Standalone Recovery Gateway (legacy)' : 'Forge Standalone Recovery Watchdog (legacy)',
     executable: join(recoveryCurrentPath(controllerHome), binary),
     args: [role, '--controller-home', resolve(controllerHome)],
     environment: {
@@ -413,7 +413,11 @@ export function recoverySystemdUserUnitInput(
 }
 
 function recoverySystemdLabel(role: RecoveryRuntimeRole): string {
-  return role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+  return role === 'daemon' ? RECOVERY_DAEMON_LABEL : role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+}
+
+function recoveryRoleServesGateway(role: RecoveryRuntimeRole): boolean {
+  return role === 'daemon' || role === 'gateway';
 }
 
 function recoveryPlist(input: {
@@ -447,7 +451,7 @@ export function recoveryLaunchdServicePid(label: string): number | undefined {
 }
 
 export function recoveryLaunchdPid(role: RecoveryRuntimeRole): number | undefined {
-  return recoveryLaunchdServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL);
+  return recoveryLaunchdServicePid(recoverySystemdLabel(role));
 }
 
 function defaultCurrentPid(controllerHome: string, role: RecoveryRuntimeRole): number | undefined {
@@ -477,8 +481,6 @@ export async function verifyRecoveryReleaseActivation(input: {
     if (!current || current.releasePath !== input.expectedRelease.releasePath || current.manifestSha256 !== input.expectedRelease.manifestSha256) {
       failures.push('Recovery current authority does not match expected release');
     }
-    const gateway = readRecoveryRuntimeIdentity(input.controllerHome, 'gateway');
-    const watchdog = readRecoveryRuntimeIdentity(input.controllerHome, 'watchdog');
     const observedPids: Partial<Record<RecoveryRuntimeRole, number>> = {};
     const platform = dependencies.platform ?? process.platform;
     const servicePid = dependencies.servicePid ?? ((_controllerHome: string, role: RecoveryRuntimeRole) => (
@@ -486,12 +488,13 @@ export async function verifyRecoveryReleaseActivation(input: {
         ? systemdUserServicePid(recoverySystemdLabel(role), dependencies.systemdEnv ?? process.env)
         : recoveryLaunchdPid(role)
     ));
-    for (const [role, identity] of [['gateway', gateway], ['watchdog', watchdog]] as const) {
+    for (const role of ['daemon', 'gateway', 'watchdog'] as const) {
       const managedPid = servicePid(input.controllerHome, role);
       if (!selectedRoles.has(role)) {
         if (managedPid) failures.push(`${role} service remains active outside Recovery profile ${profile}`);
         continue;
       }
+      const identity = readRecoveryRuntimeIdentity(input.controllerHome, role);
       if (!managedPid) failures.push(`${role} service-owner PID is unavailable`);
       else observedPids[role] = managedPid;
       if (input.expectedRelease.legacy) continue;
@@ -505,7 +508,7 @@ export async function verifyRecoveryReleaseActivation(input: {
       }
     }
     let healthStatus: number | undefined;
-    if (selectedRoles.has('gateway')) {
+    if ([...selectedRoles].some(recoveryRoleServesGateway)) {
       try {
         const response = await fetch(`http://${input.config.gateway?.host ?? '127.0.0.1'}:${input.config.gateway?.port ?? 8787}/health`, {
           signal: AbortSignal.timeout(3_000),
@@ -528,6 +531,7 @@ export async function verifyRecoveryReleaseActivation(input: {
       ok: failures.length === 0,
       expectedReleaseRevision: input.expectedRelease.releaseRevision,
       failures,
+      daemonPid: observedPids.daemon,
       gatewayPid: observedPids.gateway,
       watchdogPid: observedPids.watchdog,
       healthStatus,
@@ -553,7 +557,7 @@ function acquireRecoveryReleaseLock(controllerHome: string): { path: string; ins
 }
 
 function recoveryRoleLabel(role: RecoveryRuntimeRole): string {
-  return role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+  return recoverySystemdLabel(role);
 }
 
 function retireRecoveryRoleService(input: {
@@ -633,7 +637,7 @@ async function handoffRecoveryServices(input: {
         platform: 'systemd-user',
         serviceRegistered: true,
         pidReady: false,
-        portReady: role === 'watchdog',
+        portReady: !recoveryRoleServesGateway(role),
         servicePath,
       };
     }
@@ -656,7 +660,7 @@ async function handoffRecoveryServices(input: {
       const generatedPath = join(generatedRoot, `${label}.plist`);
       writeFileSync(generatedPath, recoveryPlist({
         label,
-        executable: join(recoveryCurrentPath(input.controllerHome), role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog'),
+        executable: join(recoveryCurrentPath(input.controllerHome), role === 'daemon' ? 'forge-recovery' : role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog'),
         command: role,
         controllerHome: resolve(input.controllerHome),
         logPath: join(auditRoot, `${role}.log`),
@@ -668,18 +672,18 @@ async function handoffRecoveryServices(input: {
         plistPath: installedPath,
         domain,
         oldPid: currentPid(input.controllerHome, role),
-        ...(role === 'gateway' ? { port: input.config.gateway?.port } : {}),
+        ...(recoveryRoleServesGateway(role) ? { port: input.config.gateway?.port } : {}),
         maxBootoutWaitMs: 20_000,
         maxBootstrapRetry: 3,
       });
-      if (!launched.serviceRegistered || !launched.pidWaitClean || (role === 'gateway' && !launched.portWaitClean)) {
-        throw new Error(role === 'gateway' ? 'RECOVERY_GATEWAY_HANDOFF_FAILED' : 'RECOVERY_WATCHDOG_HANDOFF_FAILED');
+      if (!launched.serviceRegistered || !launched.pidWaitClean || (recoveryRoleServesGateway(role) && !launched.portWaitClean)) {
+        throw new Error(role === 'daemon' ? 'RECOVERY_DAEMON_HANDOFF_FAILED' : role === 'gateway' ? 'RECOVERY_GATEWAY_HANDOFF_FAILED' : 'RECOVERY_WATCHDOG_HANDOFF_FAILED');
       }
       services[role] = {
         platform: 'launchd',
         serviceRegistered: launched.serviceRegistered,
         pidReady: launched.pidWaitClean,
-        portReady: role === 'gateway' ? launched.portWaitClean : true,
+        portReady: recoveryRoleServesGateway(role) ? launched.portWaitClean : true,
         servicePath: installedPath,
         launchd: launched,
       };
@@ -697,9 +701,9 @@ async function handoffRecoveryServices(input: {
   for (const role of recoveryInstallProfileRoles(input.profile)) {
     const service = services[role];
     if (!service) continue;
-    service.pid = role === 'gateway' ? verification.gatewayPid : verification.watchdogPid;
+    service.pid = role === 'daemon' ? verification.daemonPid : role === 'gateway' ? verification.gatewayPid : verification.watchdogPid;
     service.pidReady = Boolean(service.pid);
-    if (role === 'gateway') service.portReady = verification.healthStatus === 200;
+    if (recoveryRoleServesGateway(role)) service.portReady = verification.healthStatus === 200;
   }
   return { services, verification };
 }
@@ -762,7 +766,7 @@ export async function activateRecoveryRelease(input: {
       }
       throw new Error(
         `RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK: ${activationError instanceof Error ? activationError.message : String(activationError)}; `
-        + `restored=${previous.releaseRevision}; gateway=${rollbackResult.verification.gatewayPid ?? 'unknown'}; watchdog=${rollbackResult.verification.watchdogPid ?? 'unknown'}`,
+        + `restored=${previous.releaseRevision}; recovery=${rollbackResult.verification.daemonPid ?? rollbackResult.verification.gatewayPid ?? 'unknown'}`,
       );
     }
   } finally {
@@ -917,6 +921,7 @@ export function recoveryReleaseAuthoritySnapshot(controllerHome: string): {
   previous?: RecoveryReleaseDescriptor;
   currentPath: string;
   previousPath: string;
+  daemonLaunchAgent: string;
   gatewayLaunchAgent: string;
   watchdogLaunchAgent: string;
 } {
@@ -925,6 +930,7 @@ export function recoveryReleaseAuthoritySnapshot(controllerHome: string): {
     previous: readPreviousRecoveryRelease(controllerHome),
     currentPath: recoveryCurrentPath(controllerHome),
     previousPath: recoveryPreviousPath(controllerHome),
+    daemonLaunchAgent: launchAgentPath(RECOVERY_DAEMON_LABEL),
     gatewayLaunchAgent: launchAgentPath(RECOVERY_GATEWAY_LABEL),
     watchdogLaunchAgent: launchAgentPath(RECOVERY_WATCHDOG_LABEL),
   };

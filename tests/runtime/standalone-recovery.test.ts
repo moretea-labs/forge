@@ -29,7 +29,6 @@ import {
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
-  restartRecoveryWatchdog,
   scopeWatchdogStateToRuntimeRelease,
   stageAndActivateConfiguredRuntimeRelease,
   unpinRuntimeRelease,
@@ -89,11 +88,10 @@ import {
 import { FORGE_VERSION } from '../../src/version';
 import {
   defaultUserControllerHomeForMigration,
-  recoveryControllerHomeOwnerLabels,
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
-import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
@@ -288,8 +286,7 @@ test('standalone Recovery non-stage install persists a durable canonical source 
       ok: true,
       expectedReleaseRevision: expectedRelease.releaseRevision,
       failures: [],
-      gatewayPid: 4101,
-      watchdogPid: 4102,
+      daemonPid: 4101,
       healthStatus: 200,
     }),
   });
@@ -302,8 +299,6 @@ test('standalone Recovery non-stage install persists a durable canonical source 
   expect(result.staged.release.productVersion).toBe('1.7.2');
   expect(result.activated?.release.sourceCommit).toBe(sourceCommit);
   expect(result.activated?.release.productVersion).toBe('1.7.2');
-  const gatewayPlist = readFileSync(join(home, 'recovery', 'launchd', 'com.moretea.forge-recovery-gateway.plist'), 'utf8');
-  expect(gatewayPlist).toContain('FORGE_BUILD_VERSION=1.7.2');
   expect(result.activated?.verification.ok).toBe(true);
 });
 
@@ -1569,26 +1564,6 @@ describe('standalone recovery systemd user ownership', () => {
     expect(defaultPrimaryRuntimeServiceConfig('darwin')).toEqual({ platform: 'launchd' });
   });
 
-  test('pins Gateway and Watchdog units to the current immutable Recovery release', () => {
-    const controllerHome = '/tmp/forge-recovery-systemd-fixture';
-    const serviceEnv = { PATH: '/usr/bin:/bin', FORGE_CONNECTOR_EXECUTABLE: '/opt/forge/bin/bun' };
-    const gateway = recoverySystemdUserUnitInput(controllerHome, 'gateway', serviceEnv);
-    const watchdog = recoverySystemdUserUnitInput(controllerHome, 'watchdog', serviceEnv);
-    expect(gateway).toMatchObject({
-      executable: expect.stringContaining('/recovery/current/forge-recovery-gateway'),
-      args: ['gateway', '--controller-home', controllerHome],
-      restart: 'always',
-      restartSec: 5,
-      environment: { PATH: '/usr/bin:/bin', FORGE_CONNECTOR_EXECUTABLE: '/opt/forge/bin/bun' },
-    });
-    expect(watchdog).toMatchObject({
-      executable: expect.stringContaining('/recovery/current/forge-recovery-watchdog'),
-      args: ['watchdog', '--controller-home', controllerHome],
-      restart: 'always',
-      restartSec: 5,
-      environment: { FORGE_CONNECTOR_EXECUTABLE: '/opt/forge/bin/bun' },
-    });
-  });
 });
 
 describe('standalone recovery on canonical Runtime', () => {
@@ -2078,8 +2053,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(recoveryConnectorHasExternalTransport({
       public: false,
       services: {
-        gateway: { label: 'gateway', platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: true },
-        watchdog: { label: 'watchdog', platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: true },
+        recovery: { label: 'recovery', platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: true },
         tunnel: { configured: true, platform: 'openai-secure-tunnel', alias: wslAlias, tunnelId: 'recovery-wsl-1', plistInstalled: false, restartSafe: true, running: true, healthy: true, ready: true },
       },
     })).toBe(true);
@@ -2101,14 +2075,6 @@ describe('standalone recovery on canonical Runtime', () => {
       FORGE_CONTROLLER_HOME: `${TEST_MAC_HOME}/.forge/controller`,
       XDG_STATE_HOME: '',
     }, TEST_LINUX_HOME)).toBe(`${TEST_LINUX_HOME}/.forge/controller`);
-    const owners = recoveryControllerHomeOwnerLabels(`${TEST_LINUX_HOME}/src/forge/_ops/controller-home`);
-    expect(owners).toHaveLength(4);
-    expect(owners[0]).toMatch(/^com\.moretea\.forge\.runtime\.[a-f0-9]+$/);
-    expect(owners[1]).toMatch(/^com\.moretea\.forge\.mcp-gateway\.[a-f0-9]+$/);
-    expect(owners.slice(2)).toEqual([
-      'com.moretea.forge-recovery-gateway',
-      'com.moretea.forge-recovery-watchdog',
-    ]);
     const home = repoLocalControllerHome();
     const config = createRecoveryConfig(home);
     expect(() => scheduleRecoveryControllerHomeMigration(config, {
@@ -4081,10 +4047,10 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
-  test('restarts only the independent Recovery Gateway through its own bounded lock', async () => {
+  test('restarts the Recovery service after a sustained local health failure', async () => {
     const home = controllerHome();
     const config = initializeStandaloneRecovery(home, 8787);
-    const plist = join(home, 'recovery', 'launchd', 'com.moretea.forge-recovery-gateway.plist');
+    const plist = join(home, 'recovery', 'launchd', `${RECOVERY_DAEMON_LABEL}.plist`);
     mkdirSync(dirname(plist), { recursive: true });
     writeFileSync(plist, '<plist/>');
     let probes = 0;
@@ -4149,7 +4115,7 @@ describe('standalone recovery on canonical Runtime', () => {
     };
     const runtimeIdentity = {
       schemaVersion: 1 as const,
-      role: 'watchdog' as const,
+      role: 'daemon' as const,
       pid: 4242,
       startedAt: new Date(now - 60_000).toISOString(),
       ...release,
@@ -4191,29 +4157,6 @@ describe('standalone recovery on canonical Runtime', () => {
       nowMs: now,
       pidAlive: () => true,
     })).toMatchObject({ ok: false, detail: 'Recovery Watchdog is not running the current immutable Recovery release' });
-  });
-
-  test('Recovery Gateway can restart a stale independent Watchdog through the shared bounded launchd primitive', async () => {
-    const home = controllerHome();
-    const config = initializeStandaloneRecovery(home, 8787);
-    const plist = join(home, 'recovery', 'launchd', 'com.moretea.forge-recovery-watchdog.plist');
-    mkdirSync(dirname(plist), { recursive: true });
-    writeFileSync(plist, '<plist/>');
-    let probes = 0;
-    const commands: string[][] = [];
-    const result = await restartRecoveryWatchdog(config, {
-      platform: 'darwin',
-      currentUid: async () => 501,
-      runCommand: async (_command, args) => {
-        commands.push(args);
-        return { ok: true, status: 0, stdout: '', stderr: '' };
-      },
-      probeWatchdog: async () => ({ ok: ++probes >= 3, detail: probes >= 3 ? 'healthy' : 'stale' }),
-      now: (() => { let now = 0; return () => now += 1_000; })(),
-      sleep: async () => undefined,
-    });
-    expect(result).toMatchObject({ ok: true, attempted: true });
-    expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
   });
 
   test('accepts a live Recovery runtime child owned by the managed wrapper and rejects unrelated PIDs', () => {
@@ -4269,13 +4212,7 @@ describe('standalone recovery on canonical Runtime', () => {
       },
       healthUrl: 'https://recovery.example.test/recovery/health',
       services: {
-        gateway: {
-          label: 'com.moretea.forge-recovery-gateway',
-          plistInstalled: false,
-          running: false,
-        },
-        watchdog: {
-          label: 'com.moretea.forge-recovery-watchdog',
+        recovery: {
           plistInstalled: false,
           running: false,
         },
@@ -4291,8 +4228,8 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(descriptor.tools).toContain('recover_primary_runtime');
     expect(descriptor.tools).toContain('rollback_previous');
     expect(descriptor.warnings).toContain('No current immutable Forge Recovery release is installed. Run forge recovery install.');
-    expect(descriptor.warnings).toContain('Forge Recovery launchd services are not fully installed. Run forge recovery install.');
-    expect(descriptor.warnings).toContain('Forge Recovery Gateway or Watchdog is not running on the current Recovery release.');
+    expect(descriptor.warnings).toContain('Forge Recovery launchd service is not installed. Run forge recovery install.');
+    expect(descriptor.warnings).toContain('Forge Recovery service is not running on the current Recovery release.');
     expect(descriptor.warnings).toContain('The dedicated Forge Recovery tunnel plist is not installed.');
     const serialized = JSON.stringify(descriptor);
     expect(serialized).not.toContain(credential.passphrase);
@@ -4400,23 +4337,20 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(result.failures.some((failure) => failure.startsWith('oauthPkce/mcp:'))).toBe(false);
   });
 
-  test('reports Linux Recovery Gateway and Watchdog installation through systemd-user ownership', () => {
+  test('reports Linux Recovery service ownership through systemd-user', () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
       initializeStandaloneRecovery(home, 8787);
-      const gatewayUnit = systemdUserUnitPath('com.moretea.forge-recovery-gateway');
-      const watchdogUnit = systemdUserUnitPath('com.moretea.forge-recovery-watchdog');
       const descriptor = recoveryConnectorDescriptor(home, {
         platform: 'linux',
-        pathExists: (path) => path === gatewayUnit || path === watchdogUnit,
+        pathExists: () => true,
         systemdPid: () => undefined,
         processAlive: () => false,
       });
-      expect(descriptor.services.gateway).toMatchObject({ platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: false });
-      expect(descriptor.services.watchdog).toMatchObject({ platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: false });
-      expect(descriptor.warnings).not.toContain('Forge Recovery systemd-user services are not fully installed. Run forge recovery install.');
+      expect(descriptor.services.recovery).toMatchObject({ platform: 'systemd-user', serviceInstalled: true, running: false });
+      expect(descriptor.warnings).not.toContain('Forge Recovery systemd-user service is not installed. Run forge recovery install.');
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -4497,7 +4431,7 @@ describe('standalone recovery on canonical Runtime', () => {
     try {
       const generatedRoot = join(home, 'recovery', 'launchd');
       const retiredLabel = 'com.moretea.retired-recovery-gateway';
-      const currentLabel = 'com.moretea.forge-recovery-gateway';
+      const currentLabel = RECOVERY_DAEMON_LABEL;
       mkdirSync(generatedRoot, { recursive: true });
       const plist = (label: string) => `<plist><dict><key>Label</key><string>${label}</string></dict></plist>`;
       writeFileSync(join(generatedRoot, `${retiredLabel}.plist`), plist(retiredLabel));

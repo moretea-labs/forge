@@ -19,8 +19,7 @@ import {
 } from '../repositories/controller-home';
 import { FORGE_VERSION } from '../../version';
 import {
-  RECOVERY_GATEWAY_LABEL,
-  RECOVERY_WATCHDOG_LABEL,
+  RECOVERY_DAEMON_LABEL,
   inspectRecoveryTunnelLaunchdContract,
   installStandaloneRecovery,
   recoveryLaunchdPid,
@@ -150,8 +149,8 @@ export type { RecoveryControllerHomeMigrationPreflight };
 export interface RecoveryConnectorDependencies {
   platform?: NodeJS.Platform;
   pathExists?: (path: string) => boolean;
-  launchdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
-  systemdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
+  launchdPid?: (role: 'daemon') => number | undefined;
+  systemdPid?: (role: 'daemon') => number | undefined;
   tunnelLaunchdPid?: (label: string) => number | undefined;
   tunnelSystemdPid?: (unitName: string) => number | undefined;
   openAiTunnelStatus?: (service: OpenAiSecureTunnelServiceConfig) => OpenAiSecureTunnelRuntimeObservation;
@@ -220,8 +219,7 @@ export interface RecoveryConnectorDescriptor {
   };
   healthUrl: string;
   services: {
-    gateway: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
-    watchdog: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
+    recovery: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
     tunnel: {
       configured: boolean;
       platform?: 'launchd' | 'systemd-user' | 'openai-secure-tunnel';
@@ -254,14 +252,13 @@ export function recoveryConnectorDescriptor(
   const url = configuredUrl ?? `${localOrigin}/recovery/mcp`;
   const origin = new URL(url).origin;
   const passphraseConfigured = Boolean(readMcpServiceOAuthPassphrase(home));
-  const gatewayIdentity = readRecoveryRuntimeIdentity(home, 'gateway');
-  const watchdogIdentity = readRecoveryRuntimeIdentity(home, 'watchdog');
+  const recoveryIdentity = readRecoveryRuntimeIdentity(home, 'daemon');
   const platform = dependencies.platform ?? process.platform;
   const servicePlatform: 'launchd' | 'systemd-user' = platform === 'linux' ? 'systemd-user' : 'launchd';
   const pathExists = dependencies.pathExists ?? existsSync;
   const launchdPid = dependencies.launchdPid ?? recoveryLaunchdPid;
-  const systemdPid = dependencies.systemdPid ?? ((role: 'gateway' | 'watchdog') => systemdUserServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL));
-  const managedPid = (role: 'gateway' | 'watchdog') => servicePlatform === 'systemd-user' ? systemdPid(role) : launchdPid(role);
+  const systemdPid = dependencies.systemdPid ?? ((_role: 'daemon') => systemdUserServicePid(RECOVERY_DAEMON_LABEL));
+  const managedPid = () => servicePlatform === 'systemd-user' ? systemdPid('daemon') : launchdPid('daemon');
   const processAlive = dependencies.processAlive ?? isProcessAlive;
   const serviceOwnsRuntimeProcess = (managedPid: number | undefined, runtimePid: number | undefined) =>
     recoveryManagedServiceOwnsRuntimeProcess(managedPid, runtimePid, {
@@ -307,36 +304,24 @@ export function recoveryConnectorDescriptor(
       : Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
   const tunnelHealthy = openAiTunnelService ? openAiTunnelStatus?.healthy === true : tunnelRunning;
   const tunnelReady = openAiTunnelService ? openAiTunnelStatus?.ok === true : tunnelRestartSafe && tunnelRunning;
-  const gatewayPlistInstalled = pathExists(authority.gatewayLaunchAgent);
-  const watchdogPlistInstalled = pathExists(authority.watchdogLaunchAgent);
-  const gatewayServiceInstalled = servicePlatform === 'systemd-user'
-    ? pathExists(systemdUserUnitPath(RECOVERY_GATEWAY_LABEL))
-    : gatewayPlistInstalled;
-  const watchdogServiceInstalled = servicePlatform === 'systemd-user'
-    ? pathExists(systemdUserUnitPath(RECOVERY_WATCHDOG_LABEL))
-    : watchdogPlistInstalled;
-  const gatewayManagedPid = managedPid('gateway');
-  const watchdogManagedPid = managedPid('watchdog');
-  const gatewayRunning = Boolean(
-    gatewayIdentity
-    && serviceOwnsRuntimeProcess(gatewayManagedPid, gatewayIdentity.pid)
+  const recoveryPlistInstalled = pathExists(authority.daemonLaunchAgent);
+  const recoveryServiceInstalled = servicePlatform === 'systemd-user'
+    ? pathExists(systemdUserUnitPath(RECOVERY_DAEMON_LABEL))
+    : recoveryPlistInstalled;
+  const recoveryManagedPid = managedPid();
+  const recoveryRunning = Boolean(
+    recoveryIdentity
+    && serviceOwnsRuntimeProcess(recoveryManagedPid, recoveryIdentity.pid)
     && authority.current
-    && gatewayIdentity.releaseRevision === authority.current.releaseRevision
-    && gatewayIdentity.manifestSha256 === authority.current.manifestSha256,
+    && recoveryIdentity.releaseRevision === authority.current.releaseRevision
+    && recoveryIdentity.manifestSha256 === authority.current.manifestSha256,
   );
-  const watchdogRunning = Boolean(
-    watchdogIdentity
-    && serviceOwnsRuntimeProcess(watchdogManagedPid, watchdogIdentity.pid)
-    && authority.current
-    && watchdogIdentity.releaseRevision === authority.current.releaseRevision
-    && watchdogIdentity.manifestSha256 === authority.current.manifestSha256,
-  );
-  const installed = Boolean(authority.current && gatewayServiceInstalled && watchdogServiceInstalled);
+  const installed = Boolean(authority.current && recoveryServiceInstalled);
   const publicEndpoint = Boolean(configuredUrl?.startsWith('https://'));
   const warnings: string[] = [];
   if (!authority.current) warnings.push('No current immutable Forge Recovery release is installed. Run forge recovery install.');
-  if (!gatewayServiceInstalled || !watchdogServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} services are not fully installed. Run forge recovery install.`);
-  if (!gatewayRunning || !watchdogRunning) warnings.push('Forge Recovery Gateway or Watchdog is not running on the current Recovery release.');
+  if (!recoveryServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} service is not installed. Run forge recovery install.`);
+  if (!recoveryRunning) warnings.push('Forge Recovery service is not running on the current Recovery release.');
   if (!configuredTunnel) warnings.push('Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.');
   else if (openAiTunnelService) {
     if (!tunnelRestartSafe) warnings.push('The dedicated OpenAI Recovery tunnel must use a valid alias, tunnel id, loopback MCP endpoint, and env:/file: runtime API key reference.');
@@ -357,7 +342,7 @@ export function recoveryConnectorDescriptor(
     transport: 'streamable_http',
     url,
     public: publicEndpoint,
-    readyForChatGPT: installed && gatewayRunning && watchdogRunning && tunnelReady && (openAiTunnelService ? true : publicEndpoint) && passphraseConfigured,
+    readyForChatGPT: installed && recoveryRunning && tunnelReady && (openAiTunnelService ? true : publicEndpoint) && passphraseConfigured,
     installed,
     currentRelease: authority.current?.releaseRevision,
     previousRelease: authority.previous?.releaseRevision,
@@ -368,21 +353,13 @@ export function recoveryConnectorDescriptor(
     },
     healthUrl: `${origin}/recovery/health`,
     services: {
-      gateway: {
-        label: RECOVERY_GATEWAY_LABEL,
+      recovery: {
+        label: RECOVERY_DAEMON_LABEL,
         platform: servicePlatform,
-        serviceInstalled: gatewayServiceInstalled,
-        plistInstalled: gatewayPlistInstalled,
-        running: gatewayRunning,
-        ...(gatewayIdentity ? { pid: gatewayIdentity.pid } : {}),
-      },
-      watchdog: {
-        label: RECOVERY_WATCHDOG_LABEL,
-        platform: servicePlatform,
-        serviceInstalled: watchdogServiceInstalled,
-        plistInstalled: watchdogPlistInstalled,
-        running: watchdogRunning,
-        ...(watchdogIdentity ? { pid: watchdogIdentity.pid } : {}),
+        serviceInstalled: recoveryServiceInstalled,
+        plistInstalled: recoveryPlistInstalled,
+        running: recoveryRunning,
+        ...(recoveryIdentity ? { pid: recoveryIdentity.pid } : {}),
       },
       tunnel: {
         configured: Boolean(configuredTunnel),

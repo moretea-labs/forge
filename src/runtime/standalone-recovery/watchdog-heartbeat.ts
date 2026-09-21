@@ -154,7 +154,7 @@ export function evaluateRecoveryWatchdogHealth(input: {
 export function observeRecoveryWatchdogHealth(controllerHome: string): RecoveryWatchdogHealth {
   return evaluateRecoveryWatchdogHealth({
     heartbeat: readRecoveryWatchdogHeartbeat(controllerHome),
-    runtimeIdentity: readRecoveryRuntimeIdentity(controllerHome, 'watchdog'),
+    runtimeIdentity: readRecoveryRuntimeIdentity(controllerHome, 'daemon'),
     currentRelease: readCurrentRecoveryRelease(controllerHome),
   });
 }

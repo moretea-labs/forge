@@ -53,7 +53,7 @@ import type { RuntimeReleaseManifest } from '../root/types';
 import { ensurePackageConnectorService, packageConnectorAuthMode, packageConnectorServicePaths, type PackageConnectorReleaseBinding } from '../root/package-connector-service';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
-import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
+import { RECOVERY_DAEMON_LABEL } from './service-labels';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import { reconcileStoppedWorkflowSupervisorSocket } from '../../../supervisor/server';
 import {
@@ -162,8 +162,7 @@ export function normalizeRecoveryInstallProfile(value: unknown, fallback: Recove
 
 export function recoveryInstallProfileRoles(profile: RecoveryInstallProfile): RecoveryRuntimeRole[] {
   if (profile === 'manual') return [];
-  if (profile === 'gateway') return ['gateway'];
-  return ['gateway', 'watchdog'];
+  return ['daemon'];
 }
 
 export interface RecoveryConfig {
@@ -303,7 +302,6 @@ export type RecoveryMutationAction =
   | 'release_session_known_good'
   | 'restart_primary_connector'
   | 'restart_recovery_gateway'
-  | 'restart_recovery_watchdog'
   | 'repair_public_tunnel';
 
 interface RecoveryLock {
@@ -5479,8 +5477,8 @@ export interface RecoveryWatchdogRestartDependencies extends RecoveryRoleRestart
   probeWatchdog?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
 }
 
-function recoveryRoleLaunchdService(config: RecoveryConfig, uid: number, role: 'gateway' | 'watchdog'): LaunchdService {
-  const label = role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+function recoveryRoleLaunchdService(config: RecoveryConfig, uid: number, _role: 'gateway'): LaunchdService {
+  const label = RECOVERY_DAEMON_LABEL;
   const generated = join(recoveryRoot(config), 'launchd', `${label}.plist`);
   const installed = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   return {
@@ -5497,19 +5495,14 @@ async function probeRecoveryGateway(config: RecoveryConfig): Promise<{ ok: boole
   return probe(createRecoveryHttpTransport(config.controllerHome), `http://${config.gateway.host}:${config.gateway.port}/health`);
 }
 
-async function probeRecoveryWatchdog(config: RecoveryConfig): Promise<{ ok: boolean; detail: string }> {
-  const health = observeRecoveryWatchdogHealth(config.controllerHome);
-  return { ok: health.ok, detail: health.detail };
-}
-
 async function restartRecoveryRole(input: {
   config: RecoveryConfig;
-  role: 'gateway' | 'watchdog';
-  action: 'restart_recovery_gateway' | 'restart_recovery_watchdog';
+  role: 'gateway';
+  action: 'restart_recovery_gateway';
   check: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
   dependencies: RecoveryRoleRestartDependencies;
 }): Promise<RecoveryGatewayRestartResult> {
-  const display = input.role === 'gateway' ? 'Recovery Gateway' : 'Recovery Watchdog';
+  const display = 'Recovery daemon';
   if ((input.dependencies.platform ?? process.platform) !== 'darwin') return { ok: false, attempted: false, noOp: true, detail: `${display} launchd restart is only supported on macOS` };
   const initial = await input.check(input.config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: `${display} is already healthy` };
@@ -5517,7 +5510,7 @@ async function restartRecoveryRole(input: {
   if (uid === undefined) return { ok: false, attempted: false, noOp: true, detail: `${display} launchd UID is unavailable` };
   const service = recoveryRoleLaunchdService(input.config, uid, input.role);
   if (!existsSync(service.plistPath)) return { ok: false, attempted: false, noOp: true, detail: `${display} launchd plist is missing: ${service.plistPath}`, serviceTarget: service.target };
-  const eventPrefix = input.role === 'gateway' ? 'recovery_gateway' : 'recovery_watchdog';
+  const eventPrefix = 'recovery_daemon';
   const locked = await withLock(input.config, { action: input.action }, async () => {
     const before = await input.check(input.config);
     if (before.ok) return { ok: true, attempted: false, noOp: true, detail: `${display} recovered before restart`, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
@@ -5555,19 +5548,6 @@ export async function restartRecoveryGateway(
     role: 'gateway',
     action: 'restart_recovery_gateway',
     check: dependencies.probeGateway ?? probeRecoveryGateway,
-    dependencies,
-  });
-}
-
-export async function restartRecoveryWatchdog(
-  config: RecoveryConfig,
-  dependencies: RecoveryWatchdogRestartDependencies = {},
-): Promise<RecoveryWatchdogRestartResult> {
-  return restartRecoveryRole({
-    config,
-    role: 'watchdog',
-    action: 'restart_recovery_watchdog',
-    check: dependencies.probeWatchdog ?? probeRecoveryWatchdog,
     dependencies,
   });
 }

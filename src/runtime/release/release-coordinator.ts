@@ -1,6 +1,7 @@
 import {
   advanceReleaseSession,
   listReleaseSessions,
+  readReleaseSession,
   releaseSessionIsTerminal,
   type ReleaseSession,
 } from './release-session';
@@ -9,12 +10,24 @@ export interface RuntimeReleaseContext {
   controllerHome: string;
 }
 
+export type RuntimeReleaseRunBoundary =
+  | 'terminal'
+  | 'provider_boundary'
+  | 'provider_failure'
+  | 'advance_budget_exhausted';
+
+export interface RuntimeReleaseRunEvidence {
+  actions: RuntimeReleaseCoordinatorAction[];
+  boundary: RuntimeReleaseRunBoundary;
+}
+
 export interface RuntimeReleaseProgressResult {
   ok: boolean;
   attempted: boolean;
   noOp?: boolean;
   detail: string;
   releaseSession?: ReleaseSession;
+  releaseRun?: RuntimeReleaseRunEvidence;
 }
 
 /**
@@ -42,6 +55,8 @@ export interface RuntimeReleaseCoordinatorDecision {
   action: RuntimeReleaseCoordinatorAction;
   session?: ReleaseSession;
 }
+
+const MAX_AUTONOMOUS_RELEASE_ADVANCES = 8;
 
 export function activeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
   const inventory = listReleaseSessions(controllerHome, { maxEntries: 512 });
@@ -75,12 +90,14 @@ export function decideConfiguredRuntimeReleaseAction(controllerHome: string): Ru
   }
 }
 
-/**
- * Stateless normal-release coordinator. ReleaseSession is the only durable
- * progression authority. Repeated calls derive exactly one next action from
- * its persisted phase; no Work or coordinator-local state is created per phase.
- */
-export async function advanceConfiguredRuntimeRelease<C extends RuntimeReleaseContext>(
+function decisionFingerprint(decision: RuntimeReleaseCoordinatorDecision): string {
+  const session = decision.session;
+  return session
+    ? `${decision.action}:${session.sessionId}:${session.phase}:${session.revision}`
+    : `${decision.action}:none`;
+}
+
+export async function advanceConfiguredRuntimeReleaseStep<C extends RuntimeReleaseContext>(
   config: C,
   provider: RuntimeReleaseProvider<C>,
   requestId?: string,
@@ -115,4 +132,79 @@ export async function advanceConfiguredRuntimeRelease<C extends RuntimeReleaseCo
     case 'promote_known_good':
       return provider.promoteKnownGood(config, decision.session!.sessionId, request);
   }
+}
+
+/**
+ * Stateless run-to-boundary normal-release engine. ReleaseSession remains the
+ * only durable progression authority: every iteration re-derives the next
+ * action from persisted state, and no coordinator-local checkpoint is created.
+ *
+ * One invocation drains immediately executable phases. It stops only when the
+ * session terminalizes, a provider reports failure, a provider deliberately
+ * makes no durable progress (a genuine wait/safety boundary), or the fixed
+ * advance budget is exhausted. The budget/no-progress fences make accidental
+ * in-process loops fail closed while preserving crash-safe retry semantics.
+ */
+export async function advanceConfiguredRuntimeRelease<C extends RuntimeReleaseContext>(
+  config: C,
+  provider: RuntimeReleaseProvider<C>,
+  requestId?: string,
+): Promise<RuntimeReleaseProgressResult> {
+  const actions: RuntimeReleaseCoordinatorAction[] = [];
+  let attempted = false;
+  let allNoOp = true;
+  let lastResult: RuntimeReleaseProgressResult | undefined;
+
+  for (let index = 0; index < MAX_AUTONOMOUS_RELEASE_ADVANCES; index += 1) {
+    const before = decideConfiguredRuntimeReleaseAction(config.controllerHome);
+    const beforeFingerprint = decisionFingerprint(before);
+    const result = await advanceConfiguredRuntimeReleaseStep(config, provider, requestId);
+    actions.push(before.action);
+    attempted ||= result.attempted;
+    allNoOp &&= result.noOp === true;
+    lastResult = result;
+
+    const observedSession = result.releaseSession
+      ?? (before.session ? readReleaseSession(config.controllerHome, before.session.sessionId) : undefined);
+
+    if (!result.ok) {
+      return {
+        ...result,
+        attempted,
+        ...(allNoOp ? { noOp: true } : { noOp: false }),
+        releaseSession: observedSession ?? result.releaseSession,
+        releaseRun: { actions, boundary: 'provider_failure' },
+      };
+    }
+
+    if (observedSession && releaseSessionIsTerminal(observedSession)) {
+      return {
+        ...result,
+        attempted,
+        ...(allNoOp ? { noOp: true } : { noOp: false }),
+        releaseSession: observedSession,
+        releaseRun: { actions, boundary: 'terminal' },
+      };
+    }
+
+    const after = decideConfiguredRuntimeReleaseAction(config.controllerHome);
+    if (decisionFingerprint(after) === beforeFingerprint) {
+      return {
+        ...result,
+        attempted,
+        ...(allNoOp ? { noOp: true } : { noOp: false }),
+        releaseSession: observedSession ?? result.releaseSession,
+        releaseRun: { actions, boundary: 'provider_boundary' },
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    attempted,
+    ...(allNoOp ? { noOp: true } : { noOp: false }),
+    detail: `RELEASE_SESSION_AUTONOMOUS_ADVANCE_BUDGET_EXHAUSTED: ${MAX_AUTONOMOUS_RELEASE_ADVANCES} durable advances without reaching a boundary`,
+    releaseSession: lastResult?.releaseSession,
+    releaseRun: { actions, boundary: 'advance_budget_exhausted' },
+  };
 }

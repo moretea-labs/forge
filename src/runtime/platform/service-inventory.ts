@@ -13,6 +13,7 @@ export interface ForgePersistentServiceIdentity {
   systemdUnitName: string;
 }
 
+export const FORGE_RECOVERY_DAEMON_LABEL = 'com.moretea.forge-recovery';
 export const FORGE_RECOVERY_GATEWAY_LABEL = 'com.moretea.forge-recovery-gateway';
 export const FORGE_RECOVERY_WATCHDOG_LABEL = 'com.moretea.forge-recovery-watchdog';
 
@@ -21,6 +22,8 @@ const RETIRED_CORE_LABELS = [
   ['legacy-mcp-gateway', 'com.moretea.forge.mcp-gateway'],
   ['bootstrap-supervisor', 'com.moretea.forge-bootstrap-supervisor'],
   ['evolution-supervisor', 'com.moretea.forge-evolution-supervisor'],
+  ['legacy-recovery-gateway', FORGE_RECOVERY_GATEWAY_LABEL],
+  ['legacy-recovery-watchdog', FORGE_RECOVERY_WATCHDOG_LABEL],
 ] as const;
 
 /**
@@ -71,8 +74,7 @@ export function forgeOwnedPersistentServiceInventory(controllerHome: string): {
     current: [
       identity('runtime', forgeRuntimePersistentServiceLabel(controllerHome), 'current'),
       identity('mcp-gateway', forgeConnectorPersistentServiceLabel(controllerHome), 'current'),
-      identity('recovery-gateway', FORGE_RECOVERY_GATEWAY_LABEL, 'current'),
-      identity('recovery-watchdog', FORGE_RECOVERY_WATCHDOG_LABEL, 'current'),
+      identity('recovery', FORGE_RECOVERY_DAEMON_LABEL, 'current'),
     ],
     retired: FORGE_RETIRED_PERSISTENT_SERVICES,
     providerOwnedExcludedLabels: FORGE_PROVIDER_OWNED_PERSISTENT_SERVICES,
