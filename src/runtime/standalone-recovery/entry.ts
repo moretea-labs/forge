@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { existsSync } from 'fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { basename, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
@@ -14,6 +15,7 @@ import {
   cutoverConfiguredRuntimeReleaseSession,
   assertRecoveryMutationIdentity,
   attestKnownGood,
+  configuredRuntimeReleaseSourceState,
   measureConfiguredRuntimePerformance,
   RECOVERY_INTERNAL_PERFORMANCE_COMMAND,
   diagnose,
@@ -52,6 +54,7 @@ import {
 } from './watchdog-heartbeat';
 import {
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
+  readCurrentRecoveryRelease,
   writeRecoveryRuntimeIdentity,
   type RecoveryRuntimeIdentity,
   type RecoveryRuntimeRole,
@@ -59,7 +62,14 @@ import {
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
 import { readReleaseSession } from '../release/release-session';
 import { migrateReleaseDurableState } from '../release/release-state-migration';
-import { advanceConfiguredRuntimeRelease, type RuntimeReleaseProvider } from '../release/release-coordinator';
+import {
+  advanceConfiguredRuntimeRelease,
+  advanceConfiguredRuntimeReleaseStep,
+  decideConfiguredRuntimeReleaseReconciliation,
+  type RuntimeReleaseProvider,
+} from '../release/release-coordinator';
+import { runBoundedChild } from '../shared/bounded-child-supervisor';
+import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 
 const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> = {
   prepare: (config, requestId) => prepareConfiguredRuntimeReleaseSession(config, {}, requestId),
@@ -68,6 +78,10 @@ const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> 
   cutover: (config, sessionId, requestId) => cutoverConfiguredRuntimeReleaseSession(config, sessionId, requestId),
   promoteKnownGood: (config, sessionId, requestId) => promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, requestId),
 };
+
+const RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND = '__reconcile-runtime-release-step';
+const RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS = 15_000;
+const RECOVERY_AUTOMATIC_RELEASE_STEP_TIMEOUT_MS = 15 * 60_000;
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -155,6 +169,25 @@ async function cli(): Promise<void> {
           ? detail
           : 'RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler failed',
       });
+    }
+    return;
+  }
+  if (command === RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND) {
+    try {
+      const source = configuredRuntimeReleaseSourceState(config);
+      const decision = decideConfiguredRuntimeReleaseReconciliation(config.controllerHome, source);
+      if (!decision.required) {
+        output({ schemaVersion: 1, ok: true, attempted: false, noOp: true, decision });
+        return;
+      }
+      const result = await advanceConfiguredRuntimeReleaseStep(
+        config,
+        RECOVERY_RUNTIME_RELEASE_PROVIDER,
+        `recovery-auto-release:${process.pid}:${Date.now()}`,
+      );
+      output({ schemaVersion: 1, ok: result.ok, attempted: result.attempted, decision, result });
+    } catch (error) {
+      output({ schemaVersion: 1, ok: false, attempted: false, error: error instanceof Error ? error.message : String(error) });
     }
     return;
   }
@@ -852,8 +885,71 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
   }
 }
 
+async function runAutomaticReleaseReconciliationStep(config: RecoveryConfig): Promise<void> {
+  const release = readCurrentRecoveryRelease(config.controllerHome);
+  if (!release) throw new Error('RECOVERY_AUTOMATIC_RELEASE_CURRENT_RECOVERY_UNKNOWN');
+  const executable = join(release.releasePath, 'forge-recovery');
+  if (!existsSync(executable)) throw new Error('RECOVERY_AUTOMATIC_RELEASE_EXECUTABLE_UNAVAILABLE');
+  const result = await runBoundedChild(
+    executable,
+    [RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND, '--controller-home', config.controllerHome],
+    {
+      timeoutMs: RECOVERY_AUTOMATIC_RELEASE_STEP_TIMEOUT_MS,
+      maxOutputBytes: 64 * 1024,
+      forwardSignals: false,
+      env: runtimeAuthorityFreeEnvironment(process.env),
+    },
+  );
+  if (result.status !== 0 || result.failureCode || result.timedOut) {
+    const detail = result.failureCode ?? result.error ?? (result.stderr.trim() || `exit=${result.status}`);
+    throw new Error(`RECOVERY_AUTOMATIC_RELEASE_STEP_FAILED: ${detail.slice(0, 500)}`);
+  }
+  let envelope: unknown;
+  try { envelope = JSON.parse(result.stdout); }
+  catch { throw new Error('RECOVERY_AUTOMATIC_RELEASE_PROTOCOL_INVALID'); }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) throw new Error('RECOVERY_AUTOMATIC_RELEASE_PROTOCOL_INVALID');
+  const parsed = envelope as {
+    ok?: unknown;
+    attempted?: unknown;
+    error?: unknown;
+    decision?: { reason?: unknown; action?: unknown };
+    result?: { detail?: unknown };
+  };
+  if (parsed.ok !== true) {
+    const detail = typeof parsed.error === 'string'
+      ? parsed.error
+      : typeof parsed.result?.detail === 'string'
+        ? parsed.result.detail
+        : 'automatic release reconciliation failed';
+    throw new Error(`RECOVERY_AUTOMATIC_RELEASE_STEP_FAILED: ${detail.slice(0, 500)}`);
+  }
+  if (parsed.decision?.action) {
+    process.stdout.write(JSON.stringify({
+      at: new Date().toISOString(),
+      action: 'automatic_release_reconcile',
+      reason: parsed.decision?.reason,
+      releaseAction: parsed.decision?.action,
+    }) + '\n');
+  }
+}
+
+async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Promise<never> {
+  for (;;) {
+    try {
+      await runAutomaticReleaseReconciliationStep(config);
+    } catch (error) {
+      process.stderr.write(`automatic release reconciliation failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS));
+  }
+}
+
 async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
   const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'daemon');
+  void startAutomaticReleaseReconciliation(config).catch((error) => {
+    process.stderr.write(`Recovery release driver failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
   if (config.installProfile === 'self-healing') {
     void startWatchdog(config, runtimeIdentity).catch((error) => {
       process.stderr.write(`Recovery monitor failed: ${error instanceof Error ? error.message : String(error)}\n`);

@@ -4003,6 +4003,32 @@ function configuredSourceRevision(sourceRoot: string): string {
   return revision;
 }
 
+export interface ConfiguredRuntimeReleaseSourceState {
+  configured: boolean;
+  sourceRevision?: string;
+  activeSourceCommit?: string;
+  activeReleaseId?: string;
+}
+
+/**
+ * Read the two immutable identities used only to decide whether automatic
+ * release reconciliation is warranted. This does not create or advance a
+ * ReleaseSession and therefore never becomes release intent authority.
+ */
+export function configuredRuntimeReleaseSourceState(config: RecoveryConfig): ConfiguredRuntimeReleaseSourceState {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) return { configured: false };
+  const authority = readRuntimeReleaseAuthority(config.controllerHome);
+  if (!authority) throw new Error('RELEASE_AUTOMATION_ACTIVE_RELEASE_AUTHORITY_UNKNOWN');
+  const manifest = loadRuntimeReleaseManifest(authority.active.manifestPath, config.controllerHome);
+  return {
+    configured: true,
+    sourceRevision: configuredSourceRevision(sourceRoot),
+    activeSourceCommit: manifest.sourceCommit?.trim() || undefined,
+    activeReleaseId: authority.active.releaseId,
+  };
+}
+
 async function allocateCandidateLoopbackPort(stablePort: number): Promise<number> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const port = await new Promise<number>((resolvePort, rejectPort) => {

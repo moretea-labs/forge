@@ -56,6 +56,19 @@ export interface RuntimeReleaseCoordinatorDecision {
   session?: ReleaseSession;
 }
 
+export type RuntimeReleaseReconciliationReason =
+  | 'active_session'
+  | 'source_mismatch'
+  | 'source_not_configured'
+  | 'source_current';
+
+export interface RuntimeReleaseReconciliationDecision {
+  required: boolean;
+  reason: RuntimeReleaseReconciliationReason;
+  action?: RuntimeReleaseCoordinatorAction;
+  session?: ReleaseSession;
+}
+
 const MAX_AUTONOMOUS_RELEASE_ADVANCES = 8;
 
 export function activeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
@@ -88,6 +101,35 @@ export function decideConfiguredRuntimeReleaseAction(controllerHome: string): Ru
     case 'failed':
       throw new Error(`RELEASE_SESSION_TERMINAL_NOT_ACTIVE: ${session.sessionId}:${session.phase}`);
   }
+}
+
+/**
+ * Decide whether the Recovery-hosted automatic trigger should invoke one
+ * ReleaseCoordinator step. ReleaseSession remains the only durable progression
+ * authority; source comparison merely decides whether an absent session should
+ * be created. Unknown active source identity fails closed rather than implying
+ * a source mismatch.
+ */
+export function decideConfiguredRuntimeReleaseReconciliation(
+  controllerHome: string,
+  source: { configured: boolean; sourceRevision?: string; activeSourceCommit?: string },
+): RuntimeReleaseReconciliationDecision {
+  const active = activeRuntimeReleaseSessions(controllerHome);
+  if (active.length > 1) {
+    throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
+  }
+  const session = active[0];
+  if (session) {
+    const decision = decideConfiguredRuntimeReleaseAction(controllerHome);
+    return { required: true, reason: 'active_session', action: decision.action, session };
+  }
+  if (!source.configured) return { required: false, reason: 'source_not_configured' };
+  const sourceRevision = source.sourceRevision?.trim();
+  const activeSourceCommit = source.activeSourceCommit?.trim();
+  if (!sourceRevision) throw new Error('RELEASE_AUTOMATION_SOURCE_REVISION_UNKNOWN');
+  if (!activeSourceCommit) throw new Error('RELEASE_AUTOMATION_ACTIVE_SOURCE_COMMIT_UNKNOWN');
+  if (sourceRevision === activeSourceCommit) return { required: false, reason: 'source_current' };
+  return { required: true, reason: 'source_mismatch', action: 'prepare' };
 }
 
 function decisionFingerprint(decision: RuntimeReleaseCoordinatorDecision): string {
