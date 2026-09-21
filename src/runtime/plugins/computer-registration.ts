@@ -368,7 +368,6 @@ function buildComputerManifest(
       sourceOfTruth: [
         ...browser.authority.sourceOfTruth,
         'controllerHome:sqlite/computer_interaction_target',
-        'controllerHome:system/plugins/external/registrations/desktop_operator.json',
       ],
     },
     enabled: browser.enabled || desktop?.enabled === true,
@@ -385,15 +384,20 @@ function buildComputerManifest(
       checkedAt,
       ready,
       probed: browser.health.probed || desktop?.health.probed === true,
-      errors: ready ? [] : [...browser.health.errors, ...(desktopSupported ? (desktop?.health.errors ?? (desktop ? [] : ['Native Computer provider is not installed.'])) : [])],
+      errors: ready ? [] : [
+        ...browser.health.errors,
+        ...(desktopSupported && !desktopReady ? ['Native Computer capabilities are unavailable or not ready.'] : []),
+      ],
       warnings: [
         ...browser.health.warnings,
-        ...(desktopSupported ? (desktop?.health.warnings ?? []) : [`Native Desktop Computer capabilities are unsupported on ${platform}.`]),
+        ...(desktopSupported
+          ? (desktopReady ? [] : ['Native Computer capability diagnostics are available through the internal platform provider.'])
+          : [`Native Desktop Computer capabilities are unsupported on ${platform}.`]),
       ],
       details: {
         partial: !ready && partial,
         browser: { ready: browserReady, state: browser.health.state },
-        desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported'), provider: DESKTOP_PROVIDER_ID },
+        desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported') },
       },
     },
     permissions: [...browser.permissions, ...desktopProductPermissions(desktopReady)],
