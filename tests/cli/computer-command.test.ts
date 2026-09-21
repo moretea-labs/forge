@@ -32,7 +32,7 @@ function registerProvider(home: string, options: { version?: string; enabled?: b
     socketPath: join(home, 'missing-desktop-operator.sock'),
     launchAgentLabel: 'com.moretea.forge.desktop-operator',
     expectedProgramContains: 'Forge Desktop Operator.app',
-    pluginVersion: options.version ?? '0.3.2',
+    pluginVersion: options.version ?? '0.4.4',
     protocolVersion: '1.0',
     enabled: options.enabled,
   }));
@@ -50,7 +50,7 @@ describe('Computer product facade', () => {
       provider: {
         implementation: 'Forge Desktop Operator',
         pluginId: 'desktop_operator',
-        catalogVersion: '0.3.2',
+        catalogVersion: '0.4.4',
         enabled: false,
         releaseIndependent: true,
         health: { state: 'not_installed', ready: false, probed: false },
@@ -88,7 +88,7 @@ describe('Computer product facade', () => {
       implementation: 'Forge Desktop Operator',
       pluginId: 'desktop_operator',
       installedVersion: '0.2.3',
-      catalogVersion: '0.3.2',
+      catalogVersion: '0.4.4',
       protocolVersion: '1.0',
       enabled: false,
       updateAvailable: true,
@@ -103,7 +103,7 @@ describe('Computer product facade', () => {
     registerProvider(home, { version: '0.4.0', enabled: true });
     const status = readComputerStatus({ controllerHome: home, platform: 'darwin' });
     expect(status.provider.installedVersion).toBe('0.4.0');
-    expect(status.provider.catalogVersion).toBe('0.3.2');
+    expect(status.provider.catalogVersion).toBe('0.4.4');
     expect(status.capabilities).toEqual(expect.arrayContaining([
       expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', provider: 'browser', supported: true }),
       expect.objectContaining({ capabilityId: 'computer.console.unlock.v1', provider: 'desktop_operator', supported: true }),

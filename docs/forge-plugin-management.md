@@ -10,7 +10,7 @@ forge plugin catalog
 
 | Plugin ID | Product | Pinned release | Platforms |
 | --- | --- | --- | --- |
-| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.3.0` | macOS |
+| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.4.4` | macOS |
 | `design` | [Forge Design](https://github.com/moretea-labs/forge-design) | `v0.3.0` | macOS, Linux, Windows |
 | `personal_knowledge` | [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant) | `v0.2.1` | macOS, Linux, Windows |
 
@@ -30,7 +30,7 @@ forge computer uninstall
 forge computer uninstall --purge
 ```
 
-`Computer` is the Forge product/capability identity. `desktop_operator` remains the implementation/provider identity used for trusted registration, release diagnostics, the stable macOS app bundle, LaunchAgent, socket, and TCC permissions. Its provider release is independent from the Forge Runtime release. `status` is a bounded projection of registration and recorded health, never proof inferred from a host browser; `doctor` refreshes provider health before reporting platform, registration, pinned-release, and readiness checks only on a compatible provider platform, and otherwise reports the stored incompatible registration without probing its transport. Setup/update use the same pinned official catalog transaction as generic plugin installation and fail before mutation when no compatible native provider exists. Uninstall invokes the provider-owned native uninstaller before Forge removes registration/package state, and fails closed rather than orphaning a native service when that lifecycle cannot be proven.
+`Computer` is the Forge product/capability identity. `desktop_operator` remains the implementation/provider identity used for trusted registration, release diagnostics, the stable macOS app bundle, LaunchAgent, socket, and TCC permissions. Its provider release is independent from the Forge Runtime release. Desktop Operator owns native macOS Computer observe/input/capture/console-unlock/element capabilities; Browser automation remains under the separate Browser provider authority rather than being claimed by the Desktop Operator catalog. `status` is a bounded projection of registration and recorded health, never proof inferred from a host browser; `doctor` refreshes provider health before reporting platform, registration, pinned-release, and readiness checks only on a compatible provider platform, and otherwise reports the stored incompatible registration without probing its transport. Setup/update use the same pinned official catalog transaction as generic plugin installation and fail before mutation when no compatible native provider exists. Uninstall invokes the provider-owned native uninstaller before Forge removes registration/package state, and fails closed rather than orphaning a native service when that lifecycle cannot be proven.
 
 Generic provider administration remains available for diagnostics and non-Computer providers:
 
