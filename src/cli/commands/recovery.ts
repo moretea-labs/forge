@@ -785,6 +785,10 @@ export function buildRecoveryCommand(): Command {
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const repoRoot = resolve(opts.repo);
+      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(repoRoot, home);
+      if (!primaryRuntimeSourceRepository) {
+        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${repoRoot}`);
+      }
       const current = loadRecoveryConfig(home);
       const primaryConnectorBase = launchdService(
         opts.primaryConnectorServiceLabel,
@@ -798,6 +802,7 @@ export function buildRecoveryCommand(): Command {
       const installed = await installStandaloneRecovery({
         controllerHome: home,
         repoRoot,
+        primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId,
         port: current.gateway?.port ?? 8787,
         publicMcpUrl: current.publicMcpUrl,
         recoveryPublicUrl: current.recoveryPublicUrl,
