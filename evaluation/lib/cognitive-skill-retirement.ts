@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { performance } from 'node:perf_hooks';
+import { memoryAddressKey } from '../../packages/kernel/cognition/api/index.ts';
 import type { ScopeRef } from '../../packages/kernel/identity/api/index.ts';
+import { resolveAssistantContext } from '../../src/runtime/context/assistant-context.ts';
 import { activateCognitiveMemory } from '../../src/runtime/control-plane/persistence/cognition-store.ts';
 
 export const COGNITIVE_SKILL_RETIREMENT_SCHEMA = 'forge-cognitive-skill-retirement/v1' as const;
-export const COGNITIVE_SKILL_RETIREMENT_EVALUATOR_VERSION = 'forge-cognitive-skill-retirement-evaluator/v1' as const;
+export const COGNITIVE_SKILL_RETIREMENT_EVALUATOR_VERSION = 'forge-cognitive-skill-retirement-evaluator/v2' as const;
 export const COGNITIVE_SKILL_RETIREMENT_THRESHOLD_SET_ID = 'forge-cognitive-skill-retirement-thresholds/v1' as const;
 
 export type CognitiveSkillMode = 'skill_first' | 'cognitive_only' | 'cognitive_with_skill_fallback';
@@ -320,19 +322,32 @@ function cognitiveMeasurement(input: { controllerHome: string; workspaceId: stri
   const scope: ScopeRef = { schemaVersion: 1, kind: 'workspace', id: input.workspaceId };
   const started = performance.now();
   const pack = activateCognitiveMemory(input.controllerHome, [scope], input.scenario.query, { maxItems: 12, maxCandidates: 96, maxGraphDepth: 2, maxBytes: 16 * 1024 });
-  const allConcepts = unique(pack.items.flatMap(item => item.memory.concepts));
+  const resolved = resolveAssistantContext({
+    query: input.scenario.query,
+    sources: [],
+    knowledge: { read() { throw new Error('COGNITIVE_SKILL_UNEXPECTED_KNOWLEDGE_READ'); } },
+    activation: pack,
+  });
+  const activationByAddress = new Map(pack.items.map(item => [
+    memoryAddressKey({ scope: item.memory.scope, id: item.memory.id }),
+    item,
+  ]));
+  const selected = resolved.items
+    .map(item => activationByAddress.get(item.id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const allConcepts = unique(selected.flatMap(item => item.memory.concepts));
   return measurement({
     scenario: input.scenario,
     mode: 'cognitive_only',
     matchedConcepts: allConcepts,
     allMatchedConcepts: allConcepts,
-    contextBytes: pack.estimatedBytes,
+    contextBytes: resolved.bytes,
     retrievalLatencyMs: performance.now() - started,
     skillReads: 0,
     fallbackCount: 0,
-    recalledMemoryIds: pack.items.map(item => item.memory.id),
-    cognitiveGaps: pack.gaps,
-    cognitiveTruncated: pack.truncated,
+    recalledMemoryIds: selected.map(item => item.memory.id),
+    cognitiveGaps: unique([...pack.gaps, ...resolved.gaps]),
+    cognitiveTruncated: pack.truncated || resolved.truncated,
   });
 }
 
