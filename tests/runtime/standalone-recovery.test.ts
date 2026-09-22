@@ -1753,6 +1753,103 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('Recovery modern sessionless requests survive gateway replacement without reinitialize', async () => {
+    const tools = [{
+      name: 'runtime_status',
+      description: 'test recovery status',
+      inputSchema: { type: 'object' as const, additionalProperties: false },
+    }];
+    const start = async (port = 0) => {
+      const mcp = new RecoveryMcpSessionServer({
+        tools,
+        dispatchTool: async () => ({ ok: true }),
+      });
+      const httpServer = createServer(async (request, response) => {
+        let body: unknown;
+        if (request.method === 'POST') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        }
+        await mcp.handle(request, response, body);
+      });
+      await new Promise<void>((resolveListen, rejectListen) => {
+        httpServer.once('error', rejectListen);
+        httpServer.listen(port, '127.0.0.1', () => resolveListen());
+      });
+      const address = httpServer.address();
+      if (!address || typeof address === 'string') throw new Error('TEST_RECOVERY_MCP_ADDRESS_MISSING');
+      return { mcp, httpServer, port: address.port };
+    };
+    const stop = async (instance: Awaited<ReturnType<typeof start>>) => {
+      await instance.mcp.close();
+      await new Promise<void>((resolveClose, rejectClose) => instance.httpServer.close((error) => error ? rejectClose(error) : resolveClose()));
+    };
+    const headers = {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': '2026-07-28',
+    };
+    const discoverBody = (id: number) => JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'server/discover',
+      params: {
+        protocolVersion: '2026-07-28',
+        capabilities: {},
+        clientInfo: { name: 'recovery-modern-restart-test', version: '1.0.0' },
+      },
+    });
+    const toolsListBody = (id: number) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', params: {} });
+    const readMcpResponse = async (response: Response): Promise<{ result?: { tools?: unknown[] } }> => {
+      const text = await response.text();
+      if (/text\/event-stream/i.test(response.headers.get('content-type') ?? '')) {
+        const dataLine = text.split(/\r?\n/).find((line) => line.startsWith('data: '));
+        if (!dataLine) throw new Error(`TEST_MCP_SSE_DATA_MISSING: ${text}`);
+        return JSON.parse(dataLine.slice('data: '.length)) as { result?: { tools?: unknown[] } };
+      }
+      return JSON.parse(text) as { result?: { tools?: unknown[] } };
+    };
+
+    const first = await start();
+    let second: Awaited<ReturnType<typeof start>> | undefined;
+    try {
+      const discovered = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
+        method: 'POST',
+        headers,
+        body: discoverBody(1),
+      });
+      expect(discovered.status).toBe(200);
+      expect(discovered.headers.get('mcp-session-id')).toBeNull();
+      await discovered.text();
+
+      const beforeRestart = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
+        method: 'POST',
+        headers,
+        body: toolsListBody(2),
+      });
+      expect(beforeRestart.status).toBe(200);
+      expect(beforeRestart.headers.get('mcp-session-id')).toBeNull();
+      expect((await readMcpResponse(beforeRestart)).result?.tools?.length).toBe(1);
+
+      const restartPort = first.port;
+      await stop(first);
+      second = await start(restartPort);
+
+      const afterRestart = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
+        method: 'POST',
+        headers,
+        body: toolsListBody(3),
+      });
+      expect(afterRestart.status).toBe(200);
+      expect(afterRestart.headers.get('mcp-session-id')).toBeNull();
+      expect((await readMcpResponse(afterRestart)).result?.tools?.length).toBe(1);
+    } finally {
+      if (second) await stop(second);
+      else if (first.httpServer.listening) await stop(first);
+    }
+  });
+
   test('verifies and attests the single active whole-Runtime release', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-a', 'artifact-a');
