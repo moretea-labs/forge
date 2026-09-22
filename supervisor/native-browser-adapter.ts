@@ -239,8 +239,28 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // Reconciliation/observation must attach to an existing exact owned tab;
         // a user closing the tab is transport loss, not authority to reopen it.
         const allowCreate = poll.command?.mode === 'send';
-        const ensured = await this.ensurePage(task, allowCreate);
-        if (!ensured) continue;
+        let ensured = await this.ensurePage(task, allowCreate);
+        if (ensured.state !== 'ready') {
+          // A reconcile command represents an unconfirmed external mutation. Missing
+          // transport is not proof that the effect was or was not applied, so never
+          // recreate or replay that source effect from transport absence alone.
+          if (poll.command || ensured.state !== 'missing') continue;
+          const transport = this.control.browserObserveProviderTurn({
+            conversationId: task.conversationId,
+            conversationUrl: task.conversationUrl,
+            generating: false,
+            latestAssistantResponse: '',
+            providerActivityText: 'exact Forge-owned conversation transport absent from successful browser inventory',
+            providerFailureCode: 'WORKFLOW_SUPERVISOR_PROVIDER_TRANSPORT_UNAVAILABLE',
+            observedAtMs: this.deps.nowMs(),
+            graceMs: this.deps.providerIdleGraceMs,
+          });
+          if (transport.state !== 'recovery_reserved') continue;
+          poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
+          if (poll.command?.mode !== 'send') continue;
+          ensured = await this.ensurePage(task, true);
+          if (ensured.state !== 'ready') continue;
+        }
         let page = ensured.page;
         let snapshot = ensured.snapshot
           ?? await this.deps.snapshot(page, { includeUserHistory: false, includePageText: false });
@@ -254,30 +274,37 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         }
         conversations.push({ conversation_id: task.conversationId, canonical_url: task.conversationUrl, ...(snapshot.title.trim() ? { title: snapshot.title.trim().slice(0, 512) } : {}) });
         await this.observeAssistant(task, snapshot);
-        const providerTurnPending = snapshot.isGenerating || snapshot.latestTurnRole === 'user';
+        const providerBusy = snapshot.isGenerating;
+        const latestRoleStillUser = snapshot.latestTurnRole === 'user';
         const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+        let recoveryAuthorized = false;
         if (!poll.command) {
           // Provider failure evidence is scoped to the latest turn plus current
           // live status regions. Historical page text must never poison a later turn.
-          this.control.browserObserveProviderTurn({
+          // The latest committed role being user is not itself a busy signal: if
+          // provider activity keeps changing, the digest below resets idle grace;
+          // if activity stops changing, the existing bounded recovery path closes
+          // a provider turn that died without ever committing an assistant message.
+          const providerObservation = this.control.browserObserveProviderTurn({
             conversationId: task.conversationId,
             conversationUrl: task.conversationUrl,
-            generating: providerFailureCode ? false : providerTurnPending,
+            generating: providerFailureCode ? false : providerBusy,
             latestAssistantResponse: snapshot.latestAssistantResponse,
             providerActivityText: snapshot.providerActivityText,
             providerFailureCode,
             observedAtMs: this.deps.nowMs(),
             graceMs: this.deps.providerIdleGraceMs,
           });
-          // Explicit provider failure is causal evidence that the prior provider
-          // turn ended; bounded recovery may therefore dispatch a new effect.
-          if (providerTurnPending && !providerFailureCode) continue;
+          recoveryAuthorized = providerObservation.state === 'recovery_reserved';
+          if (providerBusy && !providerFailureCode) continue;
+          if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         }
-        // A provider turn owns the composer while it is generating or while the
-        // latest committed conversation role is still the user. Absence of a
-        // Stop button alone is never enough to declare the provider idle.
-        if (providerTurnPending && !providerFailureCode) continue;
+        // An already-present send command must not steal the composer from a live
+        // provider turn. Only the causal recovery observation above authorizes a
+        // send while the latest committed role is still the user.
+        if (providerBusy && !providerFailureCode) continue;
+        if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
         if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command, task);
       } catch (error) {
         this.deps.onError(error);
@@ -300,40 +327,41 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
   }
 
-  private async ensurePage(task: WorkflowSupervisorBrowserTask, allowCreate: boolean): Promise<{
-    page: WorkflowSupervisorNativePage;
-    snapshot?: WorkflowSupervisorNativeSnapshot;
-  } | undefined> {
+  private async ensurePage(task: WorkflowSupervisorBrowserTask, allowCreate: boolean): Promise<
+    | { state: 'ready'; page: WorkflowSupervisorNativePage; snapshot?: WorkflowSupervisorNativeSnapshot }
+    | { state: 'missing' | 'unproven' }
+  > {
     const marker = ownerMarker(task.conversationId);
     const cached = this.pages.get(task.conversationId);
     if (cached) {
       try {
         const snapshot = await this.deps.snapshot(cached, { includeUserHistory: false, includePageText: false });
         if (await this.deps.readOwner(cached) === marker && exactConversation(snapshot.url, task)) {
-          return { page: cached, snapshot };
+          return { state: 'ready', page: cached, snapshot };
         }
       } catch { /* Reconstruct from browser evidence below. */ }
       this.pages.delete(task.conversationId);
     }
     const inventory = await this.deps.listTabs();
     const matches: Array<{ page: WorkflowSupervisorNativePage; ref: MacOsBrowserTabRef }> = [];
+    let exactCandidateInspectionFailed = false;
     for (const candidate of inventory.filter((entry) => exactConversation(entry.url, task))) {
       const ref = { windowId: candidate.windowId, tabId: candidate.tabId };
       try {
         const page = await this.deps.reattach(ref);
         if (await this.deps.readOwner(page) === marker) matches.push({ page, ref });
-      } catch { /* An uninspectable or unmarked user tab is never adopted. */ }
+      } catch { exactCandidateInspectionFailed = true; }
     }
     if (matches.length > 0) {
       const [selected, ...duplicates] = matches;
       for (const duplicate of duplicates) await this.deps.close(duplicate.ref).catch(() => undefined);
       this.pages.set(task.conversationId, selected!.page);
-      return { page: selected!.page };
+      return { state: 'ready', page: selected!.page };
     }
-    if (!allowCreate) return undefined;
+    if (!allowCreate) return { state: exactCandidateInspectionFailed ? 'unproven' : 'missing' };
     const created = await this.createOwnedPage(task);
     this.pages.set(task.conversationId, created.page);
-    return created;
+    return { state: 'ready', ...created };
   }
 
   private async createOwnedPage(task: WorkflowSupervisorBrowserTask): Promise<{

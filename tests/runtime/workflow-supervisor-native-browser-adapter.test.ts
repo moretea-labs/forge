@@ -49,6 +49,7 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     snapshot: async (page) => {
       snapshotCount += 1;
       const value = page as FakePage;
+      if (value.closed) throw new Error('fake transport closed');
       return { url: value.url, title: value.title, latestUserText: value.latestUserText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, providerActivityText: value.providerActivityText, providerFailureText: value.providerFailureText, latestTurnRole: value.latestTurnRole, isGenerating: value.isGenerating };
     },
     dispatchPrompt: async (page, prompt) => {
@@ -224,6 +225,34 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.errors).toEqual([]);
   });
 
+  test('turns proven exact transport loss after an applied effect into a distinct recovery effect without replay', async () => {
+    const conversationId = 'bcbcbcbc-dede-fafa-2323-454545454545';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const h = harness();
+    const { effect } = register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const original = h.pages.find((page) => page.ref.tabId === 'forge-tab-1')!;
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
+    expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+
+    original.closed = true;
+    await h.adapter.runOnce();
+
+    expect(h.created()).toBe(2);
+    expect(h.dispatchAttempts()).toBe(2);
+    const replacement = h.pages.find((page) => page.ref.tabId === 'forge-tab-2')!;
+    expect(replacement.url).toBe(url);
+    expect(replacement.owner).toBe(`forge-workflow-supervisor:${conversationId}`);
+    expect(replacement.latestUserText).toContain('WORKFLOW_SUPERVISOR_PROVIDER_TRANSPORT_UNAVAILABLE');
+    expect(replacement.latestUserText).toContain(`Applied Supervisor effect ${effect.effectId}`);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
+    expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+    const effectIds = h.dispatchedPrompts.map((prompt) => /<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt)?.[1]).filter(Boolean);
+    expect(effectIds).toHaveLength(2);
+    expect(new Set(effectIds).size).toBe(2);
+    expect(h.errors).toEqual([]);
+  });
+
   test('recovers only the exact marked tab after Runtime memory loss', async () => {
     const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const url = `https://chatgpt.com/c/${conversationId}`;
@@ -288,18 +317,30 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserTasks()).toEqual([]);
     expect(h.errors).toEqual([]);
   });
-  test('does not infer provider idle from a missing Stop control while the latest committed role is still user', async () => {
+  test('recovers a no-output provider turn only after busy clears and provider activity stays stable for the idle grace', async () => {
     const conversationId = '17171717-2828-3939-5050-616161616161';
     const h = harness();
-    register(h.control, conversationId);
+    const { effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     expect(page.latestTurnRole).toBe('user');
-    h.advance(5_000);
+    expect(h.dispatchAttempts()).toBe(1);
+
+    page.providerActivityText = 'thinking phase one';
     await h.adapter.runOnce();
-    h.advance(5_000);
+    h.advance(999);
+    page.providerActivityText = 'thinking phase two';
+    await h.adapter.runOnce();
+    h.advance(999);
     await h.adapter.runOnce();
     expect(h.dispatchAttempts()).toBe(1);
+
+    h.advance(1);
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(2);
+    expect(page.latestUserText).toContain(`Applied Supervisor effect ${effect.effectId}`);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(true);
+    expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
     expect(h.errors).toEqual([]);
   });
 
