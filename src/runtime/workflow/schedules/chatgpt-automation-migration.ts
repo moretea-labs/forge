@@ -2,7 +2,7 @@ import type { RepositorySchedule } from '../../../../packages/kernel/scheduler/a
 
 export const CHATGPT_AUTOMATION_EXECUTION_PROFILE = 'chatgpt_browser_v1';
 export const CHATGPT_AUTOMATION_DEFAULT_MODEL = 'gpt-5.6';
-export const CHATGPT_AUTOMATION_DEFAULT_REASONING = 'high';
+export const CHATGPT_AUTOMATION_DEFAULT_REASONING = 'medium';
 export const CHATGPT_AUTOMATION_DEFAULT_TAB_POLICY = 'auto';
 
 export interface ChatgptAutomationScheduleMigrationResult {

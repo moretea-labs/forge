@@ -53,6 +53,8 @@ import {
   settleWorkChatgptAutomationTab,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
+import { ensureScheduledControllerBinding } from '../../src/runtime/root/scheduled-controller-composition';
+import { getChatgptControllerBindingPayload } from '../../adapters/chatgpt/controller-binding-store';
 import { chatgptAutomationModelFamilyMenuTrigger } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
 import {
@@ -819,6 +821,47 @@ describe('ChatGPT Work conversation binding', () => {
     expect(observed.map(({ reasoning }) => reasoning)).toEqual(['xhigh', 'high', 'medium']);
   });
 
+  test('uses medium for scheduler-owned mechanical ChatGPT bindings while preserving explicit high and xhigh', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-scheduled-reasoning-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'scheduled-reasoning@example.test'], ['config', 'user.name', 'Scheduled Reasoning Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'scheduled reasoning fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-scheduled-reasoning' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const, status: 'running' as const,
+    };
+    const bind = (workId: string, reasoning?: 'medium' | 'high' | 'xhigh') => {
+      createWorkContract(store, { ...workInput, workId, objective: `Scheduled reasoning ${workId}.` });
+      const session = claimControllerSession(store, {
+        workId,
+        controllerId: `controller-${workId}`,
+        controllerType: 'chatgpt',
+        sessionId: `session-${workId}`,
+        principalId: 'test-controller',
+        controllerInstanceId: 'test-runtime',
+        leaseMs: 60_000,
+      });
+      const binding = ensureScheduledControllerBinding(store, { workId, session, args: reasoning ? { reasoning } : {} });
+      return getChatgptControllerBindingPayload(store, binding.adapterRef)?.reasoning;
+    };
+
+    expect(bind('WORK-SCHEDULED-DEFAULT')).toBe('medium');
+    expect(bind('WORK-SCHEDULED-HIGH', 'high')).toBe('high');
+    expect(bind('WORK-SCHEDULED-XHIGH', 'xhigh')).toBe('xhigh');
+  });
+
   test('fails closed when the explicit controller home does not contain the requested WorkContract', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-authority-'));
     roots.push(root);
@@ -1279,8 +1322,12 @@ describe('ChatGPT Work conversation binding', () => {
     const migrated = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-1' } } });
     expect(migrated.changed).toBe(true);
     expect(migrated.schedule.enabled).toBe(true);
-    expect(migrated.schedule.action.arguments).toMatchObject({ work_id: 'WORK-1', controller_type: 'chatgpt', model: 'gpt-5.6', reasoning: 'high', tab_policy: 'auto', execution_profile: 'chatgpt_browser_v1' });
+    expect(migrated.schedule.action.arguments).toMatchObject({ work_id: 'WORK-1', controller_type: 'chatgpt', model: 'gpt-5.6', reasoning: 'medium', tab_policy: 'auto', execution_profile: 'chatgpt_browser_v1' });
     expect(migrateChatgptAutomationSchedule(migrated.schedule).changed).toBe(false);
+    const explicitHigh = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-HIGH', reasoning: 'high' } } });
+    expect(explicitHigh.schedule.action.arguments?.reasoning).toBe('high');
+    const explicitXhigh = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-XHIGH', reasoning: 'xhigh' } } });
+    expect(explicitXhigh.schedule.action.arguments?.reasoning).toBe('xhigh');
     expect(migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { controller_type: 'codex' } } }).changed).toBe(false);
   });
 });

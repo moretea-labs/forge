@@ -31,7 +31,7 @@ export function ensureScheduledControllerBinding(
       ].map(value => value.trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index),
       title: input.scheduleName,
       model: typeof input.args.model === 'string' ? input.args.model : 'gpt-5.6',
-      reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'xhigh' ? input.args.reasoning : 'high',
+      reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'high' || input.args.reasoning === 'xhigh' ? input.args.reasoning : 'medium',
       tabPolicy: input.args.tab_policy === 'reuse' || input.args.tab_policy === 'new' ? input.args.tab_policy : 'auto',
       timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
     }).binding;

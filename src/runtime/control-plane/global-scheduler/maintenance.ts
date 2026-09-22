@@ -388,7 +388,7 @@ export async function runSchedulerControllerRoundRecovery(input: {
           conversationUrl: deliveryBinding?.conversationUrl,
           authorizationGrantRefs: deliveryBinding?.authorizationGrantRefs,
           model: 'gpt-5.6',
-          reasoning: 'high',
+          reasoning: 'medium',
           tabPolicy: 'auto',
           timeoutMs: 30_000,
         });
