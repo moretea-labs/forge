@@ -124,6 +124,9 @@ describe('runtime command surface', () => {
     expect(sourceBaseline).toContain("args: ['test', '--max-concurrency', '1', `./${path}`]");
     expect(sourceBaseline).toContain("'tests/cli/mcp-http.test.ts'");
     expect(sourceBaseline).not.toContain("'tests/cli/mcp-controller.test.ts'");
+    expect(sourceBaseline).toContain('findRegisteredRepositoryByCheckoutRoot');
+    expect(sourceBaseline).toContain('repositoryId(repoRoot, controllerHome)');
+    expect(sourceBaseline).not.toContain(".ai', 'harness', 'repository.json");
     expect(mcpCommand).toContain('bindInheritedRuntimeWriteClaimFromEnvironment');
     expect(mcpCommand).toContain("from '../../runtime/root/write-fence'");
     expect(mcpCommand).not.toContain('stable-state/runtime-writer-context');

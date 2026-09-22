@@ -6,13 +6,13 @@ import {
   existsSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   writeFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
+import { findRegisteredRepositoryByCheckoutRoot } from '../src/cli/repositories/registry';
 import { cleanupTerminalWork } from '../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { listWorkHandles, type WorkTerminalOutcome } from '../src/runtime/control-plane/execution/work-handle-store';
 import { runProcess } from '../src/effects/process-runner';
@@ -114,13 +114,12 @@ function assertCleanMain(repoRoot: string, expectedHead?: string): string {
   return head;
 }
 
-function repositoryId(repoRoot: string): string {
-  const configPath = join(repoRoot, '.ai', 'harness', 'repository.json');
-  const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as { repoId?: unknown };
-  if (typeof parsed.repoId !== 'string' || !parsed.repoId.trim()) {
+function repositoryId(repoRoot: string, controllerHome: string): string {
+  const repository = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
+  if (!repository?.repoId?.trim()) {
     throw new Error('SOURCE_BASELINE_REPOSITORY_ID_UNAVAILABLE');
   }
-  return parsed.repoId.trim();
+  return repository.repoId.trim();
 }
 
 function statePath(controllerHome: string, requestId: string): string {
@@ -194,7 +193,7 @@ async function request(args: string[]): Promise<void> {
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot, option(args, '--controller-home'));
   const requestId = safeId(option(args, '--request-id'));
   const expectedHead = assertCleanMain(repoRoot, option(args, '--expected-head'));
-  const repoId = repositoryId(repoRoot);
+  const repoId = repositoryId(repoRoot, controllerHome);
   const requestedAt = new Date().toISOString();
   let state: SourceBaselineState = {
     schemaVersion: 1,
@@ -251,7 +250,7 @@ async function run(args: string[]): Promise<void> {
   const requestId = safeId(option(args, '--request-id'));
   const expectedHead = option(args, '--expected-head');
   if (!expectedHead) throw new Error('SOURCE_BASELINE_EXPECTED_HEAD_REQUIRED');
-  const repoId = repositoryId(repoRoot);
+  const repoId = repositoryId(repoRoot, controllerHome);
   const requestedAt = new Date().toISOString();
   let state: SourceBaselineState = {
     schemaVersion: 1,
