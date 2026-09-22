@@ -256,6 +256,23 @@ Different repository roots never share a cache entry. When the registry
 is unavailable, Git discovery (`origin/HEAD`, `main`/`master`, current
 branch) is used.
 
+## Autonomous continuation cost boundary
+
+The five-second Scheduler reconciliation is a liveness safety net, not permission
+to replay a terminal provider retry decision. When a failed ControllerRound has
+already consumed `maxFailures`, autonomous continuation skips it until the
+existing provider-environment recovery transition supplies new evidence and
+resets that budget. This prevents an unchanged failed round from becoming a
+five-second error/repair loop.
+
+Automatic Forge incident repair also treats Runtime release provenance as
+existing authority. Source-mode Runtime may resolve repair ownership by exact
+registered checkout path. Immutable/package Runtime resolves it from the staged
+release manifest `sourceRepositoryId`. It must not scan every registered
+repository with synchronous `git cat-file` / `merge-base` calls from the Runtime
+Scheduler path. A package manifest without that repository identity is not
+silently repaired through Git ancestry discovery.
+
 ## Safe Cleanup
 
 Safe source-distribution exclusions:

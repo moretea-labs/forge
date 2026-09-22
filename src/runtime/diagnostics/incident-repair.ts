@@ -250,17 +250,6 @@ function actionableEvidence(event: RuntimeEntityEvent, rootCode: string, ordinal
   };
 }
 
-function gitContainsCommit(root: string, commit: string): boolean {
-  const exists = spawnSync('git', ['-C', root, 'cat-file', '-e', `${commit}^{commit}`], {
-    encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'], timeout: 10_000,
-  });
-  if (exists.status !== 0) return false;
-  const ancestor = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, 'HEAD'], {
-    encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'], timeout: 10_000,
-  });
-  return ancestor.status === 0;
-}
-
 function gitHead(root: string): string | undefined {
   const result = spawnSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000,
@@ -276,8 +265,10 @@ function samePath(left: string, right: string): boolean {
 /**
  * Resolve the registered Forge source authority. A user/business repository
  * affected by a Runtime defect is never treated as the repair repository.
- * Source-mode Runtime uses exact checkout path identity; immutable/package mode
- * must prove its release sourceCommit exists in exactly one enabled repo.
+ * Source-mode Runtime uses exact checkout path identity. Immutable/package mode
+ * uses the release manifest's sourceRepositoryId, which is minted by the staged
+ * release contract. Scheduler/incident reconciliation must not rediscover that
+ * identity by synchronously walking Git history across registered repositories.
  */
 export function resolveRuntimeSourceRepairRepository(
   controllerHome: string,
@@ -294,19 +285,16 @@ export function resolveRuntimeSourceRepairRepository(
 
   const manifestPath = join(resolve(root), 'manifest.json');
   if (!existsSync(manifestPath)) return undefined;
-  let sourceCommit: string | undefined;
+  let sourceRepositoryId: string | undefined;
   try {
-    sourceCommit = loadRuntimeReleaseManifest(manifestPath, controllerHome).sourceCommit;
+    sourceRepositoryId = loadRuntimeReleaseManifest(manifestPath, controllerHome).sourceRepositoryId?.trim();
   } catch {
     return undefined;
   }
-  if (!sourceCommit || !/^[a-f0-9]{40}$/i.test(sourceCommit)) return undefined;
-  const containing = repositories.filter((repository) => {
-    const selected = selectRepositoryCheckout(repository, repository.activeCheckoutId);
-    return gitContainsCommit(selected.canonicalRoot, sourceCommit!);
-  });
-  if (containing.length !== 1) return undefined;
-  return selectRepositoryCheckout(containing[0]!, containing[0]!.activeCheckoutId);
+  if (!sourceRepositoryId) return undefined;
+  const sourceRepository = repositories.find((repository) => repository.repoId === sourceRepositoryId);
+  if (!sourceRepository) return undefined;
+  return selectRepositoryCheckout(sourceRepository, sourceRepository.activeCheckoutId);
 }
 
 function requestBase(fingerprint: string): string {

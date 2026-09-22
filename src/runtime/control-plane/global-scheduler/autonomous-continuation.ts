@@ -171,6 +171,17 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         continue;
       }
 
+      const existingRound = getControllerRoundRelay(store, work.workId);
+      // Retry budget is ControllerRound authority, not a hint for the 5-second
+      // liveness sweep. Once it is exhausted, repeatedly asking the transition
+      // policy to retry can only reproduce the same rejection and feed incident
+      // repair. Provider-environment recovery is the existing authority that
+      // resets the budget; until then this Work is not an automatic wake target.
+      if (existingRound?.status === 'failed' && existingRound.consecutiveFailures >= existingRound.maxFailures) {
+        skip(skippedByReason, 'controller_retry_budget_exhausted');
+        continue;
+      }
+
       const currentTask = currentTaskSemanticProjectionForWork(work);
       let occurrenceId: string;
       let relayScopeId = currentTask.requirementId ? 'requirement:' + currentTask.requirementId : undefined;
@@ -217,7 +228,6 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
           skip(skippedByReason, 'progression:' + progression.reasonCode);
           continue;
         }
-        const existingRound = getControllerRoundRelay(store, work.workId);
         occurrenceId = existingRound?.status === 'failed' && existingRound.occurrenceId
           ? existingRound.occurrenceId
           : progression.idempotencyKey;
@@ -231,7 +241,6 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
         const requirementState = requirementRecord?.value.state;
         if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
         if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
-        const existingRound = getControllerRoundRelay(store, work.workId);
         if (existingRound && existingRound.status !== 'failed') { skip(skippedByReason, 'controller_round_present'); continue; }
         occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
       }
