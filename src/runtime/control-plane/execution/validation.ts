@@ -128,7 +128,7 @@ export function validateWorkHandle(
   const currentBranch = gitText(root, ['branch', '--show-current']);
   const currentHead = gitText(root, ['rev-parse', '--verify', 'HEAD']);
   if (currentBranch !== handle.branch) fail('WORK_HANDLE_BRANCH_CHANGED', `expected ${handle.branch}, found ${currentBranch ?? 'detached'}`);
-  const managedWorkProgress = (operation === 'validate' || operation === 'finalize')
+  const managedWorkProgress = (operation === 'inspect' || operation === 'validate' || operation === 'finalize')
     && handle.managedWorktree
     && Boolean(handle.expectedHead && currentHead)
     && gitSucceeds(root, ['merge-base', '--is-ancestor', handle.expectedHead!, currentHead!]);

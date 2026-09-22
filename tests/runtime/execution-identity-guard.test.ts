@@ -140,6 +140,64 @@ describe('execution identity pre-spawn guard', () => {
     expect(observed).toBeInstanceOf(WorkHandleValidationError);
     expect((observed as WorkHandleValidationError).code).toBe('WORK_HANDLE_HEAD_CHANGED');
   });
+
+  test('inspection accepts a managed Work-owned descendant HEAD without weakening execute authority', () => {
+    const fx = dualRepoFixture();
+    const identity = { sessionId: 'sess-managed-inspect', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
+    startExecutionSession(fx.controllerHome, {
+      ...identity,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    });
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-inspect-descendant',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    };
+
+    writeFileSync(join(fx.repoARoot, 'work-owned.txt'), 'work owned\n');
+    spawnSync('git', ['-C', fx.repoARoot, 'add', 'work-owned.txt'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'work-owned descendant'], { encoding: 'utf8' });
+    const descendantHead = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+
+    const inspected = validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'inspect');
+    expect(inspected.currentHead).toBe(descendantHead);
+    expect(inspected.warnings.some((warning) => warning.includes('Work-owned descendant commits'))).toBe(true);
+    expect(() => validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'execute')).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+  });
+
+  test('inspection still rejects a managed non-descendant HEAD', () => {
+    const fx = dualRepoFixture();
+    const identity = { sessionId: 'sess-managed-inspect-unrelated', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
+    startExecutionSession(fx.controllerHome, {
+      ...identity,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    });
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-inspect-unrelated',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    };
+    const tree = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', `${fx.headA}^{tree}`], { encoding: 'utf8' }).stdout.trim();
+    const unrelatedHead = spawnSync('git', ['-C', fx.repoARoot, 'commit-tree', tree, '-m', 'unrelated root'], { encoding: 'utf8' }).stdout.trim();
+    spawnSync('git', ['-C', fx.repoARoot, 'reset', '--hard', unrelatedHead], { encoding: 'utf8' });
+
+    expect(() => validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'inspect')).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+  });
+
   test('rejects explicit checkout A when cwd routes into repo B', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
