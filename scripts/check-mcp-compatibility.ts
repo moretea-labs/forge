@@ -91,29 +91,28 @@ const legacyHandlerSource = readFileSync(new URL('../src/cli/mcp/legacy-tool-ser
 const legacyHandlerNames = [...legacyHandlerSource.matchAll(/case\s+["']([^"']+)["']\s*:/g)].map((match) => match[1]);
 const legacyHandlerCollisions = [...new Set(legacyHandlerNames.filter((name) => currentToolNames.has(name)))].sort();
 const recoveryMcpSource = readFileSync(new URL('../src/runtime/standalone-recovery/mcp-server.ts', import.meta.url), 'utf8');
-const recoveryModernSessionlessMarkers = [
+const recoveryStatelessMarkers = [
   'createMcpHandler',
-  'isLegacyRequest',
   'toNodeHandler',
-  'toWebRequest',
-  "legacy: 'reject'",
+  "legacy: 'stateless'",
   "responseMode: 'auto'",
 ];
-const recoveryLegacyCompatibilityMarkers = [
+const recoverySessionAuthorityMarkers = [
   'McpSessionRegistry',
   'NodeStreamableHTTPServerTransport',
   'Mcp-Session-Reset',
+  'sessionIdGenerator',
 ];
 
 const failures: string[] = [];
-for (const marker of recoveryModernSessionlessMarkers) {
+for (const marker of recoveryStatelessMarkers) {
   if (!recoveryMcpSource.includes(marker)) {
-    failures.push(`Standalone Recovery MCP must keep the modern sessionless serving boundary: missing ${marker}`);
+    failures.push(`Standalone Recovery MCP must remain stateless across protocol eras: missing ${marker}`);
   }
 }
-for (const marker of recoveryLegacyCompatibilityMarkers) {
-  if (!recoveryMcpSource.includes(marker)) {
-    failures.push(`Standalone Recovery MCP must keep bounded legacy compatibility: missing ${marker}`);
+for (const marker of recoverySessionAuthorityMarkers) {
+  if (recoveryMcpSource.includes(marker)) {
+    failures.push(`Standalone Recovery MCP must not own transport-session state: found ${marker}`);
   }
 }
 if (defaultNames.join('\n') !== EXPECTED_STABLE_CONTROLLER_TOOL_NAMES.join('\n')) {
