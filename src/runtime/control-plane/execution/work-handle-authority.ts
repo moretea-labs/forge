@@ -175,6 +175,26 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   return writeWorkHandle(input.controllerHome, { ...existing, sourceCheckoutId: placement.registeredRepository.activeCheckoutId, managedWorktree: true });
 }
 
+export function assertManagedRepositoryMutationAuthority(input: {
+  repository: RepositoryRecord;
+  handle: WorkHandleState;
+}): void {
+  if (!input.handle.managedWorktree) return;
+  if (input.handle.state !== 'prepared' && input.handle.state !== 'editing') {
+    throw new Error(`WORK_REPOSITORY_MUTATION_LIFECYCLE_INVALID: ${input.handle.workId}:${input.handle.state}`);
+  }
+  if (input.repository.activeCheckoutId !== input.handle.checkoutId) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_MISMATCH: expected ${input.handle.checkoutId}, found ${input.repository.activeCheckoutId}`);
+  }
+  const status = repositoryGitStatus(input.repository);
+  if (status.branch !== input.handle.branch) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_BRANCH_CHANGED: expected ${input.handle.branch}, found ${status.branch ?? 'detached'}`);
+  }
+  if (!input.handle.expectedHead || status.head !== input.handle.expectedHead) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_HEAD_CHANGED: expected ${input.handle.expectedHead ?? 'missing'}, found ${status.head ?? 'missing'}`);
+  }
+}
+
 function alignRepositoryMutationBase(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -323,6 +343,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
     handle,
     freshlyMaterialized: !existingHandle,
   });
+  assertManagedRepositoryMutationAuthority({ repository: input.repository, handle });
   return { handle, ...(promotedFrom ? { promotedFrom } : {}) };
 }
 

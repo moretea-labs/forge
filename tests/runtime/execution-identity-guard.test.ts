@@ -29,7 +29,7 @@ import {
 import { adoptWorkHandleSuccessorCandidate, resolveWorkDeliveryTargetBranch, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { inspectManagedWorkSuccessorAdoption } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
-import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { assertManagedRepositoryMutationAuthority, ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
 import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
@@ -682,6 +682,62 @@ describe('execution identity pre-spawn guard', () => {
 
 });
 
+
+describe('managed Work mutation authority', () => {
+  test('rejects mutation after the durable handle leaves editable state', () => {
+    const fx = dualRepoFixture();
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-committed-mutation',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+      state: 'committed' as const,
+    };
+    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle }))
+      .toThrow(/WORK_REPOSITORY_MUTATION_LIFECYCLE_INVALID/);
+  });
+
+  test('rejects managed mutation when repository history moved away from durable expectedHead', () => {
+    const fx = dualRepoFixture();
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-head-drift-mutation',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+    };
+    writeFileSync(join(fx.repoARoot, 'drift.txt'), 'drift\n');
+    spawnSync('git', ['-C', fx.repoARoot, 'add', 'drift.txt'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'drift'], { encoding: 'utf8' });
+    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle }))
+      .toThrow(/WORK_REPOSITORY_MUTATION_HEAD_CHANGED/);
+  });
+
+  test('keeps prepared managed mutation authority valid while branch and HEAD still match', () => {
+    const fx = dualRepoFixture();
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-valid-mutation',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+    };
+    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle })).not.toThrow();
+  });
+});
 
 describe('managed Work successor authority', () => {
   test('adopts a clean target-reconciled rewritten candidate and re-arms validation', () => {
