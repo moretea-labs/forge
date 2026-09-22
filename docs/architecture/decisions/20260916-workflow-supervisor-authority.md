@@ -193,14 +193,12 @@ The crash windows before reservation, after reservation/before send, after send/
 
 ## ChatGPT Web adapter boundary
 
-The Chrome Extension is an execution/discovery adapter, not a state authority. It may:
+The Chrome Extension is a discovery/assistant-observation adapter, not a state authority or outbound sender. Native macOS Browser transport is the single sender: it uses trusted input, confirms the composer contains the exact fixed prompt before it clicks Send, and waits for the exact committed user message before recording the effect outcome. It may:
 
 - locate or open only an allowlisted exact conversation id/URL;
 - obtain repository-derived ChatGPT Project scopes from the Supervisor and scan visible project links for canonical `/c/<id>` conversation identities;
 - publish bounded project/conversation discovery observations; the Supervisor alone decides whether an unbound discovered conversation receives one enrollment effect;
 - read the final complete assistant response, its echoed identity/state fields and `source_effect_id`, and forward bounded evidence;
-- submit only a daemon-authorized fixed prompt containing the marker for one exact `submission_effect_id`;
-- observe whether that exact effect marker/fixed outbound message is present for reconciliation;
 - rediscover a closed/discarded tab without changing durable task identity.
 
 It must not select durable tasks by mutable title, open the Supervisor database, decide `CONTINUE/DONE/NEEDS_USER`, invent prompts, weaken Forge gates, or depend on private ChatGPT APIs. A repository/project title is only a bounded discovery selector; exact conversation URL/id becomes the stable execution target before any enrollment effect exists. Transient generation UI may help avoid pointless reads but is never commit evidence.

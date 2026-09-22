@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPageForProduct,
+  discoverMacOsBrowserAttachment,
   listMacOsBrowserTabs,
   reattachMacOsBrowserOwnedPage,
   type MacOsAppleEventsPage,
   type MacOsBrowserTabInventoryEntry,
+  type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
+import type { ComputerTrustedInput } from '../packages/protocols/computer/index';
 import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
@@ -21,10 +24,17 @@ const IDLE_INTERVAL_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_PROVIDER_FAILURE_SCAN_CHARS = 250_000;
 const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
+const MAX_TRUSTED_TEXT_INPUT_CHARS = 10_000;
+const NATIVE_BROWSER_PRODUCTS: readonly MacOsBrowserProduct[] = ['vivaldi', 'chrome'];
+type TaggedBrowserTabRef = MacOsBrowserTabRef & { browserProduct?: MacOsBrowserProduct };
+type TaggedBrowserTabInventoryEntry = MacOsBrowserTabInventoryEntry & { browserProduct?: MacOsBrowserProduct };
 
 export interface WorkflowSupervisorNativePage {
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
   tabRef(): MacOsBrowserTabRef | undefined;
+  foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
+  /** Real OS input, required for a provider-visible message submission. */
+  trustedInput?(input: ComputerTrustedInput): Promise<void>;
 }
 export interface WorkflowSupervisorNativeSnapshot {
   url: string;
@@ -43,7 +53,7 @@ export interface WorkflowSupervisorNativeSnapshotOptions {
 }
 export interface WorkflowSupervisorNativeBrowserDependencies {
   platform: NodeJS.Platform;
-  listTabs(): Promise<MacOsBrowserTabInventoryEntry[]>;
+  listTabs(): Promise<TaggedBrowserTabInventoryEntry[]>;
   reattach(ref: MacOsBrowserTabRef): Promise<WorkflowSupervisorNativePage>;
   create(url: string): Promise<WorkflowSupervisorNativePage>;
   close(ref: MacOsBrowserTabRef): Promise<void>;
@@ -76,7 +86,25 @@ function committedAssistant(text: string): boolean {
   return value.length <= 512 * 1024 && value.endsWith(SUPERVISOR_BLOCK_END) && value.lastIndexOf(SUPERVISOR_BLOCK_START) >= 0;
 }
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
-function refKey(ref: MacOsBrowserTabRef): string { return `${ref.windowId}:${ref.tabId}`; }
+type PromptControl = { value: string; center: { x: number; y: number } };
+type PromptControls = { composer?: PromptControl; sendButton?: PromptControl };
+
+function refKey(ref: TaggedBrowserTabRef): string { return `${ref.browserProduct ?? 'unknown'}:${ref.windowId}:${ref.tabId}`; }
+function productForRef(ref: TaggedBrowserTabRef): MacOsBrowserProduct {
+  if (ref.browserProduct === 'chrome' || ref.browserProduct === 'vivaldi') return ref.browserProduct;
+  throw new Error('WORKFLOW_SUPERVISOR_BROWSER_PRODUCT_UNPROVEN');
+}
+function taggedPage(page: MacOsAppleEventsPage, product: MacOsBrowserProduct): WorkflowSupervisorNativePage {
+  return {
+    evaluate: page.evaluate.bind(page),
+    tabRef: () => {
+      const ref = page.tabRef();
+      return ref ? { ...ref, browserProduct: product } : undefined;
+    },
+    foregroundState: page.foregroundState.bind(page),
+    trustedInput: page.trustedInput.bind(page),
+  };
+}
 
 export async function defaultSnapshot(page: WorkflowSupervisorNativePage, options: WorkflowSupervisorNativeSnapshotOptions = {}): Promise<WorkflowSupervisorNativeSnapshot> {
   const includeUserHistory = options.includeUserHistory ?? true;
@@ -116,10 +144,18 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     return snapshot;
   })()`);
 }
-async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string): Promise<{ dispatched: boolean; reason?: string }> {
-  return await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
-    const prompt = ${JSON.stringify(prompt)};
+async function promptControls(page: WorkflowSupervisorNativePage): Promise<PromptControls> {
+  return await page.evaluate<PromptControls>(`(() => {
     const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+    const control = (element) => {
+      if (!element || !visible(element)) return undefined;
+      const rect = element.getBoundingClientRect();
+      if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top) || rect.width <= 0 || rect.height <= 0) return undefined;
+      return {
+        value: String(('value' in element ? element.value : element.innerText ?? element.textContent ?? '') || ''),
+        center: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+      };
+    };
     const composer = [
       '[data-testid="composer-text-input"]',
       'div#prompt-textarea[contenteditable="true"]',
@@ -129,51 +165,58 @@ async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, prompt:
       'textarea[placeholder*="问问"]',
       'div[role="textbox"][contenteditable="true"]',
     ].map((selector) => document.querySelector(selector)).find(visible);
-    if (!composer) return { dispatched: false, reason: 'composer_missing' };
-    composer.focus();
-    let inserted = false;
-    if ('value' in composer) {
-      composer.value = '';
-      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
-      composer.value = prompt;
-      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
-      inserted = true;
-    } else {
-      const selection = globalThis.getSelection?.();
-      if (selection) {
-        const range = document.createRange();
-        range.selectNodeContents(composer);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        selection.deleteFromDocument();
-      }
-      inserted = document.execCommand?.('insertText', false, prompt) === true;
-    }
-    const current = String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '')).replace(/\\s+/g, ' ').trim();
-    const expected = prompt.replace(/\\s+/g, ' ').trim();
-    if (!inserted || current !== expected) {
-      if ('value' in composer) composer.value = prompt;
-      else composer.textContent = prompt;
-      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
-    }
     const button = [
       '[data-testid="send-button"]',
       'button[aria-label*="Send"]',
       'button[aria-label*="发送"]',
       'button[data-testid*="send"]',
     ].map((selector) => document.querySelector(selector)).find((candidate) => visible(candidate) && !candidate.disabled && candidate.getAttribute('aria-disabled') !== 'true');
-    if (!button) return { dispatched: false, reason: 'send_button_missing' };
-    button.click();
-    return { dispatched: true };
+    return { composer: control(composer), sendButton: control(button) };
   })()`);
+}
+
+export async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string): Promise<{ dispatched: boolean; reason?: string }> {
+  if (!page.trustedInput) return { dispatched: false, reason: 'trusted_input_unavailable' };
+  const foreground = await page.foregroundState?.();
+  if (!foreground || !foreground.frontmost || !foreground.active) {
+    return { dispatched: false, reason: 'browser_foreground_required' };
+  }
+  const before = await promptControls(page);
+  if (!before.composer) return { dispatched: false, reason: 'composer_missing' };
+  // A non-empty composer is an unconfirmed previous external mutation. Do not
+  // overwrite it or manufacture a second submission from an ambiguous state.
+  if (normalize(before.composer.value)) return { dispatched: false, reason: 'composer_not_empty' };
+  await page.trustedInput({ kind: 'click', x: before.composer.center.x, y: before.composer.center.y, button: 'left', clickCount: 1 });
+  for (let offset = 0; offset < prompt.length; offset += MAX_TRUSTED_TEXT_INPUT_CHARS) {
+    await page.trustedInput({ kind: 'text', text: prompt.slice(offset, offset + MAX_TRUSTED_TEXT_INPUT_CHARS) });
+  }
+  const typed = await promptControls(page);
+  if (!typed.composer || normalize(typed.composer.value) !== normalize(prompt)) {
+    return { dispatched: false, reason: 'composer_text_unconfirmed' };
+  }
+  if (!typed.sendButton) return { dispatched: false, reason: 'send_button_missing' };
+  await page.trustedInput({ kind: 'click', x: typed.sendButton.center.x, y: typed.sendButton.center.y, button: 'left', clickCount: 1 });
+  return { dispatched: true };
 }
 
 const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   platform: process.platform,
-  listTabs: async () => (await listMacOsBrowserTabs('chrome', DEFAULT_TIMEOUT_MS)).tabs,
-  reattach: async (ref) => (await reattachMacOsBrowserOwnedPage('chrome', ref, DEFAULT_TIMEOUT_MS)).page,
-  create: async (url) => (await createMacOsBrowserOwnedPageForProduct('chrome', url, [], DEFAULT_TIMEOUT_MS)).page,
-  close: async (ref) => { await closeMacOsBrowserOwnedTab('chrome', ref, DEFAULT_TIMEOUT_MS); },
+  listTabs: async () => (await Promise.all(NATIVE_BROWSER_PRODUCTS.map(async (product) => {
+    try {
+      return (await listMacOsBrowserTabs(product, DEFAULT_TIMEOUT_MS)).tabs.map((tab): TaggedBrowserTabInventoryEntry => ({ ...tab, browserProduct: product }));
+    } catch { return []; }
+  }))).flat(),
+  reattach: async (ref) => {
+    const product = productForRef(ref as TaggedBrowserTabRef);
+    return taggedPage((await reattachMacOsBrowserOwnedPage(product, ref, DEFAULT_TIMEOUT_MS)).page, product);
+  },
+  create: async (url) => {
+    const { attachment } = await discoverMacOsBrowserAttachment([...NATIVE_BROWSER_PRODUCTS], DEFAULT_TIMEOUT_MS);
+    if (!attachment) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_UNAVAILABLE');
+    const product = attachment.metadata.product;
+    return taggedPage((await createMacOsBrowserOwnedPageForProduct(product, url, attachment.attempts, DEFAULT_TIMEOUT_MS)).page, product);
+  },
+  close: async (ref) => { await closeMacOsBrowserOwnedTab(productForRef(ref as TaggedBrowserTabRef), ref, DEFAULT_TIMEOUT_MS); },
   readOwner: async (page) => await page.evaluate<string>('String(window.name || "")'),
   writeOwner: async (page, marker) => { await page.evaluate(`(() => { window.name = ${JSON.stringify(marker)}; return window.name; })()`); },
   snapshot: defaultSnapshot,
@@ -343,10 +386,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.pages.delete(task.conversationId);
     }
     const inventory = await this.deps.listTabs();
-    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: MacOsBrowserTabRef }> = [];
+    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     let exactCandidateInspectionFailed = false;
     for (const candidate of inventory.filter((entry) => exactConversation(entry.url, task))) {
-      const ref = { windowId: candidate.windowId, tabId: candidate.tabId };
+      const ref: TaggedBrowserTabRef = {
+        windowId: candidate.windowId,
+        tabId: candidate.tabId,
+        ...(candidate.browserProduct ? { browserProduct: candidate.browserProduct } : {}),
+      };
       try {
         const page = await this.deps.reattach(ref);
         if (await this.deps.readOwner(page) === marker) matches.push({ page, ref });

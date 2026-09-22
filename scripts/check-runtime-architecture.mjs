@@ -1171,7 +1171,7 @@ requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
 requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
 forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Supervisor transport must relay typed commands through the control plane and never own persistence');
 requireText('supervisor/chrome-extension/manifest.json', 'nativeMessaging');
-requireText('supervisor/chrome-extension/background.js', 'browser_begin_effect');
+forbid('supervisor/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|forge-workflow-supervisor-effect/, 'Chrome extension is discovery/assistant-observation only; native macOS transport is the sole outbound Supervisor sender');
 requireText('supervisor/chrome-extension/content.js', 'FORGE_WORKFLOW_SUPERVISOR');
 requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
 requireText('supervisor/native-messaging/host.ts', 'browser_observe_assistant');

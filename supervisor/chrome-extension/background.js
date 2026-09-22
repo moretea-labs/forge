@@ -2,7 +2,6 @@ importScripts('core.js');
 const core = globalThis.ForgeWorkflowSupervisorChromeCore;
 const NATIVE_HOST = 'com.moretea.forge.workflow_supervisor';
 const ALARM = 'forge-workflow-supervisor-scan';
-const inflight = new Set();
 const observedAssistant = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -20,29 +19,6 @@ function tabMessage(tabId, message) {
     if (error) { reject(new Error(error.message)); return; }
     resolve(response ?? {});
   }));
-}
-async function recordOutcome(identity, command, result) {
-  const outcome = result?.outcome === 'applied' ? 'applied' : result?.outcome === 'not_applied' ? 'not_applied' : 'unknown';
-  await nativeRpc('browser_observe_effect', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, effect_id: command.effectId, observation_id: randomId(), outcome, evidence: result?.evidence ?? {} });
-}
-async function act(tabId, identity, command) {
-  if (!command || inflight.has(command.effectId)) return;
-  inflight.add(command.effectId);
-  try {
-    let mode = command.mode;
-    if (mode === 'send') {
-      let baseline;
-      try { baseline = await tabMessage(tabId, { type: 'forge-workflow-supervisor-snapshot', effectId: command.effectId }); }
-      catch { baseline = undefined; }
-      if (!baseline) return;
-      const begin = await nativeRpc('browser_begin_effect', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl, effect_id: command.effectId, dispatch_id: randomId(), dispatch_generation: command.dispatchGeneration, evidence: { surface: 'chrome-extension', ...baseline } });
-      if (begin.started !== true) mode = 'reconcile';
-    }
-    let result;
-    try { result = await tabMessage(tabId, { type: 'forge-workflow-supervisor-effect', ...command, mode }); }
-    catch (error) { result = { outcome: 'unknown', evidence: { reason: String(error?.message ?? error) } }; }
-    await recordOutcome(identity, command, result);
-  } finally { inflight.delete(command.effectId); }
 }
 async function handlePage(message, sender) {
   const tabId = sender.tab?.id;
@@ -68,8 +44,9 @@ async function handlePage(message, sender) {
   // start from an ordinary assistant turn, so wait until that turn is idle
   // before submitting the first Supervisor effect into this same conversation.
   if (message.providerTurnPending === true) return;
-  const poll = await nativeRpc('browser_poll', { conversation_id: identity.conversationId, conversation_url: identity.canonicalUrl });
-  if (poll?.command) await act(tabId, identity, poll.command);
+  // Native macOS transport is the only outbound sender. DOM-created input and
+  // click events are not a provider submission receipt, so this extension is
+  // deliberately limited to discovery and assistant-turn observation.
 }
 async function discoveryScan(tabId, projectTitles) {
   try { return await tabMessage(tabId, { type: 'forge-workflow-supervisor-discovery-scan', projectTitles }); }

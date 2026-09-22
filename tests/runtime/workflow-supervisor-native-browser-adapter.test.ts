@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { defaultSnapshot, WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
+import { defaultDispatchPrompt, defaultSnapshot, WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
@@ -80,6 +80,56 @@ function register(control: WorkflowSupervisorControlPlane, conversationId: strin
 }
 
 describe('Workflow Supervisor macOS native browser adapter', () => {
+  test('requires trusted OS input rather than claiming a DOM click dispatched a prompt', async () => {
+    const page: WorkflowSupervisorNativePage = { evaluate: async () => { throw new Error('must not inspect DOM without trusted input'); }, tabRef: () => undefined };
+    await expect(defaultDispatchPrompt(page, 'continue')).resolves.toEqual({ dispatched: false, reason: 'trusted_input_unavailable' });
+  });
+
+  test('uses trusted text and click input, then verifies the composer before sending', async () => {
+    const inputs: unknown[] = [];
+    let reads = 0;
+    const page: WorkflowSupervisorNativePage = {
+      tabRef: () => undefined,
+      foregroundState: async () => ({ frontmost: true, active: true }),
+      trustedInput: async (input) => { inputs.push(input); },
+      evaluate: async <T>() => {
+        reads += 1;
+        if (reads === 1) return { composer: { value: '', center: { x: 10, y: 20 } } } as T;
+        return { composer: { value: 'continue safely', center: { x: 10, y: 20 } }, sendButton: { value: '', center: { x: 30, y: 40 } } } as T;
+      },
+    };
+    await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: true });
+    expect(inputs).toEqual([
+      { kind: 'click', x: 10, y: 20, button: 'left', clickCount: 1 },
+      { kind: 'text', text: 'continue safely' },
+      { kind: 'click', x: 30, y: 40, button: 'left', clickCount: 1 },
+    ]);
+  });
+
+  test('refuses to overwrite an ambiguous non-empty composer', async () => {
+    const inputs: unknown[] = [];
+    const page: WorkflowSupervisorNativePage = {
+      tabRef: () => undefined,
+      foregroundState: async () => ({ frontmost: true, active: true }),
+      trustedInput: async (input) => { inputs.push(input); },
+      evaluate: async <T>() => ({ composer: { value: 'unsent prior content', center: { x: 10, y: 20 } } } as T),
+    };
+    await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: false, reason: 'composer_not_empty' });
+    expect(inputs).toEqual([]);
+  });
+
+  test('refuses physical input unless the exact browser tab is already foreground and active', async () => {
+    const inputs: unknown[] = [];
+    const page: WorkflowSupervisorNativePage = {
+      tabRef: () => undefined,
+      foregroundState: async () => ({ frontmost: false, active: false }),
+      trustedInput: async (input) => { inputs.push(input); },
+      evaluate: async <T>() => ({ composer: { value: '', center: { x: 10, y: 20 } } } as T),
+    };
+    await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: false, reason: 'browser_foreground_required' });
+    expect(inputs).toEqual([]);
+  });
+
   test('reuses the page-validation snapshot instead of capturing the same active page twice per run', async () => {
     const conversationId = '10101010-2020-3030-4040-505050505050';
     const h = harness();
@@ -387,9 +437,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
     expect(page.latestUserText).not.toBe(firstPrompt);
     expect(page.latestUserText).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
-    expect(page.latestUserText).toContain('Previous checkpoint evidence only');
-    expect(page.latestUserText).toContain('controller_authority_id=ctrl_next');
-    expect(page.latestUserText).toContain('relay_scope_id=requirement:REQ-next');
+    expect(page.latestUserText).toContain('Continue the current original task directly from the previous checkpoint without repeating completed work.');
     expect(h.settlements).toHaveLength(1);
     expect(h.control.browserPoll({ conversationId, conversationUrl }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
