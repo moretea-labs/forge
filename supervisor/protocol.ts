@@ -50,7 +50,7 @@ export function parseSupervisorCompletion(responseText: string): { proposal: Wor
   if (supervisorState && !['running', 'done', 'needs_user'].includes(supervisorState)) throw new Error('WORKFLOW_SUPERVISOR_STATE_INVALID');
   const expectedState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
   if (supervisorState && supervisorState !== expectedState) throw new Error('WORKFLOW_SUPERVISOR_STATE_ACTION_MISMATCH');
-  if (activeScope && !/^(?:requirement|goal):[^\\s]{1,480}$/.test(activeScope)) throw new Error('WORKFLOW_SUPERVISOR_ACTIVE_SCOPE_INVALID');
+  if (activeScope && !/^(?:requirement|goal):[^\s]{1,480}$/.test(activeScope)) throw new Error('WORKFLOW_SUPERVISOR_ACTIVE_SCOPE_INVALID');
   const controlBlock = responseText.slice(start, end + SUPERVISOR_BLOCK_END.length);
   return {
     proposal: {

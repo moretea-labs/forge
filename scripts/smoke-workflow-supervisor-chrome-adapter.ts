@@ -23,7 +23,7 @@ try {
   assert.equal(control.browserBeginEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, dispatchId: 'dispatch-1', dispatchGeneration: poll.command!.dispatchGeneration, evidence: { latest_user_text: '', latest_assistant_response: '' } }).started, true);
   poll = control.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.mode, 'reconcile');
   control.browserObserveEffect({ conversationId, conversationUrl, effectId: enrollment.effectId, observationId: 'observed-1', outcome: 'applied', evidence: { exact: true } });
-  const response = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', source_effect_id: enrollment.effectId, checkpoint: 'step 4', reason: 'more work', evidence: ['receipt'] })}\n${SUPERVISOR_BLOCK_END}`;
+  const response = `Work remains.\n${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'CONTINUE', source_effect_id: enrollment.effectId, checkpoint: 'step 4', reason: 'more work', evidence: ['receipt'], conversation_id: conversationId, task_id: 'task-1', supervisor_state: 'running', active_scope: 'goal:task-1' })}\n${SUPERVISOR_BLOCK_END}`;
   const observed = await control.browserObserveAssistant({ conversationId, conversationUrl, responseText: response });
   assert.equal(observed.action, 'CONTINUE'); assert.ok(observed.successorEffect);
   poll = control.browserPoll({ conversationId, conversationUrl }); assert.equal(poll.command?.effectId, observed.successorEffect?.effectId); assert.equal(poll.command?.mode, 'send');
@@ -36,7 +36,7 @@ try {
   const donePoll = control.browserPoll({ conversationId: doneConversationId, conversationUrl: doneConversationUrl });
   control.browserBeginEffect({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, effectId: doneEffect.effectId, dispatchId: 'dispatch-done', dispatchGeneration: donePoll.command!.dispatchGeneration, evidence: { latest_user_text: '', latest_assistant_response: '' } });
   control.browserObserveEffect({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, effectId: doneEffect.effectId, observationId: 'observed-done', outcome: 'applied' });
-  const doneResponse = `${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'DONE', source_effect_id: doneEffect.effectId, checkpoint: 'done', reason: 'complete', evidence: ['receipt'] })}\n${SUPERVISOR_BLOCK_END}`;
+  const doneResponse = `${SUPERVISOR_BLOCK_START}\n${JSON.stringify({ action: 'DONE', source_effect_id: doneEffect.effectId, checkpoint: 'done', reason: 'complete', evidence: ['receipt'], conversation_id: doneConversationId, task_id: 'task-done', supervisor_state: 'done', active_scope: 'goal:task-done' })}\n${SUPERVISOR_BLOCK_END}`;
   assert.equal((await control.browserObserveAssistant({ conversationId: doneConversationId, conversationUrl: doneConversationUrl, responseText: doneResponse })).terminal, true);
   assert.equal(control.browserTasks().some((task) => task.taskId === 'task-done'), false);
 
@@ -70,5 +70,14 @@ try {
   const discoverySource = backgroundSource.slice(backgroundSource.indexOf('async function publishDiscovery'), backgroundSource.indexOf('async function refreshAuthorizedTabs'));
   assert.ok(discoverySource.includes("browser_discovery_update"));
   for (const forbidden of ['task_register', 'reserve_enrollment', 'browser_begin_effect', 'forge-workflow-supervisor-effect']) assert.equal(discoverySource.includes(forbidden), false);
+  const taskRefreshSource = backgroundSource.slice(backgroundSource.indexOf("const result = await nativeRpc('browser_tasks')"), backgroundSource.indexOf('chrome.runtime.onMessage.addListener'));
+  assert.ok(taskRefreshSource.includes("chrome.tabs.create({ url: target.canonicalUrl, active: false })"));
+  assert.ok(taskRefreshSource.includes('if (tab.discarded && tab.id) { await chrome.tabs.reload(tab.id); continue; }'));
+  assert.ok(taskRefreshSource.includes('core.sameIdentity(core.parseConversation(candidate.url ?? \'\'), target)'));
+  assert.ok(backgroundSource.includes("chrome.alarms.create(ALARM, { periodInMinutes: 1 })"));
+  const contentSource = readFileSync(resolve('supervisor/chrome-extension/content.js'), 'utf8');
+  assert.ok(contentSource.includes('new MutationObserver(notify).observe'));
+  assert.ok(contentSource.includes('}, 200);'));
+  assert.ok(contentSource.includes('const assistantResponse = latestAssistant();'));
   console.log('[workflow-supervisor-chrome-smoke] OK');
 } finally { rmSync(home, { recursive: true, force: true }); }
