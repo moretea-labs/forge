@@ -4877,11 +4877,25 @@ export async function cutoverConfiguredRuntimeReleaseSession(
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableBefore = await verifyLocalRuntime(config);
+      if (!stableBefore.ok) {
+        const reasonCodes = stableBefore.runtime.reasonCodes.join(',') || 'unknown';
+        audit(config, 'release_session_cutover_precondition_deferred', {
+          sessionId,
+          detail: 'stable Runtime verification is temporarily unavailable before cutover',
+          reasonCodes,
+        });
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_STABLE_RUNTIME_VERIFICATION_DEFERRED: ${reasonCodes}`,
+          releaseSession: session,
+        };
+      }
       if (
-        !stableBefore.ok
-        || stableBefore.releases.active?.revision !== session.stableRelease.releaseId
+        stableBefore.releases.active?.revision !== session.stableRelease.releaseId
         || stableBefore.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
-      ) throw new Error('RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED');
+      ) throw new Error('RELEASE_SESSION_STABLE_RUNTIME_IDENTITY_CHANGED');
 
       const candidateConfig = candidateRecoveryConfig(session);
       const candidateBefore = await verifyLocalRuntime(candidateConfig);
@@ -4910,9 +4924,23 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       // be the exact frozen authority before we enter the one cutover attempt.
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
       const stableAfterPromotion = await verifyLocalRuntime(config);
+      if (!stableAfterPromotion.ok) {
+        const reasonCodes = stableAfterPromotion.runtime.reasonCodes.join(',') || 'unknown';
+        audit(config, 'release_session_cutover_post_promotion_verification_deferred', {
+          sessionId,
+          detail: 'stable Runtime verification is temporarily unavailable after immutable promotion and before activation',
+          reasonCodes,
+        });
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_STABLE_POST_PROMOTION_VERIFICATION_DEFERRED: ${reasonCodes}`,
+          releaseSession: session,
+        };
+      }
       if (
-        !stableAfterPromotion.ok
-        || stableAfterPromotion.releases.active?.revision !== session.stableRelease.releaseId
+        stableAfterPromotion.releases.active?.revision !== session.stableRelease.releaseId
         || stableAfterPromotion.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
       ) throw new Error('RELEASE_SESSION_STABLE_CHANGED_DURING_PROMOTION');
 
