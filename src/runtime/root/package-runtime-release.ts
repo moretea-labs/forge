@@ -10,6 +10,7 @@ import { assertRuntimeReleaseExecutionSurface } from './release-manifest';
 import { assertRuntimeReleaseExecutionCanaries } from './release-execution-canary';
 import type { RuntimeReleaseManifest } from './types';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
 
 export interface PackageRuntimeFileRecord {
   path: string;
@@ -225,6 +226,7 @@ function launcherSource(input: {
   indexSha256: string;
   entryRelativePath?: string;
   managerSignalsProcessGroup?: boolean;
+  ownsProcessRuntimeCanary?: boolean;
 }): string {
   const entryRelativePath = input.entryRelativePath ?? 'src/runtime/root/entry.ts';
   return `#!${process.execPath}\n`
@@ -247,6 +249,8 @@ function launcherSource(input: {
     + `if(digest(raw)!==expectedIndex){console.error('FORGE_PACKAGE_RUNTIME_INDEX_CHANGED');process.exit(78);}\n`
     + `let records; try { records=JSON.parse(raw.toString('utf8')).files; } catch { console.error('FORGE_PACKAGE_RUNTIME_INDEX_INVALID'); process.exit(78); }\n`
     + `for(const record of records){const path=join(packageRoot,record.path);if(!existsSync(path)||digest(readFileSync(path))!==record.sha256){console.error('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED: '+record.path);process.exit(78);}}\n`
+    + `const ownsProcessRuntimeCanary=${input.ownsProcessRuntimeCanary === true ? 'true' : 'false'};\n`
+    + `if(ownsProcessRuntimeCanary&&process.argv.length===3&&process.argv[2]===${JSON.stringify(PROCESS_RUNTIME_RELEASE_CANARY_ARG)})process.exit(0);\n`
     + `const entry=join(packageRoot,...${JSON.stringify(entryRelativePath.split('/'))});\n`
     + `const loader=join(packageRoot,'src','runtime','shared','node-ts-loader.mjs');\n`
     + `const args=process.versions?.bun?[entry,...process.argv.slice(2)]:['--loader',loader,entry,...process.argv.slice(2)];\n`
@@ -337,7 +341,7 @@ export function materializePackageRuntimeRelease(input: {
   const fingerprint = packageRuntimeFingerprint(records);
   const packageArtifactIdentity = packageRuntimeArtifactIdentity(sourcePackageRoot, records);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
-  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v6`);
+  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v7`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   const releaseRoot = join(releasesRoot, releaseId);
@@ -353,6 +357,7 @@ export function materializePackageRuntimeRelease(input: {
   const processRunnerLauncher = launcherSource({
     indexSha256,
     entryRelativePath: 'src/runtime/execution/process-runtime/process-runner-entry.ts',
+    ownsProcessRuntimeCanary: true,
   });
   const processRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(processRunnerLauncher))}`;
   const checkRunnerEntrypoint = 'forge-check-runner' as const;
@@ -360,6 +365,7 @@ export function materializePackageRuntimeRelease(input: {
   const checkRunnerLauncher = launcherSource({
     indexSha256,
     entryRelativePath: 'src/runtime/execution/process-runtime/check-runner-sidecar.ts',
+    ownsProcessRuntimeCanary: true,
   });
   const checkRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(checkRunnerLauncher))}`;
   const expectedManifest: Omit<RuntimeReleaseManifest, 'createdAt'> = {

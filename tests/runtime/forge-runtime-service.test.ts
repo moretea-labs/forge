@@ -43,18 +43,20 @@ function fixture(): { root: string; home: string; repo: string; token: string } 
   return { root, home, repo, token };
 }
 
-function writePackageRuntimeCanaryFixture(packageRoot: string): void {
+function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCanary = true): void {
   const executionRoot = join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime');
   const cliRoot = join(packageRoot, 'src', 'cli');
   mkdirSync(executionRoot, { recursive: true });
   mkdirSync(cliRoot, { recursive: true });
-  const canaryOnly = [
-    `if (process.argv.includes('--forge-release-canary-child')) {`,
-    `  process.exit(0);`,
-    `}`,
-    `process.exit(2);`,
-    '',
-  ].join('\n');
+  const canaryOnly = supportsCurrentCanary
+    ? [
+      `if (process.argv.includes('--forge-release-canary-child')) {`,
+      `  process.exit(0);`,
+      `}`,
+      `process.exit(2);`,
+      '',
+    ].join('\n')
+    : `process.exit(process.argv.includes('--forge-release-canary-child') ? 17 : 2);\n`;
   writeFileSync(join(executionRoot, 'process-runner-entry.ts'), canaryOnly);
   writeFileSync(join(executionRoot, 'check-runner-sidecar.ts'), canaryOnly);
   writeFileSync(
@@ -353,6 +355,25 @@ describe('Forge Runtime service', () => {
     const changed = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test-changed' });
     expect(changed.releaseId).not.toBe(release.releaseId);
     expect(readFileSync(join(changed.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 2;\n');
+  });
+
+  test('owns the current execution canary at the package wrapper boundary for older sidecars', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package-legacy-canary');
+    for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '1.7.2-legacy-canary' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+    writePackageRuntimeCanaryFixture(packageRoot, false);
+
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-legacy-canary' });
+    const processRunner = spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' });
+    const checkRunner = spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' });
+    expect(processRunner.status).toBe(0);
+    expect(checkRunner.status).toBe(0);
+
+    const delegated = spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--not-a-canary'], { encoding: 'utf8' });
+    expect(delegated.status).toBe(2);
   });
 
   test('does not duplicate a systemd process-group shutdown signal', async () => {
