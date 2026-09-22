@@ -44,8 +44,6 @@ jobs:
       - name: PowerShell installer dry run
         shell: pwsh
         run: .\install.ps1 -DryRun -Runtime auto
-      - name: Temporary #253 MCP compatibility
-        run: bun run check:mcp-compatibility
       - name: Platform contract
         run: bun run check:platform-support
       - name: Installer and Windows policy tests
