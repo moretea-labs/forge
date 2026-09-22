@@ -1785,6 +1785,11 @@ describe('standalone recovery on canonical Runtime', () => {
       await instance.mcp.close();
       await new Promise<void>((resolveClose, rejectClose) => instance.httpServer.close((error) => error ? rejectClose(error) : resolveClose()));
     };
+    const modernMeta = {
+      'io.modelcontextprotocol/protocol-version': '2026-07-28',
+      'io.modelcontextprotocol/client-info': { name: 'recovery-modern-restart-test', version: '1.0.0' },
+      'io.modelcontextprotocol/client-capabilities': {},
+    };
     const headers = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
@@ -1794,13 +1799,14 @@ describe('standalone recovery on canonical Runtime', () => {
       jsonrpc: '2.0',
       id,
       method: 'server/discover',
-      params: {
-        protocolVersion: '2026-07-28',
-        capabilities: {},
-        clientInfo: { name: 'recovery-modern-restart-test', version: '1.0.0' },
-      },
+      params: { _meta: modernMeta },
     });
-    const toolsListBody = (id: number) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', params: {} });
+    const toolsListBody = (id: number) => JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/list',
+      params: { _meta: modernMeta },
+    });
     const readMcpResponse = async (response: Response): Promise<{ result?: { tools?: unknown[] } }> => {
       const text = await response.text();
       if (/text\/event-stream/i.test(response.headers.get('content-type') ?? '')) {
@@ -1816,7 +1822,7 @@ describe('standalone recovery on canonical Runtime', () => {
     try {
       const discovered = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
         method: 'POST',
-        headers,
+        headers: { ...headers, 'mcp-method': 'server/discover' },
         body: discoverBody(1),
       });
       expect(discovered.status).toBe(200);
@@ -1825,7 +1831,7 @@ describe('standalone recovery on canonical Runtime', () => {
 
       const beforeRestart = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
         method: 'POST',
-        headers,
+        headers: { ...headers, 'mcp-method': 'tools/list' },
         body: toolsListBody(2),
       });
       expect(beforeRestart.status).toBe(200);
@@ -1838,7 +1844,7 @@ describe('standalone recovery on canonical Runtime', () => {
 
       const afterRestart = await fetch(`http://127.0.0.1:${second.port}/recovery/mcp`, {
         method: 'POST',
-        headers,
+        headers: { ...headers, 'mcp-method': 'tools/list' },
         body: toolsListBody(3),
       });
       expect(afterRestart.status).toBe(200);
