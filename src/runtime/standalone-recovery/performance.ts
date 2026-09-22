@@ -10,7 +10,7 @@ export interface RuntimePerformanceIdentity {
 }
 
 export interface RuntimePerformanceEvidence extends RuntimePerformanceIdentity {
-  policy: 'runaway-cpu-v2';
+  policy: 'runaway-cpu-v3';
   measuredFrom: string;
   measuredUntil: string;
   warmupMs: number;
@@ -22,18 +22,20 @@ export interface RuntimePerformanceEvidence extends RuntimePerformanceIdentity {
 
 export interface RuntimeCpuReading { cpuMs: number; processStartTime: string }
 
-const PERFORMANCE_WINDOW_MS = 5_000;
-const PERFORMANCE_MAX_WINDOW_MS = 7_500;
-const PERFORMANCE_WARMUP_WINDOWS = 2;
-const PERFORMANCE_SAMPLE_WINDOWS = 10;
+const PERFORMANCE_WINDOW_MS = 2_500;
+const PERFORMANCE_MAX_WINDOW_MS = 3_750;
+const PERFORMANCE_WARMUP_WINDOWS = 4;
+const PERFORMANCE_SAMPLE_WINDOWS = 20;
 const PERFORMANCE_WARMUP_MS = PERFORMANCE_WINDOW_MS * PERFORMANCE_WARMUP_WINDOWS;
 const PERFORMANCE_DURATION_MS = PERFORMANCE_WINDOW_MS * PERFORMANCE_SAMPLE_WINDOWS;
 
 // Recovery known-good is a runaway safety gate, not the comparative release benchmark.
-// Current audit evidence has a clean separation: the functionally healthy low cluster tops
-// out at mean=10.34% / p95=31.09%, while the runaway cluster starts at
-// mean=90.64% / p95=104.72%. These ceilings keep a wide fail-closed gap between
-// the two populations. Relative <=10% regression remains Benchmark/Release Evaluation authority.
+// The v3 sampler keeps the same 60-second budget and 25%/50% ceilings as v2, but
+// doubles tail resolution: twenty 2.5-second sample windows make nearest-rank p95
+// the second-highest window instead of the single maximum. One transient window can
+// no longer masquerade as sustained runaway; two or more high-tail windows still can.
+// Live audit evidence keeps a wide gap between healthy mean CPU and true runaway CPU.
+// Relative <=10% regression remains Benchmark/Release Evaluation authority.
 export const RECOVERY_RUNAWAY_MEAN_CPU_PERCENT = 25;
 export const RECOVERY_RUNAWAY_P95_CPU_PERCENT = 50;
 
@@ -69,7 +71,7 @@ export function assertRuntimePerformanceEvidence(
   now = Date.now(),
 ): void {
   const age = now - Date.parse(evidence.measuredUntil);
-  if (evidence.policy !== 'runaway-cpu-v2' || !samePerformanceIdentity(evidence, identity)
+  if (evidence.policy !== 'runaway-cpu-v3' || !samePerformanceIdentity(evidence, identity)
     || !Number.isFinite(age) || age < 0 || age > 60_000
     || evidence.warmupMs < PERFORMANCE_WARMUP_MS || evidence.warmupMs > PERFORMANCE_MAX_WINDOW_MS * PERFORMANCE_WARMUP_WINDOWS
     || evidence.durationMs < PERFORMANCE_DURATION_MS || evidence.durationMs > PERFORMANCE_MAX_WINDOW_MS * PERFORMANCE_SAMPLE_WINDOWS || evidence.sampleCount !== PERFORMANCE_SAMPLE_WINDOWS
@@ -83,7 +85,7 @@ export function assertRuntimePerformanceEvidence(
   }
 }
 
-/** Observe 10 seconds of warmup followed by ten 5-second CPU-time delta windows. */
+/** Observe 10 seconds of warmup followed by twenty 2.5-second CPU-time delta windows. */
 export async function measureRuntimePerformance(
   observeIdentity: () => RuntimePerformanceIdentity,
   dependencies: RuntimePerformanceDependencies = {},
@@ -141,7 +143,7 @@ export async function measureRuntimePerformance(
   const durationMs = previousAt - startedAt;
   windows.sort((a, b) => a - b);
   const evidence: RuntimePerformanceEvidence = {
-    ...identity, policy: 'runaway-cpu-v2', measuredFrom, measuredUntil: new Date(wallNow()).toISOString(),
+    ...identity, policy: 'runaway-cpu-v3', measuredFrom, measuredUntil: new Date(wallNow()).toISOString(),
     warmupMs, durationMs, sampleCount: windows.length,
     meanCpuPercent: totalCpuMs / durationMs * 100,
     p95CpuPercent: windows[Math.ceil(windows.length * 0.95) - 1]!,

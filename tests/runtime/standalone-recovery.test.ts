@@ -4776,13 +4776,37 @@ describe('Recovery explicit performance acceptance', () => {
   test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
     const deps = idleCpuDependencies();
     const evidence = await measureRuntimePerformance(() => identity, deps);
-    expect(evidence).toMatchObject({ policy: 'runaway-cpu-v2', sampleCount: 10, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0 });
+    expect(evidence).toMatchObject({ policy: 'runaway-cpu-v3', sampleCount: 20, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0 });
     expect(() => assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 10.34, p95CpuPercent: 31.09 }, identity)).not.toThrow();
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 90.64, p95CpuPercent: 104.72 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: RECOVERY_RUNAWAY_MEAN_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+
+    let singleSpikeElapsed = 0;
+    const singleSpike = await measureRuntimePerformance(() => identity, {
+      readCpu: () => ({
+        cpuMs: singleSpikeElapsed >= 12_500 ? 1_500 : 0,
+        processStartTime: 'same',
+      }),
+      monotonicNow: () => singleSpikeElapsed,
+      wallNow: () => Date.now() - 60_000 + singleSpikeElapsed,
+      sleep: async (ms: number) => { singleSpikeElapsed += ms; },
+    });
+    expect(singleSpike).toMatchObject({ meanCpuPercent: 3, p95CpuPercent: 0, sampleCount: 20 });
+
+    let repeatedSpikeElapsed = 0;
+    await expect(measureRuntimePerformance(() => identity, {
+      readCpu: () => ({
+        cpuMs: repeatedSpikeElapsed < 12_500 ? 0 : repeatedSpikeElapsed < 15_000 ? 1_500 : 3_000,
+        processStartTime: 'same',
+      }),
+      monotonicNow: () => repeatedSpikeElapsed,
+      wallNow: () => Date.now() - 60_000 + repeatedSpikeElapsed,
+      sleep: async (ms: number) => { repeatedSpikeElapsed += ms; },
+    })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
+
     const busy = idleCpuDependencies();
     await expect(measureRuntimePerformance(() => identity, {
       ...busy, readCpu: () => ({ cpuMs: busy.monotonicNow(), processStartTime: 'same' }),
