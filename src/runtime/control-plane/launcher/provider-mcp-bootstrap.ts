@@ -73,6 +73,7 @@ export function codexMcpConfigArgs(bootstrap: ProviderMcpBootstrap): string[] {
     .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)
     .join(',')}}`;
   return [
+    '--ignore-user-config',
     // Replace the entire table: Codex rejects a merged URL + persisted stdio
     // transport even when command/args are overridden separately.
     '-c', `mcp_servers.forge={url=${JSON.stringify(bootstrap.url)}, bearer_token_env_var=${JSON.stringify(bootstrap.bearerTokenEnvVar)}, http_headers=${headerTable}}`,
