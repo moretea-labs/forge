@@ -11,7 +11,6 @@ import {
   getRequirementControllerRoundRelay,
   readControllerRoundSemanticStateFingerprint,
   reconcileControllerRoundAfterTerminalWork,
-  retryFailedControllerRoundProviderDispatch,
   type ControllerRoundRelayStoreOptions,
 } from '../infrastructure/controller-round-store';
 import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession } from '../infrastructure/controller-session-store';
@@ -114,14 +113,12 @@ export function prepareControllerRoundOccurrence(
   if (relay?.status === 'failed') {
     if (relay.relayScopeId !== canonicalRelayScopeId) throw new Error(`CONTROLLER_CONTINUATION_OCCURRENCE_IDENTITY_CONFLICT:${input.occurrenceId}`);
     if (relay.occurrenceId && relay.occurrenceId !== input.occurrenceId) throw new Error(`CONTROLLER_CONTINUATION_FAILED_OCCURRENCE_MISMATCH:${relay.occurrenceId}`);
-    if (!relay.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${relay.relayScopeId}`);
-    relay = retryFailedControllerRoundProviderDispatch(options, {
-      workId: work.workId,
-      relayScopeId: canonicalRelayScopeId,
-      authorityId: relay.authorityId,
-      expectedUpdatedAt: relay.updatedAt,
-      occurrenceId: input.occurrenceId,
-    });
+    // `failed` is the durable result of a ControllerHost rejection that explicitly
+    // did not opt into same-round recovery. A later Scheduler occurrence must not
+    // reinterpret that settled failure as recoverable or consume retry budget again.
+    // Explicit provider repair/retry paths own any later rearm under their existing
+    // authority and evidence fences.
+    return reusedOccurrenceResult(relay)!;
   }
 
   if (relay?.occurrenceId === input.occurrenceId) {

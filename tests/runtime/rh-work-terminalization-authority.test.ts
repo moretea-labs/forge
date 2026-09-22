@@ -2591,6 +2591,67 @@ describe('rh_work terminalization authority', () => {
     expect(prepared.relay.providerDispatchReceiptId).toBeUndefined();
   });
 
+  test('scheduled continuation preserves a non-recoverable failed lineage instead of retrying exhausted provider budget', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-nonrecoverable-provider-failure';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-nonrecoverable-provider-failure',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-nonrecoverable-provider-failure',
+      principalId: 'principal-nonrecoverable-provider-failure',
+      controllerInstanceId: 'runtime-nonrecoverable-provider-failure',
+      leaseMs: 60_000,
+    });
+    const binding = upsertChatgptControllerBinding(store, {
+      workId, sessionId: owner.sessionId, title: 'nonrecoverable provider failure', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
+    const occurrenceId = 'occ-nonrecoverable-provider-failure';
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      occurrenceId,
+      bindingId: binding.binding.bindingId,
+      maxFailures: 1,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    const failed = finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'POLICY_DENIED: explicit retry is not authorized' })!;
+    expect(failed).toMatchObject({ status: 'failed', consecutiveFailures: 1, maxFailures: 1 });
+    expect(releaseObservedControllerSession(store, { workId, actor: 'test-nonrecoverable-provider-failure-release', owner }).allowed).toBe(true);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getRetainedControllerSession(store, workId)).toBeTruthy();
+
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId,
+      workId,
+      controllerBindingId: binding.binding.bindingId,
+      relayScopeId,
+    });
+
+    expect(prepared).toMatchObject({
+      outcome: 'rejected',
+      reused: true,
+      reason: 'POLICY_DENIED: explicit retry is not authorized',
+      relay: { status: 'failed', consecutiveFailures: 1, maxFailures: 1 },
+    });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'failed',
+      consecutiveFailures: 1,
+      maxFailures: 1,
+      updatedAt: failed.updatedAt,
+    });
+  });
+
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
