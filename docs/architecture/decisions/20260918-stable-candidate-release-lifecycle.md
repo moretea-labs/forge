@@ -116,8 +116,12 @@ source_frozen → built → static_verified → candidate_booted
 bootstrap receipts from the frozen source revision. `candidate_verified`
 requires Recovery restart, MCP, Scheduler, Supervisor and controller receipts
 from isolated B. `cutover_eligible` is impossible while A and B collide on Home
-or port. `cutover_attempting` permits exactly one fenced production cutover;
-verified return to exact A terminalizes `rolled_back` and is never retried.
+or port. Before the first production activation, a transient failure to obtain a
+fresh Stable A verification leaves the same ReleaseSession `cutover_eligible` so
+the exact candidate can be retried after observation recovers; proven Stable A
+identity drift is a real precondition failure. `cutover_attempting` permits
+exactly one fenced production cutover; verified return to exact A terminalizes
+`rolled_back` and is never retried.
 Automatic source reconciliation is also revision-bounded: once an immutable
 source revision has any terminal ReleaseSession, the daemon will not create a
 second automatic ReleaseSession for that same revision. Explicit human release
