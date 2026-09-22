@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { Server, type Tool } from '@modelcontextprotocol/server';
-import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import { createMcpHandler, isLegacyRequest, Server, type Tool } from '@modelcontextprotocol/server';
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from '@modelcontextprotocol/node';
 import { McpSessionRegistry, type McpSessionRoute, type McpSessionSnapshot } from '../../../adapters/mcp/transports/session-registry';
 import { FORGE_VERSION } from '../../version';
 
@@ -84,6 +84,7 @@ export class RecoveryMcpSessionServer {
   async handle(request: IncomingMessage, response: ServerResponse, body?: unknown): Promise<void> {
     await this.registry.prune();
     if (request.method === 'POST') {
+      if (await this.handleModernPost(request, response, body)) return;
       await this.handlePost(request, response, body);
       return;
     }
@@ -97,6 +98,35 @@ export class RecoveryMcpSessionServer {
     }
     response.statusCode = 405;
     response.end();
+  }
+
+  /**
+   * MCP 2026-07-28 is the canonical Recovery serving path. Modern requests are
+   * sessionless and therefore survive Recovery gateway replacement without
+   * depending on an in-memory Mcp-Session-Id registry. The legacy stateful
+   * transport below remains explicit compatibility for 2025-era clients.
+   */
+  private async handleModernPost(
+    request: IncomingMessage,
+    response: ServerResponse,
+    body: unknown,
+  ): Promise<boolean> {
+    const webRequest = await toWebRequest(request, body);
+    if (await isLegacyRequest(webRequest, body)) return false;
+
+    const context: RecoveryMcpSessionContext = {
+      remoteAddress: request.socket.remoteAddress ?? 'unknown',
+    };
+    const handler = createMcpHandler(async () => this.createServer(context), {
+      legacy: 'reject',
+      responseMode: 'auto',
+    });
+    try {
+      await toNodeHandler(handler)(request, response, body);
+    } finally {
+      await handler.close();
+    }
+    return true;
   }
 
   private createServer(context: RecoveryMcpSessionContext): Server {
