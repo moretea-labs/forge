@@ -42,7 +42,7 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '63ccd0e9340e55fd';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '73c32eee63be132b';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -127,6 +127,19 @@ if (fullNames.length < defaultNames.length) {
 
 const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
 const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+for (const field of [
+  'checkout_id',
+  'workflow_id',
+  'workflow_run_id',
+  'controller_authority_id',
+  'relay_scope_id',
+  'assistant_context_digest',
+  'assistant_context_usage',
+  'outcome_observation',
+  'experience_draft',
+] as const) {
+  if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+}
 if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
 if (!('obligation_dispositions' in rhWorkProperties)) failures.push('rh_work native obligation_dispositions schema is missing');
 for (const field of ['controller_authority_id', 'relay_scope_id', 'engineering_preconditions']) {
