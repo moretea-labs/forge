@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'crypto';
-import { readFileSync, rmSync } from 'fs';
+import { readFileSync, rmSync, writeFileSync } from 'fs';
 import { getRepository } from '../../cli/repositories/registry';
 import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import type { AssistantPluginActionRequest } from './types';
@@ -39,7 +39,7 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
       repository,
       envelope.request,
     );
-    process.stdout.write(`${JSON.stringify({
+    writeFileSync(1, `${JSON.stringify({
       ok: true,
       requestId: submitted.receipt.requestId,
       receiptId: submitted.receipt.receiptId,
@@ -54,9 +54,9 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
 const direct = typeof process.argv[1] === 'string' && process.argv[1].includes('plugin-action-sidecar');
 if (direct) {
   void runPluginActionSidecar()
-    .then((code) => { process.exitCode = code; })
+    .then((code) => { process.exit(code); })
     .catch((error) => {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
+      writeFileSync(2, `${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
     });
 }

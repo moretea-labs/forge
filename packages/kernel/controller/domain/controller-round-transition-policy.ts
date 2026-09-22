@@ -57,7 +57,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'failed_dispatch_successor_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
   | { type: 'terminal_work_observed'; at: string; error: string }
   | { type: 'abandoned_release_observed'; at: string; error: string }
-  | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean; preserveBlockedState?: boolean; reason?: string };
+  | { type: 'authority_recovery_requested'; at: string; proposedAuthorityId: string; keepsConfirmedDispatch: boolean; preserveBlockedState?: boolean; preserveWaitingForUserState?: boolean; reason?: string };
 
 export type ControllerRoundTransitionDecision =
   | { kind: 'accept'; next: ControllerRoundRelayRecord; action: string }
@@ -493,6 +493,14 @@ export function decideControllerRoundTransition(
           ...(event.reason ? { reason: event.reason } : {}),
           updatedAt: event.at,
         }, 'controller_round_relay_explicit_authority_rekeyed_while_blocked');
+      }
+      if (event.preserveWaitingForUserState) {
+        if (current.status !== 'waiting_for_user') return { kind: 'reject', code: `CONTROLLER_RELAY_AUTHORITY_REKEY_WAITING_FOR_USER_STATE_REQUIRED:${current.status}` };
+        return accept(current, {
+          authorityId: event.proposedAuthorityId,
+          ...(event.reason ? { reason: event.reason } : {}),
+          updatedAt: event.at,
+        }, 'controller_round_relay_explicit_authority_rekeyed_while_waiting_for_user');
       }
       return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, blockedReason: undefined, claimedAt: undefined, nextRecoveryAt: undefined, ...(event.reason ? { reason: event.reason } : {}), ...(event.keepsConfirmedDispatch ? {} : { providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined }), updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
     }

@@ -131,7 +131,18 @@ export async function callRhWorkControllerOperation(
       );
       const supervisorOuterTurnClaimWithoutAuthority = supervisorOuterTurnClaimCandidate
         && await workflowSupervisorCurrentConversationMatchesWork(store, workId);
-      let authorizedRelay = samePrincipalCanonicalRuntimeMigrationWithoutAuthority || supervisorOuterTurnClaimWithoutAuthority
+      const userDirectedWaitingResumeWithoutAuthority = Boolean(
+        dispatchedRelay?.status === 'waiting_for_user'
+        && args.requested_by === 'user'
+        && !identity.controllerAuthorityId
+        && (!requestedRelayScopeId || requestedRelayScopeId === dispatchedRelay.relayScopeId)
+        && dispatchedRelay.controllerId === identity.controllerId
+        && dispatchedRelay.controllerType === identity.controllerType
+        && dispatchedRelay.principalId === identity.principalId
+      );
+      let authorizedRelay = samePrincipalCanonicalRuntimeMigrationWithoutAuthority
+        || supervisorOuterTurnClaimWithoutAuthority
+        || userDirectedWaitingResumeWithoutAuthority
         ? dispatchedRelay
         : assertFacadeControllerRoundAuthority(ctx, store, workId, args);
       if (!authorizedRelay && identity.controllerAuthorityId && requestedRelayScopeId) {

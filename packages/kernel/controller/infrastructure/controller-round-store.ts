@@ -1395,7 +1395,7 @@ export function recoverControllerRoundRelayAuthority(
   if (initial.value.controllerId !== input.identity.controllerId || initial.value.principalId !== input.identity.principalId) {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_PRINCIPAL_MISMATCH: ${workId}`);
   }
-  const recoverableStatuses: readonly ControllerRoundRelayStatus[] = ['pending_release', 'dispatching', 'dispatched', 'claimed', 'failed'];
+  const recoverableStatuses: readonly ControllerRoundRelayStatus[] = ['pending_release', 'dispatching', 'dispatched', 'claimed', 'waiting_for_user', 'failed'];
   const initialRepeatedStateBlock = initial.value.status === 'blocked' && initial.value.blockedReason?.startsWith('repeated_state:');
   const initialConsecutiveFailureBlock = controllerRoundBlockerClass(initial.value) === 'consecutive_failures';
   const initialRecoveryReason = input.recoveryReason?.trim() ?? '';
@@ -1471,6 +1471,7 @@ export function recoverControllerRoundRelayAuthority(
       type: 'authority_recovery_requested', at: nowIso(options), proposedAuthorityId: newControllerRoundAuthorityId(),
       keepsConfirmedDispatch: current.value.status === 'dispatched',
       preserveBlockedState: currentConsecutiveFailureBlock,
+      preserveWaitingForUserState: current.value.status === 'waiting_for_user',
       ...(initialRecoveryReason ? { reason: initialRecoveryReason } : {}),
     });
   });
