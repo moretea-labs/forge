@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
@@ -1786,9 +1787,9 @@ describe('standalone recovery on canonical Runtime', () => {
       await new Promise<void>((resolveClose, rejectClose) => instance.httpServer.close((error) => error ? rejectClose(error) : resolveClose()));
     };
     const modernMeta = {
-      'io.modelcontextprotocol/protocol-version': '2026-07-28',
-      'io.modelcontextprotocol/client-info': { name: 'recovery-modern-restart-test', version: '1.0.0' },
-      'io.modelcontextprotocol/client-capabilities': {},
+      [PROTOCOL_VERSION_META_KEY]: '2026-07-28',
+      [CLIENT_INFO_META_KEY]: { name: 'recovery-modern-restart-test', version: '1.0.0' },
+      [CLIENT_CAPABILITIES_META_KEY]: {},
     };
     const headers = {
       'content-type': 'application/json',
@@ -1825,9 +1826,9 @@ describe('standalone recovery on canonical Runtime', () => {
         headers: { ...headers, 'mcp-method': 'server/discover' },
         body: discoverBody(1),
       });
-      expect(discovered.status).toBe(200);
+      const discoveredText = await discovered.text();
+      if (discovered.status !== 200) throw new Error(`TEST_RECOVERY_MODERN_DISCOVER_FAILED: ${discovered.status} ${discoveredText}`);
       expect(discovered.headers.get('mcp-session-id')).toBeNull();
-      await discovered.text();
 
       const beforeRestart = await fetch(`http://127.0.0.1:${first.port}/recovery/mcp`, {
         method: 'POST',
