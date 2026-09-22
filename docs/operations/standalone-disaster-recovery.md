@@ -60,6 +60,8 @@ reconnect_primary_connector
 
 The Recovery Gateway listens on loopback, uses a separate scoped credential, bounds request/output size, and stores no primary MCP credential in logs. External HTTPS verification uses the trusted system curl transport; temporary headers, MCP payloads and session identifiers are written only to bounded mode-0600 files below `recovery/tmp` and are removed after each request.
 
+For MCP transport lifecycle, Recovery follows the same protocol-era boundary as the primary Gateway: MCP 2026-07-28 requests are served sessionlessly, so replacing the Recovery Gateway process does not require preserving an in-memory `Mcp-Session-Id`. The stateful session registry exists only for bounded 2025-era compatibility; stale legacy sessions receive the explicit reinitialize signal and do not own Recovery authority. A Runtime or Connector cutover must therefore preserve durable Recovery/release authority independently from transport process identity.
+
 ## Whole-Runtime rollback
 
 The rollback primitive is deliberately offline, while `recover_primary_runtime` owns the complete bounded service transaction:
