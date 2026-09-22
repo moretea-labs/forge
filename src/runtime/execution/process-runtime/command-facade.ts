@@ -425,7 +425,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
           // evidence is unavailable. Finalization must keep failing closed until
           // a later authoritative repository inspection proves the new HEAD.
           if (result.evidenceError) return;
-          settleWorkHandleExpectedHeadAfterRepositoryCommand({
+          const settlement = settleWorkHandleExpectedHeadAfterRepositoryCommand({
             controllerHome: input.controllerHome,
             repository: input.repository,
             executionIdentity,
@@ -434,6 +434,12 @@ export async function executeRepositoryCommandViaProcessRuntime(
             cancelled: result.cancelled,
             timedOut: result.timedOut,
           });
+          if (!settlement.settled && settlement.reason === 'concurrent_lifecycle_write') {
+            result.evidenceError = {
+              code: 'WORK_HEAD_SETTLEMENT_UNRESOLVED',
+              message: `Work ${input.workId ?? 'unknown'} repository command succeeded, but expectedHead settlement remained contested after bounded retry (${settlement.previousHead ?? 'unknown'} -> ${settlement.currentHead ?? 'unknown'}).`,
+            };
+          }
         },
       });
       const handle = lightweight.handle;

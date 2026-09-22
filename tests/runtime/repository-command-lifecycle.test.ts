@@ -22,7 +22,8 @@ import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-ac
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../src/runtime/control-plane/execution/work-head-settlement';
 import { pushExactWorkRemoteDelivery } from '../../src/runtime/control-plane/execution/work-remote-delivery';
 import { cancelWorkContract, createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
@@ -238,6 +239,29 @@ describe('repository command execution lifecycle', () => {
     expect(terminal?.ok ?? execution.ok).toBe(true);
     const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
     expect(currentHead).not.toBe(previousHead);
+    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
+  });
+
+  test('treats a concurrent lifecycle writer that already settled the exact HEAD as converged', () => {
+    const controllerHome = tempRoot('forge-cmd-work-head-converged-home-');
+    const repoRoot = tempRoot('forge-cmd-work-head-converged-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const handle = seedWorkHandle(controllerHome, repository, 'work-head-converged');
+    const executionIdentity = executionIdentityForWork(repository, handle);
+    writeFileSync(join(repoRoot, 'README.md'), 'settled by concurrent writer\n');
+    git(repoRoot, ['commit', '--only', '-m', 'concurrent settlement', '--', 'README.md']);
+    const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    transitionWorkHandle(controllerHome, handle, handle.state, { expectedHead: currentHead });
+
+    expect(settleWorkHandleExpectedHeadAfterRepositoryCommand({
+      controllerHome,
+      repository,
+      executionIdentity,
+      workId: handle.workId,
+      ok: true,
+      cancelled: false,
+      timedOut: false,
+    })).toMatchObject({ settled: true, reason: 'settled', previousHead: handle.expectedHead, currentHead });
     expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
   });
 
