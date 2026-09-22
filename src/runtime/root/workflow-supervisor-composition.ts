@@ -124,13 +124,16 @@ async function settleForgeWorkflowSupervisorTurn(
   const repoId = workflowSupervisorContractText(task, 'repo_id');
   const dynamicRequirementId = completion.proposal.activeScope?.startsWith('requirement:') ? completion.proposal.activeScope.slice('requirement:'.length).trim() : undefined;
   const requirementId = workflowSupervisorContractText(task, 'requirement_id') ?? dynamicRequirementId;
+  const workId = workflowSupervisorContractText(task, 'work_id');
   const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || !requirementId || !taskControllerHome) return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_ACTIVE_REQUIREMENT_SCOPE_REQUIRED' };
+  if (!repoId || (!requirementId && !workId) || !taskControllerHome) return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_ACTIVE_WORK_SCOPE_REQUIRED' };
   if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
 
   const store = { controllerHome, repoId };
-  let relay = getRequirementControllerRoundRelay(store, requirementId);
-  if (!relay) return { continuationAllowed: false, reason: 'CONTROLLER_ROUND_REQUIREMENT_RELAY_MISSING' };
+  let relay = requirementId
+    ? getRequirementControllerRoundRelay(store, requirementId)
+    : getControllerRoundRelay(store, workId!);
+  if (!relay) return { continuationAllowed: false, reason: 'CONTROLLER_ROUND_WORK_RELAY_MISSING' };
 
   const settledWorkId = relay.originWorkId;
   if (relay.status === 'claimed') {
@@ -188,11 +191,14 @@ export function resolveWorkflowSupervisorChatgptDelivery(
 ): { repoId: string; workId: string; browserSessionId: string; conversationUrl: string; authorizationGrantRefs: string[] } {
   const repoId = workflowSupervisorContractText(task, 'repo_id');
   const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  const workId = workflowSupervisorContractText(task, 'work_id');
   const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || !requirementId || !taskControllerHome) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_CONTRACT_INCOMPLETE');
+  if (!repoId || (!requirementId && !workId) || !taskControllerHome) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_CONTRACT_INCOMPLETE');
   if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
   const store = { controllerHome, repoId };
-  const relay = getRequirementControllerRoundRelay(store, requirementId);
+  const relay = requirementId
+    ? getRequirementControllerRoundRelay(store, requirementId)
+    : getControllerRoundRelay(store, workId!);
   if (!relay) throw new Error('WORKFLOW_SUPERVISOR_CHATGPT_DELIVERY_RELAY_MISSING');
   const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
   if (!binding || binding.conversationId !== task.conversationId || binding.conversationUrl !== task.conversationUrl) {
@@ -230,22 +236,23 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
   return (task) => {
     const repoId = workflowSupervisorContractText(task, 'repo_id');
     const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+    const workId = workflowSupervisorContractText(task, 'work_id');
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-    // A Forge browser task without exact Requirement authority is historical
-    // observation state, not an autonomous continuation obligation.
-    if (!repoId || !requirementId || !taskControllerHome) return false;
+    if (!repoId || (!requirementId && !workId) || !taskControllerHome) return false;
     if (taskControllerHome !== controllerHome) return false;
     const nowMs = Date.now();
     const lowerLayerNotReadyUntil = lowerLayerNotReadyUntilByTask.get(task.taskId) ?? 0;
     if (lowerLayerNotReadyUntil > nowMs) return false;
     lowerLayerNotReadyUntilByTask.delete(task.taskId);
-    const requirement = readRequirement({ controllerHome }, requirementId)?.value;
-    if (!requirement || requirement.state === 'done' || requirement.state === 'cancelled') {
+    const requirement = requirementId ? readRequirement({ controllerHome }, requirementId)?.value : undefined;
+    if (requirementId && (!requirement || requirement.state === 'done' || requirement.state === 'cancelled')) {
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }
     const store = { controllerHome, repoId };
-    let relay = getRequirementControllerRoundRelay(store, requirementId);
+    let relay = requirementId
+      ? getRequirementControllerRoundRelay(store, requirementId)
+      : getControllerRoundRelay(store, workId!);
     if (!relay || relay.status === 'failed') {
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
@@ -301,10 +308,13 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     effectApplied: (task, effect, observation) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
       const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+      const workId = workflowSupervisorContractText(task, 'work_id');
       const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-      if (!repoId || !requirementId || taskControllerHome !== controllerHome) return;
+      if (!repoId || (!requirementId && !workId) || taskControllerHome !== controllerHome) return;
       const store = { controllerHome, repoId };
-      const relay = getRequirementControllerRoundRelay(store, requirementId);
+      const relay = requirementId
+        ? getRequirementControllerRoundRelay(store, requirementId)
+        : getControllerRoundRelay(store, workId!);
       if (!relay || relay.status !== 'dispatching') return;
       const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
       if (boundary.status !== 'outer_turn' || boundary.taskId !== task.taskId || boundary.conversationId !== task.conversationId) return;
