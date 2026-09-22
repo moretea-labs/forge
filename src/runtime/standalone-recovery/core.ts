@@ -5494,8 +5494,21 @@ function tunnelRepairAllowed(config: RecoveryConfig, now: number): boolean {
   return typeof prior?.lastAttemptAt !== 'number' || now - prior.lastAttemptAt >= cooldownMs;
 }
 
+async function verifyRecoveryTunnelRepairSurface(config: RecoveryConfig): Promise<VerifyResult> {
+  // Recovery tunnel repair is a bootstrap control-plane operation. It must not
+  // depend on the primary public MCP/Connector transport that Recovery exists
+  // to repair around. Keep canonical Runtime/Recovery authority checks and the
+  // dedicated Recovery external probe, but exclude primary transport probes.
+  return verifyStableRuntime({
+    ...config,
+    publicMcpUrl: undefined,
+    primaryPublicTunnelService: undefined,
+    primaryConnectorService: undefined,
+  }, createRecoveryHttpTransport(config.controllerHome), { probeMcpProtocol: false });
+}
+
 export async function repairPublicTunnel(config: RecoveryConfig, dependencies: PublicTunnelRepairDependencies = {}): Promise<PublicTunnelRepairResult> {
-  const verify = dependencies.verify ?? verifyStableRuntime;
+  const verify = dependencies.verify ?? verifyRecoveryTunnelRepairSurface;
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
