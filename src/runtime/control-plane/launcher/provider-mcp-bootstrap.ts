@@ -73,13 +73,11 @@ export function codexMcpConfigArgs(bootstrap: ProviderMcpBootstrap): string[] {
     .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)
     .join(',')}}`;
   return [
-    // The persistent Codex config may register Forge as a stdio server. This
-    // invocation is deliberately an HTTP bearer-bound transport; clear the
-    // mutually-exclusive stdio fields before applying the exact runtime URL.
-    '-c', 'mcp_servers.forge.command=null',
-    '-c', 'mcp_servers.forge.args=[]',
+    // Replace the entire table: Codex rejects a merged URL + persisted stdio
+    // transport even when command/args are overridden separately.
+    '-c', `mcp_servers.forge={url=${JSON.stringify(bootstrap.url)}, bearer_token_env_var=${JSON.stringify(bootstrap.bearerTokenEnvVar)}, http_headers=${headerTable}}`,
+    // Keep the explicit URL override visible for diagnostics; the complete
+    // table above has already removed the persisted stdio transport.
     '-c', `mcp_servers.forge.url=${JSON.stringify(bootstrap.url)}`,
-    '-c', `mcp_servers.forge.bearer_token_env_var=${JSON.stringify(bootstrap.bearerTokenEnvVar)}`,
-    '-c', `mcp_servers.forge.http_headers=${headerTable}`,
   ];
 }
