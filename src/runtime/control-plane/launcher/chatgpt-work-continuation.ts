@@ -106,6 +106,8 @@ export interface WorkChatgptContinuationDependencies {
   wslHost?: ChatgptProviderDeliveryHost;
   /** Test seam plus one canonical resource-settlement owner for known Browser delivery failures. */
   settleBrowserTab?: typeof settleWorkChatgptAutomationTab;
+  /** Test seam for the outer-turn owner. Bound continuation must enroll here instead of re-entering Browser delivery. */
+  enrollWorkflowSupervisor?: typeof ensureWorkflowSupervisorEnrollmentForWork;
 }
 
 export interface WorkChatgptContinuationResult {
@@ -365,7 +367,7 @@ export async function runWorkChatgptContinuation(
   const model = normalizeModel(input.model);
   const reasoning = normalizeControllerReasoning(input.reasoning);
   const tabPolicy = transportConversation === 'fresh' ? 'new' : normalizeTabPolicy(input.tabPolicy);
-  const { bridgeRuntime, host } = resolveChatgptProviderDeliveryHost(dependencies);
+  const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime();
   const authorityInputError = controllerRoundAuthorityInputError(input);
   if (authorityInputError) {
     const browserSessionId = bridgeRuntime
@@ -421,6 +423,44 @@ export async function runWorkChatgptContinuation(
         throw new ChatgptExecutionPlacementError(targetForgeInstanceId, currentForgeInstanceId);
       }
     }
+    if (existing && transportConversation !== 'fresh') {
+      const enrollment = await (dependencies.enrollWorkflowSupervisor ?? ensureWorkflowSupervisorEnrollmentForWork)(store, input.workId);
+      if (enrollment.status !== 'enrolled') {
+        return {
+          status: 'failed',
+          provider: bridgeRuntime ? 'chatgpt-bridge' : 'controller-browser',
+          browserSessionId: deliverySessionId,
+          conversationUrl: existing.conversationUrl,
+          conversationId: existing.conversationId,
+          localAlias: existing.localAlias,
+          resumedFromBinding: true,
+          model,
+          reasoning,
+          tabPolicy,
+          executionPreferenceVerified: false,
+          authorizationGrantRefs: [...authorizationGrantRefs],
+          error: {
+            code: `WORKFLOW_SUPERVISOR_${enrollment.status.toUpperCase()}`,
+            message: enrollment.reason ?? `Workflow Supervisor enrollment did not accept bound continuation: ${enrollment.status}`,
+          },
+        };
+      }
+      return {
+        status: 'dispatched',
+        provider: bridgeRuntime ? 'chatgpt-bridge' : 'controller-browser',
+        browserSessionId: deliverySessionId,
+        conversationUrl: existing.conversationUrl,
+        conversationId: existing.conversationId,
+        localAlias: existing.localAlias,
+        resumedFromBinding: true,
+        model,
+        reasoning,
+        tabPolicy,
+        executionPreferenceVerified: false,
+        authorizationGrantRefs: [...authorizationGrantRefs],
+      };
+    }
+    const { host } = resolveChatgptProviderDeliveryHost(dependencies);
     if (!bridgeRuntime && seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)) {
       binding = bindChatgptWorkConversation(store, {
         workId: input.workId,

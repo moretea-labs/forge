@@ -1073,6 +1073,50 @@ describe('ChatGPT Work conversation binding', () => {
     expect(settledThrownSession).toBe(thrownAfterSession.browserSessionId);
   });
 
+  test('hands an existing bound conversation to Workflow Supervisor without invoking legacy Browser delivery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bound-supervisor-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'bound@example.test'], ['config', 'user.name', 'Bound Supervisor Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'bound supervisor fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-bound-supervisor' });
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId: 'WORK-BOUND-SUPERVISOR', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Continue the exact bound conversation through Workflow Supervisor.', acceptanceCriteria: ['Do not re-enter Browser delivery.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    bindChatgptWorkConversation(store, {
+      workId: 'WORK-BOUND-SUPERVISOR', conversationUrl: 'https://chatgpt.com/c/exact-bound-conversation', latestBrowserSessionId: 'browser-existing-bound', localAlias: 'Forge bound continuation',
+    });
+    let dispatches = 0;
+    let enrollments = 0;
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-BOUND-SUPERVISOR', prompt: 'continue',
+      controllerAuthorityId: 'cra_55555555555555555555555555555555', relayScopeId: 'goal:WORK-BOUND-SUPERVISOR',
+    }, {
+      bridgeRuntime: false,
+      browserHost: { dispatch: async () => { dispatches += 1; throw new Error('legacy browser delivery must not run'); } },
+      enrollWorkflowSupervisor: async (_options, workId) => {
+        enrollments += 1;
+        expect(workId).toBe('WORK-BOUND-SUPERVISOR');
+        return { status: 'enrolled' as const, taskId: 'task-bound', effectId: 'effect-bound' };
+      },
+    });
+    expect(dispatches).toBe(0);
+    expect(enrollments).toBe(1);
+    expect(result).toMatchObject({
+      status: 'dispatched', resumedFromBinding: true, browserSessionId: 'browser-existing-bound',
+      conversationId: 'exact-bound-conversation', conversationUrl: 'https://chatgpt.com/c/exact-bound-conversation',
+    });
+  });
+
   test('fresh transport starts from ChatGPT root and CAS-rebinds the durable Work to the newly observed conversation', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-fresh-transport-'));
     roots.push(root);
