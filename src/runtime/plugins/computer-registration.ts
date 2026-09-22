@@ -12,6 +12,7 @@ import {
   COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
+  type ComputerConsoleUnlockCommandRequest,
   type ComputerConsoleUnlockPrepareRequest,
   type ComputerConsoleUnlockRequest,
   type ComputerElementSemanticAction,
@@ -49,6 +50,10 @@ const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
 const DESKTOP_ELEMENT_ACTION_ACTION = 'desktop_element_action';
 export const COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION = 'console_unlock_prepare';
 export const COMPUTER_CONSOLE_UNLOCK_ACTION = 'console_unlock';
+export const COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION = 'console_unlock_enroll';
+export const COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION = 'console_unlock_status';
+export const COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION = 'console_unlock_recover';
+export const COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION = 'console_unlock_revoke';
 const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
 const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
 const CONSOLE_CREDENTIAL_HANDLE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -70,6 +75,10 @@ const DESKTOP_PRODUCT_ACTION_IDS = new Set([
   DESKTOP_ELEMENT_ACTION_ACTION,
   COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION,
   COMPUTER_CONSOLE_UNLOCK_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION,
 ]);
 
 function providerActionDescriptor(actionId: string): AssistantPluginActionDescriptor {
@@ -179,6 +188,31 @@ export async function executeProtectedConsoleUnlockInvocation(
   };
 }
 
+export async function executeProtectedConsoleUnlockLifecycle(
+  action: 'console_unlock_enroll' | 'console_unlock_status' | 'console_unlock_recover' | 'console_unlock_revoke',
+  input: ProtectedConsoleUnlockPreparationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireConsoleUnlockAuthorization(input.confirmAuthorization);
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockCommandRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action,
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedConsoleUnlockTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action,
+    invocationId,
+    ...providerResult,
+  };
+}
+
 function desktopProductActions(): AssistantPluginActionDescriptor[] {
   const open = providerActionDescriptor('desktop_session_open');
   const close = providerActionDescriptor('desktop_session_close');
@@ -240,6 +274,70 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
         required: ['credential_handle'],
         additionalProperties: false,
       },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION,
+      title: 'Enable unattended console recovery',
+      description: 'Enroll provider-local unattended console recovery. Credential collection and Keychain persistence remain entirely inside the native provider.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION,
+      title: 'Read unattended console recovery status',
+      description: 'Read whether provider-local unattended console recovery is enrolled and available without exposing credential material.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: true,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'none',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION,
+      title: 'Recover locked macOS console',
+      description: 'Recover an already-locked console using only the provider-local enrolled credential. No password or credential handle enters Forge.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'none',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION,
+      title: 'Disable unattended console recovery',
+      description: 'Delete the provider-local unattended console recovery credential and disable future recovery.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: true,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'none',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
       actionId: DESKTOP_ELEMENT_OBSERVE_ACTION,
@@ -319,7 +417,7 @@ function desktopProductPermissions(ready: boolean): AssistantPluginPermissionSco
     { scope: 'desktop.observe', mode: 'read', description: 'Observe bounded desktop accessibility state.', granted: ready, required: false },
     { scope: 'desktop.interact', mode: 'write', description: 'Perform bounded semantic desktop interaction.', granted: ready, required: false },
     { scope: 'desktop.capture', mode: 'read', description: 'Capture an authorized desktop target.', granted: ready, required: false },
-    { scope: 'console.unlock', mode: 'write', description: 'Prepare and consume a provider-local console unlock handle.', granted: ready, required: false },
+    { scope: 'console.unlock', mode: 'write', description: 'Use provider-local temporary unlock or explicitly enrolled unattended console recovery.', granted: ready, required: false },
   ];
 }
 
@@ -331,7 +429,7 @@ function desktopProductCapabilities(): AssistantPluginCapability[] {
     { capabilityId: 'computer.capture.v1', title: 'Computer capture', description: 'Capture authorized desktop state.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
     { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Observe exact provider-neutral semantic element snapshots for a Forge-owned target.', scopes: ['desktop.observe'], actions: [DESKTOP_ELEMENT_OBSERVE_ACTION] },
     { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer element action', description: 'Act on exact observed element refs with observation-epoch fencing.', scopes: ['desktop.interact'], actions: [DESKTOP_ELEMENT_ACTION_ACTION] },
-    { capabilityId: COMPUTER_CONSOLE_UNLOCK_CAPABILITY, title: 'Protected console unlock', description: 'Collect console credential material only inside the native provider and consume an opaque one-shot handle without durable replay state.', scopes: ['console.unlock'], actions: [COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION] },
+    { capabilityId: COMPUTER_CONSOLE_UNLOCK_CAPABILITY, title: 'Protected console unlock', description: 'Keep console credential material provider-local while supporting temporary one-shot unlock and opt-in unattended recovery.', scopes: ['console.unlock'], actions: [COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION, COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION, COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION, COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION, COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION] },
   ];
 }
 
@@ -897,7 +995,7 @@ function targetAuthorization(identity: ComputerApplicationStableIdentity): Assis
 }
 
 async function resolveDesktopAuthorizationContext(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined> {
-  if (input.actionId === COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION || input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) return undefined;
+  if ([COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION, COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION, COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION, COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION, COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION].includes(input.actionId)) return undefined;
   if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) return targetAuthorization(stableIdentityFromArgs(input.args));
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
   if (targetId) return targetAuthorization(computerTargetAuthority.require(input.controllerHome, targetId).stableIdentity);
@@ -928,6 +1026,18 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
         confirmAuthorization: true,
         timeoutMs: input.timeoutMs,
       }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_enroll', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_status', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_recover', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_revoke', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === DESKTOP_TARGET_CLOSE_ACTION) return closeDesktopTarget(input, optionalDesktopProvider(input));
     const provider = desktopProvider(input);

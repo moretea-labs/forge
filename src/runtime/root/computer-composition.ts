@@ -111,8 +111,8 @@ export async function executeRuntimeComputerConsoleUnlock(
   controllerHome: string = resolveControllerHome(),
 ): Promise<Record<string, unknown>> {
   if (request.capability !== COMPUTER_CONSOLE_UNLOCK_CAPABILITY
-    || !['prepare_unlock_console', 'unlock_console'].includes(request.action)) {
-    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID', 'Protected console unlock accepts only computer.console.unlock.v1 prepare/unlock commands.', { retryable: false });
+    || !['prepare_unlock_console', 'unlock_console', 'console_unlock_enroll', 'console_unlock_status', 'console_unlock_recover', 'console_unlock_revoke'].includes(request.action)) {
+    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID', 'Protected console unlock accepts only declared computer.console.unlock.v1 temporary or unattended-recovery commands.', { retryable: false });
   }
   if (authorization.kind !== 'explicit_single_use'
     || authorization.confirmed !== true

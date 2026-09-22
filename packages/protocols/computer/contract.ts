@@ -114,7 +114,33 @@ export interface ComputerConsoleUnlockRequest {
   credentialHandle: string;
 }
 
-export type ComputerConsoleUnlockCommandRequest = ComputerConsoleUnlockPrepareRequest | ComputerConsoleUnlockRequest;
+export interface ComputerConsoleUnlockEnrollRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_enroll';
+}
+
+export interface ComputerConsoleUnlockStatusRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_status';
+}
+
+export interface ComputerConsoleUnlockRecoverRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_recover';
+}
+
+export interface ComputerConsoleUnlockRevokeRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_revoke';
+}
+
+export type ComputerConsoleUnlockCommandRequest =
+  | ComputerConsoleUnlockPrepareRequest
+  | ComputerConsoleUnlockRequest
+  | ComputerConsoleUnlockEnrollRequest
+  | ComputerConsoleUnlockStatusRequest
+  | ComputerConsoleUnlockRecoverRequest
+  | ComputerConsoleUnlockRevokeRequest;
 
 export interface ComputerConsoleUnlockAuthorization {
   kind: 'explicit_single_use';
