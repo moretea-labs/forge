@@ -30,9 +30,9 @@ describe('official plugin catalog', () => {
     const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
     expect(desktop).toMatchObject({
       id: 'desktop_operator',
-      version: '0.4.4',
-      providerVersion: '0.4.4',
-      ref: 'v0.4.4',
+      version: '0.4.5',
+      providerVersion: '0.4.5',
+      ref: 'v0.4.5',
       protocolVersion: '1.0',
       compatible: true,
     });
@@ -41,14 +41,14 @@ describe('official plugin catalog', () => {
     const registration = registrationFrom({
       providerInstall: {
         kind: 'desktop_operator',
-        pluginVersion: '0.4.4',
+        pluginVersion: '0.4.5',
         protocolVersion: '1.0',
         socketPath: '/tmp/forge-desktop-operator.sock',
         launchAgentLabel: 'com.moretea.forge.desktop-operator',
         expectedProgramContains: 'Forge Desktop Operator.app',
       },
     }, desktop!);
-    expect(registration.pluginVersion).toBe('0.4.4');
+    expect(registration.pluginVersion).toBe('0.4.5');
     expect(() => registrationFrom({
       providerInstall: {
         kind: 'desktop_operator',
@@ -69,7 +69,7 @@ describe('official plugin catalog', () => {
         expectedProgramContains: 'Forge Desktop Operator.app',
       },
     }, desktop!, { packageIdentityVerified: true });
-    expect(verifiedPackageRegistration.pluginVersion).toBe('0.4.4');
+    expect(verifiedPackageRegistration.pluginVersion).toBe('0.4.5');
   });
 
 
