@@ -58,9 +58,9 @@ reconnect_primary_connector
 
 `runtime_status` reads canonical Runtime observation. `list_releases` reads the whole-release authority. `attest_known_good` succeeds only after Runtime status, release identity, authenticated MCP initialization, tools/list, and the configured read-only MCP call pass together.
 
-The Recovery Gateway listens on loopback, uses a separate scoped credential, bounds request/output size, and stores no primary MCP credential in logs. External HTTPS verification uses the trusted system curl transport; temporary headers, MCP payloads and session identifiers are written only to bounded mode-0600 files below `recovery/tmp` and are removed after each request.
+The Recovery Gateway listens on loopback, uses a separate scoped credential, bounds request/output size, and stores no primary MCP credential in logs. External HTTPS verification uses the trusted system curl transport; temporary headers and MCP payloads are written only to bounded mode-0600 files below `recovery/tmp` and are removed after each request.
 
-For MCP transport lifecycle, Recovery follows the same protocol-era boundary as the primary Gateway: MCP 2026-07-28 requests are served sessionlessly, so replacing the Recovery Gateway process does not require preserving an in-memory `Mcp-Session-Id`. The stateful session registry exists only for bounded 2025-era compatibility; stale legacy sessions receive the explicit reinitialize signal and do not own Recovery authority. A Runtime or Connector cutover must therefore preserve durable Recovery/release authority independently from transport process identity.
+For MCP transport lifecycle, Standalone Recovery deliberately owns **no transport-session state**. MCP 2026-07-28 and bounded 2025-era compatibility requests are both served statelessly by the SDK handler. `Mcp-Session-Id` is therefore never Recovery authority and is not required to survive a Recovery Gateway process replacement; an old client sending a stale session header cannot strand the independent recovery path. Runtime/release authority remains durable and separate from transport process identity.
 
 ## Whole-Runtime rollback
 
