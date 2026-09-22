@@ -353,7 +353,7 @@ export function buildSuperControllerInvocation(
         // expose another Forge tool surface under a shared principal.
         '--disable', 'apps',
         ...codexMcpConfigArgs(mcpBootstrap),
-        'exec', '--sandbox', 'workspace-write',
+        'exec', '--ignore-user-config', '--sandbox', 'workspace-write',
         ...(request.args ?? []),
         prompt,
       ],
