@@ -44,6 +44,12 @@ jobs:
       - name: PowerShell installer dry run
         shell: pwsh
         run: .\install.ps1 -DryRun -Runtime auto
+      - name: Temporary #129 typecheck
+        run: bun run check:type
+      - name: Temporary #129 MCP compatibility
+        run: bun run check:mcp-compatibility
+      - name: Temporary #129 Recovery regression
+        run: bun test tests/runtime/standalone-recovery.test.ts
       - name: Platform contract
         run: bun run check:platform-support
       - name: Installer and Windows policy tests
