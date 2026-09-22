@@ -5775,31 +5775,17 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     now,
     watchdogRuntimeStartupGraceMs(config),
   );
-  // Five-second watchdog ticks must stay cheap while the system is healthy.
-  // Full MCP protocol verification serializes the entire tool surface, so run
-  // it periodically and immediately escalate to it when a local health probe
-  // fails. A live Runtime that was just started gets a bounded grace window so
-  // startup/reconciliation cannot itself trigger a Recovery restart storm.
-  // Explicit verify/attest/release operations remain strict by default.
-  const fullVerifyDue = !runtimeStartupGrace
-    && (scopedPrior.lastFullVerifyAt === undefined || now - scopedPrior.lastFullVerifyAt >= 60_000);
-  let fullVerificationPerformed = fullVerifyDue;
-  let verified: VerifyResult;
-  let localVerify: VerifyResult;
-  if (fullVerifyDue) {
-    verified = await verifyStableRuntime(config);
-    localVerify = await verifyLocalRuntime(config);
-  } else {
-    const health = await observeWatchdogHealthTier(config);
-    verified = health;
-    localVerify = health;
-    if (!health.ok && !runtimeStartupGrace) {
-      verified = await verifyStableRuntime(config);
-      localVerify = await verifyLocalRuntime(config);
-      fullVerificationPerformed = true;
-    }
-  }
-  const lastFullVerifyAt = fullVerificationPerformed ? now : scopedPrior.lastFullVerifyAt;
+  // Watchdog owns bounded health observation only. Never run strict Runtime or
+  // known-good bundle verification from startup or the five-second tick, even
+  // when the bounded tier degrades: those checks can hash/inspect multi-GB
+  // recovery evidence and would make liveness depend on release-acceptance cost.
+  // Explicit verify/attest/release/rollback operations remain the sole strict
+  // recoverability boundaries. Keep the legacy timestamp as non-authoritative
+  // compatibility state so existing persisted WatchdogState remains readable.
+  const health = await observeWatchdogHealthTier(config);
+  const verified = health;
+  const localVerify = health;
+  const lastFullVerifyAt = scopedPrior.lastFullVerifyAt ?? now;
   const activeMutation = liveRecoveryMutationLock(config);
   if (activeMutation) {
     const attributable = recoveryLockOwnerAttributable(activeMutation);
