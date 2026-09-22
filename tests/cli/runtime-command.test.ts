@@ -127,6 +127,7 @@ describe('runtime command surface', () => {
     expect(sourceBaseline).toContain('findRegisteredRepositoryByCheckoutRoot');
     expect(sourceBaseline).toContain('repositoryId(repoRoot, controllerHome)');
     expect(sourceBaseline).not.toContain(".ai', 'harness', 'repository.json");
+    expect(sourceBaseline).not.toContain("targetBranch: 'main'");
     expect(mcpCommand).toContain('bindInheritedRuntimeWriteClaimFromEnvironment');
     expect(mcpCommand).toContain("from '../../runtime/root/write-fence'");
     expect(mcpCommand).not.toContain('stable-state/runtime-writer-context');

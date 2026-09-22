@@ -300,7 +300,6 @@ async function run(args: string[]): Promise<void> {
       const result = await cleanupTerminalWork({
         controllerHome,
         handle,
-        targetBranch: 'main',
         deleteBranch: true,
         terminalOutcome: terminalOutcome(handle),
         failureReason: handle.failureReason ?? 'source baseline terminal cleanup reconciliation',
