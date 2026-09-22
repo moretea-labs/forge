@@ -8,6 +8,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundProviderDispatch,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   claimStalledControllerRoundRelays,
@@ -1220,7 +1221,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
   });
 
-  test('resolving a Handoff triggers only the exact Work repository-event continuation schedule', async () => {
+  test('resolving a provider Handoff rearms the same round and triggers only the exact Work repository-event continuation schedule', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-handoff-event-continuation-'));
     roots.push(root);
     const controllerHome = join(root, 'controller');
@@ -1250,7 +1251,7 @@ describe('ChatGPT Work conversation binding', () => {
       requestedBy: 'chatgpt',
       status: 'running',
     });
-    claimControllerSession(store, {
+    const owner = claimControllerSession(store, {
       workId,
       controllerId: 'test-controller',
       controllerType: 'chatgpt',
@@ -1259,7 +1260,23 @@ describe('ChatGPT Work conversation binding', () => {
       controllerInstanceId: 'test-runtime',
       leaseMs: 60_000,
     });
-    releaseControllerSession(store, workId, 'test-controller');
+    const originalOccurrenceId = 'occ-provider-handoff-event';
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      occurrenceId: originalOccurrenceId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    const startedRelay = beginControllerRoundProviderDispatch(store, {
+      workId,
+      authorityId: relay.authorityId!,
+      expectedUpdatedAt: relay.updatedAt,
+    });
     const handoffId = 'HND-HANDOFF-EVENT';
     const eventName = handoffResolvedContinuationEventName(handoffId);
     const schedule = createWorkContinuationSchedule(controllerHome, repository.repoId, {
@@ -1281,8 +1298,8 @@ describe('ChatGPT Work conversation binding', () => {
       workId,
       title: 'Bounded continuation blocker',
       severity: 'needs_review',
-      creationReason: 'ambiguous_outcome',
-      reason: 'A bounded decision blocks continuation.',
+      creationReason: 'missing_authorization',
+      reason: 'Provider authorization is required before the exact same round can dispatch.',
       summary: 'Resume the exact Work after this Handoff resolves.',
       currentState: { repoId: repository.repoId, workId, statusSummary: 'waiting for bounded resolution' },
       attemptedActions: [],
@@ -1291,6 +1308,22 @@ describe('ChatGPT Work conversation binding', () => {
       recommendedPrompt: 'Resolve the bounded blocker and resume the exact Work.',
       suggestedNextActions: [],
     });
+    finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      waitForUser: true,
+      handoffId,
+      providerDispatchEffectId: startedRelay.providerDispatchEffectId,
+      error: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
+    });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'waiting_for_user',
+      blockedReason: 'provider_user_action_required',
+      handoffId,
+      occurrenceId: originalOccurrenceId,
+      authorityId: relay.authorityId,
+    });
+    releaseControllerSession(store, workId, 'test-controller');
 
     const resolved = await resolveHandoffAndTriggerContinuation(controllerHome, repository.repoId, handoffId, {
       decision: 'resolved for regression coverage',
@@ -1298,6 +1331,15 @@ describe('ChatGPT Work conversation binding', () => {
     });
 
     expect(resolved.item.status).toBe('resolved');
+    const rearmedRelay = getControllerRoundRelay(store, workId)!;
+    expect(rearmedRelay).toMatchObject({
+      status: 'dispatching',
+      occurrenceId: originalOccurrenceId,
+      authorityId: relay.authorityId,
+    });
+    expect(rearmedRelay.blockedReason).toBeUndefined();
+    expect(rearmedRelay.providerDispatchEffectId).toBeUndefined();
+    expect(rearmedRelay.providerDispatchStartedAt).toBeUndefined();
     expect(resolved.continuationOccurrences).toHaveLength(1);
     const scheduleId = resolved.continuationOccurrences[0]?.scheduleId;
     expect(scheduleId).toBe(schedule.scheduleId);
@@ -1309,7 +1351,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(exactSchedules[0]?.scheduleId).toBe(scheduleId);
     const occurrences = listOccurrences(controllerHome, repository.repoId, scheduleId!);
     expect(occurrences).toHaveLength(1);
-    expect(occurrences[0]?.triggerContext).toMatchObject({ source: 'repository-event', eventName });
+    expect(occurrences[0]?.triggerContext).toMatchObject({
+      source: 'repository-event',
+      eventName,
+      data: { handoffId, status: 'resolved', controllerRoundOccurrenceId: originalOccurrenceId },
+    });
     expect(listOccurrences(controllerHome, repository.repoId, decoy.scheduleId)).toHaveLength(0);
   });
 

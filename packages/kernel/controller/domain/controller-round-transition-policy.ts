@@ -43,6 +43,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'provider_retry_requested'; at: string; occurrenceId?: string }
   | { type: 'provider_dispatch_outcome_unknown'; at: string; error: string; providerDispatchEffectId: string }
   | { type: 'provider_user_action_required'; at: string; error: string; handoffId: string }
+  | { type: 'provider_user_action_resolved'; at: string; handoffId: string; occurrenceId: string }
   | { type: 'controller_claim_observed'; at: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string; userResume?: boolean }
   | { type: 'controller_turn_settled'; at: string; stateFingerprint: string; completionEvidenceId: string; blockingHandoffId?: string }
   | { type: 'semantic_state_changed'; at: string; stateFingerprint: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
@@ -180,6 +181,23 @@ export function decideControllerRoundTransition(
         status: 'waiting_for_user', nextRecoveryAt: undefined, failureClass: undefined, lastError: event.error,
         blockedReason: 'provider_user_action_required', handoffId: event.handoffId, updatedAt: event.at,
       }, 'controller_round_relay_waiting_for_user');
+    }
+    case 'provider_user_action_resolved': {
+      if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (current.status !== 'waiting_for_user' || controllerRoundBlockerClass(current) !== 'provider_user_action_required') {
+        return { kind: 'reject', code: `CONTROLLER_RELAY_PROVIDER_USER_ACTION_STATE_INVALID:${current.status}` };
+      }
+      const handoffId = event.handoffId.trim();
+      if (!handoffId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED' };
+      if (current.handoffId !== handoffId) return { kind: 'reject', code: `CONTROLLER_RELAY_PROVIDER_USER_ACTION_HANDOFF_MISMATCH:${current.handoffId ?? 'missing'}` };
+      const occurrenceId = event.occurrenceId.trim();
+      if (!occurrenceId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED' };
+      return accept(current, {
+        status: 'dispatching', lifecycleStage: 'dispatching', occurrenceId,
+        handoffId: undefined, blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined,
+        providerDispatchEffectId: undefined, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
+        reason: `provider_user_action_resolved:${handoffId}`, updatedAt: event.at,
+      }, 'controller_round_relay_provider_user_action_resolved');
     }
     case 'provider_dispatch_failed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };

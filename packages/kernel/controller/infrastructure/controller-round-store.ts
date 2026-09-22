@@ -1528,6 +1528,51 @@ export interface BindLegacyControllerRoundOccurrenceInput {
   identity: Pick<ControllerRoundRelayIdentity, 'controllerId' | 'controllerType' | 'principalId'>;
 }
 
+export interface RearmControllerRoundAfterProviderUserActionInput {
+  workId: string;
+  handoffId: string;
+  /** Compatibility fence for explicit callers; automatic Handoff resolution reads durable authority internally. */
+  authorityId?: string;
+  /** Compatibility CAS for explicit callers; automatic Handoff resolution validates current state under the relay lock. */
+  expectedUpdatedAt?: string;
+  /** Compatibility override only. Omit to preserve the existing semantic occurrence identity. */
+  occurrenceId?: string;
+}
+
+/** Rearm the same provider dispatch responsibility only after its exact user-action Handoff is resolved. */
+export function rearmControllerRoundAfterProviderUserAction(
+  options: ControllerRoundRelayStoreOptions,
+  input: RearmControllerRoundAfterProviderUserActionInput,
+): ControllerRoundRelayRecord {
+  const workId = input.workId.trim();
+  const initial = readRelayRecord(options, workId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_RELAY_REQUIRED: ${workId}`);
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-provider-user-action-resolved:${workId}`, () => {
+    const current = readRelayRecord(options, workId);
+    if (!current) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_RELAY_REQUIRED: ${workId}`);
+    if (input.expectedUpdatedAt?.trim() && current.value.updatedAt !== input.expectedUpdatedAt.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_STALE: ${workId}`);
+    if (input.authorityId?.trim() && (current.value.authorityId?.trim() || '') !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_AUTHORITY_MISMATCH: ${workId}`);
+    if (controllerRoundBlockerClass(current.value) !== 'provider_user_action_required') throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_BLOCKER_MISMATCH: ${workId}`);
+    const handoffId = bounded(input.handoffId, 200);
+    if (!handoffId || current.value.handoffId !== handoffId) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_HANDOFF_MISMATCH: ${workId}`);
+    const handoff = getHandoffItem(options, handoffId);
+    if (!handoff) throw new Error(`HANDOFF_NOT_FOUND: ${handoffId}`);
+    if (handoff.workId && handoff.workId !== workId) throw new Error(`CONTROLLER_RELAY_HANDOFF_WORK_MISMATCH: ${handoffId}`);
+    if (handoff.status !== 'resolved') throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_HANDOFF_NOT_RESOLVED: ${handoff.status}`);
+    const requestedOccurrenceId = bounded(input.occurrenceId, 240);
+    if (requestedOccurrenceId && current.value.occurrenceId && requestedOccurrenceId !== current.value.occurrenceId) {
+      throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_OCCURRENCE_MISMATCH: ${workId}`);
+    }
+    const occurrenceId = requestedOccurrenceId ?? current.value.occurrenceId;
+    if (!occurrenceId) throw new Error('CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED');
+    const work = getWorkContract(options, workId);
+    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_USER_ACTION_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
+    return applyControllerRoundTransition(options, current, {
+      type: 'provider_user_action_resolved', at: nowIso(options), handoffId, occurrenceId,
+    });
+  });
+}
+
 /** Exact evidence-gated provider/environment recovery for one exhausted same-round dispatch responsibility. */
 export function rearmControllerRoundAfterProviderRecovery(
   options: ControllerRoundRelayStoreOptions,

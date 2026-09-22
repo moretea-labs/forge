@@ -13,7 +13,7 @@ import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recor
 import { implementationReviewChangedPathDigest, workRequiresImplementationReview } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, rearmControllerRoundAfterProviderRecovery, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, rearmControllerRoundAfterProviderRecovery, rearmControllerRoundAfterProviderUserAction, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
@@ -36,7 +36,7 @@ import { executionIdentityForWork } from '../../src/runtime/control-plane/execut
 import { bindControllerSessionBinding, controllerSessionAuthorityDigest, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
-import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { createHandoffItem, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { releaseExternalControllerLaunchReservation, reserveExternalControllerLaunch } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { providerMcpReservationIdentity } from '../../src/runtime/control-plane/launcher/provider-mcp-bootstrap';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
@@ -2202,10 +2202,12 @@ describe('rh_work terminalization authority', () => {
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
     let resumeCalls = 0;
+    let providerReady = false;
+    const handoffId = 'hnd-provider-login-required';
     const host = {
       resume: async () => {
         resumeCalls += 1;
-        const handoffId = 'hnd-provider-login-required';
+        if (providerReady) return { accepted: true, dispatchId: 'provider-dispatch-after-user-action' };
         createHandoffItem(store, {
           id: handoffId,
           repoId: fx.repository.repoId,
@@ -2236,10 +2238,39 @@ describe('rh_work terminalization authority', () => {
       handoffId: 'hnd-provider-login-required',
       lastError: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
     });
+    const waitingAuthorityId = first.relay.authorityId;
+    const waitingEffectId = first.relay.providerDispatchEffectId;
     const replay = await resumeControllerRoundOccurrence(store, input, host);
     expect(replay.reused).toBe(true);
     expect(replay.outcome).toBe('wait_for_user');
     expect(resumeCalls).toBe(1);
+
+    providerReady = true;
+    expect(() => rearmControllerRoundAfterProviderUserAction(store, { workId, handoffId })).toThrow('CONTROLLER_RELAY_PROVIDER_USER_ACTION_HANDOFF_NOT_RESOLVED');
+    resolveHandoffItem(store, handoffId, { decision: 'provider authorization completed', resolver: 'test-user' });
+    const rearmed = rearmControllerRoundAfterProviderUserAction(store, { workId, handoffId });
+    expect(rearmed).toMatchObject({
+      status: 'dispatching',
+      occurrenceId: input.occurrenceId,
+      authorityId: waitingAuthorityId,
+      handoffId: undefined,
+      blockedReason: undefined,
+      providerDispatchEffectId: undefined,
+      providerDispatchStartedAt: undefined,
+    });
+    const resumed = await resumeControllerRoundOccurrence(store, input, host);
+    expect(resumed.reused).toBe(false);
+    expect(resumed).toMatchObject({ outcome: 'dispatched', providerDispatchReceiptId: 'provider-dispatch-after-user-action' });
+    expect(resumed.relay).toMatchObject({
+      status: 'dispatched',
+      occurrenceId: 'occ-provider-wait-for-user',
+      authorityId: waitingAuthorityId,
+      blockedReason: undefined,
+      providerDispatchAttempt: 2,
+    });
+    expect(resumed.relay.handoffId).toBeUndefined();
+    expect(resumed.relay.providerDispatchEffectId).toBe(waitingEffectId);
+    expect(resumeCalls).toBe(2);
   }, 15_000);
 
   test('Requirement-scoped Controller fingerprint ignores sibling Work outside the explicit current-task lineage', () => {

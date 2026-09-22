@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { getRetainedControllerSession, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay, getRetainedControllerSession, rearmControllerRoundAfterProviderUserAction, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
 import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
 import type { HandoffItem } from '../../control-plane/facade/types';
@@ -461,13 +461,25 @@ export async function resolveHandoffAndTriggerContinuation(
   input: { decision: string; resolver: string },
 ): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
   const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
+  const relay = item.workId ? getControllerRoundRelay({ controllerHome, repoId }, item.workId) : undefined;
+  const rearmedRelay = item.workId && relay?.status === 'waiting_for_user' && relay.blockedReason === 'provider_user_action_required' && relay.handoffId === item.id
+    ? rearmControllerRoundAfterProviderUserAction({ controllerHome, repoId }, { workId: item.workId, handoffId: item.id })
+    : undefined;
   const continuationOccurrences = item.workId
     ? await triggerWorkContinuationRepositoryEvent(
         controllerHome,
         repoId,
         handoffResolvedContinuationEventName(item.id),
         `handoff:${item.id}:${item.updatedAt}`,
-        { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
+        {
+          workId: item.workId,
+          data: {
+            handoffId: item.id,
+            status: item.status,
+            decision: item.decision,
+            ...(rearmedRelay?.occurrenceId ? { controllerRoundOccurrenceId: rearmedRelay.occurrenceId } : {}),
+          },
+        },
       )
     : [];
   return { item, continuationOccurrences };

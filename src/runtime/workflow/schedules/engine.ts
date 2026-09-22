@@ -371,6 +371,10 @@ async function executeExternalControllerWake(
   const relayScopeId = typeof schedule.action.arguments?.relay_scope_id === 'string'
     ? schedule.action.arguments.relay_scope_id
     : undefined;
+  const controllerRoundOccurrenceId = typeof occurrence.triggerContext?.data?.controllerRoundOccurrenceId === 'string'
+    && occurrence.triggerContext.data.controllerRoundOccurrenceId.trim()
+    ? occurrence.triggerContext.data.controllerRoundOccurrenceId.trim()
+    : occurrence.occurrenceId;
   if (controllerType === 'chatgpt') {
     const boundary = workflowSupervisorBoundaryForWork({ controllerHome, repoId: schedule.repoId }, workId);
     if (boundary.status === 'outer_turn') {
@@ -391,7 +395,7 @@ async function executeExternalControllerWake(
           const prepared = prepareControllerRoundOccurrence(
             { controllerHome, repoId: schedule.repoId },
             {
-              occurrenceId: occurrence.occurrenceId,
+              occurrenceId: controllerRoundOccurrenceId,
               workId,
               controllerBindingId: bindingRecord.binding.bindingId,
               relayScopeId,
@@ -482,7 +486,7 @@ async function executeExternalControllerWake(
     const resumed = await resumeControllerRoundOccurrence(
       workStore,
       {
-        occurrenceId: occurrence.occurrenceId,
+        occurrenceId: controllerRoundOccurrenceId,
         workId,
         controllerBindingId: bindingRecord.binding.bindingId,
         relayScopeId,
