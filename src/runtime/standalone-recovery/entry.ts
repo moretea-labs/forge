@@ -958,16 +958,26 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
 
 async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
   const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'daemon');
-  void startAutomaticReleaseReconciliation(config).catch((error) => {
-    process.stderr.write(`Recovery release driver failed: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
-  });
-  if (config.installProfile === 'self-healing') {
-    void startWatchdog(config, runtimeIdentity).catch((error) => {
-      process.stderr.write(`Recovery monitor failed: ${error instanceof Error ? error.message : String(error)}\n`);
+
+  // The Recovery gateway is the control plane used to repair every other
+  // Recovery subsystem. Bind it before starting background work. A reconcile
+  // or watchdog tick may perform expensive synchronous setup before its first
+  // await, so invoking those loops first can leave a live daemon process with
+  // no listening gateway.
+  const backgroundTimer = setTimeout(() => {
+    void startAutomaticReleaseReconciliation(config).catch((error) => {
+      process.stderr.write(`Recovery release driver failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
     });
-  }
+    if (config.installProfile === 'self-healing') {
+      void startWatchdog(config, runtimeIdentity).catch((error) => {
+        process.stderr.write(`Recovery monitor failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        process.exit(1);
+      });
+    }
+  }, 0);
+  backgroundTimer.unref?.();
+
   await startGateway(config, runtimeIdentity);
 }
 
