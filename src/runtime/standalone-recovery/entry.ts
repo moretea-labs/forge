@@ -5,7 +5,7 @@ import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../../adapters/mcp/auth';
 import { FORGE_VERSION } from '../../version';
 import type { Tool } from '@modelcontextprotocol/server';
-import { RecoveryMcpSessionServer } from './mcp-server';
+import { RecoveryMcpServer } from './mcp-server';
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
@@ -842,7 +842,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     securitySchemes: TOOL_SECURITY_SCHEMES,
     _meta: { securitySchemes: TOOL_SECURITY_SCHEMES },
   })) as unknown as Tool[];
-  const recoveryMcp = new RecoveryMcpSessionServer({
+  const recoveryMcp = new RecoveryMcpServer({
     tools: recoveryTools,
     dispatchTool: async (name, args, context) => {
       if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_static' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
