@@ -627,7 +627,6 @@ export async function verifyRecoveryConnector(
         credentialRetirement: 'shared_recovery_token_not_individually_revocable',
       };
 
-      let mcpSessionId: string | undefined;
       const rpc = async (id: number | undefined, method: string, params?: Record<string, unknown>) => {
         const response = await request(connector.url, {
           method: 'POST',
@@ -636,10 +635,12 @@ export async function verifyRecoveryConnector(
             accept: 'application/json, text/event-stream',
             'content-type': 'application/json',
             'mcp-protocol-version': '2025-06-18',
-            ...(mcpSessionId ? { 'mcp-session-id': mcpSessionId } : {}),
           },
           body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params ? { params } : {}) }),
         });
+        if (response.headers.get('mcp-session-id')?.trim()) {
+          throw new Error(`${method} unexpectedly established transport session state`);
+        }
         if (method === 'notifications/initialized') {
           if (response.status !== 202) throw new Error(`${method} HTTP ${response.status}`);
           return { response, result: {} as Record<string, unknown> };
@@ -649,71 +650,44 @@ export async function verifyRecoveryConnector(
         if (response.status !== 200 || Object.keys(rpcError).length > 0) {
           throw new Error(`${method} HTTP ${response.status}${typeof rpcError.message === 'string' ? `: ${rpcError.message}` : ''}`);
         }
-        if (method === 'initialize') {
-          const returnedSessionId = response.headers.get('mcp-session-id')?.trim();
-          if (!returnedSessionId) throw new Error('initialize HTTP 200: Mcp-Session-Id missing');
-          mcpSessionId = returnedSessionId;
-        }
         return { response, result: jsonObject(body.result) };
       };
-      const closeMcpSession = async (): Promise<void> => {
-        const sessionId = mcpSessionId;
-        if (!sessionId) return;
-        mcpSessionId = undefined;
-        try {
-          await request(connector.url, {
-            method: 'DELETE',
-            headers: {
-              authorization: `Bearer ${accessToken}`,
-              accept: 'application/json, text/event-stream',
-              'mcp-protocol-version': '2025-06-18',
-              'mcp-session-id': sessionId,
-            },
-          });
-        } catch {
-          // Session cleanup is best-effort and must not hide the verifier result.
-        }
-      };
 
-      try {
-        const initialized = await rpc(11, 'initialize', {
-          protocolVersion: '2025-06-18',
-          capabilities: {},
-          clientInfo: { name: 'forge-recovery-verifier', version: FORGE_VERSION },
-        });
-        const initializedNotification = await rpc(undefined, 'notifications/initialized');
-        const listed = await rpc(12, 'tools/list');
-        const tools = Array.isArray(listed.result.tools)
-          ? listed.result.tools.map((tool) => jsonObject(tool).name).filter((name): name is string => typeof name === 'string')
-          : [];
-        const expectedTools = RECOVERY_TOOLS.map((tool) => tool.name);
-        const runtimeStatusCall = await rpc(13, 'tools/call', { name: 'runtime_status', arguments: {} });
-        const listReleasesCall = await rpc(14, 'tools/call', { name: 'list_releases', arguments: {} });
-        const initializedResult = initialized.result;
-        const serverInfo = jsonObject(initializedResult.serverInfo);
-        const mcpOk = initialized.response.status === 200
-          && initializedNotification.response.status === 202
-          && initializedResult.protocolVersion === '2025-06-18'
-          && serverInfo.name === 'forge-standalone-recovery'
-          && serverInfo.version === FORGE_VERSION
-          && JSON.stringify(tools) === JSON.stringify(expectedTools)
-          && runtimeStatusCall.response.status === 200
-          && listReleasesCall.response.status === 200;
-        probes.mcp = {
-          ok: mcpOk,
-          initializeStatus: initialized.response.status,
-          initializedNotificationStatus: initializedNotification.response.status,
-          protocolVersion: typeof initializedResult.protocolVersion === 'string' ? initializedResult.protocolVersion : undefined,
-          serverName: typeof serverInfo.name === 'string' ? serverInfo.name : undefined,
-          serverVersion: typeof serverInfo.version === 'string' ? serverInfo.version : undefined,
-          tools,
-          runtimeStatusCall: runtimeStatusCall.response.status === 200,
-          listReleasesCall: listReleasesCall.response.status === 200,
-        };
-        if (!mcpOk) failures.push('mcp: initialize, Forge version, tool surface, or read-only calls did not match the Recovery contract.');
-      } finally {
-        await closeMcpSession();
-      }
+      const initialized = await rpc(11, 'initialize', {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'forge-recovery-verifier', version: FORGE_VERSION },
+      });
+      const initializedNotification = await rpc(undefined, 'notifications/initialized');
+      const listed = await rpc(12, 'tools/list');
+      const tools = Array.isArray(listed.result.tools)
+        ? listed.result.tools.map((tool) => jsonObject(tool).name).filter((name): name is string => typeof name === 'string')
+        : [];
+      const expectedTools = RECOVERY_TOOLS.map((tool) => tool.name);
+      const runtimeStatusCall = await rpc(13, 'tools/call', { name: 'runtime_status', arguments: {} });
+      const listReleasesCall = await rpc(14, 'tools/call', { name: 'list_releases', arguments: {} });
+      const initializedResult = initialized.result;
+      const serverInfo = jsonObject(initializedResult.serverInfo);
+      const mcpOk = initialized.response.status === 200
+        && initializedNotification.response.status === 202
+        && initializedResult.protocolVersion === '2025-06-18'
+        && serverInfo.name === 'forge-standalone-recovery'
+        && serverInfo.version === FORGE_VERSION
+        && JSON.stringify(tools) === JSON.stringify(expectedTools)
+        && runtimeStatusCall.response.status === 200
+        && listReleasesCall.response.status === 200;
+      probes.mcp = {
+        ok: mcpOk,
+        initializeStatus: initialized.response.status,
+        initializedNotificationStatus: initializedNotification.response.status,
+        protocolVersion: typeof initializedResult.protocolVersion === 'string' ? initializedResult.protocolVersion : undefined,
+        serverName: typeof serverInfo.name === 'string' ? serverInfo.name : undefined,
+        serverVersion: typeof serverInfo.version === 'string' ? serverInfo.version : undefined,
+        tools,
+        runtimeStatusCall: runtimeStatusCall.response.status === 200,
+        listReleasesCall: listReleasesCall.response.status === 200,
+      };
+      if (!mcpOk) failures.push('mcp: stateless initialize, Forge version, tool surface, or read-only calls did not match the Recovery contract.');
     } catch (error) {
       failures.push(`oauthPkce/mcp: ${error instanceof Error ? error.message : String(error)}`);
     }

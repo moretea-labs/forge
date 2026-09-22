@@ -90,8 +90,31 @@ const currentToolNames = new Set([
 const legacyHandlerSource = readFileSync(new URL('../src/cli/mcp/legacy-tool-service.ts', import.meta.url), 'utf8');
 const legacyHandlerNames = [...legacyHandlerSource.matchAll(/case\s+["']([^"']+)["']\s*:/g)].map((match) => match[1]);
 const legacyHandlerCollisions = [...new Set(legacyHandlerNames.filter((name) => currentToolNames.has(name)))].sort();
+const recoveryMcpSource = readFileSync(new URL('../src/runtime/standalone-recovery/mcp-server.ts', import.meta.url), 'utf8');
+const recoveryStatelessMarkers = [
+  'createMcpHandler',
+  'toNodeHandler',
+  "legacy: 'stateless'",
+  "responseMode: 'auto'",
+];
+const recoverySessionAuthorityMarkers = [
+  'McpSessionRegistry',
+  'NodeStreamableHTTPServerTransport',
+  'Mcp-Session-Reset',
+  'sessionIdGenerator',
+];
 
 const failures: string[] = [];
+for (const marker of recoveryStatelessMarkers) {
+  if (!recoveryMcpSource.includes(marker)) {
+    failures.push(`Standalone Recovery MCP must remain stateless across protocol eras: missing ${marker}`);
+  }
+}
+for (const marker of recoverySessionAuthorityMarkers) {
+  if (recoveryMcpSource.includes(marker)) {
+    failures.push(`Standalone Recovery MCP must not own transport-session state: found ${marker}`);
+  }
+}
 if (defaultNames.join('\n') !== EXPECTED_STABLE_CONTROLLER_TOOL_NAMES.join('\n')) {
   failures.push(`stable ChatGPT Tool Contract names changed: ${defaultNames.join(', ')}`);
 }
@@ -127,6 +150,19 @@ if (fullNames.length < defaultNames.length) {
 
 const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
 const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+for (const field of [
+  'checkout_id',
+  'workflow_id',
+  'workflow_run_id',
+  'controller_authority_id',
+  'relay_scope_id',
+  'assistant_context_digest',
+  'assistant_context_usage',
+  'outcome_observation',
+  'experience_draft',
+] as const) {
+  if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+}
 if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
 if (!('obligation_dispositions' in rhWorkProperties)) failures.push('rh_work native obligation_dispositions schema is missing');
 for (const field of ['controller_authority_id', 'relay_scope_id', 'engineering_preconditions']) {
