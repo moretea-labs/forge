@@ -53,6 +53,6 @@ jobs:
       - name: Validate Recovery sessionless cutover patch
         shell: bash
         run: |
-          bun test tests/runtime/standalone-recovery.test.ts --test-name-pattern "Recovery modern sessionless requests survive gateway replacement without reinitialize|Recovery MCP reinitializes a stale session after gateway restart"
+          bun test tests/runtime/standalone-recovery.test.ts --test-name-pattern "Recovery MCP stays stateless across protocol eras and gateway replacement|Recovery Connector verifier requires stateless legacy MCP across SSE responses"
           bun run check:mcp-compatibility
           bun run check:type
