@@ -36,6 +36,7 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRhWorkControllerOperation } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
+import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 
 const roots: string[] = [];
@@ -536,12 +537,17 @@ describe('connected assistant learning loops', () => {
       utility: 0.86,
     };
 
-    const result = await callRhWorkControllerOperation(ctx, fx.repository, 'controller_disposition', {
+    const result = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
       work_id: fx.workId,
       disposition: 'continue_immediately',
       controller_authority_id: round.relay.authorityId,
       relay_scope_id: round.relay.relayScopeId,
-      learning_signals: [signal],
+      capability_id: buildFrozenSemanticCompatibilityCapability({
+        operation: 'controller_disposition',
+        args: { learning_signals: [signal] },
+      }),
       ...(round.bundle ? {
         assistant_context_digest: round.bundle.snapshot.digest,
         assistant_context_usage: contextUsage(round.bundle),

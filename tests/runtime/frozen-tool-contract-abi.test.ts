@@ -177,6 +177,38 @@ describe('Tool Contract ABI authority', () => {
     })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID: continue args contains unsupported field work_id');
   });
 
+  test('semantic.v1 carries only the learning field missing from frozen controller disposition clients', () => {
+    const learningSignals = [{
+      scope_kind: 'project',
+      kind: 'principle',
+      valence: 'positive',
+      summary: 'Persist explicit Controller teaching across frozen client sessions.',
+      concepts: ['cognition.learning', 'client.forward-compatibility'],
+      admission_source: 'explicit_human',
+      portability: 'local',
+      salience: 0.9,
+      confidence: 0.95,
+      utility: 0.9,
+    }];
+    const capability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'controller_disposition',
+      args: { learning_signals: learningSignals },
+    });
+    expect(capability).toStartWith('semantic.v1:');
+    expect(parseFrozenSemanticCompatibilityCapability('repair', capability)).toEqual({
+      operation: 'controller_disposition',
+      args: { learning_signals: learningSignals },
+    });
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'controller_disposition',
+      args: { learning_signals: Array.from({ length: 9 }, () => learningSignals[0]) },
+    })).toThrow('learning_signals must be a bounded array');
+    expect(() => buildFrozenSemanticCompatibilityCapability({
+      operation: 'controller_disposition',
+      args: { learning_signals: learningSignals, work_id: 'must-stay-native' } as any,
+    })).toThrow('controller_disposition args contains unsupported field work_id');
+  });
+
   test('semantic.v1 carries frozen work review without inventing another capability prefix', () => {
     const capability = buildFrozenSemanticCompatibilityCapability({
       operation: 'work_review',

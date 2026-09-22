@@ -73,7 +73,8 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     }
     if (frozenSemanticOperation) {
       const requirementScoped = frozenSemanticOperation.operation !== 'work_review'
-        && frozenSemanticOperation.operation !== 'continue';
+        && frozenSemanticOperation.operation !== 'continue'
+        && frozenSemanticOperation.operation !== 'controller_disposition';
       if (requirementScoped) {
         const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
         if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
@@ -81,6 +82,15 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
       if (frozenSemanticOperation.operation === 'continue') {
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
         if (!explicitWorkId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: work_id must remain explicit outside the continue envelope');
+      }
+      if (frozenSemanticOperation.operation === 'controller_disposition') {
+        const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+        const disposition = typeof args.disposition === 'string' ? args.disposition.trim() : '';
+        const relayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
+        const authorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
+        if (!explicitWorkId || !disposition || !relayScopeId || !authorityId) {
+          throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_CONTROLLER_DISPOSITION_SCOPE_REQUIRED: work_id, disposition, relay_scope_id and controller_authority_id must remain explicit outside the compatibility envelope');
+        }
       }
       for (const key of Object.keys(frozenSemanticOperation.args)) {
         if (args[key] !== undefined) throw new Error(`FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT: native field ${key} is also present`);
@@ -129,6 +139,9 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
   if (frozenSemanticOperation?.operation === 'work_review') {
     args.review_decision = frozenSemanticOperation.args.decision;
     args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
+  }
+  if (frozenSemanticOperation?.operation === 'controller_disposition') {
+    args.learning_signals = frozenSemanticOperation.args.learning_signals;
   }
   if (frozenImplementationReview) {
     const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
