@@ -1,5 +1,5 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context-pack';
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context/types';
 import { RH_WORK_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { ENGINEERING_DECISION_INPUT_FIELDS } from './engineering-tool-contract';
 

@@ -30,7 +30,8 @@ import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/ru
 import { assessWorkMode, parseExplicitTaskMode } from '../../../src/cli/controller/work-mode';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
-import { buildControllerContextPack, buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context-pack';
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context/types';
+import { buildControllerContextPackInSidecar } from '../../../src/runtime/context/context-pack-process';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../src/cli/controller/check-runner';
@@ -701,15 +702,19 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               const repository = selected(ctx, args);
               const recommendedExecution = controllerContextAssessment(args);
               const modeContextPack = recommendedExecution.modeBehavior.structuralContext === 'required'
-                ? buildControllerContextPack(repository.canonicalRoot, ctx.policy, {
-                    description: typeof args.description === 'string' ? args.description : undefined,
-                    knownPaths: stringList(args.known_paths),
-                    structuralContext: 'required',
-                    maxFiles: 8,
-                    maxSnippets: 20,
-                    session: ctx.sessionId?.trim()
-                      ? { sessionId: ctx.sessionId.trim(), repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
-                      : undefined,
+                ? await buildControllerContextPackInSidecar({
+                    repoRoot: repository.canonicalRoot,
+                    policy: ctx.policy,
+                    options: {
+                      description: typeof args.description === 'string' ? args.description : undefined,
+                      knownPaths: stringList(args.known_paths),
+                      structuralContext: 'required',
+                      maxFiles: 8,
+                      maxSnippets: 20,
+                      session: ctx.sessionId?.trim()
+                        ? { sessionId: ctx.sessionId.trim(), repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
+                        : undefined,
+                    },
                   })
                 : undefined;
               markPhase('repositoryRouting', repositoryStartedAt);

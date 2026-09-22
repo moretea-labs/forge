@@ -70,6 +70,9 @@ export interface RuntimeReleaseManifest {
   /** Disposable TypeScript LanguageService process; never retained by the canonical Runtime. */
   typescriptNavigationEntrypoint?: 'forge-typescript-navigation';
   typescriptNavigationArtifactIdentity?: string;
+  /** Disposable Context Plane materialization process; keeps allocator-heavy retrieval out of the canonical Runtime. */
+  contextPackEntrypoint?: 'forge-context-pack';
+  contextPackArtifactIdentity?: string;
   schedulerWorkerEntrypoint?: 'forge-scheduler-worker';
   schedulerWorkerArtifactIdentity?: string;
   periodicCleanupEntrypoint?: 'forge-periodic-cleanup';

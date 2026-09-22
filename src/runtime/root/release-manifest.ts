@@ -206,6 +206,12 @@ export function loadRuntimeReleaseManifest(
     identityField: 'typescriptNavigationArtifactIdentity',
     canonicalEntry: 'forge-typescript-navigation',
   });
+  const contextPack = optionalRuntimeComponent({
+    value,
+    entryField: 'contextPackEntrypoint',
+    identityField: 'contextPackArtifactIdentity',
+    canonicalEntry: 'forge-context-pack',
+  });
   const schedulerWorker = optionalRuntimeComponent({
     value,
     entryField: 'schedulerWorkerEntrypoint',
@@ -327,6 +333,7 @@ export function loadRuntimeReleaseManifest(
     ...(processRunner ?? {}),
     ...(checkRunner ?? {}),
     ...(typescriptNavigation ?? {}),
+    ...(contextPack ?? {}),
     ...(schedulerWorker ?? {}),
     ...(periodicCleanup ?? {}),
     ...(pluginActionSidecar ?? {}),
@@ -352,7 +359,7 @@ export interface RuntimeReleaseExecutionSurface {
   manifest: RuntimeReleaseManifest;
   releaseRoot: string;
   entries: Array<{
-    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'typescript_navigation' | 'scheduler_worker' | 'periodic_cleanup';
+    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'typescript_navigation' | 'context_pack' | 'scheduler_worker' | 'periodic_cleanup';
     path: string;
     artifactIdentity: string;
     canary: 'runtime_interpreter' | 'process_runtime';
@@ -403,6 +410,12 @@ export function assertRuntimeReleaseExecutionSurface(
       name: 'typescript_navigation' as const,
       path: join(releaseRoot, manifest.typescriptNavigationEntrypoint),
       artifactIdentity: manifest.typescriptNavigationArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
+    ...(manifest.contextPackEntrypoint && manifest.contextPackArtifactIdentity ? [{
+      name: 'context_pack' as const,
+      path: join(releaseRoot, manifest.contextPackEntrypoint),
+      artifactIdentity: manifest.contextPackArtifactIdentity,
       canary: 'process_runtime' as const,
     }] : []),
     ...(manifest.schedulerWorkerEntrypoint && manifest.schedulerWorkerArtifactIdentity ? [{

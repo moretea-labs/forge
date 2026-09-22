@@ -91,7 +91,7 @@ import { assessWorkMode, parseExplicitTaskMode } from "../../../src/cli/controll
 import { taskExecutionPolicy } from "../../../src/cli/controller/execution-policy";
 import { finishEditSession, finishTaskRun } from "../../../src/cli/controller/completion-orchestrator";
 import { buildControllerTaskLedgerProjection } from "../../../src/cli/controller/task-ledger";
-import { buildControllerContextPack } from "../../../src/cli/controller/context-pack";
+import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { loadControllerProjectState, saveControllerProjectState } from "../../../src/cli/controller/project-state";
 import {
   FORGE_MCP_SCHEMA_VERSION,
@@ -3218,12 +3218,16 @@ export async function callMcpTool(
             ?? (typeof args.description === "string" && args.description.trim() ? undefined : "direct"),
         });
         const modeContextPack = assessment.modeBehavior.structuralContext === "required"
-          ? buildControllerContextPack(ctx.repoRoot, ctx.policy, {
-              description: typeof args.description === "string" ? args.description : undefined,
-              knownPaths: stringList(args.known_paths),
-              structuralContext: "required",
-              maxFiles: 8,
-              maxSnippets: 20,
+          ? await buildControllerContextPackInSidecar({
+              repoRoot: ctx.repoRoot,
+              policy: ctx.policy,
+              options: {
+                description: typeof args.description === "string" ? args.description : undefined,
+                knownPaths: stringList(args.known_paths),
+                structuralContext: "required",
+                maxFiles: 8,
+                maxSnippets: 20,
+              },
             })
           : undefined;
         const payload = {

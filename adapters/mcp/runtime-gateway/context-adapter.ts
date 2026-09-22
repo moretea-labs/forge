@@ -12,7 +12,8 @@ import { freshGitIdentity } from "../../../src/cli/repository/inspector";
 import { repositoryCheckoutLifecycle, repositorySummary, resolveRepositorySelection } from "../../../src/cli/repositories/registry";
 import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
-import { buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context-pack";
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context/types";
+import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { controllerPluginRepository, getAssistantPluginManifest, listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot } from "../../../src/runtime/control-plane/facade";
@@ -494,7 +495,10 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
             checkoutId: repository.activeCheckoutId,
           })
         : undefined;
-      const pack = await buildControllerContextPackAsync(repository.canonicalRoot, ctx.policy, {
+      const pack = await buildControllerContextPackInSidecar({
+        repoRoot: repository.canonicalRoot,
+        policy: ctx.policy,
+        options: {
         description: retrievalQuery,
         // Short code-like queries remain useful exact lexical needles. Long
         // semantic prompts are already tokenized from description; adding the
@@ -510,9 +514,10 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         structuralIndexRoot: structuralContext === 'off' ? undefined : resolveStructuralIndexRoot(ctx.controllerHome, repository),
         retrievalMode,
         impactDomains,
-        session: rhContextReadSessionId(ctx)
-          ? { sessionId: rhContextReadSessionId(ctx)!, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
-          : undefined,
+          session: rhContextReadSessionId(ctx)
+            ? { sessionId: rhContextReadSessionId(ctx)!, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
+            : undefined,
+        },
       });
       const explicitSemanticNavigation = Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
       const semanticRequests = [...explicitSemanticNavigation, ...legacySemanticQuery.requests];

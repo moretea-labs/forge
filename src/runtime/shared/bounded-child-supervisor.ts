@@ -39,6 +39,8 @@ export interface BoundedChildRunOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxOutputBytes?: number;
+  /** Optional bounded stdin payload for request/response sidecars. */
+  input?: string | Buffer;
   stdio?: 'capture' | 'inherit';
   forwardSignals?: boolean;
   onSpawn?: (pid: number) => void;
@@ -120,7 +122,7 @@ export async function runBoundedChild(
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const stdio: StdioOptions = options.stdio === 'inherit'
     ? ['ignore', 'inherit', 'inherit']
-    : ['ignore', 'pipe', 'pipe'];
+    : [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'];
   let child: ChildProcess;
   try {
     child = spawn(command, [...args], {
@@ -147,6 +149,12 @@ export async function runBoundedChild(
 
   const pid = child.pid;
   if (pid) options.onSpawn?.(pid);
+  if (options.input !== undefined && child.stdin) {
+    // A canary or validation failure may close stdin before the parent writes.
+    // The child outcome is authoritative; a late EPIPE must not crash the host.
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(options.input);
+  }
   let stdout = '';
   let stderr = '';
   child.stdout?.on('data', (chunk) => { stdout = appendBounded(stdout, chunk, maxOutputBytes); });
