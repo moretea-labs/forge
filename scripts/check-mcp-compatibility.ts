@@ -42,7 +42,7 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'b22922d2cbe26191';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'fa608bcdb8092992';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
