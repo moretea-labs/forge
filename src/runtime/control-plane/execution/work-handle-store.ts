@@ -406,7 +406,8 @@ export function transitionWorkHandle(
 
 export interface WorkHandleSuccessorAdoption {
   candidateHead: string;
-  targetHead: string;
+  /** Exact delivery-base authority already proven by the caller for this successor representation. */
+  deliveryBaseHead: string;
 }
 
 /**
@@ -422,12 +423,12 @@ export function adoptWorkHandleSuccessorCandidate(
   adoption: WorkHandleSuccessorAdoption,
 ): WorkHandleState {
   const candidateHead = adoption.candidateHead.trim();
-  const targetHead = adoption.targetHead.trim();
+  const deliveryBaseHead = adoption.deliveryBaseHead.trim();
   if (!handle.managedWorktree) throw new Error('WORK_SUCCESSOR_ADOPTION_MANAGED_CHECKOUT_REQUIRED');
-  if (!candidateHead || !targetHead) throw new Error('WORK_SUCCESSOR_ADOPTION_REVISION_REQUIRED');
+  if (!candidateHead || !deliveryBaseHead) throw new Error('WORK_SUCCESSOR_ADOPTION_REVISION_REQUIRED');
   if (candidateHead === handle.expectedHead) throw new Error('WORK_SUCCESSOR_ADOPTION_NO_CHANGE');
   return transitionWorkHandle(controllerHome, handle, 'validating', {
-    deliveryBaseCommit: targetHead,
+    deliveryBaseCommit: deliveryBaseHead,
     expectedHead: candidateHead,
     failureReason: undefined,
     finalization: {

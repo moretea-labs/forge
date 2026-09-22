@@ -809,7 +809,7 @@ describe('managed Work successor authority', () => {
         lastError: 'WORK_HANDLE_HEAD_CHANGED',
       },
     });
-    const adopted = adoptWorkHandleSuccessorCandidate(fx.controllerHome, handle, { candidateHead: successorHead, targetHead });
+    const adopted = adoptWorkHandleSuccessorCandidate(fx.controllerHome, handle, { candidateHead: successorHead, deliveryBaseHead: targetHead });
     expect(adopted.state).toBe('validating');
     expect(adopted.expectedHead).toBe(successorHead);
     expect(adopted.deliveryBaseCommit).toBe(targetHead);
