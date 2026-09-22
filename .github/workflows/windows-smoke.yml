@@ -49,7 +49,10 @@ jobs:
       - name: Temporary #129 MCP compatibility
         run: bun run check:mcp-compatibility
       - name: Temporary #129 Recovery regression
-        run: bun test tests/runtime/standalone-recovery.test.ts
+        shell: bash
+        run: |
+          bun test tests/runtime/standalone-recovery.test.ts -t "Recovery MCP stays stateless across protocol eras and gateway replacement"
+          bun test tests/runtime/standalone-recovery.test.ts -t "Recovery Connector verifier requires stateless legacy MCP across SSE responses"
       - name: Platform contract
         run: bun run check:platform-support
       - name: Installer and Windows policy tests
