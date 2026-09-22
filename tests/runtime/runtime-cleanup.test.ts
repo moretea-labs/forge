@@ -469,7 +469,7 @@ describe('runtime cleanup', () => {
     expect(report.errors.some((entry) => entry.includes('command identity is unavailable'))).toBe(true);
   });
 
-  test('scheduler periodic cleanup removes expired temp state and orphaned worktrees without touching active ones', async () => {
+  test('periodic cleanup phase rotation removes orphaned worktrees before expired temp state without touching active ones', async () => {
     const home = controllerHome();
     const activeWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-active');
     const orphanWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-orphaned');
@@ -504,17 +504,25 @@ describe('runtime cleanup', () => {
     age(orphanWorktree);
     age(staleTempPath);
 
-    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
-    await scheduler.tick();
+    const worktreePass = cleanupControllerRuntimeState(home, {
+      reason: 'periodic',
+      periodicSequence: 0,
+    });
 
     expect(existsSync(activeWorktree)).toBe(true);
     expect(existsSync(orphanWorktree)).toBe(false);
-    expect(existsSync(staleTempPath)).toBe(false);
+    expect(existsSync(staleTempPath)).toBe(true);
+    expect(worktreePass.removedWorktrees).toContain('repositories/repo-a/worktrees/RUN-orphaned');
+    expect(worktreePass.removedTemporaryPaths).not.toContain('repositories/repo-a/execution-jobs/records/job.json.123.tmp');
+    expect(worktreePass.skippedActiveWorktrees).toContain('repositories/repo-a/worktrees/RUN-active');
 
-    const periodic = cleanupEntries(home).find((entry) => entry.reason === 'periodic');
-    expect(periodic?.removedWorktrees).toContain('repositories/repo-a/worktrees/RUN-orphaned');
-    expect(periodic?.removedTemporaryPaths).toContain('repositories/repo-a/execution-jobs/records/job.json.123.tmp');
-    expect(periodic?.skippedActiveWorktrees).toContain('repositories/repo-a/worktrees/RUN-active');
+    const temporaryPass = cleanupControllerRuntimeState(home, {
+      reason: 'periodic',
+      periodicSequence: 1,
+    });
+
+    expect(existsSync(staleTempPath)).toBe(false);
+    expect(temporaryPass.removedTemporaryPaths).toContain('repositories/repo-a/execution-jobs/records/job.json.123.tmp');
   });
 
   test('periodic cleanup migrates an idle legacy physical node_modules copy to canonical dependency reuse', () => {
@@ -748,6 +756,7 @@ describe('runtime cleanup', () => {
 
     const report = cleanupControllerRuntimeState(home, {
       reason: 'periodic',
+      periodicSequence: 1,
       maxEntries: 3,
     });
 

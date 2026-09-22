@@ -23,11 +23,27 @@ export interface ChatgptControllerRoundSettlement {
   error?: string;
 }
 
+function settlementKey(workId: string, relayScopeId: string): string {
+  return `${workId}:${relayScopeId}`;
+}
+
+export function getChatgptControllerRoundSettlement(
+  options: { controllerHome: string; repoId: string },
+  input: { workId: string; relayScopeId: string },
+): ChatgptControllerRoundSettlement | undefined {
+  return readControlPlaneRecord<ChatgptControllerRoundSettlement>(
+    options.controllerHome,
+    NAMESPACE,
+    options.repoId,
+    settlementKey(input.workId, input.relayScopeId),
+  )?.value;
+}
+
 export function recordChatgptControllerRoundSettlement(
   options: { controllerHome: string; repoId: string; now?: () => string },
   input: { workId: string; relayScopeId: string; status: ChatgptControllerRoundSettlementStatus; error?: string },
 ): ChatgptControllerRoundSettlement {
-  const key = `${input.workId}:${input.relayScopeId}`;
+  const key = settlementKey(input.workId, input.relayScopeId);
   return withControllerLock(options.controllerHome, { scope: 'task', repoId: options.repoId, taskId: `chatgpt-round-settlement-${input.workId}` }, `chatgpt-round-settlement:${key}`, () => {
     const existing = readControlPlaneRecord<ChatgptControllerRoundSettlement>(options.controllerHome, NAMESPACE, options.repoId, key);
     const value: ChatgptControllerRoundSettlement = {

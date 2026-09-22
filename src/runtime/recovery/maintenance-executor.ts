@@ -3,13 +3,13 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
-import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSession } from '../../cli/editing/edit-session';
+import { cleanupEditSession, getEditSession, listEditSessions } from '../../cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, transitionWorkContractPhase, updateWorkContract } from '../../../packages/kernel/work/api/index';
-import { getControllerSession, withControllerSessionTerminalizationFence } from '../../../packages/kernel/controller/api/index';
+import { cancelWorkContract, getWorkContract, readWorkContractStore, updateWorkContract } from '../../../packages/kernel/work/api/index';
+import { getControllerSession, listControllerSessions, withControllerSessionTerminalizationFence } from '../../../packages/kernel/controller/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
@@ -29,9 +29,14 @@ import {
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
-import { cleanupRuntimeQuarantine, quarantineRuntimePath, type RuntimeQuarantineRetentionReport } from './quarantine-retention';
+import {
+  cleanupRuntimeQuarantine,
+  quarantineRuntimePath,
+  runtimeLegacyCheckQuarantineRoot,
+  type RuntimeQuarantineRetentionReport,
+} from './quarantine-retention';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
-import { listProcessRecords } from '../execution/process-runtime/store';
+import { listRecoverableProcessRecords } from '../execution/process-runtime/store';
 import { isManagedProcessActive } from '../execution/process-runtime/types';
 
 export type RuntimeMaintenanceActionId =
@@ -883,29 +888,68 @@ function normalizedOptions(options: RuntimeMaintenanceOptions = {}): Required<Ru
   };
 }
 
-function activeWorkAuthorityRefs(
+interface RuntimeMaintenanceAuthoritySnapshot {
+  contracts: WorkContract[];
+  workById: Map<string, WorkContract>;
+  controllerWorkIds: Set<string>;
+  planByWorkId: Map<string, string>;
+  activeRequirementStateById: Map<string, string>;
+  scheduleByWorkId: Map<string, string>;
+  processByWorkId: Map<string, string>;
+}
+
+/**
+ * Build one bounded read snapshot for a maintenance status pass. Discovery must
+ * never turn N candidate Works/EditSessions into N full Plan/Schedule/Process
+ * scans. Process liveness comes from Process Runtime's recovery index instead of
+ * enumerating terminal process history. This snapshot is advisory only; mutation
+ * paths still re-read current authority before terminalization.
+ */
+function buildRuntimeMaintenanceAuthoritySnapshot(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
-  contract: WorkContract,
-): string[] {
-  const refs: string[] = [];
-  if (getControllerSession({ controllerHome, repoId: repository.repoId }, contract.workId)) refs.push('controller_session');
-  const activePlans = listPlanContracts({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 });
-  const plan = activePlans.find((candidate) => candidate.planId === contract.planId || candidate.steps.some((step) => step.workId === contract.workId));
-  if (plan) refs.push(`plan:${plan.planId}`);
-  if (contract.requirementId) {
-    const requirement = readRequirement({ controllerHome }, contract.requirementId)?.value;
-    if (requirement && !['done', 'cancelled'].includes(requirement.state)) refs.push(`requirement:${requirement.requirementId}:${requirement.state}`);
+): RuntimeMaintenanceAuthoritySnapshot {
+  const contracts = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
+  const workById = new Map(contracts.map((contract) => [contract.workId, contract]));
+  const controllerWorkIds = new Set(listControllerSessions({ controllerHome, repoId: repository.repoId }).map((session) => session.workId));
+  const planByWorkId = new Map<string, string>();
+  for (const plan of listPlanContracts({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 })) {
+    for (const step of plan.steps) if (step.workId) planByWorkId.set(step.workId, plan.planId);
+    if (plan.planId) {
+      for (const contract of contracts) if (contract.planId === plan.planId) planByWorkId.set(contract.workId, plan.planId);
+    }
   }
-  const boundSchedule = listSchedules(controllerHome, repository.repoId).find((schedule) => {
-    if (!schedule.enabled) return false;
-    const args = schedule.action.arguments as Record<string, unknown> | undefined;
-    return args?.work_id === contract.workId;
-  });
-  if (boundSchedule) refs.push(`schedule:${boundSchedule.scheduleId}`);
-  const activeProcess = listProcessRecords(controllerHome, repository.repoId, 500)
-    .find((process) => process.workId === contract.workId && isManagedProcessActive(process));
-  if (activeProcess) refs.push(`process:${activeProcess.processId}`);
+  const activeRequirementStateById = new Map<string, string>();
+  for (const requirementId of new Set(contracts.flatMap((contract) => contract.requirementId ? [contract.requirementId] : []))) {
+    const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+    if (requirement && !['done', 'cancelled'].includes(requirement.state)) activeRequirementStateById.set(requirementId, requirement.state);
+  }
+  const scheduleByWorkId = new Map<string, string>();
+  for (const schedule of listSchedules(controllerHome, repository.repoId)) {
+    if (!schedule.enabled) continue;
+    const workId = String((schedule.action.arguments as Record<string, unknown> | undefined)?.work_id ?? '').trim();
+    if (workId && !scheduleByWorkId.has(workId)) scheduleByWorkId.set(workId, schedule.scheduleId);
+  }
+  const processByWorkId = new Map<string, string>();
+  for (const process of listRecoverableProcessRecords(controllerHome, repository.repoId)) {
+    if (process.workId && isManagedProcessActive(process) && !processByWorkId.has(process.workId)) processByWorkId.set(process.workId, process.processId);
+  }
+  return { contracts, workById, controllerWorkIds, planByWorkId, activeRequirementStateById, scheduleByWorkId, processByWorkId };
+}
+
+function activeWorkAuthorityRefs(contract: WorkContract, snapshot: RuntimeMaintenanceAuthoritySnapshot): string[] {
+  const refs: string[] = [];
+  if (snapshot.controllerWorkIds.has(contract.workId)) refs.push('controller_session');
+  const planId = snapshot.planByWorkId.get(contract.workId);
+  if (planId) refs.push(`plan:${planId}`);
+  if (contract.requirementId) {
+    const state = snapshot.activeRequirementStateById.get(contract.requirementId);
+    if (state) refs.push(`requirement:${contract.requirementId}:${state}`);
+  }
+  const scheduleId = snapshot.scheduleByWorkId.get(contract.workId);
+  if (scheduleId) refs.push(`schedule:${scheduleId}`);
+  const processId = snapshot.processByWorkId.get(contract.workId);
+  if (processId) refs.push(`process:${processId}`);
   return refs;
 }
 
@@ -913,9 +957,10 @@ function scanStaleWorkContractCandidates(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
   options: Required<RuntimeMaintenanceOptions>,
+  snapshot: RuntimeMaintenanceAuthoritySnapshot,
 ): RuntimeMaintenanceCandidate[] {
   const nowMs = Date.now();
-  return readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts
+  return snapshot.contracts
     .filter((contract) => !isTerminalWorkContractStatus(contract.status))
     .map((contract) => {
       const updatedMs = Date.parse(contract.updatedAt);
@@ -923,16 +968,17 @@ function scanStaleWorkContractCandidates(
       return { contract, ageMinutes };
     })
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
-    .flatMap(({ contract, ageMinutes }) => {
-      const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, contract);
-      // A live Plan/Requirement/Schedule/Controller reference is lifecycle authority,
-      // not maintenance debt. Keep the Work fenced until that authority disappears;
-      // if it later becomes unowned, the next scan will surface it as stale.
-      if (authorityRefs.length > 0) return [];
-      return [{ contract, ageMinutes, source: inspectStaleWorkRepositorySource(repository, controllerHome, contract) }];
+    .filter(({ contract }) => {
+      // A live Plan/Requirement/Schedule/Controller/Process reference is lifecycle authority,
+      // not maintenance debt. The authority inventory was read once for this status pass.
+      return activeWorkAuthorityRefs(contract, snapshot).length === 0;
     })
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
+    // Expensive Git source inspection belongs after the visible candidate budget.
     .slice(0, options.maxCandidates)
+    .map(({ contract, ageMinutes }) => ({
+      contract, ageMinutes, source: inspectStaleWorkRepositorySource(repository, controllerHome, contract),
+    }))
     .map(({ contract, ageMinutes, source }) => {
       const legacyRemotePlacement = isLegacyImplicitRemoteEffectPlacement(contract);
       const semanticReady = staleWorkSemanticTerminalizationReady(contract);
@@ -1019,7 +1065,7 @@ export function applyStaleWorkContractMaintenanceCandidate(
       if (!current || isTerminalWorkContractStatus(current.status)) {
         return { ...candidate, applied: false, result: 'already_terminal' };
       }
-      const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, current);
+      const authorityRefs = activeWorkAuthorityRefs(current, buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome));
       if (authorityRefs.length > 0) {
         return {
           ...candidate,
@@ -1060,13 +1106,14 @@ export function applyStaleWorkContractMaintenanceCandidate(
           result: 'work_semantic_completion_required',
         };
       }
-      transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, current.workId, {
-        phase: 'cleanup',
-        status: 'cancelled',
-        state: 'skipped',
-        summary: 'Cancelled by explicit full maintenance after the Work had already reached cleanup with prior semantic phases satisfied and no unique live repository source remained; durable evidence retained.',
-        evidenceRefs: current.evidenceRefs,
-      });
+      cancelWorkContract(
+        { controllerHome, repoId: repository.repoId },
+        current.workId,
+        {
+          summary: 'Cancelled by explicit full maintenance after the Work had already reached cleanup with prior semantic phases satisfied and no unique live repository source remained; durable evidence retained.',
+          evidenceRefs: current.evidenceRefs,
+        },
+      );
       return {
         ...candidate,
         path: source.path ?? candidate.path,
@@ -1092,35 +1139,26 @@ export function applyStaleWorkContractMaintenanceCandidate(
 
 function scanStaleEditSessionCandidates(
   repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
   options: Required<RuntimeMaintenanceOptions>,
+  snapshot: RuntimeMaintenanceAuthoritySnapshot,
 ): RuntimeMaintenanceCandidate[] {
   const nowMs = Date.now();
   return listEditSessions(repository.canonicalRoot, Math.min(options.maxCandidates * 3, 500))
     .filter((summary) => ['open', 'dirty', 'checked', 'check_failed'].includes(summary.status))
-    .flatMap((summary) => {
-      try {
-        const session = reconcileEditSession(repository.canonicalRoot, summary.sessionId, {
-          reviewer: 'runtime-maintenance',
-          note: 'Reconciled during maintenance discovery; source files were not modified.',
-        });
-        if (['finalized', 'superseded', 'rolled_back'].includes(session.status)) return [];
-        const updatedMs = Date.parse(session.updatedAt);
-        const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
-        return [{ session, ageMinutes }];
-      } catch {
-        return [];
-      }
+    // Status discovery is read-only. Workspace hashing/Git reconciliation belongs
+    // exclusively to explicit full maintenance for the selected candidate.
+    .map((session) => {
+      const updatedMs = Date.parse(session.updatedAt);
+      const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
+      return { session, ageMinutes };
     })
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
     .flatMap(({ session, ageMinutes }) => {
-      const work = session.workId
-        ? getWorkContract({ controllerHome, repoId: repository.repoId }, session.workId)
-        : undefined;
+      const work = session.workId ? snapshot.workById.get(session.workId) : undefined;
       const terminalWork = Boolean(work && isTerminalWorkContractStatus(work.status));
-      if (work && !terminalWork && activeWorkAuthorityRefs(repository, controllerHome, work).length > 0) {
+      if (work && !terminalWork && activeWorkAuthorityRefs(work, snapshot).length > 0) {
         // The Edit Session inherits the live Work lifecycle authority. Reporting it
         // as stale maintenance debt while that authority is active would duplicate
         // ownership and can permanently block release readiness for valid long work.
@@ -1181,7 +1219,10 @@ export function buildRuntimeMaintenanceStatus(
   options: RuntimeMaintenanceOptions = {},
 ): RuntimeMaintenanceStatus {
   const normalized = normalizedOptions(options);
+  // Runtime-storage binding is the compatibility cutover authority for legacy test/
+  // migrated repositories. Read lifecycle owners only after that binding is resolved.
   const storage = safeRuntimeStorage(repository, controllerHome);
+  const authoritySnapshot = buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome);
   const runtimeStorageRepair = previewRuntimeStorageRepair(coerceRepository(repository), controllerHome, {
     minAgeMinutes: normalized.minAgeMinutes,
     maxCandidates: normalized.maxCandidates,
@@ -1189,8 +1230,8 @@ export function buildRuntimeMaintenanceStatus(
   const localJobCandidates = scanLocalJobCandidates(repository.canonicalRoot, normalized);
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
-  const staleWorkCandidates = scanStaleWorkContractCandidates(repository, controllerHome, normalized);
-  const staleEditCandidates = scanStaleEditSessionCandidates(repository, controllerHome, normalized);
+  const staleWorkCandidates = scanStaleWorkContractCandidates(repository, controllerHome, normalized, authoritySnapshot);
+  const staleEditCandidates = scanStaleEditSessionCandidates(repository, normalized, authoritySnapshot);
   const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(repository, controllerHome, normalized.maxCandidates);
   const candidates = [...localJobCandidates, ...storageCandidates, ...staleWorkCandidates, ...staleEditCandidates, ...retainedWorktreeCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
@@ -1478,6 +1519,7 @@ export function applyRuntimeMaintenance(
     ? cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
       maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+      additionalRoots: [runtimeLegacyCheckQuarantineRoot(controllerHome, repository.repoId)],
     })
     : undefined;
 

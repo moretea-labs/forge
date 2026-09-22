@@ -47,6 +47,30 @@ function isAuthoritativeCurrentWorkVerification(
   );
 }
 
+function verificationRecordHasExactInputIdentity(record: VerificationRecord): boolean {
+  return Boolean(record.sourceRevision && record.workspaceFingerprint && record.verificationInputFingerprint);
+}
+
+export function effectiveCurrentWorkVerificationRecords(
+  work: WorkContract,
+  currentRevision?: string,
+  currentWorkspaceFingerprint?: string,
+): VerificationRecord[] {
+  const applicable = work.checkRefs.filter((record) =>
+    verificationRecordAppliesToCurrentWorkspace(record, currentRevision, currentWorkspaceFingerprint));
+  const authoritativePasses = new Set(
+    applicable
+      .filter((record) => verificationRecordHasExactInputIdentity(record)
+        && isAuthoritativeCurrentWorkVerification(work, record, currentRevision))
+      .map((record) => record.checkId),
+  );
+  return applicable.filter((record) => !(
+    record.outcome === 'infrastructure_failure'
+    && authoritativePasses.has(record.checkId)
+    && !verificationRecordHasExactInputIdentity(record)
+  ));
+}
+
 export interface WorkImplementationEvidenceEvaluation {
   status: 'complete' | 'incomplete';
   changedPaths: string[];
@@ -100,8 +124,11 @@ export function evaluateWorkCompletionEvidence(
   workBoundProcessEvidenceIds: readonly string[] = [],
   currentWorkspaceChangedPaths?: readonly string[],
 ): WorkCompletionEvidenceEvaluation {
-  const applicableCheckRefs = work.checkRefs.filter((record) =>
-    verificationRecordAppliesToCurrentWorkspace(record, currentRevision, currentWorkspaceFingerprint));
+  const applicableCheckRefs = effectiveCurrentWorkVerificationRecords(
+    work,
+    currentRevision,
+    currentWorkspaceFingerprint,
+  );
   const history = reconcileVerificationHistory(
     applicableCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );

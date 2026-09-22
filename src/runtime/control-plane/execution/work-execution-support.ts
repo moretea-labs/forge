@@ -1,8 +1,8 @@
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
-import { getRepository, listRepositories, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { getRepository, listRepositories, RepositoryCheckoutSelectionError, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { assertControllerOwnershipAuthority, claimControllerSession, controllerSessionPrincipalId, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
-import { appendWorkEvidence, getWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, transitionWorkContractPhase } from '../../../../packages/kernel/work/api/index';
 import { resolveLegacyWorkContractIdentity } from './execution-identity';
 import type { ExecutionSessionContext, SessionIdentity } from './session-store';
 import { currentControllerInstanceId, requireExecutionSession, updateExecutionSession } from './session-store';
@@ -108,12 +108,13 @@ export function selectWorkFinalizationTarget(
     try {
       return selectRepositoryCheckout(repository, preferredCheckoutId, { allowArchived: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       // Legacy Work can outlive the registry entry for the source checkout after
       // an earlier partial cleanup. Git refs/worktree administration are
-      // repository-common operations, so fall back only for a positively
-      // identified missing/removed source checkout; all other errors fail closed.
-      if (!message.startsWith('CHECKOUT_NOT_ACTIVE:') && !message.startsWith('checkout not found for ')) throw error;
+      // repository-common operations, so fall back only for a typed missing or
+      // removed source checkout; all other errors fail closed.
+      const unavailable = error instanceof RepositoryCheckoutSelectionError
+        && (error.code === 'CHECKOUT_NOT_FOUND' || (error.code === 'CHECKOUT_NOT_ACTIVE' && error.lifecycle === 'removed'));
+      if (!unavailable) throw error;
     }
   }
   return repository;
@@ -344,9 +345,33 @@ export async function reconcileTerminalCleanup(
   outcome: WorkTerminalOutcome,
 ): Promise<Record<string, unknown>> {
   const wasComplete = handle.cleanupReceipt?.complete === true;
+  let cleanupHandle = handle;
+  const retained = handle.terminalResourceDisposition?.mode === 'retained_by_request'
+    ? handle.terminalResourceDisposition
+    : undefined;
+  if (retained) {
+    cleanupHandle = writeWorkHandle(ctx.controllerHome, {
+      ...handle,
+      terminalResourceDisposition: undefined,
+      finalization: {
+        ...handle.finalization,
+        branchCleanup: retained.retainBranch === true && args.delete_branch !== false ? 'pending' : handle.finalization.branchCleanup,
+        worktreeCleanup: retained.retainWorktree === true ? 'pending' : handle.finalization.worktreeCleanup,
+      },
+    });
+    appendWorkEvidence(
+      { controllerHome: ctx.controllerHome, repoId: cleanupHandle.repositoryId },
+      cleanupHandle.workContractId ?? cleanupHandle.workId,
+      {
+        title: 'terminal retention consumed by explicit cleanup request',
+        summary: 'An explicit cleanup=true request consumed the durable retained_by_request resource disposition; automatic maintenance did not infer this authorization from skipped cleanup stages.',
+        detailLevel: 'summary',
+      },
+    );
+  }
   const cleaned = await cleanupTerminalWork({
     controllerHome: ctx.controllerHome,
-    handle,
+    handle: cleanupHandle,
     targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined,
     deleteBranch: args.delete_branch !== false,
     terminalOutcome: outcome,
@@ -372,6 +397,25 @@ export async function reconcileTerminalCleanup(
         detailLevel: 'summary',
       },
     );
+  }
+  if (cleaned.receipt.complete) {
+    const terminalContract = getWorkContract(
+      { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
+      persisted.workContractId ?? persisted.workId,
+    );
+    if (terminalContract && (terminalContract.status === 'cancelled' || terminalContract.status === 'failed') && terminalContract.phase !== 'cleanup') {
+      transitionWorkContractPhase(
+        { controllerHome: ctx.controllerHome, repoId: persisted.repositoryId },
+        terminalContract.workId,
+        {
+          phase: 'cleanup',
+          status: terminalContract.status,
+          state: 'satisfied',
+          summary: `Terminal cleanup ${cleaned.receipt.receiptId} completed; terminal Work status ${terminalContract.status} was preserved.`,
+          evidenceRefs: terminalContract.evidenceRefs,
+        },
+      );
+    }
   }
   return {
     work: compactHandle(persisted),

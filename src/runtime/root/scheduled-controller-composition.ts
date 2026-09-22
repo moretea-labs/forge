@@ -1,11 +1,14 @@
 import {
   bindControllerSessionBinding,
+  getRequirementControllerRoundRelay,
   type ControllerBinding,
   type ControllerHost,
   type ControllerSession,
 } from '../../../packages/kernel/controller/api/index';
 import { createChatgptControllerHost } from '../../../adapters/chatgpt/controller-host';
 import { upsertChatgptControllerBinding } from '../../../adapters/chatgpt/controller-binding-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
+import { inheritWorkflowSupervisorConversationBinding } from './workflow-supervisor-composition';
 import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { createProcessControllerHost } from '../../../adapters/controller-process/controller-host';
 import { upsertProcessControllerBinding, type ProcessControllerType } from '../../../adapters/controller-process/binding-store';
@@ -22,9 +25,13 @@ export function ensureScheduledControllerBinding(
       workId: input.workId, sessionId: input.session.sessionId,
       browserSessionId: durable?.latestBrowserSessionId ?? (typeof input.args.browser_session_id === 'string' ? input.args.browser_session_id : undefined),
       conversationUrl: durable?.conversationUrl ?? (typeof input.args.conversation_url === 'string' ? input.args.conversation_url : undefined),
+      authorizationGrantRefs: [
+        ...(durable?.authorizationGrantRefs ?? []),
+        ...(Array.isArray(input.args.authorization_grant_refs) ? input.args.authorization_grant_refs.map(String) : []),
+      ].map(value => value.trim()).filter(Boolean).filter((value, index, values) => values.indexOf(value) === index),
       title: input.scheduleName,
       model: typeof input.args.model === 'string' ? input.args.model : 'gpt-5.6',
-      reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'xhigh' ? input.args.reasoning : 'high',
+      reasoning: input.args.reasoning === 'medium' || input.args.reasoning === 'high' || input.args.reasoning === 'xhigh' ? input.args.reasoning : 'medium',
       tabPolicy: input.args.tab_policy === 'reuse' || input.args.tab_policy === 'new' ? input.args.tab_policy : 'auto',
       timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
     }).binding;
@@ -41,6 +48,22 @@ export function ensureScheduledControllerBinding(
   }
   bindControllerSessionBinding(options, { workId: input.workId, sessionId: input.session.sessionId, binding });
   return binding;
+}
+
+export function ensureScheduledControllerBindingForWork(
+  options: { controllerHome: string; repoId: string },
+  input: { workId: string; session: ControllerSession; scheduleName?: string; args: Record<string, unknown> },
+): ControllerBinding {
+  if (input.session.controllerType === 'chatgpt') {
+    const work = getWorkContract(options, input.workId);
+    if (work?.requirementId && !getChatgptWorkConversationBinding(options, input.workId)) {
+      const requirementRelay = getRequirementControllerRoundRelay(options, work.requirementId);
+      if (requirementRelay?.originWorkId && requirementRelay.originWorkId !== input.workId) {
+        inheritWorkflowSupervisorConversationBinding(options, requirementRelay.originWorkId, input.workId);
+      }
+    }
+  }
+  return ensureScheduledControllerBinding(options, input);
 }
 
 export function controllerHostForScheduledBinding(

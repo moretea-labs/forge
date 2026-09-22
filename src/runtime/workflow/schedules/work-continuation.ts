@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { getRetainedControllerSession, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay, getRetainedControllerSession, rearmControllerRoundAfterProviderUserAction, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
 import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
 import type { HandoffItem } from '../../control-plane/facade/types';
@@ -31,6 +31,8 @@ export interface WorkContinuationScheduleInput {
   workId?: string;
   scheduleMode?: WorkScheduleMode;
   controllerType?: ContinuationControllerType;
+  /** Exact interactive Browser grants to carry into the scheduled Controller binding. */
+  authorizationGrantRefs?: string[];
   executable?: string;
   launchArgs?: string[];
   launchReservationMs?: number;
@@ -116,6 +118,9 @@ function providerSeedArguments(input: WorkContinuationScheduleInput, controllerT
   return {
     ...(workId ? { work_id: workId } : {}),
     controller_type: controllerType,
+    ...(input.authorizationGrantRefs?.length
+      ? { authorization_grant_refs: [...new Set(input.authorizationGrantRefs.map(String).map(value => value.trim()).filter(Boolean))] }
+      : {}),
     ...(input.executable?.trim() ? { executable: input.executable.trim() } : {}),
     ...(input.launchArgs ? { launch_args: input.launchArgs.map(String) } : {}),
     ...(input.launchReservationMs !== undefined ? { launch_reservation_ms: input.launchReservationMs } : {}),
@@ -172,11 +177,14 @@ export function createWorkContinuationSchedule(
   const requestedControllerType = input.controllerType;
   if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
-  const retainedSession = scheduleMode === 'continuation' && work
+  const retainedSession = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch') && work
     ? getRetainedControllerSession({ controllerHome, repoId }, work.workId)
     : undefined;
   if (scheduleMode === 'continuation' && !retainedSession) {
     throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
+  }
+  if (scheduleMode === 'browser_watch' && !retainedSession) {
+    throw new Error(`SCHEDULE_BROWSER_WATCH_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
   }
   if (retainedSession?.controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
   const controllerType = (retainedSession?.controllerType ?? requestedControllerType ?? 'chatgpt') as ContinuationControllerType;
@@ -191,7 +199,7 @@ export function createWorkContinuationSchedule(
       : scheduleMode === 'browser_keepalive'
         ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
         : `Continue Work ${work!.workId}`);
-  const controllerBinding = scheduleMode === 'continuation'
+  const controllerBinding = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch')
     ? ensureScheduledControllerBinding(
         { controllerHome, repoId },
         {
@@ -209,7 +217,10 @@ export function createWorkContinuationSchedule(
         controllerBindingId: controllerBinding!.bindingId,
         continuationHint: input.continuationPrompt,
       })
-    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
+    : {
+        ...probeArguments(input, controllerType, scheduleMode === 'browser_keepalive'),
+        ...(scheduleMode === 'browser_watch' ? { controller_binding_id: controllerBinding!.bindingId } : {}),
+      };
   assertAutomatedOperationAllowed(operation, actionArguments);
   const policy = {
     maxActiveOccurrences: 1,
@@ -450,14 +461,40 @@ export async function resolveHandoffAndTriggerContinuation(
   input: { decision: string; resolver: string },
 ): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
   const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
+  const continuationOccurrences = await triggerResolvedHandoffContinuation(controllerHome, repoId, item);
+  return { item, continuationOccurrences };
+}
+
+/**
+ * The Inbox application resolves persistence before it calls its continuation
+ * port. Keep the post-resolution transition here so every transport re-arms
+ * the exact ControllerRound before it can wake its Work schedule.
+ */
+export async function triggerResolvedHandoffContinuation(
+  controllerHome: string,
+  repoId: string,
+  item: HandoffItem,
+): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
+  const relay = item.workId ? getControllerRoundRelay({ controllerHome, repoId }, item.workId) : undefined;
+  const rearmedRelay = item.workId && relay?.status === 'waiting_for_user' && relay.blockedReason === 'provider_user_action_required' && relay.handoffId === item.id
+    ? rearmControllerRoundAfterProviderUserAction({ controllerHome, repoId }, { workId: item.workId, handoffId: item.id })
+    : undefined;
   const continuationOccurrences = item.workId
     ? await triggerWorkContinuationRepositoryEvent(
         controllerHome,
         repoId,
         handoffResolvedContinuationEventName(item.id),
         `handoff:${item.id}:${item.updatedAt}`,
-        { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
+        {
+          workId: item.workId,
+          data: {
+            handoffId: item.id,
+            status: item.status,
+            decision: item.decision,
+            ...(rearmedRelay?.occurrenceId ? { controllerRoundOccurrenceId: rearmedRelay.occurrenceId } : {}),
+          },
+        },
       )
     : [];
-  return { item, continuationOccurrences };
+  return continuationOccurrences;
 }

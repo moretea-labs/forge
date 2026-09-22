@@ -28,6 +28,18 @@ export interface RuntimeExitEvidence {
   message?: string;
 }
 
+/** Latest failed startup attempt only. Diagnostic evidence, never lifecycle authority. */
+export interface RuntimeStartupFailureEvidence {
+  schemaVersion: 1;
+  runtimeInstanceId: string;
+  stage: string;
+  reasonCode: string;
+  message?: string;
+  releaseId?: string;
+  artifactIdentity?: string;
+  observedAt: string;
+}
+
 export interface RuntimeReleaseManifest {
   schemaVersion: 1;
   releaseId: string;
@@ -35,16 +47,36 @@ export interface RuntimeReleaseManifest {
   entrypoint: 'forge-runtime';
   /** Explicit execution contract for compiled immutable releases. Absent means legacy/package launcher semantics. */
   executionMode?: 'standalone-binary';
+  /** Immutable Runtime payload executed by the release-owned Bun interpreter. */
+  runtimeBundleEntrypoint?: 'forge-runtime-bundle.js';
+  runtimeBundleArtifactIdentity?: string;
+  /** Release-owned interpreter used only for the long-lived Runtime bundle. */
+  runtimeInterpreterEntrypoint?: 'forge-runtime-bun' | 'forge-runtime-bun.exe';
+  runtimeInterpreterArtifactIdentity?: string;
   diagnosticEntrypoint?: 'forge-cli';
   diagnosticArtifactIdentity?: string;
+  connectorEntrypoint?: 'forge-mcp-gateway';
+  connectorArtifactIdentity?: string;
   browserNodeBridgeEntrypoint?: 'browser-node-bridge-host.js';
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffEntrypoint?: 'browser-handoff-host.js';
   browserHandoffArtifactIdentity?: string;
+  workflowSupervisorNativeHostEntrypoint?: 'forge-workflow-supervisor-native-host';
+  workflowSupervisorNativeHostArtifactIdentity?: string;
   processRunnerEntrypoint?: 'process-runner.js';
   processRunnerArtifactIdentity?: string;
   checkRunnerEntrypoint?: 'forge-check-runner';
   checkRunnerArtifactIdentity?: string;
+  /** Disposable TypeScript LanguageService process; never retained by the canonical Runtime. */
+  typescriptNavigationEntrypoint?: 'forge-typescript-navigation';
+  typescriptNavigationArtifactIdentity?: string;
+  /** Disposable Context Plane materialization process; keeps allocator-heavy retrieval out of the canonical Runtime. */
+  contextPackEntrypoint?: 'forge-context-pack';
+  contextPackArtifactIdentity?: string;
+  schedulerWorkerEntrypoint?: 'forge-scheduler-worker';
+  schedulerWorkerArtifactIdentity?: string;
+  periodicCleanupEntrypoint?: 'forge-periodic-cleanup';
+  periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarEntrypoint?: 'forge-plugin-action-sidecar';
   pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeEntrypoint?: 'external-unix-socket-probe.cjs';
@@ -64,12 +96,17 @@ export interface RuntimeReleaseManifest {
   controllerUiArtifactIdentity?: string;
   arguments: string[];
   configurationSchemaVersion: 1;
-  controllerHome: string;
+  /** New compiled releases are portable artifacts. Absence means legacy ControllerHome-bound deployment semantics. */
+  deploymentScope?: 'portable';
+  /** Legacy/package deployment binding only. Portable compiled artifacts omit this field. */
+  controllerHome?: string;
   databaseSchemaCompatibility: {
     minimum: number;
     maximum: number;
   };
   workerProtocolVersion: number;
+  /** Repository Registry identity of the source repository that produced this immutable release. */
+  sourceRepositoryId?: string;
   sourceCommit?: string;
   releaseRevision?: string;
   cleanWorkspace?: boolean;
@@ -87,6 +124,8 @@ export interface CanonicalRuntimeConfig {
   exclusiveWorkId?: string;
   runtimeInstanceId?: string;
   schedulerReadyTimeoutMs?: number;
+  /** Product-level component composition; missing means a legacy ChatGPT-capable installation. */
+  topology?: import('./deployment-topology').RuntimeDeploymentTopology;
 }
 
 export interface RuntimeStatusSnapshot {

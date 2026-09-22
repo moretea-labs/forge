@@ -10,7 +10,7 @@ import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { getProcessRecord, listActiveProcessIds } from './store';
-import { reconcileStaleManagedProcessForMaintenance } from './runtime';
+import { reconcileStaleManagedProcessForMaintenance, releaseProcessLeasesOnce } from './runtime';
 import { isManagedProcessActive, type ProcessRuntimeStatus } from './types';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { isProcessAlive } from '../../shared/process-tree';
@@ -196,6 +196,13 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
         }
       }
       if (!TERMINAL.has(metadata.status)) continue;
+      // Terminal evidence and lease cleanup are separate durable phases. A
+      // crash/fence between them must not leave a workspace lease immortal just
+      // because the terminal record is still inside the retention window.
+      const terminalRecord = getProcessRecord(options.controllerHome, options.repoId, processId);
+      if (terminalRecord?.terminalWritten === true && terminalRecord.leasesReleased !== true) {
+        releaseProcessLeasesOnce(options.controllerHome, options.repoId, processId);
+      }
       // Do not delete terminal evidence that has never been read when maxAge is not exceeded
       // unless we are strictly over maxTerminalRecords budget (handled by sort below).
       const finished = Date.parse(metadata.finishedAt ?? metadata.updatedAt ?? '');

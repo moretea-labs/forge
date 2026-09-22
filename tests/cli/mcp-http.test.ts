@@ -4,9 +4,14 @@ import { createServer } from 'net';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
 import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../src/cli/mcp/auth';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
+import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
+import { createMcpHttpSessionRegistry } from '../../adapters/mcp/transports/http';
+import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
+import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -101,6 +106,91 @@ function isolatedMcpProcessEnv(
 }
 
 describe('mcp http transport', () => {
+  test('transport session retirement does not invalidate durable execution session authority', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-mcp-transport-durable-session-'));
+    try {
+      const controllerHome = join(root, 'controller');
+      const execution = startExecutionSession(controllerHome, {
+        sessionId: 'durable-execution-session',
+        principalId: 'transport-test-principal',
+        controllerInstanceId: 'runtime-before-transport-close',
+      });
+      let transportClosed = 0;
+      const registry = createMcpHttpSessionRegistry<{ close(): void }, { sessionId: string; controllerHome: string }>();
+      registry.register({
+        sessionId: 'mcp-transport-session',
+        transport: { close: () => { transportClosed += 1; } },
+        toolContext: { sessionId: execution.sessionId, controllerHome },
+        route: '/mcp',
+        principalId: 'transport-test-principal',
+        connectionId: 'transport-connection',
+        clientIdentity: 'transport-client',
+      });
+
+      await registry.close('mcp-transport-session', 'transport_close');
+
+      expect(transportClosed).toBe(1);
+      expect(registry.get('mcp-transport-session')).toBeUndefined();
+      expect(readExecutionSession(controllerHome, {
+        sessionId: execution.sessionId,
+        principalId: execution.principalId,
+        controllerInstanceId: 'runtime-after-transport-close',
+      })).toMatchObject({
+        sessionId: execution.sessionId,
+        principalId: execution.principalId,
+        controllerInstanceId: 'runtime-after-transport-close',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('health keeps current transport health separate from recent interruption and recovery evidence', () => {
+    const startedAt = '2026-09-22T09:50:00.000Z';
+    const now = Date.parse('2026-09-22T10:10:00.000Z');
+    const interrupted = recentMcpTransportEvidence([{
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:00.000Z',
+      kind: 'interruption',
+      sessionId: 'session-a',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+      reason: 'transport_close',
+    }], startedAt, now);
+    expect(interrupted).toMatchObject({
+      current: 'healthy',
+      recentStatus: 'recovering',
+      gatewayStartedAt: startedAt,
+      lastInterruption: { sessionId: 'session-a' },
+    });
+
+    const recovered = recentMcpTransportEvidence([{
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:05.000Z',
+      kind: 'session_initialized',
+      sessionId: 'session-b',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+    }, {
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:00.000Z',
+      kind: 'interruption',
+      sessionId: 'session-a',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+      reason: 'transport_close',
+    }], startedAt, now);
+    expect(recovered).toMatchObject({
+      current: 'healthy',
+      recentStatus: 'recovered',
+      lastRecoveryAt: '2026-09-22T10:00:05.000Z',
+    });
+  });
+
   test('starts a controller Gateway without selecting or registering its launch directory as a repository', async () => {
     const workingDirectory = mkdtempSync(join(tmpdir(), 'forge-mcp-controller-no-repo-'));
     const port = await freePort();
@@ -280,6 +370,7 @@ describe('mcp http transport', () => {
           sessionCapacity: {
             active: 0,
             maximum: 64,
+            admissionMode: 'immediate',
             acceptingNewSessions: true,
             activePosts: 0,
             activeStreams: 0,
@@ -305,17 +396,36 @@ describe('mcp http transport', () => {
         });
         expect(badJson.status).toBe(400);
 
+        const modernMeta = {
+          [PROTOCOL_VERSION_META_KEY]: '2026-07-28',
+          [CLIENT_INFO_META_KEY]: { name: 'forge-modern-http-test', version: '1.0.0' },
+          [CLIENT_CAPABILITIES_META_KEY]: {},
+        };
+        const modernHeaders = {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+          'mcp-protocol-version': '2026-07-28',
+        };
         const modernProbe = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 'discover-1', method: 'server/discover', params: {} }),
+          headers: { ...modernHeaders, 'mcp-method': 'server/discover' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'discover-1', method: 'server/discover', params: { _meta: modernMeta } }),
         });
-        expect(modernProbe.status).toBe(404);
-        expect(await modernProbe.json()).toEqual({
-          jsonrpc: '2.0',
-          id: 'discover-1',
-          error: { code: -32601, message: 'Method not found' },
+        expect(modernProbe.status).toBe(200);
+        expect(modernProbe.headers.get('mcp-session-id')).toBeNull();
+        const modernDiscover = await modernProbe.json() as { result?: { supportedVersions?: string[] } };
+        expect(modernDiscover.result?.supportedVersions).toContain('2026-07-28');
+
+        const modernTools = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { ...modernHeaders, 'mcp-method': 'tools/list' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'tools-modern-1', method: 'tools/list', params: { _meta: modernMeta } }),
         });
+        expect(modernTools.status).toBe(200);
+        expect(modernTools.headers.get('mcp-session-id')).toBeNull();
+        const modernToolsBody = await modernTools.json() as { result?: { tools?: unknown[] } };
+        expect(Array.isArray(modernToolsBody.result?.tools)).toBe(true);
+
         const postProbeHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(postProbeHealth.sessions.active).toBe(0);
 
@@ -542,6 +652,7 @@ describe('mcp http transport', () => {
           active: 2,
           maximum: 2,
           capacityAvailable: 0,
+          admissionMode: 'eviction',
           acceptingNewSessions: true,
         });
         expect(health.sessions.closed.principalCapacity + health.sessions.closed.capacityEviction).toBe(1);
@@ -562,6 +673,49 @@ describe('mcp http transport', () => {
       await stopMcpServerProcess(proc);
       rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+
+  test('capacity eviction releases initialize admission before slow transport cleanup completes', async () => {
+    let releaseClose!: () => void;
+    const blockedClose = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const registry = new McpSessionRegistry<{ close(): Promise<void> }, { id: string }>({
+      maximumSessions: 1,
+      maximumSessionsPerPrincipal: 1,
+    });
+    registry.register({
+      sessionId: 'old-session',
+      transport: { close: () => blockedClose },
+      toolContext: { id: 'old' },
+      route: '/mcp',
+      principalId: 'principal-a',
+      connectionId: 'connection-a',
+      clientIdentity: 'client-a',
+    });
+
+    expect(registry.snapshot()).toMatchObject({
+      active: 1,
+      maximum: 1,
+      capacityAvailable: 0,
+      admissionMode: 'eviction',
+      acceptingNewSessions: true,
+    });
+
+    const reservation = await Promise.race([
+      registry.reserveForInitialize({
+        principalId: 'principal-b',
+        connectionId: 'connection-b',
+        route: '/mcp',
+      }),
+      Bun.sleep(100).then(() => 'timed-out' as const),
+    ]);
+    expect(reservation).not.toBe('timed-out');
+    expect(typeof reservation).toBe('string');
+    expect(registry.get('old-session')).toBeUndefined();
+    expect(registry.snapshot().closed.capacityEviction).toBe(1);
+
+    registry.releaseInitialize(reservation as string);
+    releaseClose();
+    await Bun.sleep(0);
   });
 
   test('reclaims the oldest stream-only session before returning capacity backpressure', async () => {

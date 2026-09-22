@@ -3,6 +3,7 @@ export {
   assertControllerOwnershipAuthority,
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
+  controllerSessionAuthorityDigest,
   controllerSessionAuthorityMatches,
   controllerSessionBlocksRecovery,
   controllerSessionPrincipalId,

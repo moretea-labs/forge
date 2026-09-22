@@ -11,6 +11,7 @@ import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-ac
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
+import { implementationReviewCommittedBaseRevision } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -24,7 +25,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(requirementId?: string) {
+function fixture(requirementId?: string, workKind: 'repository_change' | 'remote_effect' = 'repository_change') {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-repo-'));
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-home-'));
   roots.push(repoRoot, controllerHome);
@@ -54,6 +55,7 @@ function fixture(requirementId?: string) {
     checks: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
+    workKind,
     ...(requirementId ? { requirementId } : {}),
     status: 'running',
   });
@@ -375,7 +377,8 @@ describe('standalone Direct Edit Work completion', () => {
         merge: 'pending',
         branchCleanup: 'pending',
         worktreeCleanup: 'pending',
-        lastError: 'WORK_HANDLE_HEAD_CHANGED: expected old, found current',
+        failureCode: 'WORK_HANDLE_HEAD_CHANGED',
+        lastError: 'diagnostic text may change without changing recovery authority',
       },
     };
 
@@ -398,6 +401,14 @@ describe('standalone Direct Edit Work completion', () => {
     })).toBe(false);
     expect(isFailedReviewedDirectEditWorkRecovery({ ...failedWork, status: 'cancelled' }, handle)).toBe(false);
     expect(isFailedReviewedDirectEditWorkRecovery(failedWork, { ...handle, managedWorktree: true })).toBe(false);
+    expect(isFailedReviewedDirectEditWorkRecovery(failedWork, {
+      ...handle,
+      finalization: {
+        ...handle.finalization,
+        failureCode: undefined,
+        lastError: 'WORK_HANDLE_HEAD_CHANGED: misleading diagnostic only',
+      },
+    })).toBe(false);
   });
 
   test('retires postcommit completion authority so new Direct Edit delivery cannot bypass precommit implementation review', () => {
@@ -533,6 +544,184 @@ describe('standalone Direct Edit Work completion', () => {
     const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
     expect(completed.status).toBe('completed');
     expect(completed.scopeEvidence?.actualChangedPaths).toEqual([...ownedPaths].sort((left, right) => left.localeCompare(right)));
+  });
+
+  test('reconciles an exact content-equivalent Direct commit from an advanced durable baseline without absorbing later target-only history', () => {
+    const fx = fixture();
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    const originalBase = work.baseRevision!;
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Test\npre-mutation target advance\n');
+    execFileSync('git', ['add', '--', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'pre-mutation target advance'], { cwd: fx.repoRoot });
+    const deliveryBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    expect(deliveryBase).not.toBe(originalBase);
+
+    const reviewedPaths = ['src/example.ts'];
+    const preCommitStatus = repositoryGitStatus(fx.repository);
+    const preCommitContentFingerprint = implementationReviewContentFingerprint(fx.repoRoot, reviewedPaths);
+    const preCommitVerificationFingerprint = workspaceValidationFingerprint(fx.repoRoot, preCommitStatus);
+    transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      phase: 'verification', status: 'running', state: 'satisfied',
+      summary: 'The exact dirty workspace is ready for pre-commit review.',
+    });
+    requestWorkImplementationReview(
+      { controllerHome: fx.controllerHome, repoId: fx.repoId },
+      fx.workId,
+      'Review the exact content before it is materialized as a commit.',
+    );
+    recordWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-advanced-durable-baseline-precommit',
+      workId: fx.workId,
+      reviewerPrincipalId: 'principal-reviewer',
+      decision: 'approved',
+      rationale: 'The exact pre-commit content is approved at the durable pre-mutation baseline.',
+      findings: [],
+      sourceRevision: deliveryBase,
+      workspaceFingerprint: preCommitContentFingerprint,
+      verificationWorkspaceFingerprint: preCommitVerificationFingerprint,
+      changedPaths: reviewedPaths,
+      changedPathDigest: implementationReviewChangedPathDigest(reviewedPaths),
+      acceptanceCriteriaSummary: 'Exact content-equivalent materialization is approved.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt: '2026-09-08T00:00:00.000Z',
+    });
+    const now = new Date().toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId: fx.workId,
+      workContractId: fx.workId,
+      sessionId: 'advanced-baseline-session',
+      principalId: 'principal-test',
+      repositoryId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      deliveryTargetBranch: 'main',
+      baseCommit: originalBase,
+      deliveryBaseCommit: deliveryBase,
+      expectedHead: deliveryBase,
+      managedWorktree: false,
+      permissionSnapshotVersion: 1,
+      state: 'editing',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+
+    execFileSync('git', ['add', '--', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'materialize exact reviewed content'], { cwd: fx.repoRoot });
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    expect(execFileSync('git', ['diff', '--name-only', deliveryBase, targetRevision], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe('src/example.ts');
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Test\npre-mutation target advance\nlater unrelated target history\n');
+    execFileSync('git', ['add', '--', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'later unrelated target history'], { cwd: fx.repoRoot });
+    const currentTargetHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    expect(currentTargetHead).not.toBe(targetRevision);
+
+    transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      phase: 'verification', status: 'running', state: 'satisfied',
+      summary: 'Later target history invalidated the current target-relative review projection.',
+    });
+    requestWorkImplementationReview(
+      { controllerHome: fx.controllerHome, repoId: fx.repoId },
+      fx.workId,
+      'Record the later target-relative review as blocked without erasing the exact prior approval.',
+    );
+    const currentStatus = repositoryGitStatus(fx.repository);
+    recordWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-later-target-projection-blocked',
+      workId: fx.workId,
+      reviewerPrincipalId: 'principal-reviewer',
+      decision: 'blocked',
+      rationale: 'The current target has later unrelated history; recover only the explicit reviewed commit.',
+      findings: [],
+      sourceRevision: currentTargetHead,
+      workspaceFingerprint: implementationReviewContentFingerprint(fx.repoRoot, reviewedPaths),
+      verificationWorkspaceFingerprint: workspaceValidationFingerprint(fx.repoRoot, currentStatus),
+      changedPaths: reviewedPaths,
+      changedPathDigest: implementationReviewChangedPathDigest(reviewedPaths),
+      acceptanceCriteriaSummary: 'Do not absorb later target-only history.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt: '2026-09-08T00:01:00.000Z',
+    });
+
+    const result = acceptReviewedDirectEditWorkReconciliation({
+      ...reconciliationInput(fx, targetRevision),
+      comparedPaths: reviewedPaths,
+      rationale: 'The explicit target revision exactly materializes the approved pre-commit content from the durable delivery baseline.',
+    });
+    expect(result.receipt.targetRevision).toBe(targetRevision);
+    expect(result.receipt.changedPaths).toEqual(reviewedPaths);
+    expect(result.reconciliation.observedTargetRevision).toBe(targetRevision);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(currentTargetHead);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('completed');
+  });
+
+  test('rejects advanced-baseline recovery when later target history changes reviewed content', () => {
+    const fx = fixture();
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    const originalBase = work.baseRevision!;
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Test\npre-mutation target advance\n');
+    execFileSync('git', ['add', '--', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'pre-mutation target advance'], { cwd: fx.repoRoot });
+    const deliveryBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const reviewedPaths = ['src/example.ts'];
+    const preCommitStatus = repositoryGitStatus(fx.repository);
+    transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Pre-commit review boundary.',
+    });
+    requestWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, 'Review exact pre-commit bytes.');
+    recordWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-advanced-baseline-content-drift',
+      workId: fx.workId,
+      reviewerPrincipalId: 'principal-reviewer',
+      decision: 'approved',
+      rationale: 'Approve only the original exact bytes.',
+      findings: [],
+      sourceRevision: deliveryBase,
+      workspaceFingerprint: implementationReviewContentFingerprint(fx.repoRoot, reviewedPaths),
+      verificationWorkspaceFingerprint: workspaceValidationFingerprint(fx.repoRoot, preCommitStatus),
+      changedPaths: reviewedPaths,
+      changedPathDigest: implementationReviewChangedPathDigest(reviewedPaths),
+      acceptanceCriteriaSummary: 'Exact bytes only.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt: '2026-09-08T00:02:00.000Z',
+    });
+    const now = new Date().toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId: fx.workId, workContractId: fx.workId,
+      sessionId: 'advanced-baseline-drift-session', principalId: 'principal-test',
+      repositoryId: fx.repoId, checkoutId: fx.checkoutId, worktreePath: fx.repoRoot,
+      branch: 'main', deliveryTargetBranch: 'main', baseCommit: originalBase,
+      deliveryBaseCommit: deliveryBase, expectedHead: deliveryBase, managedWorktree: false,
+      permissionSnapshotVersion: 1, state: 'editing', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    execFileSync('git', ['add', '--', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'materialize exact reviewed content'], { cwd: fx.repoRoot });
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    writeFileSync(join(fx.repoRoot, 'src/example.ts'), 'export const value = 999;\n');
+    execFileSync('git', ['add', '--', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'later reviewed-path drift'], { cwd: fx.repoRoot });
+
+    expect(() => acceptReviewedDirectEditWorkReconciliation({
+      ...reconciliationInput(fx, targetRevision),
+      comparedPaths: reviewedPaths,
+      rationale: 'This must fail because current reviewed bytes no longer match the approved content fingerprint.',
+    })).toThrow(/DIRECT_EDIT_WORK_RECONCILIATION_/);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).not.toBe('completed');
   });
 
   test('does not use parent-based ownership repair after Direct mutation lifecycle has started', () => {
@@ -749,7 +938,7 @@ describe('standalone Direct Edit Work completion', () => {
   });
 
   test('narrowly reconciles an already-delivered effect Work only with exact validation, remote containment, and a clean source tree', () => {
-    const fx = fixture();
+    const fx = fixture(undefined, 'remote_effect');
     const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
     commitExample(fx.repoRoot);
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
@@ -759,7 +948,6 @@ describe('standalone Direct Edit Work completion', () => {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', baseRevision], { cwd: fx.repoRoot });
     const checks = ['package:check:release-published'];
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
-      workKind: 'remote_effect',
       checks,
       checkRefs: [verificationRecord({
         repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId,
@@ -781,10 +969,9 @@ describe('standalone Direct Edit Work completion', () => {
   });
 
   test('refuses historical effect reconciliation without bound validation receipts or while any source delta remains unresolved', () => {
-    const fx = fixture();
+    const fx = fixture(undefined, 'remote_effect');
     commitExample(fx.repoRoot);
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
-    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { workKind: 'remote_effect' });
     expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
       .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_REQUIRED');
 
@@ -974,5 +1161,71 @@ describe('standalone Direct Edit Work completion', () => {
     expect(reconciliation.completedWorkIds).toEqual([]);
     expect(reconciliation.skipped[0]?.reason).toBe('postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('running');
+  });
+});
+
+
+describe('managed implementation-review delivery baseline', () => {
+  test('preserves the original delivery base after Forge has merged the exact candidate even when deliveryBaseCommit equals baseCommit', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-qb', 'work/review-equal-base'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'src', 'example.ts'), 'export const reviewed = true;\n');
+    execFileSync('git', ['add', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'reviewed equal-base candidate'], { cwd: fx.repoRoot });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: fx.repoRoot });
+    execFileSync('git', ['merge', '--ff-only', 'work/review-equal-base'], { cwd: fx.repoRoot });
+
+    const preDeliveryHandle = {
+      workId: 'work-review-equal-base', managedWorktree: true, deliveryTargetBranch: 'main',
+      baseCommit: baseRevision, deliveryBaseCommit: baseRevision,
+    };
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, preDeliveryHandle, baseRevision, candidateHead, 'main',
+    )).toBe(candidateHead);
+
+    const mergedHandle = { ...preDeliveryHandle, state: 'merged' as const };
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, mergedHandle, baseRevision, candidateHead, 'main',
+    )).toBe(baseRevision);
+  });
+
+  test('preserves the durable delivery base after the target catches the exact reviewed candidate', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Test\ntarget advance\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'target advance'], { cwd: fx.repoRoot });
+    const deliveryBaseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-qb', 'work/review-baseline'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'src', 'example.ts'), 'export const reviewed = true;\n');
+    execFileSync('git', ['add', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'reviewed candidate'], { cwd: fx.repoRoot });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: fx.repoRoot });
+    execFileSync('git', ['merge', '--ff-only', 'work/review-baseline'], { cwd: fx.repoRoot });
+
+    const handle = {
+      workId: 'work-review-baseline', managedWorktree: true, deliveryTargetBranch: 'main',
+      baseCommit: baseRevision, deliveryBaseCommit,
+    };
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, handle, baseRevision, candidateHead, 'main',
+    )).toBe(deliveryBaseCommit);
+
+    execFileSync('git', ['checkout', '-q', 'work/review-baseline'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'src', 'example.ts'), 'export const reviewed = 2;\n');
+    execFileSync('git', ['add', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'next candidate'], { cwd: fx.repoRoot });
+    const nextCandidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, handle, baseRevision, nextCandidateHead, 'main',
+    )).toBe(candidateHead);
   });
 });

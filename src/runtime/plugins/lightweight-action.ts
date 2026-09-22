@@ -5,7 +5,10 @@ import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
 import { startLightweightInternalProcess, waitForLightweightProcess } from '../execution/process-runtime/lightweight-managed';
+import { getProcessHandle, spawnManagedProcess, waitForProcess } from '../execution/process-runtime/runtime';
+import { getProcessRecord, getProcessRequestBinding } from '../execution/process-runtime/store';
 import type { ProcessHandle } from '../execution/process-runtime/types';
+import type { ResolvedExecutionIdentity } from '../control-plane/execution/execution-identity';
 import type { AssistantPluginActionRequest } from './types';
 
 interface LightweightPluginActionEnvelope {
@@ -140,6 +143,109 @@ export async function startLightweightPluginAction(input: {
     signal: input.request.signal,
   });
   return { handle, requestSha256 };
+}
+
+export async function startManagedPluginAction(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  request: AssistantPluginActionRequest;
+  interactiveWaitMs?: number;
+  timeoutMs: number;
+}): Promise<LightweightPluginActionStart> {
+  const requestToken = createHash('sha256')
+    .update(`${input.repository.repoId}\u0000${input.request.requestId}`)
+    .digest('hex')
+    .slice(0, 24);
+  const requestRoot = join(repositoryControllerRoot(input.controllerHome, input.repository.repoId), 'plugin-action-processes');
+  const requestPath = join(requestRoot, `${requestToken}.request.json`);
+  const bytes = envelopeBytes(input.controllerHome, input.repository, input.request);
+  const requestSha256 = createHash('sha256').update(bytes).digest('hex');
+
+  const existingBinding = getProcessRequestBinding(
+    input.controllerHome,
+    input.repository.repoId,
+    input.repository.activeCheckoutId,
+    input.request.requestId,
+  );
+  if (existingBinding) {
+    if (existsSync(requestPath)) {
+      const existingBytes = readFileSync(requestPath, 'utf8');
+      const existingSha256 = createHash('sha256').update(existingBytes).digest('hex');
+      if (existingSha256 !== requestSha256) {
+        throw new Error(`PROCESS_REQUEST_CONFLICT: plugin request ${input.request.requestId} already has different arguments`);
+      }
+    }
+    const existing = getProcessHandle(input.controllerHome, input.repository.repoId, existingBinding.processId);
+    if (!existing) {
+      throw new Error(`PROCESS_REQUEST_INCOMPLETE: plugin request ${input.request.requestId} is bound to missing process ${existingBinding.processId}; refusing re-execution`);
+    }
+    const processRecord = getProcessRecord(input.controllerHome, input.repository.repoId, existingBinding.processId);
+    if (processRecord?.origin?.requestSemanticFingerprint && processRecord.origin.requestSemanticFingerprint !== requestSha256) {
+      throw new Error(`PROCESS_REQUEST_CONFLICT: plugin request ${input.request.requestId} already has different arguments`);
+    }
+    return { handle: { ...existing, deduplicated: true, requestId: input.request.requestId }, requestSha256 };
+  }
+
+  if (existsSync(requestPath)) {
+    const existingBytes = readFileSync(requestPath, 'utf8');
+    const existingSha256 = createHash('sha256').update(existingBytes).digest('hex');
+    if (existingSha256 !== requestSha256) {
+      throw new Error(`PROCESS_REQUEST_CONFLICT: plugin request ${input.request.requestId} already has different arguments`);
+    }
+  } else {
+    privateAtomicWrite(requestPath, bytes);
+  }
+
+  const invocation = resolveLightweightPluginActionRuntimeInvocation();
+  const executionIdentity: ResolvedExecutionIdentity = Object.freeze({
+    schemaVersion: 1 as const,
+    authority: 'ephemeral_workspace' as const,
+    repositoryId: input.repository.repoId,
+    checkoutId: input.repository.activeCheckoutId,
+    canonicalRoot: input.repository.canonicalRoot,
+    ...(input.request.workId ? { workId: input.request.workId } : {}),
+  });
+  const handle = await spawnManagedProcess({
+    controllerHome: input.controllerHome,
+    repoId: input.repository.repoId,
+    checkoutId: input.repository.activeCheckoutId,
+    executionIdentity,
+    workId: input.request.workId,
+    commandId: `plugin-action:${input.request.requestId}`,
+    trustedRuntimeChild: 'plugin_action_sidecar',
+    command: {
+      kind: 'argv',
+      executable: invocation.executable,
+      args: [
+        ...invocation.argsPrefix,
+        '--request', requestPath,
+        '--expected-sha256', requestSha256,
+      ],
+      cwd: input.repository.canonicalRoot,
+    },
+    interactiveWaitMs: Math.max(0, input.interactiveWaitMs ?? 750),
+    timeoutMs: input.timeoutMs,
+    maxOutputBytes: 64 * 1024,
+    origin: {
+      surface: 'mcp',
+      toolName: 'plugin_action_execute',
+      requestId: input.request.requestId,
+      requestSemanticFingerprint: requestSha256,
+      correlationId: input.request.workId,
+    },
+    signal: input.request.signal,
+  });
+  return { handle, requestSha256 };
+}
+
+export async function waitManagedPluginAction(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<ProcessHandle> {
+  return waitForProcess(controllerHome, repoId, processId, { timeoutMs, signal });
 }
 
 export async function waitLightweightPluginAction(

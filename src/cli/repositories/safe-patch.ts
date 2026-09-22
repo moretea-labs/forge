@@ -6,11 +6,11 @@ import {
   applyEditOperations,
   beginEditSession,
   getEditSession,
-  type EditOperation,
   type EditSession,
   type EditSessionBinding,
   type EditSessionPatchError,
 } from '../editing/edit-session';
+import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
 import { getMcpPolicy } from '../mcp/policy';
 import type { RepositoryRecord } from './types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
@@ -102,46 +102,15 @@ function objectEntries(value: unknown): Record<string, unknown>[] {
   return value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null && !Array.isArray(entry));
 }
 
-function normalizeReplacement(value: unknown): Array<{ oldText: string; newText: string; replaceAll?: boolean }> {
-  return objectEntries(value).map((replacement) => ({
-    oldText: String(replacement.old_text ?? replacement.oldText ?? ''),
-    newText: String(replacement.new_text ?? replacement.newText ?? ''),
-    replaceAll: replacement.replace_all === true || replacement.replaceAll === true,
-  }));
-}
-
 function normalizeOperation(entry: Record<string, unknown>, originalIndex: number): NormalizedOperation {
-  const type = String(entry.type ?? '');
   const path = String(entry.path ?? '').trim();
-  const expectedSha256 = String(entry.expected_sha256 ?? entry.expectedSha256 ?? '').trim();
   if (!path) throw new Error(`SAFE_PATCH_OPERATION_INVALID: operation ${originalIndex + 1} path is required`);
-  if (type === 'create') return { type, path, content: String(entry.content ?? ''), __originalIndex: originalIndex };
-  if (type === 'delete') return { type, path, expectedSha256, __originalIndex: originalIndex };
-  if (type === 'write') return { type, path, expectedSha256, content: String(entry.content ?? ''), __originalIndex: originalIndex };
-  if (type === 'replace') {
-    const replacements = Array.isArray(entry.replacements)
-      ? normalizeReplacement(entry.replacements)
-      : (entry.old_text !== undefined || entry.oldText !== undefined)
-        ? normalizeReplacement([entry])
-        : [];
-    if (replacements.length === 0) {
-      throw new Error(`SAFE_PATCH_OPERATION_INVALID: operation ${originalIndex + 1} replace requires replacements[] or old_text/new_text`);
-    }
-    return { type, path, expectedSha256, replacements, __originalIndex: originalIndex };
+  try {
+    return { ...normalizeEditOperation({ ...entry, path }), __originalIndex: originalIndex } as NormalizedOperation;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`SAFE_PATCH_OPERATION_INVALID: operation ${originalIndex + 1} ${message}`);
   }
-  if (type === 'insert_before' || type === 'insert_after') {
-    return {
-      type,
-      path,
-      expectedSha256,
-      anchor: String(entry.anchor ?? ''),
-      content: String(entry.content ?? ''),
-      occurrence: typeof entry.occurrence === 'number' ? Math.trunc(entry.occurrence) : undefined,
-      __originalIndex: originalIndex,
-    };
-  }
-  if (type === 'prepend' || type === 'append') return { type, path, expectedSha256, content: String(entry.content ?? ''), __originalIndex: originalIndex };
-  throw new Error(`SAFE_PATCH_OPERATION_INVALID: operation ${originalIndex + 1} has invalid type: ${type}`);
 }
 
 export function normalizeSafePatchOperations(value: unknown): EditOperation[] {

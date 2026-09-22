@@ -5,12 +5,14 @@ import { Command } from 'commander';
 import {
   COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
   type ComputerCapabilityId,
 } from '../../../packages/protocols/computer/index';
 import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
-import { discoverPreferredNativeBrowserProduct } from '../../runtime/platform/browser-product-discovery';
 import { getExternalPluginRegistration, removeExternalPluginRegistration } from '../../runtime/plugins/external-registration';
 import {
   readControllerStoredPluginManifest,
@@ -127,40 +129,44 @@ function providerHealth(controllerHome: string): ComputerProviderHealth {
 }
 
 function browserCapabilityStatus(input: {
-  platform: NodeJS.Platform;
   compatibility: ReturnType<typeof pluginCatalogCompatibility>;
   registration: ReturnType<typeof getExternalPluginRegistration>;
   health: ComputerProviderHealth;
-  env?: NodeJS.ProcessEnv;
-  fileExists?: (path: string) => boolean;
 }): ComputerCapabilityStatus {
-  const supported = input.platform === 'darwin' || input.platform === 'linux' || input.platform === 'win32';
-  if (!supported) return { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, provider: 'browser', supported: false, ready: false, state: 'unsupported', reason: `Browser Computer capability is unsupported on ${input.platform}.` };
-
-  const nativeDeclaresBrowser = input.registration?.capabilities.some((capability) => capability.capabilityId === COMPUTER_BROWSER_AUTOMATION_CAPABILITY) === true;
-  if (input.compatibility.compatible && input.registration?.enabled && input.health.ready && nativeDeclaresBrowser) {
-    return { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, provider: 'desktop_operator', supported: true, ready: true, state: 'ready' };
+  if (!input.compatibility.compatible) {
+    return {
+      capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+      provider: 'desktop_operator',
+      supported: false,
+      ready: false,
+      state: 'unsupported',
+      reason: `No native Computer browser provider is available: ${input.compatibility.reason}`,
+    };
   }
 
-  const discoveredBrowser = discoverPreferredNativeBrowserProduct({
-    platform: input.platform,
-    env: input.env,
-    fileExists: input.fileExists,
-  });
+  if (!input.registration) {
+    return {
+      capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+      provider: 'browser',
+      supported: true,
+      ready: false,
+      state: 'missing',
+      reason: 'Native Browser compatibility mechanics require the installed macOS Computer provider.',
+    };
+  }
+  const ready = input.registration.enabled && input.health.ready;
   return {
     capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
     provider: 'browser',
     supported: true,
-    ready: false,
-    state: 'missing',
-    reason: discoveredBrowser
-      ? `Discovered ${discoveredBrowser.appName}, but no generic Computer Browser provider readiness proof is bound yet.`
-      : 'No ready Computer Browser provider is bound; run forge computer setup or forge setup to discover and configure one.',
+    ready,
+    state: ready ? 'ready' : 'degraded',
+    reason: ready ? undefined : (input.health.errors[0] ?? input.health.warnings[0] ?? `Native Browser compatibility health is ${input.health.state}.`),
   };
 }
 
 function desktopCapabilityStatus(
-  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY,
+  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY | typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY | typeof COMPUTER_ELEMENT_ACTION_CAPABILITY,
   compatibility: ReturnType<typeof pluginCatalogCompatibility>,
   registration: ReturnType<typeof getExternalPluginRegistration>,
   health: ComputerProviderHealth,
@@ -181,7 +187,7 @@ function desktopCapabilityStatus(
   };
 }
 
-export function readComputerStatus(options: { controllerHome?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; fileExists?: (path: string) => boolean } = {}): ComputerStatusReport {
+export function readComputerStatus(options: { controllerHome?: string; platform?: NodeJS.Platform } = {}): ComputerStatusReport {
   const controllerHome = resolveControllerHome(options.controllerHome);
   const platform = options.platform ?? process.platform;
   const entry = catalogEntry();
@@ -203,10 +209,13 @@ export function readComputerStatus(options: { controllerHome?: string; platform?
     health,
   };
   const capabilities = [
-    browserCapabilityStatus({ platform, compatibility, registration, health, env: options.env, fileExists: options.fileExists }),
+    browserCapabilityStatus({ compatibility, registration, health }),
     desktopCapabilityStatus(COMPUTER_OBSERVE_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_INPUT_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_CONSOLE_UNLOCK_CAPABILITY, compatibility, registration, health),
     desktopCapabilityStatus(COMPUTER_CAPTURE_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_ELEMENT_OBSERVE_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_ELEMENT_ACTION_CAPABILITY, compatibility, registration, health),
   ];
   const supportedCapabilities = capabilities.filter((capability) => capability.supported);
   return {
@@ -223,25 +232,33 @@ export function readComputerStatus(options: { controllerHome?: string; platform?
   };
 }
 
-export function runComputerSetup(options: { controllerHome?: string } = {}): {
+export function runComputerSetup(options: { controllerHome?: string; platform?: NodeJS.Platform } = {}): {
   installed: Record<string, unknown>;
   status: ComputerStatusReport;
 } {
   const controllerHome = resolveControllerHome(options.controllerHome);
+  const compatibility = pluginCatalogCompatibility(catalogEntry(), options.platform ?? process.platform);
+  if (!compatibility.compatible) {
+    throw new Error(`COMPUTER_PROVIDER_UNAVAILABLE_ON_PLATFORM: ${compatibility.reason}. Forge has no installable native Computer provider for this platform.`);
+  }
   const installed = installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID, controllerHome);
-  return { installed, status: readComputerStatus({ controllerHome }) };
+  return { installed, status: readComputerStatus({ controllerHome, platform: options.platform }) };
 }
 
-export function runComputerUpdate(options: { controllerHome?: string } = {}) {
+export function runComputerUpdate(options: { controllerHome?: string; platform?: NodeJS.Platform } = {}) {
   return runComputerSetup(options);
 }
 
-export function runComputerDoctor(options: { controllerHome?: string } = {}): ComputerDoctorReport {
+export function runComputerDoctor(options: { controllerHome?: string; platform?: NodeJS.Platform } = {}): ComputerDoctorReport {
   const controllerHome = resolveControllerHome(options.controllerHome);
-  if (getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID)) {
+  const platform = options.platform ?? process.platform;
+  const compatibility = pluginCatalogCompatibility(catalogEntry(), platform);
+  // A stale macOS registration must never launch a synchronous socket probe on a
+  // platform where the provider cannot execute. Status remains a stored-state read.
+  if (compatibility.compatible && getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID)) {
     syncControllerPluginManifest(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   }
-  const status = readComputerStatus({ controllerHome });
+  const status = readComputerStatus({ controllerHome, platform });
   const checks: ComputerDoctorReport['checks'] = [];
   checks.push({
     id: 'platform',
@@ -265,7 +282,7 @@ export function runComputerDoctor(options: { controllerHome?: string } = {}): Co
       ? (status.installed ? `Native Computer provider ${status.provider.installedVersion ?? 'unknown'} is installed.` : 'Native Computer provider is not installed.')
       : `Native Desktop Computer provider is not part of the supported capability set on ${status.platform}.`,
   });
-  if (status.installed) {
+  if (status.installed && compatibility.compatible) {
     checks.push({
       id: 'registration',
       state: status.provider.enabled ? 'pass' : 'fail',
@@ -288,6 +305,12 @@ export function runComputerDoctor(options: { controllerHome?: string } = {}): Co
       message: status.provider.health.errors[0]
         ?? status.provider.health.warnings[0]
         ?? `Computer provider health is ${status.provider.health.state}.`,
+    });
+  } else if (status.installed) {
+    checks.push({
+      id: 'provider-platform',
+      state: 'warn',
+      message: `Installed Computer provider is incompatible with ${status.platform}; its live health probe was intentionally skipped.`,
     });
   }
   return {

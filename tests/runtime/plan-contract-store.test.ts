@@ -10,11 +10,13 @@ import {
   completePlanStepForWork,
   createPlanContract,
   getPlanContract,
+  getPlanExecutionBaselineRevision,
   listPlanContracts,
   listUnresolvedPlanObligations,
   repairDraftPlanContract,
   repairPlanStepForTechnicalRetry,
   replanActivePlanBoundWorkScope,
+  listPlanRevisionRecords,
   supersedePlanContract,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
@@ -24,7 +26,7 @@ import {
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, getWorkContract } from '../../packages/kernel/work/api/index';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
 
@@ -130,15 +132,43 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
     goal: 'freeze authority',
     steps: [{ id: 'step-1', objective: 'define schema', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['schema is explicit'] }],
   });
+  createPlanContract(options, {
+    planId: 'plan-2',
+    repoId: 'repo-1',
+    scopeKey: 'runtime-sibling',
+    sourceRevision: 'abc123',
+    goal: 'preserve sibling authority',
+    steps: [{ id: 'step-2', objective: 'remain unchanged', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['revision remains stable'] }],
+  });
 
   expect(getPlanContract(options, 'plan-1')).toEqual(plan);
-  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(1);
-  expect(listControlPlaneRecords(options.controllerHome, { namespace: 'plan_contract', scope: 'repo-1' })).toHaveLength(1);
+  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(2);
+  expect(listControlPlaneRecords(options.controllerHome, { namespace: 'plan_contract', scope: 'repo-1' })).toHaveLength(2);
 
   const approved = approvePlanContract(options, 'plan-1');
   expect(approved.status).toBe('approved');
   expect(approved.steps[0]?.status).toBe('ready');
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(2);
+  expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-2')?.revision).toBe(1);
+});
+
+test('persists Work contracts as independent SQLite rows without sibling revision fan-out', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-work-store-row-delta-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-work-row-delta', now: () => '2026-09-11T00:00:00.000Z' };
+  for (const workId of ['work-1', 'work-2']) {
+    createWorkContract(options, {
+      workId, repoId: options.repoId, mode: 'goal_workloop', objective: `deliver ${workId}`,
+      acceptanceCriteria: ['deliver independently'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+  }
+
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-1')?.revision).toBe(1);
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-2')?.revision).toBe(1);
+  updateWorkContract(options, 'work-1', { objective: 'deliver work-1 with updated metadata' });
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-1')?.revision).toBe(2);
+  expect(readControlPlaneRecord(home, 'work_contract', options.repoId, 'work-2')?.revision).toBe(1);
 });
 
 test('repairs a legacy malformed draft in place without replacing Plan authority', () => {
@@ -286,21 +316,22 @@ test('atomically admits one canonical Plan for concurrent same-scope callers', a
   expect(persisted[0]?.scopeKey).toBe('shared-scope');
 });
 
-test('requires explicit Requirement relation and permits only distinct-scope parallel Plan slices', () => {
+test('same-Requirement distinct scopes coexist while exact scope remains single-owner', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-relation-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-relation' };
-  createRequirement({ controllerHome: home }, { requirementId: 'REQ-relation', title: 'Relation authority', outcomeStatement: 'Plan slices remain explicitly related to one Requirement.' });
+  createRequirement({ controllerHome: home }, { requirementId: 'REQ-relation', title: 'Relation authority', outcomeStatement: 'Requirement is portfolio ownership while Plan scope is semantic authority.' });
   const base = {
-    repoId: 'repo-relation',
-    requirementId: 'REQ-relation',
-    sourceRevision: 'revision-a',
-    goal: 'Deliver a Requirement slice',
+    repoId: 'repo-relation', requirementId: 'REQ-relation', sourceRevision: 'revision-a', goal: 'Deliver a Requirement slice',
     steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
   };
-  expect(admitPlanContract(options, { ...base, planId: 'plan-primary', scopeKey: 'primary-scope' }).admissionDecision).toBe('create_new');
-  const unresolved = admitPlanContract(options, { ...base, planId: 'plan-second', scopeKey: 'second-scope' });
-  expect(unresolved).toMatchObject({ admissionDecision: 'resolution_required', reason: 'requirement_relation_required' });
+  const primaryAdmission = admitPlanContract(options, { ...base, planId: 'plan-primary', scopeKey: 'primary-scope' });
+  expect(primaryAdmission).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-primary' } });
+  const second = admitPlanContract(options, { ...base, planId: 'plan-second', scopeKey: 'second-scope' });
+  expect(second).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-second' } });
+  const duplicate = admitPlanContract(options, { ...base, planId: 'plan-primary-duplicate', scopeKey: 'primary-scope' });
+  expect(duplicate).toMatchObject({ admissionDecision: 'reuse_existing', reason: 'exact_scope_authority', plan: { planId: 'plan-primary' } });
+
   const primary = getPlanContract(options, 'plan-primary')!;
   const extended = admitPlanContract(options, {
     ...base,
@@ -310,16 +341,17 @@ test('requires explicit Requirement relation and permits only distinct-scope par
     relatedPlanId: 'plan-primary',
     obligationDispositions: keepAllPlanObligations(primary),
   });
-  expect(extended).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-extended', status: 'draft' } });
-  expect(getPlanContract(options, 'plan-primary')).toMatchObject({ status: 'superseded', supersededBy: 'plan-extended', supersessionReason: 'extend_existing' });
-  expect(getPlanContract(options, 'plan-extended')).toMatchObject({ supersedes: ['plan-primary'] });
+  expect(extended).toMatchObject({ admissionDecision: 'reuse_existing', reason: 'extend_existing', plan: { planId: 'plan-primary', revision: 1, status: 'draft', scopeKey: 'extended-scope' } });
+  expect(getPlanContract(options, 'plan-extended')).toBeUndefined();
+
   const parallel = admitPlanContract(options, { ...base, planId: 'plan-parallel', scopeKey: 'parallel-scope', planRelation: 'parallel' });
   expect(parallel).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-parallel' } });
   const duplicateParallel = admitPlanContract(options, { ...base, planId: 'plan-parallel-duplicate', scopeKey: 'parallel-scope', planRelation: 'parallel' });
   expect(duplicateParallel).toMatchObject({ admissionDecision: 'reuse_existing', plan: { planId: 'plan-parallel' } });
+  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId).sort()).toEqual(['plan-parallel', 'plan-primary', 'plan-second']);
 });
 
-test('atomically replaces the exact-scope Plan authority during serial replanning', () => {
+test('stages and approves a committed Plan revision without creating a successor Plan entity', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-atomic-replan-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-atomic-replan' };
@@ -330,71 +362,118 @@ test('atomically replaces the exact-scope Plan authority during serial replannin
     goal: 'Release safely',
     steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
   };
-  expect(admitPlanContract(options, { ...base, planId: 'plan-r1' }).plan?.planId).toBe('plan-r1');
-  const predecessor = getPlanContract(options, 'plan-r1')!;
-  const replacement = admitPlanContract(options, {
+  const created = admitPlanContract(options, { ...base, planId: 'plan-r1' }).plan!;
+  const committed = approvePlanContract(options, created.planId);
+  expect(committed).toMatchObject({ planId: 'plan-r1', revision: 1, status: 'approved' });
+  const staged = admitPlanContract(options, {
     ...base,
     planId: 'plan-r2',
     sourceRevision: 'revision-b',
     planRelation: 'extend',
-    relatedPlanId: 'plan-r1',
-    obligationDispositions: keepAllPlanObligations(predecessor),
+    relatedPlanId: committed.planId,
+    obligationDispositions: keepAllPlanObligations(committed),
   });
-  expect(replacement).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-r2', scopeKey: 'release-scope', status: 'draft' } });
-  expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2', supersessionReason: 'extend_existing' });
-  expect(getPlanContract(options, 'plan-r2')).toMatchObject({ supersedes: ['plan-r1'] });
-  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-r2']);
+  expect(staged).toMatchObject({
+    admissionDecision: 'reuse_existing',
+    reason: 'extend_existing',
+    plan: { planId: 'plan-r1', revision: 1, status: 'replanning', pendingRevision: { revision: 2, requestedRevisionLabel: 'plan-r2', sourceRevision: 'revision-b' } },
+  });
+  expect(getPlanContract(options, 'plan-r2')).toBeUndefined();
+  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-r1']);
+
+  const revised = approvePlanContract(options, committed.planId);
+  expect(revised).toMatchObject({ planId: 'plan-r1', revision: 2, sourceRevision: 'revision-b', status: 'approved' });
+  expect(revised.pendingRevision).toBeUndefined();
+  expect(listPlanRevisionRecords(options, committed.planId)).toEqual([expect.objectContaining({ planId: 'plan-r1', revision: 1, sourceRevision: 'revision-a', requestedRevisionLabel: 'plan-r2' })]);
 });
 
-test('extends an explicitly invalidated predecessor without hijacking an unrelated active Requirement plan', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-invalidated-successor-'));
+
+test('repeated committed replans advance one stable Plan while revision history grows only as audit', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-revision-cardinality-'));
   homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-invalidated-successor' };
-  createRequirement({ controllerHome: home }, {
-    requirementId: 'REQ-invalidated-successor',
-    title: 'Recover drifted Plan lineage',
-    outcomeStatement: 'A drifted Plan can create its exact successor without replacing an unrelated Plan slice.',
-  });
+  const options = { controllerHome: home, repoId: 'repo-revision-cardinality' };
   const base = {
     repoId: options.repoId,
-    requirementId: 'REQ-invalidated-successor',
-    sourceRevision: 'revision-a',
-    goal: 'Deliver one Plan slice',
+    scopeKey: 'one-semantic-scope',
+    sourceRevision: 'revision-1',
+    goal: 'Keep one durable Plan authority through repeated replanning.',
     steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
   };
-  expect(admitPlanContract(options, { ...base, planId: 'plan-r1', scopeKey: 'release-scope' }).plan?.planId).toBe('plan-r1');
-  approvePlanContract(options, 'plan-r1');
-  const invalidated = claimPlanStepForWork(options, {
-    planId: 'plan-r1',
-    stepId: 'step-a',
-    workId: 'work-never-created',
-    sourceRevision: 'revision-b',
-  });
-  expect(invalidated.status).toBe('invalidated_by_drift');
+  let current = approvePlanContract(options, admitPlanContract(options, { ...base, planId: 'plan-stable' }).plan!.planId);
+  expect(current).toMatchObject({ planId: 'plan-stable', revision: 1, status: 'approved' });
 
-  const unrelated = admitPlanContract(options, {
-    ...base,
-    planId: 'plan-post-v2',
-    scopeKey: 'post-v2-scope',
-    planRelation: 'parallel',
-  });
-  expect(unrelated).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-post-v2', status: 'draft' } });
+  for (let revision = 2; revision <= 4; revision += 1) {
+    const requestedLabel = `plan-legacy-r${revision}`;
+    const staged = admitPlanContract(options, {
+      ...base,
+      planId: requestedLabel,
+      sourceRevision: `revision-${revision}`,
+      planRelation: 'extend',
+      relatedPlanId: current.planId,
+      obligationDispositions: keepAllPlanObligations(current),
+    });
+    expect(staged).toMatchObject({
+      admissionDecision: 'reuse_existing',
+      reason: 'extend_existing',
+      plan: { planId: 'plan-stable', status: 'replanning', pendingRevision: { revision, requestedRevisionLabel: requestedLabel } },
+    });
+    expect(getPlanContract(options, requestedLabel)).toBeUndefined();
+    expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-stable']);
+    current = approvePlanContract(options, 'plan-stable');
+    expect(current).toMatchObject({ planId: 'plan-stable', revision, sourceRevision: `revision-${revision}` });
+  }
 
-  const predecessor = getPlanContract(options, 'plan-r1')!;
-  const replacement = admitPlanContract(options, {
-    ...base,
-    planId: 'plan-r2',
-    scopeKey: 'release-scope',
-    sourceRevision: 'revision-b',
-    planRelation: 'extend',
-    relatedPlanId: 'plan-r1',
-    obligationDispositions: keepAllPlanObligations(predecessor),
+  expect(listPlanContracts({ ...options, status: 'active' })).toHaveLength(1);
+  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(1);
+  expect(listPlanRevisionRecords(options, 'plan-stable').map((record) => record.revision)).toEqual([3, 2, 1]);
+  expect(listPlanRevisionRecords(options, 'plan-stable').map((record) => record.requestedRevisionLabel)).toEqual([
+    'plan-legacy-r4',
+    'plan-legacy-r3',
+    'plan-legacy-r2',
+  ]);
+});
+
+test('advances the Plan execution baseline without semantic replanning when no step is active', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-execution-baseline-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-plan-execution-baseline' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-baseline-r1', repoId: options.repoId, scopeKey: 'release-scope', sourceRevision: 'revision-a', goal: 'Deliver one Plan slice',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
   });
-  expect(replacement).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-r2', status: 'draft' } });
-  expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2' });
-  expect(getPlanContract(options, 'plan-r2')).toMatchObject({ supersedes: ['plan-r1'] });
-  expect(getPlanContract(options, 'plan-post-v2')?.status).toBe('draft');
-  expect(getPlanContract(options, 'plan-post-v2')?.supersededBy).toBeUndefined();
+  approvePlanContract(options, plan.planId);
+
+  const claimed = claimPlanStepForWork(options, {
+    planId: plan.planId, stepId: 'step-a', workId: 'work-baseline-b', sourceRevision: 'revision-b',
+  });
+  expect(claimed).toMatchObject({
+    revision: 1,
+    sourceRevision: 'revision-a',
+    status: 'executing',
+    steps: [{ id: 'step-a', status: 'executing', workId: 'work-baseline-b' }],
+  });
+  expect(getPlanExecutionBaselineRevision(options, plan.planId)).toBe('revision-b');
+});
+
+test('keeps the Plan execution baseline frozen while any step is active', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-execution-baseline-fence-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-plan-execution-baseline-fence' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-baseline-fence', repoId: options.repoId, scopeKey: 'release-scope', sourceRevision: 'revision-a', goal: 'Deliver independent slices',
+    steps: [
+      { id: 'step-a', objective: 'first', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['first done'] },
+      { id: 'step-b', objective: 'second', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['second done'] },
+    ],
+  });
+  approvePlanContract(options, plan.planId);
+  claimPlanStepForWork(options, { planId: plan.planId, stepId: 'step-a', workId: 'work-a', sourceRevision: 'revision-a' });
+
+  expect(() => claimPlanStepForWork(options, {
+    planId: plan.planId, stepId: 'step-b', workId: 'work-b', sourceRevision: 'revision-b',
+  })).toThrow(/PLAN_EXECUTION_BASELINE_LOCKED/);
+  expect(getPlanContract(options, plan.planId)).toMatchObject({ sourceRevision: 'revision-a', steps: [{ id: 'step-a', workId: 'work-a' }, { id: 'step-b' }] });
+  expect(getPlanExecutionBaselineRevision(options, plan.planId)).toBe('revision-a');
 });
 
 test('does not allow cancelled Plans to become extension predecessors', () => {
@@ -456,16 +535,20 @@ test('atomically replans one active Plan-bound Work by widening only its allowed
   });
 
   const replanned = replanActivePlanBoundWorkScope(options, {
-    planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', successorPlanId: 'plan-scope-r2', sourceRevision: 'revision-b',
+    planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', requestedRevisionLabel: 'plan-scope-r2', sourceRevision: 'revision-b',
     allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], reason: 'The Plan requires current-source context closure but omitted its runtime context path.',
   });
 
-  expect(replanned.predecessor).toMatchObject({ status: 'superseded', supersededBy: 'plan-scope-r2' });
-  expect(replanned.successor).toMatchObject({ planId: 'plan-scope-r2', status: 'executing', sourceRevision: 'revision-b', supersedes: ['plan-scope-r1'] });
-  expect(replanned.successor.steps[0]).toMatchObject({ status: 'executing', workId: 'work-stage-7c', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] });
-  expect(getWorkContract(options, 'work-stage-7c')).toMatchObject({ workId: 'work-stage-7c', planId: 'plan-scope-r2', planStepId: 'stage-7c', planSourceRevision: 'revision-b', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], requirementId: 'REQ-scope-replan' });
+  expect(replanned.priorPlan).toMatchObject({ planId: 'plan-scope-r1', revision: 1, status: 'executing', sourceRevision: 'revision-a' });
+  expect(replanned.priorPlan.supersededBy).toBeUndefined();
+  expect(replanned.currentPlan).toMatchObject({ planId: 'plan-scope-r1', revision: 2, status: 'executing', sourceRevision: 'revision-b' });
+  expect(replanned.currentPlan.supersedes).toBeUndefined();
+  expect(replanned.currentPlan.steps[0]).toMatchObject({ status: 'executing', workId: 'work-stage-7c', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] });
+  expect(getWorkContract(options, 'work-stage-7c')).toMatchObject({ workId: 'work-stage-7c', planId: 'plan-scope-r1', planStepId: 'stage-7c', planSourceRevision: 'revision-b', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], requirementId: 'REQ-scope-replan' });
   expect(getWorkContract(options, 'work-stage-7c')?.phaseEvidence.review).toBeDefined();
-  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-scope-r2']);
+  expect(getPlanContract(options, 'plan-scope-r2')).toBeUndefined();
+  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-scope-r1']);
+  expect(listPlanRevisionRecords(options, 'plan-scope-r1')).toMatchObject([{ planId: 'plan-scope-r1', revision: 1, sourceRevision: 'revision-a', requestedRevisionLabel: 'plan-scope-r2' }]);
 });
 
 test('active Plan-bound Work scope replan rejects narrowing or changing the Work identity', () => {
@@ -483,10 +566,10 @@ test('active Plan-bound Work scope replan rejects narrowing or changing the Work
   });
   claimPlanStepForWork(options, { planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', sourceRevision: 'revision-a' });
   expect(() => replanActivePlanBoundWorkScope(options, {
-    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', successorPlanId: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/c/**'], reason: 'attempt narrowing',
+    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', requestedRevisionLabel: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/c/**'], reason: 'attempt narrowing',
   })).toThrow('PLAN_WORK_REPLAN_SCOPE_NARROWING_FORBIDDEN: src/b/**');
   expect(() => replanActivePlanBoundWorkScope(options, {
-    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-other', successorPlanId: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/b/**', 'src/c/**'], reason: 'attempt Work replacement',
+    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-other', requestedRevisionLabel: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/b/**', 'src/c/**'], reason: 'attempt Work replacement',
   })).toThrow('PLAN_WORK_REPLAN_STEP_BINDING_MISMATCH');
   expect(getPlanContract(options, 'plan-fence-r1')?.status).toBe('executing');
   expect(getPlanContract(options, 'plan-fence-r1')?.supersededBy).toBeUndefined();

@@ -1,5 +1,6 @@
 import {
   listControlPlaneRecords,
+  listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
@@ -48,6 +49,8 @@ export interface CreateRequirementInput {
   outcomeStatement: string;
   acceptanceCriteria?: string[];
   requiredDeliveryReferences?: string[];
+  /** Authority-derived provenance only; raw transports must not pass arbitrary audit refs. */
+  auditRefs?: string[];
 }
 
 const NAMESPACE = 'requirement';
@@ -109,16 +112,27 @@ export function createRequirement(
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
     requiredDeliveryReferences: bounded(input.requiredDeliveryReferences, 50),
+    auditRefs: bounded(input.auditRefs, 50),
     state: 'planned',
     needsAttention: false,
     revision: 1,
     createdAt: at,
     updatedAt: at,
-    auditRefs: [],
   };
   if (!requirement.title || !requirement.outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
   withControlPlaneTransaction(options.controllerHome, (database) => {
     if (readWithin(database, requirementId)) throw new Error(`REQUIREMENT_ALREADY_EXISTS: ${requirementId}`);
+    const exclusiveCandidateRefs = requirement.auditRefs.filter(ref => ref.startsWith('cognitive-requirement-candidate:'));
+    if (exclusiveCandidateRefs.length > 0) {
+      const existing = listControlPlaneRecordsWithinTransaction<Requirement>(database, {
+        namespace: NAMESPACE,
+        scope: SCOPE,
+        limit: 1000,
+      });
+      if (existing.length >= 1000) throw new Error('REQUIREMENT_CANDIDATE_BINDING_LOOKUP_LIMIT');
+      const alreadyBound = existing.find(record => exclusiveCandidateRefs.some(ref => record.value.auditRefs.includes(ref)));
+      if (alreadyBound) throw new Error('REQUIREMENT_CANDIDATE_ALREADY_PROMOTED');
+    }
     writeControlPlaneRecordWithinTransaction(database, {
       namespace: NAMESPACE,
       scope: SCOPE,
@@ -130,6 +144,48 @@ export function createRequirement(
     });
   });
   return requirement;
+}
+
+export function bindRequirementCandidateAuditRef(
+  options: RequirementStoreOptions,
+  requirementIdInput: string,
+  candidateAuditRefInput: string,
+): Requirement {
+  const requirementId = id(requirementIdInput);
+  const candidateAuditRef = String(candidateAuditRefInput ?? '').trim().slice(0, 500);
+  if (!candidateAuditRef.startsWith('cognitive-requirement-candidate:')) {
+    throw new Error('REQUIREMENT_CANDIDATE_AUDIT_REF_INVALID');
+  }
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    const records = listControlPlaneRecordsWithinTransaction<Requirement>(database, {
+      namespace: NAMESPACE,
+      scope: SCOPE,
+      limit: 1000,
+    });
+    if (records.length >= 1000) throw new Error('REQUIREMENT_CANDIDATE_BINDING_LOOKUP_LIMIT');
+    const bound = records.find(record => record.value.auditRefs.includes(candidateAuditRef));
+    if (bound && bound.value.requirementId !== requirementId) {
+      throw new Error('REQUIREMENT_CANDIDATE_ALREADY_PROMOTED');
+    }
+    const current = readWithin(database, requirementId);
+    if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+    if (current.value.auditRefs.includes(candidateAuditRef)) return current.value;
+    const updated: Requirement = {
+      ...current.value,
+      auditRefs: [...new Set([...current.value.auditRefs, candidateAuditRef])].slice(-50),
+      revision: current.value.revision + 1,
+      updatedAt: nowIso(options),
+    };
+    return writeControlPlaneRecordWithinTransaction(database, {
+      namespace: NAMESPACE,
+      scope: SCOPE,
+      key: requirementId,
+      schemaVersion: SCHEMA_VERSION,
+      value: updated,
+      action: 'requirement_candidate_promoted',
+      expectedRevision: current.revision,
+    }).value;
+  });
 }
 
 export function updateRequirement(

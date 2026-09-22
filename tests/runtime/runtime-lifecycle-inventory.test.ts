@@ -5,6 +5,7 @@ import {
 } from '../../src/runtime/recovery/lifecycle-inventory';
 
 const REQUIRED_CLASSES = [
+  'assistant_experience', 'assistant_outcome_observation',
   'requirement','plan','work','process_record_log','execution_job','check_receipt',
   'controller_round','controller_session_lease','scheduler_occurrence_history',
   'managed_workspace_checkout','edit_session','verification_snapshot','mcp_transport_session',

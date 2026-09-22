@@ -6,7 +6,7 @@ import {
   type ControllerRoundContext,
 } from '../../packages/kernel/controller/api/index';
 import { runWorkChatgptContinuation } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
-import { buildChatgptControllerRoundPrompt } from './controller-round-host';
+import { renderChatgptControllerRoundPrompt } from '../../src/runtime/root/controller-round-composition';
 import { getChatgptControllerBindingPayload } from './controller-binding-store';
 import { getChatgptWorkConversationBinding } from './work-conversation-binding-store';
 import { chatgptProviderDispatchReceiptId, classifyChatgptProviderFailure } from './provider-delivery';
@@ -71,7 +71,7 @@ export function createChatgptControllerHost(options: {
       }
       const durableConversation = getChatgptWorkConversationBinding(relayStore, roundContext.workId);
       const prompt = [
-        buildChatgptControllerRoundPrompt(relayStore, relay, { exactOriginWork: roundContext.exactOriginWork === true }),
+        renderChatgptControllerRoundPrompt(relayStore, relay, { exactOriginWork: roundContext.exactOriginWork === true }),
         roundContext.continuationHint?.trim() ? `Continuation hint: ${roundContext.continuationHint.trim()}` : '',
       ].filter(Boolean).join('\n\n');
       const result = await runWorkChatgptContinuation({
@@ -89,6 +89,8 @@ export function createChatgptControllerHost(options: {
         reasoning: payload.reasoning ?? 'high',
         tabPolicy: payload.tabPolicy ?? 'auto',
         timeoutMs: payload.timeoutMs,
+        authorizationGrantRefs: payload.authorizationGrantRefs,
+        originSurface: 'schedule',
       });
       if (result.status === 'failed') {
         const code = result.error?.code ?? 'CHATGPT_WORK_CONTINUATION_FAILED';

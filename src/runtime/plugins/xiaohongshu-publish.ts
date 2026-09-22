@@ -7,178 +7,55 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError } from './errors';
-import { executeBrowserPluginAction } from './browser-adapter';
+import {
+  materializedXiaohongshuWorkflow,
+  translateXiaohongshuPublishToWorkflow,
+  type XiaohongshuWorkflowInvocation,
+} from '../workflows/first-party/xiaohongshu';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 8;
-const LIVE_CONTRACT_WAIT_MS = 5_000;
-const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
-const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
-const CREATOR_NOTE_MANAGER_URL = 'https://creator.xiaohongshu.com/new/note-manager';
-const IMAGE_TAB_TEXT = '上传图文';
-const ARTICLE_NEW_TEXT = '新的创作';
-const ARTICLE_LAYOUT_TEXT = '一键排版';
-const ARTICLE_NEXT_TEXT = '下一步';
-const IMAGE_FILE_SELECTOR = 'input[type=file]';
-const IMAGE_TITLE_SELECTOR = 'input[placeholder*="标题"]';
-const IMAGE_BODY_SELECTOR = '[contenteditable="true"][role="textbox"]';
-const ARTICLE_TITLE_SELECTOR = 'textarea:nth-of-type(1)';
-const ARTICLE_BODY_SELECTOR = '[contenteditable="true"]';
-const PUBLISH_SELECTOR = 'xhs-publish-btn';
-const PUBLISH_EVENT = 'publish';
-const CREATOR_SUCCESS_URL_MARKERS = ['published=true', '/publish/success', '/publish/editsuccess'] as const;
+const PROVIDER = 'xiaohongshu-workflow-compatibility';
 
-const LOGIN_URL_MARKERS = ['/login', 'passport.xiaohongshu.com', 'login.xiaohongshu.com'];
-const LOGIN_TEXT_MARKERS = ['手机号登录', '扫码登录', '验证码登录'];
+function now(): string { return new Date().toISOString(); }
 
-type PublishMode = 'image_note' | 'generated_image_note' | 'long_text';
-type NormalizedPublishMode = 'image_note' | 'long_text';
-type RecipeStep = {
-  id: string;
-  actionId: string;
-  args: Record<string, unknown>;
-  expectation?: string;
-};
-type RecipeReceipt = { stepId: string; actionId: string; durationMs: number; url?: string };
-type LiveContractAnchorStatus = 'ready' | 'hidden' | 'slow_attached' | 'slow_attached_hidden' | 'missing' | 'blocked' | 'error';
-type LiveContractAnchor = {
-  id: string;
-  selector?: string;
-  compatible: boolean;
-  status: LiveContractAnchorStatus;
-  durationMs: number;
-  exists?: boolean;
-  visible?: boolean;
-  message?: string;
-};
-
-interface XiaohongshuHooks {
-  executeBrowserAction?: typeof executeBrowserPluginAction;
-  now?: () => string;
-  nowMs?: () => number;
-}
-
-let hooks: XiaohongshuHooks = {};
-
-export function setXiaohongshuPluginHooksForTest(next: XiaohongshuHooks): void {
-  hooks = next;
-}
-
-export function resetXiaohongshuPluginHooksForTest(): void {
-  hooks = {};
-}
-
-function now(): string {
-  return hooks.now?.() ?? new Date().toISOString();
-}
-
-function nowMs(): number {
-  return hooks.nowMs?.() ?? Date.now();
-}
-
-function elapsedMs(startedAt: number): number {
-  return Math.max(0, nowMs() - startedAt);
-}
-
-function browserExecutor(): typeof executeBrowserPluginAction {
-  return hooks.executeBrowserAction ?? executeBrowserPluginAction;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function requiredString(value: unknown, name: string): string {
-  const normalized = stringValue(value);
-  if (!normalized) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} is required.`, { retryable: false });
-  return normalized;
-}
-
-function stringList(value: unknown): string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || !entry.trim())) {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'image_paths must be a string array.', { retryable: false });
-  }
-  return value.map((entry) => String(entry).trim());
-}
-
-function publishMode(value: unknown): PublishMode {
-  if (value === 'image_note' || value === 'generated_image_note' || value === 'long_text') return value;
-  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'mode must be image_note, generated_image_note, or long_text.', { retryable: false });
-}
-
-function normalizedMode(mode: PublishMode): NormalizedPublishMode {
-  return mode === 'generated_image_note' ? 'image_note' : mode;
-}
-
-function validProfileUrl(value: string): boolean {
+function invocation(args: Record<string, unknown>): XiaohongshuWorkflowInvocation {
   try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'https:' && parsed.hostname === 'www.xiaohongshu.com' && parsed.pathname.startsWith('/user/profile/');
-  } catch {
-    return false;
+    return translateXiaohongshuPublishToWorkflow(args);
+  } catch (error) {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      error instanceof Error ? error.message : String(error),
+      { retryable: false },
+    );
   }
 }
 
-export function isXiaohongshuAuthRequired(url: string, text: string): boolean {
-  const normalizedUrl = url.toLowerCase();
-  return LOGIN_URL_MARKERS.some((marker) => normalizedUrl.includes(marker.toLowerCase()))
-    || LOGIN_TEXT_MARKERS.some((marker) => text.includes(marker));
-}
-
-export function classifyXiaohongshuPublishState(input: {
-  phase: 'preflight' | 'creator_receipt' | 'profile_verify';
-  url: string;
-  text: string;
-  expectedTitle?: string;
-}): 'AUTH_REQUIRED' | 'READY' | 'PUBLISHED_RECEIPT' | 'PROFILE_VERIFIED' | 'VERIFY_PENDING' | 'PAGE_SCHEMA_CHANGED' {
-  if (isXiaohongshuAuthRequired(input.url, input.text)) return 'AUTH_REQUIRED';
-  if (input.phase === 'creator_receipt') {
-    const normalizedUrl = input.url.toLowerCase();
-    return CREATOR_SUCCESS_URL_MARKERS.some((marker) => normalizedUrl.includes(marker))
-      ? 'PUBLISHED_RECEIPT'
-      : 'VERIFY_PENDING';
-  }
-  if (input.phase === 'profile_verify') {
-    return input.expectedTitle && input.text.includes(input.expectedTitle) ? 'PROFILE_VERIFIED' : 'VERIFY_PENDING';
-  }
-  return input.text.includes('创作服务平台') || input.text.includes('发布笔记') ? 'READY' : 'PAGE_SCHEMA_CHANGED';
-}
-
-function parseRecipeArgs(args: Record<string, unknown>) {
-  const mode = publishMode(args.mode);
-  const sessionId = requiredString(args.session_id, 'session_id');
-  const profileUrl = requiredString(args.profile_url, 'profile_url');
-  if (!validProfileUrl(profileUrl)) {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'profile_url must be an https://www.xiaohongshu.com/user/profile/... URL.', { retryable: false });
-  }
-  const title = requiredString(args.title, 'title');
-  const body = requiredString(args.body, 'body');
-  const imagePaths = stringList(args.image_paths);
-  const summary = stringValue(args.summary);
-  const templateText = stringValue(args.template_text);
-  if (normalizedMode(mode) === 'image_note' && mode !== 'generated_image_note' && (imagePaths.length < 1 || imagePaths.length > 18)) {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'image_note requires 1-18 image_paths.', { retryable: false });
-  }
-  if (mode === 'generated_image_note' && imagePaths.length > 18) {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'generated_image_note accepts at most 18 generated image_paths.', { retryable: false });
-  }
-  return { mode, normalizedMode: normalizedMode(mode), sessionId, profileUrl, title, body, imagePaths, summary, templateText };
-}
-
+/**
+ * Compatibility projection only. Platform URLs, selectors, login markers,
+ * sequencing, verification and effect reconciliation live in the authored
+ * Workflow asset. This adapter never dispatches Browser actions.
+ */
 export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Record<string, unknown> {
-  const parsed = parseRecipeArgs(args);
-  const generationRequired = parsed.mode === 'generated_image_note' && parsed.imagePaths.length === 0;
-  if (generationRequired) {
-    return {
-      schemaVersion: 1,
-      recipeVersion: RECIPE_VERSION,
-      provider: 'xiaohongshu-web',
-      requestedMode: parsed.mode,
-      normalizedMode: parsed.normalizedMode,
-      generationRequired: true,
-      sessionId: parsed.sessionId,
-      profileUrl: parsed.profileUrl,
+  const translated = invocation(args);
+  const asset = materializedXiaohongshuWorkflow(translated.workflowId);
+  return {
+    schemaVersion: 1,
+    provider: PROVIDER,
+    workflowId: asset.workflowId,
+    workflowVersion: asset.version,
+    workflowContentDigest: asset.contentDigest,
+    registryScope: translated.registryScope,
+    normalizedMode: translated.normalizedMode,
+    generationRequired: translated.generationRequired,
+    inputs: translated.inputs,
+    execution: {
+      tool: 'rh_work',
+      operation: 'workflow_execute',
+      requiredRuntimeFields: ['work_id', 'workflow_run_id', 'controller_authority_id', 'relay_scope_id'],
+      workflow_id: asset.workflowId,
+      workflow_inputs: translated.inputs,
+    },
+    ...(translated.generationRequired ? {
       generationHandoff: {
         status: 'required',
         requiredInput: 'image_paths',
@@ -186,558 +63,104 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
         maxImages: 18,
         resumeAction: 'publish_note',
         resumeMode: 'generated_image_note',
-        next: 'Generate one or more image files, then call publish_note again with image_paths. The publishing path will normalize to image_note.',
       },
-      steps: [],
-      verification: [],
-    };
-  }
-
-  const creatorUrl = parsed.normalizedMode === 'long_text' ? CREATOR_ARTICLE_URL : CREATOR_BASE_URL;
-  const steps: RecipeStep[] = [
-    {
-      id: 'preflight.navigate_creator',
-      actionId: 'navigate',
-      args: { session_id: parsed.sessionId, url: creatorUrl, wait_until: 'domcontentloaded', timeout_ms: 60_000 },
-      expectation: 'Creator page remains in the persisted browser profile; raw cookies/tokens are not copied into recipe state.',
-    },
-    parsed.normalizedMode === 'image_note'
-      ? {
-          id: 'image.select_mode',
-          actionId: 'click_text',
-          args: { session_id: parsed.sessionId, text: IMAGE_TAB_TEXT, post_action_wait_ms: 750 },
-          expectation: 'Creator may default to 上传视频; switch semantically to the exact visible 上传图文 tab before waiting for the image input.',
-        }
-      : {
-          id: 'preflight.read_auth_state',
-          actionId: 'get_text',
-          args: { session_id: parsed.sessionId, max_chars: 8_000 },
-          expectation: 'Classify with phase=preflight; stop as AUTH_REQUIRED before editing if login markers appear.',
-        },
-  ];
-
-  if (parsed.normalizedMode === 'image_note') {
-    steps.push(
-      { id: 'image.wait_file_input', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, state: 'attached', timeout_ms: 30_000 }, expectation: 'Wait for the image-upload input only after the semantic 上传图文 mode switch.' },
-      { id: 'image.attach_files', actionId: 'attach_local_file', args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, file_paths: parsed.imagePaths, post_action_wait_ms: 1_200 }, expectation: 'One input event/change event after all files are selected.' },
-      { id: 'image.wait_editor', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: IMAGE_TITLE_SELECTOR, state: 'visible', timeout_ms: 30_000 } },
-      { id: 'image.fill_title', actionId: 'fill', args: { session_id: parsed.sessionId, selector: IMAGE_TITLE_SELECTOR, text: parsed.title } },
-      { id: 'image.fill_body', actionId: 'fill', args: { session_id: parsed.sessionId, selector: IMAGE_BODY_SELECTOR, text: parsed.body } },
-    );
-  } else {
-    steps.push(
-      { id: 'article.new', actionId: 'click_text', args: { session_id: parsed.sessionId, text: ARTICLE_NEW_TEXT, post_action_wait_ms: 900 }, expectation: 'Exact visible 新的创作 button.' },
-      { id: 'article.wait_editor', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: ARTICLE_TITLE_SELECTOR, state: 'visible', timeout_ms: 30_000 } },
-      { id: 'article.fill_title', actionId: 'fill', args: { session_id: parsed.sessionId, selector: ARTICLE_TITLE_SELECTOR, text: parsed.title } },
-      { id: 'article.fill_body', actionId: 'fill', args: { session_id: parsed.sessionId, selector: ARTICLE_BODY_SELECTOR, text: parsed.body } },
-      { id: 'article.layout', actionId: 'click_text', args: { session_id: parsed.sessionId, text: ARTICLE_LAYOUT_TEXT, post_action_wait_ms: 1_500 } },
-    );
-    if (parsed.templateText) {
-      steps.push({ id: 'article.select_template', actionId: 'click_text', args: { session_id: parsed.sessionId, text: parsed.templateText, post_action_wait_ms: 500 } });
-    }
-    steps.push(
-      { id: 'article.next', actionId: 'click_text', args: { session_id: parsed.sessionId, text: ARTICLE_NEXT_TEXT, post_action_wait_ms: 1_200 } },
-      { id: 'article.wait_publish', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: PUBLISH_SELECTOR, state: 'visible', timeout_ms: 30_000 } },
-    );
-    if (parsed.summary) {
-      steps.push({ id: 'article.fill_summary', actionId: 'fill', args: { session_id: parsed.sessionId, selector: ARTICLE_BODY_SELECTOR, text: parsed.summary } });
-    }
-  }
-
-  steps.push(
-    { id: 'publish.semantic_submit', actionId: 'dispatch_event', args: { session_id: parsed.sessionId, selector: PUBLISH_SELECTOR, event: PUBLISH_EVENT, post_action_wait_ms: 1_500 }, expectation: 'Current XHS closed-shadow publish control emits publish; recipe version must be updated if this semantic event changes.' },
-    { id: 'verify.creator_receipt', actionId: 'get_text', args: { session_id: parsed.sessionId, max_chars: 4_000 }, expectation: 'Creator URL must expose a recognized publish success receipt before title verification.' },
-    { id: 'verify.creator_note_manager', actionId: 'navigate', args: { session_id: parsed.sessionId, url: CREATOR_NOTE_MANAGER_URL, wait_until: 'domcontentloaded', timeout_ms: 60_000 } },
-    { id: 'verify.creator_title', actionId: 'get_text', args: { session_id: parsed.sessionId, max_chars: 12_000 }, expectation: `Creator note manager text must contain exact title even when the note is still under review: ${parsed.title}` },
-  );
-
-  return {
-    schemaVersion: 1,
-    recipeVersion: RECIPE_VERSION,
-    provider: 'xiaohongshu-web',
-    requestedMode: parsed.mode,
-    normalizedMode: parsed.normalizedMode,
-    generationRequired: false,
-    sessionId: parsed.sessionId,
-    profileUrl: parsed.profileUrl,
-    authPolicy: {
-      loginUrlMarkers: LOGIN_URL_MARKERS,
-      loginTextMarkers: LOGIN_TEXT_MARKERS,
-      credentialPersistence: 'browser_profile_only',
-      onAuthRequired: 'stop_before_edit_and_resume_after_user_login',
-    },
-    selectors: {
-      imageFile: IMAGE_FILE_SELECTOR,
-      imageTitle: IMAGE_TITLE_SELECTOR,
-      imageBody: IMAGE_BODY_SELECTOR,
-      articleTitle: ARTICLE_TITLE_SELECTOR,
-      articleBody: ARTICLE_BODY_SELECTOR,
-      publish: PUBLISH_SELECTOR,
-      publishEvent: PUBLISH_EVENT,
-    },
-    steps,
-    verification: ['creator_publish_success_receipt', 'creator_note_manager_contains_exact_title'],
-  };
-}
-
-function resultText(result: Record<string, unknown>): string {
-  return typeof result.text === 'string' ? result.text : '';
-}
-
-function resultUrl(result: Record<string, unknown>): string {
-  if (typeof result.url === 'string') return result.url;
-  const session = result.session;
-  if (session && typeof session === 'object' && typeof (session as Record<string, unknown>).url === 'string') return String((session as Record<string, unknown>).url);
-  const navigation = result.navigation;
-  if (navigation && typeof navigation === 'object' && typeof (navigation as Record<string, unknown>).url === 'string') return String((navigation as Record<string, unknown>).url);
-  return '';
-}
-
-function schemaDriftMessage(message: string): boolean {
-  return /not found|does not allow multiple|Timeout waiting for selector|visible exact text not found|file input/i.test(message);
-}
-
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function recordArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.map(recordValue).filter((entry): entry is Record<string, unknown> => Boolean(entry)) : [];
-}
-
-function verificationBoolean(result: Record<string, unknown>, criterion: string): boolean | undefined {
-  const check = recordArray(result.checks).find((entry) => entry.criterion === criterion);
-  return check ? check.observed === true : undefined;
-}
-
-async function runXiaohongshuLiveContractSmoke(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const sessionId = requiredString(input.args.session_id, 'session_id');
-  const requestedMode = input.args.mode === undefined ? 'image_note' : publishMode(input.args.mode);
-  const mode = normalizedMode(requestedMode);
-  const execute = browserExecutor();
-  const anchors: LiveContractAnchor[] = [];
-  const startedAt = nowMs();
-  const creatorUrl = mode === 'long_text' ? CREATOR_ARTICLE_URL : CREATOR_BASE_URL;
-
-  const call = async (actionId: string, args: Record<string, unknown>, suffix: string) => execute({
-    ...input,
-    pluginId: 'browser',
-    actionId,
-    requestId: `${input.requestId}:xhs-contract:${RECIPE_VERSION}:${suffix}`,
-    args,
-  });
-
-  const addError = (id: string, started: number, error: unknown, selector?: string): void => {
-    anchors.push({
-      id, selector, compatible: false, status: 'error', durationMs: elapsedMs(started),
-      message: error instanceof Error ? error.message : String(error),
-    });
-  };
-
-  const probeSelector = async (id: string, selector: string, expectedHidden = false): Promise<LiveContractAnchor> => {
-    const probeStarted = nowMs();
-    const verify = async () => call('verify_state', {
-      session_id: sessionId,
-      selector,
-      require_visible: true,
-      max_chars: 256,
-    }, `${id}:verify`);
-    try {
-      let observation = await verify();
-      let exists = verificationBoolean(observation, 'selector_exists') === true;
-      let visible = verificationBoolean(observation, 'selector_visible') === true;
-      let slow = false;
-      if (!exists) {
-        try {
-          await call('wait_for_selector', {
-            session_id: sessionId,
-            selector,
-            state: 'attached',
-            timeout_ms: LIVE_CONTRACT_WAIT_MS,
-          }, `${id}:wait`);
-          slow = true;
-          observation = await verify();
-          exists = verificationBoolean(observation, 'selector_exists') === true;
-          visible = verificationBoolean(observation, 'selector_visible') === true;
-        } catch {
-          return { id, selector, compatible: false, status: 'missing', durationMs: elapsedMs(probeStarted), exists: false, visible: false };
-        }
-      }
-      const compatible = exists && (!expectedHidden || !visible);
-      const status: LiveContractAnchorStatus = !exists
-        ? 'missing'
-        : slow && !visible
-          ? 'slow_attached_hidden'
-          : slow
-            ? 'slow_attached'
-            : !visible
-              ? 'hidden'
-              : 'ready';
-      return {
-        id, selector, compatible, status, durationMs: elapsedMs(probeStarted), exists, visible,
-        ...(expectedHidden && visible ? { message: 'Expected the file input to remain attached but hidden.' } : {}),
-      };
-    } catch (error) {
-      return {
-        id, selector, compatible: false, status: 'error', durationMs: elapsedMs(probeStarted),
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-  };
-
-  const navigationStarted = nowMs();
-  let navigation: Record<string, unknown>;
-  try {
-    navigation = await call('navigate', {
-      session_id: sessionId,
-      url: creatorUrl,
-      wait_until: 'domcontentloaded',
-      timeout_ms: 60_000,
-    }, 'navigate');
-    anchors.push({ id: 'creator.navigation', compatible: true, status: 'ready', durationMs: elapsedMs(navigationStarted) });
-  } catch (error) {
-    addError('creator.navigation', navigationStarted, error);
-    return {
-      status: 'incompatible', recipeVersion: RECIPE_VERSION, mode, sessionId, creatorUrl,
-      anchors, incompatibleAnchors: anchors.filter((anchor) => !anchor.compatible).map((anchor) => anchor.id),
-      receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS], sideEffects: { uploaded: false, submitted: false, published: false },
-      durationMs: elapsedMs(startedAt),
-    };
-  }
-
-  const observedUrl = resultUrl(navigation) || creatorUrl;
-  if (isXiaohongshuAuthRequired(observedUrl, '')) {
-    anchors.push({ id: 'creator.auth', compatible: false, status: 'blocked', durationMs: 0, message: 'Creator redirected to an authentication surface.' });
-    return {
-      status: 'auth_required', recipeVersion: RECIPE_VERSION, mode, sessionId, creatorUrl: observedUrl,
-      anchors, incompatibleAnchors: ['creator.auth'], receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS],
-      sideEffects: { uploaded: false, submitted: false, published: false }, durationMs: elapsedMs(startedAt),
-    };
-  }
-
-  const authStarted = nowMs();
-  try {
-    const auth = await call('query_all', {
-      session_id: sessionId,
-      selector: 'button,[role="button"],a',
-      limit: 80,
-    }, 'auth');
-    const authText = recordArray(auth.matches).map((entry) => stringValue(entry.text) ?? '').join('\n');
-    const authRequired = isXiaohongshuAuthRequired(observedUrl, authText);
-    anchors.push({
-      id: 'creator.auth', compatible: !authRequired, status: authRequired ? 'blocked' : 'ready',
-      durationMs: elapsedMs(authStarted), ...(authRequired ? { message: 'Creator authentication markers are present.' } : {}),
-    });
-    if (authRequired) {
-      return {
-        status: 'auth_required', recipeVersion: RECIPE_VERSION, mode, sessionId, creatorUrl: observedUrl,
-        anchors, incompatibleAnchors: ['creator.auth'], receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS],
-        sideEffects: { uploaded: false, submitted: false, published: false }, durationMs: elapsedMs(startedAt),
-      };
-    }
-  } catch (error) {
-    addError('creator.auth', authStarted, error);
-  }
-
-  const surfaceStarted = nowMs();
-  try {
-    await call('click_text', {
-      session_id: sessionId,
-      text: mode === 'image_note' ? IMAGE_TAB_TEXT : ARTICLE_NEW_TEXT,
-      post_action_wait_ms: mode === 'image_note' ? 250 : 400,
-    }, 'surface');
-    anchors.push({ id: mode === 'image_note' ? 'image.surface' : 'article.surface', compatible: true, status: 'ready', durationMs: elapsedMs(surfaceStarted) });
-  } catch (error) {
-    addError(mode === 'image_note' ? 'image.surface' : 'article.surface', surfaceStarted, error);
-  }
-
-  if (mode === 'image_note') {
-    anchors.push(await probeSelector('image.file_input', IMAGE_FILE_SELECTOR, true));
-    anchors.push(await probeSelector('image.title', IMAGE_TITLE_SELECTOR));
-    anchors.push(await probeSelector('image.body', IMAGE_BODY_SELECTOR));
-  } else {
-    anchors.push(await probeSelector('article.title', ARTICLE_TITLE_SELECTOR));
-    anchors.push(await probeSelector('article.body', ARTICLE_BODY_SELECTOR));
-  }
-  anchors.push(await probeSelector('publish.host', PUBLISH_SELECTOR));
-  anchors.push({ id: 'publish.receipt_patterns', compatible: true, status: 'ready', durationMs: 0 });
-
-  const incompatibleAnchors = anchors.filter((anchor) => !anchor.compatible).map((anchor) => anchor.id);
-  return {
-    status: incompatibleAnchors.length === 0 ? 'compatible' : 'incompatible',
-    recipeVersion: RECIPE_VERSION,
-    mode,
-    sessionId,
-    creatorUrl: observedUrl,
-    anchors,
-    incompatibleAnchors,
-    receiptPatterns: [...CREATOR_SUCCESS_URL_MARKERS],
-    sideEffects: { uploaded: false, submitted: false, published: false },
-    durationMs: elapsedMs(startedAt),
+    } : {}),
   };
 }
 
 export async function executeXiaohongshuPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  if (input.actionId === 'get_publish_recipe') return buildXiaohongshuPublishRecipe(input.args);
-  if (input.actionId === 'check_live_contract') return runXiaohongshuLiveContractSmoke(input);
-  if (input.actionId === 'classify_publish_state') {
-    const phase = input.args.phase;
-    if (phase !== 'preflight' && phase !== 'creator_receipt' && phase !== 'profile_verify') {
-      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'phase must be preflight, creator_receipt, or profile_verify.', { retryable: false });
-    }
-    const url = requiredString(input.args.url, 'url');
-    const text = typeof input.args.text === 'string' ? input.args.text : '';
-    const expectedTitle = stringValue(input.args.expected_title);
-    return { state: classifyXiaohongshuPublishState({ phase, url, text, expectedTitle }), recipeVersion: RECIPE_VERSION };
-  }
-  if (input.actionId !== 'publish_note') {
+  if (input.actionId !== 'get_publish_recipe' && input.actionId !== 'publish_note') {
     throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `xiaohongshu/${input.actionId} is not supported.`, { retryable: false });
   }
-
-  const parsed = parseRecipeArgs(input.args);
-  if (parsed.mode === 'generated_image_note' && parsed.imagePaths.length === 0) {
-    return {
-      status: 'generation_required',
-      recipeVersion: RECIPE_VERSION,
-      resumeMode: 'generated_image_note',
-      next: 'Generate one or more image files, then call publish_note again with image_paths. The publishing path will normalize to image_note.',
-    };
-  }
-
-  const contractSmoke = await runXiaohongshuLiveContractSmoke({ ...input, actionId: 'check_live_contract' });
-  if (contractSmoke.status === 'auth_required') {
-    return {
-      status: 'auth_required', recipeVersion: RECIPE_VERSION, checkpoint: 'preflight.live_contract',
-      sessionId: parsed.sessionId, contractSmoke,
-      next: 'Complete only the necessary Xiaohongshu login/verification in the existing browser profile, then rerun publish_note with the same inputs.',
-    };
-  }
-  if (contractSmoke.status !== 'compatible') {
-    return {
-      status: 'page_schema_changed', recipeVersion: RECIPE_VERSION, checkpoint: 'preflight.live_contract', contractSmoke,
-      next: 'Review all incompatible live-contract anchors before uploading files or dispatching publish.',
-    };
-  }
-
   const recipe = buildXiaohongshuPublishRecipe(input.args);
-  const steps = recipe.steps as RecipeStep[];
-  const execute = browserExecutor();
-  const receipts: RecipeReceipt[] = [];
-  let currentStep = 'preflight';
-  let creatorReceipt: Record<string, unknown> | undefined;
-  let profileReceipt: Record<string, unknown> | undefined;
-
-  const runStep = async (step: RecipeStep, index: number): Promise<Record<string, unknown>> => {
-    currentStep = step.id;
-    const startedAt = nowMs();
-    const result = await execute({
-      ...input,
-      pluginId: 'browser',
-      actionId: step.actionId,
-      requestId: `${input.requestId}:xhs:${RECIPE_VERSION}:${index}:${step.actionId}`,
-      args: step.args,
-    });
-    receipts.push({ stepId: step.id, actionId: step.actionId, durationMs: elapsedMs(startedAt), ...(resultUrl(result) ? { url: resultUrl(result) } : {}) });
-    return result;
+  if (input.actionId === 'get_publish_recipe') return recipe;
+  return {
+    ...recipe,
+    status: recipe.generationRequired === true ? 'generation_required' : 'workflow_required',
+    next: recipe.generationRequired === true
+      ? 'Generate one or more image files and request the same compatibility translation with image_paths.'
+      : 'Execute the returned Workflow through rh_work workflow_execute under the exact claimed Work/controller authority.',
   };
-
-  try {
-    const preflightNavigate = await runStep(steps[0], 0);
-    const navigateUrl = resultUrl(preflightNavigate);
-    if (isXiaohongshuAuthRequired(navigateUrl, '')) {
-      return {
-        status: 'auth_required',
-        recipeVersion: RECIPE_VERSION,
-        checkpoint: 'preflight.navigate_creator',
-        sessionId: parsed.sessionId,
-        next: 'Complete only the necessary Xiaohongshu login/verification in the existing browser profile, then rerun publish_note with the same inputs.',
-        receipts,
-      };
-    }
-
-    const preflight = await runStep(steps[1], 1);
-    const preflightUrl = resultUrl(preflight) || navigateUrl;
-    const preflightState = parsed.normalizedMode === 'image_note'
-      ? 'READY'
-      : classifyXiaohongshuPublishState({ phase: 'preflight', url: preflightUrl, text: resultText(preflight) });
-    if (preflightState === 'AUTH_REQUIRED') {
-      return {
-        status: 'auth_required',
-        recipeVersion: RECIPE_VERSION,
-        checkpoint: steps[1].id,
-        sessionId: parsed.sessionId,
-        next: 'Complete only the necessary Xiaohongshu login/verification in the existing browser profile, then rerun publish_note with the same inputs.',
-        receipts,
-      };
-    }
-    if (preflightState !== 'READY') {
-      return { status: 'page_schema_changed', recipeVersion: RECIPE_VERSION, checkpoint: currentStep, receipts };
-    }
-
-    for (let index = 2; index < steps.length; index += 1) {
-      const step = steps[index];
-      const result = await runStep(step, index);
-      if (step.id === 'verify.creator_receipt') {
-        creatorReceipt = result;
-        const state = classifyXiaohongshuPublishState({ phase: 'creator_receipt', url: resultUrl(result), text: resultText(result) });
-        if (state === 'AUTH_REQUIRED') {
-          return { status: 'auth_required', recipeVersion: RECIPE_VERSION, checkpoint: step.id, receipts, next: 'Restore Xiaohongshu login in the existing browser profile, then verify the draft/publication state before retrying.' };
-        }
-        if (state !== 'PUBLISHED_RECEIPT') {
-          return { status: 'publish_unverified', recipeVersion: RECIPE_VERSION, checkpoint: step.id, creatorUrl: resultUrl(result), receipts };
-        }
-      }
-      if (step.id === 'verify.creator_title') profileReceipt = result;
-    }
-
-    const profileState = profileReceipt
-      ? classifyXiaohongshuPublishState({ phase: 'profile_verify', url: resultUrl(profileReceipt), text: resultText(profileReceipt), expectedTitle: parsed.title })
-      : 'VERIFY_PENDING';
-    if (profileState !== 'PROFILE_VERIFIED') {
-      return {
-        status: 'verification_pending',
-        recipeVersion: RECIPE_VERSION,
-        creatorReceipt: creatorReceipt ? { url: resultUrl(creatorReceipt) } : undefined,
-        verificationUrl: CREATOR_NOTE_MANAGER_URL,
-        expectedTitle: parsed.title,
-        receipts,
-      };
-    }
-    return {
-      status: 'published',
-      recipeVersion: RECIPE_VERSION,
-      contractSmoke,
-      mode: parsed.mode,
-      normalizedMode: parsed.normalizedMode,
-      title: parsed.title,
-      creatorReceipt: { url: resultUrl(creatorReceipt ?? {}) },
-      creatorVerification: { url: resultUrl(profileReceipt ?? {}), titleFound: true },
-      receipts,
-      publishedAt: now(),
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (schemaDriftMessage(message)) {
-      return {
-        status: 'page_schema_changed',
-        recipeVersion: RECIPE_VERSION,
-        checkpoint: currentStep,
-        message,
-        receipts,
-        next: 'Re-discover only the failed semantic anchor, update the Xiaohongshu recipe version, then resume with the same content inputs.',
-      };
-    }
-    throw error;
-  }
 }
 
 function health(): AssistantPluginHealth {
   return {
-    state: 'ready',
-    checkedAt: now(),
-    ready: true,
-    probed: true,
-    errors: [],
-    warnings: ['Xiaohongshu authentication is owned by the Browser profile; login validity is checked at publish preflight and no raw token/cookie is stored by this recipe.'],
-    details: { recipeVersion: RECIPE_VERSION, browserSessionRequired: true },
+    state: 'ready', checkedAt: now(), ready: true, probed: true, errors: [],
+    warnings: ['This compatibility adapter is read-only. Xiaohongshu external effects are owned exclusively by the versioned Workflow Runtime and generic Browser capabilities.'],
+    details: { workflowRuntimeRequired: true, browserSessionRequired: true },
   };
 }
 
 function permissions(): AssistantPluginPermissionScope[] {
-  return [
-    { scope: 'xiaohongshu.recipe', mode: 'read', description: 'Resolve and classify the versioned Xiaohongshu publishing recipe.', granted: true, required: true },
-    { scope: 'xiaohongshu.publish', mode: 'write', description: 'Execute the bounded Xiaohongshu publishing recipe through the existing Browser plugin.', granted: true, required: true },
-  ];
+  return [{
+    scope: 'xiaohongshu.recipe', mode: 'read',
+    description: 'Translate legacy Xiaohongshu publish inputs into the canonical first-party Workflow invocation.',
+    granted: true, required: true,
+  }];
 }
 
 function capabilities(): AssistantPluginCapability[] {
   return [{
-    capabilityId: 'xiaohongshu-publish',
-    title: 'Xiaohongshu Publishing Recipe',
-    description: 'Versioned Browser-backed publishing flow with auth fencing, image/long-text routing, generated-image handoff, semantic publish activation, and dual verification.',
-    scopes: ['xiaohongshu.recipe', 'xiaohongshu.publish'],
-    actions: ['get_publish_recipe', 'check_live_contract', 'classify_publish_state', 'publish_note'],
+    capabilityId: 'xiaohongshu-workflow-compatibility',
+    title: 'Xiaohongshu Workflow Compatibility',
+    description: 'Read-only translation into versioned first-party Workflow assets. It does not own publishing effects.',
+    scopes: ['xiaohongshu.recipe'],
+    actions: ['get_publish_recipe', 'publish_note'],
   }];
 }
 
-function actions(): AssistantPluginActionDescriptor[] {
-  const recipeSchema = {
+function recipeSchema(): Record<string, unknown> {
+  return {
     type: 'object',
     properties: {
       mode: { type: 'string', enum: ['image_note', 'generated_image_note', 'long_text'] },
       session_id: { type: 'string' },
+      account: { type: 'string' },
       profile_url: { type: 'string' },
       title: { type: 'string' },
       body: { type: 'string' },
-      image_paths: { type: 'array', minItems: 1, maxItems: 18, items: { type: 'string' } },
+      image_paths: { type: 'array', maxItems: 18, items: { type: 'string' } },
       summary: { type: 'string' },
       template_text: { type: 'string' },
     },
     required: ['mode', 'session_id', 'profile_url', 'title', 'body'],
     additionalProperties: false,
   };
+}
+
+function actions(): AssistantPluginActionDescriptor[] {
+  const schema = recipeSchema();
   return [
     {
-      actionId: 'get_publish_recipe', title: 'Resolve publish recipe', description: 'Return the current deterministic Xiaohongshu Browser action sequence without executing it.',
+      actionId: 'get_publish_recipe', title: 'Resolve publish Workflow',
+      description: 'Translate inputs to the immutable first-party Xiaohongshu Workflow identity and typed inputs without executing Browser effects.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['xiaohongshu.recipe'], resourceClaims: [], argumentsSchema: recipeSchema,
+      scopes: ['xiaohongshu.recipe'], resourceClaims: [], argumentsSchema: schema,
     },
     {
-      actionId: 'check_live_contract', title: 'Check live Creator contract', description: 'Run a bounded non-publishing Creator preflight that navigates/selects the requested creation surface, reports all selector incompatibilities together, distinguishes hidden/slow-attaching/missing anchors, and never uploads content or dispatches publish.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true,
-      scopes: ['xiaohongshu.recipe'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: {
-        type: 'object',
-        properties: {
-          session_id: { type: 'string' },
-          mode: { type: 'string', enum: ['image_note', 'generated_image_note', 'long_text'] },
-        },
-        required: ['session_id'], additionalProperties: false,
-      },
-    },
-    {
-      actionId: 'classify_publish_state', title: 'Classify publish state', description: 'Classify observed Xiaohongshu URL/text as ready, auth-required, published receipt, profile verified, pending, or schema drift.',
+      actionId: 'publish_note', title: 'Translate legacy publish request',
+      description: 'Compatibility-only alias that returns the canonical rh_work workflow_execute invocation. It never publishes directly.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['xiaohongshu.recipe'], resourceClaims: [],
-      argumentsSchema: {
-        type: 'object',
-        properties: {
-          phase: { type: 'string', enum: ['preflight', 'creator_receipt', 'profile_verify'] },
-          url: { type: 'string' }, text: { type: 'string' }, expected_title: { type: 'string' },
-        },
-        required: ['phase', 'url', 'text'], additionalProperties: false,
-      },
-    },
-    {
-      actionId: 'publish_note', title: 'Publish Xiaohongshu note', description: 'Execute the versioned Xiaohongshu publish recipe through the existing persisted Browser session. Stops on login expiry or page-schema drift and only reports published after a Creator success receipt plus exact-title verification in Creator note manager.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 180_000, cancellable: true, idempotent: false,
-      scopes: ['xiaohongshu.publish'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }, { resource: 'repo-state', mode: 'write' }], argumentsSchema: recipeSchema,
+      scopes: ['xiaohongshu.recipe'], resourceClaims: [], argumentsSchema: schema,
     },
   ];
 }
 
 export function buildXiaohongshuPluginManifest(previousRevision = 0, previousUpdatedAt?: string): AssistantPluginManifest {
   return {
-    schemaVersion: 1,
-    manifestVersion: 1,
-    revision: Math.max(1, previousRevision || 1),
-    pluginId: PLUGIN_ID,
-    provider: 'xiaohongshu-web-recipe',
-    displayName: 'Xiaohongshu Publishing',
-    pluginVersion: '1.0.0',
+    schemaVersion: 1, manifestVersion: 1, revision: Math.max(1, previousRevision || 1),
+    pluginId: PLUGIN_ID, provider: PROVIDER, displayName: 'Xiaohongshu Workflow Compatibility', pluginVersion: '2.0.0',
     authority: {
-      strategy: 'derived',
-      duplicateStateAllowed: false,
-      sourceOfTruth: ['source:src/runtime/plugins/xiaohongshu-publish.ts', 'browser-profile:authentication-and-session'],
+      strategy: 'derived', duplicateStateAllowed: false,
+      sourceOfTruth: [
+        'source:assets/workflows/xiaohongshu/*.draft.json',
+        'source:src/runtime/workflows/first-party/xiaohongshu.ts',
+        'browser-profile:authentication-and-session',
+      ],
     },
     enabled: true,
-    lifecycle: { state: 'enabled', reason: 'Versioned Xiaohongshu publishing recipe is available; live authentication is fenced at execution time.' },
-    health: health(),
-    permissions: permissions(),
-    capabilities: capabilities(),
-    actions: actions(),
-    updatedAt: previousUpdatedAt ?? now(),
+    lifecycle: { state: 'enabled', reason: 'Compatibility translation is available; all publishing effects are Workflow-owned.' },
+    health: health(), permissions: permissions(), capabilities: capabilities(), actions: actions(), updatedAt: previousUpdatedAt ?? now(),
   };
 }
 

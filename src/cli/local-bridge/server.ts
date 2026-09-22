@@ -7,6 +7,7 @@ import express, {
   type Request,
   type Response,
 } from "express";
+import { describeFailure } from "../../../packages/protocols/failure";
 import {
   cancelAgentJob,
   getAgentJob,
@@ -235,6 +236,14 @@ function openUrl(url: string): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function mobileIntentFailureResponse(error: unknown): { message: string; status: number } {
+  const failure = describeFailure(error, {
+    fallbackCode: 'MOBILE_INTENT_REQUEST_FAILED',
+    fallbackHttpStatus: 400,
+  });
+  return { message: failure.message, status: failure.httpStatus ?? 400 };
 }
 
 function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
@@ -1007,12 +1016,8 @@ export async function startLocalBridgeServer(
         signatureVerified: verified.signatureVerified,
       });
     } catch (error) {
-      const message = errorMessage(error);
-      const status = message.includes("RATE_LIMITED") ? 429
-        : message.includes("SCOPE_DENIED") ? 403
-          : message.includes("TOKEN") || message.includes("SIGNATURE") || message.includes("REPLAY") || message.includes("TIMESTAMP") || message.includes("NONCE") || message.includes("DEVICE") ? 401
-            : 400;
-      response.status(status).json({ error: message });
+      const failure = mobileIntentFailureResponse(error);
+      response.status(failure.status).json({ error: failure.message });
     }
   });
 
@@ -1031,12 +1036,8 @@ export async function startLocalBridgeServer(
       sendStreamEvent(response, "ready");
       request.on("close", () => streamClients.delete(response));
     } catch (error) {
-      const message = errorMessage(error);
-      const status = message.includes("RATE_LIMITED") ? 429
-        : message.includes("SCOPE_DENIED") ? 403
-          : message.includes("TOKEN") || message.includes("SIGNATURE") || message.includes("REPLAY") || message.includes("TIMESTAMP") || message.includes("NONCE") || message.includes("DEVICE") ? 401
-            : 400;
-      response.status(status).json({ error: message });
+      const failure = mobileIntentFailureResponse(error);
+      response.status(failure.status).json({ error: failure.message });
     }
   });
 
@@ -1155,12 +1156,8 @@ export async function startLocalBridgeServer(
         job: submitted.job,
       });
     } catch (error) {
-      const message = errorMessage(error);
-      const status = message.includes("RATE_LIMITED") ? 429
-        : message.includes("SCOPE_DENIED") ? 403
-          : message.includes("TOKEN") || message.includes("SIGNATURE") || message.includes("REPLAY") || message.includes("TIMESTAMP") || message.includes("NONCE") || message.includes("DEVICE") ? 401
-            : 400;
-      response.status(status).json({ error: message });
+      const failure = mobileIntentFailureResponse(error);
+      response.status(failure.status).json({ error: failure.message });
     }
   });
 

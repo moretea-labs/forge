@@ -28,6 +28,7 @@ import type { ProcessHandle } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
+import { registeredCheckRequiresDurableWorkflow } from './check-classification';
 
 export type CheckExecutionMode = 'direct' | 'managed' | 'durable';
 
@@ -101,16 +102,17 @@ export interface RunCheckFacadeResult {
   };
 }
 
-const DURABLE_CHECK_ID = /(?:^|:)(?:release|migration|integrate|public-export|deploy)(?:$|:)/i;
 /**
- * True when a check requires external Controller handling (multi-phase / release).
- * Ordinary typecheck / lint / package test / focused validation stay on Process Runtime.
+ * Compatibility entry point while older internal callers still pass
+ * (checkId, registeredCheck). The id is deliberately ignored: lifecycle
+ * authority comes only from the registered ControllerCheck contract.
  */
-export function checkRequiresDurableWorkflow(checkId: string, check?: ControllerCheck): boolean {
-  if (check?.executionAuthority === 'live_controller_home') return true;
-  if (DURABLE_CHECK_ID.test(checkId)) return true;
-  if (check && /release|rollback|blue.?green|migrate/i.test(check.description)) return true;
-  return false;
+export function checkRequiresDurableWorkflow(
+  checkOrLegacyId: ControllerCheck | string | undefined,
+  registeredCheck?: ControllerCheck,
+): boolean {
+  const check = typeof checkOrLegacyId === 'string' ? registeredCheck : checkOrLegacyId;
+  return registeredCheckRequiresDurableWorkflow(check);
 }
 
 function resolveCheck(repoRoot: string, checkId: string): ControllerCheck | undefined {
@@ -144,7 +146,7 @@ export async function runCheckViaProcessRuntime(
     };
   }
 
-  if (input.forceDurable || checkRequiresDurableWorkflow(input.checkId, check)) {
+  if (input.forceDurable || checkRequiresDurableWorkflow(check)) {
     return {
       mode: 'durable',
       checkId: input.checkId,

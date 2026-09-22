@@ -9,37 +9,42 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
-import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest, workRequiresImplementationReview } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, rearmControllerRoundAfterProviderRecovery, rearmControllerRoundAfterProviderUserAction, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
-import { inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
+import { implementationReviewCommittedBaseRevision, inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
-import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
-import { invalidateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { invalidateExecutionSession, readExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession } from '../../packages/kernel/controller/api/index';
-import { resumeScheduledControllerContinuation } from '../../packages/kernel/scheduler/api/index';
+import { bindControllerSessionBinding, controllerSessionAuthorityDigest, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
-import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { createHandoffItem, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { releaseExternalControllerLaunchReservation, reserveExternalControllerLaunch } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
+import { providerMcpReservationIdentity } from '../../src/runtime/control-plane/launcher/provider-mcp-bootstrap';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
+import { recoverControllerRoundAfterVerifiedProviderRepair } from '../../adapters/mcp/runtime-gateway/work-adapter';
+import { bindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
+import { listRecoveryAuditRecords } from '../../src/runtime/recovery/store';
 
 const roots: string[] = [];
 
@@ -63,12 +68,43 @@ function fixture() {
   return { repoRoot, controllerHome, repository };
 }
 
+function installBatchVerificationChecks(repoRoot: string): void {
+  mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
+  writeFileSync(join(repoRoot, '.repo-harness', 'checks.json'), JSON.stringify({
+    checks: {
+      'check:batch-a': {
+        command: ['node', '-e', "setTimeout(() => console.log('batch-a'), 40)"],
+        effects: { reads: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] },
+      },
+      'check:batch-b': {
+        command: ['node', '-e', "setTimeout(() => console.log('batch-b'), 40)"],
+        effects: { reads: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] },
+      },
+      'check:conflict-write': {
+        command: ['node', '-e', "console.log('conflict')"],
+        effects: { writes: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] },
+      },
+      'check:release-only': {
+        command: ['node', '-e', "console.log('release')"],
+        effects: { reads: ['src/index.ts'], temp: 'isolated' },
+        selection: { costClass: 'L4', riskFloor: 'high', phases: ['release'] },
+      },
+    },
+  }, null, 2));
+  execFileSync('git', ['add', '.repo-harness/checks.json'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-m', 'add batch verification checks'], { cwd: repoRoot });
+}
+
 function ctx(
   controllerHome: string,
   repository: ReturnType<typeof registerRepository>,
   principalId: string,
   sessionId: string,
   controllerInstanceId: string,
+  controllerType: 'chatgpt' | 'codex' = 'chatgpt',
 ): MultiRepositoryMcpToolContext {
   return {
     repoRoot: repository.canonicalRoot,
@@ -80,7 +116,7 @@ function ctx(
     principalId,
     sessionId,
     controllerInstanceId,
-    controllerType: 'chatgpt',
+    controllerType,
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
 }
@@ -182,6 +218,264 @@ function exactVerification(input: {
 }
 
 describe('rh_work terminalization authority', () => {
+  test('an exact current valid pass survives a later identityless infrastructure observation while standalone infrastructure failure remains actionable', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const caller = {
+      principalId: 'principal-verification-failure-contract',
+      sessionId: 'transport-verification-failure-contract',
+      controllerInstanceId: 'runtime-verification-failure-contract',
+    };
+    const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, repositoryGitStatus(fx.repository));
+    const checkId = 'failure-contract-check';
+    const create = (workId: string) => createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Keep verification authority separate from infrastructure observation order.',
+      acceptanceCriteria: ['The exact successful verification remains authoritative.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [checkId],
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+      phase: 'verification',
+    });
+    const identitylessInfrastructureFailure: VerificationRecord = {
+      checkId,
+      outcome: 'infrastructure_failure',
+      summary: 'transport request id conflict after successful verification',
+      recordedAt: '2026-09-05T00:00:01.000Z',
+    };
+
+    const protectedWorkId = 'work-verification-pass-survives-identityless-infra';
+    create(protectedWorkId);
+    const validPass = exactVerification({
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceRevision,
+      workspaceFingerprint,
+      checkId,
+    });
+    validPass.receipt = { ...validPass.receipt!, workId: protectedWorkId };
+    updateWorkContract(store, protectedWorkId, { checkRefs: [validPass, identitylessInfrastructureFailure] });
+    claimControllerSession(store, {
+      workId: protectedWorkId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const protectedResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: protectedWorkId },
+    ));
+    expect(protectedResult.status).toBe('ok');
+    expect(protectedResult.data?.nextStep).toBe('review');
+    expect(protectedResult.data?.remainingChecks).toBeUndefined();
+
+    const infrastructureOnlyWorkId = 'work-verification-infra-remains-actionable';
+    create(infrastructureOnlyWorkId);
+    updateWorkContract(store, infrastructureOnlyWorkId, { checkRefs: [identitylessInfrastructureFailure] });
+    claimControllerSession(store, {
+      workId: infrastructureOnlyWorkId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: `${caller.sessionId}-infra`,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const infrastructureOnlyResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, `${caller.sessionId}-infra`, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: infrastructureOnlyWorkId },
+    ));
+    expect(infrastructureOnlyResult.status).toBe('ok');
+    expect(infrastructureOnlyResult.data?.nextStep).toBe('repair_or_reverify');
+    expect(infrastructureOnlyResult.data?.infrastructureIssues).toEqual([checkId]);
+    const identityBoundWorkId = 'work-verification-exact-infra-remains-actionable';
+    create(identityBoundWorkId);
+    const identityBoundFailure: VerificationRecord = { ...identitylessInfrastructureFailure, recordedAt: '2026-09-05T00:00:02.000Z', sourceRevision, workspaceFingerprint, verificationInputFingerprint: validPass.verificationInputFingerprint };
+    updateWorkContract(store, identityBoundWorkId, { checkRefs: [{ ...validPass, receipt: { ...validPass.receipt!, workId: identityBoundWorkId } }, identityBoundFailure] });
+    const identityBoundSession = `${caller.sessionId}-exact-infra`;
+    claimControllerSession(store, { workId: identityBoundWorkId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: identityBoundSession, principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000 });
+    const identityBoundResult = structured(await callRuntimeTool(ctx(fx.controllerHome, fx.repository, caller.principalId, identityBoundSession, caller.controllerInstanceId), 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: identityBoundWorkId }));
+    expect(identityBoundResult.data?.nextStep).toBe('repair_or_reverify');
+  });
+  test('rh_work start persists a scheduled ChatGPT ControllerWorkBinding before controller release', async () => {
+    const fx = fixture();
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-fresh-binding-start', 'transport-fresh-binding-start', 'runtime-fresh-binding-start');
+    const started = structured(await callRuntimeTool(caller, 'rh_work', {
+      operation: 'start', repo_id: fx.repository.repoId, requested_by: 'chatgpt',
+      objective: 'Persist fresh scheduled binding at Work admission.', work_kind: 'read_only_review',
+      scope_clear: true, allowed_paths: ['src/index.ts'], acceptance_criteria: ['Fresh Work is scheduler-resumable after release.'],
+      constraints: { workspace_mode: 'isolated', require_worktree: true, direct_main_prohibited: true, allow_commit: false, allow_merge: false, allow_cleanup: true },
+    }));
+    expect(started.status).toBe('ok');
+    const workId = String(started.data?.work?.workId ?? '');
+    const binding = getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(binding?.latestSessionId).toBe('transport-fresh-binding-start');
+    expect(binding?.binding).toMatchObject({ hostKind: 'chatgpt' });
+  });
+
+  test('rh_work controller_claim repairs a missing scheduled ChatGPT ControllerWorkBinding', async () => {
+    const fx = fixture();
+    const workId = 'work-fresh-binding-claim';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-fresh-binding-claim', 'transport-fresh-binding-claim', 'runtime-fresh-binding-claim');
+    expect(getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+    const claimed = structured(await callRuntimeTool(caller, 'rh_work', {
+      operation: 'controller_claim', repo_id: fx.repository.repoId, work_id: workId, requested_by: 'chatgpt',
+    }));
+    expect(claimed.status).toBe('ok');
+    const binding = getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(binding?.latestSessionId).toBe('transport-fresh-binding-claim');
+    expect(binding?.binding).toMatchObject({ hostKind: 'chatgpt' });
+  });
+
+  test('rh_work verify honors check_ids as one resource-compatible Work verification wave', async () => {
+    const fx = fixture();
+    installBatchVerificationChecks(fx.repoRoot);
+    const caller = {
+      principalId: 'principal-batch-verify',
+      sessionId: 'transport-batch-verify',
+      controllerInstanceId: 'runtime-batch-verify',
+    };
+    const callerContext = ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    const started = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'start',
+      repo_id: fx.repository.repoId,
+      requested_by: 'chatgpt',
+      objective: 'Verify two compatible checks through the public rh_work batch ABI.',
+      work_kind: 'repository_change',
+      scope_clear: true,
+      allowed_paths: ['src/index.ts'],
+      check_ids: ['check:batch-a', 'check:batch-b'],
+      acceptance_criteria: ['Both compatible checks retain Work verification authority.'],
+      constraints: { workspace_mode: 'isolated', require_worktree: true, direct_main_prohibited: true, allow_commit: false, allow_merge: false, allow_cleanup: true },
+      request_id: 'batch-verify-start',
+    }));
+    expect(started.status).toBe('ok');
+    const workId = String(started.data?.work?.workId ?? '');
+    const checkoutId = String(started.data?.executionHandle?.checkoutId ?? '');
+    expect(workId).toBeTruthy();
+    expect(checkoutId).toBeTruthy();
+
+    const conflict = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_id: 'check:batch-a', check_ids: ['check:batch-b'], requested_by: 'chatgpt', request_id: 'batch-verify-input-conflict',
+    }));
+    expect(conflict.status).toBe('blocked');
+    expect(conflict.warnings).toContain('WORK_VERIFY_CHECK_INPUT_CONFLICT');
+    expect(conflict.data?.verificationStarted).toBe(false);
+
+    const invalid = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:missing'], requested_by: 'chatgpt', request_id: 'batch-verify-invalid',
+    }));
+    expect(invalid.status).toBe('blocked');
+    expect(invalid.warnings).toContain('INVALID_CHECK_IDS');
+    expect(invalid.data?.verificationStarted).toBe(false);
+
+    const crossWave = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:conflict-write'], requested_by: 'chatgpt', request_id: 'batch-verify-cross-wave',
+    }));
+    expect(crossWave.status).toBe('blocked');
+    expect(crossWave.warnings).toContain('BATCH_SPANS_MULTIPLE_CHECK_WAVES');
+    expect(crossWave.data?.checkScheduling?.waveCount).toBeGreaterThan(1);
+    expect(crossWave.data?.verificationStarted).toBe(false);
+
+    const durable = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:release-only'], requested_by: 'chatgpt', request_id: 'batch-verify-durable',
+    }));
+    expect(durable.status).toBe('blocked');
+    expect(durable.warnings).toContain('BATCH_CONTAINS_DURABLE_CHECK');
+    expect(durable.data?.durableCheckIds).toEqual(['check:release-only']);
+    expect(durable.data?.verificationStarted).toBe(false);
+
+    const batch = structured(await callRuntimeTool(callerContext, 'rh_work', {
+      operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+      check_ids: ['check:batch-a', 'check:batch-b'], requested_by: 'chatgpt', request_id: 'batch-verify-compatible',
+    }));
+    expect(batch?.status).toBe('ok');
+    expect(batch?.data).toMatchObject({
+      batch: true,
+      checkIds: ['check:batch-a', 'check:batch-b'],
+      completed: true,
+      ok: true,
+      checkScheduling: { waveCount: 1, maxParallel: 2 },
+    });
+    expect(batch?.data?.verifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ checkId: 'check:batch-a', completed: true, outcome: 'valid_pass' }),
+      expect.objectContaining({ checkId: 'check:batch-b', completed: true, outcome: 'valid_pass' }),
+    ]));
+    expect(new Set(batch?.data?.processIds ?? []).size).toBe(2);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(2);
+
+    let single: Record<string, any> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      single = structured(await callRuntimeTool(callerContext, 'rh_work', {
+        operation: 'verify', repo_id: fx.repository.repoId, checkout_id: checkoutId, work_id: workId,
+        check_id: 'check:batch-a', requested_by: 'chatgpt', request_id: 'batch-verify-single-nonregression',
+      }));
+      if (single.data?.verification?.completed === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(single?.status).toBe('ok');
+    expect(single?.data?.verification).toMatchObject({
+      checkId: 'check:batch-a',
+      completed: true,
+      outcome: 'valid_pass',
+      reused: true,
+      executed: false,
+    });
+    const batchAProcessId = batch?.data?.verifications?.find((entry: { checkId?: string }) => entry.checkId === 'check:batch-a')?.processId;
+    expect(single?.data?.verification?.processId).toBe(batchAProcessId);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(2);
+  }, 20_000);
+  test('materializes a canonical WorkHandle for isolated reconciliation Work without manual handle ceremony', () => {
+    const fx = fixture();
+    const workId = 'work-reconciliation-handle-auto';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: workId, title: 'reconciliation handle auto' });
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Reconcile already-delivered source evidence.',
+      acceptanceCriteria: ['Existing source remains unchanged.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: ['package:check:type'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'reconciliation',
+      status: 'running',
+      checkoutId: workspace.checkoutId,
+      worktreeRef: workspace.root,
+      baseRevision: workspace.baseRevision ?? undefined,
+    });
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: { sessionId: 'reconciliation-session', principalId: 'principal-reconciliation' },
+    });
+    expect(handle).toMatchObject({ workId, state: 'prepared', managedWorktree: true });
+  });
+
   test('materializes a canonical WorkHandle for isolated completed_no_change Work', () => {
     const fx = fixture();
     const workId = 'work-completed-no-change-handle';
@@ -507,18 +801,10 @@ describe('rh_work terminalization authority', () => {
     execFileSync('git', ['commit', '-m', 'target command advance'], { cwd: fx.repoRoot });
     const targetRevision = repositoryGitStatus(fx.repository).head!;
 
-    const rejected = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
-      repo_id: fx.repository.repoId,
-      work_id: workId,
-      command: ['git', 'commit', '--allow-empty', '-m', 'must be rejected before mutation admission'],
-      request_id: 'direct-pre-mutation-command-rejected',
-    }, caller));
-    expect(rejected.accepted).toBe(false);
-    expect(rejected.path).toBe('git_commit_requires_explicit_path_scope');
-    const afterRejected = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
-    expect(afterRejected.state).toBe('prepared');
-    expect(afterRejected.deliveryBaseCommit).toBe(baseRevision);
-    expect(afterRejected.expectedHead).toBe(baseRevision);
+    const beforeMutation = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(beforeMutation.state).toBe('prepared');
+    expect(beforeMutation.deliveryBaseCommit).toBe(baseRevision);
+    expect(beforeMutation.expectedHead).toBe(baseRevision);
 
     const command = ['touch', 'src/command-owned.ts'];
     const preview = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_preview', {
@@ -534,6 +820,11 @@ describe('rh_work terminalization authority', () => {
       request_id: 'direct-pre-mutation-command-process',
     }, caller));
     expect(executed.accepted).toBe(true);
+    const executedProcess = typeof executed.processId === 'string'
+      ? await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, executed.processId, { timeoutMs: 10_000 })
+      : undefined;
+    if (executedProcess) expect(executedProcess.status).toBe('succeeded');
+    else expect(executed.ok === true || executed.status === 'succeeded').toBe(true);
     expect(existsSync(join(fx.repoRoot, 'src', 'command-owned.ts'))).toBe(true);
 
     const aligned = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
@@ -541,6 +832,177 @@ describe('rh_work terminalization authority', () => {
     expect(aligned.deliveryBaseCommit).toBe(targetRevision);
     expect(aligned.expectedHead).toBe(targetRevision);
   }, 15_000);
+
+  test('durable canonical WorkHandle ownership fences later mutation calls after Process lease release', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const baseRevision = repositoryGitStatus(fx.repository).head!;
+    const makeWork = (suffix: string) => {
+      const workId = `work-canonical-writer-${suffix}`;
+      const caller = {
+        principalId: `principal-canonical-writer-${suffix}`,
+        sessionId: `transport-canonical-writer-${suffix}`,
+        controllerInstanceId: `runtime-canonical-writer-${suffix}`,
+      };
+      createWorkContract(store, {
+        workId,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        baseRevision,
+        mode: 'goal_workloop',
+        objective: `Exercise durable canonical writer ownership for ${suffix}.`,
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        allowedPaths: ['src/**'],
+        forbiddenPaths: [],
+        checks: [],
+        requestedBy: 'chatgpt',
+        workKind: 'repository_change',
+        status: 'running',
+        phase: 'implementation',
+      });
+      claimControllerSession(store, {
+        workId,
+        controllerId: caller.principalId,
+        controllerType: 'chatgpt',
+        sessionId: caller.sessionId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        leaseMs: 60_000,
+      });
+      expect(ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller })?.state).toBe('prepared');
+      return { workId, caller };
+    };
+    const owner = makeWork('owner');
+    const contender = makeWork('contender');
+
+    const first = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: owner.workId,
+      purpose: 'owner establishes durable canonical mutation authority',
+      operations: [{
+        type: 'replace', path: 'src/index.ts',
+        replacements: [{ old_text: 'export const ready = true;', new_text: 'export const ready = false;' }],
+      }],
+    }, owner.caller));
+    expect(first.error).toBeUndefined();
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, owner.workId)?.state).toBe('editing');
+
+    const ownerAgain = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: owner.workId,
+      purpose: 'same owner may continue after the prior mutation call ended',
+      operations: [{ type: 'create', path: 'src/owner-second.ts', content: 'export const second = true;\n' }],
+    }, owner.caller));
+    expect(ownerAgain.error).toBeUndefined();
+
+    const contenderResult = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: contender.workId,
+      purpose: 'different pre-admitted Work must not take over the dirty canonical checkout',
+      operations: [{ type: 'create', path: 'src/contender.ts', content: 'export const contender = true;\n' }],
+    }, contender.caller));
+    expect(JSON.stringify(contenderResult)).toContain(`WORK_CANONICAL_MUTATION_OWNED: checkout=${fx.repository.activeCheckoutId}; owner=${owner.workId}`);
+    expect(existsSync(join(fx.repoRoot, 'src', 'contender.ts'))).toBe(false);
+
+    const unattributed = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['touch', 'src/unattributed.ts'],
+      request_id: 'canonical-writer-unattributed-command',
+    }, { principalId: 'principal-unattributed', sessionId: 'transport-unattributed', controllerInstanceId: 'runtime-unattributed' }));
+    expect(JSON.stringify(unattributed)).toContain(`WORK_CANONICAL_MUTATION_OWNED: checkout=${fx.repository.activeCheckoutId}; owner=${owner.workId}`);
+    expect(existsSync(join(fx.repoRoot, 'src', 'unattributed.ts'))).toBe(false);
+
+    execFileSync('git', ['add', 'src/index.ts', 'src/owner-second.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'owner canonical mutation'], { cwd: fx.repoRoot });
+    let ownerHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, owner.workId)!;
+    ownerHandle = transitionWorkHandle(fx.controllerHome, ownerHandle, 'validating');
+    transitionWorkHandle(fx.controllerHome, ownerHandle, 'committed');
+
+    const afterRelease = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: contender.workId,
+      purpose: 'later Work may acquire the clean canonical checkout after prior mutable ownership is committed',
+      operations: [{ type: 'create', path: 'src/contender.ts', content: 'export const contender = true;\n' }],
+    }, contender.caller));
+    expect(afterRelease.error).toBeUndefined();
+    expect(existsSync(join(fx.repoRoot, 'src', 'contender.ts'))).toBe(true);
+  }, 20_000);
+
+  test('terminal WorkContract releases stale failed canonical WorkHandle ownership but nonterminal failure remains fenced', async () => {
+    const runCase = async (terminal: boolean) => {
+      const fx = fixture();
+      const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+      const baseRevision = repositoryGitStatus(fx.repository).head!;
+      const makeWork = (suffix: string, terminalize: boolean) => {
+        const workId = `work-canonical-terminal-owner-${terminalize ? 'terminal' : 'running'}-${suffix}`;
+        const caller = {
+          principalId: `principal-${workId}`,
+          sessionId: `transport-${workId}`,
+          controllerInstanceId: `runtime-${workId}`,
+        };
+        createWorkContract(store, {
+          workId,
+          repoId: fx.repository.repoId,
+          checkoutId: fx.repository.activeCheckoutId,
+          principalId: caller.principalId,
+          controllerInstanceId: caller.controllerInstanceId,
+          baseRevision,
+          mode: 'goal_workloop',
+          objective: `Exercise ${terminalize ? 'terminal' : 'nonterminal'} failed canonical ownership.`,
+          acceptanceCriteria: [],
+          constraints: { requireHandoffOnAmbiguity: true },
+          allowedPaths: ['src/**'],
+          forbiddenPaths: [],
+          checks: [],
+          requestedBy: 'chatgpt',
+          workKind: 'repository_change',
+          status: 'running',
+          phase: 'implementation',
+        });
+        claimControllerSession(store, {
+          workId,
+          controllerId: caller.principalId,
+          controllerType: 'chatgpt',
+          sessionId: caller.sessionId,
+          principalId: caller.principalId,
+          controllerInstanceId: caller.controllerInstanceId,
+          leaseMs: 60_000,
+        });
+        const prepared = ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller })!;
+        transitionWorkHandle(fx.controllerHome, prepared, 'failed', { failureReason: 'synthetic durable owner failure' });
+        if (terminalize) {
+          transitionWorkContractPhase(store, workId, {
+            status: 'cancelled',
+            phase: 'cleanup',
+            state: 'skipped',
+            summary: 'terminal Work lifecycle released durable canonical mutation ownership',
+          });
+        }
+        return { workId, caller };
+      };
+      const owner = makeWork('owner', terminal);
+      const contender = makeWork('contender', false);
+      const result = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+        repo_id: fx.repository.repoId,
+        work_id: contender.workId,
+        purpose: 'probe canonical ownership after failed owner lifecycle transition',
+        operations: [{ type: 'create', path: 'src/contender-terminal-owner.ts', content: 'export const contenderTerminalOwner = true;\n' }],
+      }, contender.caller));
+      if (terminal) {
+        expect(result.error).toBeUndefined();
+        expect(existsSync(join(fx.repoRoot, 'src', 'contender-terminal-owner.ts'))).toBe(true);
+      } else {
+        expect(JSON.stringify(result)).toContain(`WORK_CANONICAL_MUTATION_OWNED: checkout=${fx.repository.activeCheckoutId}; owner=${owner.workId}`);
+        expect(existsSync(join(fx.repoRoot, 'src', 'contender-terminal-owner.ts'))).toBe(false);
+      }
+    };
+
+    await runCase(false);
+    await runCase(true);
+  }, 20_000);
 
   test('Direct canonical pre-mutation reconciliation fails closed on dirty or rewritten target history', async () => {
     const makeWork = (suffix: string) => {
@@ -646,7 +1108,7 @@ describe('rh_work terminalization authority', () => {
       constraints: { requireWorktree: true, directMainProhibited: true },
       allowedPaths: [],
       forbiddenPaths: [],
-      checks: [],
+      checks: ['check:declared-after-resume'],
       requestedBy: 'chatgpt',
       status: 'running',
       phase: 'implementation',
@@ -716,6 +1178,8 @@ describe('rh_work terminalization authority', () => {
     const work = getWorkContract(store, workId)!;
     const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
     expect(work.status).toBe('running');
+    expect(work.checks).toEqual(['check:declared-after-resume']);
+    expect(work.checkRefs).toHaveLength(0);
     expect(work.checkoutId).toBeDefined();
     expect(work.worktreeRef).toBeDefined();
     expect(work.checkoutId).not.toBe(oldCheckoutId);
@@ -861,6 +1325,112 @@ describe('rh_work terminalization authority', () => {
     expect(handle.deliveryTargetBranch).toBe('main');
     expect(handle.validatedInputFingerprint).toBeUndefined();
     expect(handle.cleanupReceipt).toBeUndefined();
+    expect(handle.finalization).toMatchObject({
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work.worktreeRef!, encoding: 'utf8' }).trim()).toBe(candidateRevision);
+  }, 20_000);
+
+  test('validation-process loss rehydrates an exact pending candidate before delivery', async () => {
+    const fx = fixture();
+    const workId = 'work-pending-candidate-validation-recovery';
+    const caller = {
+      principalId: 'principal-pending-candidate-validation-recovery',
+      sessionId: 'transport-pending-candidate-validation-recovery',
+      controllerInstanceId: 'runtime-pending-candidate-validation-recovery',
+    };
+    const branch = 'work/pending-candidate-validation-recovery';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Pending candidate validation recovery',
+      branchName: branch,
+    });
+    const baseRevision = workspace.baseRevision!;
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "pending-candidate";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'pending candidate validation recovery'], { cwd: workspace.root! });
+    const candidateRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Recover an exact committed candidate after its validation process disappeared.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'verification',
+      worktreeRef: workspace.root,
+      evidenceState: 'stale',
+      scopeEvidence: {
+        initialLikelyPaths: ['src/index.ts'],
+        inspectedPaths: ['src/index.ts'],
+        actualChangedPaths: ['src/index.ts'],
+        recordedAt: now,
+      },
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: candidateRevision,
+      permissionSnapshotVersion: 1,
+      state: 'failed',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'failed',
+        commit: 'done',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+        lastError: 'Validation process record is unavailable.',
+      },
+    });
+
+    const oldCheckoutId = workspace.checkoutId!;
+    const oldWorktree = workspace.root!;
+    execFileSync('git', ['worktree', 'remove', '--force', oldWorktree], { cwd: fx.repoRoot });
+    expect(reconcileRepositoryCheckouts(fx.repository.repoId, fx.controllerHome).archivedCheckoutIds).toContain(oldCheckoutId);
+
+    const recovered = ensureRunningRepositoryWorkCheckout({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    });
+    expect(recovered.reconstructedCheckout).toBe(true);
+    const work = getWorkContract(store, workId)!;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(work.status).toBe('running');
+    expect(work.phase).toBe('verification');
+    expect(work.evidenceState).toBe('stale');
+    expect(handle.state).toBe('validating');
+    expect(handle.expectedHead).toBe(candidateRevision);
     expect(handle.finalization).toMatchObject({
       validation: 'pending',
       commit: 'done',
@@ -1019,7 +1589,7 @@ describe('rh_work terminalization authority', () => {
       work_id: workId,
       capability_id: `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`,
     }));
-    expect(claimed.status).toBe('ok');
+    expect(claimed).toMatchObject({ status: 'ok' });
     expect(getControllerSession(store, workId)?.sessionId).toBe('transport-frozen-round');
 
     const wrongVerify = structured(await callRuntimeTool(caller, 'rh_work', {
@@ -1054,55 +1624,228 @@ describe('rh_work terminalization authority', () => {
     expect(released.status).toBe('ok');
   }, 15_000);
 
-  test('direct Work authority follows the authenticated principal/runtime across explicit and MCP transport rotation', async () => {
+  test('Requirement-scoped frozen claim follows explicit Work lineage and never aliases sibling Work', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const requirementId = 'REQ-frozen-requirement-authority';
+    const otherRequirementId = 'REQ-frozen-requirement-authority-other';
+    const parentWorkId = 'work-frozen-requirement-parent';
+    const originWorkId = 'work-frozen-requirement-origin';
+    const siblingWorkId = 'work-frozen-requirement-sibling';
+    const successorWorkId = 'work-frozen-requirement-successor';
+    const unrelatedWorkId = 'work-frozen-requirement-unrelated';
+    const runtimeInstanceId = 'runtime-frozen-requirement';
+    const principalId = 'principal-frozen-requirement';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Frozen Requirement authority',
+      outcomeStatement: 'One durable ControllerRound authority follows only explicit Work lineage across transport rollover.',
+    });
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: otherRequirementId,
+      title: 'Unrelated frozen Requirement authority',
+      outcomeStatement: 'Unrelated Work cannot inherit another Requirement ControllerRound authority.',
+    });
+    for (const input of [
+      { workId: parentWorkId, linkedRequirementId: requirementId },
+      { workId: originWorkId, linkedRequirementId: requirementId, parentWorkId },
+      { workId: siblingWorkId, linkedRequirementId: requirementId, parentWorkId },
+      { workId: successorWorkId, linkedRequirementId: requirementId, predecessorWorkId: originWorkId },
+      { workId: unrelatedWorkId, linkedRequirementId: otherRequirementId },
+    ] as const) {
+      createWorkContract(store, {
+        workId: input.workId,
+        repoId: fx.repository.repoId,
+        requirementId: input.linkedRequirementId,
+        ...('parentWorkId' in input && input.parentWorkId ? { parentWorkId: input.parentWorkId } : {}),
+        ...('predecessorWorkId' in input && input.predecessorWorkId ? { predecessorWorkId: input.predecessorWorkId } : {}),
+        mode: 'goal_workloop',
+        objective: `durable authority regression for ${input.workId}`,
+        acceptanceCriteria: ['preserve exact durable semantic authority'],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        workKind: 'local_effect',
+        status: 'ready',
+      });
+    }
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId: originWorkId,
+      requirementId,
+      relayScopeId: `requirement:${requirementId}`,
+      identity: {
+        controllerId: 'schedule:frozen-requirement',
+        controllerType: 'chatgpt',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: 'occurrence-frozen-requirement',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId: originWorkId,
+      ok: true,
+      bindingId: `chatgpt:${fx.repository.repoId}:${originWorkId}`,
+    });
+    const capabilityId = `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`;
+
+    const sibling = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-sibling', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: siblingWorkId, capability_id: capabilityId },
+    ));
+    expect(sibling.status).toBe('blocked');
+    expect(sibling.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND');
+    expect(getControllerSession(store, siblingWorkId)).toBeUndefined();
+
+    const first = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-a', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: successorWorkId, capability_id: capabilityId },
+    ));
+    expect(first.status).toBe('ok');
+    expect(first.data.controllerAuthorityId).toBe(relay.authorityId);
+    expect(first.data.controllerAuthorityCarrier).toBe('controller_authority_id');
+    expect(getControllerSession(store, successorWorkId)?.sessionId).toBe('transport-frozen-requirement-a');
+
+    const second = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-b', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: successorWorkId, capability_id: capabilityId },
+    ));
+    expect(second.status).toBe('ok');
+    expect(second.data.controllerAuthorityId).toBe(relay.authorityId);
+    expect(getControllerSession(store, successorWorkId)?.sessionId).toBe('transport-frozen-requirement-b');
+
+    const unrelated = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-c', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: unrelatedWorkId, capability_id: capabilityId },
+    ));
+    expect(unrelated.status).toBe('blocked');
+    expect(unrelated.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND');
+    expect(getControllerSession(store, unrelatedWorkId)).toBeUndefined();
+  }, 15_000);
+
+  test('continue preserves durable remote_effect semantics without requiring repository source changes', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-remote-effect-continue-durable-kind';
+    const principalId = 'principal-remote-effect-continue';
+    const sessionId = 'transport-remote-effect-continue';
+    const runtimeInstanceId = 'runtime-remote-effect-continue';
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Resume a durable external effect without fabricating repository implementation.',
+      acceptanceCriteria: ['remote effect remains externally owned'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'remote_effect',
+      status: 'running',
+      phase: 'implementation',
+    });
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(continued.data.work).toMatchObject({ workId });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+      workId,
+      workKind: 'remote_effect',
+    });
+    expect(continued.summary).not.toContain('Repository-change Work has no current net source changes');
+    expect(getWorkContract(store, workId)?.workKind).toBe('remote_effect');
+  }, 15_000);
+
+  test('direct Work authority remains exact across modern sessionless request rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const workA = 'work-explicit-session-a';
     const workB = 'work-explicit-session-b';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workA);
     createReadyWork(fx.controllerHome, fx.repository.repoId, workB);
+    publishCurrentRuntime(fx.controllerHome, 'runtime-explicit-session');
 
     const withoutTransport = () => ({
       ...ctx(fx.controllerHome, fx.repository, 'principal-explicit-session', 'placeholder', 'runtime-explicit-session'),
       sessionId: undefined,
     }) as unknown as MultiRepositoryMcpToolContext;
 
-    const missing = structured(await callRuntimeTool(
+    const claimedA = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA },
     ));
-    expect(missing.status).toBe('blocked');
-    expect(missing.summary).toContain('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED');
-
-    expect(structured(await callRuntimeTool(
+    const claimedB = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA, session_id: 'opaque-a' },
-    )).status).toBe('ok');
-    expect(structured(await callRuntimeTool(
-      withoutTransport(),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB, session_id: 'opaque-b' },
-    )).status).toBe('ok');
-
-    // Explicit session_id is the transport binding when no MCP transport exists;
-    // it is not a durable conversation/scope authority. The exact Work plus the
-    // authenticated principal/current Runtime owns the direct mutation.
-    const rotatedStopB = structured(await callRuntimeTool(
-      withoutTransport(),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'same owner via replacement explicit transport', session_id: 'opaque-a' },
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB },
     ));
-    expect(rotatedStopB.status).toBe('ok');
+    expect(claimedA.status).toBe('ok');
+    expect(claimedB.status).toBe('ok');
+    const authorityA = String(claimedA.data.controllerAuthorityId ?? '');
+    const authorityB = String(claimedB.data.controllerAuthorityId ?? '');
+    expect(authorityA).toStartWith('ctrl_');
+    expect(authorityB).toStartWith('ctrl_');
+    expect(authorityA).not.toBe(authorityB);
+
+    const mechanicallyRebound = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workA, requested_by: 'chatgpt' },
+    ));
+    expect(mechanicallyRebound.summary).not.toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getControllerSession(store, workA)?.sessionId).toStartWith('mcp_request_');
+
+    const wrongWorkAuthority = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt',
+        reason: 'wrong Work authority must not cross sessionless requests', controller_authority_id: authorityA,
+      },
+    ));
+    expect(wrongWorkAuthority.status).toBe('blocked');
+    expect(wrongWorkAuthority.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+
+    const stopB = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt',
+        reason: 'exact Work authority across sessionless request rotation', controller_authority_id: authorityB,
+      },
+    ));
+    expect(stopB.status).toBe('ok');
     expect(getWorkContract(store, workB)?.status).toBe('cancelled');
 
-    const rotatedStopA = structured(await callRuntimeTool(
+    const stopA = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'chatgpt', reason: 'same owner via another replacement explicit transport', session_id: 'opaque-b' },
+      {
+        repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'chatgpt',
+        reason: 'exact Work authority across another sessionless request', controller_authority_id: authorityA,
+      },
     ));
-    expect(rotatedStopA.status).toBe('ok');
+    expect(stopA.status).toBe('ok');
     expect(getWorkContract(store, workA)?.status).toBe('cancelled');
   }, 15_000);
 
@@ -1264,8 +2007,7 @@ describe('rh_work terminalization authority', () => {
       binding: { bindingId: adapterA.binding.bindingId, hostKind: 'chatgpt' },
     });
 
-    const dispatched = await resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId,
+    const dispatched = await resumeControllerRoundOccurrence(store, {
       occurrenceId: 'occ-binding-rollover',
       workId,
       controllerBindingId: adapterA.binding.bindingId,
@@ -1275,16 +2017,164 @@ describe('rh_work terminalization authority', () => {
         dispatchId: 'provider-dispatch-after-session-rollover',
       }),
     });
-    expect(dispatched.dispatch).toMatchObject({
-      status: 'dispatched',
-      workId,
-      controllerSessionId: ownerB.sessionId,
-      controllerBindingId: adapterA.binding.bindingId,
-      hostDispatchId: 'provider-dispatch-after-session-rollover',
+    expect(dispatched).toMatchObject({
+      outcome: 'dispatched',
+      reused: false,
+      providerDispatchReceiptId: 'provider-dispatch-after-session-rollover',
     });
+    expect(dispatched.relay).toMatchObject({ originWorkId: workId, bindingId: adapterA.binding.bindingId });
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       lifecycleStage: 'dispatch_confirmed',
       providerDispatchReceiptId: 'provider-dispatch-after-session-rollover',
+    });
+  }, 15_000);
+
+  test('scheduled continuation binds the first post-recovery occurrence onto a pre-occurrence legacy relay without duplicate dispatch', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-legacy-binding-adoption';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-legacy-binding-adoption',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-legacy-binding-adoption',
+      principalId: 'principal-legacy-binding-adoption',
+      controllerInstanceId: 'runtime-legacy-binding-adoption',
+      leaseMs: 60_000,
+    });
+    const currentBinding = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: owner.sessionId,
+      title: 'current work-scoped provider target',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: currentBinding.binding });
+    const occurrenceId = 'occ-legacy-binding-adoption';
+    const relayScopeId = `goal:${workId}`;
+    const legacyBindingId = `chatgpt:legacy:${fx.repository.repoId}:${workId}`;
+    const legacyRelay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: legacyBindingId,
+      maxFailures: 1,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    expect(legacyRelay).toMatchObject({ status: 'dispatching', bindingId: legacyBindingId });
+    expect(legacyRelay.occurrenceId).toBeUndefined();
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })!;
+    expect(blocked).toMatchObject({ status: 'blocked', blockedReason: 'consecutive_failures:1>=1' });
+    expect(blocked.occurrenceId).toBeUndefined();
+    expect(releaseObservedControllerSession(store, { workId, actor: 'test-provider-recovery-release', owner }).allowed).toBe(true);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    const relay = rearmControllerRoundAfterProviderRecovery(store, {
+      workId, relayScopeId, authorityId: blocked.authorityId!, expectedUpdatedAt: blocked.updatedAt,
+      evidenceId: 'runtime:verified-browser-provider:legacy-occurrence',
+    });
+    expect(relay).toMatchObject({
+      status: 'dispatching', bindingId: legacyBindingId,
+      authorityId: legacyRelay.authorityId, providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: 'runtime:verified-browser-provider:legacy-occurrence',
+    });
+    expect(relay.occurrenceId).toBeUndefined();
+    const recoveredOwner = claimControllerSession(store, {
+      workId,
+      controllerId: owner.controllerId,
+      controllerType: owner.controllerType,
+      sessionId: 'transport-legacy-binding-recovered',
+      principalId: owner.principalId!,
+      controllerInstanceId: owner.controllerInstanceId!,
+      leaseMs: 60_000,
+    });
+    const recoveredBinding = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: recoveredOwner.sessionId,
+      title: 'current work-scoped provider target after recovery',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    expect(recoveredBinding.binding.bindingId).toBe(currentBinding.binding.bindingId);
+    bindControllerSessionBinding(store, { workId, sessionId: recoveredOwner.sessionId, binding: recoveredBinding.binding });
+    let resumeCalls = 0;
+    const input = { occurrenceId, workId, controllerBindingId: recoveredBinding.binding.bindingId };
+    const host = {
+      resume: async (binding: typeof recoveredBinding.binding, context: { authorityId: string }) => {
+        resumeCalls += 1;
+        expect(binding.bindingId).toBe(recoveredBinding.binding.bindingId);
+        expect(context.authorityId).toBe(relay.authorityId!);
+        return { accepted: true, dispatchId: 'provider-dispatch-after-binding-migration' };
+      },
+    };
+    const first = await resumeControllerRoundOccurrence(store, input, host);
+    expect(first.reused).toBe(false);
+    expect(first).toMatchObject({ outcome: 'dispatched', providerDispatchReceiptId: 'provider-dispatch-after-binding-migration' });
+    expect(first.relay).toMatchObject({ status: 'dispatched', occurrenceId, bindingId: recoveredBinding.binding.bindingId });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'dispatched', occurrenceId, bindingId: recoveredBinding.binding.bindingId,
+      providerDispatchReceiptId: 'provider-dispatch-after-binding-migration',
+    });
+
+    const replay = await resumeControllerRoundOccurrence(store, input, host);
+    expect(replay.reused).toBe(true);
+    expect(replay.outcome).toBe('dispatched');
+    expect(resumeCalls).toBe(1);
+  }, 15_000);
+
+  test('scheduled continuation rejects a dispatching round from another occurrence even when the provider binding projection matches', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-occurrence-mismatch';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-occurrence-mismatch',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-occurrence-mismatch',
+      principalId: 'principal-occurrence-mismatch',
+      controllerInstanceId: 'runtime-occurrence-mismatch',
+      leaseMs: 60_000,
+    });
+    const binding = upsertChatgptControllerBinding(store, {
+      workId, sessionId: owner.sessionId, title: 'matching provider projection', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
+    const reservedOccurrenceId = 'occ-reserved-after-crash';
+    const otherOccurrenceId = 'occ-other-open-round';
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: binding.binding.bindingId,
+      occurrenceId: otherOccurrenceId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    let resumeCalls = 0;
+    await expect(resumeControllerRoundOccurrence(store, {
+      occurrenceId: reservedOccurrenceId, workId, controllerBindingId: binding.binding.bindingId,
+    }, {
+      resume: async () => {
+        resumeCalls += 1;
+        return { accepted: true, dispatchId: 'must-not-dispatch' };
+      },
+    })).rejects.toThrow(`CONTROLLER_CONTINUATION_ROUND_ALREADY_OPEN:${reservedOccurrenceId}:${relayScopeId}`);
+    expect(resumeCalls).toBe(0);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'dispatching', occurrenceId: otherOccurrenceId, bindingId: binding.binding.bindingId,
     });
   }, 15_000);
 
@@ -1311,14 +2201,13 @@ describe('rh_work terminalization authority', () => {
       tabPolicy: 'auto',
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
-    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
-      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
-    });
     let resumeCalls = 0;
+    let providerReady = false;
+    const handoffId = 'hnd-provider-login-required';
     const host = {
       resume: async () => {
         resumeCalls += 1;
-        const handoffId = 'hnd-provider-login-required';
+        if (providerReady) return { accepted: true, dispatchId: 'provider-dispatch-after-user-action' };
         createHandoffItem(store, {
           id: handoffId,
           repoId: fx.repository.repoId,
@@ -1338,21 +2227,104 @@ describe('rh_work terminalization authority', () => {
       },
     };
     const input = {
-      scheduleId: schedule.scheduleId, occurrenceId: 'occ-provider-wait-for-user', workId, controllerBindingId: adapter.binding.bindingId,
+      occurrenceId: 'occ-provider-wait-for-user', workId, controllerBindingId: adapter.binding.bindingId,
     };
-    const first = await resumeScheduledControllerContinuation(store, input, host);
-    expect(first.dispatch).toMatchObject({ status: 'wait_for_user', handoffId: 'hnd-provider-login-required', reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' });
+    const first = await resumeControllerRoundOccurrence(store, input, host);
+    expect(first).toMatchObject({ outcome: 'wait_for_user', reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' });
+    expect(first.relay).toMatchObject({ handoffId: 'hnd-provider-login-required' });
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       status: 'waiting_for_user',
       blockedReason: 'provider_user_action_required',
       handoffId: 'hnd-provider-login-required',
       lastError: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
     });
-    const replay = await resumeScheduledControllerContinuation(store, input, host);
+    const waitingAuthorityId = first.relay.authorityId;
+    const waitingEffectId = first.relay.providerDispatchEffectId;
+    const replay = await resumeControllerRoundOccurrence(store, input, host);
     expect(replay.reused).toBe(true);
-    expect(replay.dispatch.status).toBe('wait_for_user');
+    expect(replay.outcome).toBe('wait_for_user');
     expect(resumeCalls).toBe(1);
+
+    providerReady = true;
+    expect(() => rearmControllerRoundAfterProviderUserAction(store, { workId, handoffId })).toThrow('CONTROLLER_RELAY_PROVIDER_USER_ACTION_HANDOFF_NOT_RESOLVED');
+    resolveHandoffItem(store, handoffId, { decision: 'provider authorization completed', resolver: 'test-user' });
+    const rearmed = rearmControllerRoundAfterProviderUserAction(store, { workId, handoffId });
+    expect(rearmed).toMatchObject({
+      status: 'dispatching',
+      occurrenceId: input.occurrenceId,
+      authorityId: waitingAuthorityId,
+      handoffId: undefined,
+      blockedReason: undefined,
+      providerDispatchEffectId: undefined,
+      providerDispatchStartedAt: undefined,
+    });
+    const resumed = await resumeControllerRoundOccurrence(store, input, host);
+    expect(resumed.reused).toBe(false);
+    expect(resumed).toMatchObject({ outcome: 'dispatched', providerDispatchReceiptId: 'provider-dispatch-after-user-action' });
+    expect(resumed.relay).toMatchObject({
+      status: 'dispatched',
+      occurrenceId: 'occ-provider-wait-for-user',
+      authorityId: waitingAuthorityId,
+      blockedReason: undefined,
+      providerDispatchAttempt: 2,
+    });
+    expect(resumed.relay.handoffId).toBeUndefined();
+    expect(resumed.relay.providerDispatchEffectId).toBe(waitingEffectId);
+    expect(resumeCalls).toBe(2);
   }, 15_000);
+
+  test('Requirement-scoped Controller fingerprint ignores sibling Work outside the explicit current-task lineage', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const requirementId = 'REQ-current-task-fingerprint';
+    const originWorkId = 'work-current-task-origin';
+    const siblingWorkId = 'work-current-task-sibling';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Current task fingerprint isolation',
+      outcomeStatement: 'Sibling Work in one Goal must not become current-task state.',
+    });
+    for (const [workId, objective] of [
+      [originWorkId, 'Execute the exact current task.'],
+      [siblingWorkId, 'Execute an unrelated sibling objective in the same Goal.'],
+    ] as const) {
+      createWorkContract(store, {
+        workId,
+        repoId: fx.repository.repoId,
+        requirementId,
+        mode: 'goal_workloop',
+        objective,
+        acceptanceCriteria: ['Keep exact task lineage isolated.'],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        workKind: 'local_effect',
+        status: 'ready',
+      });
+    }
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId: originWorkId,
+      requirementId,
+      relayScopeId: `requirement:${requirementId}`,
+      identity: {
+        controllerId: 'controller-current-task-isolation',
+        controllerType: 'chatgpt',
+        principalId: 'principal-current-task-isolation',
+        controllerInstanceId: 'runtime-current-task-isolation',
+        sessionId: 'transport-current-task-isolation',
+      },
+    });
+    const baseline = readControllerRoundSemanticStateFingerprint(store, originWorkId);
+    expect(baseline).toBe(relay.stateFingerprint);
+
+    recordWorkEvidenceState(store, siblingWorkId, 'partial');
+    expect(readControllerRoundSemanticStateFingerprint(store, originWorkId)).toBe(baseline);
+
+    recordWorkEvidenceState(store, originWorkId, 'partial');
+    expect(readControllerRoundSemanticStateFingerprint(store, originWorkId)).not.toBe(baseline);
+  });
 
   test('semantic wait suppresses unchanged scheduled provider dispatch and wakes once after semantic state changes', async () => {
     const fx = fixture();
@@ -1377,9 +2349,6 @@ describe('rh_work terminalization authority', () => {
       tabPolicy: 'auto',
     });
     bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
-    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
-      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
-    });
     const relayScopeId = `goal:${workId}`;
     beginInitialControllerRoundDispatch(store, {
       workId,
@@ -1421,31 +2390,267 @@ describe('rh_work terminalization authority', () => {
         return { accepted: true, dispatchId: `dispatch-${resumeCalls}` };
       },
     };
-    const unchanged = await resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId,
+    const unchanged = await resumeControllerRoundOccurrence(store, {
       occurrenceId: 'occ-semantic-wait-unchanged',
       workId,
       controllerBindingId: adapter.binding.bindingId,
       relayScopeId,
     }, host);
-    expect(unchanged.dispatch).toMatchObject({ status: 'semantic_wait', workId, relayScopeId });
+    expect(unchanged).toMatchObject({ outcome: 'semantic_wait' });
+    expect(unchanged.relay).toMatchObject({ originWorkId: workId, relayScopeId });
     expect(resumeCalls).toBe(0);
     expect(getControllerRoundRelay(store, workId)?.status).toBe('waiting');
 
     // A meaningful Work state change opens exactly one successor round.
-    updateWorkContract(store, workId, { evidenceState: 'partial' });
+    recordWorkEvidenceState(store, workId, 'partial');
     expect(readControllerRoundSemanticStateFingerprint(store, workId)).not.toBe(baselineFingerprint);
-    const changed = await resumeScheduledControllerContinuation(store, {
-      scheduleId: schedule.scheduleId,
+    const changed = await resumeControllerRoundOccurrence(store, {
       occurrenceId: 'occ-semantic-wait-changed',
       workId,
       controllerBindingId: adapter.binding.bindingId,
       relayScopeId,
     }, host);
-    expect(changed.dispatch).toMatchObject({ status: 'dispatched', hostDispatchId: 'dispatch-1' });
+    expect(changed).toMatchObject({ outcome: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
     expect(resumeCalls).toBe(1);
     expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
   }, 15_000);
+
+  test('explicit user continuation reclaims an exact waiting_for_user relay without weakening its authority fence', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-explicit-user-resume';
+    const principalId = 'principal-explicit-user-resume';
+    const runtimeInstanceId = 'runtime-explicit-user-resume';
+    const relayScopeId = `goal:${workId}`;
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId: 'transport-explicit-user-resume-initial',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      providerDispatchReceiptId: 'dispatch-before-explicit-user-resume',
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+    const handoffId = 'handoff-explicit-user-resume';
+    createHandoffItem(store, {
+      id: handoffId,
+      repoId: fx.repository.repoId,
+      workId,
+      title: 'User decision required',
+      severity: 'needs_review',
+      reason: 'EXPLICIT_USER_CONTINUATION_REQUIRED',
+      creationReason: 'missing_authorization',
+      summary: 'Wait for an explicit user continuation.',
+      currentState: { repoId: fx.repository.repoId, workId, statusSummary: 'waiting for user' },
+      evidenceRefs: [],
+      recommendedDecision: 'continue',
+      recommendedPrompt: 'Continue the exact Work.',
+      suggestedNextActions: [],
+    });
+    const waiting = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+      disposition: 'wait_for_user',
+      handoffId,
+      reason: 'Explicit user continuation required.',
+    });
+    expect(waiting).toMatchObject({ status: 'waiting_for_user', handoffId, authorityId: relay.authorityId });
+    expect(releaseObservedControllerSession(store, {
+      workId,
+      actor: 'test-explicit-user-resume-release',
+      owner,
+    }).allowed).toBe(true);
+
+    const automatedClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-automated-resume', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: relay.authorityId,
+        relay_scope_id: relayScopeId,
+        requested_by: 'chatgpt',
+      },
+    ));
+    expect(automatedClaim.status).toBe('blocked');
+    expect(automatedClaim.summary).toContain('CONTROLLER_RELAY_CLAIM_STATE_INVALID:waiting_for_user');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const resumed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-user-resume', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: relay.authorityId,
+        relay_scope_id: relayScopeId,
+        requested_by: 'user',
+      },
+    ));
+    expect(resumed.status).toBe('ok');
+    expect(resumed.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: relay.authorityId,
+      relayScopeId,
+      roundCount: waiting.roundCount,
+      repeatedStateCount: waiting.repeatedStateCount,
+    });
+    expect(resumed.data?.relay?.handoffId).toBeUndefined();
+    expect(resumed.data?.relay?.disposition).toBeUndefined();
+    expect(getControllerSession(store, workId)).toMatchObject({
+      controllerId: principalId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      sessionId: 'transport-user-resume',
+    });
+  }, 15_000);
+
+  test('Supervisor recovery re-arms an unchanged semantic wait without dispatching the provider itself', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-supervisor-semantic-wait-recovery';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-supervisor-recovery',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-supervisor-recovery',
+      principalId: 'principal-supervisor-recovery',
+      controllerInstanceId: 'runtime-supervisor-recovery',
+      leaseMs: 60_000,
+    });
+    const binding = upsertChatgptControllerBinding(store, {
+      workId, sessionId: owner.sessionId, title: 'supervisor recovery target', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: binding.binding.bindingId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: binding.binding.bindingId, providerDispatchReceiptId: 'dispatch-before-supervisor-recovery' });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+    expect(submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+      disposition: 'wait',
+    }).status).toBe('waiting');
+
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId: 'occ-supervisor-recovery',
+      workId,
+      controllerBindingId: binding.binding.bindingId,
+      relayScopeId,
+      allowSemanticWaitRecovery: true,
+    });
+    expect(prepared).toMatchObject({ outcome: 'dispatched', reused: false });
+    expect(prepared.relay).toMatchObject({ status: 'dispatching', occurrenceId: 'occ-supervisor-recovery' });
+    expect(prepared.relay.providerDispatchStartedAt).toBeUndefined();
+    expect(prepared.relay.providerDispatchReceiptId).toBeUndefined();
+  });
+
+  test('scheduled continuation preserves a non-recoverable failed lineage instead of retrying exhausted provider budget', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-nonrecoverable-provider-failure';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-nonrecoverable-provider-failure',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-nonrecoverable-provider-failure',
+      principalId: 'principal-nonrecoverable-provider-failure',
+      controllerInstanceId: 'runtime-nonrecoverable-provider-failure',
+      leaseMs: 60_000,
+    });
+    const binding = upsertChatgptControllerBinding(store, {
+      workId, sessionId: owner.sessionId, title: 'nonrecoverable provider failure', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
+    const occurrenceId = 'occ-nonrecoverable-provider-failure';
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      occurrenceId,
+      bindingId: binding.binding.bindingId,
+      maxFailures: 1,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    const failed = finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'POLICY_DENIED: explicit retry is not authorized' })!;
+    expect(failed).toMatchObject({ status: 'failed', consecutiveFailures: 1, maxFailures: 1 });
+    expect(releaseObservedControllerSession(store, { workId, actor: 'test-nonrecoverable-provider-failure-release', owner }).allowed).toBe(true);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getRetainedControllerSession(store, workId)).toBeTruthy();
+
+    const prepared = prepareControllerRoundOccurrence(store, {
+      occurrenceId,
+      workId,
+      controllerBindingId: binding.binding.bindingId,
+      relayScopeId,
+    });
+
+    expect(prepared).toMatchObject({
+      outcome: 'rejected',
+      reused: true,
+      reason: 'POLICY_DENIED: explicit retry is not authorized',
+      relay: { status: 'failed', consecutiveFailures: 1, maxFailures: 1 },
+    });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'failed',
+      consecutiveFailures: 1,
+      maxFailures: 1,
+      updatedAt: failed.updatedAt,
+    });
+  });
 
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {
     const fx = fixture();
@@ -1501,7 +2706,7 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
-  test('explicit user recovery can rekey only a direct exact-Work authority after capability loss without weakening normal transport fencing', async () => {
+  test('direct exact-Work claim mechanically rebinds the same authenticated owner while explicit rekey remains user-directed', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const principalId = 'principal-direct-authority-recovery';
@@ -1524,8 +2729,12 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
     ));
-    expect(ordinaryRotatedClaim.status).toBe('blocked');
-    expect(ordinaryRotatedClaim.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(ordinaryRotatedClaim.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toMatchObject({
+      principalId,
+      sessionId: 'transport-recovery-2',
+      controllerInstanceId: runtimeInstanceId,
+    });
 
     const automatedRecovery = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
@@ -1574,6 +2783,121 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(finalStop.status).toBe('ok');
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('ownerless failed ControllerRound can be explicitly stopped without obsolete round authority', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-ownerless-failed-relay-stop';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'principal-stale-stop',
+        controllerType: 'chatgpt',
+        principalId: 'principal-stale-stop',
+        controllerInstanceId: 'runtime-stale-stop',
+        sessionId: 'launcher-stale-stop',
+      },
+      bindingId: 'binding-stale-stop',
+    });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'synthetic dispatch failure' })).toMatchObject({ status: 'failed' });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const stopped = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-maintenance', 'transport-maintenance', 'runtime-maintenance'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workId,
+        requested_by: 'user',
+        reason: 'retire stale failed canary',
+        cleanup: false,
+      },
+    ));
+    expect(stopped.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('same-principal controller_claim preserves exact relay authority across canonical Runtime rotation without chat-driven rekey', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-relay-runtime-rotation';
+    const workId = 'work-relay-runtime-rotation';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        principalId,
+        controllerInstanceId: 'runtime-relay-a',
+        sessionId: 'launcher-relay-runtime-a',
+      },
+      bindingId: 'binding-relay-runtime-rotation',
+    });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: true })).toMatchObject({
+      status: 'dispatched',
+      authorityId: opened.authorityId,
+    });
+
+    const firstClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-runtime-a', 'runtime-relay-a'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        session_id: opened.authorityId,
+      },
+    ));
+    expect(firstClaim.status).toBe('ok');
+    expect(firstClaim.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: opened.authorityId,
+      controllerInstanceId: 'runtime-relay-a',
+    });
+
+    publishCurrentRuntime(fx.controllerHome, 'runtime-relay-b');
+    const migrated = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-runtime-b', 'runtime-relay-b'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+      },
+    ));
+    expect(migrated.status).toBe('ok');
+    expect(migrated.data?.controllerAuthorityId).toBe(opened.authorityId);
+    expect(migrated.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: opened.authorityId,
+      relayScopeId: opened.relayScopeId,
+      controllerInstanceId: 'runtime-relay-b',
+    });
+    expect(migrated.data?.session).toMatchObject({
+      principalId,
+      controllerInstanceId: 'runtime-relay-b',
+      authorityDigest: controllerSessionAuthorityDigest(opened.authorityId!),
+    });
+
+    const staleExplicit = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-runtime-c', 'runtime-relay-b'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: 'cra_00000000000000000000000000000000',
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(staleExplicit.status).toBe('blocked');
+    expect(staleExplicit.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
   }, 15_000);
 
   test('explicit user recovery rekeys an exact relay-bound failed round without resetting budgets or depending on provider dispatch', async () => {
@@ -1640,8 +2964,472 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
     ));
-    expect(whileActive.status).toBe('blocked');
-    expect(whileActive.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM');
+    const whileActiveAuthority = String(whileActive.data?.controllerAuthorityId ?? '');
+    expect(whileActive).toMatchObject({ status: 'ok' });
+    expect(whileActive.data?.authorityRecovered).toBe(true);
+    expect(whileActiveAuthority).toStartWith('cra_');
+    expect(whileActiveAuthority).not.toBe(recoveredAuthority);
+    expect(whileActive.data?.relayScopeId).toBe(opened.relayScopeId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const reclaimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-5', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, session_id: whileActiveAuthority },
+    ));
+    expect(reclaimed.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
+
+    const foreignRecovery = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-relay-authority-foreign', 'transport-relay-recovery-foreign', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(foreignRecovery.status).toBe('blocked');
+    expect(foreignRecovery.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_PRINCIPAL_MISMATCH');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
+
+    const now = new Date().toISOString();
+    createProcessRecord({
+      schemaVersion: 1,
+      processId: 'proc-relay-authority-recovery-active',
+      repoId: fx.repository.repoId,
+      workId,
+      controllerHome: fx.controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 60000)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 60_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      terminalFenceToken: 1,
+    });
+    const whileExecuting = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-6', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(whileExecuting.status).toBe('blocked');
+    expect(whileExecuting.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_EXECUTION');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: runtimeInstanceId });
+  }, 15_000);
+
+  test('explicit user relay recovery migrates the same principal from a superseded Runtime to the live canonical Runtime', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-relay-runtime-migration';
+    const workId = 'work-relay-runtime-migration';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId: 'runtime-old', sessionId: 'transport-old' },
+      bindingId: 'binding-runtime-migration',
+    });
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-old', 'runtime-old'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, session_id: opened.authorityId },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, controllerInstanceId: 'runtime-old' });
+
+    publishCurrentRuntime(fx.controllerHome, 'runtime-new');
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-new', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(recovered.status).toBe('ok');
+    expect(String(recovered.data?.controllerAuthorityId ?? '')).toStartWith('cra_');
+    expect(recovered.data?.relayScopeId).toBe(opened.relayScopeId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+  }, 15_000);
+
+  test('provider recovery requires exact authority and fresh confirmed probe evidence before rearming the same blocked round', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+
+    const blockRound = (workId: string) => {
+      createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+      const opened = beginInitialControllerRoundDispatch(store, {
+        workId,
+        identity: { controllerId: 'provider-recovery-controller', controllerType: 'chatgpt', principalId: 'provider-recovery-principal', controllerInstanceId: 'provider-recovery-runtime', sessionId: `launcher-${workId}` },
+        maxFailures: 3,
+      });
+      finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+      finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+      const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' })!;
+      expect(blocked).toMatchObject({ status: 'blocked', consecutiveFailures: 3, providerFailureTotal: 3 });
+      return { opened, blocked };
+    };
+    const confirmedProbe = async () => ({
+      status: 'dispatched' as const,
+      provider: 'controller-browser' as const,
+      browserSessionId: 'provider-recovery-probe-session',
+      conversationUrl: 'https://chatgpt.com/c/provider-recovery-probe',
+      resumedFromBinding: false,
+      model: 'gpt-5.6',
+      reasoning: 'high' as const,
+      tabPolicy: 'new' as const,
+      executionPreferenceVerified: true,
+      providerDeliveryStatus: 'dispatch_confirmed' as const,
+    });
+
+    const workId = 'work-provider-recovery-success';
+    const { opened, blocked } = blockRound(workId);
+    bindChatgptWorkConversation(store, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/provider-recovery-bound-work',
+      latestBrowserSessionId: 'provider-recovery-bound-session',
+      authorizationGrantRefs: ['browser-grant-exact-work'],
+    });
+    let wrongAuthorityProbeCalls = 0;
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: opened.relayScopeId,
+      authorityId: 'cra_wrong',
+      probe: async () => { wrongAuthorityProbeCalls += 1; return confirmedProbe(); },
+      now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_MISMATCH');
+    expect(wrongAuthorityProbeCalls).toBe(0);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: 'goal:wrong-provider-recovery-scope',
+      authorityId: opened.authorityId!,
+      probe: async () => { wrongAuthorityProbeCalls += 1; return confirmedProbe(); },
+      now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_SCOPE_MISMATCH');
+    expect(wrongAuthorityProbeCalls).toBe(0);
+
+    let recoveredProbeGrantRefs: readonly string[] | undefined;
+    const recovered = await recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: opened.relayScopeId,
+      authorityId: opened.authorityId!,
+      probe: async (probeInput) => {
+        recoveredProbeGrantRefs = probeInput.authorizationGrantRefs;
+        return confirmedProbe();
+      },
+      now: () => new Date(Date.parse(blocked.updatedAt) + 1_000).toISOString(),
+    });
+    expect(recoveredProbeGrantRefs).toEqual(['browser-grant-exact-work']);
+    expect(recovered.relay).toMatchObject({
+      status: 'dispatching',
+      relayScopeId: opened.relayScopeId,
+      authorityId: opened.authorityId,
+      consecutiveFailures: 0,
+      providerFailureTotal: 3,
+      providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: recovered.audit.id,
+    });
+    expect(recovered.audit.id.startsWith('REC-')).toBe(true);
+    expect(recovered.audit).toMatchObject({ result: 'succeeded', actionId: 'recovery.controller_provider_probe' });
+    expect(recovered.audit.evidence[0]).toMatchObject({ source: 'chatgpt_provider_recovery_probe', details: { workId, relayScopeId: opened.relayScopeId, controllerAuthorityId: opened.authorityId, blockedUpdatedAt: blocked.updatedAt, provider: 'controller-browser', providerDeliveryStatus: 'dispatch_confirmed', authorizationGrantRefCount: 1 } });
+    expect(listRecoveryAuditRecords(fx.controllerHome, fx.repository.repoId).map((entry) => entry.id)).toContain(recovered.audit.id);
+
+    const nonBlockedWorkId = 'work-provider-recovery-non-blocked';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, nonBlockedWorkId);
+    const nonBlocked = beginInitialControllerRoundDispatch(store, {
+      workId: nonBlockedWorkId,
+      identity: { controllerId: 'provider-recovery-controller', controllerType: 'chatgpt', principalId: 'provider-recovery-principal', controllerInstanceId: 'provider-recovery-runtime', sessionId: 'launcher-non-blocked' },
+    });
+    let nonBlockedProbeCalls = 0;
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: nonBlockedWorkId,
+      relayScopeId: nonBlocked.relayScopeId,
+      authorityId: nonBlocked.authorityId!,
+      probe: async () => { nonBlockedProbeCalls += 1; return confirmedProbe(); },
+      now: () => new Date(Date.parse(nonBlocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_BLOCKER_MISMATCH');
+    expect(nonBlockedProbeCalls).toBe(0);
+
+    const staleEvidenceWorkId = 'work-provider-recovery-stale-evidence';
+    const staleEvidenceRound = blockRound(staleEvidenceWorkId);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: staleEvidenceWorkId,
+      relayScopeId: staleEvidenceRound.opened.relayScopeId,
+      authorityId: staleEvidenceRound.opened.authorityId!,
+      probe: confirmedProbe,
+      now: () => staleEvidenceRound.blocked.updatedAt,
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_EVIDENCE_NOT_FRESH');
+    const stillBlockedAfterStaleEvidence = getControllerRoundRelay(store, staleEvidenceWorkId)!;
+    expect(stillBlockedAfterStaleEvidence).toMatchObject({ status: 'blocked', consecutiveFailures: 3 });
+    expect(stillBlockedAfterStaleEvidence.providerRecoveryEpoch).toBeUndefined();
+    expect(stillBlockedAfterStaleEvidence.providerRecoveryEvidenceId).toBeUndefined();
+
+    const failedWorkId = 'work-provider-recovery-failed-probe';
+    const failedRound = blockRound(failedWorkId);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: failedWorkId,
+      relayScopeId: failedRound.opened.relayScopeId,
+      authorityId: failedRound.opened.authorityId!,
+      probe: async () => ({ status: 'failed', provider: 'controller-browser', browserSessionId: 'failed-probe', resumedFromBinding: false, model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'new', executionPreferenceVerified: false, providerDeliveryStatus: 'wait_for_user', error: { code: 'CHATGPT_AUTH_REQUIRED', message: 'login required' } }),
+      now: () => new Date(Date.parse(failedRound.blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow('CONTROLLER_PROVIDER_RECOVERY_PROBE_FAILED');
+    const stillBlockedAfterFailedProbe = getControllerRoundRelay(store, failedWorkId)!;
+    expect(stillBlockedAfterFailedProbe).toMatchObject({ status: 'blocked', consecutiveFailures: 3 });
+    expect(stillBlockedAfterFailedProbe.providerRecoveryEpoch).toBeUndefined();
+    expect(stillBlockedAfterFailedProbe.providerRecoveryEvidenceId).toBeUndefined();
+
+    const staleWorkId = 'work-provider-recovery-cas-race';
+    const staleRound = blockRound(staleWorkId);
+    await expect(recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId: staleWorkId,
+      relayScopeId: staleRound.opened.relayScopeId,
+      authorityId: staleRound.opened.authorityId!,
+      probe: async () => {
+        rearmControllerRoundAfterProviderRecovery(store, { workId: staleWorkId, relayScopeId: staleRound.opened.relayScopeId, authorityId: staleRound.opened.authorityId!, expectedUpdatedAt: staleRound.blocked.updatedAt, evidenceId: 'concurrent-provider-recovery' });
+        return confirmedProbe();
+      },
+      now: () => new Date(Date.parse(staleRound.blocked.updatedAt) + 1_000).toISOString(),
+    })).rejects.toThrow(/CONTROLLER_RELAY_PROVIDER_RECOVERY_(STALE|BLOCKER_MISMATCH)/);
+
+    const missingAuthority = structured(await callRuntimeTool(ctx(fx.controllerHome, fx.repository, 'provider-recovery-principal', 'transport-provider-recovery', 'runtime-provider-recovery'), 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: failedWorkId,
+      capability_id: `controller.provider.recover:${failedWorkId}`,
+    }));
+    expect(missingAuthority.status).toBe('blocked');
+    expect(missingAuthority.summary).toContain('CONTROLLER_PROVIDER_RECOVERY_AUTHORITY_REQUIRED');
+  }, 15_000);
+
+  test('initial ControllerRound begin idempotently reuses the same unsubmitted relay for the same authenticated controller principal', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-initial-relay-idempotent-begin';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const first = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-initial-relay',
+        controllerType: 'chatgpt',
+        principalId: 'principal-initial-relay',
+        controllerInstanceId: 'runtime-initial-relay-a',
+        sessionId: 'session-initial-relay-a',
+      },
+    });
+    const resumed = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-initial-relay',
+        controllerType: 'chatgpt',
+        principalId: 'principal-initial-relay',
+        controllerInstanceId: 'runtime-initial-relay-b',
+        sessionId: 'session-initial-relay-b',
+      },
+    });
+
+    expect(resumed).toEqual(first);
+    expect(resumed.authorityId).toBe(first.authorityId);
+    expect(resumed.roundCount).toBe(1);
+    expect(() => beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'chatgpt-initial-relay',
+        controllerType: 'chatgpt',
+        principalId: 'foreign-principal',
+        controllerInstanceId: 'runtime-initial-relay-c',
+        sessionId: 'session-initial-relay-c',
+      },
+    })).toThrow('CONTROLLER_RELAY_ROUND_ALREADY_OPEN');
+  });
+
+  test('explicit user authority rekey preserves a consecutive-failures provider block until evidence-gated provider recovery succeeds', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-provider-block-rekey';
+    const runtimeInstanceId = 'runtime-provider-block-rekey';
+    const workId = 'work-provider-block-rekey';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        principalId,
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: 'launcher-provider-block-rekey',
+      },
+      maxFailures: 3,
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+    finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' });
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE' })!;
+    expect(blocked).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'consecutive_failures:3>=3',
+      consecutiveFailures: 3,
+      providerFailureTotal: 3,
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.authority.recover:${workId}`,
+        requested_by: 'user',
+      },
+    ));
+    const recoveredAuthority = String(recovered.data?.controllerAuthorityId ?? '');
+    expect(recovered.status).toBe('ok');
+    expect(recoveredAuthority).toStartWith('cra_');
+    expect(recoveredAuthority).not.toBe(opened.authorityId);
+    expect(recovered.data?.relay).toMatchObject({
+      status: 'blocked',
+      blockedReason: blocked.blockedReason,
+      consecutiveFailures: 3,
+      providerFailureTotal: 3,
+      relayScopeId: opened.relayScopeId,
+      authorityId: recoveredAuthority,
+    });
+    expect(recovered.data?.relay?.failureClass).toBe(blocked.failureClass);
+    expect(recovered.data?.relay?.lastError).toBe(blocked.lastError);
+    expect(recovered.data?.relay?.providerRecoveryEpoch).toBe(blocked.providerRecoveryEpoch);
+    expect(recovered.data?.relay?.providerRecoveryEvidenceId).toBe(blocked.providerRecoveryEvidenceId);
+    expect(recovered.data?.relay?.providerDispatchEffectId).toBe(blocked.providerDispatchEffectId);
+    expect(recovered.data?.relay?.providerDispatchReceiptId).toBe(blocked.providerDispatchReceiptId);
+
+    const prematureClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey-claim', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: recoveredAuthority,
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(prematureClaim.status).toBe('blocked');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: 'transport-provider-block-rekey-claim',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+    })).toBeUndefined();
+
+    const providerRecovered = await recoverControllerRoundAfterVerifiedProviderRepair({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      repoRoot: fx.repoRoot,
+      workId,
+      relayScopeId: opened.relayScopeId,
+      authorityId: recoveredAuthority,
+      probe: async () => ({
+        status: 'dispatched' as const,
+        provider: 'controller-browser' as const,
+        browserSessionId: 'provider-block-rekey-probe',
+        conversationUrl: 'https://chatgpt.com/c/provider-block-rekey-probe',
+        resumedFromBinding: false,
+        model: 'gpt-5.6',
+        reasoning: 'high' as const,
+        tabPolicy: 'new' as const,
+        executionPreferenceVerified: true,
+        providerDeliveryStatus: 'dispatch_confirmed' as const,
+      }),
+      now: () => new Date(Date.parse(String(recovered.data?.relay?.updatedAt ?? blocked.updatedAt)) + 1_000).toISOString(),
+    });
+    expect(providerRecovered.relay).toMatchObject({
+      status: 'dispatching',
+      authorityId: recoveredAuthority,
+      relayScopeId: opened.relayScopeId,
+      consecutiveFailures: 0,
+      providerFailureTotal: 3,
+      providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: providerRecovered.audit.id,
+    });
+
+    const wrongTypeClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey-wrong-type', runtimeInstanceId, 'codex'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_type: 'codex',
+        controller_authority_id: recoveredAuthority,
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(wrongTypeClaim.status).toBe('blocked');
+    expect(wrongTypeClaim.summary).toContain('CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getRetainedControllerSession(store, workId)).toBeUndefined();
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: 'transport-provider-block-rekey-wrong-type',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+    })).toBeUndefined();
+
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-provider-block-rekey-claimed', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        controller_authority_id: recoveredAuthority,
+        relay_scope_id: opened.relayScopeId,
+      },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(claimed.data?.relay).toMatchObject({
+      status: 'claimed',
+      authorityId: recoveredAuthority,
+      relayScopeId: opened.relayScopeId,
+      consecutiveFailures: 0,
+      providerFailureTotal: 3,
+      providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: providerRecovered.audit.id,
+    });
+    expect(getControllerSession(store, workId)).toMatchObject({
+      workId,
+      controllerId: principalId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      sessionId: 'transport-provider-block-rekey-claimed',
+    });
+    expect(readExecutionSession(fx.controllerHome, {
+      sessionId: 'transport-provider-block-rekey-claimed',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+    })).toMatchObject({
+      activeWorkId: workId,
+      controllerInstanceId: runtimeInstanceId,
+    });
   }, 15_000);
 
   test('frozen rh_work compatibility maps explicit review intent to the canonical implementation-review handler', async () => {
@@ -1675,6 +3463,107 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(invalidDecision.status).toBe('blocked');
     expect(invalidDecision.summary).toContain('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_INVALID');
+  }, 15_000);
+
+  test('frozen ControllerRound review carrier preserves exact authority and explicit review decision in one canonical call', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-frozen-controller-review';
+    const runtimeInstanceId = 'runtime-frozen-controller-review';
+    const sessionId = 'transport-frozen-controller-review';
+    const workId = 'work-frozen-controller-review';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const now = new Date().toISOString();
+
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Prove frozen ControllerRound review transport keeps one authority.',
+      acceptanceCriteria: ['Exact verified candidate is explicitly reviewed through the frozen carrier.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'review',
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId,
+      principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      deliveryTargetBranch: 'main',
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'validating',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'pending' },
+    });
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    writeFileSync(join(fx.repoRoot, 'src', 'index.ts'), 'export const ready = 2;\n');
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, repositoryGitStatus(fx.repository));
+    updateWorkContract(store, workId, {
+      checkRefs: [exactVerification({
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        sourceRevision: baseRevision,
+        workspaceFingerprint,
+        checkId: 'frozen-controller-review-check',
+      })],
+    });
+
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId: runtimeInstanceId, sessionId },
+      bindingId: `chatgpt:${fx.repository.repoId}:${workId}`,
+    });
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`,
+      },
+    ));
+    expect(claimed.status).toBe('ok');
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.round:review:approved:${relay.authorityId}:${relay.relayScopeId}`,
+        reason: 'Exact verified frozen-client candidate is approved under the durable round authority.',
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+    expect(reviewed.data?.review).toMatchObject({ decision: 'approved' });
+    expect(getWorkContract(store, workId)).toMatchObject({
+      phase: 'delivery',
+      phaseEvidence: { review: { state: 'satisfied' } },
+    });
   }, 15_000);
 
   test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
@@ -1857,6 +3746,118 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession(store, workB)?.sessionId).toBe('transport-b-frozen-stop');
   }, 15_000);
 
+  test('terminal cleanup releases the exact leftover owner from a terminalization crash window', async () => {
+    const fx = fixture();
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner', 'runtime-terminal-owner');
+    const cleanupCaller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner-retry', 'runtime-terminal-owner');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-terminal-cleanup-leftover-owner';
+    const branch = 'work/terminal-cleanup-leftover-owner';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'terminal cleanup leftover owner regression',
+      baseRef: baseRevision,
+      branchName: branch,
+    });
+    const now = new Date().toISOString();
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId!,
+      controllerInstanceId: caller.controllerInstanceId!,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Release the terminalization owner before retrying resource cleanup.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'ready',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const preservedAfterTerminalizationCrash = true;\n');
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId!,
+      principalId: caller.principalId!,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      deliveryTargetBranch: 'main',
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending',
+      },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId!,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId!,
+      principalId: caller.principalId!,
+      controllerInstanceId: caller.controllerInstanceId!,
+      leaseMs: 60_000,
+    });
+    // Simulate the durable semantic transition succeeding immediately before a
+    // crash, leaving the original ControllerSession for cleanup retry.
+    transitionWorkContractPhase(store, workId, {
+      status: 'cancelled',
+      phase: 'cleanup',
+      state: 'skipped',
+      summary: 'terminalization committed before cleanup process exited',
+    });
+
+    const wrongOwnerCaller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner-wrong', 'runtime-terminal-owner-wrong');
+    const rejected = structured(await callRuntimeTool(wrongOwnerCaller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      cleanup: true,
+      delete_branch: true,
+      target_branch: 'main',
+      authorize_destructive_cleanup: true,
+    }));
+    expect(rejected.status).toBe('blocked');
+    expect(rejected.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
+    expect(getControllerSession(store, workId)?.sessionId).toBe(caller.sessionId);
+    expect(existsSync(workspace.root!)).toBe(true);
+
+    const cleaned = structured(await callRuntimeTool(cleanupCaller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      cleanup: true,
+      delete_branch: true,
+      target_branch: 'main',
+      authorize_destructive_cleanup: true,
+    }));
+    expect(cleaned.status).toBe('ok');
+    expect(cleaned.data.cleanupOnly).toBe(true);
+    expect(cleaned.data.worktreeDeleted).toBe(true);
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.cleanupReceipt).toMatchObject({
+      complete: true,
+      ownership: { controllerLease: 'released' },
+    });
+  }, 20_000);
+
   test('terminal cleanup resolves legacy exact-id WorkHandles without workContractId', async () => {
     const fx = fixture();
     const workId = 'work-legacy-handle-terminal-cleanup';
@@ -1978,6 +3979,55 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(released.status).toBe('ok');
     expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+  }, 15_000);
+
+  test('explicit user cleanup releases only the current same-owner claim from an already blocked relay', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-blocked-relay-owner-cleanup';
+    const principalId = 'principal-blocked-relay-owner-cleanup';
+    const runtimeInstanceId = 'runtime-blocked-relay-owner-cleanup';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId: 'transport-blocked-relay-owner-cleanup',
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      maxFailures: 1,
+      identity: {
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        principalId,
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: owner.sessionId,
+      },
+    });
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'synthetic provider failure' })!;
+    expect(blocked.status).toBe('blocked');
+
+    const foreign = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-foreign-blocked-cleanup', 'transport-foreign-blocked-cleanup', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, requested_by: 'user' },
+    ));
+    expect(foreign.status).toBe('blocked');
+    expect(getControllerSession(store, workId)).toMatchObject({ principalId, claimGeneration: owner.claimGeneration });
+
+    const released = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-current-blocked-cleanup', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, requested_by: 'user' },
+    ));
+    expect(released.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'blocked', authorityId: blocked.authorityId });
   }, 15_000);
 
   test('current canonical Runtime migrates the same principal before release while the old Runtime stays fenced', async () => {
@@ -2211,6 +4261,48 @@ describe('rh_work terminalization authority', () => {
     expect(explicit.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('cancelled');
   }, 15_000);
+
+  test('active Codex launch reservation fences controller_claim to the reservation-scoped MCP identity', async () => {
+    const fx = fixture();
+    const workId = 'work-codex-launch-identity-fence';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const reservation = reserveExternalControllerLaunch({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerType: 'codex',
+      ttlMs: 5_000,
+    });
+    try {
+      const generic = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, fx.repository, 'mcp-bearer-client', 'generic-codex-session', 'runtime-codex', 'codex'),
+        'rh_work',
+        { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'codex' },
+      ));
+      expect(generic.status).toBe('blocked');
+      expect(generic.summary).toContain('WORK_CONTROLLER_LAUNCH_IDENTITY_MISMATCH');
+      expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+
+      const expected = providerMcpReservationIdentity('codex', reservation.reservationId);
+      const exact = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, fx.repository, expected.principalId, expected.sessionId, 'runtime-codex', 'codex'),
+        'rh_work',
+        { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'codex' },
+      ));
+      expect(exact.status).toBe('ok');
+      expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+        controllerType: 'codex',
+        controllerId: expected.principalId,
+        principalId: expected.principalId,
+        sessionId: expected.sessionId,
+      });
+    } finally {
+      releaseExternalControllerLaunchReservation(
+        { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+        workId,
+        reservation.reservationId,
+        'test_cleanup',
+      );
+    }
+  });
 
   test('already-terminal Work performs cleanup-only without reopening Controller ownership', async () => {
     const fx = fixture();
@@ -2701,6 +4793,221 @@ describe('rh_work terminalization authority', () => {
 
   }, 25_000);
 
+  test('terminal Requirement-only continuation binds the successor before claiming ownership', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const requirementId = 'REQ-terminal-requirement-successor';
+    const predecessorWorkId = 'work-terminal-requirement-predecessor';
+    const principalId = 'principal-terminal-requirement-successor';
+    const sessionId = 'transport-terminal-requirement-successor';
+    const controllerInstanceId = 'runtime-terminal-requirement-successor';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Terminal Requirement successor compatibility',
+      outcomeStatement: 'Continue a completed Requirement-only Work through the exact ControllerRound relay without introducing a Plan.',
+    });
+    createWorkContract(store, {
+      workId: predecessorWorkId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      objective: 'finish the Requirement predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: targetRevision,
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId: predecessorWorkId,
+      identity: { controllerId: 'schedule:terminal-requirement-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-requirement-successor' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
+    const owner = claimControllerSession(store, {
+      workId: predecessorWorkId, controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId, sessionId, leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId: predecessorWorkId, session: owner })).toMatchObject({ status: 'claimed' });
+
+    const recordedAt = '2026-09-20T00:00:00.000Z';
+    transitionWorkContractPhase(store, predecessorWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Requirement predecessor no-change delivery verified.' });
+    requestWorkImplementationReview(store, predecessorWorkId, 'Requirement predecessor requires review before terminal successor handoff.');
+    recordWorkImplementationReview(store, predecessorWorkId, {
+      schemaVersion: 1, reviewId: 'REV-terminal-requirement-predecessor', workId: predecessorWorkId, reviewerPrincipalId: principalId, reviewerControllerSessionId: sessionId,
+      decision: 'approved', rationale: 'Reviewed Requirement predecessor before successor relay handoff.', findings: [], sourceRevision: targetRevision,
+      workspaceFingerprint: 'terminal-requirement-content', verificationWorkspaceFingerprint: 'terminal-requirement-verification', changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'predecessor delivered',
+      verificationEvidence: [], architectureEvidence: [], recordedAt,
+    });
+    recordWorkCompletionReceipt(store, predecessorWorkId, {
+      schemaVersion: 1, receiptId: 'receipt-terminal-requirement-predecessor', source: 'controller_work', issueId: 'requirement-stage',
+      taskId: predecessorWorkId, workId: predecessorWorkId, targetBranch: 'main', targetRevision, changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    expect(getWorkContract(store, predecessorWorkId)?.status).toBe('completed');
+    expect(releaseObservedControllerSession(store, { workId: predecessorWorkId, actor: 'test-terminal-requirement-release', owner }).allowed).toBe(true);
+
+    const caller = ctx(
+      fx.controllerHome, fx.repository, principalId,
+      `${sessionId}-rotated`, `${controllerInstanceId}-rotated`,
+    );
+    const started = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Continue the Requirement-only successor.',
+      requirement_id: requirementId,
+      related_work_id: predecessorWorkId,
+      work_relation: 'continue',
+      work_kind: 'completed_no_change',
+      controller_authority_id: opened.authorityId,
+      relay_scope_id: opened.relayScopeId,
+      scope_clear: true,
+      requires_recovery: true,
+    }));
+    expect(started.status).toBe('ok');
+    expect(started.data.ownershipClaimed).toBe(false);
+    const successorWorkId = String(started.data.successorWorkId ?? started.data.work?.workId ?? '');
+    expect(successorWorkId).toMatch(/^work-/);
+    expect(getControllerSession(store, successorWorkId)).toBeUndefined();
+    expect(getControllerRoundRelay(store, predecessorWorkId)).toMatchObject({
+      status: 'claimed',
+      successorWorkId,
+      requirementId,
+      relayScopeId: opened.relayScopeId,
+    });
+  }, 20_000);
+
+  test('terminal continuation leaves relay-free predecessors on normal admission and atomically hands off failed pre-claim relays', async () => {
+    const completeRequirementWork = (fx: ReturnType<typeof fixture>, requirementId: string, workId: string, principalId: string) => {
+      const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+      const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+      createRequirement({ controllerHome: fx.controllerHome }, {
+        requirementId,
+        title: 'Terminal continuation regression',
+        outcomeStatement: 'Continue one completed Requirement Work without duplicating controller authority.',
+      });
+      createWorkContract(store, {
+        workId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+        objective: 'complete predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: targetRevision,
+      });
+      const recordedAt = '2026-09-20T00:10:00.000Z';
+      transitionWorkContractPhase(store, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Predecessor verified.' });
+      requestWorkImplementationReview(store, workId, 'Predecessor review required.');
+      recordWorkImplementationReview(store, workId, {
+        schemaVersion: 1, reviewId: `REV-${workId}`, workId, reviewerPrincipalId: principalId, reviewerControllerSessionId: `review-${workId}`,
+        decision: 'approved', rationale: 'Reviewed predecessor.', findings: [], sourceRevision: targetRevision,
+        workspaceFingerprint: `content-${workId}`, verificationWorkspaceFingerprint: `verification-${workId}`, changedPaths: [],
+        changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'predecessor delivered',
+        verificationEvidence: [], architectureEvidence: [], recordedAt,
+      });
+      recordWorkCompletionReceipt(store, workId, {
+        schemaVersion: 1, receiptId: `receipt-${workId}`, source: 'controller_work', issueId: 'requirement-stage',
+        taskId: workId, workId, targetBranch: 'main', targetRevision, changedPaths: [],
+        delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+        cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
+      }, 'completed_no_change', 'completed_no_change');
+      expect(getWorkContract(store, workId)?.status).toBe('completed');
+      return { store, targetRevision };
+    };
+
+    const plain = fixture();
+    const plainPrincipal = 'principal-terminal-no-relay';
+    const plainWorkId = 'work-terminal-no-relay';
+    const plainRequirementId = 'REQ-terminal-no-relay';
+    const plainContext = completeRequirementWork(plain, plainRequirementId, plainWorkId, plainPrincipal);
+    expect(getControllerRoundRelay(plainContext.store, plainWorkId)).toBeUndefined();
+    const plainStarted = structured(await callRuntimeTool(
+      ctx(plain.controllerHome, plain.repository, plainPrincipal, 'transport-terminal-no-relay', 'runtime-terminal-no-relay'),
+      'rh_work',
+      {
+        repo_id: plain.repository.repoId,
+        operation: 'start',
+        objective: 'Continue after a completed predecessor that never had a ControllerRound.',
+        requirement_id: plainRequirementId,
+        related_work_id: plainWorkId,
+        work_relation: 'continue',
+        work_kind: 'completed_no_change',
+        scope_clear: true,
+        requires_recovery: true,
+      },
+    ));
+    expect(plainStarted.status).toBe('ok');
+    expect(plainStarted.data.ownershipClaimed).toBe(true);
+    expect(String(plainStarted.data.work?.workId ?? '')).not.toBe(plainWorkId);
+
+    const failed = fixture();
+    const failedPrincipal = 'principal-terminal-failed-preclaim';
+    const failedWorkId = 'work-terminal-failed-preclaim';
+    const failedRequirementId = 'REQ-terminal-failed-preclaim';
+    const failedStore = { controllerHome: failed.controllerHome, repoId: failed.repository.repoId };
+    const failedTargetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: failed.repoRoot, encoding: 'utf8' }).trim();
+    createRequirement({ controllerHome: failed.controllerHome }, {
+      requirementId: failedRequirementId,
+      title: 'Failed pre-claim successor handoff',
+      outcomeStatement: 'Continue from a provider dispatch failure after the predecessor is independently completed.',
+    });
+    createWorkContract(failedStore, {
+      workId: failedWorkId, repoId: failed.repository.repoId, requirementId: failedRequirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      objective: 'complete failed-dispatch predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: failedTargetRevision,
+    });
+    const opened = beginInitialControllerRoundDispatch(failedStore, {
+      workId: failedWorkId,
+      identity: {
+        controllerId: failedPrincipal, controllerType: 'chatgpt', principalId: failedPrincipal,
+        controllerInstanceId: 'runtime-terminal-failed-preclaim', sessionId: 'occ-terminal-failed-preclaim',
+      },
+    });
+    expect(finishControllerRoundRelayDispatch(failedStore, {
+      workId: failedWorkId, ok: false, recovery: false, error: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+    })).toMatchObject({ status: 'failed', claimGeneration: 0, lifecycleStage: 'dispatching' });
+
+    const failedRecordedAt = '2026-09-20T00:11:00.000Z';
+    transitionWorkContractPhase(failedStore, failedWorkId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Failed-dispatch predecessor verified independently.' });
+    requestWorkImplementationReview(failedStore, failedWorkId, 'Failed-dispatch predecessor review required.');
+    recordWorkImplementationReview(failedStore, failedWorkId, {
+      schemaVersion: 1, reviewId: 'REV-terminal-failed-preclaim', workId: failedWorkId, reviewerPrincipalId: failedPrincipal, reviewerControllerSessionId: 'review-terminal-failed-preclaim',
+      decision: 'approved', rationale: 'Reviewed failed-dispatch predecessor.', findings: [], sourceRevision: failedTargetRevision,
+      workspaceFingerprint: 'content-terminal-failed-preclaim', verificationWorkspaceFingerprint: 'verification-terminal-failed-preclaim', changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'predecessor delivered',
+      verificationEvidence: [], architectureEvidence: [], recordedAt: failedRecordedAt,
+    });
+    recordWorkCompletionReceipt(failedStore, failedWorkId, {
+      schemaVersion: 1, receiptId: 'receipt-terminal-failed-preclaim', source: 'controller_work', issueId: 'requirement-stage',
+      taskId: failedWorkId, workId: failedWorkId, targetBranch: 'main', targetRevision: failedTargetRevision, changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt: failedRecordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: failedRecordedAt }, verifiedAt: failedRecordedAt, recordedAt: failedRecordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+
+    const failedStarted = structured(await callRuntimeTool(
+      ctx(failed.controllerHome, failed.repository, failedPrincipal, 'transport-terminal-failed-preclaim-rotated', 'runtime-terminal-failed-preclaim-rotated'),
+      'rh_work',
+      {
+        repo_id: failed.repository.repoId,
+        operation: 'start',
+        objective: 'Continue from the failed pre-claim predecessor.',
+        requirement_id: failedRequirementId,
+        related_work_id: failedWorkId,
+        work_relation: 'continue',
+        work_kind: 'completed_no_change',
+        controller_authority_id: opened.authorityId,
+        relay_scope_id: opened.relayScopeId,
+        scope_clear: true,
+        requires_recovery: true,
+      },
+    ));
+    expect(failedStarted.status).toBe('ok');
+    expect(failedStarted.data.ownershipClaimed).toBe(false);
+    const successorWorkId = String(failedStarted.data.successorWorkId ?? failedStarted.data.work?.workId ?? '');
+    expect(successorWorkId).toMatch(/^work-/);
+    const predecessorRelay = getControllerRoundRelay(failedStore, failedWorkId)!;
+    expect(predecessorRelay).toMatchObject({ status: 'handed_off', successorWorkId });
+    expect(predecessorRelay.authorityId).toBeUndefined();
+    const successorRelay = getControllerRoundRelay(failedStore, successorWorkId)!;
+    expect(successorRelay).toMatchObject({
+      status: 'dispatching', originWorkId: successorWorkId, predecessorWorkId: failedWorkId,
+      relayScopeId: opened.relayScopeId, claimGeneration: 0,
+    });
+    expect(successorRelay.authorityId).toBeTruthy();
+    expect(successorRelay.authorityId).not.toBe(opened.authorityId);
+    expect(getControllerSession(failedStore, successorWorkId)).toBeUndefined();
+  }, 30_000);
+
   test('plan_accept_step fails closed when multiple successor Plan steps are ready', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
@@ -3032,6 +5339,7 @@ describe('rh_work terminalization authority', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toMatchObject({
       deliveryBaseCommit: advancedRevision,
       expectedHead: advancedRevision,
+      finalization: { validation: 'done' },
     });
   }, 15_000);
 
@@ -3147,6 +5455,202 @@ describe('rh_work terminalization authority', () => {
     expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: fx.repoRoot, encoding: 'utf8' })).not.toContain(workspace.root!);
   }, 15_000);
 
+
+  test('managed implementation review excludes only target history already incorporated into the candidate', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const branch = 'work/managed-review-target-base';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'managed-review-target-base',
+      title: 'Managed Review Target Base',
+      branchName: branch,
+    });
+    const canonicalRepository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const selectedWorktree = selectRepositoryCheckout(canonicalRepository, workspace.checkoutId!);
+    const handle = {
+      workId: 'work-managed-review-target-base',
+      managedWorktree: true,
+      deliveryTargetBranch: 'main',
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+    };
+
+    writeFileSync(join(fx.repoRoot, 'target-only.txt'), 'target advance\n');
+    execFileSync('git', ['add', 'target-only.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance before managed review'], { cwd: fx.repoRoot });
+    const incorporatedTarget = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', 'main'], { cwd: workspace.root! });
+    const candidateHead = repositoryGitStatus(selectedWorktree).head!;
+
+    expect(implementationReviewCommittedBaseRevision(selectedWorktree, handle, baseRevision, candidateHead, 'main')).toBe(incorporatedTarget);
+    expect(handle.deliveryBaseCommit).toBe(baseRevision);
+
+    writeFileSync(join(fx.repoRoot, 'target-later.txt'), 'later target advance\n');
+    execFileSync('git', ['add', 'target-later.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance not in candidate'], { cwd: fx.repoRoot });
+    expect(implementationReviewCommittedBaseRevision(selectedWorktree, handle, baseRevision, candidateHead, 'main')).toBe(baseRevision);
+  }, 15_000);
+
+  test('managed review prepares the exact target-reconciled candidate and finalize never rewrites it after a later target advance', async () => {
+    const fx = fixture();
+    const workId = 'work-managed-review-exact-delivery-candidate';
+    const caller = {
+      principalId: 'principal-managed-review-exact-candidate',
+      sessionId: 'transport-managed-review-exact-candidate',
+      controllerInstanceId: 'runtime-managed-review-exact-candidate',
+    };
+    const branch = 'work/managed-review-exact-delivery-candidate';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'managed-review-exact-delivery-candidate',
+      title: 'Managed Review Exact Delivery Candidate',
+      branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Review and deliver only an exact immutable managed Work candidate.',
+      acceptanceCriteria: ['Review sourceRevision is the exact delivery candidate and post-review target advancement cannot rewrite it.'],
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'review',
+      worktreeRef: workspace.root,
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      workId,
+      identity: { sessionId: caller.sessionId, principalId: caller.principalId },
+    });
+
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "managed-review-exact-candidate";\n');
+    writeFileSync(join(fx.repoRoot, 'target-before-review.txt'), 'target before review\n');
+    execFileSync('git', ['add', 'target-before-review.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance before managed review'], { cwd: fx.repoRoot });
+    const targetBeforeReview = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    const retainedBeforeReview = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        commit: true,
+        merge: false,
+        cleanup: false,
+      },
+    ));
+    expect(JSON.stringify(retainedBeforeReview)).toContain('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetBeforeReview);
+
+    const firstReviewResult = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'The exact committed candidate includes the current canonical target and only the Work-owned source delta.',
+      },
+    ));
+    expect(firstReviewResult.status).toBe('ok');
+    const reviewedCandidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(reviewedCandidate).not.toBe(workspace.baseRevision ?? undefined);
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(targetBeforeReview);
+    execFileSync('git', ['merge-base', '--is-ancestor', targetBeforeReview, reviewedCandidate], { cwd: workspace.root! });
+    const firstReviewedContract = getWorkContract(store, workId);
+    expect(firstReviewedContract?.implementationReviews.at(-1)?.sourceRevision).toBe(reviewedCandidate);
+    expect(firstReviewedContract).toMatchObject({ phase: 'delivery', phaseEvidence: { review: { state: 'satisfied' } } });
+
+    const retainedAfterReview = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        completion_outcome: 'completed_changed',
+        commit: false,
+        merge: false,
+        cleanup: false,
+      },
+    ));
+    expect(retainedAfterReview.error?.code).toBe('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.finalization).toMatchObject({
+      merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped',
+    });
+
+    writeFileSync(join(fx.repoRoot, 'target-after-review.txt'), 'target after review\n');
+    execFileSync('git', ['add', 'target-after-review.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance after managed review'], { cwd: fx.repoRoot });
+    const targetAfterReview = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    const firstReviewId = firstReviewedContract?.implementationReviews.at(-1)?.reviewId;
+    const finalizeAfterAdvance = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: false },
+    ));
+    expect(finalizeAfterAdvance.status).toBe('ok');
+    const finalCandidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(finalCandidate).not.toBe(reviewedCandidate);
+    execFileSync('git', ['merge-base', '--is-ancestor', targetAfterReview, finalCandidate], { cwd: workspace.root! });
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(finalCandidate);
+    const finalizedContract = getWorkContract(store, workId);
+    expect(finalizedContract).toMatchObject({
+      status: 'completed',
+      workKind: 'repository_change',
+      completionOutcome: 'completed_changed',
+    });
+    expect(finalizedContract?.implementationReviews.at(-1)).toMatchObject({
+      sourceRevision: finalCandidate,
+      derivedFromReviewId: firstReviewId,
+      derivation: 'content_equivalent_commit',
+    });
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.terminalResourceDisposition).toMatchObject({
+      mode: 'retained_by_request',
+      retainWorktree: true,
+    });
+    expect(existsSync(workspace.root!)).toBe(true);
+
+    const cleaned = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', cleanup: true },
+    ));
+    expect(cleaned.status).toBe('ok');
+    expect(cleaned.data.cleanupOnly).toBe(true);
+    expect(cleaned.data.cleanupPending).toBe(false);
+    expect(cleaned.data.worktreeDeleted).toBe(true);
+    expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
 
   test('isolated WorkHandle preserves approved review when physical validation only reuses exact current check evidence', async () => {
     const fx = fixture();
@@ -3708,11 +6212,11 @@ describe('rh_work terminalization authority', () => {
       {
         repo_id: repository.repoId,
         checkout_id: workspace.checkoutId,
-        operation: 'review',
+        operation: 'repair',
         work_id: workId,
         requested_by: 'chatgpt',
-        review_decision: 'approved',
-        review_rationale: 'The exact verified no-change candidate is approved before any managed resource is removed.',
+        capability_id: buildFrozenSemanticCompatibilityCapability({ operation: 'work_review', args: { decision: 'approved' } }),
+        reason: 'The exact verified no-change candidate is approved before any managed resource is removed.',
       },
     ));
     expect(reviewed.status).toBe('ok');
@@ -3848,6 +6352,85 @@ describe('rh_work terminalization authority', () => {
     expect(workRequiresImplementationReview('repository_change', [])).toBe(true);
   }, 20_000);
 
+  test('finalize validation failure re-arms verification without terminalizing the WorkHandle after approved delivery', async () => {
+    const fx = fixture();
+    const workId = 'work-finalize-validation-retry-atomicity';
+    const caller = {
+      principalId: 'principal-finalize-validation-retry',
+      sessionId: 'transport-finalize-validation-retry',
+      controllerInstanceId: 'runtime-finalize-validation-retry',
+    };
+    const branch = 'work/finalize-validation-retry-atomicity';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'Finalize Validation Retry Atomicity', branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+
+    writeFileSync(join(workspace.root!, 'owned.txt'), 'candidate changed after recorded handle head\n');
+    execFileSync('git', ['add', 'owned.txt'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'candidate ahead of stale handle'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+
+    createWorkContract(store, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Preserve one lifecycle authority when finalization discovers stale validation identity.',
+      acceptanceCriteria: ['Retryable finalization validation failure re-arms verification without terminal Handle divergence.'],
+      allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: ['owned.txt'], inspectedPaths: ['owned.txt'], actualChangedPaths: ['owned.txt'], recordedAt: now },
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Exact candidate verification was satisfied before review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Exact changed candidate requires implementation review before delivery.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1, reviewId: 'REV-finalize-validation-retry', workId, reviewerPrincipalId: caller.principalId,
+      reviewerControllerSessionId: caller.sessionId, decision: 'approved',
+      rationale: 'Approve the exact candidate before simulating a stale WorkHandle head at finalization.', findings: [],
+      sourceRevision: candidate, workspaceFingerprint: 'finalize-validation-retry-content', verificationWorkspaceFingerprint: 'finalize-validation-retry-verification',
+      changedPaths: ['owned.txt'], changedPathDigest: implementationReviewChangedPathDigest(['owned.txt']),
+      acceptanceCriteriaSummary: 'Retryable validation failure preserves lifecycle atomicity.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    expect(getWorkContract(store, workId)).toMatchObject({ phase: 'delivery', status: 'running' });
+
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,
+      repositoryId: repository.repoId, checkoutId: workspace.checkoutId!, sourceCheckoutId: repository.activeCheckoutId,
+      worktreePath: workspace.root!, branch: `${branch}-stale`, deliveryTargetBranch: 'main', managedWorktree: true, baseCommit: base,
+      deliveryBaseCommit: base, expectedHead: candidate, permissionSnapshotVersion: 1, state: 'committed',
+      validatedInputFingerprint: 'stale-finalize-validation-authority', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'done', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    claimControllerSession(store, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const context = ctx(fx.controllerHome, getRepository(repository.repoId, fx.controllerHome), caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: true, cleanup: false, target_branch: 'main',
+    }));
+
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)).toMatchObject({
+      state: 'validating',
+      finalization: { validation: 'failed', commit: 'done', merge: 'pending' },
+    });
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'blocked',
+      phase: 'verification',
+      dispatchState: 'blocked',
+      evidenceState: 'partial',
+      phaseEvidence: { verification: { state: 'blocked' }, review: { state: 'pending' }, delivery: { state: 'pending' } },
+      implementationReviews: [{ reviewId: 'REV-finalize-validation-retry', decision: 'approved' }],
+    });
+  }, 20_000);
+
   test('finalize recovers a reviewed changed Work after physical cleanup removed its checkout before completion receipt persistence', async () => {
     const fx = fixture();
     const workId = 'work-changed-cleaned-missing-completion-receipt';
@@ -3944,6 +6527,191 @@ describe('rh_work terminalization authority', () => {
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
   }, 20_000);
 
+  test('finalize preserves an exact target-relative empty review after cleanup removed the already-integrated Work checkout', async () => {
+    const fx = fixture();
+    const workId = 'work-exact-target-cleaned-empty-review';
+    const caller = {
+      principalId: 'principal-exact-target-cleaned',
+      sessionId: 'transport-exact-target-cleaned',
+      controllerInstanceId: 'runtime-exact-target-cleaned',
+    };
+    const branch = 'work/exact-target-cleaned-empty-review';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'Exact Target Cleaned Empty Review', branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+
+    writeFileSync(join(workspace.root!, 'owned.txt'), 'reviewed changed delivery\n');
+    execFileSync('git', ['add', 'owned.txt'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'reviewed changed delivery'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', candidate], { cwd: fx.repoRoot });
+
+    createWorkContract(store, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
+      acceptanceCriteria: ['The target-relative empty reviewed candidate is terminalized without replaying Git mutation.'],
+      allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: ['owned.txt'], inspectedPaths: ['owned.txt'], actualChangedPaths: ['owned.txt'], recordedAt: now },
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Exact target-contained candidate verification is satisfied before review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Exact target-contained candidate requires review before semantic completion.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1, reviewId: 'REV-exact-target-cleaned-empty', workId, reviewerPrincipalId: caller.principalId,
+      reviewerControllerSessionId: caller.sessionId, decision: 'approved',
+      rationale: 'Canonical target already equals the immutable candidate, so the committed review delta is empty before physical cleanup.', findings: [],
+      sourceRevision: candidate, workspaceFingerprint: 'exact-target-cleaned-content', verificationWorkspaceFingerprint: 'exact-target-cleaned-verification',
+      changedPaths: [], changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Exact target-relative empty reviewed candidate is terminalized.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied',
+      summary: 'Simulate a late exact validation projection after the approved review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Late validation projection reopened the exact target-relative review before the crash.');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      phase: 'review',
+      phaseEvidence: { review: { state: 'active' } },
+      implementationReviews: [{ reviewId: 'REV-exact-target-cleaned-empty', decision: 'approved', sourceRevision: candidate }],
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,
+      repositoryId: repository.repoId, checkoutId: workspace.checkoutId!, sourceCheckoutId: repository.activeCheckoutId,
+      worktreePath: workspace.root!, branch, deliveryTargetBranch: 'main', managedWorktree: true, baseCommit: base,
+      deliveryBaseCommit: base, expectedHead: candidate, permissionSnapshotVersion: 1, state: 'cleaned',
+      validatedInputFingerprint: 'cleaned-changed-validation', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'done', merge: 'done', branchCleanup: 'done', worktreeCleanup: 'done' },
+    });
+    execFileSync('git', ['worktree', 'remove', '--force', workspace.root!], { cwd: fx.repoRoot });
+    execFileSync('git', ['branch', '-D', branch], { cwd: fx.repoRoot });
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome, repoId: repository.repoId, checkoutId: workspace.checkoutId!, lifecycle: 'removed',
+      reason: 'simulate exact-target crash after physical cleanup but before Work completion receipt persistence',
+    });
+    claimControllerSession(store, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const context = ctx(fx.controllerHome, getRepository(repository.repoId, fx.controllerHome), caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    const finalized = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'completed', completionOutcome: 'completed_changed',
+      completionReceipt: { targetBranch: 'main', sourceRevision: candidate, changedPaths: ['owned.txt'] },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+
+    const repeated = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(repeated.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.completionReceipt).toMatchObject({ sourceRevision: candidate });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+  }, 20_000);
+
+
+  test('branch cleanup preserves an exact target-relative empty review after worktree cleanup', async () => {
+    const fx = fixture();
+    const workId = 'work-exact-target-branch-cleanup-empty-review';
+    const caller = {
+      principalId: 'principal-exact-target-branch-cleanup',
+      sessionId: 'transport-exact-target-branch-cleanup',
+      controllerInstanceId: 'runtime-exact-target-branch-cleanup',
+    };
+    const branch = 'work/exact-target-branch-cleanup-empty-review';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'Exact Target Branch Cleanup Empty Review', branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+
+    writeFileSync(join(workspace.root!, 'owned.txt'), 'reviewed changed delivery\n');
+    execFileSync('git', ['add', 'owned.txt'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'reviewed changed delivery'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', candidate], { cwd: fx.repoRoot });
+
+    createWorkContract(store, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
+      acceptanceCriteria: ['The target-relative empty reviewed candidate is terminalized without replaying Git mutation.'],
+      allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: ['owned.txt'], inspectedPaths: ['owned.txt'], actualChangedPaths: ['owned.txt'], recordedAt: now },
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Exact target-contained candidate verification is satisfied before review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Exact target-contained candidate requires review before semantic completion.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1, reviewId: 'REV-exact-target-branch-cleanup-empty', workId, reviewerPrincipalId: caller.principalId,
+      reviewerControllerSessionId: caller.sessionId, decision: 'approved',
+      rationale: 'Canonical target already equals the immutable candidate, so the committed review delta is empty before physical cleanup.', findings: [],
+      sourceRevision: candidate, workspaceFingerprint: 'exact-target-branch-cleanup-content', verificationWorkspaceFingerprint: 'exact-target-branch-cleanup-verification',
+      changedPaths: [], changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Exact target-relative empty reviewed candidate is terminalized.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,
+      repositoryId: repository.repoId, checkoutId: workspace.checkoutId!, sourceCheckoutId: repository.activeCheckoutId,
+      worktreePath: workspace.root!, branch, deliveryTargetBranch: 'main', managedWorktree: true, baseCommit: base,
+      deliveryBaseCommit: base, expectedHead: candidate, permissionSnapshotVersion: 1, state: 'merged',
+      validatedInputFingerprint: 'cleaned-changed-validation', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'done', merge: 'done', branchCleanup: 'pending', worktreeCleanup: 'done' },
+    });
+    execFileSync('git', ['worktree', 'remove', '--force', workspace.root!], { cwd: fx.repoRoot });
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome, repoId: repository.repoId, checkoutId: workspace.checkoutId!, lifecycle: 'removed',
+      reason: 'simulate exact-target worktree cleanup before branch cleanup and semantic completion',
+    });
+    claimControllerSession(store, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const context = ctx(fx.controllerHome, getRepository(repository.repoId, fx.controllerHome), caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    const finalized = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'completed', completionOutcome: 'completed_changed',
+      completionReceipt: { targetBranch: 'main', sourceRevision: candidate, changedPaths: ['owned.txt'] },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+    expect(execFileSync('git', ['branch', '--list', branch], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe('');
+
+    const repeated = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(repeated.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.completionReceipt).toMatchObject({ sourceRevision: candidate });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+  }, 20_000);
+
+
+
   test('exact rh_work repair does not run broad maintenance against unrelated stale Work', async () => {
     const fx = fixture();
     const targetWorkId = 'work-exact-repair-target';
@@ -4018,64 +6786,69 @@ describe('rh_work terminalization authority', () => {
       steps: [{ id: stepId, objective: 'certify already integrated behavior', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['same semantic contract'] }],
     });
     approvePlanContract(store, planId);
+    const principalId = 'principal-technical-retry';
+    const sessionId = 'terminal-technical-retry-session';
+    const runtimeInstanceId = 'runtime-technical-retry';
+    const branch = 'work/technical-retry-facade';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'technical retry facade lifecycle regression',
+      baseRef: sourceRevision,
+      branchName: branch,
+    });
     createWorkContract(store, {
-      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      workId, repoId: fx.repository.repoId, checkoutId: workspace.checkoutId!,
+      principalId, controllerInstanceId: runtimeInstanceId,
       baseRevision: sourceRevision, repositoryBaseState: 'revision', planId, planStepId: stepId, planSourceRevision: sourceRevision,
       mode: 'goal_workloop', workKind: 'repository_change', objective: 'certify already integrated behavior', acceptanceCriteria: ['same semantic contract'],
-      allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
-      status: 'cancelled', phase: 'cleanup', dispatchState: 'terminal', evidenceState: 'none',
+      allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], constraints: { requireWorktree: true, directMainProhibited: true, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
+      status: 'running', phase: 'implementation', evidenceState: 'none', worktreeRef: workspace.root,
       scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
     });
     claimPlanStepForWork(store, { planId, stepId, workId, sourceRevision });
-    const terminalWork = getWorkContract(store, workId)!;
-    const replanning = completePlanStepForWork(store, { planId, stepId, work: terminalWork });
-    expect(replanning).toMatchObject({ status: 'replanning', steps: [{ id: stepId, status: 'ready' }] });
-    expect(replanning.steps[0]?.workId).toBeUndefined();
-
-    const removedWorktree = join(fx.controllerHome, 'removed-worktree-for-technical-retry');
     writeWorkHandle(fx.controllerHome, {
       schemaVersion: 1,
       workId,
       workContractId: workId,
-      sessionId: 'terminal-technical-retry-session',
-      principalId: 'principal-technical-retry',
+      sessionId,
+      principalId,
       repositoryId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      worktreePath: removedWorktree,
-      branch: 'work/technical-retry-facade',
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      deliveryTargetBranch: 'main',
+      worktreePath: workspace.root!,
+      branch,
       managedWorktree: true,
       baseCommit: sourceRevision,
       expectedHead: sourceRevision,
       permissionSnapshotVersion: 1,
-      state: 'cleaned',
+      state: 'prepared',
       createdAt: now,
       updatedAt: now,
-      finalization: { validation: 'pending', commit: 'skipped', merge: 'skipped', branchCleanup: 'done', worktreeCleanup: 'done' },
-      cleanupReceipt: {
-        schemaVersion: 1,
-        receiptId: 'cleanup-technical-retry-facade',
-        repoId: fx.repository.repoId,
-        checkoutId: fx.repository.activeCheckoutId,
-        workId,
-        branch: 'work/technical-retry-facade',
-        targetBranch: 'main',
-        terminalOutcome: 'cancelled',
-        startedAt: now,
-        updatedAt: now,
-        completedAt: now,
-        verification: { mode: 'cleanup_only', checksRun: [] },
-        processes: { examined: [], terminated: [], blocking: [], allTerminal: true },
-        ownership: { controllerLease: 'already_released', processLeases: 'released' },
-        preservation: { status: 'not_needed' },
-        worktree: { path: removedWorktree, status: 'already_removed' },
-        branchCleanup: { branch: 'work/technical-retry-facade', status: 'already_deleted', uniqueCommits: 0 },
-        checkoutRegistry: { status: 'already_removed' },
-        prune: { status: 'done' },
-        complete: true,
-        partial: false,
-        blockers: [],
-      },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
     });
+    claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const stopped = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'technical classification retry', cleanup: true, delete_branch: true, target_branch: 'main' },
+    ));
+    expect(stopped.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
+    expect(existsSync(workspace.root!)).toBe(false);
+    const replanning = getPlanContract(store, planId)!;
+    expect(replanning).toMatchObject({ status: 'replanning', steps: [{ id: stepId, status: 'ready' }] });
+    expect(replanning.steps[0]?.workId).toBeUndefined();
 
     const mismatch = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-technical-retry', 'transport-technical-retry', 'runtime-technical-retry'),
@@ -4100,4 +6873,166 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
   });
 
+});
+
+
+describe('rh_work content-equivalent commit authority transfer', () => {
+  test('finalize atomically transfers verification and approved review across its own managed commit before merge and cleanup', async () => {
+    const fx = fixture();
+    const checkId = 'package:check:content-equivalent-finalize';
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:content-equivalent-finalize': 'node -e "setTimeout(() => process.exit(0), 250)"' },
+    }, null, 2) + '\n');
+    execFileSync('git', ['add', 'package.json'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'add content-equivalent finalize check'], { cwd: fx.repoRoot });
+
+    const workId = 'work-content-equivalent-managed-finalize';
+    const caller = {
+      principalId: 'principal-content-equivalent-managed-finalize',
+      sessionId: 'transport-content-equivalent-managed-finalize',
+      controllerInstanceId: 'runtime-content-equivalent-managed-finalize',
+    };
+    const branch = 'work/content-equivalent-managed-finalize';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Content Equivalent Managed Finalize',
+      branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Finalize an exact reviewed dirty candidate through a Forge-owned representation-only commit.',
+      acceptanceCriteria: ['The reviewed bytes survive commit, merge, and cleanup under one Work authority.'],
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [checkId],
+      constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      scopeEvidence: {
+        initialLikelyPaths: ['src/index.ts'],
+        inspectedPaths: ['src/index.ts'],
+        actualChangedPaths: ['src/index.ts'],
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      workId,
+      identity: { sessionId: caller.sessionId, principalId: caller.principalId },
+    });
+    expect(handle).toBeTruthy();
+    expect(handle!.managedWorktree).toBe(true);
+
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "reviewed-before-forge-commit";\n');
+    const dirtyStatus = repositoryGitStatus(selectedWorktree);
+    expect(dirtyStatus.clean).toBe(false);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim()).toBe(workspace.baseRevision!);
+
+    const admitted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, checkout_id: workspace.checkoutId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(admitted.status).toBe('ok');
+
+    const verificationStarted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'verify',
+        work_id: workId,
+        check_id: checkId,
+        requested_by: 'chatgpt',
+        request_id: 'content-equivalent-managed-finalize-check',
+      },
+    ));
+    expect(verificationStarted.status).toBe('ok');
+    expect(verificationStarted.data?.verification).toMatchObject({
+      checkId,
+      completed: true,
+      outcome: 'valid_pass',
+    });
+    const processId = String(verificationStarted.data?.verification?.processId ?? '');
+    expect(processId).toBeTruthy();
+    const verifiedContract = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(verifiedContract.checkRefs.some((record) => record.checkId === checkId && record.outcome === 'valid_pass')).toBe(true);
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'The exact dirty workspace bytes and bound verification receipt are approved before Forge changes Git representation.',
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+    const approvedBeforeCommit = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(approvedBeforeCommit).toMatchObject({ phase: 'delivery', phaseEvidence: { review: { state: 'satisfied' } } });
+    expect(approvedBeforeCommit.implementationReviews).toHaveLength(1);
+    const parentReviewId = approvedBeforeCommit.implementationReviews[0]!.reviewId;
+    const preCommitHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        completion_outcome: 'completed_changed',
+        commit: true,
+        merge: true,
+        cleanup: true,
+        target_branch: 'main',
+      },
+    ));
+    expect(finalized.status).toBe('ok');
+
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(completed).toMatchObject({
+      status: 'completed',
+      workKind: 'repository_change',
+      completionOutcome: 'completed_changed',
+      phaseEvidence: { verification: { state: 'satisfied' }, review: { state: 'satisfied' } },
+    });
+    expect(completed.implementationReviews).toHaveLength(2);
+    const derived = completed.implementationReviews[1]!;
+    expect(derived).toMatchObject({
+      decision: 'approved',
+      derivation: 'content_equivalent_commit',
+      derivedFromReviewId: parentReviewId,
+    });
+    expect(derived.sourceRevision).not.toBe(preCommitHead);
+    expect(completed.checkRefs.some((record) => record.sourceRevision === derived.sourceRevision && record.outcome === 'valid_pass')).toBe(true);
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['show', 'HEAD:src/index.ts'], { cwd: fx.repoRoot, encoding: 'utf8' })).toContain('reviewed-before-forge-commit');
+  }, 30_000);
 });

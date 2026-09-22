@@ -34,6 +34,25 @@ V2 must explicitly distinguish four concepts even if compatibility transport sti
 - Non-idempotent mutations never blind-replay after `outcome_unknown`; existing observe/reconcile authority remains canonical.
 - Process Runtime claims/leases remain the only execution concurrency authority.
 
+## Computer hot-path transport contract
+
+The 2026-09-09 #200 latency review proved that the native Desktop Operator is not the dominant warm-path cost, so provider transport optimization must preserve the existing authority boundary rather than introduce another controller or durable provider session. The Computer runtime therefore uses the following transport contract:
+
+- one live Desktop Operator provider binding is scoped to the current trusted registration identity/revision and endpoint contract;
+- provider identity/capability negotiation is reused only while the same Unix-socket connection generation remains live;
+- sequential Computer requests may reuse that bounded JSONL channel instead of reconnecting and handshaking for every action;
+- registration fingerprint/revision or endpoint-contract change disposes the old provider binding before replacement;
+- if the Unix connection changes after negotiation, the pending action is rejected before dispatch and the next explicit invocation must renegotiate; non-idempotent effects are never replayed automatically;
+- timeout, cancellation, response-size and protocol-error bounds remain per request; transport reuse creates no new durable lifecycle or retry authority.
+- Browser semantic mutations do not pay an unconditional fixed post-action sleep: provider primitives and bounded post-action identity/evidence are the normal completion path; `post_action_wait_ms` is explicit compatibility input only, while native foreground activation may retain a provider-specific verification budget because system foreground authority must be observed.
+- Desktop target-bound semantic actions dispatch through the current leased provider binding without a `desktop_status(limit: 500)` preflight. Only an explicit provider `SESSION_NOT_FOUND` transported as a failed/pre-effect result may rebuild the binding from stable application identity and retry once; transport, timeout, and outcome-unknown failures are never replayed. Target close likewise calls the bound session close directly instead of enumerating provider sessions first.
+- Desktop observe/input/capture product actions use the retained `ComputerProvider` channel instead of re-entering the legacy external-adapter transport for every semantic action. Target open/close remain low-frequency provider lifecycle operations; the hot path owns no parallel durable provider-session authority.
+- the external Unix JSONL and `ComputerProviderError` failure contracts preserve `failed` versus `outcome_unknown` across adapter boundaries. A provider-declared failure keeps the negotiated connection alive; transport loss after an effectful request is dispatched invalidates negotiation and is never eligible for implicit replay.
+
+The repeatable `benchmark:computer-hotpath` run on 2026-09-09 used 50 warm semantic samples after five warmups. The isolated real dispatch path measured cold first semantic action `4.398ms`; warm `p50=0.939ms`, `p95=1.511ms`, `max=1.894ms`. Across the 50 warm samples the provider observed exactly 50 semantic RPCs, zero new connections, zero handshakes, zero manifest preflights, zero `desktop_status` preflights, and zero session reopens. This benchmark is comparative evidence, not a machine-specific release threshold.
+
+This is a transport/runtime optimization beneath the existing Computer authority. Browser/OS handles remain ephemeral observations, and Process Runtime plus existing unknown-outcome reconciliation remain authoritative for execution concurrency and effect recovery.
+
 ## Workflow Asset Contract
 
 Introduce the smallest generic versioned Workflow Asset model needed to move user-goal automation out of Core. Human-editable assets include:

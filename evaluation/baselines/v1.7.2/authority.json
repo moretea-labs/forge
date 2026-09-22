@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "forge-evaluation-baseline-authority/v1",
+  "reconstructionDigest": "sha256:d9a0a99a5bf7eeccdbaf2f186bceeaf8a29b33400e8ac6d9c21edfb1d0d0fc3b",
+  "artifactDigest": "sha256:1a0bb50ad97c414f4c553ef790b29c8786a76d0f6ca29e04bbd9fed3bb46d43e",
+  "productionDependencies": {
+    "packageEntryCount": 100,
+    "uniqueBlobCount": 99,
+    "digest": "sha256:4acfb83f4e977d16a077020e3c3279dedaf7e307f12d06a99d8fb2701c78c16c"
+  },
+  "reproducibilityProof": {
+    "method": "independent_offline_builds",
+    "buildCount": 2,
+    "receiptDigest": "sha256:26aa8e8d64c158ed718f4c5166a0a882ca058eed2191fc73a657f9f563964a45",
+    "buildProcessIds": [
+      "proc_mts5o306_376368a3",
+      "proc_mts5oixi_9b76e564"
+    ],
+    "artifactDigests": [
+      "sha256:1a0bb50ad97c414f4c553ef790b29c8786a76d0f6ca29e04bbd9fed3bb46d43e",
+      "sha256:1a0bb50ad97c414f4c553ef790b29c8786a76d0f6ca29e04bbd9fed3bb46d43e"
+    ]
+  }
+}

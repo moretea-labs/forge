@@ -320,6 +320,18 @@ function isControllerHomeRuntimeBindingLink(
   }
 }
 
+function excludeSyntheticSnapshotPath(targetRoot: string, path: string): void {
+  const rawExcludePath = git(targetRoot, ['rev-parse', '--git-path', 'info/exclude']).toString('utf8').trim();
+  if (!rawExcludePath) throw new Error('WORK_VERIFICATION_SNAPSHOT_EXCLUDE_PATH_UNAVAILABLE');
+  const excludePath = resolve(targetRoot, rawExcludePath);
+  const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+  const entries = existing.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+  if (entries.includes(path)) return;
+  mkdirSync(dirname(excludePath), { recursive: true });
+  const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+  writeFileSync(excludePath, `${existing}${separator}${path}\n`);
+}
+
 function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPaths: readonly string[]): void {
   let source = join(sourceRoot, 'node_modules');
   const target = join(targetRoot, 'node_modules');
@@ -348,9 +360,20 @@ function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPat
   if (!ignored) return;
   try {
     symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir');
+    // Preserve the source checkout's exact Git-visible input identity. A normal
+    // ignored node_modules directory is not an input, while a pre-existing managed
+    // worktree dependency link is currently Git-visible as an untracked symlink.
+    // Snapshot materialization must not change either case merely because it uses
+    // the same dependency cache through a link.
+    const sourceDependencyLinkVisible = nulPaths(git(sourceRoot, [
+      'ls-files', '--others', '--exclude-standard', '-z', '--', 'node_modules',
+    ])).includes('node_modules');
+    if (!sourceDependencyLinkVisible) excludeSyntheticSnapshotPath(targetRoot, 'node_modules');
   } catch {
-    // Dependency linking is an optimization. If it is unavailable the check may
-    // still succeed using its own toolchain resolution; never copy a huge cache.
+    // Dependency linking is an optimization. If either the link or its local Git
+    // exclusion cannot be established coherently, remove the partial link rather
+    // than letting snapshot-only state contaminate Check identity.
+    rmSync(target, { recursive: true, force: true });
   }
 }
 

@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
-import { mkdirSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 
@@ -107,4 +107,42 @@ export function systemdUserServicePid(unitName: string, env: NodeJS.ProcessEnv =
   if (result.status !== 0) return undefined;
   const pid = Number(result.stdout.trim());
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+export interface ExactSystemdUserUnitRetirementResult {
+  unitName: string;
+  unitPath: string;
+  serviceWasPresent: boolean;
+  unitFileWasPresent: boolean;
+  absentAfter: boolean;
+}
+
+function systemdUnitLoaded(unitName: string, env: NodeJS.ProcessEnv): boolean {
+  const result = commandSucceeded('systemctl', ['--user', 'show', '--property', 'LoadState', '--value', systemdUserUnitName(unitName)], env);
+  return result.status === 0 && result.stdout.trim() !== '' && result.stdout.trim() !== 'not-found';
+}
+
+export function retireSystemdUserUnitExact(
+  input: { unitName: string; env?: NodeJS.ProcessEnv },
+): ExactSystemdUserUnitRetirementResult {
+  const env = input.env ?? process.env;
+  const unitName = systemdUserUnitName(input.unitName);
+  const unitPath = systemdUserUnitPath(unitName, env);
+  const serviceWasPresent = systemdUnitLoaded(unitName, env);
+  const unitFileWasPresent = existsSync(unitPath);
+  if (serviceWasPresent || unitFileWasPresent) {
+    const disabled = commandSucceeded('systemctl', ['--user', 'disable', '--now', unitName], env);
+    const detail = `${disabled.stderr ?? ''}\n${disabled.stdout ?? ''}`;
+    if (disabled.status !== 0 && !/not loaded|not found|does not exist|not enabled|no files found/i.test(detail)) {
+      throw new Error(`SYSTEMD_USER_EXACT_RETIRE_FAILED: ${unitName}: ${detail.trim()}`);
+    }
+  }
+  rmSync(unitPath, { force: true });
+  const reload = commandSucceeded('systemctl', ['--user', 'daemon-reload'], env);
+  if (reload.status !== 0) {
+    throw new Error(`SYSTEMD_USER_EXACT_RETIRE_RELOAD_FAILED: ${unitName}: ${(reload.stderr || reload.stdout || '').trim()}`);
+  }
+  const absentAfter = !systemdUnitLoaded(unitName, env) && !existsSync(unitPath);
+  if (!absentAfter) throw new Error(`SYSTEMD_USER_EXACT_RETIRE_VERIFY_FAILED: ${unitName}`);
+  return { unitName, unitPath, serviceWasPresent, unitFileWasPresent, absentAfter };
 }

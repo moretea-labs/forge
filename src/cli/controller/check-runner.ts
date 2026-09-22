@@ -1,5 +1,6 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { basename, dirname, join, normalize, relative, resolve } from 'path';
 import {
   capProcessOutput,
@@ -12,6 +13,11 @@ import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
 import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
+import {
+  isStructuredCheckFailureEvidence,
+  STRUCTURED_CHECK_RESULT_PATH_ENV,
+  type StructuredCheckFailureEvidence,
+} from '../../runtime/execution/process-runtime/check-result';
 import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readCurrentRecoveryRelease } from '../../runtime/standalone-recovery/release';
@@ -274,8 +280,19 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
     // and persist only content-bound receipts/caches outside repository source.
     return { reads: ['.'], cache: 'write', temp: 'isolated', git: 'read' };
   }
-  const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
-  if (staticAnalysis) return { reads: ['.'], cache: 'write' };
+  if (normalized === 'check:type' || normalized === 'check:runtime-architecture') {
+    // These canonical gates are source readers: TypeScript runs with --noEmit,
+    // while runtime-architecture only inspects source/AST structure. Neither
+    // owns the shared repository build cache.
+    return { reads: ['.'] };
+  }
+  if (normalized === 'check:architecture-sync') {
+    // Architecture sync runs the queue in --check mode and inspects Git state.
+    // Its scratch space is check-local; it never mutates repository source.
+    return { reads: ['.'], temp: 'isolated', git: 'read' };
+  }
+  const cachedStaticAnalysis = /(?:^|:)(?:typecheck|lint|format:check|mcp-compatibility|forge-runtime)$/.test(normalized);
+  if (cachedStaticAnalysis) return { reads: ['.'], cache: 'write' };
   const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|evaluation-framework|background-check-overlap|typescript-navigation|check-scheduling|bootstrap-files)$/.test(normalized);
   if (isolatedReadOnlyCheck) return { reads: ['.'], temp: 'isolated', git: 'read' };
   const browserLive = /(?:^|:)browser-live$/.test(normalized);
@@ -366,6 +383,7 @@ export interface ControllerCheckResult {
   originalExecutedAt?: string;
   /** Non-zero repository failures are acceptance failures unless bounded infrastructure evidence proves otherwise. */
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
 }
 
 export interface ControllerCheckEvidence {
@@ -389,6 +407,7 @@ export interface ControllerCheckEvidence {
   validatedRevision?: string;
   originalExecutedAt?: string;
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
 }
 
 const STRONG_TRANSPORT_FAILURE_PATTERNS = [
@@ -415,6 +434,72 @@ function classifyControllerCheckFailure(input: {
   return 'acceptance_failure';
 }
 
+const GOVERNED_TEST_GATES = new Map<string, string>([
+  ['package:test', 'affected'],
+  ['package:test:core', 'core'],
+  ['package:test:integration', 'integration'],
+  ['package:test:infrastructure', 'infrastructure'],
+  ['package:test:fault', 'fault'],
+  ['package:test:full', 'full'],
+  ['package:test:bun', 'full'],
+]);
+const MAX_STRUCTURED_CHECK_RESULT_BYTES = 64 * 1024;
+
+interface StructuredCheckObservation {
+  evidence?: StructuredCheckFailureEvidence;
+  error?: string;
+}
+
+function structuredCheckResultPath(check: ControllerCheck): string | undefined {
+  if (!GOVERNED_TEST_GATES.has(check.id)) return undefined;
+  return join(tmpdir(), `forge-check-result-${process.pid}-${randomUUID()}.json`);
+}
+
+function readStructuredCheckObservation(check: ControllerCheck, path: string | undefined): StructuredCheckObservation {
+  const expectedGate = GOVERNED_TEST_GATES.get(check.id);
+  if (!expectedGate) return {};
+  if (!path || !existsSync(path)) return { error: 'CHECK_STRUCTURED_RESULT_MISSING' };
+  try {
+    const bytes = readFileSync(path);
+    if (bytes.byteLength > MAX_STRUCTURED_CHECK_RESULT_BYTES) return { error: 'CHECK_STRUCTURED_RESULT_TOO_LARGE' };
+    const value = JSON.parse(bytes.toString('utf8')) as unknown;
+    if (!isStructuredCheckFailureEvidence(value) || value.gate !== expectedGate) return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
+    return { evidence: value };
+  } catch {
+    return { error: 'CHECK_STRUCTURED_RESULT_INVALID' };
+  }
+}
+
+function consumeStructuredCheckObservation(check: ControllerCheck, path: string | undefined): StructuredCheckObservation {
+  try {
+    return readStructuredCheckObservation(check, path);
+  } finally {
+    if (path) rmSync(path, { force: true });
+  }
+}
+
+function applyStructuredCheckObservation(processOk: boolean, observation: StructuredCheckObservation): {
+  ok: boolean;
+  failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+  failureEvidence?: StructuredCheckFailureEvidence;
+  error?: string;
+} {
+  if (!observation.error && !observation.evidence) return { ok: processOk };
+  if (observation.error) return { ok: false, failureClass: 'infrastructure_failure', error: observation.error };
+  const evidence = observation.evidence!;
+  const reportOk = evidence.status === 'passed';
+  if (reportOk !== processOk) {
+    return { ok: false, failureClass: 'infrastructure_failure', failureEvidence: evidence, error: 'CHECK_STRUCTURED_RESULT_STATUS_MISMATCH' };
+  }
+  if (reportOk) return { ok: true, failureEvidence: evidence };
+  const sourceOnly = evidence.failureClasses.length > 0 && evidence.failureClasses.every((entry) => entry === 'source');
+  return {
+    ok: false,
+    failureClass: sourceOnly ? 'acceptance_failure' : 'infrastructure_failure',
+    failureEvidence: evidence,
+  };
+}
+
 function artifactSlug(id: string): string {
   return id.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'check';
 }
@@ -432,39 +517,80 @@ function logicalEvidenceArtifactPath(id: string): string {
 }
 
 const CHECK_REVISION_EXCLUDES = [
-  '.ai/harness/jobs/**',
-  '.ai/harness/local-jobs/**',
-  '.ai/harness/checks/controller/**',
-  '.ai/harness/edit-sessions/**',
-  '.ai/harness/worktrees/**',
-  '.ai/harness/controller/**',
-  '.ai/harness/artifacts/**',
-  '.ai/harness/local-bridge/**',
-  '.ai/harness/ephemeral-issues/**',
+  // `.ai/harness` is Forge runtime/check state, not repository source. Checks
+  // are allowed to materialize artifacts such as design-system audit reports
+  // there; hashing those outputs would make a stable check invalidate itself.
+  '.ai/harness/**',
 ];
 
 function checkRevisionPathspecs(): string[] {
   return ['.', ...CHECK_REVISION_EXCLUDES.map((path) => `:(exclude)${path}`)];
 }
 
-export function currentControllerCheckRevision(repoRoot: string): string {
+interface ControllerCheckContentObservation {
+  revision: string;
+  fileDigests?: Map<string, string>;
+  listingAvailable: boolean;
+}
+
+function observeControllerCheckContent(
+  repoRoot: string,
+  options: { captureFileDigests?: boolean } = {},
+): ControllerCheckContentObservation {
   const files = runProcess('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...checkRevisionPathspecs()], {
     cwd: repoRoot,
     timeoutMs: 10_000,
     maxOutputBytes: 8 * 1024 * 1024,
   });
   const revision = createHash('sha256').update('controller-check-content-v2\n');
-  if (!files.ok) return revision.update(`git-error:${files.error || files.stderr}`).digest('hex').slice(0, 24);
+  const fileDigests = options.captureFileDigests ? new Map<string, string>() : undefined;
+  if (!files.ok) {
+    return {
+      revision: revision.update(`git-error:${files.error || files.stderr}`).digest('hex').slice(0, 24),
+      ...(fileDigests ? { fileDigests } : {}),
+      listingAvailable: false,
+    };
+  }
   for (const relativePath of files.stdout.split('\0').filter(Boolean).sort()) {
     if (relativePath.startsWith('tasks/') || relativePath.startsWith('plans/')) continue;
     revision.update(`${relativePath}\0`);
     try {
-      revision.update(readFileSync(resolve(repoRoot, relativePath)));
+      const content = readFileSync(resolve(repoRoot, relativePath));
+      revision.update(content);
+      fileDigests?.set(relativePath, createHash('sha256').update(content).digest('hex'));
     } catch (_error) {
       revision.update('missing');
+      fileDigests?.set(relativePath, 'missing');
     }
   }
-  return revision.digest('hex').slice(0, 24);
+  return {
+    revision: revision.digest('hex').slice(0, 24),
+    ...(fileDigests ? { fileDigests } : {}),
+    listingAvailable: true,
+  };
+}
+
+export function currentControllerCheckRevision(repoRoot: string): string {
+  return observeControllerCheckContent(repoRoot).revision;
+}
+
+function controllerCheckWriteScopeContainsPath(scope: string, relativePath: string): boolean {
+  return scope === '.' || relativePath === scope || relativePath.startsWith(`${scope}/`);
+}
+
+function controllerCheckInputIntegrityChanged(
+  check: ControllerCheck,
+  input: ControllerCheckContentObservation,
+  completed: ControllerCheckContentObservation,
+): boolean {
+  if (!input.listingAvailable || !completed.listingAvailable || !input.fileDigests || !completed.fileDigests) return true;
+  const writeScopes = check.effects?.writes ?? [];
+  const observedPaths = new Set([...input.fileDigests.keys(), ...completed.fileDigests.keys()]);
+  for (const relativePath of observedPaths) {
+    if (writeScopes.some((scope) => controllerCheckWriteScopeContainsPath(scope, relativePath))) continue;
+    if (input.fileDigests.get(relativePath) !== completed.fileDigests.get(relativePath)) return true;
+  }
+  return false;
 }
 
 function checkDefinitionDigest(check: ControllerCheck): string {
@@ -652,9 +778,10 @@ function buildCheckCacheKey(
     .slice(0, 24);
 }
 
-export function controllerCheckExecutionIdentity(
+function controllerCheckExecutionIdentityForRevision(
   repoRoot: string,
   id: string,
+  revision: string,
   requestedTimeoutMs?: number,
   snapshot?: ControllerCheckSnapshot,
   executionStateFingerprint?: string,
@@ -666,7 +793,6 @@ export function controllerCheckExecutionIdentity(
   const timeoutMs = requestedTimeoutMs === undefined
     ? check.timeoutMs
     : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
-  const revision = currentControllerCheckRevision(repoRoot);
   const definitionDigest = checkDefinitionDigest(check);
   const environmentFingerprint = controllerCheckEnvironmentFingerprint(check, executionStateFingerprint);
   const checkoutClean = checkWorkspaceClean(repoRoot);
@@ -685,6 +811,23 @@ export function controllerCheckExecutionIdentity(
     crossCheckoutReusable,
     reuseScope: crossCheckoutReusable ? 'repository' : 'checkout',
   };
+}
+
+export function controllerCheckExecutionIdentity(
+  repoRoot: string,
+  id: string,
+  requestedTimeoutMs?: number,
+  snapshot?: ControllerCheckSnapshot,
+  executionStateFingerprint?: string,
+): ControllerCheckExecutionIdentity {
+  return controllerCheckExecutionIdentityForRevision(
+    repoRoot,
+    id,
+    currentControllerCheckRevision(repoRoot),
+    requestedTimeoutMs,
+    snapshot,
+    executionStateFingerprint,
+  );
 }
 
 function persistCheckEvidence(
@@ -722,6 +865,7 @@ function persistCheckEvidence(
     validatedRevision: meta.validatedRevision,
     originalExecutedAt: result.originalExecutedAt ?? result.executedAt,
     failureClass: result.failureClass,
+    failureEvidence: result.failureEvidence,
   };
   const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
   atomicWriteFileSync(path, serialized);
@@ -745,7 +889,9 @@ export function readLatestControllerCheckEvidence(
   if (!existsSync(path)) return undefined;
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8')) as ControllerCheckEvidence;
-    return value.schemaVersion === 2 && value.checkId === id ? value : undefined;
+    if (value.schemaVersion !== 2 || value.checkId !== id) return undefined;
+    if (value.failureEvidence !== undefined && !isStructuredCheckFailureEvidence(value.failureEvidence)) return undefined;
+    return value;
   } catch (_error) {
     return undefined;
   }
@@ -781,7 +927,8 @@ export function runControllerCheck(
   }
   const storage = ensureRepositoryCheckStorage(repoRoot, storageAuthority);
   prepareControllerCheckDependencies(repoRoot, check);
-  const identity = controllerCheckExecutionIdentity(repoRoot, id, requestedTimeoutMs, snapshot);
+  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const identity = controllerCheckExecutionIdentityForRevision(repoRoot, id, inputIntegrity.revision, requestedTimeoutMs, snapshot);
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
@@ -802,15 +949,18 @@ export function runControllerCheck(
       validatedRevision: cached.validatedRevision ?? cached.completedRevision ?? cached.revision ?? revision,
       originalExecutedAt: cached.originalExecutedAt ?? cached.executedAt,
       failureClass: cached.failureClass,
+      failureEvidence: cached.failureEvidence,
     };
   }
   const heavy = controllerCheckConcurrencyClass(id) === 'heavy';
   const lease = heavy ? tryAcquireHeavyCheckLock(storage, id) : undefined;
   if (heavy && !lease) throw new Error(`heavy check already running for repository: ${id}`);
+  const structuredResultPath = structuredCheckResultPath(check);
   let result: ProcessRunResult;
   try {
     const bridgeRuntime = resolveSyncSupervisorBridgeRuntime();
     const childEnvironment = repositoryChildProcessEnvironment();
+    if (structuredResultPath) childEnvironment[STRUCTURED_CHECK_RESULT_PATH_ENV] = structuredResultPath;
     delete childEnvironment[CHECK_BRIDGE_RUNTIME_ENV];
     childEnvironment.FORGE_SUPERVISED_REQUEST = Buffer.from(JSON.stringify({
       command: check.command[0],
@@ -875,17 +1025,23 @@ export function runControllerCheck(
   } finally {
     lease?.release();
   }
-  const completedRevision = currentControllerCheckRevision(repoRoot);
-  const stale = completedRevision !== revision;
+  const structuredObservation = consumeStructuredCheckObservation(check, structuredResultPath);
+  const structuredDecision = applyStructuredCheckObservation(result.ok, structuredObservation);
+  const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const completedRevision = completedContent.revision;
+  const stale = controllerCheckInputIntegrityChanged(check, inputIntegrity, completedContent);
   const executedAt = new Date().toISOString();
+  const effectiveOk = structuredDecision.ok && !stale;
+  const hardInfrastructureFailure = stale || result.timedOut || Boolean(result.error) || Boolean(result.signal);
   const withoutPath = {
     check,
-    ok: result.ok && !stale,
-    status: stale ? 1 : result.status,
+    ok: effectiveOk,
+    status: stale || (!structuredDecision.ok && result.status === 0) ? 1 : result.status,
     timedOut: result.timedOut,
     stdout: result.stdout,
     stderr: [
       result.stderr || result.error,
+      structuredDecision.error,
       stale ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun' : '',
     ].filter(Boolean).join('\n'),
     command: result.command,
@@ -893,14 +1049,17 @@ export function runControllerCheck(
     cacheHit: false,
     validatedRevision: stale ? completedRevision : revision,
     originalExecutedAt: executedAt,
-    failureClass: classifyControllerCheckFailure({
-      ok: result.ok && !stale,
-      stale,
-      timedOut: result.timedOut,
-      runtimeFailure: Boolean(result.error) || Boolean(result.signal),
-      stdout: result.stdout,
-      stderr: [result.stderr, result.error].filter(Boolean).join('\n'),
-    }),
+    failureClass: hardInfrastructureFailure
+      ? 'infrastructure_failure' as const
+      : structuredDecision.failureClass ?? classifyControllerCheckFailure({
+        ok: effectiveOk,
+        stale,
+        timedOut: result.timedOut,
+        runtimeFailure: Boolean(result.error) || Boolean(result.signal),
+        stdout: result.stdout,
+        stderr: [result.stderr, result.error, structuredDecision.error].filter(Boolean).join('\n'),
+      }),
+    failureEvidence: structuredDecision.failureEvidence,
   };
   return {
     ...withoutPath,
@@ -1070,6 +1229,8 @@ async function executeControllerCheckAsync(
   const maxOutputBytes = 256 * 1024;
   const command = [check.command[0], ...check.command.slice(1)];
   const childEnvironment = repositoryChildProcessEnvironment();
+  const structuredResultPath = structuredCheckResultPath(check);
+  if (structuredResultPath) childEnvironment[STRUCTURED_CHECK_RESULT_PATH_ENV] = structuredResultPath;
   if (isolatedControllerHome?.trim() && liveControllerHome?.trim()) throw new Error('CHECK_CONTROLLER_HOME_AUTHORITY_CONFLICT');
   if (liveControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(liveControllerHome);
   else if (isolatedControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(isolatedControllerHome);
@@ -1088,23 +1249,34 @@ async function executeControllerCheckAsync(
   const timeoutMessage = supervised.timedOut
     ? `process timed out after ${timeoutMs}ms: ${command.join(' ')}`
     : '';
+  const processOk = supervised.status === 0 && !supervised.failureCode;
+  const structuredObservation = consumeStructuredCheckObservation(check, structuredResultPath);
+  const structuredDecision = applyStructuredCheckObservation(processOk, structuredObservation);
+  const hardInfrastructureFailure = supervised.timedOut
+    || Boolean(supervised.failureCode)
+    || Boolean(supervised.error)
+    || Boolean(supervised.signal);
   const result = {
-    ok: supervised.status === 0 && !supervised.failureCode,
-    status: supervised.status,
+    ok: structuredDecision.ok,
+    status: !structuredDecision.ok && supervised.status === 0 ? 1 : supervised.status,
     timedOut: supervised.timedOut,
     stdout: capProcessOutput(redactProcessOutput(supervised.stdout), maxOutputBytes),
     stderr: capProcessOutput(redactProcessOutput([
       supervised.stderr,
       timeoutMessage || supervised.error || '',
       processTreeError,
+      structuredDecision.error,
     ].filter(Boolean).join('\n')), maxOutputBytes),
-    failureClass: classifyControllerCheckFailure({
-      ok: supervised.status === 0 && !supervised.failureCode,
+    failureClass: hardInfrastructureFailure
+      ? 'infrastructure_failure' as const
+      : structuredDecision.failureClass ?? classifyControllerCheckFailure({
+      ok: structuredDecision.ok,
       timedOut: supervised.timedOut,
-      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error),
+      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error) || Boolean(supervised.signal),
       stdout: supervised.stdout,
-      stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError].filter(Boolean).join('\n'),
+      stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError, structuredDecision.error].filter(Boolean).join('\n'),
     }),
+    failureEvidence: structuredDecision.failureEvidence,
   };
 
   const executedAt = new Date().toISOString();
@@ -1121,6 +1293,7 @@ async function executeControllerCheckAsync(
     validatedRevision: undefined,
     originalExecutedAt: executedAt,
     failureClass: result.failureClass,
+    failureEvidence: result.failureEvidence,
   };
   return { ...withoutPath, artifactPath: logicalEvidenceArtifactPath(check.id) };
 }
@@ -1154,7 +1327,15 @@ export function runControllerCheckAsync(
   } catch (error) {
     return Promise.reject(error);
   }
-  const identity = controllerCheckExecutionIdentity(repoRoot, id, options.requestedTimeoutMs, options.snapshot, options.executionStateFingerprint);
+  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const identity = controllerCheckExecutionIdentityForRevision(
+    repoRoot,
+    id,
+    inputIntegrity.revision,
+    options.requestedTimeoutMs,
+    options.snapshot,
+    options.executionStateFingerprint,
+  );
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
@@ -1256,7 +1437,8 @@ export function runControllerCheckAsync(
         lease?.setChildPid(pid);
         notifySpawn(pid);
       }, options.isolatedControllerHome, options.liveControllerHome);
-      const completedRevision = currentControllerCheckRevision(repoRoot);
+      const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+      const completedRevision = completedContent.revision;
       let liveStateStale = false;
       if (liveCertification) {
         try {
@@ -1268,7 +1450,7 @@ export function runControllerCheckAsync(
           liveStateStale = true;
         }
       }
-      const repositoryStale = completedRevision !== revision;
+      const repositoryStale = controllerCheckInputIntegrityChanged(check, inputIntegrity, completedContent);
       const stale = repositoryStale || liveStateStale;
       const finalized = {
         ...result,

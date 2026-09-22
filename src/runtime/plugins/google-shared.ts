@@ -6,7 +6,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { bootstrapManagedRuntimeEnv } from '../shared/managed-env';
-import { readStoredGoogleRefreshToken } from '../safe-tooling/google-credential-store';
+import { readStoredGoogleClientSecret, readStoredGoogleRefreshToken } from '../safe-tooling/google-credential-store';
 import { readRepositoryPluginConfig, writeRepositoryPluginConfig, type RepositoryPluginConfigContext } from './config-store';
 
 export type GoogleProviderKind = 'mock' | 'google-workspace';
@@ -128,8 +128,15 @@ function refreshCredential(service: GoogleService): { name: string; value: strin
   return stored ? { name: stored.source, value: stored.token } : undefined;
 }
 
+function clientSecretCredential(service: GoogleService): { name: string; value: string } | undefined {
+  const fromEnv = firstEnv(clientSecretEnvNames(service));
+  if (fromEnv) return fromEnv;
+  const stored = readStoredGoogleClientSecret(service);
+  return stored ? { name: stored.source, value: stored.secret } : undefined;
+}
+
 function refreshCredentialsReady(service: GoogleService): boolean {
-  return Boolean(refreshCredential(service) && firstEnv(clientIdEnvNames(service)) && firstEnv(clientSecretEnvNames(service)));
+  return Boolean(refreshCredential(service) && firstEnv(clientIdEnvNames(service)));
 }
 
 export function installGoogleAccessToken(service: GoogleService, accessToken: string, expiresInSeconds = 3600, source = 'oauth'): void {
@@ -289,9 +296,9 @@ function tokenEnvNames(service: GoogleService): string[] {
 export function resolveGoogleAuth(
   service: GoogleService,
   config: GooglePluginConfig,
-  options: { repoRoot?: string } = {},
+  options: { repoRoot?: string; controllerHome?: string } = {},
 ): GoogleAuthState {
-  bootstrapManagedRuntimeEnv({ repoRoot: options.repoRoot });
+  bootstrapManagedRuntimeEnv({ repoRoot: options.repoRoot, controllerHome: options.controllerHome });
   if (config.provider === 'mock') {
     return {
       provider: 'mock', ready: true, authenticated: true, probed: true,
@@ -428,8 +435,8 @@ function serviceBaseUrl(service: GoogleService): string {
 async function refreshGoogleAccessToken(service: GoogleService, timeoutMs: number): Promise<string | undefined> {
   const refreshToken = refreshCredential(service);
   const clientId = firstEnv(clientIdEnvNames(service));
-  const clientSecret = firstEnv(clientSecretEnvNames(service));
-  if (!refreshToken || !clientId || !clientSecret) return undefined;
+  const clientSecret = clientSecretCredential(service);
+  if (!refreshToken || !clientId) return undefined;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -437,8 +444,8 @@ async function refreshGoogleAccessToken(service: GoogleService, timeoutMs: numbe
       grant_type: 'refresh_token',
       refresh_token: refreshToken.value,
       client_id: clientId.value,
-      client_secret: clientSecret.value,
     });
+    if (clientSecret) body.set('client_secret', clientSecret.value);
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },

@@ -137,6 +137,14 @@ export interface CommandRecord {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** Process-tree evidence comes from the evaluator-owned child supervisor, never candidate stdout. */
+  supervision?: {
+    pid?: number;
+    residualPids: number[];
+    remainingPids: number[];
+    pidReuseFenced: boolean;
+    failureCode?: string;
+  };
   /** Resource accounting is available only where the host can observe the child process. */
   resourceUsage?: {
     userCpuMs: number;

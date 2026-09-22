@@ -9,12 +9,15 @@ import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-t
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
 import {
   buildPlanObligationCompatibilityCapability,
+  parseControllerRoundCompatibilityCapability,
   parsePlanObligationCompatibilityCapability,
 } from '../adapters/mcp/controller-round-compatibility';
 import {
   buildFrozenSemanticCompatibilityCapability,
+  FROZEN_WORK_START_KINDS,
   parseFrozenSemanticCompatibilityCapability,
 } from '../adapters/mcp/frozen-client-semantic-compatibility';
+import { ENGINEERING_DECISION_INPUT_FIELDS } from '../adapters/mcp/runtime-gateway/engineering-tool-contract';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   CORE_CONTROLLER_TOOL_NAMES,
@@ -28,20 +31,38 @@ import {
 // caught before they become discovery latency and schema-cache churn.
 const MAX_DEFAULT_TOOL_COUNT = 24;
 
+// #197 decomposition authority: the public/frozen Tool Contract is an explicit
+// baseline, independent from whichever internal adapter currently defines a
+// tool. Adapter extraction may move implementation ownership without silently
+// changing names, descriptions, input schemas, or annotations.
+const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
+  'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work',
+  'repository_list', 'repository_get', 'repository_register', 'repository_command_execute',
+  'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
+  'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
+] as const;
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'fa608bcdb8092992';
+
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
   enableDevRunner: true,
   devRunnerAgents: 'codex,claude',
 });
 
-const sourceGroups = {
-  runtime: runtimeToolDefinitions.map((tool) => tool.name),
-  execution: executionToolDefinitions.map((tool) => tool.name),
-  process: processToolDefinitions.map((tool) => tool.name),
-  access: accessToolDefinitions.map((tool) => tool.name),
-  repository: repositoryToolDefinitions.map((tool) => tool.name),
-  legacyCompatibility: buildMcpToolDefinitions(policy).map((tool) => tool.name),
+const sourceDefinitionGroups = {
+  runtime: runtimeToolDefinitions,
+  execution: executionToolDefinitions,
+  process: processToolDefinitions,
+  access: accessToolDefinitions,
+  repository: repositoryToolDefinitions,
+  legacyCompatibility: buildMcpToolDefinitions(policy),
 };
+const sourceGroups = Object.fromEntries(
+  Object.entries(sourceDefinitionGroups).map(([group, definitions]) => [group, definitions.map((tool) => tool.name)]),
+) as Record<keyof typeof sourceDefinitionGroups, string[]>;
+const allDefinitions = Object.values(sourceDefinitionGroups).flat();
+const definitionByName = new Map(allDefinitions.map((tool) => [tool.name, tool]));
 const fullNames = [...new Set(Object.values(sourceGroups).flat())];
 const defaultNames: string[] = [...DEFAULT_CONTROLLER_TOOL_NAMES];
 const coreNames: string[] = [...CORE_CONTROLLER_TOOL_NAMES];
@@ -49,6 +70,8 @@ const advancedNames: string[] = [...ADVANCED_CONTROLLER_TOOL_NAMES];
 const catalogNames: string[] = [...STABLE_CONTROLLER_TOOL_NAMES];
 const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
 const defaultFingerprint = forgeToolSurfaceFingerprint(defaultNames);
+const stableDefinitions = defaultNames.map((name) => definitionByName.get(name)).filter((tool) => tool !== undefined);
+const stableSchemaFingerprint = forgeToolSurfaceFingerprint(stableDefinitions);
 const catalogFingerprint = forgeToolSurfaceFingerprint(catalogNames);
 const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);
 const duplicateDefault = defaultNames.filter((name, index) => defaultNames.indexOf(name) !== index);
@@ -67,8 +90,42 @@ const currentToolNames = new Set([
 const legacyHandlerSource = readFileSync(new URL('../src/cli/mcp/legacy-tool-service.ts', import.meta.url), 'utf8');
 const legacyHandlerNames = [...legacyHandlerSource.matchAll(/case\s+["']([^"']+)["']\s*:/g)].map((match) => match[1]);
 const legacyHandlerCollisions = [...new Set(legacyHandlerNames.filter((name) => currentToolNames.has(name)))].sort();
+const recoveryMcpSource = readFileSync(new URL('../src/runtime/standalone-recovery/mcp-server.ts', import.meta.url), 'utf8');
+const recoveryStatelessMarkers = [
+  'createMcpHandler',
+  'toNodeHandler',
+  "legacy: 'stateless'",
+  "responseMode: 'auto'",
+];
+const recoverySessionAuthorityMarkers = [
+  'McpSessionRegistry',
+  'NodeStreamableHTTPServerTransport',
+  'Mcp-Session-Reset',
+  'sessionIdGenerator',
+];
 
 const failures: string[] = [];
+for (const marker of recoveryStatelessMarkers) {
+  if (!recoveryMcpSource.includes(marker)) {
+    failures.push(`Standalone Recovery MCP must remain stateless across protocol eras: missing ${marker}`);
+  }
+}
+for (const marker of recoverySessionAuthorityMarkers) {
+  if (recoveryMcpSource.includes(marker)) {
+    failures.push(`Standalone Recovery MCP must not own transport-session state: found ${marker}`);
+  }
+}
+if (defaultNames.join('\n') !== EXPECTED_STABLE_CONTROLLER_TOOL_NAMES.join('\n')) {
+  failures.push(`stable ChatGPT Tool Contract names changed: ${defaultNames.join(', ')}`);
+}
+if (defaultFingerprint !== EXPECTED_STABLE_TOOL_NAME_FINGERPRINT) {
+  failures.push(`stable ChatGPT tool-name fingerprint changed: ${defaultFingerprint} != ${EXPECTED_STABLE_TOOL_NAME_FINGERPRINT}`);
+}
+if (stableDefinitions.length !== defaultNames.length) {
+  failures.push(`stable ChatGPT Tool Contract definitions are incomplete: ${stableDefinitions.length}/${defaultNames.length}`);
+} else if (stableSchemaFingerprint !== EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT) {
+  failures.push(`stable ChatGPT Tool Contract schema fingerprint changed: ${stableSchemaFingerprint} != ${EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT}`);
+}
 if (defaultNames.length > MAX_DEFAULT_TOOL_COUNT) {
   failures.push(`default ChatGPT tools/list exceeds the schema budget: ${defaultNames.length} > ${MAX_DEFAULT_TOOL_COUNT}`);
 }
@@ -93,8 +150,38 @@ if (fullNames.length < defaultNames.length) {
 
 const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
 const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+for (const field of [
+  'checkout_id',
+  'workflow_id',
+  'workflow_run_id',
+  'controller_authority_id',
+  'relay_scope_id',
+  'assistant_context_digest',
+  'assistant_context_usage',
+  'outcome_observation',
+  'experience_draft',
+] as const) {
+  if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+}
 if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
 if (!('obligation_dispositions' in rhWorkProperties)) failures.push('rh_work native obligation_dispositions schema is missing');
+for (const field of ['controller_authority_id', 'relay_scope_id', 'engineering_preconditions']) {
+  if (!(field in rhWorkProperties)) failures.push(`rh_work native ${field} schema is missing`);
+}
+const workKindSchema = rhWorkProperties.work_kind as { enum?: unknown[] } | undefined;
+if (JSON.stringify(workKindSchema?.enum ?? []) !== JSON.stringify(FROZEN_WORK_START_KINDS)) {
+  failures.push('rh_work native work_kind enum diverged from frozen start compatibility authority');
+}
+const engineeringPreconditionsSchema = rhWorkProperties.engineering_preconditions as { properties?: Record<string, unknown> } | undefined;
+const designDecisionSchema = engineeringPreconditionsSchema?.properties?.design_decision as { properties?: Record<string, unknown> } | undefined;
+const decisionsSchema = designDecisionSchema?.properties?.decisions as { properties?: Record<string, unknown>; required?: unknown[] } | undefined;
+const decisionPropertyKeys = Object.keys(decisionsSchema?.properties ?? {});
+if (JSON.stringify(decisionPropertyKeys) !== JSON.stringify(ENGINEERING_DECISION_INPUT_FIELDS)) {
+  failures.push('rh_work Engineering Design decision schema diverged from Kernel decision-area authority');
+}
+if (JSON.stringify(decisionsSchema?.required ?? []) !== JSON.stringify(ENGINEERING_DECISION_INPUT_FIELDS)) {
+  failures.push('rh_work Engineering Design required decisions diverged from Kernel decision-area authority');
+}
 
 const planCompatibilityFixture = [
   {
@@ -131,6 +218,52 @@ try {
 }
 
 try {
+  const authorityId = `cra_${'a'.repeat(32)}`;
+  const relayScopeId = 'goal:work-frozen-review-compatibility';
+  const parsedReview = parseControllerRoundCompatibilityCapability(
+    'repair',
+    `controller.round:review:approved:${authorityId}:${relayScopeId}`,
+  );
+  if (JSON.stringify(parsedReview) !== JSON.stringify({ operation: 'review', authorityId, relayScopeId, reviewDecision: 'approved' })) {
+    failures.push('frozen ControllerRound review compatibility changed authority, scope, or review decision');
+  }
+  const parsedVerify = parseControllerRoundCompatibilityCapability(
+    'repair',
+    `controller.round:verify:${authorityId}:${relayScopeId}`,
+  );
+  if (JSON.stringify(parsedVerify) !== JSON.stringify({ operation: 'verify', authorityId, relayScopeId })) {
+    failures.push('legacy ControllerRound compatibility changed non-review operation semantics');
+  }
+  for (const invalid of [
+    `controller.round:review:${authorityId}:${relayScopeId}`,
+    `controller.round:review:maybe:${authorityId}:${relayScopeId}`,
+  ]) {
+    try {
+      parseControllerRoundCompatibilityCapability('repair', invalid);
+      failures.push('frozen ControllerRound review compatibility accepted a missing or invalid explicit decision');
+    } catch {
+      // Expected: frozen review must carry one explicit canonical review decision.
+    }
+  }
+} catch (error) {
+  failures.push(`frozen ControllerRound review compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+try {
+  const authorityId = `cra_${'b'.repeat(32)}`;
+  const relayScopeId = 'goal:frozen-start-abi';
+  for (const workKind of FROZEN_WORK_START_KINDS) {
+    const startFixture = {
+      operation: 'start' as const,
+      args: { work_kind: workKind, controller_authority_id: authorityId, relay_scope_id: relayScopeId },
+    };
+    const startCapability = buildFrozenSemanticCompatibilityCapability(startFixture);
+    const parsedStart = parseFrozenSemanticCompatibilityCapability('repair', startCapability);
+    if (JSON.stringify(parsedStart) !== JSON.stringify(startFixture)) {
+      failures.push(`frozen semantic start compatibility changed ${workKind} or Controller authority identity`);
+    }
+  }
+
   const semanticFixture = {
     operation: 'requirement_create' as const,
     args: {
@@ -196,6 +329,7 @@ console.log(JSON.stringify({
   version: FORGE_VERSION,
   stableToolCount: defaultNames.length,
   stableFingerprint: defaultFingerprint,
+  stableSchemaFingerprint,
   defaultToolBudget: MAX_DEFAULT_TOOL_COUNT,
   compatibilityCatalogToolCount: catalogNames.length,
   compatibilityCatalogFingerprint: catalogFingerprint,

@@ -78,6 +78,75 @@ function loadTypeScriptCompiler() {
   return typeScriptCompiler;
 }
 
+const WORK_LIFECYCLE_PATCH_FIELDS = new Set(['status', 'phase', 'dispatchState', 'evidenceState', 'workKind']);
+
+function unwrapTypeScriptExpression(ts, node) {
+  let current = node;
+  while (ts.isParenthesizedExpression(current)
+      || ts.isAsExpression(current)
+      || ts.isTypeAssertionExpression(current)
+      || ts.isNonNullExpression(current)
+      || (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(current))) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function staticTypeScriptPropertyName(ts, name) {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text;
+  return undefined;
+}
+
+function inlineWorkLifecyclePatchFields(ts, node) {
+  const expression = unwrapTypeScriptExpression(ts, node);
+  if (!ts.isObjectLiteralExpression(expression)) return [];
+  const fields = new Set();
+  for (const property of expression.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      for (const field of inlineWorkLifecyclePatchFields(ts, property.expression)) fields.add(field);
+      continue;
+    }
+    if (!(ts.isPropertyAssignment(property)
+        || ts.isShorthandPropertyAssignment(property)
+        || ts.isMethodDeclaration(property)
+        || ts.isGetAccessorDeclaration(property)
+        || ts.isSetAccessorDeclaration(property))) continue;
+    const name = staticTypeScriptPropertyName(ts, property.name);
+    if (name && WORK_LIFECYCLE_PATCH_FIELDS.has(name)) fields.add(name);
+  }
+  return [...fields].sort();
+}
+
+function genericWorkLifecycleMutationRecords(files) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return [];
+  const records = [];
+  for (const path of [...files].sort()) {
+    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function visit(node) {
+      if (ts.isCallExpression(node) && node.arguments.length >= 3) {
+        const callee = node.expression;
+        const callName = ts.isIdentifier(callee)
+          ? callee.text
+          : ts.isPropertyAccessExpression(callee)
+            ? callee.name.text
+            : undefined;
+        if (callName === 'updateWorkContract') {
+          const fields = inlineWorkLifecyclePatchFields(ts, node.arguments[2]);
+          if (fields.length > 0) {
+            const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+            records.push({ path, line: line + 1, fields });
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
 function staticTypeScriptImportRecords(files) {
   const ts = loadTypeScriptCompiler();
   if (!ts) return [];
@@ -176,6 +245,348 @@ function requireExactShrinkingDebt(label, actual, allowed) {
     if (!actual.has(edge)) failures.push(`${label} allowlist contains retired dependency; remove it so the debt ledger only shrinks: ${edge}`);
   }
 }
+
+function requireExactShrinkingInventory(label, actual, allowed) {
+  for (const entry of actual) {
+    if (!allowed.has(entry)) failures.push(`${label} introduced forbidden entry: ${entry}`);
+  }
+  for (const entry of allowed) {
+    if (!actual.has(entry)) failures.push(`${label} allowlist contains retired entry; remove it so the debt ledger only shrinks: ${entry}`);
+  }
+}
+
+// Stage 4 boundary: rh_work is an ABI/translation adapter. Durable lifecycle
+// ownership stays in Kernel/application services and physical WorkHandle state
+// may not be persisted from the MCP adapter.
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "if (name === 'rh_work') return callWorkAdapter(ctx, args);");
+requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
+requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'assertControllerRoundInvocationAuthority');
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'export async function callRhWorkControllerOperation');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkControllerOperation(ctx, repository, operation, args)');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:controller_get_owner|controller_claim|controller_disposition|controller_release|launcher_start)['"]/, 'rh_work compatibility adapter must delegate ControllerRound/Launcher operation orchestration to work-controller-operations');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'export async function callRhWorkRequirementOperation');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'admitRequirement');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'continueRequirement');
+requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'promoteRequirementCandidate');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs)');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_promote_candidate|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanCreateOperation');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'approvePlanContractAsync');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'supersedePlanContract');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'resolvePlanAdmission');
+requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'admitPlanContractAsync');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanCreateOperation(store, operation, args');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:plan_list|plan_get|plan_approve|plan_supersede|plan_create)['"]/, 'rh_work compatibility adapter must delegate Plan transport/admission orchestration to work-plan-operations');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:createRequirement|resumeRetainedCancelledWorkContract|acceptRequirementOutcome)\s*\(/, 'rh_work adapter must delegate Requirement and retained-Work lifecycle transitions to canonical application authorities');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/, 'rh_work adapter must not implement implementation-review policy authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/, 'rh_work adapter must delegate physical Git delivery to canonical Work finalization authority');
+
+// #197 MCP mega-adapter decomposition. These are debt ledgers, not target
+// architecture: entries may only disappear. New domain-authority imports or
+// switch cases must be implemented in the owning domain adapter/application API,
+// never added to runtime-tools/router while decomposition is in progress.
+const MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/|src\/cli\/(?:repositories|editing)\/)/;
+
+function gatewayAuthorityImportInventoryFromSources(sources, importPattern = MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return new Set();
+  const records = new Set();
+  for (const { path, source } of sources) {
+    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function visit(node) {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier
+          && ts.isStringLiteralLike(node.moduleSpecifier)
+          && importPattern.test(node.moduleSpecifier.text)) {
+        records.add(`${path}::${node.moduleSpecifier.text}`);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
+function runtimeToolSwitchCaseInventory(source) {
+  const marker = 'export async function callRuntimeTool';
+  const start = source.indexOf(marker);
+  if (start < 0) return new Set();
+  return new Set([...source.slice(start).matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map((match) => match[1]));
+}
+
+const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-result',
+]);
+
+const MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT = new Set();
+
+const mcpAdapterBoundaryFixture = process.env.FORGE_MCP_RUNTIME_ADAPTER_BOUNDARY_FIXTURE;
+if (mcpAdapterBoundaryFixture) {
+  const fixture = JSON.parse(mcpAdapterBoundaryFixture);
+  const sources = Array.isArray(fixture.sources) ? fixture.sources : [];
+  requireExactShrinkingDebt(
+    'MCP runtime adapter authority-import fixture debt',
+    gatewayAuthorityImportInventoryFromSources(sources),
+    new Set(Array.isArray(fixture.allowedImports) ? fixture.allowedImports : []),
+  );
+  const runtimeSource = sources.find((entry) => entry.path === 'adapters/mcp/runtime-gateway/runtime-tools.ts')?.source ?? '';
+  requireExactShrinkingInventory(
+    'MCP runtime-tools switch-case fixture debt',
+    runtimeToolSwitchCaseInventory(runtimeSource),
+    new Set(Array.isArray(fixture.allowedCases) ? fixture.allowedCases : []),
+  );
+  if (failures.length) {
+    console.error('[mcp-runtime-adapter-boundary-guardrail] FAILED');
+    for (const failure of failures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
+  console.log('[mcp-runtime-adapter-boundary-guardrail] OK');
+  process.exit(0);
+}
+
+requireExactShrinkingDebt(
+  'MCP runtime mega-adapter direct domain-authority import debt',
+  gatewayAuthorityImportInventoryFromSources([
+    { path: 'adapters/mcp/runtime-gateway/runtime-tools.ts', source: text('adapters/mcp/runtime-gateway/runtime-tools.ts') },
+    { path: 'adapters/mcp/runtime-gateway/router.ts', source: text('adapters/mcp/runtime-gateway/router.ts') },
+  ]),
+  MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT,
+);
+requireExactShrinkingInventory(
+  'MCP runtime-tools switch-case debt',
+  runtimeToolSwitchCaseInventory(text('adapters/mcp/runtime-gateway/runtime-tools.ts')),
+  MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT,
+);
+
+const MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/)/;
+requireExactShrinkingDebt(
+  'MCP pure transport adapter authority imports',
+  gatewayAuthorityImportInventoryFromSources([
+    { path: 'adapters/mcp/runtime-gateway/shared-adapter.ts', source: text('adapters/mcp/runtime-gateway/shared-adapter.ts') },
+    { path: 'adapters/mcp/runtime-gateway/result-adapter.ts', source: text('adapters/mcp/runtime-gateway/result-adapter.ts') },
+  ], MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN),
+  new Set(),
+);
+
+const FROZEN_CAPABILITY_PREFIX_FILES = [
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
+  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
+  'adapters/mcp/controller-round-compatibility.ts',
+  'adapters/mcp/frozen-client-semantic-compatibility.ts',
+];
+const CANONICAL_FROZEN_SEMANTIC_PREFIX = 'semantic.v1:';
+
+function frozenCapabilityPrefixRecordsFromSources(sources) {
+  const records = new Set();
+  const protocolLiteral = /(['"`])([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+:)\1/g;
+  for (const { path, source } of sources) {
+    for (const match of source.matchAll(protocolLiteral)) {
+      const prefix = match[2];
+      if (prefix === CANONICAL_FROZEN_SEMANTIC_PREFIX) continue;
+      records.add(`${path}::${prefix}`);
+    }
+  }
+  return records;
+}
+
+const capabilityPrefixFixture = process.env.FORGE_CAPABILITY_PREFIX_GUARDRAIL_FIXTURE;
+if (capabilityPrefixFixture) {
+  const fixture = JSON.parse(capabilityPrefixFixture);
+  const actual = frozenCapabilityPrefixRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  const allowed = new Set(Array.isArray(fixture.allowed) ? fixture.allowed : []);
+  requireExactShrinkingInventory('frozen capability prefix fixture debt', actual, allowed);
+  if (failures.length) {
+    console.error('[frozen-capability-prefix-guardrail] FAILED');
+    for (const failure of failures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
+  console.log(`[frozen-capability-prefix-guardrail] OK (${actual.size} debt entries)`);
+  process.exit(0);
+}
+
+const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
+  'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts::controller.authority.recover:',
+  'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts::controller.provider.recover:',
+  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts::plan.step.retry:',
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts::schedule.delete:',
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts::work.review:',
+  'adapters/mcp/controller-round-compatibility.ts::controller.disposition:',
+  'adapters/mcp/controller-round-compatibility.ts::controller.round:',
+  'adapters/mcp/controller-round-compatibility.ts::plan.obligations.v1:',
+]);
+requireExactShrinkingInventory(
+  'legacy frozen capability prefix debt',
+  frozenCapabilityPrefixRecordsFromSources(FROZEN_CAPABILITY_PREFIX_FILES.map((path) => ({ path, source: text(path) }))),
+  LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT,
+);
+
+const SEMANTIC_AUTHORITY_CRITICAL_ROOTS = [
+  'packages/kernel',
+  'src/runtime/control-plane',
+  'src/runtime/execution',
+  'adapters/mcp/runtime-gateway',
+  'src/cli/local-bridge',
+];
+const HUMAN_READABLE_SEMANTIC_FIELDS = new Set(['message', 'reason', 'description', 'checkId', 'check_id']);
+const HUMAN_READABLE_STRING_MATCH_METHODS = new Set(['includes', 'startsWith', 'endsWith', 'match', 'search']);
+
+function humanReadableSemanticExpression(ts, node) {
+  if (ts.isIdentifier(node)) return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.text);
+  if (ts.isPropertyAccessExpression(node)) return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.name.text);
+  if (ts.isElementAccessExpression(node)
+      && node.argumentExpression
+      && ts.isStringLiteralLike(node.argumentExpression)) {
+    return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.argumentExpression.text);
+  }
+  if (ts.isParenthesizedExpression(node)
+      || ts.isAsExpression(node)
+      || ts.isTypeAssertionExpression(node)
+      || ts.isNonNullExpression(node)) {
+    return humanReadableSemanticExpression(ts, node.expression);
+  }
+  if (ts.isConditionalExpression(node)) {
+    return humanReadableSemanticExpression(ts, node.whenTrue)
+      || humanReadableSemanticExpression(ts, node.whenFalse);
+  }
+  if (ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && ['trim', 'toLowerCase', 'toUpperCase'].includes(node.expression.name.text)) {
+    return humanReadableSemanticExpression(ts, node.expression.expression);
+  }
+  return false;
+}
+
+function isHumanReadableSemanticMatcherCall(ts, node) {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
+  const method = node.expression.name.text;
+  if (HUMAN_READABLE_STRING_MATCH_METHODS.has(method)
+      && humanReadableSemanticExpression(ts, node.expression.expression)) return true;
+  return method === 'test' && node.arguments.some((argument) => humanReadableSemanticExpression(ts, argument));
+}
+
+function semanticAuthorityStringMatchRecordsFromSources(sources) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return new Set();
+  const records = new Set();
+  for (const { path, source } of [...sources].sort((left, right) => left.path.localeCompare(right.path))) {
+    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function collectCondition(expression) {
+      function visitCondition(node) {
+        if (isHumanReadableSemanticMatcherCall(ts, node)) {
+          records.add(`${path}::${node.getText(sourceFile).replace(/\s+/g, ' ').trim()}`);
+        }
+        ts.forEachChild(node, visitCondition);
+      }
+      visitCondition(expression);
+    }
+    function visit(node) {
+      if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) collectCondition(node.expression);
+      else if (ts.isConditionalExpression(node)) collectCondition(node.condition);
+      else if (ts.isForStatement(node) && node.condition) collectCondition(node.condition);
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
+function semanticAuthorityProductionStringMatchRecords() {
+  const paths = SEMANTIC_AUTHORITY_CRITICAL_ROOTS.flatMap((directory) => sourceFiles(directory));
+  return semanticAuthorityStringMatchRecordsFromSources(paths.map((path) => ({ path, source: text(path) })));
+}
+
+const LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION = /\b(?:class|interface|type|function|const)\s+\w*(?:Browser|Desktop)\w*(?:Authority|Persistence)\b/;
+function legacyInteractionAuthorityOwnerRecordsFromSources(sources) {
+  const records = new Set();
+  for (const { path, source } of sources) {
+    for (const line of String(source).split('\n')) {
+      if (LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION.test(line)) records.add(`${path}::${line.trim()}`);
+    }
+  }
+  return records;
+}
+
+const interactionAuthorityGuardrailFixture = process.env.FORGE_INTERACTION_AUTHORITY_GUARDRAIL_FIXTURE;
+if (interactionAuthorityGuardrailFixture) {
+  const fixture = JSON.parse(interactionAuthorityGuardrailFixture);
+  const actual = legacyInteractionAuthorityOwnerRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  if (actual.size > 0) {
+    console.error('[interaction-authority-guardrail] FAILED');
+    for (const record of actual) console.error(`- Browser/Desktop durable interaction authority must live only in Computer target authority: ${record}`);
+    process.exit(1);
+  }
+  console.log('[interaction-authority-guardrail] OK');
+  process.exit(0);
+}
+
+const semanticAuthorityGuardrailFixture = process.env.FORGE_SEMANTIC_AUTHORITY_GUARDRAIL_FIXTURE;
+if (semanticAuthorityGuardrailFixture) {
+  const fixture = JSON.parse(semanticAuthorityGuardrailFixture);
+  const actual = semanticAuthorityStringMatchRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  const allowed = new Set(Array.isArray(fixture.allowed) ? fixture.allowed : []);
+  requireExactShrinkingInventory('semantic authority fixture debt', actual, allowed);
+  if (failures.length) {
+    console.error('[semantic-authority-guardrail] FAILED');
+    for (const failure of failures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
+  console.log(`[semantic-authority-guardrail] OK (${actual.size} debt entries)`);
+  process.exit(0);
+}
+
+const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
+  `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
+  `adapters/mcp/runtime-gateway/process-tools.ts::message.includes(':')`,
+  `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
+  `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('consecutive_failures:')`,
+  `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('repeated_state:')`,
+  `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('round_budget_exhausted:')`,
+  `packages/kernel/controller/application/continuation-service.ts::error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')`,
+  `src/cli/local-bridge/facade-api.ts::selection.reason.includes('Small')`,
+  `src/cli/local-bridge/facade-api.ts::selection.reason.includes('small')`,
+  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
+  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_PATH_INVALID:\")`,
+  `src/cli/local-bridge/server.ts::message.startsWith(\"REPOSITORY_SELF_PROTECTED\")`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('infrastructure')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('terminal')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('timed out')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('unavailable')`,
+  `src/runtime/control-plane/execution/work-head-settlement.ts::error.message.includes('CONTROL_PLANE_REVISION_CONFLICT')`,
+  `src/runtime/control-plane/facade/requirement-authority.ts::error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')`,
+  `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.includes(':')`,
+  `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.startsWith('WRITER_FENCED:')`,
+  `src/runtime/control-plane/global-scheduler/scheduler.ts::error.message.startsWith('LOCK_HELD:')`,
+  `src/runtime/control-plane/launcher/chatgpt-work-continuation.ts::error.message.includes(':')`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::(error instanceof Error ? error.message : String(error)).startsWith('CONTROL_PLANE_SQLITE_BUSY:')`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::/database is locked|SQLITE_BUSY/i.test(message)`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::message.startsWith('CONTROL_PLANE_')`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::message.startsWith('CONTROL_PLANE_SQLITE_CORRUPT:')`,
+  `src/runtime/execution/jobs/store.ts::error.message.startsWith('WRITER_FENCED:')`,
+  `src/runtime/execution/process-runtime/lightweight-managed.ts::error.message.startsWith('PROCESS_REQUEST_CONFLICT:')`,
+  `src/runtime/execution/process-runtime/process-runner-entry.ts::message.startsWith('PROCESS_RUNNER_ALREADY_STARTED:')`,
+  `src/runtime/execution/process-runtime/process-runner-entry.ts::message.startsWith('PROCESS_RUNNER_RECEIPT_CORRUPT:')`,
+  `src/runtime/execution/thin-harness/fast-executor.ts::message.includes(':')`,
+  `src/runtime/execution/thin-harness/fast-executor.ts::message.includes('\\0')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::error.message.startsWith('SNAPSHOT_BUDGET')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('CANCELLED')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_BUDGET')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_TOO_DIRTY')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_WORKER_TIMEOUT')`,
+  `src/runtime/execution/workers/executor.ts::message.startsWith('LEGACY_JOB_TIMEOUT:')`,
+]);
+requireExactShrinkingInventory(
+  'human-readable semantic authority debt',
+  semanticAuthorityProductionStringMatchRecords(),
+  SEMANTIC_STRING_AUTHORITY_DEBT,
+);
 
 // Kernel V2 B7 graph analysis. Legacy boundary debt below is exact and must only shrink.
 // Inventory is derived from the production graph before the gate is activated.
@@ -281,6 +692,7 @@ const required = [
   'src/runtime/control-plane/execution/work-handle-authority.ts',
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
+  'src/runtime/control-plane/execution/content-equivalent-commit-authority.ts',
   'src/runtime/control-plane/execution/implementation-review-content.ts',
   'packages/protocols/handoff/status.ts',
   'packages/kernel/work/domain/admission-policy.ts',
@@ -361,13 +773,17 @@ const required = [
 ];
 for (const path of required) text(path);
 requireAcyclicProductionTypeScript();
-// Stage7F permits exactly one Controller-local derived Memory persistence adapter
-// and one bounded mechanical consumer. Kernel Memory remains pure and there is
-// still no Context/Brain/MCP authority path.
+// Operational priors retain their bounded mechanical consumers. The accepted
+// assistant-loop ADR adds semantic experience through its own API/adapter;
+// neither consumer may move persistence or semantic acceptance into the reducer.
 const stage7fMemoryImports = staticTypeScriptImportRecords(productionTypeScriptFiles());
 const stage7fKernelMemoryConsumers = new Set([
   'src/runtime/evidence/operational-shadow.ts',
   'src/runtime/control-plane/persistence/operational-prior-store.ts',
+  'src/runtime/context/assistant-context.ts',
+  'src/runtime/context/assistant-work-context.ts',
+  'src/runtime/control-plane/persistence/experience-store.ts',
+  'src/cli/commands/brain-assistant.ts',
 ]);
 const stage7fOperationalStoreConsumers = new Set([
   'src/runtime/control-plane/execution/work-verification-service.ts',
@@ -403,7 +819,7 @@ requireText('src/runtime/control-plane/execution/work-verification-service.ts', 
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'observedGitHead');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'executeWorkVerification({');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'executeWorkVerification({');
 requireText('src/cli/local-bridge/facade-api.ts', 'executeWorkVerification({');
 forbid(
   'src/cli/local-bridge/facade-api.ts',
@@ -434,6 +850,14 @@ requireText('src/runtime/control-plane/execution/implementation-review-content.t
 requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewIndexFingerprint');
 requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'requestWorkImplementationReview');
 requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordWorkImplementationReview');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'activateWorkContract');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'failWorkContract');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'cancelWorkContract');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordWorkEvidenceState');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'WORK_LIFECYCLE_REQUIRES_TRANSITION_API');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'work_contract_schema_v3_migrated');
+forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /phaseForStatusUpdate|dispatchStateForStatusUpdate/, 'Work status must not regain hidden phase/dispatch transition authority');
+forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /phaseEvidence:\s*legacyPhaseEvidence\(/, 'new Work construction must not reuse legacy migration phase-evidence inference');
 requireText('src/runtime/control-plane/facade/work-contract-store.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/facade/work-state-machine.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/facade/work-implementation-review.ts', '@deprecated Kernel V2 compatibility shim');
@@ -441,23 +865,44 @@ requireText('packages/kernel/work/domain/types.ts', "['implementation', 'verific
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'completeReviewedDirectEditWorkAfterCommit');
-requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'planWorkVerificationAcrossContentEquivalentCommit');
+forbid(
+  'src/runtime/control-plane/execution/work-verification-service.ts',
+  /export\s+function\s+transferWorkVerificationAcrossContentEquivalentCommit\s*\(/,
+  'content-equivalent verification planning must stay pure; authority persistence belongs to the atomic transfer owner',
+);
+requireText('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts', 'recordContentEquivalentCommitAuthorityTransfer');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordContentEquivalentCommitAuthorityTransfer');
 requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'workId: session.workId');
 requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'verificationSnapshot: work ?');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'review_decision');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'implementation_review_findings');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'review'");
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'implementationReviewContentFingerprint');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'review'");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'implementationReviewContentFingerprint');
 requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
-requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason === 'provider_dispatch_outcome_unknown'");
-requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason: 'provider_dispatch_outcome_unknown'");
+const controllerRoundTransitionPolicyPath = 'packages/kernel/controller/domain/controller-round-transition-policy.ts';
+if (existsSync(resolve(root, controllerRoundTransitionPolicyPath))) {
+  requireText(controllerRoundTransitionPolicyPath, "case 'provider_dispatch_outcome_unknown'");
+  requireText(controllerRoundTransitionPolicyPath, "blockedReason: 'provider_dispatch_outcome_unknown'");
+  forbid(
+    'packages/kernel/controller/infrastructure/controller-round-store.ts',
+    /blockedReason\s*(?:===|:)\s*['"]provider_dispatch_outcome_unknown['"]/,
+    'ControllerRound outcome-unknown lifecycle semantics must be owned by the canonical transition policy, not the store',
+  );
+} else {
+  requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason === 'provider_dispatch_outcome_unknown'");
+  requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason: 'provider_dispatch_outcome_unknown'");
+}
 requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN');
 requireText('adapters/chatgpt/controller-host.ts', 'CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'outcomeUnknown: providerDispatchOutcomeUnknown');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'const outcomeUnknown =');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'outcomeUnknown });');
 requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
 requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
 forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');
@@ -507,6 +952,9 @@ for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-state-machine|work-implementation-review)['"]/, 'production source must consume packages/kernel/work instead of retired Work facade authority');
   forbid(path, /packages\/kernel\/work\/infrastructure\/work-contract-store/, 'production source must consume the Work application/API boundary, not persistence infrastructure');
 }
+for (const record of genericWorkLifecycleMutationRecords([...sourceFiles('src'), ...sourceFiles('adapters')])) {
+  failures.push(`${record.path}:${record.line} violates Work lifecycle authority: updateWorkContract patch owns ${record.fields.join(', ')}; use explicit Kernel lifecycle commands`);
+}
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
@@ -517,7 +965,7 @@ forbid(
   /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'completeRemoteEffectWorkFromProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
@@ -544,9 +992,9 @@ requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'REQUIR
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'withPlanAdmissionLock');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRequirementGoal');
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'completeRequirementGoal');
 forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must delegate Requirement-bound goal completion to the canonical Goal application boundary');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "disposition === 'goal_complete' && work.requirementId");
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', "disposition === 'goal_complete' && work.requirementId");
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');
@@ -574,20 +1022,38 @@ requireText('packages/kernel/scheduler/application/settlement.ts', 'applySchedul
 requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleRetryableFailure');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'settleScheduledExecution');
 requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel V2 compatibility shim');
-requireText('packages/kernel/scheduler/domain/continuation.ts', 'export interface ScheduledContinuationDispatch');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'resumeScheduledControllerContinuation');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getRetainedControllerSession');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getControllerWorkBinding');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
-forbid('packages/kernel/scheduler/application/continuation-service.ts', /SCHEDULE_CONTINUATION_SESSION_DRIFT/, 'Scheduler continuation must not treat replaceable ControllerSession transport ids as durable continuation identity');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_prepare');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_bind_round');
+requireMissing('packages/kernel/scheduler/domain/continuation.ts');
+requireMissing('packages/kernel/scheduler/application/continuation-service.ts');
+requireMissing('packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'resumeControllerRoundOccurrence');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'getRetainedControllerSession');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'getControllerWorkBinding');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'beginControllerRoundProviderDispatch');
+requireText('packages/kernel/controller/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
+requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'controller-provider-dispatch-start');
+requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "type: 'provider_dispatch_started'");
+forbid('packages/kernel/controller/application/continuation-service.ts', /scheduler_continuation_dispatch|ScheduledContinuationDispatch/, 'Controller continuation must not recreate Scheduler-owned continuation lifecycle persistence');
+requireText('src/runtime/control-plane/launcher/chatgpt-round-continuation.ts', 'beginControllerRoundProviderDispatch');
+requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'beginControllerRoundProviderDispatch');
 requireText('src/runtime/root/scheduled-controller-composition.ts', 'controllerHostForScheduledBinding');
 requireMissing('adapters/scheduler/controller-binding.ts');
 requireText('adapters/chatgpt/controller-host.ts', 'createChatgptControllerHost');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
-requireText('src/runtime/workflow/schedules/engine.ts', 'resumeScheduledControllerContinuation');
+requireText('src/runtime/workflow/schedules/engine.ts', 'resumeControllerRoundOccurrence');
+requireText('src/runtime/workflow/schedules/engine.ts', 'workflowSupervisorBoundaryForWork');
+requireText('src/runtime/workflow/schedules/engine.ts', 'workflow_supervisor_owns_outer_turn');
+requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
+requireText('src/runtime/control-plane/launcher/chatgpt-round-continuation.ts', "outerTurnOwner: 'workflow_supervisor'");
+requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'workflowSupervisorBoundaryForWork');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
+requireText('supervisor/entry.ts', 'forgeWorkflowSupervisorValidators()');
+requireText('supervisor/forge-validators.ts', "requirement.state !== 'done'");
+requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
+forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:conversation:${conversationId}`');
+forbid('supervisor/client.ts', /task_has_effect|taskHasAnyEffect/, 'Supervisor boundary is derived from canonical Work+conversation facts; do not add a second ownership projection RPC');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
 requireText('src/runtime/workflow/schedules/engine.ts', 'controller_session_id');
@@ -680,6 +1146,46 @@ requireMissing('src/runtime/bootstrap/runtime-authority.ts');
 requireMissing('src/runtime/bootstrap/activation-transaction.ts');
 requireMissing('src/runtime/bootstrap/stable-bootstrap.ts');
 requireMissing('src/runtime/supervisor');
+requireText('supervisor/store.ts', 'BEGIN IMMEDIATE');
+requireText('supervisor/store.ts', 'completions_one_per_source_effect');
+requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_SOURCE_EFFECT_COMPLETION_CONFLICT');
+requireText('supervisor/paths.ts', 'resolveControllerHome');
+requireText('supervisor/paths.ts', "join(resolveWorkflowSupervisorForgeHome(controllerHome), 'supervisor')");
+forbid('supervisor/paths.ts', /control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor path authority may share the canonical Controller Home root but must not depend on lower lifecycle persistence or Kernel authorities');
+forbid('supervisor/store.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor persistence must resolve its root only through supervisor/paths and remain a separate database authority');
+requireMissing('supervisor/service.ts');
+requireText('src/runtime/root/runtime.ts', 'startWorkflowSupervisorRuntime');
+requireText('src/runtime/root/runtime.ts', 'WORKFLOW_SUPERVISOR_STOPPED');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorRuntime(controllerHome: string)');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'new WorkflowSupervisorStore(forgeHome)');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'createWorkflowSupervisorServer');
+requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorNativeBrowserAdapter');
+requireText('supervisor/native-browser-adapter.ts', "surface: 'macos-native'");
+forbid('supervisor/native-browser-adapter.ts', /supervisor\/store|sqlite|scheduler|packages\/kernel\/(?:work|controller)|control-plane\/persistence/, 'Native Supervisor browser adapter is transport-only and must not own durable lifecycle, Scheduler, Work, Controller, or persistence authority');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'resolveWorkflowSupervisorForgeHome(options.controllerHome)');
+forbid('src/runtime/root/workflow-supervisor-runtime.ts', /createPlatformServiceManagerHost|launchd|systemd|startDetached/, 'Workflow Supervisor reuses the Canonical Runtime process lifecycle and must not own a second OS service');
+requireText('supervisor/entry.ts', "argument('--controller-home')");
+forbid('supervisor/entry.ts', /FORGE_HOME|--forge-home/, 'Workflow Supervisor foreground entry must use the canonical Controller Home authority rather than a second Forge-home root');
+requireText('supervisor/control-plane.ts', 'await validator(task, parsed.proposal)');
+requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
+requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
+forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Supervisor transport must relay typed commands through the control plane and never own persistence');
+requireText('supervisor/chrome-extension/manifest.json', 'nativeMessaging');
+forbid('supervisor/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|forge-workflow-supervisor-effect/, 'Chrome extension is discovery/assistant-observation only; native macOS transport is the sole outbound Supervisor sender');
+requireText('supervisor/chrome-extension/content.js', 'FORGE_WORKFLOW_SUPERVISOR');
+requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
+requireText('supervisor/native-messaging/host.ts', 'browser_observe_assistant');
+requireText('supervisor/store.ts', 'recordEffectNotAppliedProof');
+requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
+requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
+requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
+requireText('supervisor/server.ts', "if (!['applied','unknown'].includes(outcome))");
+forbid('supervisor/chrome-extension/background.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Chrome recovery must reconstruct from daemon journal state rather than durable browser shadow state');
+forbid('supervisor/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Chrome content reconciliation must remain an observation surface rather than durable recovery authority');
+forbid('supervisor/native-messaging/host.ts', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|bun:sqlite|node:sqlite|from ['"][^'"]*(?:store|control-plane)['"]/, 'Chrome Native Messaging host must remain a stateless browser-method relay and never own Supervisor persistence/lifecycle');
+forbid('supervisor/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome extension background must consume daemon-authorized browser commands and never become durable workflow authority');
+forbid('supervisor/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Chrome content script must observe/execute one exact page only and never own durable workflow state');
+
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
 requireMissing('docs/operations/stable-external-runtime-supervisor.md');
@@ -899,7 +1405,7 @@ forbid(
   'Execution Worker must invoke control-plane Work application services directly, never MCP transport',
 );
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'managedProcessOperationDigest');
+requireText('adapters/mcp/runtime-gateway/work-compat-adapter.ts', 'managedProcessOperationDigest');
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\bcreateExecutionJob\b/,
@@ -968,18 +1474,17 @@ forbid(
 );
 forbid('adapters/mcp/runtime-gateway/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
-  'adapters/mcp/runtime-gateway/router.ts',
+  'adapters/mcp/runtime-gateway/routing-policy.ts',
   /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
   'declare DIRECT_REPOSITORY_TOOLS with repository_list, repository_get, and repository_workbench',
 );
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'controller_context'");
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'local_bridge_status'");
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
+requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', "case 'controller_context'");
+requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', "case 'local_bridge_status'");
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'connectorExposedTools');
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'currentCallableTools');
-forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
+forbid('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Runtime observation adapter must not perform Agent executable discovery or mutate readiness snapshots');
 forbidBetween(
-  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts',
   "case 'repository_runtime_snapshot':",
   "case 'runtime_performance_diagnostics':",
   /rebuildRepositoryProjection\s*\(/,
@@ -993,7 +1498,7 @@ forbid(
 );
 requireText('src/runtime/projections/controller-context.ts', 'controllerContextProjectionPayloadMatchesSourceIdentity');
 requireText('src/runtime/projections/controller-context.ts', 'sourceIdentityMatches');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
+requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
 forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
 forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
 requireText('src/runtime/execution/jobs/types.ts', 'requestId: string');
@@ -1099,7 +1604,7 @@ requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../s
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest,');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'selectDefaultWorkValidationChecks');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "callExecutionTool(ctx, 'work_finalize'");
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
@@ -1143,8 +1648,8 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpo
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
 requireText('src/runtime/release/release-gate.ts', 'releaseReady');
-requireText('adapters/mcp/transports/http.ts', "'/ready'");
-requireText('adapters/mcp/transports/http.ts', "'/repos/:repoId/health'");
+requireText('adapters/mcp/transports/http-observation.ts', "'/ready'");
+requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'AUTOMATED_REQUIREMENT_REQUIRES_CANDIDATE');
 requireText('adapters/mcp/tool-mapping/tools.ts', "export * from './legacy-tool-service'");
@@ -1153,6 +1658,7 @@ requireText('src/cli/mcp/tools.ts', '@deprecated Kernel V2 compatibility shim');
 for (const path of [
   'adapters/mcp/runtime-gateway/router.ts',
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',
@@ -1267,8 +1773,6 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/evidence/event-ledger.ts',
-  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/cli/repositories/locks.ts',
-  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
@@ -1383,7 +1887,7 @@ requireText('src/runtime/root/runtime.ts', 'readonly forgeInstanceId: string');
 requireText('src/runtime/root/runtime.ts', 'ensureForgeInstanceIdentity');
 requireText('src/runtime/root/entry.ts', 'forgeInstanceId: runtime.forgeInstanceId');
 requireText('adapters/mcp/transports/http.ts', 'forgeInstanceId: forgeInstance.instanceId');
-requireText('adapters/mcp/transports/http.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
+requireText('adapters/mcp/transports/http-observation.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
 forbid('adapters/mcp/transports/http.ts', /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/, 'MCP process identity must not be exposed as semantic Forge instanceId');
 requireText('adapters/mcp/transports/http.ts', "adapterId: 'mcp-http'");
 requireText('adapters/mcp/transports/session-registry.ts', 'connectionId: string');
@@ -1487,20 +1991,40 @@ for (const path of sourceFiles('src/runtime/plugins')) {
   if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-provider-registry.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
   forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
 }
-requireText('packages/plugin-runtime/browser/session-authority.ts', 'export interface BrowserSessionAuthorityPort');
-forbid('packages/plugin-runtime/browser/session-authority.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session authority port must not own persistence implementation');
-requireText('packages/plugin-runtime/browser/session-persistence.ts', 'export interface BrowserSessionPersistencePort');
-forbid('packages/plugin-runtime/browser/session-persistence.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session persistence port must remain storage-implementation neutral');
-requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthority');
-requireText('adapters/browser/session-authority.ts', "current?.value.status === 'tombstoned'");
-forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
+// Computer SurfaceTarget is the only durable interaction-target authority. Browser
+// compatibility may retain old type/API names, but it must not recreate a Browser
+// or Desktop authority/persistence owner alongside Computer.
+requireMissing('adapters/browser/session-authority.ts');
 requireMissing('adapters/browser/sqlite-session-authority.ts');
-requireText('src/runtime/root/browser-session-persistence.ts', 'createRuntimeBrowserSessionPersistence');
-requireText('src/runtime/root/browser-session-composition.ts', 'createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence())');
-requireText('src/runtime/plugins/browser-session-authority.ts', '@deprecated C0 compatibility shim');
-for (const path of sourceFiles('src/runtime/plugins')) {
-  if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
-  forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');
+requireMissing('packages/plugin-runtime/browser/session-persistence.ts');
+requireMissing('src/runtime/root/browser-session-persistence.ts');
+forbid('packages/plugin-runtime/browser/session-authority.ts', /\bBrowserSession(?:Authority|Persistence)Port\b/, 'Browser compatibility contracts must not expose a second durable authority or persistence port');
+requireText('src/runtime/plugins/browser-session-authority.ts', 'findComputerBackedBrowserSession');
+requireText('src/runtime/plugins/browser-session-authority.ts', 'saveComputerBackedBrowserSession');
+forbid('src/runtime/plugins/browser-session-authority.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'Browser compatibility facade must delegate semantic identity to Computer and cannot persist its own authority');
+requireText('src/runtime/plugins/browser-session-legacy-migration.ts', 'readLegacyBrowserSessionMigrationEntries');
+forbid('src/runtime/plugins/browser-session-legacy-migration.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'legacy Browser migration may read retired state but cannot mutate or recreate Browser durable authority');
+requireText('src/runtime/root/browser-session-composition.ts', 'BrowserSessionExecutionContext');
+forbid('src/runtime/root/browser-session-composition.ts', /\b(?:createBrowserSessionAuthority|runtimeBrowserSessionAuthority|createRuntimeBrowserSessionPersistence)\b/, 'Browser Runtime composition may carry execution context but cannot compose a second durable interaction authority');
+for (const path of [
+  ...sourceFiles('adapters/browser'),
+  ...sourceFiles('packages/plugin-runtime/browser'),
+  ...sourceFiles('src/runtime/plugins'),
+  ...sourceFiles('src/runtime/root'),
+]) {
+  if (path === 'src/runtime/plugins/browser-session-legacy-migration.ts') continue;
+  forbid(path, LEGACY_INTERACTION_AUTHORITY_OWNER_DECLARATION, 'Browser/Desktop durable interaction authority must live only in Computer target authority');
+}
+// Workflow Asset authority: editable content stays in files; machine registry stays metadata-only.
+requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'export interface WorkflowAssetDefinition');
+requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'workflowAssetContentDigest');
+requireText('src/runtime/control-plane/persistence/workflow-content-store.ts', 'ensureControllerWorkflowContentRoot');
+requireText('src/runtime/control-plane/persistence/workflow-registry-store.ts', "WORKFLOW_REGISTRY_NAMESPACE = 'workflow_registry'");
+requireText('src/runtime/control-plane/persistence/workflow-registry-store.ts', 'WORKFLOW_REGISTRY_CONTENT_IDENTITY_CHANGED');
+forbid('src/runtime/control-plane/persistence/workflow-registry-store.ts', /\b(?:prompts|scripts|templates|selectors|resources)\s*:/, 'Workflow machine registry must not persist editable prompt/script/template/selector/resource bodies');
+for (const path of sourceFiles('packages/workflow-runtime')) {
+  forbid(path, /xiaohongshu|douyin|instagram|reddit|facebook/i, 'generic Workflow Runtime contracts must not own site/business choreography');
+  forbid(path, /from\s+['"][^'"]*(?:src\/runtime|adapters)\//, 'Workflow Runtime package contracts must remain independent from Runtime/adapters implementation authority');
 }
 requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
 requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");

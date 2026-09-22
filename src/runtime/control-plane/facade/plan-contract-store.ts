@@ -23,9 +23,11 @@ import {
 import { readRequirement } from '../persistence/requirement-store';
 import {
   getWorkContract,
+  canonicalizeWorkContractForAuthority,
   isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   rebindPlanBoundWorkContract,
+  refreshPlanBoundWorkRevision,
   retirePlanBoundWorkContract,
   isTerminalWorkContractStatus,
   type WorkContract,
@@ -37,6 +39,8 @@ import {
   type PlanContractStatus,
   type PlanContractStore,
   type PlanObligationDisposition,
+  type PlanRevisionDraft,
+  type PlanRevisionRecord,
   type PlanStep,
   type PlanStepDeliveryCarry,
 } from './types';
@@ -85,6 +89,7 @@ export type AdmitPlanContractResult = PlanAdmissionResolution;
 
 export interface PlanContractSummary {
   planId: string;
+  revision: number;
   repoId: string;
   requirementId?: string;
   scopeKey: string;
@@ -106,6 +111,36 @@ function bounded(values: readonly string[] | undefined, limit: number, maxLength
 
 function normalizeScopeKey(value: string): string {
   return normalizePlanScopeKey(value) || 'unknown';
+}
+
+export function currentPlanRevision(plan: PlanContract): number {
+  const revision = Number(plan.revision);
+  return Number.isInteger(revision) && revision > 0 ? revision : 1;
+}
+
+interface PlanRevisionRecordStore {
+  schemaVersion: 1;
+  updatedAt: string;
+  revisions: PlanRevisionRecord[];
+}
+
+interface PlanExecutionBaselineRecord {
+  schemaVersion: 1;
+  repoId: string;
+  planId: string;
+  semanticSourceRevision: string;
+  executionBaselineRevision: string;
+  updatedAt: string;
+}
+
+interface PlanExecutionBaselineStore {
+  schemaVersion: 1;
+  updatedAt: string;
+  baselines: PlanExecutionBaselineRecord[];
+}
+
+function planRevisionRecordKey(planId: string, revision: number): string {
+  return `${sanitizeFileComponent(planId)}:r${revision}`;
 }
 
 function projectDependencyReadySteps(steps: readonly PlanStep[]): PlanStep[] {
@@ -287,6 +322,61 @@ function updatePlanContract(
   );
 }
 
+function updatePlanContractWithExecutionBaseline(
+  options: PlanContractStoreOptions,
+  planId: string,
+  mutate: (current: PlanContract, executionBaselineRevision: string) => { plan: PlanContract; executionBaselineRevision: string },
+): PlanContract {
+  const key = sanitizeFileComponent(planId);
+  const apply = (): PlanContract => {
+    const store = readPlanContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.planId === key);
+    if (index < 0) throw new Error(`plan contract not found: ${key}`);
+    const current = store.contracts[index]!;
+    const currentBaseline = getPlanExecutionBaselineRevision(options, current);
+    const next = mutate(current, currentBaseline);
+    const baseline: PlanExecutionBaselineRecord = {
+      schemaVersion: 1, repoId: current.repoId, planId: current.planId, semanticSourceRevision: next.plan.sourceRevision,
+      executionBaselineRevision: next.executionBaselineRevision.trim() || next.plan.sourceRevision, updatedAt: next.plan.updatedAt,
+    };
+    if (!sqliteBacked(options)) {
+      const baselineStore = readJsonFile<PlanExecutionBaselineStore>(planExecutionBaselineStorePath(options), {
+        schemaVersion: 1, updatedAt: baseline.updatedAt, baselines: [],
+      });
+      const baselineIndex = baselineStore.baselines.findIndex((record) => record.planId === key);
+      const baselines = [...baselineStore.baselines];
+      if (baselineIndex >= 0) baselines[baselineIndex] = baseline; else baselines.unshift(baseline);
+      writeJsonAtomic(planExecutionBaselineStorePath(options), { schemaVersion: 1, updatedAt: baseline.updatedAt, baselines });
+      const contracts = [...store.contracts];
+      contracts[index] = next.plan;
+      writePlanContractStore(options, { schemaVersion: 1, updatedAt: next.plan.updatedAt, contracts });
+      return next.plan;
+    }
+    return withControlPlaneTransaction(options.controllerHome!, (database) => {
+      const planRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId!, key);
+      if (!planRecord || JSON.stringify(planRecord.value) !== JSON.stringify(current)) throw new Error(`PLAN_EXECUTION_BASELINE_STALE: ${key}`);
+      const baselineRecord = readControlPlaneRecordWithinTransaction<PlanExecutionBaselineRecord>(database, 'plan_execution_baseline', options.repoId!, key);
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract', scope: options.repoId!, key, schemaVersion: 1, value: next.plan,
+        action: 'plan_contract_execution_claim', expectedRevision: planRecord.revision,
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_execution_baseline', scope: options.repoId!, key, schemaVersion: 1, value: baseline,
+        action: 'plan_execution_baseline_write', expectedRevision: baselineRecord?.revision ?? null,
+      });
+      return next.plan;
+    });
+  };
+  if (!options.controllerHome || !options.repoId) return apply();
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `plan-${key}` },
+    'plan-contract-execution-baseline',
+    apply,
+    15_000,
+  );
+}
+
 function assertRequirementReference(options: PlanContractStoreOptions, requirementId: string | undefined): void {
   const normalized = requirementId?.trim();
   if (!normalized || !options.controllerHome) return;
@@ -312,6 +402,152 @@ export function planContractRoot(location: PlanContractStoreLocation): string {
 
 export function planContractStorePath(location: PlanContractStoreLocation): string {
   return join(planContractRoot(location), 'index.json');
+}
+
+function planExecutionBaselineStorePath(location: PlanContractStoreLocation): string {
+  return join(planContractRoot(location), 'execution-baselines.json');
+}
+
+function readPlanExecutionBaselineRecord(options: PlanContractStoreOptions, planId: string): PlanExecutionBaselineRecord | undefined {
+  const key = sanitizeFileComponent(planId);
+  if (sqliteBacked(options)) {
+    return listControlPlaneRecords<PlanExecutionBaselineRecord>(options.controllerHome!, {
+      namespace: 'plan_execution_baseline', scope: options.repoId!, limit: 5_000,
+    }).map((record) => record.value).find((record) => record.planId === key);
+  }
+  const store = readJsonFile<PlanExecutionBaselineStore>(planExecutionBaselineStorePath(options), {
+    schemaVersion: 1, updatedAt: nowIso(options), baselines: [],
+  });
+  return store.baselines.find((record) => record.planId === key);
+}
+
+function persistedPlanExecutionBaselineRevision(options: PlanContractStoreOptions, plan: PlanContract): string {
+  const record = readPlanExecutionBaselineRecord(options, plan.planId);
+  return record?.semanticSourceRevision === plan.sourceRevision && record.executionBaselineRevision.trim()
+    ? record.executionBaselineRevision.trim()
+    : plan.sourceRevision;
+}
+
+export function getPlanExecutionBaselineRevision(options: PlanContractStoreOptions, planOrId: PlanContract | string): string {
+  const plan = typeof planOrId === 'string' ? getPlanContract(options, planOrId) : planOrId;
+  if (!plan) throw new Error(`plan contract not found: ${sanitizeFileComponent(String(planOrId))}`);
+  const activeStep = plan.steps.find((step) => (step.status === 'executing' || step.status === 'validating') && step.workId);
+  if (options.controllerHome && options.repoId && activeStep?.workId) {
+    const work = getWorkContract(options, activeStep.workId);
+    const frozenBase = work?.baseRevision?.trim();
+    if (frozenBase && work?.planId === plan.planId && work.planStepId === activeStep.id) return frozenBase;
+  }
+  return persistedPlanExecutionBaselineRevision(options, plan);
+}
+
+export function planRevisionStorePath(location: PlanContractStoreLocation): string {
+  return join(planContractRoot(location), 'revisions.json');
+}
+
+export function listPlanRevisionRecords(
+  options: PlanContractStoreOptions,
+  planId?: string,
+): PlanRevisionRecord[] {
+  const normalizedPlanId = planId ? sanitizeFileComponent(planId) : undefined;
+  if (!sqliteBacked(options)) {
+    const store = readJsonFile<PlanRevisionRecordStore>(planRevisionStorePath(options), { schemaVersion: 1, updatedAt: nowIso(options), revisions: [] });
+    return store.revisions
+      .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
+      .sort((left, right) => right.revision - left.revision);
+  }
+  return listControlPlaneRecords<PlanRevisionRecord>(options.controllerHome, {
+    namespace: 'plan_revision', scope: options.repoId, limit: 5_000,
+  }).map((record) => record.value)
+    .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
+    .sort((left, right) => right.revision - left.revision);
+}
+
+function appendJsonPlanRevisionRecord(options: PlanContractStoreOptions, record: PlanRevisionRecord): void {
+  const path = planRevisionStorePath(options);
+  const store = readJsonFile<PlanRevisionRecordStore>(path, { schemaVersion: 1, updatedAt: record.recordedAt, revisions: [] });
+  if (store.revisions.some((existing) => existing.planId === record.planId && existing.revision === record.revision)) {
+    throw new Error(`PLAN_REVISION_ALREADY_EXISTS: ${record.planId}:r${record.revision}`);
+  }
+  writeJsonAtomic(path, { schemaVersion: 1, updatedAt: record.recordedAt, revisions: [record, ...store.revisions] });
+}
+
+function planRevisionRecord(plan: PlanContract, input: { recordedAt: string; reason: string; requestedRevisionLabel?: string }): PlanRevisionRecord {
+  return {
+    schemaVersion: 1, repoId: plan.repoId, planId: plan.planId, revision: currentPlanRevision(plan),
+    requirementId: plan.requirementId, scopeKey: plan.scopeKey, sourceRevision: plan.sourceRevision, goal: plan.goal,
+    nonGoals: [...plan.nonGoals], assumptions: [...plan.assumptions], resolvedDecisions: [...plan.resolvedDecisions],
+    stopConditions: [...plan.stopConditions], replanConditions: [...plan.replanConditions], integrationStrategy: plan.integrationStrategy,
+    status: plan.status, steps: structuredClone(plan.steps), evidenceRefs: structuredClone(plan.evidenceRefs),
+    obligationDispositions: plan.obligationDispositions ? structuredClone(plan.obligationDispositions) : undefined,
+    recordedAt: input.recordedAt, reason: input.reason.slice(0, 1_000), requestedRevisionLabel: input.requestedRevisionLabel,
+  };
+}
+
+function revisionDraftFromCandidate(candidate: PlanContract, input: { requestedRevisionLabel?: string; createdAt: string; updatedAt: string }): PlanRevisionDraft {
+  return {
+    revision: currentPlanRevision(candidate), requestedRevisionLabel: input.requestedRevisionLabel,
+    sourceRevision: candidate.sourceRevision, goal: candidate.goal, nonGoals: [...candidate.nonGoals], assumptions: [...candidate.assumptions],
+    resolvedDecisions: [...candidate.resolvedDecisions], stopConditions: [...candidate.stopConditions], replanConditions: [...candidate.replanConditions],
+    integrationStrategy: candidate.integrationStrategy, steps: structuredClone(candidate.steps),
+    obligationDispositions: candidate.obligationDispositions ? structuredClone(candidate.obligationDispositions) : undefined,
+    deliveryCarries: candidate.deliveryCarries ? structuredClone(candidate.deliveryCarries) : undefined,
+    createdAt: input.createdAt, updatedAt: input.updatedAt,
+  };
+}
+
+function planFromPendingRevision(current: PlanContract, pending: PlanRevisionDraft, at: string): PlanContract {
+  return {
+    ...current, revision: pending.revision, sourceRevision: pending.sourceRevision, goal: pending.goal, nonGoals: [...pending.nonGoals],
+    assumptions: [...pending.assumptions], resolvedDecisions: [...pending.resolvedDecisions], stopConditions: [...pending.stopConditions],
+    replanConditions: [...pending.replanConditions], integrationStrategy: pending.integrationStrategy, steps: structuredClone(pending.steps),
+    obligationDispositions: pending.obligationDispositions ? structuredClone(pending.obligationDispositions) : undefined,
+    deliveryCarries: pending.deliveryCarries ? structuredClone(pending.deliveryCarries) : undefined,
+    pendingRevision: undefined, updatedAt: at,
+  };
+}
+
+function revisionContinuityErrors(current: PlanContract, candidate: PlanContract, allPlans: readonly PlanContract[]): string[] {
+  const validationCandidate: PlanContract = { ...candidate, supersedes: [current.planId] };
+  return obligationContinuityErrors(validationCandidate, allPlans);
+}
+
+function retireResolvedRevisionObligationDispositions(current: PlanContract, candidate: PlanContract): PlanContract {
+  const dispositions = candidate.obligationDispositions ?? [];
+  if (dispositions.length === 0) return candidate;
+  const completed = new Set(listPlanObligations(current, 'completed_steps').map((obligation) => obligation.obligationId));
+  if (completed.size === 0) return candidate;
+  const retained = dispositions.filter((disposition) => !(disposition.predecessorPlanId === current.planId && completed.has(disposition.obligationId)));
+  return retained.length === dispositions.length ? candidate : { ...candidate, obligationDispositions: retained };
+}
+
+function assertRevisionScopeAuthority(current: PlanContract, allPlans: readonly PlanContract[]): void {
+  const conflicting = allPlans.find((plan) => plan.planId !== current.planId
+    && !isTerminalPlanContractStatus(plan.status) && plan.scopeKey === current.scopeKey);
+  if (conflicting) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${current.scopeKey}:${conflicting.planId}`);
+}
+
+function deriveRequiredRevisionDeliveryCarries(
+  options: PlanContractStoreOptions,
+  current: PlanContract,
+  candidate: PlanContract,
+  at: string,
+): PlanStepDeliveryCarry[] {
+  const carries = derivePlanStepDeliveryCarries(options, current, candidate, at);
+  // A validating projection backed by a still-completed Work but missing its
+  // immutable completion receipt is corrupt and cannot be silently downgraded.
+  // A changed execution contract, failed/cancelled Work, or a successor source
+  // that does not contain the delivered revision simply means "do not carry".
+  for (const previousStep of current.steps) {
+    if (previousStep.status !== 'validating' || !previousStep.workId) continue;
+    const nextStep = candidate.steps.find((step) => step.id === previousStep.id);
+    if (!nextStep || !samePlanStepExecutionContract(previousStep, nextStep)) continue;
+    if (!acceptanceChangesExplicitlyReconciled(current, previousStep, candidate, nextStep)) continue;
+    const work = getWorkContract(options, previousStep.workId);
+    if (work?.status === 'completed' && !work.completionReceipt) {
+      throw new Error(`PLAN_DELIVERY_CARRY_RECEIPT_REQUIRED: ${current.planId}/${previousStep.id}`);
+    }
+  }
+  return carries;
 }
 
 export function emptyPlanContractStore(updatedAt: string): PlanContractStore {
@@ -373,6 +609,9 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
         options.repoId,
         contract.planId,
       );
+      // SQLite is authoritative per Plan row. A sibling Plan appearing in an
+      // aggregate compatibility snapshot is not itself a mutation.
+      if (current && JSON.stringify(current.value) === JSON.stringify(contract)) continue;
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'plan_contract',
         scope: options.repoId,
@@ -461,6 +700,7 @@ function buildPlanContract(input: CreatePlanContractInput, at: string): PlanCont
   return {
     schemaVersion: 1,
     planId,
+    revision: 1,
     repoId: input.repoId,
     requirementId: input.requirementId?.trim().slice(0, 160) || undefined,
     scopeKey: normalizeScopeKey(input.scopeKey),
@@ -579,12 +819,31 @@ function deliveryCarryForStep(
   successorStep: PlanStep,
   recordedAt: string,
 ): PlanStepDeliveryCarry | undefined {
-  if (predecessorStep.status !== 'validating' || !predecessorStep.workId) return undefined;
   if (!samePlanStepExecutionContract(predecessorStep, successorStep)) return undefined;
   if (!acceptanceChangesExplicitlyReconciled(predecessorPlan, predecessorStep, successorPlan, successorStep)) return undefined;
   if (!predecessorPlan.requirementId || successorPlan.requirementId !== predecessorPlan.requirementId) return undefined;
 
-  const work = getWorkContract(options, predecessorStep.workId);
+  if (!options.controllerHome || !options.repoId) return undefined;
+  const exactHistoricalWorks = listControlPlaneRecords<WorkContract>(
+    options.controllerHome,
+    { namespace: 'work_contract', scope: options.repoId, limit: 5_000 },
+  ).map((record) => record.value).filter((candidate) =>
+    candidate.status === 'completed'
+    && candidate.planId === predecessorPlan.planId
+    && candidate.planStepId === predecessorStep.id
+    && candidate.requirementId === predecessorPlan.requirementId
+    && candidate.planSourceRevision === predecessorPlan.sourceRevision
+    && candidate.objective === predecessorStep.objective
+    && sameOrderedStrings(candidate.acceptanceCriteria, predecessorStep.acceptanceCriteria)
+    && sameOrderedStrings(candidate.allowedPaths, predecessorStep.allowedPaths)
+    && sameOrderedStrings(candidate.forbiddenPaths, predecessorStep.forbiddenPaths)
+    && sameOrderedStrings(candidate.checks, predecessorStep.checks)
+  );
+  const work = predecessorStep.workId
+    ? getWorkContract(options, predecessorStep.workId)
+    : exactHistoricalWorks.length === 1
+      ? exactHistoricalWorks[0]
+      : undefined;
   if (!work
     || work.status !== 'completed'
     || work.phase !== 'cleanup'
@@ -700,35 +959,54 @@ function replacePlanContractUnlocked(
   const predecessorKey = sanitizeFileComponent(predecessorId);
   const predecessorIndex = store.contracts.findIndex((contract) => contract.planId === predecessorKey);
   if (predecessorIndex < 0) throw new Error(`plan contract not found: ${predecessorKey}`);
-  const predecessor = store.contracts[predecessorIndex]!;
-  if (!isPlanExtensionPredecessor(predecessor)) throw new Error(`plan contract ${predecessor.planId} is terminal (${predecessor.status})`);
-  const successorDraft = {
-    ...buildPlanContract(input, at),
-    supersedes: [predecessor.planId],
-  };
-  if (successorDraft.planId === predecessor.planId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
-  if (successorDraft.repoId !== predecessor.repoId) throw new Error('PLAN_SUCCESSOR_REPOSITORY_MISMATCH');
-  const continuityErrors = obligationContinuityErrors(successorDraft, store.contracts);
-  if (continuityErrors.length > 0) throw new Error(`PLAN_OBLIGATION_CONTINUITY_REQUIRED: ${continuityErrors.join('; ')}`);
-  if (store.contracts.some((existing) => existing.planId === successorDraft.planId)) {
-    throw new Error(`plan contract already exists: ${successorDraft.planId}`);
+  const current = store.contracts[predecessorIndex]!;
+  if (!isPlanExtensionPredecessor(current)) throw new Error(`plan contract ${current.planId} is terminal (${current.status})`);
+
+  // Before approval Plan identity is already provisional, so an extension simply
+  // repairs that exact draft instead of minting an r2/r3 entity.
+  if (current.status === 'draft') {
+    const draftCandidate = buildPlanContract({
+      ...input,
+      planId: current.planId,
+      repoId: current.repoId,
+      requirementId: current.requirementId,
+      scopeKey: current.scopeKey,
+    }, at);
+    const continuityErrors = revisionContinuityErrors(current, draftCandidate, store.contracts);
+    if (continuityErrors.length > 0) {
+      throw new Error(`PLAN_OBLIGATION_CONTINUITY_REQUIRED: ${continuityErrors.join('; ')}`);
+    }
+    return repairDraftPlanContractUnlocked(options, current.planId, {
+      scopeKey: input.scopeKey, sourceRevision: input.sourceRevision, goal: input.goal, nonGoals: input.nonGoals, assumptions: input.assumptions,
+      resolvedDecisions: input.resolvedDecisions, stopConditions: input.stopConditions, replanConditions: input.replanConditions,
+      integrationStrategy: input.integrationStrategy, steps: input.steps, obligationDispositions: input.obligationDispositions,
+    });
   }
-  const conflictingScope = store.contracts.find((existing, index) => index !== predecessorIndex
-    && !isTerminalPlanContractStatus(existing.status)
-    && existing.scopeKey === successorDraft.scopeKey);
-  if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${successorDraft.scopeKey}:${conflictingScope.planId}`);
-  const deliveryCarries = derivePlanStepDeliveryCarries(options, predecessor, successorDraft, at);
-  const successor: PlanContract = deliveryCarries.length > 0 ? { ...successorDraft, deliveryCarries } : successorDraft;
+  if (current.pendingRevision) throw new Error(`PLAN_REVISION_DRAFT_ALREADY_EXISTS: ${current.planId}:r${current.pendingRevision.revision}`);
+  if (input.requirementId?.trim() !== current.requirementId?.trim()) throw new Error('PLAN_REVISION_REQUIREMENT_IDENTITY_MISMATCH');
+  if (normalizeScopeKey(input.scopeKey) !== current.scopeKey) throw new Error(`PLAN_REVISION_SCOPE_IDENTITY_MISMATCH: ${current.scopeKey}`);
+
+  const candidate = {
+    ...buildPlanContract({ ...input, planId: current.planId, repoId: current.repoId, requirementId: current.requirementId, scopeKey: current.scopeKey }, at),
+    revision: currentPlanRevision(current) + 1,
+    supersedes: current.supersedes ? [...current.supersedes] : undefined,
+  };
+  const contentErrors = draftContentErrors(candidate);
+  if (contentErrors.length > 0) throw new Error(`PLAN_REVISION_DRAFT_INVALID: ${contentErrors.join('; ')}`);
+  const continuityErrors = revisionContinuityErrors(current, candidate, store.contracts);
+  if (continuityErrors.length > 0) throw new Error(`PLAN_OBLIGATION_CONTINUITY_REQUIRED: ${continuityErrors.join('; ')}`);
+  assertRevisionScopeAuthority(current, store.contracts);
+  const deliveryCarries = deriveRequiredRevisionDeliveryCarries(options, current, candidate, at);
+  const stagedCandidate = deliveryCarries.length > 0 ? { ...candidate, deliveryCarries } : candidate;
+  const requestedRevisionLabel = sanitizeFileComponent(input.planId);
+  const pendingRevision = revisionDraftFromCandidate(stagedCandidate, {
+    requestedRevisionLabel: requestedRevisionLabel !== current.planId ? requestedRevisionLabel : undefined, createdAt: at, updatedAt: at,
+  });
+  const next: PlanContract = { ...current, status: 'replanning', pendingRevision, updatedAt: at };
   const contracts = [...store.contracts];
-  const staged = hasCoherentActivePlanBoundWork(options, predecessor);
-  const predecessorNext: PlanContract = staged
-    ? { ...predecessor, status: 'replanning', updatedAt: at }
-    : { ...predecessor, status: 'superseded', supersededBy: successor.planId, supersessionReason: 'extend_existing', updatedAt: at };
-  contracts[predecessorIndex] = predecessorNext;
-  const nextStore = { schemaVersion: 1 as const, updatedAt: at, contracts: [successor, ...contracts] };
-  if (staged) writePlanContractStore(options, nextStore);
-  else writePlanSupersessionWithWorkRetirement(options, nextStore, predecessorNext, successor, at);
-  return successor;
+  contracts[predecessorIndex] = next;
+  writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+  return next;
 }
 
 function repairDraftPlanContractUnlocked(
@@ -741,9 +1019,11 @@ function repairDraftPlanContractUnlocked(
   const index = store.contracts.findIndex((contract) => contract.planId === key);
   if (index < 0) throw new Error(`plan contract not found: ${key}`);
   const current = store.contracts[index]!;
-  if (current.status !== 'draft') throw new Error(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${current.planId}:${current.status}`);
-  if (input.expectedSourceRevision !== undefined && current.sourceRevision !== input.expectedSourceRevision) {
-    throw new Error(`PLAN_DRAFT_REPAIR_STALE_SOURCE: ${current.planId}:expected=${input.expectedSourceRevision}:actual=${current.sourceRevision}`);
+  const pending = current.status === 'replanning' ? current.pendingRevision : undefined;
+  if (current.status !== 'draft' && !pending) throw new Error(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${current.planId}:${current.status}`);
+  const observedSourceRevision = pending?.sourceRevision ?? current.sourceRevision;
+  if (input.expectedSourceRevision !== undefined && observedSourceRevision !== input.expectedSourceRevision) {
+    throw new Error(`PLAN_DRAFT_REPAIR_STALE_SOURCE: ${current.planId}:expected=${input.expectedSourceRevision}:actual=${observedSourceRevision}`);
   }
   assertRequirementReference(options, current.requirementId);
   const at = nowIso(options);
@@ -765,6 +1045,24 @@ function repairDraftPlanContractUnlocked(
   const continuityErrors = obligationContinuityErrors(candidateWithLineage, store.contracts);
   if (continuityErrors.length > 0) {
     throw new Error(`PLAN_DRAFT_REPAIR_INVALID: ${continuityErrors.join('; ')}`);
+  }
+  if (pending) {
+    if (normalizeScopeKey(input.scopeKey) !== current.scopeKey) throw new Error(`PLAN_REVISION_SCOPE_IDENTITY_MISMATCH: ${current.scopeKey}`);
+    assertRevisionScopeAuthority(current, store.contracts);
+    let revisionCandidate: PlanContract = { ...candidateWithLineage, revision: pending.revision, supersedes: current.supersedes ? [...current.supersedes] : undefined };
+    revisionCandidate = retireResolvedRevisionObligationDispositions(current, revisionCandidate);
+    const revisionErrors = revisionContinuityErrors(current, revisionCandidate, store.contracts);
+    if (revisionErrors.length > 0) throw new Error(`PLAN_DRAFT_REPAIR_INVALID: ${revisionErrors.join('; ')}`);
+    const deliveryCarries = deriveRequiredRevisionDeliveryCarries(options, current, revisionCandidate, at);
+    if (deliveryCarries.length > 0) revisionCandidate = { ...revisionCandidate, deliveryCarries };
+    const repairedPending = revisionDraftFromCandidate(revisionCandidate, {
+      requestedRevisionLabel: pending.requestedRevisionLabel, createdAt: pending.createdAt, updatedAt: at,
+    });
+    const repairedCurrent: PlanContract = { ...current, pendingRevision: repairedPending, updatedAt: at };
+    const contracts = [...store.contracts];
+    contracts[index] = repairedCurrent;
+    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+    return repairedCurrent;
   }
   const explicitPredecessors = new Set(candidateWithLineage.supersedes ?? []);
   const conflictingScope = store.contracts.find((existing, candidateIndex) => candidateIndex !== index
@@ -833,8 +1131,8 @@ function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: Adm
     relatedPlanId: input.relatedPlanId,
   });
   if (resolution.admissionDecision === 'extend_existing' && resolution.plan) {
-    const successor = replacePlanContractUnlocked(options, resolution.plan.planId, input);
-    return { ...resolution, admissionDecision: 'create_new', plan: successor };
+    const revised = replacePlanContractUnlocked(options, resolution.plan.planId, input);
+    return { ...resolution, admissionDecision: 'reuse_existing', plan: revised };
   }
   if (resolution.admissionDecision !== 'create_new') return resolution;
   return { ...resolution, plan: createPlanContractUnlocked(options, input) };
@@ -868,6 +1166,7 @@ export function listPlanContracts(options: PlanContractStoreOptions & { status?:
 export function summarizePlanContract(plan: PlanContract): PlanContractSummary {
   return {
     planId: plan.planId,
+    revision: currentPlanRevision(plan),
     repoId: plan.repoId,
     requirementId: plan.requirementId,
     scopeKey: plan.scopeKey,
@@ -899,12 +1198,123 @@ function approvalErrors(plan: PlanContract, allPlans: readonly PlanContract[]): 
   return [...new Set(errors)];
 }
 
+function approvePendingPlanRevisionUnlocked(
+  options: PlanContractStoreOptions & { controllerHome: string; repoId: string },
+  current: PlanContract,
+): PlanContract {
+  const pending = current.pendingRevision;
+  if (!pending) throw new Error('PLAN_PENDING_REVISION_REQUIRED');
+  const at = nowIso(options);
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, current.planId);
+    if (!currentRecord?.value.pendingRevision) throw new Error('PLAN_PENDING_REVISION_STALE');
+    const predecessor = currentRecord.value;
+    const staged = predecessor.pendingRevision!;
+    const archived = planRevisionRecord(predecessor, { recordedAt: at, reason: 'approved Plan revision', requestedRevisionLabel: staged.requestedRevisionLabel });
+    let candidate = planFromPendingRevision(predecessor, staged, at);
+    candidate = { ...candidate, status: 'approved', steps: projectDependencyReadySteps(candidate.steps) };
+    const allPlans = readPlanContractStore(options).contracts;
+    assertRevisionScopeAuthority(predecessor, allPlans);
+    const continuityErrors = revisionContinuityErrors(predecessor, candidate, allPlans);
+    if (continuityErrors.length > 0) throw new Error(`PLAN_OBLIGATION_CONTINUITY_REQUIRED: ${continuityErrors.join('; ')}`);
+    const revalidatedCarries = deriveRequiredRevisionDeliveryCarries(options, predecessor, candidate, at);
+    const stagedCarryKeys = new Set((staged.deliveryCarries ?? []).map((carry) => `${carry.successorStepId}:${carry.workId}:${carry.completionReceiptId}`));
+    const revalidatedCarryKeys = new Set(revalidatedCarries.map((carry) => `${carry.successorStepId}:${carry.workId}:${carry.completionReceiptId}`));
+    for (const carry of revalidatedCarries) {
+      const key = `${carry.successorStepId}:${carry.workId}:${carry.completionReceiptId}`;
+      if (!stagedCarryKeys.has(key)) throw new Error(`PLAN_DELIVERY_CARRY_STAGING_MISMATCH: ${carry.successorStepId}`);
+    }
+    for (const carry of staged.deliveryCarries ?? []) {
+      const key = `${carry.successorStepId}:${carry.workId}:${carry.completionReceiptId}`;
+      if (!revalidatedCarryKeys.has(key)) throw new Error(`PLAN_DELIVERY_CARRY_INVALID: ${carry.successorStepId}`);
+    }
+
+    const workWrites: Array<{ value: WorkContract; revision: number; action: string }> = [];
+    let hasExecuting = false;
+    let hasValidating = false;
+    const steps = [...candidate.steps];
+    // Preserve already completed immutable semantics without replay.
+    for (let index = 0; index < steps.length; index += 1) {
+      const nextStep = steps[index]!;
+      const previousStep = predecessor.steps.find((step) => step.id === nextStep.id);
+      if (!previousStep) continue;
+      if (previousStep.status === 'completed' && samePlanStepExecutionContract(previousStep, nextStep)
+        && sameOrderedStrings(previousStep.acceptanceCriteria, nextStep.acceptanceCriteria)) {
+        steps[index] = { ...nextStep, status: 'completed', workId: previousStep.workId, evidenceRefs: previousStep.evidenceRefs };
+      } else {
+        const carry = deliveryCarryForStep(options, predecessor, previousStep, candidate, nextStep, at);
+        if (carry) {
+          steps[index] = {
+            ...nextStep,
+            status: 'validating',
+            workId: carry.workId,
+            evidenceRefs: previousStep.evidenceRefs,
+          };
+          hasValidating = true;
+        }
+      }
+    }
+    candidate = { ...candidate, steps };
+
+    const workRecords = listAllControlPlaneRecordsWithinTransaction<WorkContract>(database, { namespace: 'work_contract', scope: options.repoId })
+      .filter((record) => record.value.planId === predecessor.planId && !isTerminalWorkContractStatus(record.value.status));
+    for (const workRecord of workRecords) {
+      const previousStep = predecessor.steps.find((step) => workMatchesPlanStep(workRecord.value, predecessor, step));
+      const nextIndex = previousStep ? candidate.steps.findIndex((step) => step.id === previousStep.id) : -1;
+      const nextStep = nextIndex >= 0 ? candidate.steps[nextIndex] : undefined;
+      if (previousStep && nextStep && previousStep.workId === workRecord.value.workId
+        && samePlanStepExecutionContract(previousStep, nextStep)
+        && sameOrderedStrings(previousStep.acceptanceCriteria, nextStep.acceptanceCriteria)) {
+        const refreshed = refreshPlanBoundWorkRevision(workRecord.value, {
+          planId: predecessor.planId, planStepId: nextStep.id, planSourceRevision: candidate.sourceRevision,
+          allowedPaths: nextStep.allowedPaths, forbiddenPaths: nextStep.forbiddenPaths, checks: nextStep.checks,
+          recordedAt: at, reason: `Plan revision r${currentPlanRevision(predecessor)} -> r${staged.revision} preserved the exact Work contract.`,
+        });
+        const nextSteps = [...candidate.steps];
+        nextSteps[nextIndex] = { ...nextStep, status: 'executing', workId: refreshed.workId, evidenceRefs: previousStep.evidenceRefs };
+        candidate = { ...candidate, steps: nextSteps };
+        hasExecuting = true;
+        workWrites.push({ value: refreshed, revision: workRecord.revision, action: 'plan_revision_work_refreshed' });
+      } else {
+        const retired = retirePlanBoundWorkContract(workRecord.value, {
+          predecessorPlanId: predecessor.planId, recordedAt: at, reason: `Plan revision r${currentPlanRevision(predecessor)} -> r${staged.revision} changed the frozen Work execution contract.`,
+        });
+        workWrites.push({ value: retired, revision: workRecord.revision, action: 'plan_revision_work_retired' });
+      }
+    }
+    const allCompleted = candidate.steps.length > 0 && candidate.steps.every((step) => step.status === 'completed');
+    candidate = { ...candidate, deliveryCarries: undefined, status: hasExecuting ? 'executing' : hasValidating ? 'verifying' : allCompleted ? 'ready_to_finalize' : 'approved', updatedAt: at };
+    const revisionKey = planRevisionRecordKey(predecessor.planId, currentPlanRevision(predecessor));
+    if (readControlPlaneRecordWithinTransaction<PlanRevisionRecord>(database, 'plan_revision', options.repoId, revisionKey)) {
+      throw new Error(`PLAN_REVISION_ALREADY_EXISTS: ${predecessor.planId}:r${currentPlanRevision(predecessor)}`);
+    }
+    writeControlPlaneRecordWithinTransaction(database, { namespace: 'plan_revision', scope: options.repoId, key: revisionKey, schemaVersion: 1, value: archived, action: 'plan_revision_archived', expectedRevision: null });
+    writeControlPlaneRecordWithinTransaction(database, { namespace: 'plan_contract', scope: options.repoId, key: predecessor.planId, schemaVersion: 1, value: candidate, action: 'plan_revision_approved', expectedRevision: currentRecord.revision });
+    for (const write of workWrites) {
+      writeControlPlaneRecordWithinTransaction(database, { namespace: 'work_contract', scope: options.repoId, key: write.value.workId, schemaVersion: 2, value: write.value, action: write.action, expectedRevision: write.revision });
+    }
+    return candidate;
+  });
+}
+
 function approvePlanContractUnlocked(options: PlanContractStoreOptions, planId: string): PlanContract {
   const store = readPlanContractStore(options);
   const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
   if (index < 0) throw new Error(`plan contract not found: ${sanitizeFileComponent(planId)}`);
   const current = store.contracts[index];
   assertRequirementReference(options, current.requirementId);
+  if (current.status === 'replanning' && current.pendingRevision) {
+    if (!sqliteBacked(options)) {
+      const at = nowIso(options);
+      const candidate = { ...planFromPendingRevision(current, current.pendingRevision, at), status: 'approved' as const };
+      appendJsonPlanRevisionRecord(options, planRevisionRecord(current, { recordedAt: at, reason: 'approved Plan revision', requestedRevisionLabel: current.pendingRevision.requestedRevisionLabel }));
+      const contracts = [...store.contracts];
+      contracts[index] = candidate;
+      writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+      return candidate;
+    }
+    return approvePendingPlanRevisionUnlocked(options, current);
+  }
   if (current.status !== 'draft' && current.status !== 'reviewing') throw new Error(`plan contract ${current.planId} cannot be approved from ${current.status}`);
   const errors = approvalErrors(current, store.contracts);
   if (errors.length > 0) throw new Error(`plan contract ${current.planId} cannot be approved: ${errors.join('; ')}`);
@@ -1029,22 +1439,22 @@ export interface ReplanActivePlanBoundWorkScopeInput {
   planId: string;
   stepId: string;
   workId: string;
-  successorPlanId: string;
+  requestedRevisionLabel: string;
   sourceRevision: string;
   allowedPaths: string[];
   reason: string;
 }
 
 export interface ReplanActivePlanBoundWorkScopeResult {
-  predecessor: PlanContract;
-  successor: PlanContract;
+  priorPlan: PlanContract;
+  currentPlan: PlanContract;
   work: WorkContract;
 }
 
 /**
- * Atomically replace one executing Plan authority and move its exact active
- * Work binding to the successor. This repair is intentionally scope-only:
- * objective, acceptance, checks, forbidden paths, dependencies, and Work
+ * Atomically advance one executing Plan revision while retaining its exact
+ * active Work binding. This repair is intentionally scope-only: objective,
+ * acceptance, checks, forbidden paths, dependencies, Plan identity, and Work
  * identity remain unchanged; allowed paths may only widen.
  */
 export function replanActivePlanBoundWorkScope(
@@ -1052,39 +1462,36 @@ export function replanActivePlanBoundWorkScope(
   input: ReplanActivePlanBoundWorkScopeInput,
 ): ReplanActivePlanBoundWorkScopeResult {
   if (!sqliteBacked(options)) throw new Error('PLAN_WORK_REPLAN_REQUIRES_CONTROLLER_STORE');
-  const predecessorId = sanitizeFileComponent(input.planId);
-  const successorId = sanitizeFileComponent(input.successorPlanId);
+  const planId = sanitizeFileComponent(input.planId);
+  const requestedRevisionLabel = sanitizeFileComponent(input.requestedRevisionLabel);
   const stepId = sanitizeFileComponent(input.stepId);
   const workId = sanitizeFileComponent(input.workId);
   const sourceRevision = input.sourceRevision.trim();
   const reason = input.reason.trim();
-  if (!successorId || successorId === 'unknown' || successorId === predecessorId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
+  if (!requestedRevisionLabel || requestedRevisionLabel === 'unknown' || requestedRevisionLabel === planId) throw new Error('PLAN_REVISION_LABEL_MUST_CHANGE');
   if (!sourceRevision) throw new Error('PLAN_WORK_REPLAN_SOURCE_REVISION_REQUIRED');
   if (!reason) throw new Error('PLAN_WORK_REPLAN_REASON_REQUIRED');
   const requestedAllowedPaths = [...new Set(input.allowedPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
 
   return withPlanAdmissionLock(options, () => {
-    const observed = getPlanContract(options, predecessorId);
-    if (!observed) throw new Error(`plan contract not found: ${predecessorId}`);
+    const observed = getPlanContract(options, planId);
+    if (!observed) throw new Error(`plan contract not found: ${planId}`);
     assertRequirementReference(options, observed.requirementId);
     return withControlPlaneTransaction(options.controllerHome, (database) => {
-      const predecessorRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, predecessorId);
-      if (!predecessorRecord) throw new Error(`plan contract not found: ${predecessorId}`);
-      const predecessor = predecessorRecord.value;
-      if (predecessor.supersededBy || isTerminalPlanContractStatus(predecessor.status)) {
-        throw new Error(`PLAN_WORK_REPLAN_PREDECESSOR_TERMINAL: ${predecessor.planId}:${predecessor.status}`);
+      const planRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, planId);
+      if (!planRecord) throw new Error(`plan contract not found: ${planId}`);
+      const priorPlan = planRecord.value;
+      if (priorPlan.supersededBy || isTerminalPlanContractStatus(priorPlan.status)) {
+        throw new Error(`PLAN_WORK_REPLAN_PREDECESSOR_TERMINAL: ${priorPlan.planId}:${priorPlan.status}`);
       }
-      if (predecessor.status !== 'executing' && predecessor.status !== 'replanning') {
-        throw new Error(`PLAN_WORK_REPLAN_STATUS_INVALID: ${predecessor.planId}:${predecessor.status}`);
+      if (priorPlan.status !== 'executing' && priorPlan.status !== 'replanning') {
+        throw new Error(`PLAN_WORK_REPLAN_STATUS_INVALID: ${priorPlan.planId}:${priorPlan.status}`);
       }
-      if (readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, successorId)) {
-        throw new Error(`plan contract already exists: ${successorId}`);
-      }
-      const stepIndex = predecessor.steps.findIndex((candidate) => candidate.id === stepId);
+      const stepIndex = priorPlan.steps.findIndex((candidate) => candidate.id === stepId);
       if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${stepId}`);
-      const step = predecessor.steps[stepIndex]!;
+      const step = priorPlan.steps[stepIndex]!;
       if (step.status !== 'executing' || step.workId !== workId) {
-        throw new Error(`PLAN_WORK_REPLAN_STEP_BINDING_MISMATCH: ${predecessor.planId}/${stepId}:${step.status}:${step.workId ?? 'none'}`);
+        throw new Error(`PLAN_WORK_REPLAN_STEP_BINDING_MISMATCH: ${priorPlan.planId}/${stepId}:${step.status}:${step.workId ?? 'none'}`);
       }
       for (const path of step.allowedPaths) {
         if (!requestedAllowedPaths.includes(path)) throw new Error(`PLAN_WORK_REPLAN_SCOPE_NARROWING_FORBIDDEN: ${path}`);
@@ -1093,67 +1500,58 @@ export function replanActivePlanBoundWorkScope(
       if (!widened) throw new Error('PLAN_WORK_REPLAN_SCOPE_NOT_WIDENED');
       const workRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, workId);
       if (!workRecord) throw new Error(`work contract not found: ${workId}`);
-      const work = workRecord.value;
-      if (work.requirementId !== predecessor.requirementId) throw new Error('PLAN_WORK_REPLAN_REQUIREMENT_MISMATCH');
+      // Replan runs inside the Plan + Work transaction. Normalize the exact
+      // row read there so a legacy Work missing the first-class review
+      // checkpoint is migrated by the canonical Work authority before the
+      // scope-only refresh validates phase evidence.
+      const work = canonicalizeWorkContractForAuthority(workRecord.value);
+      if (work.requirementId !== priorPlan.requirementId) throw new Error('PLAN_WORK_REPLAN_REQUIREMENT_MISMATCH');
       const at = nowIso(options);
-      const steps = [...predecessor.steps];
+      const priorRevision = currentPlanRevision(priorPlan);
+      const archived = planRevisionRecord(priorPlan, { recordedAt: at, reason, requestedRevisionLabel });
+      const steps = [...priorPlan.steps];
       steps[stepIndex] = {
         ...step,
         allowedPaths: requestedAllowedPaths,
         evidenceRefs: [{
-          title: 'scope-only Plan replan',
-          summary: `${predecessor.planId} -> ${successorId}: ${reason}`.slice(0, 2_000),
+          title: 'scope-only Plan revision',
+          summary: `${priorPlan.planId} r${priorRevision} -> r${priorRevision + 1}: ${reason}`.slice(0, 2_000),
           detailLevel: 'summary' as const,
         }, ...step.evidenceRefs].slice(0, 20),
       };
-      const successor: PlanContract = {
-        ...predecessor,
-        planId: successorId,
+      const currentPlan: PlanContract = {
+        ...priorPlan,
+        revision: priorRevision + 1,
         sourceRevision,
         status: 'executing',
         steps,
-        supersedes: [predecessor.planId],
-        supersededBy: undefined,
-        supersessionReason: undefined,
         evidenceRefs: [{
-          title: 'active Work scope replanned',
-          summary: `${predecessor.planId}/${stepId} retained exact Work ${workId}; allowed-path authority widened without changing semantic acceptance or machine checks.`.slice(0, 2_000),
+          title: 'active Work Plan revision advanced',
+          summary: `${priorPlan.planId} retained exact Work ${workId}; current revision advanced r${priorRevision} -> r${priorRevision + 1} without creating another Plan authority.`.slice(0, 2_000),
           detailLevel: 'summary' as const,
-        }, ...predecessor.evidenceRefs].slice(0, 20),
-        createdAt: at,
+        }, ...priorPlan.evidenceRefs].slice(0, 20),
         updatedAt: at,
       };
-      const predecessorNext: PlanContract = {
-        ...predecessor,
-        status: 'superseded',
-        supersededBy: successorId,
-        supersessionReason: reason.slice(0, 500),
-        updatedAt: at,
-      };
-      const workNext = rebindPlanBoundWorkContract(work, {
-        predecessorPlanId: predecessor.planId,
-        successorPlanId: successorId,
-        planStepId: stepId,
-        planSourceRevision: sourceRevision,
-        allowedPaths: requestedAllowedPaths,
-        forbiddenPaths: step.forbiddenPaths,
-        checks: step.checks,
-        recordedAt: at,
-        reason,
+      const workNext = refreshPlanBoundWorkRevision(work, {
+        planId: priorPlan.planId, planStepId: stepId, planSourceRevision: sourceRevision,
+        allowedPaths: requestedAllowedPaths, forbiddenPaths: step.forbiddenPaths, checks: step.checks, recordedAt: at, reason,
+      });
+      const revisionKey = planRevisionRecordKey(priorPlan.planId, priorRevision);
+      const existingRevision = readControlPlaneRecordWithinTransaction<PlanRevisionRecord>(database, 'plan_revision', options.repoId, revisionKey);
+      if (existingRevision) throw new Error(`PLAN_REVISION_ALREADY_EXISTS: ${priorPlan.planId}:r${priorRevision}`);
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_revision', scope: options.repoId, key: revisionKey, schemaVersion: 1,
+        value: archived, action: 'plan_revision_archived', expectedRevision: null,
       });
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'plan_contract', scope: options.repoId, key: predecessor.planId, schemaVersion: 1,
-        value: predecessorNext, action: 'plan_work_scope_replan_predecessor', expectedRevision: predecessorRecord.revision,
-      });
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'plan_contract', scope: options.repoId, key: successor.planId, schemaVersion: 1,
-        value: successor, action: 'plan_work_scope_replan_successor', expectedRevision: null,
+        namespace: 'plan_contract', scope: options.repoId, key: priorPlan.planId, schemaVersion: 1,
+        value: currentPlan, action: 'plan_current_revision_advanced', expectedRevision: planRecord.revision,
       });
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'work_contract', scope: options.repoId, key: workNext.workId, schemaVersion: 2,
-        value: workNext, action: 'plan_work_scope_replan_work_rebind', expectedRevision: workRecord.revision,
+        value: workNext, action: 'plan_revision_work_refreshed', expectedRevision: workRecord.revision,
       });
-      return { predecessor: predecessorNext, successor, work: workNext };
+      return { priorPlan, currentPlan, work: workNext };
     });
   });
 }
@@ -1167,25 +1565,30 @@ export function claimPlanStepForWork(
   options: PlanContractStoreOptions,
   input: { planId: string; stepId: string; workId: string; sourceRevision: string },
 ): PlanContract {
-  return updatePlanContract(options, input.planId, (current) => {
+  return updatePlanContractWithExecutionBaseline(options, input.planId, (current, executionBaselineRevision) => {
     assertRequirementReference(options, current.requirementId);
     if (current.status !== 'approved' && current.status !== 'executing') {
       throw new Error(`PLAN_NOT_EXECUTABLE: ${current.planId} is ${current.status}`);
     }
-    if (current.sourceRevision !== input.sourceRevision) {
-      return { ...current, status: 'invalidated_by_drift', updatedAt: nowIso(options) };
+    let nextExecutionBaseline = executionBaselineRevision;
+    if (executionBaselineRevision !== input.sourceRevision) {
+      const activeStep = current.steps.find((candidate) => candidate.status === 'executing' || candidate.status === 'validating');
+      if (activeStep) {
+        throw new Error(`PLAN_EXECUTION_BASELINE_LOCKED: ${current.planId}:${activeStep.id}:${executionBaselineRevision}`);
+      }
+      nextExecutionBaseline = input.sourceRevision;
     }
     const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
     if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
     const step = current.steps[stepIndex];
-    if (step.status === 'executing' || step.workId) throw new Error(`PLAN_STEP_ALREADY_ACTIVE: ${step.id}`);
+    if (step.status === 'executing' || step.status === 'validating') throw new Error(`PLAN_STEP_ALREADY_ACTIVE: ${step.id}`);
     if (step.status === 'completed') throw new Error(`PLAN_STEP_ALREADY_COMPLETED: ${step.id}`);
     const unresolved = step.dependencies.filter((dependency) => current.steps.find((candidate) => candidate.id === dependency)?.status !== 'completed');
     if (unresolved.length > 0) throw new Error(`PLAN_STEP_DEPENDENCIES_PENDING: ${unresolved.join(', ')}`);
     const at = nowIso(options);
     const steps = [...current.steps];
     steps[stepIndex] = { ...step, status: 'executing', workId: input.workId };
-    return { ...current, status: 'executing', steps, updatedAt: at };
+    return { plan: { ...current, status: 'executing', steps, updatedAt: at }, executionBaselineRevision: nextExecutionBaseline };
   });
 }
 
@@ -1254,7 +1657,7 @@ export function repairPlanStepForTechnicalRetry(
   return updatePlanContract(options, work.planId, (current) => {
     if (current.status !== 'replanning') throw new Error(`PLAN_STEP_TECHNICAL_RETRY_PLAN_STATUS_INVALID: ${current.planId}:${current.status}`);
     if (current.sourceRevision !== work.planSourceRevision) {
-      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_SOURCE_MISMATCH: ${current.planId}:plan=${current.sourceRevision}:work=${work.planSourceRevision}`);
+      throw new Error(`PLAN_STEP_TECHNICAL_RETRY_SEMANTIC_SOURCE_MISMATCH: ${current.planId}:plan=${current.sourceRevision}:work=${work.planSourceRevision}`);
     }
     if (work.requirementId !== current.requirementId) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_REQUIREMENT_MISMATCH: ${work.workId}`);
     const stepIndex = current.steps.findIndex((step) => step.id === work.planStepId);
@@ -1320,7 +1723,7 @@ export function completePlanStepForWork(
       workId: delivered ? step.workId : undefined,
       evidenceRefs: input.work.evidenceRefs.length > 0 ? input.work.evidenceRefs.slice(0, 20) : step.evidenceRefs,
     };
-    return { ...current, status: delivered ? 'verifying' : 'replanning', steps, updatedAt: at };
+    return { ...current, status: current.pendingRevision ? 'replanning' : delivered ? 'verifying' : 'replanning', steps, updatedAt: at };
   });
 }
 
@@ -1331,11 +1734,11 @@ export function acceptPlanStepEvidence(
   const reviewer = input.reviewer.trim();
   const rationale = input.rationale.trim();
   if (!reviewer || !rationale) throw new Error('PLAN_STEP_SEMANTIC_ACCEPTANCE_METADATA_REQUIRED');
-  return updatePlanContract(options, input.planId, (current) => {
+  return updatePlanContractWithExecutionBaseline(options, input.planId, (current, executionBaselineRevision) => {
     const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
     if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
     const step = current.steps[stepIndex];
-    if (step.status === 'completed') return current;
+    if (step.status === 'completed') return { plan: current, executionBaselineRevision };
     if (step.status !== 'validating') throw new Error(`PLAN_STEP_NOT_READY_FOR_SEMANTIC_ACCEPTANCE: ${step.id} is ${step.status}`);
     const steps = [...current.steps];
     steps[stepIndex] = {
@@ -1346,12 +1749,15 @@ export function acceptPlanStepEvidence(
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
     const projectedSteps = allCompleted ? steps : projectDependencyReadySteps(steps);
     const acceptedSourceRevision = input.acceptedSourceRevision?.trim();
+    const updatedAt = nowIso(options);
     return {
-      ...current,
-      ...(acceptedSourceRevision ? { sourceRevision: acceptedSourceRevision } : {}),
-      status: allCompleted ? 'finalized' : 'executing',
-      steps: projectedSteps,
-      updatedAt: nowIso(options),
+      plan: {
+        ...current,
+        status: current.pendingRevision ? 'replanning' : allCompleted ? 'finalized' : 'executing',
+        steps: projectedSteps,
+        updatedAt,
+      },
+      executionBaselineRevision: acceptedSourceRevision || executionBaselineRevision,
     };
   });
 }

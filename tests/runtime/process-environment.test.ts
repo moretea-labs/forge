@@ -4,7 +4,7 @@ import type { ChildProcess } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../src/runtime/shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../../src/runtime/shared/process-environment';
 import {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -38,16 +38,49 @@ afterEach(() => {
 });
 
 describe('repository child process environment', () => {
+  test('removes every host-private writer authority before a service boundary adds its own contract', () => {
+    const sanitized = runtimeAuthorityFreeEnvironment({
+      PATH: '/usr/bin:/bin',
+      FORGE_WRITER_SLOT: 'host-writer-must-not-leak',
+      FORGE_RUNTIME_INSTANCE_ID: 'runtime-a',
+      FORGE_RUNTIME_INCARNATION_GENERATION: '7',
+      FORGE_RELEASE_FENCING_TOKEN: 'secret-fence',
+      FORGE_CONTROLLER_LIFECYCLE_OWNER: 'host-runtime',
+      FORGE_SUPERVISOR_PRIVATE_STATE: 'private',
+      USER_VISIBLE_SETTING: 'preserve-me',
+    });
+
+    expect(sanitized.FORGE_WRITER_SLOT).toBeUndefined();
+    expect(sanitized.FORGE_RUNTIME_INSTANCE_ID).toBeUndefined();
+    expect(sanitized.FORGE_RUNTIME_INCARNATION_GENERATION).toBeUndefined();
+    expect(sanitized.FORGE_RELEASE_FENCING_TOKEN).toBeUndefined();
+    expect(sanitized.FORGE_CONTROLLER_LIFECYCLE_OWNER).toBeUndefined();
+    expect(sanitized.FORGE_SUPERVISOR_PRIVATE_STATE).toBeUndefined();
+    expect(sanitized.USER_VISIBLE_SETTING).toBe('preserve-me');
+  });
+
   test('normalizes Windows PATH case variants into one usable canonical PATH', () => {
     const normalized = repositoryChildProcessEnvironment({
       Path: 'C:\\Windows\\System32;C:\\Program Files\\Git\\cmd',
       PATH: '',
       FORGE_RUNTIME_PRIVATE_TEST: 'must-not-leak',
+      FORGE_RELEASE_PATH: 'C:\\private-runtime-release',
+      FORGE_RELEASE_ID: 'private-release-id',
+      FORGE_RELEASE_AUTHORITY_REVISION: '321',
+      FORGE_RELEASE_SOURCE_COMMIT: 'deadbeef',
+      FORGE_BUILD_VERSION: '1.7.2-host-runtime',
+      REPOSITORY_VISIBLE_SETTING: 'preserve-me',
     }, 'win32');
 
     expect(normalized.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\cmd');
     expect(Object.keys(normalized).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
     expect(normalized.FORGE_RUNTIME_PRIVATE_TEST).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_PATH).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_ID).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_AUTHORITY_REVISION).toBeUndefined();
+    expect(normalized.FORGE_RELEASE_SOURCE_COMMIT).toBeUndefined();
+    expect(normalized.FORGE_BUILD_VERSION).toBeUndefined();
+    expect(normalized.REPOSITORY_VISIBLE_SETTING).toBe('preserve-me');
   });
 
   test('uses the last non-empty Windows PATH variant as the case-insensitive override', () => {

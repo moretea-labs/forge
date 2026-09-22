@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureForgeInstanceIdentity, MAX_SEMANTIC_SYNC_JOURNAL_ENTRIES } from '../../packages/kernel/identity/api/index';
@@ -18,10 +18,13 @@ import {
   type SemanticSyncJournalEntry,
 } from '../../src/runtime/control-plane/workspace/semantic-sync-service';
 import {
+  readProjectPlacement,
+  readWorkspaceIdentity,
   writeProjectIdentity,
   writeProjectPlacement,
   writeWorkspaceIdentity,
 } from '../../src/runtime/control-plane/workspace/workspace-store';
+import { ensureRepositoryProjectOnboarding } from '../../src/runtime/control-plane/workspace/project-onboarding';
 
 function requirement(title = 'Shared requirement', revision = 1): Requirement {
   return {
@@ -109,6 +112,138 @@ function seedNode(home: string, instanceId: string, repoId: string, projectId: s
 }
 
 describe('Kernel V2 Workspace semantic sync', () => {
+  test('onboards a real Work repository using contract-declared Project identity and preserves it idempotently', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-project-onboarding-'));
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    try {
+      mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+      writeFileSync(join(repoRoot, '.forge', 'project-engineering.json'), JSON.stringify({
+        schemaVersion: 1,
+        contractId: 'declared-project-contract',
+        contractVersion: '1',
+        projectId: 'declared-project',
+        authority: {},
+        quality: {},
+        checks: [],
+        journeys: [],
+      }));
+      const repository = {
+        schemaVersion: 1 as const,
+        repoId: 'repo_local_declared',
+        displayName: 'Declared Project',
+        localRoot: repoRoot,
+        canonicalRoot: repoRoot,
+        activeCheckoutId: 'checkout_declared',
+        checkouts: [],
+        remoteUrl: 'git@github.com:example/declared-project.git',
+        canonicalRemote: 'github.com/example/declared-project',
+        repositoryType: 'git' as const,
+        enabled: true,
+        createdAt: '2026-09-20T00:00:00.000Z',
+        updatedAt: '2026-09-20T00:00:00.000Z',
+        lastSeenAt: '2026-09-20T00:00:00.000Z',
+        configurationPath: join(root, 'registry.json'),
+        stateStorageStrategy: 'controller-home' as const,
+      };
+
+      const first = ensureRepositoryProjectOnboarding({
+        controllerHome,
+        repository,
+        sourceRevision: 'revision-a',
+      });
+      expect(first).toMatchObject({
+        status: 'bound',
+        projectId: 'declared-project',
+        workspaceId: 'workspace-personal',
+        identitySource: 'project_contract',
+        createdWorkspace: true,
+        createdProject: true,
+        createdPlacement: true,
+      });
+      if (first.status !== 'bound') throw new Error('expected bound project');
+      expect(readWorkspaceIdentity(controllerHome, first.workspaceId)?.value.title).toBe('Personal workspace');
+      expect(readProjectPlacement(controllerHome, first.forgeInstanceId, first.projectId)?.value).toMatchObject({
+        projectId: 'declared-project',
+        repositoryId: repository.repoId,
+      });
+
+      const repeated = ensureRepositoryProjectOnboarding({
+        controllerHome,
+        repository,
+        sourceRevision: 'revision-b',
+      });
+      expect(repeated).toMatchObject({
+        status: 'bound',
+        projectId: 'declared-project',
+        workspaceId: 'workspace-personal',
+        createdWorkspace: false,
+        createdProject: false,
+        createdPlacement: false,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a contract Project identity that aliases an existing Project source fingerprint', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-project-alias-conflict-'));
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    try {
+      const remote = 'https://github.com/example/shared-source.git';
+      const sourceFingerprint = portableProjectSourceFingerprint(remote);
+      ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-alias-conflict' });
+      writeWorkspaceIdentity({ controllerHome, value: { workspaceId: 'workspace-personal', title: 'Personal workspace' }, expectedRevision: null });
+      writeProjectIdentity({
+        controllerHome,
+        value: {
+          projectId: 'existing-project',
+          workspaceId: 'workspace-personal',
+          displayName: 'Existing Project',
+          sourceFingerprint,
+        },
+        expectedRevision: null,
+      });
+      mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+      writeFileSync(join(repoRoot, '.forge', 'project-engineering.json'), JSON.stringify({
+        schemaVersion: 1,
+        contractId: 'conflicting-project-contract',
+        contractVersion: '1',
+        projectId: 'different-declared-project',
+        authority: {},
+        quality: {},
+        checks: [],
+        journeys: [],
+      }));
+      const repository = {
+        schemaVersion: 1 as const,
+        repoId: 'repo_local_conflict',
+        displayName: 'Conflicting Project',
+        localRoot: repoRoot,
+        canonicalRoot: repoRoot,
+        activeCheckoutId: 'checkout_conflict',
+        checkouts: [],
+        remoteUrl: remote,
+        canonicalRemote: 'github.com/example/shared-source',
+        repositoryType: 'git' as const,
+        enabled: true,
+        createdAt: '2026-09-20T00:00:00.000Z',
+        updatedAt: '2026-09-20T00:00:00.000Z',
+        lastSeenAt: '2026-09-20T00:00:00.000Z',
+        configurationPath: join(root, 'registry.json'),
+        stateStorageStrategy: 'controller-home' as const,
+      };
+      expect(() => ensureRepositoryProjectOnboarding({
+        controllerHome,
+        repository,
+        sourceRevision: 'revision-a',
+      })).toThrow('PROJECT_IDENTITY_SOURCE_ALIAS_CONFLICT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('resolves one portable Project identity across HTTPS and SSH repository registrations', () => {
     const https = 'https://github.com/moretea-labs/forge.git';
     const ssh = 'git@github.com:moretea-labs/forge.git';

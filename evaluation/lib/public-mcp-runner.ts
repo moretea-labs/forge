@@ -1,7 +1,8 @@
 import { performance } from 'node:perf_hooks';
+import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { Client } from "@modelcontextprotocol/client";
 import { buildReport, writeReport } from './report.ts';
 import {
   assertOutsideSource,
@@ -119,6 +120,54 @@ interface PublicMcpConnection {
   stderr: { value: string };
 }
 
+interface ProcessResourceSample {
+  userCpuMs: number;
+  systemCpuMs: number;
+  peakRssBytes: number;
+}
+
+function parseProcessCpuTime(value: string): number | undefined {
+  const parts = value.trim().split(':').map(Number);
+  if (parts.some((part) => !Number.isFinite(part)) || (parts.length !== 2 && parts.length !== 3)) return undefined;
+  const seconds = parts.length === 2
+    ? (parts[0]! * 60) + parts[1]!
+    : (parts[0]! * 3_600) + (parts[1]! * 60) + parts[2]!;
+  return seconds * 1_000;
+}
+
+/**
+ * Read evaluator-owned resource facts for the MCP server process. `ps` is used
+ * instead of candidate output so the candidate cannot manufacture accounting.
+ * A missing process or unsupported host is intentionally unmeasured.
+ */
+export function sampleMcpProcessResource(pid: number | null): ProcessResourceSample | undefined {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) return undefined;
+  try {
+    const output = execFileSync('ps', ['-o', 'utime=', '-o', 'stime=', '-o', 'rss=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const fields = output.split(/\s+/);
+    if (fields.length < 3) return undefined;
+    const userCpuMs = parseProcessCpuTime(fields[0]!);
+    const systemCpuMs = parseProcessCpuTime(fields[1]!);
+    const rssKb = Number(fields[2]);
+    if (userCpuMs === undefined || systemCpuMs === undefined || !Number.isFinite(rssKb) || rssKb < 0) return undefined;
+    return { userCpuMs, systemCpuMs, peakRssBytes: rssKb * 1_024 };
+  } catch {
+    return undefined;
+  }
+}
+
+function deltaMcpProcessResource(before: ProcessResourceSample | undefined, after: ProcessResourceSample | undefined): ProcessResourceSample | undefined {
+  if (!before || !after) return undefined;
+  return {
+    userCpuMs: Math.max(0, after.userCpuMs - before.userCpuMs),
+    systemCpuMs: Math.max(0, after.systemCpuMs - before.systemCpuMs),
+    peakRssBytes: Math.max(before.peakRssBytes, after.peakRssBytes),
+  };
+}
+
 async function openConnection(input: {
   deadline: number;
   forgeCommand: ForgeCommand;
@@ -171,6 +220,7 @@ async function executeCall(input: {
   const timeoutMs = Math.min(candidateTimeRemaining(input.deadline), input.call.timeoutMs ?? 60_000);
   const startedAt = new Date().toISOString();
   const started = performance.now();
+  const resourceBefore = sampleMcpProcessResource(input.connection.transport.pid);
   let payload: unknown = {};
   let actualOutcome: 'success' | 'error' = 'success';
   let errorText = '';
@@ -187,6 +237,7 @@ async function executeCall(input: {
     errorText = error instanceof Error ? error.message : String(error);
     payload = { error: errorText };
   }
+  const resourceUsage = deltaMcpProcessResource(resourceBefore, sampleMcpProcessResource(input.connection.transport.pid));
   return {
     call: input.call,
     payload,
@@ -203,6 +254,7 @@ async function executeCall(input: {
       stdout: safeText(JSON.stringify(payload)),
       stderr: safeText(errorText || input.connection.stderr.value),
       timedOut: errorText.startsWith('EVALUATION_MCP_TIMEOUT:'),
+      ...(resourceUsage ? { resourceUsage } : {}),
     },
   };
 }
@@ -225,7 +277,13 @@ function applyCallResult(input: {
   return input.result.actualOutcome === (input.result.call.expectedOutcome ?? 'success');
 }
 
-function restartCommand(callId: string, cwd: string, startedAt: string, durationMs: number): CommandRecord {
+function restartCommand(
+  callId: string,
+  cwd: string,
+  startedAt: string,
+  durationMs: number,
+  resourceUsage?: NonNullable<CommandRecord['resourceUsage']>,
+): CommandRecord {
   return {
     kind: 'forge',
     stepId: `restart-before:${callId}`,
@@ -238,6 +296,7 @@ function restartCommand(callId: string, cwd: string, startedAt: string, duration
     stdout: '',
     stderr: '',
     timedOut: false,
+    ...(resourceUsage ? { resourceUsage } : {}),
   };
 }
 
@@ -280,9 +339,17 @@ export async function runPublicMcpEvaluationInSnapshot(input: {
       if (call.restartBefore) {
         const restartStartedAt = new Date().toISOString();
         const restartStarted = performance.now();
+        const restartResourceBefore = sampleMcpProcessResource(connection.transport.pid);
         await closeConnection(connection);
         connection = await openConnection({ forgeCommand, sandbox: input.sandbox, execution: input.scenario.execution, environment, deadline });
-        commands.push(restartCommand(call.id, input.sandbox.repository, restartStartedAt, Math.max(0, performance.now() - restartStarted)));
+        const restartResource = deltaMcpProcessResource(restartResourceBefore, sampleMcpProcessResource(connection.transport.pid));
+        commands.push(restartCommand(
+          call.id,
+          input.sandbox.repository,
+          restartStartedAt,
+          Math.max(0, performance.now() - restartStarted),
+          restartResource,
+        ));
       }
 
       if (call.parallelGroup) {

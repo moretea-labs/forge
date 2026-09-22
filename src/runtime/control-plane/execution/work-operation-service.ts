@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
-import { listControllerChecks } from '../../../cli/controller/check-runner';
+import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 import { validateWorkHandle } from './validation';
@@ -14,9 +14,9 @@ import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDec
 import { recordMcpTiming } from '../../diagnostics/mcp-timing';
 import { commandValue, normalizeRepositoryCommand, type RepositoryCommandValue } from '../../../cli/repositories/command-normalization';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
-import { getCheckProcessHandle } from '../../execution/process-runtime/check-facade';
+import { getCheckProcessHandle, waitForCheckProcess } from '../../execution/process-runtime/check-facade';
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
-import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
+import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from '../../execution/process-runtime/persisted-check';
 import { markWorkValidationCurrentFromReusedEvidence, markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
@@ -243,6 +243,10 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   const requestedChecks = Array.isArray(args.check_ids)
     ? args.check_ids.map(String).filter(Boolean)
     : selectDefaultWorkValidationChecks(contract, changedPaths);
+  const interactiveWaitBudgetMs = typeof args.interactive_wait_ms === 'number' && Number.isFinite(args.interactive_wait_ms)
+    ? Math.max(0, Math.min(30_000, Math.floor(args.interactive_wait_ms)))
+    : 0;
+  const interactiveWaitDeadline = interactiveWaitBudgetMs > 0 ? Date.now() + interactiveWaitBudgetMs : 0;
   const validationInvocationId = typeof args.request_id === 'string' && args.request_id.trim()
     ? args.request_id.trim()
     : `validate-${session.sessionId}-${handle.workId}-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -379,6 +383,17 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       };
       current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
     }
+    if (!process.completed && interactiveWaitDeadline > 0) {
+      const remainingWaitMs = Math.max(0, interactiveWaitDeadline - Date.now());
+      if (remainingWaitMs > 0) {
+        process = await waitForCheckProcess(
+          ctx.controllerHome,
+          handle.repositoryId,
+          process.processId,
+          remainingWaitMs,
+        );
+      }
+    }
     if (!process.completed) {
       checks.push({ checkId, ok: undefined, status: 'running', process });
       break;
@@ -406,14 +421,13 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
         },
       } : {}),
     });
-    const terminalEvidence = classifyPersistedCheckTerminalEvidence(record, checkId);
-    const infrastructureFailed = receipt.timedOut
-      || receipt.cancelled
-      || terminalEvidence.state !== 'matched'
-      || (!receipt.ok && terminalEvidence.failureClass !== 'acceptance_failure');
+    const legacyEvidence = record.origin?.checkResultReceiptPath
+      ? undefined
+      : readLatestControllerCheckEvidence(validated.worktreeRepository.canonicalRoot, checkId);
+    const projection = projectTerminalCheckVerification(record, checkId, receipt, { legacyEvidence });
     appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
       checkId,
-      outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',
+      outcome: projection.outcome,
       summary: receipt.summary,
       recordedAt: receipt.finishedAt,
       sourceRevision: validationHead,
@@ -428,13 +442,14 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
     });
     checks.push({
       checkId,
-      ok: receipt.ok,
-      status: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'passed' : 'failed',
+      ok: projection.outcome === 'valid_pass' ? true : projection.outcome === 'valid_fail' ? false : undefined,
+      status: projection.outcome === 'valid_pass' ? 'passed' : projection.outcome === 'valid_fail' ? 'failed' : 'infrastructure_failure',
       process,
       receipt,
-      ...(terminalEvidence.warning ? { warning: terminalEvidence.warning } : {}),
+      ...(projection.evidence.warning ? { warning: projection.evidence.warning } : {}),
+      ...(projection.infrastructureReason ? { infrastructureReason: projection.infrastructureReason } : {}),
     });
-    if (!receipt.ok) break;
+    if (projection.outcome !== 'valid_pass') break;
   }
   const infrastructureFailure = checks.find((check) => (
     check.status === 'missing'

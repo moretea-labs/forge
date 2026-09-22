@@ -4,6 +4,10 @@ import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost } from '../platform/service-manager';
+import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
+import { loadRuntimeReleaseManifest } from './release-manifest';
+import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
+import type { RuntimeReleaseManifest } from './types';
 
 export interface ForgeRuntimeServiceConfig {
   schemaVersion: 1;
@@ -14,6 +18,8 @@ export interface ForgeRuntimeServiceConfig {
   port: number;
   authTokenFile: string;
   exclusiveWorkId?: string;
+  /** Persisted product-level component composition. Missing is accepted only for legacy configs. */
+  topology?: RuntimeDeploymentTopology;
 }
 
 export interface ForgeRuntimeServicePaths {
@@ -42,8 +48,7 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
 export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeServicePaths {
   const home = resolveControllerHome(controllerHome);
   const serviceRoot = join(home, 'runtime', 'service');
-  const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
-  const label = `com.moretea.forge.runtime.${suffix}`;
+  const label = forgeRuntimePersistentServiceLabel(home);
   const launchAgentsRoot = join(process.env.HOME ?? homedir(), 'Library', 'LaunchAgents');
   return {
     controllerHome: home,
@@ -73,6 +78,7 @@ export function validateForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConf
     ...(repositoryRoot ? { repositoryRoot } : {}),
     host: input.host.trim(),
     authTokenFile,
+    topology: normalizeRuntimeDeploymentTopology(input.topology),
     ...(input.exclusiveWorkId?.trim() ? { exclusiveWorkId: input.exclusiveWorkId.trim() } : {}),
   };
 }
@@ -82,28 +88,12 @@ export function readForgeRuntimeServiceConfig(path: string): ForgeRuntimeService
 }
 
 interface RuntimeReleaseAuthorityRecord {
-  schemaVersion: 1;
+  schemaVersion: 2;
   status: string;
   active?: { releaseId?: string; manifestPath?: string; artifactIdentity?: string };
 }
 
-interface RuntimeReleaseManifestRecord {
-  schemaVersion: 1;
-  releaseId: string;
-  entrypoint: string;
-  controllerHome: string;
-  artifactIdentity: string;
-  arguments?: string[];
-  diagnosticEntrypoint?: string;
-  packageRoot?: string;
-  packageArtifactIdentity?: string;
-  browserAutomationHelperEntrypoint?: string;
-  browserAutomationHelperArtifactIdentity?: string;
-  browserAutomationHelperContractIdentity?: string;
-  releaseRevision?: string;
-  sourceCommit?: string;
-  cleanWorkspace?: boolean;
-}
+type RuntimeReleaseManifestRecord = RuntimeReleaseManifest;
 
 interface ActiveRuntimeReleaseRecord {
   releaseId: string;
@@ -130,14 +120,13 @@ function readActiveRuntimeRelease(controllerHome: string): ActiveRuntimeReleaseR
   if (!existsSync(authorityPath)) return undefined;
   const authority = JSON.parse(readFileSync(authorityPath, 'utf8')) as RuntimeReleaseAuthorityRecord;
   const active = authority.active;
-  if (authority.schemaVersion !== 1 || authority.status !== 'committed' || !active?.manifestPath) {
+  if (authority.schemaVersion !== 2 || authority.status !== 'committed' || !active?.manifestPath) {
     throw new Error('FORGE_RUNTIME_RELEASE_AUTHORITY_INVALID');
   }
   const manifestPath = resolve(active.manifestPath);
   if (!isInside(releasesRoot, manifestPath)) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_OUTSIDE_RELEASES');
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as RuntimeReleaseManifestRecord;
+  const manifest = loadRuntimeReleaseManifest(manifestPath, home);
   if (manifest.schemaVersion !== 1 || !manifest.releaseId || !manifest.entrypoint) throw new Error('FORGE_RUNTIME_RELEASE_MANIFEST_INVALID');
-  if (resolve(manifest.controllerHome) !== home) throw new Error('FORGE_RUNTIME_RELEASE_CONTROLLER_HOME_MISMATCH');
   if (active.releaseId && active.releaseId !== manifest.releaseId) throw new Error('FORGE_RUNTIME_RELEASE_ID_MISMATCH');
   const releaseRoot = dirname(manifestPath);
   const entrypoint = resolve(releaseRoot, manifest.entrypoint);
@@ -209,6 +198,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
     throw new Error('FORGE_RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_INVALID');
   }
   const productVersion = activeRuntimeProductVersion(active);
+  const topology = normalizeRuntimeDeploymentTopology(config.topology);
   return {
     args: [
       '--controller-home', home,
@@ -217,6 +207,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
       '--host', config.host,
       '--port', String(config.port),
       '--auth-token-file', config.authTokenFile,
+      '--deployment-topology', JSON.stringify(topology),
       ...manifestArguments,
       ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
     ],

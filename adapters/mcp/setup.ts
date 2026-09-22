@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { isIP } from "net";
@@ -25,7 +26,7 @@ import {
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/cli/repositories/controller-home";
 import { accessModeForLegacyToolset } from "./access-mode";
 import { migrateControllerToolsetConfig } from "./toolset-selection";
-import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId } from "../../packages/kernel/identity/api/index";
+import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
 import { discoverExecutable } from "../../src/runtime/platform/executable-discovery";
 
 export interface McpSetupResult {
@@ -48,9 +49,9 @@ const REQUIRED_CODEX_TOOLS = [
 
 const CHATGPT_MCP_ENDPOINT_PLACEHOLDER = "<https-tunnel-url>/mcp";
 const CHATGPT_NAMED_TUNNEL_HOST_PLACEHOLDER = "<named-tunnel-host>";
-const DEFAULT_CHATGPT_MCP_SERVER_NAME = "forge";
+const LEGACY_CHATGPT_MCP_SERVER_NAME = "forge";
 const LEGACY_DEFAULT_SERVER_NAMES = new Set([
-  "forge",
+  LEGACY_CHATGPT_MCP_SERVER_NAME,
   "forge-controller-v1",
   "forge-controller-v2",
   "forge-controller-v3",
@@ -170,8 +171,22 @@ function normalizePublicMcpEndpoint(
   return parsed.toString();
 }
 
+export function defaultChatgptMcpServerName(forgeInstanceId: string): string {
+  const semanticInstanceId = forgeInstanceId.trim();
+  if (!semanticInstanceId) throw new Error('FORGE_INSTANCE_ID_REQUIRED');
+  const normalized = semanticInstanceId.toLowerCase();
+  const withoutForgePrefix = normalized.replace(/^forge[-_.:]/, '');
+  const stableToken = (withoutForgePrefix || normalized)
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const token = stableToken || createHash('sha256').update(semanticInstanceId).digest('hex').slice(0, 12);
+  const candidate = `forge-${token}`;
+  if (candidate.length <= 80) return candidate;
+  return `${candidate.slice(0, 80 - 13)}-${createHash('sha256').update(semanticInstanceId).digest('hex').slice(0, 12)}`;
+}
+
 function normalizeChatgptMcpServerName(value: string | undefined): string {
-  const trimmed = (value ?? DEFAULT_CHATGPT_MCP_SERVER_NAME).trim();
+  const trimmed = (value ?? LEGACY_CHATGPT_MCP_SERVER_NAME).trim();
   if (
     trimmed.length < 1 ||
     trimmed.length > 80 ||
@@ -349,8 +364,9 @@ export function runMcpSetupChatgpt(opts: {
     existingServerName && !LEGACY_DEFAULT_SERVER_NAMES.has(existingServerName)
       ? existingServerName
       : undefined;
+  const defaultServerName = defaultChatgptMcpServerName(forgeInstance.instanceId);
   const serverName = normalizeChatgptMcpServerName(
-    opts.serverName ?? migratedServerName,
+    opts.serverName ?? migratedServerName ?? defaultServerName,
   );
   const connectorAuthMode = opts.connectorAuthMode?.trim().toLowerCase();
   if (connectorAuthMode !== undefined && connectorAuthMode !== "oauth" && connectorAuthMode !== "none") {
@@ -646,6 +662,12 @@ export function runMcpDoctor(opts: {
   const localConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
   const runtimeState = loadMcpServiceRuntimeState(controllerHome, repoRoot);
   const configuredServerName = localConfig?.chatgpt?.serverName;
+  const forgeInstanceId = localConfig?.identity?.forgeInstanceId?.trim()
+    || readForgeInstanceIdentity(controllerHome)?.instanceId;
+  const defaultServerName = forgeInstanceId
+    ? defaultChatgptMcpServerName(forgeInstanceId)
+    : LEGACY_CHATGPT_MCP_SERVER_NAME;
+  const serverNameNeedsMigration = Boolean(configuredServerName && LEGACY_DEFAULT_SERVER_NAMES.has(configuredServerName));
   const host = localConfig?.server?.host ?? "127.0.0.1";
   const port = localConfig?.server?.port ?? 8765;
   const authMode = localConfig?.auth?.mode ?? "missing";
@@ -700,7 +722,8 @@ export function runMcpDoctor(opts: {
     chatgpt: {
       ...(configuredServerName ? { serverName: configuredServerName } : {}),
       serverNameConfigured: Boolean(configuredServerName),
-      defaultServerName: DEFAULT_CHATGPT_MCP_SERVER_NAME,
+      defaultServerName,
+      serverNameNeedsMigration,
       expectedToolSurface: FORGE_TOOL_SURFACE,
       localEndpoint: `http://${host}:${port}/mcp`,
       localController: `http://${localConfig?.localController?.host ?? "127.0.0.1"}:${localConfig?.localController?.port ?? 8766}/`,
@@ -737,8 +760,9 @@ export function runMcpDoctor(opts: {
             `[forge mcp] Repo: ${repoRoot}`,
             `[forge mcp] Status: ${report.status}`,
             `[forge mcp] ChatGPT MCP server name: ${
-              configuredServerName ??
-              `missing (run setup; default is ${DEFAULT_CHATGPT_MCP_SERVER_NAME})`
+              configuredServerName
+                ? `${configuredServerName}${serverNameNeedsMigration ? ' (legacy shared name; rerun setup to disambiguate this Forge instance)' : ''}`
+                : `missing (run setup; default is ${defaultServerName})`
             }`,
             `[forge mcp] ChatGPT guide: ${report.mcp.guide ? "present" : "missing"}`,
             `[forge mcp] Toolset: ${report.mcp.toolset}`,

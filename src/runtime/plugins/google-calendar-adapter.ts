@@ -394,7 +394,7 @@ function calendarProvider(config: GoogleCalendarPluginConfig, repoRoot?: string)
 export function buildGoogleCalendarPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
   const config = loadGoogleCalendarPluginConfig(root, context);
-  const auth = resolveGoogleAuth('calendar', config, { repoRoot: root });
+  const auth = resolveGoogleAuth('calendar', config, { repoRoot: root, controllerHome: context?.controllerHome });
   const state = pluginStateFromGoogleAuth(config, auth);
   return {
     schemaVersion: 1,
@@ -441,7 +441,7 @@ export async function executeGoogleCalendarPluginAction(input: AssistantPluginAc
       });
       return {
         config,
-        auth: resolveGoogleAuth('calendar', config, { repoRoot: input.repoRoot }),
+        auth: resolveGoogleAuth('calendar', config, { repoRoot: input.repoRoot, controllerHome: input.controllerHome }),
       };
     }
     case 'list_events':

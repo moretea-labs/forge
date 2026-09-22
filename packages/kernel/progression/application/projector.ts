@@ -20,6 +20,7 @@ function stableSnapshot(snapshot: AutonomousGoalProgressionSnapshot): unknown {
       planId: snapshot.plan.planId,
       requirementId: snapshot.plan.requirementId,
       sourceRevision: snapshot.plan.sourceRevision,
+      executionBaselineRevision: snapshot.plan.executionBaselineRevision,
       status: snapshot.plan.status,
       steps: snapshot.plan.steps.map((step) => ({
         id: step.id,
@@ -120,7 +121,8 @@ export function projectAutonomousGoalProgression(
       && work.baseRevision === plan.sourceRevision
       && work.completionTargetRevision === snapshot.currentSourceRevision);
   const expectedDeliveryAdvance = Boolean(validatingDelivery && plan.sourceRevision !== snapshot.currentSourceRevision);
-  if (plan.sourceRevision !== snapshot.currentSourceRevision && !expectedDeliveryAdvance) {
+  const acceptedExecutionAdvance = plan.executionBaselineRevision?.trim() === snapshot.currentSourceRevision;
+  if (plan.sourceRevision !== snapshot.currentSourceRevision && !expectedDeliveryAdvance && !acceptedExecutionAdvance) {
     return decision(snapshot, 'request_replan', 'PLAN_SOURCE_DRIFT');
   }
   if (plan.status === 'replanning' || plan.status === 'invalidated_by_drift') return decision(snapshot, 'request_replan', 'PLAN_REPLAN_REQUIRED');
@@ -172,7 +174,7 @@ export function projectAutonomousGoalProgression(
       if (round?.status === 'goal_complete') {
         return decision(snapshot, 'blocked_invalid_state', 'CONTROLLER_ROUND_TERMINAL_CONTRADICTION', { planStepId: step.id, workId: work.workId });
       }
-      if (round && (IN_FLIGHT_ROUND_STATUSES.has(round.status) || round.status === 'blocked' || round.status === 'failed')) {
+      if (round && (IN_FLIGHT_ROUND_STATUSES.has(round.status) || round.status === 'blocked')) {
         return decision(snapshot, 'wait_current_work', 'CONTROLLER_ROUND_IN_FLIGHT', { planStepId: step.id, workId: work.workId });
       }
       return decision(snapshot, 'continue_current_work', 'WORK_READY_TO_CONTINUE', { planStepId: step.id, workId: work.workId });

@@ -54,12 +54,12 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(() => scopeResourceClaims(claims, 'repo1', 'co1', 'work2')).toThrow(/RESOURCE_CLAIM_WORK_MISMATCH/);
   });
 
-  test('typecheck uses workspace read plus cache without a same-workspace write', () => {
+  test('typecheck uses workspace read plus cache and the compiler-heavy serialization fence', () => {
     const claims = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
     expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
     expect(claims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
-    expect(claims.some((claim) => claim.resourceKey.startsWith('heavy-check:'))).toBe(false);
   });
 
   test('live certification fences release and host Runtime/Recovery resources', () => {

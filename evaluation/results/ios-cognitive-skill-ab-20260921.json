@@ -1,0 +1,854 @@
+{
+  "schemaVersion": "forge-cognitive-skill-retirement/v1",
+  "evaluatorVersion": "forge-cognitive-skill-retirement-evaluator/v2",
+  "thresholdSetId": "forge-cognitive-skill-retirement-thresholds/v1",
+  "protocolDigest": "45279c4c71c8fc782cd44b89a6104167b2c8ae6f66b3e4ea8dd4d3a4f9a8a2bb",
+  "workspaceId": "workspace-personal",
+  "scenarioIds": [
+    "ios-product-self-explaining-interaction",
+    "ios-interaction-state-single-owner",
+    "swiftui-state-ownership-performance",
+    "swiftui-native-accessibility",
+    "swift-concurrency-isolation",
+    "ios-design-system-governance"
+  ],
+  "measurements": [
+    {
+      "scenarioId": "ios-product-self-explaining-interaction",
+      "domain": "ios_product_design",
+      "mode": "skill_first",
+      "matchedConcepts": [
+        "ios.product-design",
+        "product.user-job",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "product.decision-cost"
+      ],
+      "missingConcepts": [
+        "progressive-disclosure"
+      ],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "interaction.state-contract",
+        "state.single-owner",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain",
+        "swiftui.state-ownership",
+        "async.stale-result",
+        "navigation.owner",
+        "accessibility.semantics",
+        "localization.layout",
+        "api.availability",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "task.entry-isolation",
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "design-system.accessibility"
+      ],
+      "semanticCoverage": 0.8333,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.7826,
+      "contextBytes": 8457,
+      "estimatedTokens": 2115,
+      "retrievalLatencyMs": 2.75,
+      "skillReads": 1,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [],
+      "cognitiveGaps": [],
+      "cognitiveTruncated": false
+    },
+    {
+      "scenarioId": "ios-product-self-explaining-interaction",
+      "domain": "ios_product_design",
+      "mode": "cognitive_only",
+      "matchedConcepts": [
+        "ios.product-design",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules"
+      ],
+      "missingConcepts": [
+        "product.user-job",
+        "product.decision-cost",
+        "progressive-disclosure"
+      ],
+      "criticalMissingConcepts": [
+        "product.user-job"
+      ],
+      "noiseConcepts": [
+        "information-architecture",
+        "interaction.affordance",
+        "safety.explanation",
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner"
+      ],
+      "semanticCoverage": 0.5,
+      "criticalCoverage": 0.75,
+      "noiseRatio": 0.75,
+      "contextBytes": 3489,
+      "estimatedTokens": 873,
+      "retrievalLatencyMs": 15.67,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:566e37f2de37d43a82bf7748e235ad08",
+        "learning:auto:controller:faa85e98ab81e6729bc79238dd9dd575"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "ios-product-self-explaining-interaction",
+      "domain": "ios_product_design",
+      "mode": "cognitive_with_skill_fallback",
+      "matchedConcepts": [
+        "ios.product-design",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "product.user-job",
+        "product.decision-cost"
+      ],
+      "missingConcepts": [
+        "progressive-disclosure"
+      ],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "information-architecture",
+        "interaction.affordance",
+        "safety.explanation",
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner",
+        "interaction.state-contract",
+        "state.single-owner",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain",
+        "accessibility.semantics",
+        "localization.layout",
+        "api.availability",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "task.entry-isolation",
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "design-system.accessibility"
+      ],
+      "semanticCoverage": 0.8333,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.8276,
+      "contextBytes": 11947,
+      "estimatedTokens": 2987,
+      "retrievalLatencyMs": 4.31,
+      "skillReads": 1,
+      "fallbackCount": 1,
+      "recalledMemoryIds": [
+        "learning:auto:controller:566e37f2de37d43a82bf7748e235ad08",
+        "learning:auto:controller:faa85e98ab81e6729bc79238dd9dd575"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true,
+      "fallbackReason": "critical_concepts_missing:product.user-job"
+    },
+    {
+      "scenarioId": "ios-interaction-state-single-owner",
+      "domain": "interaction_state",
+      "mode": "skill_first",
+      "matchedConcepts": [
+        "interaction.state-contract",
+        "state.single-owner",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain"
+      ],
+      "missingConcepts": [
+        "state.draft-boundary"
+      ],
+      "criticalMissingConcepts": [
+        "state.draft-boundary"
+      ],
+      "noiseConcepts": [
+        "ios.product-design",
+        "product.user-job",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "product.decision-cost",
+        "swiftui.state-ownership",
+        "async.stale-result",
+        "navigation.owner",
+        "accessibility.semantics",
+        "localization.layout",
+        "api.availability",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "task.entry-isolation",
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "design-system.accessibility"
+      ],
+      "semanticCoverage": 0.8333,
+      "criticalCoverage": 0.8,
+      "noiseRatio": 0.7826,
+      "contextBytes": 8457,
+      "estimatedTokens": 2115,
+      "retrievalLatencyMs": 0.47,
+      "skillReads": 1,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [],
+      "cognitiveGaps": [],
+      "cognitiveTruncated": false
+    },
+    {
+      "scenarioId": "ios-interaction-state-single-owner",
+      "domain": "interaction_state",
+      "mode": "cognitive_only",
+      "matchedConcepts": [
+        "interaction.state-contract",
+        "state.single-owner",
+        "state.draft-boundary",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5,
+      "contextBytes": 3493,
+      "estimatedTokens": 874,
+      "retrievalLatencyMs": 4.19,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:e7bb14bcbac35b9e2ca5bf5514320029",
+        "learning:auto:controller:faa85e98ab81e6729bc79238dd9dd575"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "ios-interaction-state-single-owner",
+      "domain": "interaction_state",
+      "mode": "cognitive_with_skill_fallback",
+      "matchedConcepts": [
+        "interaction.state-contract",
+        "state.single-owner",
+        "state.draft-boundary",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5,
+      "contextBytes": 3493,
+      "estimatedTokens": 874,
+      "retrievalLatencyMs": 2.86,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:e7bb14bcbac35b9e2ca5bf5514320029",
+        "learning:auto:controller:faa85e98ab81e6729bc79238dd9dd575"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "swiftui-state-ownership-performance",
+      "domain": "swiftui_state_performance",
+      "mode": "skill_first",
+      "matchedConcepts": [
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.product-design",
+        "product.user-job",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "product.decision-cost",
+        "interaction.state-contract",
+        "state.single-owner",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain",
+        "swiftui.native-controls",
+        "accessibility.semantics",
+        "dynamic-type",
+        "touch-target",
+        "localization.layout",
+        "api.availability",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "task.entry-isolation",
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.8,
+      "contextBytes": 19841,
+      "estimatedTokens": 4961,
+      "retrievalLatencyMs": 0.72,
+      "skillReads": 2,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [],
+      "cognitiveGaps": [],
+      "cognitiveTruncated": false
+    },
+    {
+      "scenarioId": "swiftui-state-ownership-performance",
+      "domain": "swiftui_state_performance",
+      "mode": "cognitive_only",
+      "matchedConcepts": [
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.product-design",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "information-architecture",
+        "interaction.affordance",
+        "safety.explanation"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5,
+      "contextBytes": 3490,
+      "estimatedTokens": 873,
+      "retrievalLatencyMs": 2.68,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:faa85e98ab81e6729bc79238dd9dd575",
+        "learning:auto:controller:566e37f2de37d43a82bf7748e235ad08"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "swiftui-state-ownership-performance",
+      "domain": "swiftui_state_performance",
+      "mode": "cognitive_with_skill_fallback",
+      "matchedConcepts": [
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.product-design",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "information-architecture",
+        "interaction.affordance",
+        "safety.explanation"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5,
+      "contextBytes": 3489,
+      "estimatedTokens": 873,
+      "retrievalLatencyMs": 2.48,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:faa85e98ab81e6729bc79238dd9dd575",
+        "learning:auto:controller:566e37f2de37d43a82bf7748e235ad08"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "swiftui-native-accessibility",
+      "domain": "accessibility_native_controls",
+      "mode": "skill_first",
+      "matchedConcepts": [
+        "swiftui.native-controls",
+        "accessibility.semantics",
+        "dynamic-type",
+        "touch-target",
+        "localization.layout",
+        "api.availability"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.product-design",
+        "product.user-job",
+        "product.interaction.self-explanatory",
+        "product.copy.invisible-rules",
+        "product.decision-cost",
+        "interaction.state-contract",
+        "state.single-owner",
+        "external-surface.projection",
+        "context-retention",
+        "single-write-chain",
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "swiftui.stable-identity",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "navigation.owner",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "task.entry-isolation",
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.8,
+      "contextBytes": 19841,
+      "estimatedTokens": 4961,
+      "retrievalLatencyMs": 0.69,
+      "skillReads": 2,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [],
+      "cognitiveGaps": [],
+      "cognitiveTruncated": false
+    },
+    {
+      "scenarioId": "swiftui-native-accessibility",
+      "domain": "accessibility_native_controls",
+      "mode": "cognitive_only",
+      "matchedConcepts": [
+        "swiftui.native-controls",
+        "accessibility.semantics",
+        "dynamic-type",
+        "touch-target",
+        "localization.layout",
+        "api.availability"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5385,
+      "contextBytes": 3727,
+      "estimatedTokens": 932,
+      "retrievalLatencyMs": 2.13,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:5ce4b67b27603db9902f731eb0279d7e",
+        "learning:auto:controller:27212a93bea1c446d9df9e4948032203"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "swiftui-native-accessibility",
+      "domain": "accessibility_native_controls",
+      "mode": "cognitive_with_skill_fallback",
+      "matchedConcepts": [
+        "swiftui.native-controls",
+        "accessibility.semantics",
+        "dynamic-type",
+        "touch-target",
+        "localization.layout",
+        "api.availability"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5385,
+      "contextBytes": 3727,
+      "estimatedTokens": 932,
+      "retrievalLatencyMs": 2.15,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:5ce4b67b27603db9902f731eb0279d7e",
+        "learning:auto:controller:27212a93bea1c446d9df9e4948032203"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "swift-concurrency-isolation",
+      "domain": "swift_concurrency",
+      "mode": "skill_first",
+      "matchedConcepts": [
+        "swift.concurrency",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "structured-concurrency",
+        "sendable.boundary",
+        "task.entry-isolation"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "product.copy.invisible-rules",
+        "product.decision-cost",
+        "interaction.state-contract",
+        "state.single-owner",
+        "state.draft-boundary",
+        "context-retention",
+        "swiftui.state-ownership",
+        "swiftui.render-performance",
+        "async.stale-result",
+        "localization.layout",
+        "api.availability",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.6667,
+      "contextBytes": 12526,
+      "estimatedTokens": 3132,
+      "retrievalLatencyMs": 0.65,
+      "skillReads": 1,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [],
+      "cognitiveGaps": [],
+      "cognitiveTruncated": false
+    },
+    {
+      "scenarioId": "swift-concurrency-isolation",
+      "domain": "swift_concurrency",
+      "mode": "cognitive_only",
+      "matchedConcepts": [
+        "swift.concurrency",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "structured-concurrency",
+        "sendable.boundary",
+        "task.entry-isolation"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5385,
+      "contextBytes": 3686,
+      "estimatedTokens": 922,
+      "retrievalLatencyMs": 2.19,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:0a3386a1303ddf77119c794ab5cc302e",
+        "learning:auto:controller:27212a93bea1c446d9df9e4948032203"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "swift-concurrency-isolation",
+      "domain": "swift_concurrency",
+      "mode": "cognitive_with_skill_fallback",
+      "matchedConcepts": [
+        "swift.concurrency",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "structured-concurrency",
+        "sendable.boundary",
+        "task.entry-isolation"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.5385,
+      "contextBytes": 3686,
+      "estimatedTokens": 922,
+      "retrievalLatencyMs": 2.1,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:0a3386a1303ddf77119c794ab5cc302e",
+        "learning:auto:controller:27212a93bea1c446d9df9e4948032203"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "ios-design-system-governance",
+      "domain": "ios_design_system",
+      "mode": "skill_first",
+      "matchedConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "product.copy.invisible-rules",
+        "product.decision-cost",
+        "interaction.state-contract",
+        "state.single-owner",
+        "swiftui.state-ownership",
+        "swiftui.data-flow",
+        "async.stale-result",
+        "swiftui.native-controls",
+        "accessibility.semantics",
+        "dynamic-type",
+        "swift.concurrency",
+        "swift.concurrency.isolation",
+        "mainactor.ui-ownership",
+        "sendable.boundary"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.6667,
+      "contextBytes": 10979,
+      "estimatedTokens": 2745,
+      "retrievalLatencyMs": 0.56,
+      "skillReads": 1,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [],
+      "cognitiveGaps": [],
+      "cognitiveTruncated": false
+    },
+    {
+      "scenarioId": "ios-design-system-governance",
+      "domain": "ios_design_system",
+      "mode": "cognitive_only",
+      "matchedConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.product-architecture",
+        "product.evolution",
+        "reuse-before-rebuild",
+        "product.single-owner",
+        "duplicate-surface",
+        "single-source-of-truth"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.4615,
+      "contextBytes": 3691,
+      "estimatedTokens": 923,
+      "retrievalLatencyMs": 2.01,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:27212a93bea1c446d9df9e4948032203",
+        "learning:auto:controller:307da316daa86c06335d03328c0fabc4"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    },
+    {
+      "scenarioId": "ios-design-system-governance",
+      "domain": "ios_design_system",
+      "mode": "cognitive_with_skill_fallback",
+      "matchedConcepts": [
+        "ios.design-system",
+        "design-system.tokens",
+        "design-system.semantic-tokens",
+        "visual.single-source-of-truth",
+        "platform.system-first",
+        "design-system.accessibility",
+        "design-system.incremental-migration"
+      ],
+      "missingConcepts": [],
+      "criticalMissingConcepts": [],
+      "noiseConcepts": [
+        "ios.product-architecture",
+        "product.evolution",
+        "reuse-before-rebuild",
+        "product.single-owner",
+        "duplicate-surface",
+        "single-source-of-truth"
+      ],
+      "semanticCoverage": 1,
+      "criticalCoverage": 1,
+      "noiseRatio": 0.4615,
+      "contextBytes": 3690,
+      "estimatedTokens": 923,
+      "retrievalLatencyMs": 2.13,
+      "skillReads": 0,
+      "fallbackCount": 0,
+      "recalledMemoryIds": [
+        "learning:auto:controller:27212a93bea1c446d9df9e4948032203",
+        "learning:auto:controller:307da316daa86c06335d03328c0fabc4"
+      ],
+      "cognitiveGaps": [
+        "context_budget"
+      ],
+      "cognitiveTruncated": true
+    }
+  ],
+  "aggregates": [
+    {
+      "mode": "skill_first",
+      "scenarioCount": 6,
+      "meanSemanticCoverage": 0.9444,
+      "meanCriticalCoverage": 0.9667,
+      "medianContextBytes": 11752.5,
+      "medianEstimatedTokens": 2938.5,
+      "medianRetrievalLatencyMs": 0.67,
+      "totalSkillReads": 8,
+      "totalFallbackCount": 0
+    },
+    {
+      "mode": "cognitive_only",
+      "scenarioCount": 6,
+      "meanSemanticCoverage": 0.9167,
+      "meanCriticalCoverage": 0.9583,
+      "medianContextBytes": 3589.5,
+      "medianEstimatedTokens": 898,
+      "medianRetrievalLatencyMs": 2.44,
+      "totalSkillReads": 0,
+      "totalFallbackCount": 0
+    },
+    {
+      "mode": "cognitive_with_skill_fallback",
+      "scenarioCount": 6,
+      "meanSemanticCoverage": 0.9722,
+      "meanCriticalCoverage": 1,
+      "medianContextBytes": 3688,
+      "medianEstimatedTokens": 922.5,
+      "medianRetrievalLatencyMs": 2.32,
+      "totalSkillReads": 1,
+      "totalFallbackCount": 1
+    }
+  ],
+  "retirementGate": {
+    "passed": false,
+    "noCriticalRegression": false,
+    "semanticCoverageWithinTwoPoints": false,
+    "medianContextBytesHalved": true,
+    "zeroSkillReadsForCoveredScenarios": true,
+    "coveredScenarioIds": [
+      "ios-interaction-state-single-owner",
+      "swiftui-state-ownership-performance",
+      "swiftui-native-accessibility",
+      "swift-concurrency-isolation",
+      "ios-design-system-governance"
+    ],
+    "gaps": [
+      "critical_regression",
+      "semantic_coverage_regression"
+    ]
+  },
+  "modelAnswerQuality": "not_measured"
+}

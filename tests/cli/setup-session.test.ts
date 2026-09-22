@@ -126,6 +126,22 @@ describe('Forge setup session', () => {
       runMcpSetupChatgpt({ controllerHome, userLevel: true, instanceId: 'Forge-WSL' });
       const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
       expect(localConfig.identity.forgeInstanceId).toBe('forge-wsl');
+      expect(localConfig.chatgpt.serverName).toBe('forge-wsl');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('disambiguates default ChatGPT connector names per Forge instance and migrates the legacy shared default', () => {
+    const root = temp('forge-setup-instance-server-name-'); try {
+      const macHome = join(root, 'mac-controller'), wslHome = join(root, 'wsl-controller');
+      runMcpSetupChatgpt({ controllerHome: macHome, userLevel: true, instanceId: 'forge-mac' });
+      runMcpSetupChatgpt({ controllerHome: wslHome, userLevel: true, instanceId: 'forge-wsl' });
+      const readConfig = (home: string) => JSON.parse(require('fs').readFileSync(join(home, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(readConfig(macHome).chatgpt.serverName).toBe('forge-mac');
+      expect(readConfig(wslHome).chatgpt.serverName).toBe('forge-wsl');
+      const legacy = readConfig(macHome); legacy.chatgpt.serverName = 'forge';
+      require('fs').writeFileSync(join(macHome, 'mcp', 'mcp.local.json'), `${JSON.stringify(legacy, null, 2)}\n`);
+      runMcpSetupChatgpt({ controllerHome: macHome, userLevel: true });
+      expect(readConfig(macHome).chatgpt.serverName).toBe('forge-mac');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

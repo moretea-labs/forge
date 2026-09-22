@@ -30,6 +30,14 @@ export interface ComputerTargetPersistenceDeleteInput {
   expectedRevision?: number;
 }
 
+export interface ComputerTargetPersistenceTransaction {
+  read<T>(namespace: string, scope: string, key: string): ComputerTargetPersistenceRecord<T> | undefined;
+  list<T>(input: ComputerTargetPersistenceListInput): ComputerTargetPersistenceRecord<T>[];
+  listAll<T>(input: Omit<ComputerTargetPersistenceListInput, 'limit'>): ComputerTargetPersistenceRecord<T>[];
+  write<T>(input: ComputerTargetPersistenceWrite<T>): ComputerTargetPersistenceRecord<T>;
+  delete(input: ComputerTargetPersistenceDeleteInput): boolean;
+}
+
 /**
  * Provider-neutral persistence and serialization contract for durable Computer
  * interaction targets. Concrete Controller locking/SQLite ownership belongs to
@@ -38,7 +46,9 @@ export interface ComputerTargetPersistenceDeleteInput {
 export interface ComputerTargetPersistencePort {
   read<T>(controllerHome: string, namespace: string, scope: string, key: string): ComputerTargetPersistenceRecord<T> | undefined;
   list<T>(controllerHome: string, input: ComputerTargetPersistenceListInput): ComputerTargetPersistenceRecord<T>[];
+  listAll<T>(controllerHome: string, input: Omit<ComputerTargetPersistenceListInput, 'limit'>): ComputerTargetPersistenceRecord<T>[];
   write<T>(controllerHome: string, input: ComputerTargetPersistenceWrite<T>): ComputerTargetPersistenceRecord<T>;
   delete(controllerHome: string, input: ComputerTargetPersistenceDeleteInput): boolean;
+  transaction<T>(controllerHome: string, operation: (transaction: ComputerTargetPersistenceTransaction) => T): T;
   withTargetLock<T>(controllerHome: string, targetId: string, operation: () => Promise<T>): Promise<T>;
 }

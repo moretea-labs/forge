@@ -17,6 +17,8 @@ export interface ChatgptControllerBindingPayload {
   reasoning?: 'medium' | 'high' | 'xhigh';
   tabPolicy?: 'auto' | 'reuse' | 'new';
   timeoutMs?: number;
+  /** Exact interactive Browser grants reusable by scheduled delivery. */
+  authorizationGrantRefs?: string[];
   createdAt: string;
   updatedAt: string;
 }

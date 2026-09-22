@@ -4,7 +4,7 @@ import {
   recordEditSessionProcessCheckReceipts,
   type EditSession,
 } from '../../../cli/editing/edit-session';
-import { listControllerChecks } from '../../../cli/controller/check-runner';
+import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
@@ -20,6 +20,7 @@ import {
   runPersistedCheckViaProcessRuntime,
   type ProcessCheckCompletionReceipt,
 } from '../../execution/process-runtime';
+import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 import { resourceClaimsConflict } from '../../resources/claims/conflicts';
 import {
   mutateControlPlaneRecord,
@@ -492,6 +493,19 @@ export async function reconcileEditValidationRun(
 
   try {
     const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId));
+    const projections = receipts.map((receipt, index) => {
+      const record = records[index]!;
+      const legacyEvidence = record.origin?.checkResultReceiptPath
+        ? undefined
+        : readLatestControllerCheckEvidence(validationRepository.canonicalRoot, receipt.checkId);
+      return projectTerminalCheckVerification(record, receipt.checkId, receipt, { legacyEvidence });
+    });
+    const infrastructureProjectionIndex = projections.findIndex((projection) => projection.outcome === 'infrastructure_failure');
+    if (infrastructureProjectionIndex >= 0) {
+      const receipt = receipts[infrastructureProjectionIndex]!;
+      const projection = projections[infrastructureProjectionIndex]!;
+      throw new Error(`EDIT_VALIDATION_CHECK_INFRASTRUCTURE_FAILURE: ${receipt.checkId}: ${projection.infrastructureReason ?? projection.evidence.warning ?? receipt.summary}`);
+    }
     if (session.workId && work) {
       if (!run.sourceRevision || !run.workspaceFingerprint) throw new Error('EDIT_VALIDATION_WORK_IDENTITY_REQUIRED');
       const availableChecks = listControllerChecks(validationRepository.canonicalRoot);
@@ -503,15 +517,15 @@ export async function reconcileEditValidationRun(
         sourceRevision: run.sourceRevision,
         workspaceFingerprint: run.workspaceFingerprint,
       };
-      for (const receipt of receipts) {
+      for (const [index, receipt] of receipts.entries()) {
         const checkId = receipt.checkId;
+        const projection = projections[index]!;
         const inputFingerprint = verificationInputFingerprint({
           sourceRevision: run.sourceRevision,
           workspaceFingerprint: run.workspaceFingerprint,
           checkId,
           requestedChecks: work.checks.length ? work.checks : run.checkIds,
         });
-        const infrastructureFailed = receipt.timedOut || receipt.cancelled || (!receipt.ok && receipt.status !== 'failed');
         verifyGoalWorkloop(workloopCtx, {
           workId: session.workId,
           checkId,
@@ -520,8 +534,8 @@ export async function reconcileEditValidationRun(
           verificationInputFingerprint: inputFingerprint,
           commandFingerprint: commandFingerprint(checkId, receipt.commandId),
           receipt,
-          infrastructureFailed,
-          checkFailed: !receipt.ok && !infrastructureFailed,
+          infrastructureFailed: projection.isInfrastructureIssue,
+          checkFailed: projection.isAcceptanceFailure,
         });
       }
     }
@@ -535,7 +549,7 @@ export async function reconcileEditValidationRun(
     run = saveRun(controllerHome, {
       ...run,
       status: 'completed',
-      ok: receipts.every((receipt) => receipt.ok),
+      ok: projections.every((projection) => projection.outcome === 'valid_pass'),
       receipts,
       error: undefined,
     });

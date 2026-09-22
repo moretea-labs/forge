@@ -17,6 +17,7 @@ import { callRuntimeTool, runtimeToolDefinitions } from "../../src/runtime/gatew
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
+import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { createWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
@@ -170,14 +171,73 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("restores the exact pre-stage index when an explicit-path commit fails and preserves unrelated staged changes on success", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-commit-rollback-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "repo");
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "owned.txt"), "base-owned\n");
+      writeFileSync(join(repoRoot, "outside.txt"), "base-outside\n");
+      git(repoRoot, ["add", "owned.txt", "outside.txt"]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      writeFileSync(join(repoRoot, "owned.txt"), "changed-owned\n");
+      writeFileSync(join(repoRoot, "outside.txt"), "changed-outside\n");
+      git(repoRoot, ["add", "outside.txt"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const indexPath = join(repoRoot, ".git", "index");
+      const indexBefore = readFileSync(indexPath);
+      const hook = join(repoRoot, ".git", "hooks", "pre-commit");
+      writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+      spawnSync("chmod", ["+x", hook]);
+
+      const failed = repositoryGitCommit(controllerHome, repository, {
+        message: "must roll back staged representation",
+        paths: ["owned.txt"],
+      });
+
+      expect(failed.committed).toBe(false);
+      expect(failed.error?.code).toBe("GIT_COMMIT_FAILED");
+      expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
+      const afterFailure = repositoryGitStatus(repository);
+      expect(afterFailure.staged).toEqual(["outside.txt"]);
+      expect(afterFailure.unstaged).toEqual(["owned.txt"]);
+      expect(readFileSync(join(repoRoot, "owned.txt"), "utf8")).toBe("changed-owned\n");
+
+      rmSync(hook, { force: true });
+      const committed = repositoryGitCommit(controllerHome, repository, {
+        message: "commit after rollback",
+        paths: ["owned.txt"],
+      });
+      expect(committed.committed).toBe(true);
+      expect(repositoryGitStatus(repository).staged).toEqual(["outside.txt"]);
+      expect(spawnSync("git", ["-C", repoRoot, "show", "HEAD:owned.txt"], { encoding: "utf8" }).stdout).toBe("changed-owned\n");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("documents the facade-first shortest path without widening the tool surface", () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === "rh_context");
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === "rh_work");
     const command = repositoryToolDefinitions.find((tool) => tool.name === "repository_command_execute");
+    const safePatchPlan = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_plan");
+    const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_apply");
     expect(rhContext?.description).toContain("default repository code-discovery/read path");
     expect(rhContext?.description).toContain("fallback-only");
     expect(rhWork?.description).toContain("Requirement and Plan are not universal prerequisites");
     expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
+    const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {
+      const properties = tool?.inputSchema.properties as Record<string, unknown> | undefined;
+      const operations = properties?.operations as { items?: { properties?: { type?: { enum?: string[] } } } } | undefined;
+      return operations?.items?.properties?.type?.enum;
+    };
+    expect(operationTypes(safePatchPlan)).toEqual(["create", "write", "replace", "insert_before", "insert_after", "prepend", "append", "delete"]);
+    expect(operationTypes(safePatchApply)).toEqual(operationTypes(safePatchPlan));
     for (const retired of ["repository_goal_list", "repository_goal_upsert", "repository_stuck_diagnose", "repository_goal_run", "repository_goal_runs"]) {
       expect(repositoryToolDefinitions.some((tool) => tool.name === retired)).toBe(false);
     }
@@ -358,6 +418,70 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("Work-bound raw commit derives staged scope and rejects staged paths outside durable Work authority", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-work-commit-scope-"));
+    const controllerHome = join(workspace, "controller");
+    const repoRoot = join(workspace, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "tracked.txt"), "base\n");
+      git(repoRoot, ["add", "tracked.txt"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-RAW-COMMIT-SCOPE";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: "goal_workloop",
+        objective: "Commit only Work-owned staged source.",
+        acceptanceCriteria: [],
+        allowedPaths: ["tracked.txt"],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "running",
+      });
+      const caller = { sessionId: "session-raw-commit-scope", principalId: "principal-raw-commit-scope", controllerInstanceId: "runtime-raw-commit-scope" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        controllerId: caller.principalId,
+        controllerType: "chatgpt",
+        sessionId: caller.sessionId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        leaseMs: 60_000,
+      });
+
+      const established = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["sh", "-c", "printf 'work change\\n' > tracked.txt"],
+        request_id: "work-raw-commit-scope-establish-authority",
+      }, caller));
+      expect(established.accepted).toBe(true);
+
+      writeFileSync(join(repoRoot, "outside.txt"), "outside\n");
+      git(repoRoot, ["add", "outside.txt"]);
+      const blocked = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["git", "commit", "-m", "must not commit outside Work scope"],
+        request_id: "work-raw-commit-scope-blocked",
+      }, caller));
+      expect(blocked.error).toMatchObject({ code: "WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE" });
+      expect(spawnSync("git", ["-C", repoRoot, "diff", "--cached", "--name-only"], { encoding: "utf8" }).stdout.trim()).toBe("outside.txt");
+      expect(spawnSync("git", ["-C", repoRoot, "log", "-1", "--pretty=%s"], { encoding: "utf8" }).stdout.trim()).toBe("init");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal-bound execution session cannot omit work_id and fall back to unbound repository mutation", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-bound-attribution-"));
     const controllerHome = join(workspace, "controller");
@@ -469,6 +593,14 @@ describe("repository MCP command tools", () => {
       expect(allowed.status).toBe("applied");
       expect(allowed.session.workId).toBe(workId);
       expect(readFileSync(join(repoRoot, "src/allowed.txt"), "utf8")).toBe("yes\n");
+
+      const writeMissing = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "write must not silently create",
+        operations: [{ type: "write", path: "src/missing.txt", content: "no\n" }],
+      }, caller));
+      expect(writeMissing.status).toBe("failed");
+      expect(writeMissing.failures).toContainEqual(expect.objectContaining({ type: "write", path: "src/missing.txt", code: "TARGET_MISSING" }));
+      expect(existsSync(join(repoRoot, "src/missing.txt"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
@@ -610,6 +742,53 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("running managed effect command without repository delta does not promote WorkKind", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-running-no-delta-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    const longCommand = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setTimeout(() => {}, 3000);")}`;
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-EFFECT-RUNNING-NO-DELTA";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
+        workKind: "local_effect", objective: "Run a conservative write-risk Process without changing repository source.",
+        acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-effect-running", principalId: "principal-effect-running", controllerInstanceId: "runtime-effect-running" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const running = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: longCommand,
+        request_id: "effect-running-no-delta",
+        interactive_wait_ms: 0,
+      }, caller));
+      expect(running.accepted).toBe(true);
+      expect(running.status).toBe("running");
+      expect(typeof running.processId).toBe("string");
+      expect(repositoryGitStatus(getRepository(repository.repoId, controllerHome)).clean).toBe(true);
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("local_effect");
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({ state: "prepared" });
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal Work ids remain usable only as explicit read-only historical context", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-readonly-context-"));
     const controllerHome = join(workspace, "controller");
@@ -735,6 +914,18 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["add", "direct-edit.txt"]);
       git(repoRoot, ["commit", "-m", "independent direct edit"]);
 
+      const merged = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        command: ["git", "merge", "feature/completed"],
+        request_id: "merge-completed-unrelated-work",
+      }, caller));
+      expect(merged.error?.code).not.toBe("WORK_DELIVERY_REQUIRES_FINALIZE");
+      if (typeof merged.processId === "string") {
+        const mergedProcess = await waitRepositoryCommandProcess(controllerHome, repository.repoId, merged.processId, { timeoutMs: 10_000 });
+        expect(mergedProcess.status).toBe("succeeded");
+      }
+      expect(readFileSync(join(repoRoot, "completed.txt"), "utf8")).toBe("done\n");
+
       const explicitlyBoundPatch = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
         repo_id: repository.repoId,
         work_id: unrelatedWorkId,
@@ -743,15 +934,6 @@ describe("repository MCP command tools", () => {
       }, caller));
       expect(explicitlyBoundPatch.status).toBe("applied");
       expect(explicitlyBoundPatch.session.workId).toBe(unrelatedWorkId);
-
-      const merged = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
-        repo_id: repository.repoId,
-        command: ["git", "merge", "feature/completed"],
-        request_id: "merge-completed-unrelated-work",
-      }, caller));
-      expect(merged.error?.code).not.toBe("WORK_DELIVERY_REQUIRES_FINALIZE");
-      expect(merged.exitCode).toBe(0);
-      expect(readFileSync(join(repoRoot, "completed.txt"), "utf8")).toBe("done\n");
 
       git(repoRoot, ["switch", "-c", "feature/explicit-work"]);
       writeFileSync(join(repoRoot, "explicit.txt"), "pending\n");

@@ -10,6 +10,7 @@ import { assertRuntimeReleaseExecutionSurface } from './release-manifest';
 import { assertRuntimeReleaseExecutionCanaries } from './release-execution-canary';
 import type { RuntimeReleaseManifest } from './types';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
 
 export interface PackageRuntimeFileRecord {
   path: string;
@@ -35,9 +36,32 @@ export interface PackageRuntimeRelease {
 // TypeScript entrypoints import both `src/` and the top-level modular-monolith
 // roots at runtime, so retaining only `src/` creates a release that passes
 // staging but cannot start after the installed package moves or disappears.
-const PACKAGE_RUNTIME_ROOTS = ['src', 'adapters', 'packages', 'bin', 'assets', 'scripts', 'node_modules'] as const;
+const PACKAGE_RUNTIME_ROOTS = ['src', 'adapters', 'packages', 'supervisor', 'bin', 'assets', 'scripts', 'node_modules'] as const;
 const PACKAGE_RUNTIME_FILES = ['package.json'] as const;
+// Compiled releases execute only compiled/bundled artifacts. Keep a tiny package
+// projection for browser-extension installation plus two legacy Recovery
+// recognition sentinels; neither sentinel is executed when the compiled
+// Connector sidecar is present.
+const COMPILED_RUNTIME_PACKAGE_ROOTS = ['supervisor/chrome-extension'] as const;
+const COMPILED_RUNTIME_PACKAGE_FILES = [
+  'package.json',
+  'src/cli/index.ts',
+  'src/runtime/shared/node-ts-loader.mjs',
+] as const;
 const PACKAGE_RUNTIME_STAGING_RESERVE_BYTES = 256 * 1024 * 1024;
+
+function isNonRuntimePackageHelper(path: string): boolean {
+  if (path.startsWith('scripts/benchmark-')) return true;
+  if (path.startsWith('scripts/check-release-')) return true;
+  if (path.startsWith('scripts/public-release')) return true;
+  return path === 'scripts/route-nl-vs-ts-eval.ts'
+    || path === 'scripts/check-npm-release.sh'
+    || path === 'scripts/check-public-release-surface.sh'
+    || path === 'scripts/check-tarball-install-smoke.sh'
+    || path === 'scripts/publish-release-tarball.sh'
+    || path === 'scripts/stage-runtime-release.ts'
+    || path === 'scripts/package-source-archive.sh';
+}
 
 function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -50,7 +74,7 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
   renameSync(temporary, path);
 }
 
-function walkRegularFiles(root: string, current: string, output: string[]): void {
+function walkRegularFiles(root: string, current: string, output: string[], prefix = ''): void {
   if (!existsSync(current)) return;
   const stat = lstatSync(current);
   // Package managers such as Bun can materialize dependency files as
@@ -59,36 +83,87 @@ function walkRegularFiles(root: string, current: string, output: string[]): void
   // regular files beneath its own immutable package root.
   if (stat.isSymbolicLink()) {
     const target = statSync(current);
-    if (target.isFile()) output.push(relative(root, current).split('\\').join('/'));
+    if (target.isFile()) {
+      const relativePath = relative(root, current).split('\\').join('/');
+      output.push(prefix ? `${prefix}/${relativePath}` : relativePath);
+    }
     return;
   }
   if (stat.isFile()) {
-    output.push(relative(root, current).split('\\').join('/'));
+    const relativePath = relative(root, current).split('\\').join('/');
+    output.push(prefix ? `${prefix}/${relativePath}` : relativePath);
     return;
   }
   if (!stat.isDirectory()) return;
-  for (const entry of readdirSync(current).sort()) walkRegularFiles(root, join(current, entry), output);
+  for (const entry of readdirSync(current).sort()) walkRegularFiles(root, join(current, entry), output, prefix);
 }
 
-export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
+function packageSourcePath(packageRoot: string, path: string, dependencyRoot = packageRoot): string {
+  return path === 'node_modules' || path.startsWith('node_modules/')
+    ? join(resolve(dependencyRoot), path)
+    : join(resolve(packageRoot), path);
+}
+
+function packageFileIndex(
+  packageRoot: string,
+  roots: readonly string[],
+  files: readonly string[],
+  dependencyRoot = packageRoot,
+): PackageRuntimeFileRecord[] {
   const root = resolve(packageRoot);
+  const dependencies = resolve(dependencyRoot);
   const paths: string[] = [];
-  for (const directory of PACKAGE_RUNTIME_ROOTS) walkRegularFiles(root, join(root, directory), paths);
-  for (const file of PACKAGE_RUNTIME_FILES) walkRegularFiles(root, join(root, file), paths);
-  const unique = [...new Set(paths)].sort();
-  if (!unique.includes('package.json') || !unique.some((path) => path === 'bin/forge-runtime.mjs')) {
-    throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
+  for (const directory of roots) {
+    if (directory === 'node_modules' && dependencies !== root) {
+      const dependencyNodeModules = join(dependencies, 'node_modules');
+      walkRegularFiles(dependencyNodeModules, dependencyNodeModules, paths, 'node_modules');
+    } else {
+      walkRegularFiles(root, join(root, directory), paths);
+    }
   }
-  return unique.map((path) => {
-    const bytes = readFileSync(join(root, path));
+  for (const file of files) walkRegularFiles(root, join(root, file), paths);
+  return [...new Set(paths)].sort().map((path) => {
+    const bytes = readFileSync(packageSourcePath(root, path, dependencies));
     return { path, sha256: sha256(bytes), bytes: bytes.length };
   });
+}
+
+export function packageRuntimeFileIndex(packageRoot = packageRuntimeSourceRoot(), dependencyRoot = packageRoot): PackageRuntimeFileRecord[] {
+  const root = resolve(packageRoot);
+  const records = packageFileIndex(root, PACKAGE_RUNTIME_ROOTS, PACKAGE_RUNTIME_FILES, dependencyRoot)
+    .filter((record) => !isNonRuntimePackageHelper(record.path));
+  const paths = new Set(records.map((record) => record.path));
+  if (!paths.has('package.json') || !paths.has('bin/forge-runtime.mjs')) {
+    throw new Error(`PACKAGE_RUNTIME_SURFACE_INCOMPLETE: ${root}`);
+  }
+  return records;
+}
+
+export function compiledRuntimePackageFileIndex(packageRoot = packageRuntimeSourceRoot()): PackageRuntimeFileRecord[] {
+  const root = resolve(packageRoot);
+  const records = packageFileIndex(root, COMPILED_RUNTIME_PACKAGE_ROOTS, COMPILED_RUNTIME_PACKAGE_FILES);
+  const paths = new Set(records.map((record) => record.path));
+  for (const required of COMPILED_RUNTIME_PACKAGE_FILES) {
+    if (!paths.has(required)) throw new Error(`COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: ${required}`);
+  }
+  if (![...paths].some((path) => path.startsWith('supervisor/chrome-extension/'))) {
+    throw new Error('COMPILED_RUNTIME_PACKAGE_SURFACE_INCOMPLETE: supervisor/chrome-extension');
+  }
+  return records;
 }
 
 export function packageRuntimeFingerprint(records: PackageRuntimeFileRecord[]): string {
   const hash = createHash('sha256');
   for (const record of records) hash.update(record.path).update('\0').update(record.sha256).update('\0').update(String(record.bytes)).update('\n');
   return hash.digest('hex');
+}
+
+function packageRuntimeArtifactIdentity(root: string, records: PackageRuntimeFileRecord[]): string {
+  const hash = createHash('sha256');
+  for (const record of records) {
+    hash.update(record.path).update('\0').update(readFileSync(join(root, record.path))).update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
 }
 
 function assertPackageRuntimeSnapshot(snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
@@ -111,10 +186,15 @@ function assertPackageRuntimeSnapshot(snapshotRoot: string, records: PackageRunt
   }
 }
 
-export function stagePackageRuntimeSnapshot(sourceRoot: string, snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
+export function stagePackageRuntimeSnapshot(
+  sourceRoot: string,
+  snapshotRoot: string,
+  records: PackageRuntimeFileRecord[],
+  dependencyRoot = sourceRoot,
+): void {
   mkdirSync(snapshotRoot, { recursive: false, mode: 0o700 });
   for (const record of records) {
-    const source = join(sourceRoot, record.path);
+    const source = packageSourcePath(sourceRoot, record.path, dependencyRoot);
     const link = lstatSync(source);
     const stat = link.isSymbolicLink() ? statSync(source) : link;
     if (!stat.isFile()) throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);
@@ -146,6 +226,7 @@ function launcherSource(input: {
   indexSha256: string;
   entryRelativePath?: string;
   managerSignalsProcessGroup?: boolean;
+  ownsProcessRuntimeCanary?: boolean;
 }): string {
   const entryRelativePath = input.entryRelativePath ?? 'src/runtime/root/entry.ts';
   return `#!${process.execPath}\n`
@@ -154,7 +235,12 @@ function launcherSource(input: {
     + `import { dirname, join } from 'node:path';\n`
     + `import { fileURLToPath } from 'node:url';\n`
     + `import { spawn } from 'node:child_process';\n`
-    + `const releaseRoot=dirname(fileURLToPath(import.meta.url));\n`
+    // macOS runs a byte-for-byte mirror of this launcher from its fixed,
+    // TCC-stable service path. The mirrored file is not its immutable release
+    // directory, so use the launch contract's attested release binding when it
+    // is present. Direct execution from the immutable release still derives
+    // the same root from the entrypoint location.
+    + `const releaseRoot=process.env.FORGE_RELEASE_PATH?.trim()||dirname(fileURLToPath(import.meta.url));\n`
     + `const packageRoot=join(releaseRoot,'package');\n`
     + `const indexPath=join(releaseRoot,'package-files.json');\n`
     + `const expectedIndex=${JSON.stringify(input.indexSha256)};\n`
@@ -163,6 +249,8 @@ function launcherSource(input: {
     + `if(digest(raw)!==expectedIndex){console.error('FORGE_PACKAGE_RUNTIME_INDEX_CHANGED');process.exit(78);}\n`
     + `let records; try { records=JSON.parse(raw.toString('utf8')).files; } catch { console.error('FORGE_PACKAGE_RUNTIME_INDEX_INVALID'); process.exit(78); }\n`
     + `for(const record of records){const path=join(packageRoot,record.path);if(!existsSync(path)||digest(readFileSync(path))!==record.sha256){console.error('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED: '+record.path);process.exit(78);}}\n`
+    + `const ownsProcessRuntimeCanary=${input.ownsProcessRuntimeCanary === true ? 'true' : 'false'};\n`
+    + `if(ownsProcessRuntimeCanary&&process.argv.length===3&&process.argv[2]===${JSON.stringify(PROCESS_RUNTIME_RELEASE_CANARY_ARG)})process.exit(0);\n`
     + `const entry=join(packageRoot,...${JSON.stringify(entryRelativePath.split('/'))});\n`
     + `const loader=join(packageRoot,'src','runtime','shared','node-ts-loader.mjs');\n`
     + `const args=process.versions?.bun?[entry,...process.argv.slice(2)]:['--loader',loader,entry,...process.argv.slice(2)];\n`
@@ -224,7 +312,12 @@ function assertImmutablePackageRuntimeRelease(input: {
     && manifest.checkRunnerArtifactIdentity === expected.checkRunnerArtifactIdentity
     && JSON.stringify(manifest.arguments ?? []) === JSON.stringify(expected.arguments ?? [])
     && manifest.configurationSchemaVersion === expected.configurationSchemaVersion
-    && resolve(manifest.controllerHome) === resolve(expected.controllerHome)
+    && manifest.deploymentScope === expected.deploymentScope
+    && (manifest.deploymentScope === 'portable'
+      ? expected.deploymentScope === 'portable'
+      : typeof manifest.controllerHome === 'string'
+        && typeof expected.controllerHome === 'string'
+        && resolve(manifest.controllerHome) === resolve(expected.controllerHome))
     && JSON.stringify(manifest.databaseSchemaCompatibility) === JSON.stringify(expected.databaseSchemaCompatibility)
     && manifest.workerProtocolVersion === expected.workerProtocolVersion
     && manifest.releaseRevision === expected.releaseRevision
@@ -232,6 +325,7 @@ function assertImmutablePackageRuntimeRelease(input: {
     && typeof manifest.createdAt === 'string'
     && Number.isFinite(Date.parse(manifest.createdAt));
   if (!compatible) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: manifest identity changed');
+  if (!expected.controllerHome) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package release must remain ControllerHome-bound');
   assertRuntimeReleaseExecutionSurface(input.manifestPath, expected.controllerHome);
 }
 
@@ -245,8 +339,9 @@ export function materializePackageRuntimeRelease(input: {
   const version = packageVersion(sourcePackageRoot);
   const records = packageRuntimeFileIndex(sourcePackageRoot);
   const fingerprint = packageRuntimeFingerprint(records);
+  const packageArtifactIdentity = packageRuntimeArtifactIdentity(sourcePackageRoot, records);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
-  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v5`);
+  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v7`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   const releaseRoot = join(releasesRoot, releaseId);
@@ -262,6 +357,7 @@ export function materializePackageRuntimeRelease(input: {
   const processRunnerLauncher = launcherSource({
     indexSha256,
     entryRelativePath: 'src/runtime/execution/process-runtime/process-runner-entry.ts',
+    ownsProcessRuntimeCanary: true,
   });
   const processRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(processRunnerLauncher))}`;
   const checkRunnerEntrypoint = 'forge-check-runner' as const;
@@ -269,6 +365,7 @@ export function materializePackageRuntimeRelease(input: {
   const checkRunnerLauncher = launcherSource({
     indexSha256,
     entryRelativePath: 'src/runtime/execution/process-runtime/check-runner-sidecar.ts',
+    ownsProcessRuntimeCanary: true,
   });
   const checkRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(checkRunnerLauncher))}`;
   const expectedManifest: Omit<RuntimeReleaseManifest, 'createdAt'> = {
@@ -280,6 +377,8 @@ export function materializePackageRuntimeRelease(input: {
     processRunnerArtifactIdentity,
     checkRunnerEntrypoint,
     checkRunnerArtifactIdentity,
+    packageRoot: 'package',
+    packageArtifactIdentity,
     arguments: [],
     configurationSchemaVersion: 1,
     controllerHome,

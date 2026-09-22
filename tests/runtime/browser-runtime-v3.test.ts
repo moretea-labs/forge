@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  browserExplicitPostActionWaitMs,
+  browserNativeForegroundVerificationWaitMs,
+  browserRuntimeActionPolicy,
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from '../../src/runtime/plugins/browser-runtime';
@@ -66,6 +69,57 @@ function provider(options: {
     revalidate: options.revalidate,
   };
 }
+
+describe('Browser Runtime completion wait policy', () => {
+  test('normal semantic actions have no hidden settle delay but preserve explicit compatibility waits', () => {
+    expect(browserExplicitPostActionWaitMs(undefined)).toBe(0);
+    expect(browserExplicitPostActionWaitMs(0)).toBe(0);
+    expect(browserExplicitPostActionWaitMs(125)).toBe(125);
+    expect(browserExplicitPostActionWaitMs(-1)).toBe(0);
+    expect(browserExplicitPostActionWaitMs(Number.NaN)).toBe(0);
+  });
+
+  test('native foreground keeps a provider verification budget unless explicitly overridden', () => {
+    expect(browserNativeForegroundVerificationWaitMs(undefined)).toBe(750);
+    expect(browserNativeForegroundVerificationWaitMs(-1)).toBe(750);
+    expect(browserNativeForegroundVerificationWaitMs(0)).toBe(0);
+    expect(browserNativeForegroundVerificationWaitMs(25)).toBe(25);
+  });
+});
+
+describe('Browser Runtime V3 internal resources', () => {
+  test('routes unpacked-extension reads and mutations through browser.internal_resources plus transaction authority', async () => {
+    expect(browserRuntimeActionPolicy('list_unpacked_extensions')).toEqual({
+      requiredCapabilities: ['browser.internal_resources', 'browser.transaction'],
+      foreground: 'none',
+      replaySafety: 'read_only',
+    });
+    expect(browserRuntimeActionPolicy('install_unpacked_extension')).toEqual({
+      requiredCapabilities: ['browser.internal_resources', 'browser.transaction'],
+      foreground: 'none',
+      replaySafety: 'non_idempotent',
+    });
+    const selected: string[] = [];
+    const wrong = provider({
+      providerId: 'dom-only',
+      capabilities: ['dom.read', 'browser.transaction'],
+      priority: 1,
+      execute: async () => { selected.push('wrong'); return {}; },
+    });
+    const right = provider({
+      providerId: 'extensions',
+      capabilities: ['browser.internal_resources', 'browser.transaction'],
+      priority: 2,
+      execute: async () => { selected.push('right'); return { ok: true }; },
+    });
+    await executeBrowserRuntimeAction({
+      runtimeKey: 'browser-v3:extensions',
+      input: input('install_unpacked_extension', 'tx-extension-install'),
+      providers: [wrong, right],
+    });
+    expect(selected).toEqual(['right']);
+  });
+});
 
 describe('Browser Runtime V3 native create-tab provenance', () => {
   test('prefers the structured stable ref and preserves exact assignment provenance', () => {

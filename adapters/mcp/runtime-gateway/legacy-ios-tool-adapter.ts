@@ -1,3 +1,9 @@
+import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import type { MultiRepositoryMcpToolContext } from '../multi-repository';
+import { callPluginAdapter } from './plugin-adapter';
+import { result } from './result-adapter';
+import { selected } from './shared-adapter';
+
 /**
  * Compatibility translation only: legacy iOS MCP tool names are normalized to
  * the canonical typed iOS plugin action surface. This module owns no runtime,
@@ -58,4 +64,42 @@ export function legacyIosPluginInvocation(
     arguments: definedArguments(invocation.arguments),
     confirmAuthorization: args.confirm_authorization === true,
   };
+}
+
+
+const LEGACY_IOS_PLUGIN_TOOLS = new Set([
+  'ios_xcode_status', 'ios_simulators_list', 'ios_project_discover', 'ios_schemes_list',
+  'ios_simulator_boot', 'ios_app_build', 'ios_simulator_screenshot', 'ios_ui_smoke_test',
+]);
+const RETIRED_IOS_ATOMIC_TOOLS = new Set(['ios_app_install', 'ios_app_launch', 'ios_simulator_log_tail']);
+
+/** Thin compatibility dispatch. Execution remains owned by the typed iOS plugin application path. */
+export async function callLegacyIosAdapter(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
+  if (RETIRED_IOS_ATOMIC_TOOLS.has(name)) {
+    return result({
+      accepted: false,
+      mode: 'compatibility_migration',
+      path: 'plugin_action_execute',
+      rejectCode: 'LEGACY_IOS_ATOMIC_RETIRED',
+      message: `${name} no longer owns an independent iOS execution path. Use plugin_action_execute with plugin_id=ios and action_id=smoke_review for staged simulator validation.`,
+      migration: { tool: 'plugin_action_execute', plugin_id: 'ios', action_id: 'smoke_review' },
+    }, true);
+  }
+  if (!LEGACY_IOS_PLUGIN_TOOLS.has(name)) return undefined;
+  const repository = selected(ctx, args);
+  const invocation = legacyIosPluginInvocation(name, args);
+  if (!invocation) return undefined;
+  return callPluginAdapter(ctx, 'plugin_action_execute', {
+    repo_id: repository.repoId,
+    checkout_id: repository.activeCheckoutId,
+    plugin_id: 'ios',
+    action_id: invocation.actionId,
+    request_id: invocation.requestId,
+    arguments: invocation.arguments,
+    ...(invocation.confirmAuthorization ? { confirm_authorization: true } : {}),
+  });
 }

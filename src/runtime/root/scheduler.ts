@@ -30,10 +30,14 @@ async function waitForSchedulerHeartbeat(
   throw new Error(`SCHEDULER_INITIALIZATION_TIMEOUT: ${timeoutMs}ms`);
 }
 
-export function startInProcessScheduler(
-  controllerHome: string,
-  readyTimeoutMs = 5_000,
-): RuntimeSchedulerHandle {
+export function startInProcessScheduler(input: {
+  controllerHome: string;
+  readyTimeoutMs?: number;
+  runtimeSourceRoot?: string;
+  workerExecutable?: string;
+  periodicCleanupExecutable?: string;
+}): RuntimeSchedulerHandle {
+  const { controllerHome, readyTimeoutMs = 5_000 } = input;
   const abort = new AbortController();
   // Old Runtime releases ignore pending activation markers entirely. A naturally
   // restarted Runtime that contains this code consumes them once, before its
@@ -42,6 +46,9 @@ export function startInProcessScheduler(
   const startedAfterMs = Date.now();
   const scheduler = new GlobalScheduler(controllerHome, {}, {
     controllerPid: process.pid,
+    runtimeSourceRoot: input.runtimeSourceRoot,
+    workerExecutable: input.workerExecutable,
+    periodicCleanupExecutable: input.periodicCleanupExecutable,
     isolatePeriodicCleanup: true,
     fatalOnTickError: true,
   });

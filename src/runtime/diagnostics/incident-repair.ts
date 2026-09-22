@@ -1,21 +1,26 @@
 import { createHash } from 'crypto';
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import { listRepositories, selectRepositoryCheckout } from '../../cli/repositories/registry';
+import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { withControllerLock } from '../../cli/repositories/locks';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
+import { readRuntimeReleaseAuthority } from '../root/release-store';
+import { appendRuntimeEvent, type RuntimeEntityEvent } from '../evidence/event-ledger';
+import { listReleaseSessions } from '../release/release-session';
 import { appendWorkEvidence, getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
 import { routeWorkStart } from '../control-plane/facade/goal-workloop';
 import { createWorkContinuationSchedule } from '../workflow/schedules/work-continuation';
 import { touchSchedulerWakeSignal } from '../control-plane/global-scheduler/wake-signal';
-import type { McpIncident } from './mcp-timing';
+import { recentMcpIncidents, type McpIncident } from './mcp-timing';
 
 const RECURRENCE_WINDOW_MS = 30 * 60_000;
 const RECURRENCE_THRESHOLD = 3;
 const INCIDENT_TAIL_BYTES = 256 * 1024;
 const INCIDENT_WORK_PREFIX = 'forge-incident-repair';
+const ACTIONABLE_FAILURE_EVENT = 'forge_actionable_failure_observed';
 const TERMINAL_WORK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 export interface ForgeIncidentRepairClassification {
@@ -36,6 +41,16 @@ export interface ForgeIncidentRepairRegistration {
   reusedExistingWork?: boolean;
   scheduleId?: string;
   reason: string;
+}
+
+export interface ForgeActionableFailureObservation {
+  observationId: string;
+  source: 'progression' | 'release' | 'maintenance';
+  code: string;
+  message: string;
+  at?: string;
+  repoId?: string;
+  workId?: string;
 }
 
 interface PersistedMcpIncident extends McpIncident {
@@ -80,13 +95,12 @@ function incidentAuditPath(controllerHome: string): string {
   return join(resolve(controllerHome), 'audit', 'mcp-incidents.jsonl');
 }
 
-function readBoundedIncidentTail(controllerHome: string): PersistedMcpIncident[] {
-  const path = incidentAuditPath(controllerHome);
+function readBoundedJsonLines<T>(path: string, maxBytes = INCIDENT_TAIL_BYTES): T[] {
   if (!existsSync(path)) return [];
   let fd: number | undefined;
   try {
     const size = statSync(path).size;
-    const length = Math.min(size, INCIDENT_TAIL_BYTES);
+    const length = Math.min(size, maxBytes);
     const start = Math.max(0, size - length);
     const buffer = Buffer.alloc(length);
     fd = openSync(path, 'r');
@@ -98,7 +112,7 @@ function readBoundedIncidentTail(controllerHome: string): PersistedMcpIncident[]
     }
     return text.split(/\r?\n/).filter(Boolean).flatMap((line) => {
       try {
-        const parsed = JSON.parse(line) as PersistedMcpIncident;
+        const parsed = JSON.parse(line) as T;
         return parsed && typeof parsed === 'object' ? [parsed] : [];
       } catch {
         return [];
@@ -111,6 +125,10 @@ function readBoundedIncidentTail(controllerHome: string): PersistedMcpIncident[]
   }
 }
 
+function readBoundedIncidentTail(controllerHome: string): PersistedMcpIncident[] {
+  return readBoundedJsonLines<PersistedMcpIncident>(incidentAuditPath(controllerHome));
+}
+
 function recentRootIncidents(
   controllerHome: string,
   classification: ForgeIncidentRepairClassification,
@@ -118,7 +136,7 @@ function recentRootIncidents(
 ): PersistedMcpIncident[] {
   if (!classification.eligible || !classification.rootCode) return [];
   const unique = new Map<string, PersistedMcpIncident>();
-  for (const candidate of readBoundedIncidentTail(controllerHome)) {
+  for (const candidate of [...readBoundedIncidentTail(controllerHome), ...recentMcpIncidents(controllerHome)]) {
     const at = Date.parse(candidate.at ?? '');
     if (!Number.isFinite(at) || at < nowMs - RECURRENCE_WINDOW_MS || at > nowMs + 60_000) continue;
     if (classifyForgeIncidentForRepair(candidate).rootCode !== classification.rootCode) continue;
@@ -128,15 +146,108 @@ function recentRootIncidents(
   return [...unique.values()];
 }
 
-function gitContainsCommit(root: string, commit: string): boolean {
-  const exists = spawnSync('git', ['-C', root, 'cat-file', '-e', `${commit}^{commit}`], {
-    encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'], timeout: 10_000,
-  });
-  if (exists.status !== 0) return false;
-  const ancestor = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, 'HEAD'], {
-    encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'], timeout: 10_000,
-  });
-  return ancestor.status === 0;
+function actionableFailureLedgerPath(controllerHome: string, repoId: string): string {
+  return join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl');
+}
+
+function readActionableFailureEvents(controllerHome: string, repoId: string): RuntimeEntityEvent[] {
+  return readBoundedJsonLines<RuntimeEntityEvent>(actionableFailureLedgerPath(controllerHome, repoId))
+    .filter((event) => event.eventType === ACTIONABLE_FAILURE_EVENT && event.entityType === 'portfolio');
+}
+
+function normalizedFailureMessage(message: string): string {
+  return message.toUpperCase()
+    .replace(/[A-F0-9]{16,64}/g, '<ID>')
+    .replace(/\b\d{2,}\b/g, '<N>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+export function deriveForgeActionableFailureCode(prefix: string, message: string): string {
+  const normalizedPrefix = prefix.toUpperCase().replace(/[^A-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'FORGE_FAILURE';
+  const normalizedMessage = normalizedFailureMessage(message);
+  const explicit = normalizedMessage.match(/\b(?:[A-Z][A-Z0-9]*_){1,}[A-Z0-9_]+\b/)?.[0];
+  if (explicit) return explicit.slice(0, 120);
+  const digest = createHash('sha256').update(normalizedMessage || normalizedPrefix).digest('hex').slice(0, 12).toUpperCase();
+  return `${normalizedPrefix}_${digest}`.slice(0, 120);
+}
+
+export function classifyForgeActionableFailureForRepair(observation: ForgeActionableFailureObservation): ForgeIncidentRepairClassification {
+  const code = observation.code.trim().toUpperCase();
+  if (!code) return { eligible: false, reason: 'actionable failure code is empty' };
+  const blockerText = `${code} ${observation.message}`.toUpperCase();
+  if (
+    blockerText.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED')
+    || blockerText.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')
+    || blockerText.includes('LOGIN_REQUIRED')
+    || blockerText.includes('PERMISSION_REQUIRED')
+    || blockerText.includes('CONSENT_REQUIRED')
+    || blockerText.includes('WAITING_FOR_USER')
+    || blockerText.includes('USER_ACTION_REQUIRED')
+    || blockerText.includes('OUTCOME_UNKNOWN')
+  ) return { eligible: false, reason: `explicit user/ambiguity blocker ${code}` };
+
+  const rootCode = (
+    code.startsWith('CONTROLLER_')
+    || code.startsWith('SCHEDULER_')
+    || code.startsWith('WORKFLOW_SUPERVISOR_')
+    || code.startsWith('RUNTIME_')
+    || code.startsWith('RECOVERY_')
+    || code.startsWith('PROCESS_')
+    || code.startsWith('RELEASE_SESSION_')
+    || code.startsWith('MAINTENANCE_')
+    || /^PLUGIN_[A-Z0-9_]+_(?:UNAVAILABLE|MISSING|MISMATCH|FAILED)$/.test(code)
+  ) ? code : undefined;
+  if (!rootCode) return { eligible: false, reason: `non-infrastructure actionable failure class ${code}` };
+  const fingerprint = createHash('sha256').update(`forge-infrastructure:${rootCode}`).digest('hex').slice(0, 24);
+  return { eligible: true, rootCode, fingerprint, reason: `eligible Forge infrastructure root ${rootCode}` };
+}
+
+function activeRuntimeSourceRoot(controllerHome: string): string | undefined {
+  const authority = readRuntimeReleaseAuthority(controllerHome);
+  return authority?.active.manifestPath ? dirname(authority.active.manifestPath) : undefined;
+}
+
+function recentActionableRootEvents(
+  controllerHome: string,
+  repoId: string,
+  classification: ForgeIncidentRepairClassification,
+  nowMs: number,
+): RuntimeEntityEvent[] {
+  if (!classification.eligible || !classification.rootCode) return [];
+  const unique = new Map<string, RuntimeEntityEvent>();
+  for (const event of readActionableFailureEvents(controllerHome, repoId)) {
+    const data = event.data ?? {};
+    const rootCode = typeof data.rootCode === 'string' ? data.rootCode : '';
+    const observationId = typeof data.observationId === 'string' ? data.observationId : '';
+    const observedAt = typeof data.observedAt === 'string' ? data.observedAt : event.occurredAt;
+    const at = Date.parse(observedAt);
+    if (rootCode !== classification.rootCode || !observationId) continue;
+    if (!Number.isFinite(at) || at < nowMs - RECURRENCE_WINDOW_MS || at > nowMs + 60_000) continue;
+    unique.set(observationId, event);
+  }
+  return [...unique.values()].sort((left, right) => left.occurredAt.localeCompare(right.occurredAt));
+}
+
+function actionableEvidence(event: RuntimeEntityEvent, rootCode: string, ordinal: number) {
+  const data = event.data ?? {};
+  const observationId = typeof data.observationId === 'string' ? data.observationId : event.eventId;
+  const source = typeof data.source === 'string' ? data.source : 'unknown';
+  const affectedRepo = typeof data.affectedRepoId === 'string' ? data.affectedRepoId : undefined;
+  const workId = typeof data.workId === 'string' ? data.workId : undefined;
+  return {
+    evidenceId: `FAILOBS-${createHash('sha256').update(observationId).digest('hex').slice(0, 24)}`,
+    title: `recurrent Forge failure ${rootCode}`,
+    summary: [
+      `Occurrence ${ordinal} for ${rootCode}.`,
+      `source=${source}`,
+      ...(affectedRepo ? [`affectedRepo=${affectedRepo}`] : []),
+      ...(workId ? [`work=${workId}`] : []),
+      `observation=${observationId}`,
+    ].join(' ').slice(0, 1_000),
+    detailLevel: 'summary' as const,
+  };
 }
 
 function gitHead(root: string): string | undefined {
@@ -154,8 +265,10 @@ function samePath(left: string, right: string): boolean {
 /**
  * Resolve the registered Forge source authority. A user/business repository
  * affected by a Runtime defect is never treated as the repair repository.
- * Source-mode Runtime uses exact checkout path identity; immutable/package mode
- * must prove its release sourceCommit exists in exactly one enabled repo.
+ * Source-mode Runtime uses exact checkout path identity. Immutable/package mode
+ * uses the release manifest's sourceRepositoryId, which is minted by the staged
+ * release contract. Scheduler/incident reconciliation must not rediscover that
+ * identity by synchronously walking Git history across registered repositories.
  */
 export function resolveRuntimeSourceRepairRepository(
   controllerHome: string,
@@ -172,19 +285,16 @@ export function resolveRuntimeSourceRepairRepository(
 
   const manifestPath = join(resolve(root), 'manifest.json');
   if (!existsSync(manifestPath)) return undefined;
-  let sourceCommit: string | undefined;
+  let sourceRepositoryId: string | undefined;
   try {
-    sourceCommit = loadRuntimeReleaseManifest(manifestPath, controllerHome).sourceCommit;
+    sourceRepositoryId = loadRuntimeReleaseManifest(manifestPath, controllerHome).sourceRepositoryId?.trim();
   } catch {
     return undefined;
   }
-  if (!sourceCommit || !/^[a-f0-9]{40}$/i.test(sourceCommit)) return undefined;
-  const containing = repositories.filter((repository) => {
-    const selected = selectRepositoryCheckout(repository, repository.activeCheckoutId);
-    return gitContainsCommit(selected.canonicalRoot, sourceCommit!);
-  });
-  if (containing.length !== 1) return undefined;
-  return selectRepositoryCheckout(containing[0]!, containing[0]!.activeCheckoutId);
+  if (!sourceRepositoryId) return undefined;
+  const sourceRepository = repositories.find((repository) => repository.repoId === sourceRepositoryId);
+  if (!sourceRepository) return undefined;
+  return selectRepositoryCheckout(sourceRepository, sourceRepository.activeCheckoutId);
 }
 
 function requestBase(fingerprint: string): string {
@@ -242,42 +352,39 @@ function ensureAutomaticContinuation(
   }
 }
 
-/**
- * Promote only recurrent, source-authority-proven Forge infrastructure incidents
- * into canonical primary Work. The JSONL incident log remains evidence only;
- * WorkContract + existing continuation Schedule are the sole durable authorities.
- */
-export function maybeRegisterMcpIncidentRepair(input: {
+interface RepairEvidenceRef {
+  evidenceId?: string;
+  title: string;
+  summary: string;
+  detailLevel: 'summary';
+}
+
+function registerRecurringForgeRepair(input: {
   controllerHome: string;
   runtimeSourceRoot?: string;
-  incident: McpIncident;
-  now?: () => number;
+  classification: ForgeIncidentRepairClassification;
+  occurrenceCount: number;
+  evidence: RepairEvidenceRef[];
+  repairRepository?: RepositoryRecord;
 }): ForgeIncidentRepairRegistration {
-  const classification = classifyForgeIncidentForRepair(input.incident);
+  const { classification } = input;
   if (!classification.eligible || !classification.fingerprint || !classification.rootCode) {
     return { eligible: false, recurrent: false, occurrenceCount: 0, reason: classification.reason };
   }
-  const nowMs = input.now?.() ?? Date.now();
-  const occurrences = recentRootIncidents(input.controllerHome, classification, nowMs);
-  if (occurrences.length < RECURRENCE_THRESHOLD) {
+  if (input.occurrenceCount < RECURRENCE_THRESHOLD) {
     return {
-      eligible: true,
-      recurrent: false,
-      occurrenceCount: occurrences.length,
-      fingerprint: classification.fingerprint,
-      rootCode: classification.rootCode,
+      eligible: true, recurrent: false, occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
       reason: `waiting for ${RECURRENCE_THRESHOLD} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes`,
     };
   }
 
-  const repairRepository = resolveRuntimeSourceRepairRepository(input.controllerHome, input.runtimeSourceRoot);
+  const repairRepository = input.repairRepository
+    ?? resolveRuntimeSourceRepairRepository(input.controllerHome, input.runtimeSourceRoot);
   if (!repairRepository) {
     return {
-      eligible: true,
-      recurrent: true,
-      occurrenceCount: occurrences.length,
-      fingerprint: classification.fingerprint,
-      rootCode: classification.rootCode,
+      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
       reason: 'runtime source authority could not be mapped unambiguously to one registered repository',
     };
   }
@@ -290,24 +397,19 @@ export function maybeRegisterMcpIncidentRepair(input: {
       .filter((work) => requestGeneration(work.requestId, base) !== undefined)
       .sort((left, right) => (requestGeneration(left.requestId, base) ?? 0) - (requestGeneration(right.requestId, base) ?? 0));
     const active = [...matching].reverse().find((work) => !TERMINAL_WORK_STATUSES.has(work.status));
-    const recentEvidence = occurrences.slice(-RECURRENCE_THRESHOLD);
+    const recentEvidence = input.evidence.slice(-RECURRENCE_THRESHOLD);
+
     if (active) {
-      for (const [index, occurrence] of recentEvidence.entries()) {
-        if (active.evidenceRefs.some((entry) => entry.evidenceId === `MCPINC-${occurrence.traceId}`)) continue;
-        appendWorkEvidence(store, active.workId, incidentEvidence(occurrence, classification.rootCode!, occurrences.length - recentEvidence.length + index + 1));
+      for (const evidence of recentEvidence) {
+        if (evidence.evidenceId && active.evidenceRefs.some((entry) => entry.evidenceId === evidence.evidenceId)) continue;
+        appendWorkEvidence(store, active.workId, evidence);
       }
       const scheduleId = ensureAutomaticContinuation(input.controllerHome, repairRepository.repoId, active.workId, classification.rootCode!);
       return {
-        eligible: true,
-        recurrent: true,
-        occurrenceCount: occurrences.length,
-        fingerprint: classification.fingerprint,
-        rootCode: classification.rootCode,
-        repairRepoId: repairRepository.repoId,
-        workId: active.workId,
-        reusedExistingWork: true,
-        scheduleId,
-        reason: 'reused active canonical incident-repair Work',
+        eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+        fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+        repairRepoId: repairRepository.repoId, workId: active.workId, reusedExistingWork: true,
+        scheduleId, reason: 'reused active canonical incident-repair Work',
       };
     }
 
@@ -315,25 +417,17 @@ export function maybeRegisterMcpIncidentRepair(input: {
     const generation = (predecessor ? (requestGeneration(predecessor.requestId, base) ?? 0) : 0) + 1;
     const requestId = `${base}:g${generation}`;
     const head = gitHead(repairRepository.canonicalRoot);
-    if (!head) {
-      return {
-        eligible: true,
-        recurrent: true,
-        occurrenceCount: occurrences.length,
-        fingerprint: classification.fingerprint,
-        rootCode: classification.rootCode,
-        repairRepoId: repairRepository.repoId,
-        reason: 'repair repository HEAD could not be proven',
-      };
-    }
+    if (!head) return {
+      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+      repairRepoId: repairRepository.repoId, reason: 'repair repository HEAD could not be proven',
+    };
+
     const routed = routeWorkStart({
-      workStore: store,
-      handoffStore: store,
-      repoId: repairRepository.repoId,
-      sourceRevision: head,
-      checkoutId: repairRepository.activeCheckoutId,
+      workStore: store, handoffStore: store, repoId: repairRepository.repoId,
+      sourceRevision: head, checkoutId: repairRepository.activeCheckoutId,
     }, {
-      objective: `Repair recurrent Forge infrastructure incident ${classification.rootCode} automatically registered after ${occurrences.length} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes.`,
+      objective: `Repair recurrent Forge infrastructure incident ${classification.rootCode} automatically registered after ${input.occurrenceCount} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes.`,
       acceptanceCriteria: [
         `Reproduce and eliminate root incident ${classification.rootCode} without bypassing canonical Runtime/Recovery/Controller authority.`,
         'Preserve fail-closed behavior for expected policy, ownership, user-code, and approval failures.',
@@ -344,11 +438,8 @@ export function maybeRegisterMcpIncidentRepair(input: {
       forbiddenPaths: ['node_modules/**', '_ops/**'],
       constraints: { workspaceMode: 'auto', requireHandoffOnAmbiguity: true },
       modeInput: {
-        scopeClear: false,
-        mutation: true,
-        requiresInvestigation: true,
-        requiresRecovery: true,
-        risk: 'workspace_write',
+        scopeClear: false, mutation: true, requiresInvestigation: true,
+        requiresRecovery: true, risk: 'workspace_write',
       },
       requestedBy: 'system',
       requestId,
@@ -356,51 +447,137 @@ export function maybeRegisterMcpIncidentRepair(input: {
       workRelation: 'new_goal',
       workKind: 'repository_change',
     });
-    if (routed.status !== 'ok') {
-      return {
-        eligible: true,
-        recurrent: true,
-        occurrenceCount: occurrences.length,
-        fingerprint: classification.fingerprint,
-        rootCode: classification.rootCode,
-        repairRepoId: repairRepository.repoId,
-        reason: `canonical Work admission did not create repair Work: ${routed.summary}`,
-      };
-    }
+    if (routed.status !== 'ok') return {
+      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+      repairRepoId: repairRepository.repoId,
+      reason: `canonical Work admission did not create repair Work: ${routed.summary}`,
+    };
+
     const created = listWorkContracts({ ...store, status: 'all', limit: 500 }).find((work) => work.requestId === requestId);
-    if (!created) {
-      return {
-        eligible: true,
-        recurrent: true,
-        occurrenceCount: occurrences.length,
-        fingerprint: classification.fingerprint,
-        rootCode: classification.rootCode,
-        repairRepoId: repairRepository.repoId,
-        reason: 'canonical Work admission succeeded without a request-bound readable Work',
-      };
-    }
-    if (predecessor) {
-      appendWorkEvidence(store, created.workId, {
-        title: 'incident repair predecessor',
-        summary: `Recurrent root ${classification.rootCode} created successor generation ${generation} after terminal Work ${predecessor.workId} (${predecessor.status}).`,
-        detailLevel: 'summary',
-      });
-    }
-    for (const [index, occurrence] of recentEvidence.entries()) {
-      appendWorkEvidence(store, created.workId, incidentEvidence(occurrence, classification.rootCode!, occurrences.length - recentEvidence.length + index + 1));
-    }
+    if (!created) return {
+      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+      repairRepoId: repairRepository.repoId,
+      reason: 'canonical Work admission succeeded without a request-bound readable Work',
+    };
+
+    if (predecessor) appendWorkEvidence(store, created.workId, {
+      title: 'incident repair predecessor',
+      summary: `Recurrent root ${classification.rootCode} created successor generation ${generation} after terminal Work ${predecessor.workId} (${predecessor.status}).`,
+      detailLevel: 'summary',
+    });
+    for (const evidence of recentEvidence) appendWorkEvidence(store, created.workId, evidence);
     const scheduleId = ensureAutomaticContinuation(input.controllerHome, repairRepository.repoId, created.workId, classification.rootCode!);
     return {
-      eligible: true,
-      recurrent: true,
-      occurrenceCount: occurrences.length,
-      fingerprint: classification.fingerprint,
-      rootCode: classification.rootCode,
-      repairRepoId: repairRepository.repoId,
-      workId: created.workId,
-      reusedExistingWork: false,
-      scheduleId,
-      reason: 'created canonical recurrent-incident repair Work',
+      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+      repairRepoId: repairRepository.repoId, workId: created.workId, reusedExistingWork: false,
+      scheduleId, reason: 'created canonical recurrent-incident repair Work',
     };
   }, 10_000);
+}
+
+export function maybeRegisterMcpIncidentRepair(input: {
+  controllerHome: string;
+  runtimeSourceRoot?: string;
+  incident: McpIncident;
+  now?: () => number;
+}): ForgeIncidentRepairRegistration {
+  const classification = classifyForgeIncidentForRepair(input.incident);
+  if (!classification.eligible || !classification.fingerprint || !classification.rootCode) {
+    return { eligible: false, recurrent: false, occurrenceCount: 0, reason: classification.reason };
+  }
+  const occurrences = recentRootIncidents(input.controllerHome, classification, input.now?.() ?? Date.now());
+  return registerRecurringForgeRepair({
+    controllerHome: input.controllerHome,
+    runtimeSourceRoot: input.runtimeSourceRoot,
+    classification,
+    occurrenceCount: occurrences.length,
+    evidence: occurrences.map((incident, index) => incidentEvidence(incident, classification.rootCode!, index + 1)),
+  });
+}
+
+export function maybeRegisterForgeActionableFailureRepair(input: {
+  controllerHome: string;
+  runtimeSourceRoot?: string;
+  observation: ForgeActionableFailureObservation;
+  now?: () => number;
+}): ForgeIncidentRepairRegistration {
+  const classification = classifyForgeActionableFailureForRepair(input.observation);
+  if (!classification.eligible || !classification.fingerprint || !classification.rootCode) {
+    return { eligible: false, recurrent: false, occurrenceCount: 0, reason: classification.reason };
+  }
+
+  const runtimeSourceRoot = input.runtimeSourceRoot ?? activeRuntimeSourceRoot(input.controllerHome);
+  const repairRepository = resolveRuntimeSourceRepairRepository(input.controllerHome, runtimeSourceRoot);
+  if (!repairRepository) return {
+    eligible: true, recurrent: false, occurrenceCount: 0,
+    fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+    reason: 'runtime source authority could not be mapped unambiguously to one registered repository',
+  };
+
+  const nowMs = input.now?.() ?? Date.now();
+  const observedAt = input.observation.at?.trim() || new Date(nowMs).toISOString();
+  const existing = readActionableFailureEvents(input.controllerHome, repairRepository.repoId);
+  if (!existing.some((event) => event.data?.observationId === input.observation.observationId)) {
+    appendRuntimeEvent(input.controllerHome, {
+      repoId: repairRepository.repoId,
+      entityType: 'portfolio',
+      entityId: `forge-failure:${classification.fingerprint}`,
+      eventType: ACTIONABLE_FAILURE_EVENT,
+      requestId: `forge-actionable-failure:${input.observation.observationId}`,
+      revision: 1,
+      data: {
+        observationId: input.observation.observationId,
+        source: input.observation.source,
+        rootCode: classification.rootCode,
+        message: input.observation.message.slice(0, 2_000),
+        observedAt,
+        ...(input.observation.repoId ? { affectedRepoId: input.observation.repoId } : {}),
+        ...(input.observation.workId ? { workId: input.observation.workId } : {}),
+      },
+    });
+  }
+
+  const occurrences = recentActionableRootEvents(input.controllerHome, repairRepository.repoId, classification, nowMs);
+  return registerRecurringForgeRepair({
+    controllerHome: input.controllerHome,
+    runtimeSourceRoot,
+    repairRepository,
+    classification,
+    occurrenceCount: occurrences.length,
+    evidence: occurrences.map((event, index) => actionableEvidence(event, classification.rootCode!, index + 1)),
+  });
+}
+
+export function maybeRegisterFailedReleaseSessionRepairs(input: {
+  controllerHome: string;
+  runtimeSourceRoot?: string;
+  now?: () => number;
+}): ForgeIncidentRepairRegistration[] {
+  return listReleaseSessions(input.controllerHome, { maxEntries: 128 }).sessions
+    .filter((session) => session.phase === 'failed')
+    .slice(-32)
+    .map((session) => {
+      const lastReceipt = session.receipts.at(-1);
+      const message = lastReceipt?.summary?.trim()
+        || `ReleaseSession ${session.sessionId} entered failed phase without a diagnostic receipt.`;
+      return maybeRegisterForgeActionableFailureRepair({
+        controllerHome: input.controllerHome,
+        runtimeSourceRoot: input.runtimeSourceRoot,
+        now: input.now,
+        observation: {
+          observationId: `release:${session.sessionId}:r${session.revision}`,
+          source: 'release',
+          code: deriveForgeActionableFailureCode(
+            `RELEASE_SESSION_${(lastReceipt?.kind ?? 'UNKNOWN').toUpperCase()}_FAILED`,
+            message,
+          ),
+          message,
+          at: session.updatedAt,
+          repoId: session.candidateRelease?.sourceRepositoryId,
+        },
+      });
+    });
 }

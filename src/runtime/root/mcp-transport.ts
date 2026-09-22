@@ -2,12 +2,12 @@ import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import type { Server as NodeHttpServer } from 'http';
 import type { AddressInfo } from 'net';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { Server } from "@modelcontextprotocol/server";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import type { RuntimeReadiness } from './types';
 
 interface ManagedSession {
-  transport: StreamableHTTPServerTransport;
+  transport: NodeStreamableHTTPServerTransport;
   lastActivityAt: number;
   activePosts: number;
   activeStreams: number;
@@ -235,7 +235,7 @@ export async function startRuntimeMcpTransport(
           res.status(503).json({ error: 'mcp_session_capacity_exhausted' });
           return;
         }
-        let transport: StreamableHTTPServerTransport;
+        let transport: NodeStreamableHTTPServerTransport;
         let committedSessionId: string | undefined;
         const forwardedPrincipalId = typeof req.headers['x-forge-forwarded-principal-id'] === 'string'
           ? req.headers['x-forge-forwarded-principal-id'].trim().slice(0, 512)
@@ -251,7 +251,7 @@ export async function startRuntimeMcpTransport(
           : undefined;
         const principal = forwardedPrincipalId || principalId(options.authToken);
         const server = options.createServer(principal, forwardedSessionId || undefined, forwardedControllerType);
-        transport = new StreamableHTTPServerTransport({
+        transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
             committedSessionId = createdSessionId;

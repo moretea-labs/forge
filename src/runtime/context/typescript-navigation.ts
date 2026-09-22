@@ -26,6 +26,14 @@ export interface TypeScriptNavigationResult {
   locations: TypeScriptNavigationLocation[];
 }
 
+export interface TypeScriptSourceSymbolRange {
+  startLine: number;
+  endLine: number;
+  kind: string;
+  name?: string;
+  enclosing?: string;
+}
+
 export interface TypeScriptNavigationAccess {
   /** Stable identity for one read-policy scope. Restricted and unrestricted projects must never share a Language Service. */
   cacheScope: string;
@@ -38,11 +46,13 @@ export interface TypeScriptNavigationAccess {
 interface CachedProject {
   repoRoot: string;
   configPath: string;
+  configVersion: string;
+  sourceIdentity: string;
   service: ts.LanguageService;
 }
 
 const projects = new Map<string, CachedProject>();
-const MAX_CACHED_TYPESCRIPT_PROJECTS = 32;
+const MAX_CACHED_TYPESCRIPT_PROJECTS = 1;
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -71,12 +81,18 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
   if (access && !access.allowRepositoryPath(configRelative)) {
     throw new Error(`TypeScript navigation tsconfig is denied by read policy: ${configRelative}.`);
   }
-  const cacheKey = `${root}\0${configPath}\0${scriptVersion(configPath)}\0${access?.cacheScope ?? 'unrestricted'}\0${access?.sourceIdentity ?? 'unbound-source'}`;
+  const configVersion = scriptVersion(configPath);
+  const sourceIdentity = access?.sourceIdentity ?? 'unbound-source';
+  const cacheKey = `${root}\0${configPath}\0${access?.cacheScope ?? 'unrestricted'}`;
   const cached = projects.get(cacheKey);
-  if (cached) {
+  if (cached && cached.configVersion === configVersion && cached.sourceIdentity === sourceIdentity) {
     projects.delete(cacheKey);
     projects.set(cacheKey, cached);
     return cached;
+  }
+  if (cached) {
+    projects.delete(cacheKey);
+    cached.service.dispose();
   }
 
   const canReadAbsolute = (fileName: string): boolean => {
@@ -129,6 +145,8 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
   const project = {
     repoRoot: root,
     configPath,
+    configVersion,
+    sourceIdentity,
     service: ts.createLanguageService(host, ts.createDocumentRegistry()),
   };
   projects.set(cacheKey, project);
@@ -176,6 +194,70 @@ function location(
   };
 }
 
+function sourceScriptKind(path: string): ts.ScriptKind | undefined {
+  if (/\.tsx$/i.test(path)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/i.test(path)) return ts.ScriptKind.JSX;
+  if (/\.(?:mts|cts|ts)$/i.test(path)) return ts.ScriptKind.TS;
+  if (/\.(?:mjs|cjs|js)$/i.test(path)) return ts.ScriptKind.JS;
+  return undefined;
+}
+
+function sourceDeclarationName(node: ts.Node): string | undefined {
+  const named = node as ts.Node & { name?: ts.Node };
+  return named.name ? named.name.getText().slice(0, 200) : undefined;
+}
+
+function sourceDeclarationKind(node: ts.Node): string | undefined {
+  if (ts.isFunctionDeclaration(node)) return 'function';
+  if (ts.isMethodDeclaration(node)) return 'method';
+  if (ts.isConstructorDeclaration(node)) return 'constructor';
+  if (ts.isGetAccessorDeclaration(node)) return 'getter';
+  if (ts.isSetAccessorDeclaration(node)) return 'setter';
+  if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return 'class';
+  if (ts.isInterfaceDeclaration(node)) return 'interface';
+  if (ts.isTypeAliasDeclaration(node)) return 'type';
+  if (ts.isEnumDeclaration(node)) return 'enum';
+  if (ts.isModuleDeclaration(node)) return 'module';
+  if (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
+    declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer)))) return 'function-variable';
+  return undefined;
+}
+
+function sourceEnclosingName(node: ts.Node): string | undefined {
+  let current = node.parent;
+  while (current) {
+    if (ts.isClassDeclaration(current) || ts.isClassExpression(current) || ts.isInterfaceDeclaration(current) || ts.isModuleDeclaration(current)) {
+      const kind = sourceDeclarationKind(current) ?? 'container';
+      const name = sourceDeclarationName(current);
+      return name ? `${kind}:${name}` : kind;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+export function extractTypeScriptSourceSymbols(path: string, source: string): TypeScriptSourceSymbolRange[] {
+  const kind = sourceScriptKind(path);
+  if (kind === undefined) return [];
+  const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, kind);
+  const declarations: TypeScriptSourceSymbolRange[] = [];
+  const visit = (node: ts.Node): void => {
+    const declarationKind = sourceDeclarationKind(node);
+    if (declarationKind) {
+      declarations.push({
+        startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+        endLine: sourceFile.getLineAndCharacterOfPosition(node.end).line + 1,
+        kind: declarationKind,
+        ...(sourceDeclarationName(node) ? { name: sourceDeclarationName(node) } : {}),
+        ...(sourceEnclosingName(node) ? { enclosing: sourceEnclosingName(node) } : {}),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return declarations;
+}
+
 function dedupe(locations: TypeScriptNavigationLocation[]): TypeScriptNavigationLocation[] {
   const seen = new Set<string>();
   return locations.filter((entry) => {
@@ -218,6 +300,10 @@ export function navigateTypeScriptSymbol(
     target: { path: normalizePath(request.path), line: request.line, column: request.column },
     locations: dedupe(locations),
   };
+}
+
+export function typeScriptNavigationCachedProjectCount(): number {
+  return projects.size;
 }
 
 export function clearTypeScriptNavigationCache(): void {

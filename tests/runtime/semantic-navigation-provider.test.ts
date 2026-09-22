@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  createDefaultSemanticProviderRegistry,
   SemanticProviderRegistry,
   type SemanticNavigationProvider,
 } from '../../src/runtime/context/semantic-navigation';
@@ -17,6 +18,7 @@ import { LanguageServerClient } from '../../src/runtime/context/lsp-client';
 import {
   clearTypeScriptNavigationCache,
   navigateTypeScriptSymbol,
+  typeScriptNavigationCachedProjectCount,
 } from '../../src/runtime/context/typescript-navigation';
 import {
   clearAllSessionCachesForTest,
@@ -263,6 +265,34 @@ process.stdin.on('data', (chunk) => {
     writeFileSync(join(root, 'Package.swift'), '// swift-tools-version: 6.1\n');
     const second = swiftBuildSettingsFingerprint(root);
     expect(second).not.toBe(first);
+  });
+
+  test('default TypeScript provider executes in a disposable sidecar and leaves no parent project cache', async () => {
+    const root = tempRoot('forge-ts-provider-lifetime-');
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true }, include: ['src/**/*.ts'] }));
+    writeFileSync(join(root, 'src/a.ts'), 'export const alpha = 1;\n');
+
+    const registry = createDefaultSemanticProviderRegistry();
+    const outcomes = await registry.navigate(root, [
+      { index: 0, request: { navigation: 'definition', path: 'src/a.ts', line: 1, column: 14 } },
+      { index: 1, request: { navigation: 'references', path: 'src/a.ts', line: 1, column: 14 } },
+    ], {
+      cacheScope: 'test',
+      sourceIdentity: 'source-v1',
+      profile: 'controller',
+      readPolicy: {
+        profile: 'controller',
+        readGlobs: ['**'],
+        denyGlobs: [],
+        maxFileBytes: 2 * 1024 * 1024,
+      },
+      allowRepositoryPath: () => true,
+    });
+
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes.every((entry) => entry.outcome.ok)).toBe(true);
+    expect(typeScriptNavigationCachedProjectCount()).toBe(0);
   });
 
   test('TypeScript project membership is rebound when source identity changes', () => {

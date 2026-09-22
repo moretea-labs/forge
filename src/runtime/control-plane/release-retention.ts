@@ -8,6 +8,7 @@ import {
 } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
+import { inspectKnownGoodRecoveryBundle, type KnownGoodReleaseIdentity } from '../root/known-good-recovery';
 
 const DEFAULT_RELEASE_RETENTION_GRACE_MS = 30 * 60_000;
 const DEFAULT_STAGING_RETENTION_GRACE_MS = 6 * 60 * 60_000;
@@ -59,24 +60,6 @@ function canonical(path: string): string {
   } catch {
     return resolve(path);
   }
-}
-
-/**
- * Canonicalize a path even when its leaf has already been removed by resolving
- * the nearest existing ancestor first and then projecting the missing suffix.
- * This preserves filesystem identity across logical aliases such as macOS
- * /var -> /private/var without requiring historical artifacts to still exist.
- */
-function canonicalProjectedPath(path: string): string {
-  let cursor = resolve(path);
-  const missingSuffix: string[] = [];
-  while (!existsSync(cursor)) {
-    const parent = dirname(cursor);
-    if (parent === cursor) return resolve(path);
-    missingSuffix.unshift(basename(cursor));
-    cursor = parent;
-  }
-  return resolve(canonical(cursor), ...missingSuffix);
 }
 
 function directChild(root: string, path: string): boolean {
@@ -151,31 +134,59 @@ function loadPackageConnectorReleaseProtection(controllerHome: string, releasesR
   return canonical(releaseRoot);
 }
 
-function validateRecoveryKnownGoodHistory(controllerHome: string, releasesRoot: string): void {
+function loadRecoveryKnownGoodProtection(controllerHome: string, releasesRoot: string): Set<string> {
+  const protectedPaths = new Set<string>();
   const knownGoodPath = join(controllerHome, 'recovery', 'state', 'known-good.json');
-  if (!existsSync(knownGoodPath)) return;
+  if (!existsSync(knownGoodPath)) return protectedPaths;
   const parsed = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as Record<string, unknown>;
-  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.releases)) {
+  // Schema v1 was metadata-only evidence. It deliberately has no retention
+  // authority: only v2 entries pass the same release + DB + service-contract
+  // recoverability check that Recovery uses before attesting known-good.
+  if (parsed.schemaVersion === 1) return protectedPaths;
+  if (parsed.schemaVersion !== 2 || !Array.isArray(parsed.releases)) {
     throw new Error('standalone recovery known-good authority is invalid');
   }
   for (const raw of parsed.releases) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('standalone recovery known-good release record is invalid');
-    const record = raw as Record<string, unknown>;
-    const releaseId = typeof record.revision === 'string' ? record.revision.trim() : '';
-    const manifestPathValue = typeof record.path === 'string' ? record.path.trim() : '';
-    if (!releaseId || !manifestPathValue) throw new Error('standalone recovery known-good release identity is incomplete');
-    const manifestPath = resolve(manifestPathValue);
-    const releaseRoot = dirname(manifestPath);
-    const exactHistoricalManifestPath = resolve(canonical(releasesRoot), releaseId, 'manifest.json');
-    const historicalManifestPath = canonicalProjectedPath(manifestPath);
-    if (
-      basename(manifestPath) !== 'manifest.json'
-      || basename(releaseRoot) !== releaseId
-      || historicalManifestPath !== exactHistoricalManifestPath
-    ) {
+    let inspected;
+    try {
+      inspected = inspectKnownGoodRecoveryBundle(controllerHome, raw as KnownGoodReleaseIdentity);
+    } catch (error) {
+      throw new Error(`standalone recovery known-good bundle is not recoverable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (canonical(dirname(inspected.releaseRoot)) !== canonical(releasesRoot)) {
       throw new Error('standalone recovery known-good release is outside runtime releases');
     }
+    protectedPaths.add(canonical(inspected.releaseRoot));
   }
+  return protectedPaths;
+}
+
+function loadPinnedRuntimeReleaseProtection(controllerHome: string, releasesRoot: string): string | undefined {
+  const pinPath = join(controllerHome, 'recovery', 'state', 'runtime-pin.json');
+  if (!existsSync(pinPath)) return undefined;
+  let parsed: Record<string, unknown>;
+  try { parsed = JSON.parse(readFileSync(pinPath, 'utf8')) as Record<string, unknown>; }
+  catch (error) { throw new Error(`runtime pin authority is invalid: ${error instanceof Error ? error.message : String(error)}`); }
+  const release = parsed.release;
+  if (parsed.schemaVersion !== 1 || !release || typeof release !== 'object' || Array.isArray(release)) {
+    throw new Error('runtime pin authority is invalid');
+  }
+  const record = release as Record<string, unknown>;
+  const releaseId = typeof record.revision === 'string' ? record.revision.trim() : '';
+  const manifestPathValue = typeof record.path === 'string' ? record.path.trim() : '';
+  if (!releaseId || !manifestPathValue) throw new Error('runtime pin release identity is incomplete');
+  const manifestPath = resolve(manifestPathValue);
+  const releaseRoot = dirname(manifestPath);
+  if (
+    basename(manifestPath) !== 'manifest.json'
+    || basename(releaseRoot) !== releaseId
+    || !directChild(releasesRoot, releaseRoot)
+    || !existsSync(releaseRoot)
+  ) {
+    throw new Error('runtime pin release is outside runtime release authority or missing');
+  }
+  return canonical(releaseRoot);
 }
 
 function loadRuntimeProtection(controllerHome: string): RuntimeProtection | undefined {
@@ -186,8 +197,8 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   if (!existsSync(authorityPath)) throw new Error('runtime release authority is missing');
 
   const parsed = JSON.parse(readFileSync(authorityPath, 'utf8')) as Record<string, unknown>;
-  if (parsed.schemaVersion !== 1 || parsed.status !== 'committed') {
-    throw new Error('runtime release authority is not committed schemaVersion=1');
+  if (parsed.schemaVersion !== 2 || parsed.status !== 'committed') {
+    throw new Error('runtime release authority is not committed schemaVersion=2');
   }
 
   const releasePaths = new Set<string>();
@@ -198,15 +209,16 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   }
   const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);
   if (connectorRelease) releasePaths.add(connectorRelease);
-  // Recovery known-good is append-only attestation evidence, not a storage
-  // ownership authority. Recovery itself only accepts a known-good entry when
-  // it still matches the current active/previous release authority, both of
-  // which are already protected above. Keeping every extant historical entry
-  // here creates a circular retention leak: the artifact can never disappear
-  // because its historical evidence exists, while the evidence is allowed to
-  // outlive the artifact. Validate the ledger fail-closed, but do not grant old
-  // attestations independent retention authority.
-  validateRecoveryKnownGoodHistory(controllerHome, releasesRoot);
+  const pinnedRelease = loadPinnedRuntimeReleaseProtection(controllerHome, releasesRoot);
+  if (pinnedRelease) releasePaths.add(pinnedRelease);
+  // The known-good ledger is bounded by Recovery (currently at most eight
+  // attestations), so its extant immutable releases are bounded recovery
+  // authority, not unbounded history. Once Recovery retires an attestation the
+  // release naturally falls out of this protection set and ordinary retention
+  // may prune it after the grace period.
+  for (const knownGoodRelease of loadRecoveryKnownGoodProtection(controllerHome, releasesRoot)) {
+    releasePaths.add(knownGoodRelease);
+  }
 
   const backupPaths = new Set<string>();
   let backupAuthoritySafe = true;

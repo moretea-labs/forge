@@ -4,6 +4,29 @@ export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';
 export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN = 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN';
+export const CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT = 'CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT';
+export const CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE = 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE';
+
+export type ChatgptProviderPageFailureCode =
+  | typeof CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
+  | typeof CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE;
+
+function normalizeChatgptProviderPageText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** Shared provider-page failure detection used by both direct delivery and durable Supervisor observation. */
+export function chatgptProviderPageFailure(
+  bodyText: string | undefined,
+): ChatgptProviderPageFailureCode | undefined {
+  const normalized = normalizeChatgptProviderPageText(bodyText ?? '');
+  if (normalized.includes('resume stream unavailable')) {
+    return CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE;
+  }
+  return normalized.includes('message delivery timed out') && normalized.includes('please try again')
+    ? CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT
+    : undefined;
+}
 
 export type ChatgptAutomationReasoning = 'medium' | 'high' | 'xhigh';
 export type ChatgptAutomationTabPolicy = 'auto' | 'reuse' | 'new';
@@ -12,6 +35,24 @@ export type ChatgptAutomationTabCleanupStatus = 'closed' | 'preserved_user_owned
 export type ChatgptProviderFailureDisposition = 'outcome_unknown' | 'wait_for_user' | 'failed';
 export type ChatgptProviderDeliveryStatus = 'dispatch_confirmed' | ChatgptProviderFailureDisposition;
 export type ChatgptProviderKind = 'controller-browser' | 'chatgpt-bridge';
+
+export class ChatgptProviderDeliveryError extends Error {
+  readonly code: string;
+  readonly conversationUrl?: string;
+
+  constructor(code: string, message: string, options: { conversationUrl?: string } = {}) {
+    super(message);
+    this.name = 'ChatgptProviderDeliveryError';
+    this.code = code;
+    this.conversationUrl = options.conversationUrl;
+  }
+}
+
+export interface ChatgptProviderErrorEvidence {
+  code: string;
+  message: string;
+  conversationUrl?: string;
+}
 
 export interface ChatgptProviderDeliveryInput {
   controllerHome: string;
@@ -55,7 +96,11 @@ export function classifyChatgptProviderFailure(
   message?: string,
 ): ChatgptProviderFailureDisposition {
   const normalized = `${code ?? ''}\n${message ?? ''}`.toUpperCase();
-  if (normalized.includes('OUTCOME_UNKNOWN')) return 'outcome_unknown';
+  if (
+    normalized.includes('OUTCOME_UNKNOWN')
+    || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT')
+    || normalized.includes('RESPONSE_STREAM_UNAVAILABLE')
+  ) return 'outcome_unknown';
   if (CHATGPT_WAIT_FOR_USER_MARKERS.some((marker) => normalized.includes(marker))) return 'wait_for_user';
   return 'failed';
 }
@@ -78,10 +123,18 @@ export function chatgptProviderDispatchReceiptId(input: {
   return `chatgpt-dispatch:${digest}`;
 }
 
-export function chatgptProviderError(error: unknown, fallbackCode: string): { code: string; message: string } {
+export function chatgptProviderError(error: unknown, fallbackCode: string): ChatgptProviderErrorEvidence {
   const message = error instanceof Error ? error.message : String(error);
-  const code = error instanceof Error && error.message.includes(':')
-    ? error.message.split(':', 1)[0]
-    : fallbackCode;
-  return { code, message };
+  const code = error instanceof ChatgptProviderDeliveryError
+    ? error.code
+    : error instanceof Error && error.message.includes(':')
+      ? error.message.split(':', 1)[0]
+      : fallbackCode;
+  return {
+    code,
+    message,
+    ...(error instanceof ChatgptProviderDeliveryError && error.conversationUrl
+      ? { conversationUrl: error.conversationUrl }
+      : {}),
+  };
 }

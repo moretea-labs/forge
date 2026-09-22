@@ -13,6 +13,7 @@ import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
@@ -45,7 +46,9 @@ import {
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -614,6 +617,67 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(readFileSync(marker, 'utf8')).toBe('1');
   });
 
+  test('process_wait reconciles a terminal Work verification receipt without a second rh_work verify call', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const workId = 'work-process-wait-auto-reconcile';
+    const status = repositoryGitStatus(fx.repository);
+    const sourceRevision = String(status.head ?? '');
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, status);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Project terminal Process evidence into Work verification on dependency join.',
+      acceptanceCriteria: ['Joining the exact terminal verification Process records one current Work check receipt.'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: ['slow'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+    });
+    const requestSemanticFingerprint = verificationInputFingerprint({
+      sourceRevision,
+      workspaceFingerprint,
+      checkId: 'slow',
+      requestedChecks: ['slow'],
+    });
+    const executed = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository, { workId }),
+      checkId: 'slow',
+      interactiveWaitMs: 0,
+      requestId: 'process-wait-auto-reconcile',
+      requestSemanticFingerprint,
+      workId,
+      commandId: 'process-wait-auto-reconcile',
+      verificationSnapshot: { workId, allowedPaths: ['src/**'], forbiddenPaths: [] },
+    });
+    const processId = String(executed.process?.processId ?? '');
+    expect(processId).toBeTruthy();
+    const joined = await callProcessTool(fx.ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: processId,
+      timeout_ms: 10_000,
+    });
+    expect(joined?.isError).not.toBe(true);
+    expect(joined?.structuredContent).toMatchObject({
+      synchronization: 'terminal_result_available',
+      workVerificationReconciliation: { workId, processId, status: 'reconciled' },
+    });
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(contract?.checkRefs).toHaveLength(1);
+    expect(contract?.checkRefs[0]?.receipt?.processId).toBe(processId);
+  }, 15_000);
+
   test('batch run_check launches one resource-compatible wave concurrently in one gateway call', async () => {
     const fx = fixture();
     roots.push(fx.root);
@@ -690,6 +754,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
           command: [process.execPath, '-e', 'process.exit(0)'],
           timeoutMs: 10_000,
           effects: { reads: ['src/release'] },
+          selection: { costClass: 'L4', riskFloor: 'high', phases: ['release'] },
+        },
+        'release-named-simulator-compile': {
+          description: 'release migration deploy wording around an ordinary Simulator compile',
+          command: [process.execPath, '-e', 'process.exit(0)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src'] },
+          selection: { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] },
         },
       },
     }, null, 2));
@@ -721,6 +793,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(durable?.isError).toBe(true);
     expect(durable?.structuredContent).toMatchObject({ accepted: false, reason: 'batch_contains_durable_check' });
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(processesBefore);
+
+    const ordinaryDespiteWords = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_ids: ['release-named-simulator-compile'],
+      request_id: 'batch-ordinary-release-wording',
+    });
+    expect(ordinaryDespiteWords?.isError).not.toBe(true);
+    expect(ordinaryDespiteWords?.structuredContent).toMatchObject({ accepted: true, batch: true });
   });
 
   test('controller instructions make bounded dependency attachment explicit instead of normal polling', () => {
@@ -734,6 +814,11 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   test('Work-scoped persisted verification excludes protected concurrent untracked files but keeps Work-owned untracked files fail-closed', async () => {
     const fx = fixture();
     roots.push(fx.root);
+    // Modern repo-config checks are machine-local authority. Make the fixture
+    // match production: .forge is not source and must not enter the Work snapshot.
+    writeFileSync(join(fx.repoRoot, '.git', 'info', 'exclude'), '.forge/\n', { flag: 'a' });
+    git(fx.repoRoot, ['rm', '--cached', '.forge/checks.json']);
+    git(fx.repoRoot, ['commit', '-m', 'keep Forge check registry machine-local']);
     writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
       version: 1,
       checks: {
@@ -749,6 +834,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
         },
       },
     }, null, 2));
+    const canonicalIsolatedCheck = snapshotControllerCheck(fx.repoRoot, 'isolated');
     mkdirSync(join(fx.repoRoot, 'tests'), { recursive: true });
     writeFileSync(join(fx.repoRoot, 'tests', 'owned-untracked.test.ts'), 'owned\n');
     writeFileSync(join(fx.repoRoot, 'tests', 'protected-concurrent.test.ts'), 'protected\n');
@@ -761,7 +847,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       mode: 'direct_control',
       objective: 'Verify Work-owned snapshot content without exposing protected concurrent changes.',
       acceptanceCriteria: ['Work verification sees owned content and excludes protected concurrent content.'],
-      allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+      allowedPaths: ['tests/owned-untracked.test.ts'],
       forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       checks: ['isolated'],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
@@ -782,7 +868,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       requestSemanticFingerprint: 'work-verification-semantic-a',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
-        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        allowedPaths: ['tests/owned-untracked.test.ts'],
         forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       },
     });
@@ -791,6 +877,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(completed.ok).toBe(true);
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, run.process!.processId)!;
     expect(record.origin?.workVerificationSnapshot).toBe(true);
+    expect(record.checkExecution?.definitionDigest).toBe(canonicalIsolatedCheck.definitionDigest);
+    expect(record.command?.args).toContain('--check-snapshot');
     const receipt = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
     expect(receipt).toEqual(expect.objectContaining({ checkId: 'isolated', ok: true, status: 0 }));
     expect(receipt?.cacheKey).toBe(record.checkExecution?.cacheKey);
@@ -808,7 +896,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       requestSemanticFingerprint: 'work-verification-semantic-a',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
-        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        allowedPaths: ['tests/owned-untracked.test.ts'],
         forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       },
     });
@@ -861,7 +949,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       requestId: 'work-verification-isolation-fail',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
-        allowedPaths: ['.forge/**', 'tests/owned-*.test.ts'],
+        allowedPaths: ['tests/owned-*.test.ts'],
         forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       },
     });
@@ -1434,6 +1522,45 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
+  test('bounded attach settles a freshly launched short Check in one work_validate call', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-work-validate-bounded-attach',
+      objective: 'Settle finalizer-owned validation without another Controller round.',
+      acceptance_criteria: ['A short persisted Check completes within one bounded work_validate call.'],
+      allowed_paths: ['src/**'],
+      checks: ['slow'],
+      isolation: 'reuse',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+
+    const validated = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-bounded-attach',
+      interactive_wait_ms: 10_000,
+    });
+    expect(validated?.isError).not.toBe(true);
+    expect((validated?.structuredContent as {
+      validation: { passed: boolean; completed: boolean; checks: Array<{ status: string }> };
+    }).validation).toMatchObject({
+      passed: true,
+      completed: true,
+      checks: [expect.objectContaining({ status: 'passed' })],
+    });
+  });
+
+
   test('rebinds a content-deduplicated completed Check to the committed HEAD without replaying the Process', async () => {
     const fx = fixture();
     roots.push(fx.root);

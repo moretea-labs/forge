@@ -4,9 +4,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
 import { spawnSync } from 'child_process';
-import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
+import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { runtimeReleaseCanaryEnvironment } from '../../src/runtime/root/release-execution-canary';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
+import { resolveCompiledRuntimeBundle } from '../../src/runtime/root/release-loader';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 
@@ -47,17 +48,23 @@ function sourceFixture() {
   roots.push(root, controllerHome);
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
   mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
+  mkdirSync(join(root, 'src/cli/commands'), { recursive: true });
   mkdirSync(join(root, 'src/cli/local-bridge/ui-dist'), { recursive: true });
+  mkdirSync(join(root, 'supervisor/native-messaging'), { recursive: true });
+  mkdirSync(join(root, 'supervisor/chrome-extension'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '1.7.0-test' }));
   writeFileSync(join(root, 'bin/forge-runtime.mjs'), 'process.exit(0);\n');
   writeFileSync(join(root, 'src/cli/index.ts'), 'export {};\n');
+  writeFileSync(join(root, 'src/cli/commands/install.ts'), 'export {};\n');
   writeFileSync(join(root, 'src/runtime/shared/node-ts-loader.mjs'), 'export {};\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
+  writeFileSync(join(root, 'supervisor/native-messaging/host.ts'), 'process.exit(0);\n');
+  for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) writeFileSync(join(root, 'supervisor/chrome-extension', file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// supervisor extension fixture\n');
   writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.js'), 'console.log("ui");\n');
   writeFileSync(join(root, 'src/cli/local-bridge/ui-dist/app.css'), ':root { color-scheme: light; }\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
@@ -85,6 +92,17 @@ function sha256Text(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function bundleFakeRuntime(input: { outputPath: string }) {
+  writeFileSync(input.outputPath, 'runtime-bundle');
+  return { ok: true };
+}
+
+function materializeFakeRuntimeInterpreter(input: { outputPath: string }) {
+  writeFileSync(input.outputPath, 'runtime-interpreter');
+  chmodSync(input.outputPath, 0o700);
+  return { ok: true };
+}
+
 function executionSurfaceFixture(input: {
   controllerHome: string;
   releaseId: string;
@@ -95,6 +113,8 @@ function executionSurfaceFixture(input: {
   const releaseRoot = join(input.controllerHome, 'runtime', 'releases', input.releaseId);
   mkdirSync(releaseRoot, { recursive: true });
   const runtime = '#!/bin/sh\nexit 0\n';
+  mkdirSync(join(releaseRoot, 'package', 'src', 'cli'), { recursive: true });
+  writeFileSync(join(releaseRoot, 'package', 'src', 'cli', 'index.ts'), 'process.exit(0);\n');
   const processRunner = input.processRunnerSource ?? `#!/bin/sh\nexit ${input.processExit ?? 0}\n`;
   const checkRunner = `#!/bin/sh\nexit ${input.checkExit ?? 0}\n`;
   for (const [name, content] of [
@@ -272,17 +292,36 @@ describe('persistent Gateway release retention', () => {
 });
 
 describe('runtime release materialization', () => {
+  test('keeps a frozen source revision stable while the configured checkout advances', () => {
+    const { root } = sourceFixture();
+    const frozenRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    const observed = withRuntimeReleaseSourceSnapshot({ sourceRoot: root, sourceRevision: frozenRevision }, snapshotRoot => {
+      expect(snapshotRoot).not.toBe(root);
+      expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
+      writeFileSync(join(root, 'README.md'), 'fixture advanced while candidate is staging\n');
+      spawnSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'advance source concurrently'], { cwd: root, stdio: 'ignore' });
+      const advancedRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+      expect(advancedRevision).not.toBe(frozenRevision);
+      expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
+      return advancedRevision;
+    });
+    expect(observed).not.toBe(frozenRevision);
+  });
+
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
     const canaries: string[] = [];
-    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: (request) => {
+    const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: (request) => {
       expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         now: () => 1_700_000_000_100,
         uuid: () => 'future-candidate',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
+        bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
         materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -300,10 +339,11 @@ describe('runtime release materialization', () => {
         artifactIdentity: candidate.artifactIdentity,
         manifestSha256: sha256Text(manifestText),
         sourceCommit,
+        sourceRepositoryId: 'repo_source_fixture',
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
     }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
-    expect(canaries).toEqual(['process_runner', 'check_runner']);
+    expect(canaries).toEqual(['runtime_interpreter', 'process_runner', 'check_runner', 'typescript_navigation', 'context_pack', 'scheduler_worker', 'periodic_cleanup']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
   });
@@ -311,10 +351,12 @@ describe('runtime release materialization', () => {
   test('rejects a compiled candidate whose manifest omits the Process Runner authority pair', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: () => {
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: () => {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
+        bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
         materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -327,7 +369,7 @@ describe('runtime release materialization', () => {
       return { ok: true, stdout: JSON.stringify({
         schemaVersion: 1, releasePath: candidate.releasePath, manifestPath: candidate.manifestPath,
         releaseId: candidate.releaseId, artifactIdentity: candidate.artifactIdentity,
-        manifestSha256: sha256Text(manifestText), sourceCommit,
+        manifestSha256: sha256Text(manifestText), sourceCommit, sourceRepositoryId: 'repo_source_fixture',
       }) };
     } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: processRunnerEntrypoint');
   });
@@ -335,10 +377,12 @@ describe('runtime release materialization', () => {
   test('rejects a compiled candidate whose manifest omits standalone Process Runner execution authority', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: () => {
-      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { platform: 'linux', runCandidateStager: () => {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
         platform: 'linux',
         compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
+        bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
         bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
         bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
         materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -350,7 +394,7 @@ describe('runtime release materialization', () => {
       return { ok: true, stdout: JSON.stringify({
         schemaVersion: 1, releasePath: candidate.releasePath, manifestPath: candidate.manifestPath,
         releaseId: candidate.releaseId, artifactIdentity: candidate.artifactIdentity,
-        manifestSha256: sha256Text(manifestText), sourceCommit,
+        manifestSha256: sha256Text(manifestText), sourceCommit, sourceRepositoryId: 'repo_source_fixture',
       }) };
     } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: executionMode');
   });
@@ -364,12 +408,12 @@ describe('runtime release materialization', () => {
     const releaseId = wrongHead ? 'wrong-head' : 'outside-release';
     const releasePath = wrongHead ? join(controllerHome, 'runtime', 'releases', releaseId) : mkdtempSync(join(tmpdir(), 'forge-runtime-release-outside-'));
     if (!wrongHead) roots.push(releasePath);
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath: join(releasePath, 'manifest.json'), releaseId, artifactIdentity: `sha256:${'a'.repeat(64)}`, manifestSha256: 'c'.repeat(64), sourceCommit: wrongHead ? 'b'.repeat(40) : head }) }) })).toThrow(error);
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, { runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath: join(releasePath, 'manifest.json'), releaseId, artifactIdentity: `sha256:${'a'.repeat(64)}`, manifestSha256: 'c'.repeat(64), sourceCommit: wrongHead ? 'b'.repeat(40) : head, sourceRepositoryId: 'repo_source_fixture' }) }) })).toThrow(error);
   });
 
   test('stages and hashes browser/runtime sidecar artifacts beside immutable runtime executables', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       now: () => 1_700_000_000_000,
       uuid: () => 'release-test',
@@ -378,10 +422,14 @@ describe('runtime release materialization', () => {
           ? 'check-runner-binary'
           : entryPath?.endsWith('cli-sidecar.ts')
             ? 'cli-binary'
-            : 'runtime-binary';
+            : entryPath?.endsWith('supervisor/native-messaging/host.ts')
+              ? 'supervisor-native-host-binary'
+              : 'runtime-binary';
         writeFileSync(outputPath, kind);
         return { ok: true };
       },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath, entryPath }) => {
         const nodeBridge = entryPath.endsWith('src/runtime/plugins/browser-node-bridge-host.ts');
         const handoff = entryPath.endsWith('src/runtime/plugins/browser-handoff-host.ts');
@@ -405,6 +453,10 @@ describe('runtime release materialization', () => {
     expect(existsSync(handoffHostPath)).toBe(true);
     expect(readFileSync(handoffHostPath, 'utf8')).toBe('handoff-host-bundle');
     expect(staged.browserHandoffArtifactIdentity).toMatch(/^sha256:/);
+    const supervisorNativeHostPath = join(staged.releasePath, 'forge-workflow-supervisor-native-host');
+    expect(existsSync(supervisorNativeHostPath)).toBe(true);
+    expect(readFileSync(supervisorNativeHostPath, 'utf8')).toBe('supervisor-native-host-binary');
+    expect(staged.workflowSupervisorNativeHostArtifactIdentity).toMatch(/^sha256:/);
     expect(existsSync(join(staged.releasePath, 'browser-automation-helper'))).toBe(false);
     const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
     expect(existsSync(externalPluginProbePath)).toBe(true);
@@ -419,11 +471,36 @@ describe('runtime release materialization', () => {
     expect(existsSync(checkRunnerPath)).toBe(true);
     expect(readFileSync(checkRunnerPath, 'utf8')).toBe('check-runner-binary');
     expect(staged.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
+    const typescriptNavigationPath = join(staged.releasePath, 'forge-typescript-navigation');
+    expect(existsSync(typescriptNavigationPath)).toBe(true);
+    expect(staged.typescriptNavigationArtifactIdentity).toMatch(/^sha256:/);
+    const contextPackPath = join(staged.releasePath, 'forge-context-pack');
+    expect(existsSync(contextPackPath)).toBe(true);
+    expect(staged.contextPackArtifactIdentity).toMatch(/^sha256:/);
+    const runtimeBundlePath = join(staged.releasePath, 'forge-runtime-bundle.js');
+    expect(existsSync(runtimeBundlePath)).toBe(true);
+    expect(readFileSync(runtimeBundlePath, 'utf8')).toBe('runtime-bundle');
+    expect(staged.runtimeBundleArtifactIdentity).toMatch(/^sha256:/);
+    const runtimeInterpreterPath = join(staged.releasePath, 'forge-runtime-bun');
+    expect(existsSync(runtimeInterpreterPath)).toBe(true);
+    expect(readFileSync(runtimeInterpreterPath, 'utf8')).toBe('runtime-interpreter');
+    expect(staged.runtimeInterpreterArtifactIdentity).toMatch(/^sha256:/);
     const manifest = JSON.parse(readFileSync(staged.manifestPath, 'utf8')) as Record<string, unknown>;
+    expect(manifest.runtimeBundleEntrypoint).toBe('forge-runtime-bundle.js');
+    expect(manifest.runtimeBundleArtifactIdentity).toBe(staged.runtimeBundleArtifactIdentity);
+    expect(manifest.runtimeInterpreterEntrypoint).toBe('forge-runtime-bun');
+    expect(manifest.runtimeInterpreterArtifactIdentity).toBe(staged.runtimeInterpreterArtifactIdentity);
+    const resolvedBundle = resolveCompiledRuntimeBundle(['forge-runtime', '--release-manifest', staged.manifestPath]);
+    expect(resolvedBundle.bundlePath).toBe(runtimeBundlePath);
+    expect(resolvedBundle.artifactIdentity).toBe(staged.runtimeBundleArtifactIdentity!);
+    expect(resolvedBundle.interpreterPath).toBe(runtimeInterpreterPath);
+    expect(resolvedBundle.interpreterArtifactIdentity).toBe(staged.runtimeInterpreterArtifactIdentity!);
     expect(manifest.browserNodeBridgeEntrypoint).toBe('browser-node-bridge-host.js');
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
+    expect(manifest.workflowSupervisorNativeHostEntrypoint).toBe('forge-workflow-supervisor-native-host');
+    expect(manifest.workflowSupervisorNativeHostArtifactIdentity).toBe(staged.workflowSupervisorNativeHostArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBeUndefined();
     expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
     expect(manifest.executionMode).toBe('standalone-binary');
@@ -431,6 +508,10 @@ describe('runtime release materialization', () => {
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
     expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
+    expect(manifest.typescriptNavigationEntrypoint).toBe('forge-typescript-navigation');
+    expect(manifest.typescriptNavigationArtifactIdentity).toBe(staged.typescriptNavigationArtifactIdentity);
+    expect(manifest.contextPackEntrypoint).toBe('forge-context-pack');
+    expect(manifest.contextPackArtifactIdentity).toBe(staged.contextPackArtifactIdentity);
     expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');
     expect(manifest.externalPluginProbeArtifactIdentity).toBe(staged.externalPluginProbeArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'codegraph-node'))).toBe(true);
@@ -447,7 +528,9 @@ describe('runtime release materialization', () => {
     expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'package', 'package.json'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'commands', 'install.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'supervisor', 'chrome-extension', 'background.js'))).toBe(true);
     expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.packageRoot).toBe('package');
     expect(manifest.packageArtifactIdentity).toBe(staged.packageArtifactIdentity);
@@ -473,12 +556,12 @@ describe('runtime release materialization', () => {
   test('signs macOS Runtime before hashing and preserves one stable code identity across changed releases', () => {
     const { root, controllerHome } = sourceFixture();
     let runtimeBuild = 0;
-    const materialize = (now: number) => stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const materialize = (now: number) => stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'darwin',
       now: () => now,
       uuid: () => `signed-${now}`,
       compileBinary: ({ outputPath, entryPath }) => {
-        const isRuntime = entryPath?.endsWith('src/runtime/root/entry.ts');
+        const isRuntime = entryPath?.endsWith('src/runtime/root/release-loader.ts');
         writeFileSync(outputPath, isRuntime ? `runtime-build-${++runtimeBuild}` : 'sidecar-binary');
         return { ok: true };
       },
@@ -486,6 +569,8 @@ describe('runtime release materialization', () => {
         writeFileSync(executable, `${readFileSync(executable, 'utf8')}|developer-id-signature`);
         return STABLE_MACOS_SIGNING;
       },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -512,16 +597,18 @@ describe('runtime release materialization', () => {
   test('rejects a complete macOS candidate that omits the stable signing contract', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       now: () => 1_700_000_000_200,
       uuid: () => 'unsigned-candidate',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-binary'); return { ok: true }; },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-node-host'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-process-runner'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
     });
-    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, {
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'darwin',
       runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({
         schemaVersion: 1,
@@ -531,6 +618,7 @@ describe('runtime release materialization', () => {
         artifactIdentity: candidate.artifactIdentity,
         manifestSha256: candidate.manifestSha256,
         sourceCommit,
+        sourceRepositoryId: 'repo_source_fixture',
       }) }),
     })).toThrow('RUNTIME_RELEASE_CANDIDATE_MACOS_SIGNING_REQUIRED');
   });
@@ -593,12 +681,14 @@ describe('runtime release materialization', () => {
 
   test('release assertion fails closed when the declared Browser Node bridge host is missing', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => {
         writeFileSync(outputPath, 'binary');
         return { ok: true };
       },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => {
         writeFileSync(outputPath, 'node-host-bundle');
         return { ok: true };
@@ -615,12 +705,14 @@ describe('runtime release materialization', () => {
 
   test('release assertion fails closed when the declared Browser handoff host is missing', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => {
         writeFileSync(outputPath, 'binary');
         return { ok: true };
       },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => {
         writeFileSync(outputPath, 'node-host-bundle');
         return { ok: true };
@@ -635,11 +727,30 @@ describe('runtime release materialization', () => {
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING');
   });
 
-  test('release assertion rejects a package snapshot whose bytes no longer match its manifest identity', () => {
+  test('compiled loader and release assertion reject a tampered Runtime bundle before execution', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
+      bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
+      bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
+    writeFileSync(join(staged.releasePath, 'forge-runtime-bundle.js'), 'tampered-runtime-bundle');
+    expect(() => resolveCompiledRuntimeBundle(['forge-runtime', '--release-manifest', staged.manifestPath]))
+      .toThrow('RUNTIME_RELEASE_BUNDLE_ARTIFACT_IDENTITY_MISMATCH');
+    expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH');
+  });
+
+  test('release assertion rejects a package snapshot whose bytes no longer match its manifest identity', () => {
+    const { root, controllerHome } = sourceFixture();
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
+      platform: 'linux',
+      compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -650,9 +761,11 @@ describe('runtime release materialization', () => {
 
   test('release assertion rejects a component whose bytes no longer match its manifest identity', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
@@ -663,9 +776,11 @@ describe('runtime release materialization', () => {
 
   test('release assertion rejects a declared executable component without an execute bit', () => {
     const { root, controllerHome } = sourceFixture();
-    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root, sourceRepositoryId: 'repo_source_fixture' }, {
       platform: 'linux',
       compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleRuntime: bundleFakeRuntime,
+      materializeRuntimeInterpreter: materializeFakeRuntimeInterpreter,
       bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
       bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
       materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,

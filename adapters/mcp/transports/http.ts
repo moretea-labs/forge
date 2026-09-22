@@ -1,14 +1,10 @@
-import { randomUUID, timingSafeEqual } from 'crypto';
+import { randomUUID } from 'crypto';
 import { existsSync, watch } from 'fs';
 import { dirname } from 'path';
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
-import { revocationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/revoke.js';
-import { clientRegistrationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/register.js';
-import { redirectUriMatches } from '@modelcontextprotocol/sdk/server/auth/handlers/authorize.js';
-import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest, type NodeMcpRequestHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, isLegacyRequest, type McpRequestContext } from "@modelcontextprotocol/server";
+import { InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
 import {
   buildMultiRepositoryToolDefinitions,
   createCanonicalRuntimeProxy,
@@ -21,39 +17,28 @@ import {
 } from '../server';
 import {
   loadMcpServiceLocalConfig,
-  loadMcpServiceRuntimeState,
   mcpServiceOAuthTokenStoreFallbackPaths,
   mcpServiceOAuthTokenStorePath,
   parseMcpHttpAuthMode,
   readMcpServiceBearerToken,
   readMcpServiceOAuthPassphrase,
-  type McpLocalConfig,
   type McpHttpAuthMode,
 } from '../auth';
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
 import { resolveMcpRepoRoot } from '../repo';
-import { buildMcpToolDefinitions } from '../tool-mapping/tools';
 import { resolveControllerHome } from '../../../src/cli/repositories/controller-home';
-import {
-  controllerExposureSnapshot,
-} from '../toolset';
-import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
-import { invalidateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
-import { runtimeIdentitySnapshot } from '../runtime-gateway/runtime-tools';
-import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
+import { recordMcpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../src/runtime/root/status';
-import { getRepository, listRepositories } from '../../../src/cli/repositories/registry';
-import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
-import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
-import { reconcileReadinessProjectionSource } from '../readiness-projection';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
-  repositoryIdentity,
 } from '../../../src/cli/controller/runtime-config';
-import { McpSessionRegistry, type McpSessionRoute } from './session-registry';
+import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
+import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
+import { registerMcpHttpObservationRoutes } from './http-observation';
+export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
 import {
   connectionIdentity,
   ensureForgeInstanceIdentity,
@@ -67,17 +52,6 @@ export interface McpHttpOptions extends McpServerOptions {
   port?: number;
   authToken?: string;
   auth?: string;
-}
-
-function localControllerDiagnosticMatchesRuntime(
-  payload: Record<string, unknown> | null,
-  generation?: string,
-): boolean {
-  return payload?.status === 'ok'
-    && payload.toolSurface === FORGE_TOOL_SURFACE
-    && payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION
-    && payload.version === FORGE_VERSION
-    && (generation === undefined || payload.generation === generation);
 }
 
 function bearerFromRequest(req: Request): string | null {
@@ -111,24 +85,6 @@ function rawBodyToJson(body: Buffer): unknown | undefined {
 
 function isInitializeRequest(body: unknown): boolean {
   return typeof body === 'object' && body !== null && (body as Record<string, unknown>).method === 'initialize';
-}
-
-function isServerDiscoverRequest(body: unknown): boolean {
-  return typeof body === 'object' && body !== null && (body as Record<string, unknown>).method === 'server/discover';
-}
-
-function sendLegacyServerDiscoverUnsupported(res: Response, body: unknown): void {
-  const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
-  const id = typeof record.id === 'string' || typeof record.id === 'number' || record.id === null ? record.id : null;
-  res.setHeader('Cache-Control', 'no-store');
-  res.status(404).json({
-    jsonrpc: '2.0',
-    id,
-    error: {
-      code: -32601,
-      message: 'Method not found',
-    },
-  });
 }
 
 function initializeClientIdentity(req: Request, body: unknown, route: McpSessionRoute, principalId: string): string {
@@ -276,343 +232,6 @@ export function sendMcpRequestError(res: Response, error: unknown): void {
   res.status(response.status).json(response.body);
 }
 
-function getConfiguredPublicOrigin(config: McpLocalConfig | null): string | undefined {
-  const configured = process.env.FORGE_MCP_PUBLIC_ORIGIN?.trim();
-  if (configured) {
-    try {
-      return new URL(configured).origin;
-    } catch (_error) {
-      // Fall through to service or legacy config.
-    }
-  }
-  const endpoint = config?.chatgpt?.endpoint?.trim();
-  if (!endpoint) return undefined;
-  try {
-    return new URL(endpoint).origin;
-  } catch (_error) {
-    return undefined;
-  }
-}
-
-function getPublicOrigin(req: Request, configuredOrigin: string | undefined): string {
-  if (configuredOrigin) return configuredOrigin;
-  const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
-  const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '127.0.0.1:8765';
-  return `${proto}://${host}`;
-}
-
-function localControllerHealthUrl(host: string, port: number): string {
-  return `http://${host === '::1' ? '[::1]' : host}:${port}/health`;
-}
-
-async function jsonHealth(url: string): Promise<Record<string, unknown> | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2_000);
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: { accept: 'application/json' },
-    });
-    if (!response.ok) return null;
-    return await response.json() as Record<string, unknown>;
-  } catch (_error) {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export function isAllowedMcpOAuthRedirectUri(redirectUri: string): boolean {
-  try {
-    const url = new URL(redirectUri);
-    if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
-      return true;
-    }
-    if (
-      url.protocol === 'https:' &&
-      (url.origin === 'https://chatgpt.com' || url.origin === 'https://chat.openai.com') &&
-      url.pathname.startsWith('/connector/oauth/')
-    ) {
-      return true;
-    }
-    return false;
-  } catch (_error) {
-    return false;
-  }
-}
-
-function isRegisteredRedirectUri(redirectUri: string, client: { redirect_uris?: string[] }): boolean {
-  return (client.redirect_uris ?? []).some((registered) => redirectUriMatches(redirectUri, registered));
-}
-
-function isRegisteredExternalHttpsRedirectUri(redirectUri: string, client: { redirect_uris?: string[] }): boolean {
-  try {
-    const url = new URL(redirectUri);
-    return url.protocol === 'https:' && !url.username && !url.password && isRegisteredRedirectUri(redirectUri, client);
-  } catch (_error) {
-    return false;
-  }
-}
-
-function isSafeOAuthFallbackRedirectUri(redirectUri: string): boolean {
-  try {
-    const url = new URL(redirectUri);
-    if (url.username || url.password) return false;
-    if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return true;
-    return url.protocol === 'https:';
-  } catch (_error) {
-    return false;
-  }
-}
-
-async function getOrRegisterPublicOAuthClient(
-  provider: ReturnType<typeof createMcpOAuthProvider>,
-  clientId: string,
-  redirectUri: string | undefined,
-  req: Request,
-): Promise<OAuthClientInformationFull | undefined> {
-  const existing = await provider.clientsStore.getClient(clientId);
-  if (existing) return existing as OAuthClientInformationFull;
-  if (!redirectUri || !isSafeOAuthFallbackRedirectUri(redirectUri) || !provider.clientsStore.registerClient) return undefined;
-  oauthTrace(req, 'authorize:auto_register_public_client', {
-    redirectScheme: new URL(redirectUri).protocol,
-    redirectHost: new URL(redirectUri).hostname,
-  });
-  return provider.clientsStore.registerClient({
-    client_id: clientId,
-    client_id_issued_at: Math.floor(Date.now() / 1000),
-    client_name: 'forge OAuth fallback client',
-    redirect_uris: [redirectUri],
-    token_endpoint_auth_method: 'none',
-    grant_types: ['authorization_code', 'refresh_token'],
-    response_types: ['code'],
-  } as unknown as Omit<OAuthClientInformationFull, 'client_id' | 'client_id_issued_at'>) as OAuthClientInformationFull;
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function renderPassphrasePage(params: URLSearchParams): string {
-  const hiddenFields = Array.from(params.entries())
-    .filter(([key]) => key !== 'passphrase')
-    .map(([key, value]) => `<input type="hidden" name="${escapeHtmlAttribute(key)}" value="${escapeHtmlAttribute(value)}">`)
-    .join('\n');
-
-  return `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Authorize forge</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f6f6f3;color:#1f2328}
-.card{width:min(420px,92vw);background:#fff;border:1px solid #d8d8d0;border-radius:12px;padding:32px;box-shadow:0 12px 40px rgba(0,0,0,.08)}
-h1{font-size:20px;margin:0 0 8px}p{margin:0 0 20px;color:#60666d;line-height:1.45}
-input{width:100%;box-sizing:border-box;border:1px solid #bfc4c9;border-radius:8px;padding:12px;font-size:16px}
-button{width:100%;margin-top:14px;border:0;border-radius:8px;padding:12px;background:#1f2328;color:#fff;font-size:16px;font-weight:600}
-</style></head>
-<body><main class="card">
-<h1>Authorize forge</h1>
-<p>Enter the local MCP passphrase to let this MCP client use this workflow-scoped connector.</p>
-<form method="POST" action="/authorize">
-${hiddenFields}
-<input type="password" name="passphrase" placeholder="Passphrase" autofocus>
-<button type="submit">Authorize</button>
-</form>
-</main></body></html>`;
-}
-
-/** Collect OAuth authorize params from query (GET) or body (POST form). */
-function oauthAuthorizeParamSource(req: Request): Record<string, unknown> {
-  if (req.method === 'POST' && req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
-    return req.body as Record<string, unknown>;
-  }
-  return req.query as Record<string, unknown>;
-}
-
-function readOAuthAuthorizeString(source: Record<string, unknown>, key: string): string {
-  const value = source[key];
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-/**
- * True when the request lacks the OAuth parameters needed for a real authorization.
- * Incomplete requests must not render the passphrase form (incompatible clients loop there).
- */
-export function isIncompleteOAuthAuthorizeRequest(source: Record<string, unknown>): boolean {
-  const clientId = readOAuthAuthorizeString(source, 'client_id');
-  const responseType = readOAuthAuthorizeString(source, 'response_type');
-  const codeChallenge = readOAuthAuthorizeString(source, 'code_challenge');
-  const redirectUri = readOAuthAuthorizeString(source, 'redirect_uri');
-  // redirect_uri may be omitted when the client has a single registered URI; client_id is the usable redirect context.
-  const hasRedirectContext = Boolean(redirectUri) || Boolean(clientId);
-  return !clientId || !responseType || !codeChallenge || !hasRedirectContext;
-}
-
-function incompleteOAuthAuthorizeResponseBody(): {
-  error: 'invalid_request';
-  error_description: string;
-  message: string;
-  hint: string;
-} {
-  return {
-    error: 'invalid_request',
-    error_description:
-      'OAuth authorization request is incomplete. Required: client_id, response_type, code_challenge, and a usable redirect context (redirect_uri or a registered client).',
-    message:
-      'This endpoint expects a complete OAuth authorization request (PKCE). Non-OAuth MCP clients should use /mcp-bearer with Authorization: Bearer <token> instead of /authorize.',
-    hint: 'Use POST/GET /mcp-bearer with a forge bearer token for clients that cannot complete OAuth dynamic registration and PKCE.',
-  };
-}
-
-function isOAuthDebugTraceEnabled(): boolean {
-  return process.env.FORGE_MCP_OAUTH_TRACE === '1' || process.env.FORGE_MCP_OAUTH_TRACE === 'true';
-}
-
-const SENSITIVE_OAUTH_FIELDS = new Set([
-  'passphrase',
-  'code',
-  'code_verifier',
-  'client_secret',
-  'access_token',
-  'refresh_token',
-  'token',
-  'authorization',
-]);
-
-function safeOAuthFieldNames(source: Record<string, unknown>): string[] {
-  return Object.keys(source)
-    .filter((key) => !SENSITIVE_OAUTH_FIELDS.has(key.toLowerCase()))
-    .sort();
-}
-
-function oauthTrace(req: Request, event: string, extra: Record<string, unknown> = {}): void {
-  if (!isOAuthDebugTraceEnabled()) return;
-  const source = oauthAuthorizeParamSource(req);
-  const userAgent = typeof req.headers['user-agent'] === 'string'
-    ? req.headers['user-agent'].split(/[\s/]/)[0]
-    : undefined;
-  const safe = {
-    event,
-    method: req.method,
-    path: req.path,
-    fieldNames: safeOAuthFieldNames(source),
-    hasClientId: Boolean(readOAuthAuthorizeString(source, 'client_id')),
-    hasRedirectUri: Boolean(readOAuthAuthorizeString(source, 'redirect_uri')),
-    hasCodeChallenge: Boolean(readOAuthAuthorizeString(source, 'code_challenge')),
-    responseType: readOAuthAuthorizeString(source, 'response_type') || undefined,
-    codeChallengeMethod: readOAuthAuthorizeString(source, 'code_challenge_method') || undefined,
-    grantType: readOAuthAuthorizeString(source, 'grant_type') || undefined,
-    hasResource: Boolean(readOAuthAuthorizeString(source, 'resource')),
-    userAgent,
-    ...extra,
-  };
-  console.error(`[forge:mcp-oauth] ${JSON.stringify(safe)}`);
-}
-
-function oauthTraceMiddleware(event: string): (req: Request, res: Response, next: NextFunction) => void {
-  return (req, res, next) => {
-    oauthTrace(req, `${event}:request`);
-    res.once('finish', () => oauthTrace(req, `${event}:response`, { statusCode: res.statusCode }));
-    next();
-  };
-}
-
-function rejectIncompleteOAuthAuthorize(req: Request, res: Response, next: NextFunction): void {
-  const source = oauthAuthorizeParamSource(req);
-  if (isIncompleteOAuthAuthorizeRequest(source)) {
-    oauthTrace(req, 'authorize:incomplete');
-    res.status(400).json(incompleteOAuthAuthorizeResponseBody());
-    return;
-  }
-  oauthTrace(req, 'authorize:complete');
-  next();
-}
-
-function requirePassphrase(passphrase: string): (req: Request, res: Response, next: NextFunction) => void {
-  return (req, res, next) => {
-    const provided = typeof req.body?.passphrase === 'string' ? req.body.passphrase : undefined;
-    if (provided) {
-      const a = Buffer.from(provided);
-      const b = Buffer.from(passphrase);
-      if (a.length === b.length && timingSafeEqual(a, b)) {
-        next();
-        return;
-      }
-    }
-    // Prefer body hidden fields on POST (failed passphrase re-render), else query string on GET.
-    const source = oauthAuthorizeParamSource(req);
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(source)) {
-      if (key === 'passphrase') continue;
-      if (typeof value === 'string') params.set(key, value);
-    }
-    if ([...params.keys()].length === 0 && req.url.includes('?')) {
-      const fromUrl = new URLSearchParams(req.url.slice(req.url.indexOf('?')));
-      for (const [key, value] of fromUrl.entries()) {
-        if (key !== 'passphrase') params.set(key, value);
-      }
-    }
-    res.type('html').send(renderPassphrasePage(params));
-  };
-}
-
-function oauthAuthorizationHandler(provider: ReturnType<typeof createMcpOAuthProvider>) {
-  return async (req: Request, res: Response) => {
-    const query = req.method === 'POST' ? req.body : req.query;
-    const clientId = typeof query.client_id === 'string' ? query.client_id : '';
-    const responseType = typeof query.response_type === 'string' ? query.response_type : '';
-    const codeChallenge = typeof query.code_challenge === 'string' ? query.code_challenge : '';
-    const codeChallengeMethod = typeof query.code_challenge_method === 'string' ? query.code_challenge_method : '';
-    const state = typeof query.state === 'string' ? query.state : undefined;
-    const scope = typeof query.scope === 'string' ? query.scope : undefined;
-    let redirectUri = typeof query.redirect_uri === 'string' ? query.redirect_uri : undefined;
-
-    if (responseType !== 'code') {
-      res.status(400).json({ error: 'unsupported_response_type', error_description: 'Only code response type is supported' });
-      return;
-    }
-    if (!codeChallenge || codeChallengeMethod !== 'S256') {
-      res.status(400).json({ error: 'invalid_request', error_description: 'PKCE S256 is required' });
-      return;
-    }
-
-    const client = await getOrRegisterPublicOAuthClient(provider, clientId, redirectUri, req);
-    if (!client) {
-      res.status(400).json({ error: 'invalid_client', error_description: 'Unknown client_id' });
-      return;
-    }
-    if (!redirectUri && client.redirect_uris.length === 1) {
-      redirectUri = client.redirect_uris[0];
-    }
-    if (!redirectUri || (!isAllowedMcpOAuthRedirectUri(redirectUri) && !isRegisteredExternalHttpsRedirectUri(redirectUri, client))) {
-      res.status(400).json({
-        error: 'invalid_request',
-        error_description: 'redirect_uri must be localhost, a ChatGPT connector callback URL, or a registered HTTPS client redirect_uri',
-      });
-      return;
-    }
-    if (!isRegisteredRedirectUri(redirectUri, client)) {
-      res.status(400).json({
-        error: 'invalid_request',
-        error_description: 'redirect_uri must match a registered client redirect_uri',
-      });
-      return;
-    }
-
-    await provider.authorize(client as OAuthClientInformationFull, {
-      state,
-      scopes: scope ? scope.split(' ') : [],
-      redirectUri,
-      codeChallenge,
-    }, res);
-  };
-}
-
 function sendBearerUnauthorized(res: Response, description: string, hasConfiguredToken: boolean): void {
   res.setHeader('www-authenticate', 'Bearer realm="forge-mcp"');
   res.status(hasConfiguredToken ? 401 : 503).json({
@@ -705,7 +324,54 @@ const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_A
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
-type HttpSessionRegistry = McpSessionRegistry<StreamableHTTPServerTransport, McpToolContext>;
+type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
+
+
+/**
+ * Public HTTP transport registry. It owns transport admission/leases and
+ * transport-local observability only; closing a transport session must never
+ * invalidate durable execution, Work, or ControllerRound authority.
+ */
+export function createMcpHttpSessionRegistry<
+  TTransport extends ClosableMcpTransport = NodeStreamableHTTPServerTransport,
+  TContext = McpToolContext,
+>(options: McpSessionRegistryOptions<TTransport, TContext> = {}): McpSessionRegistry<TTransport, TContext> {
+  return new McpSessionRegistry<TTransport, TContext>({
+    maximumSessions: MAX_MCP_SESSIONS,
+    maximumSessionsPerPrincipal: MAX_MCP_SESSIONS_PER_PRINCIPAL,
+    idleTtlMs: MCP_SESSION_IDLE_TTL_MS,
+    streamLeaseMs: MCP_STREAM_LEASE_MS,
+    absoluteLifetimeMs: MCP_SESSION_ABSOLUTE_LIFETIME_MS,
+    activePostStallMs: MCP_ACTIVE_POST_STALL_MS,
+    ...options,
+  });
+}
+
+function principalIdFromModernRequestContext(context: McpRequestContext): string {
+  const clientId = context.authInfo?.clientId?.trim();
+  if (clientId) return `oauth-client:${clientId}`;
+  const authorization = context.requestInfo?.headers.get('authorization')?.trim() ?? '';
+  return /^Bearer\s+/i.test(authorization) ? 'mcp-bearer-client' : 'controller-http-client';
+}
+
+function createModernMcpHttpHandler(
+  baseOptions: McpServerOptions,
+  resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
+  sharedRuntimeProxy?: CanonicalRuntimeProxy,
+): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
+  const handler = createMcpHandler(async (requestContext) => {
+    const toolContext = createMcpToolContext({
+      ...baseOptions,
+      principalId: principalIdFromModernRequestContext(requestContext),
+    });
+    const runtimeSchema = await resolveRuntimeSchema?.(toolContext);
+    return createForgeMcpServerFromContext(toolContext, runtimeSchema, sharedRuntimeProxy);
+  }, {
+    legacy: 'reject',
+    responseMode: 'auto',
+  });
+  return { handler, nodeHandler: toNodeHandler(handler) };
+}
 
 async function handleMcpPost(
   req: Request,
@@ -718,6 +384,7 @@ async function handleMcpPost(
   currentToolSurfaceFingerprint: () => string | undefined,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
   sharedRuntimeProxy?: CanonicalRuntimeProxy,
+  modernHandler?: NodeMcpRequestHandler,
 ): Promise<void> {
   let body: unknown;
   try {
@@ -726,16 +393,14 @@ async function handleMcpPost(
     res.status(400).json({ error: 'invalid JSON request body' });
     return;
   }
-  const sessionId = req.headers['mcp-session-id'] as string | undefined;
-  // MCP 2026-07-28 clients probe legacy servers with server/discover before
-  // falling back to the initialize-era protocol. Forge still serves the
-  // legacy stateful transport, so reject the unsupported modern RPC with the
-  // protocol-prescribed Method not found / HTTP 404 response instead of
-  // misclassifying it as a missing-session HTTP 400.
-  if (isServerDiscoverRequest(body)) {
-    sendLegacyServerDiscoverUnsupported(res, body);
-    return;
+  if (modernHandler) {
+    const webRequest = await toWebRequest(req, body);
+    if (!(await isLegacyRequest(webRequest, body))) {
+      await modernHandler(req, res, body);
+      return;
+    }
   }
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
   if (isInitializeRequest(body)) {
     if (sessionId) {
       res.setHeader('Mcp-Session-Reset', 'reinitialized');
@@ -757,7 +422,7 @@ async function handleMcpPost(
     }
     stats.initializing += 1;
     stats.activePosts += 1;
-    let transport: StreamableHTTPServerTransport | undefined;
+    let transport: NodeStreamableHTTPServerTransport | undefined;
     let reservationId: string | undefined;
     let initializedSessionId: string | undefined;
     try {
@@ -797,7 +462,7 @@ async function handleMcpPost(
       });
       let runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
       let server: ReturnType<typeof createForgeMcpServerFromContext> | undefined;
-      transport = new StreamableHTTPServerTransport({
+      transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSessionId: string): void => {
           registry.commitInitialize(reservationId!, {
@@ -836,6 +501,19 @@ async function handleMcpPost(
       server = createForgeMcpServerFromContext(sessionContext, runtimeSchema, sharedRuntimeProxy);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
+      if (
+        initializedSessionId
+        && 'controllerHome' in sessionContext
+        && typeof sessionContext.controllerHome === 'string'
+      ) {
+        recordMcpTransportEvent(sessionContext.controllerHome, {
+          kind: 'session_initialized',
+          sessionId: initializedSessionId,
+          connectionId: connection.connectionId,
+          route,
+          principalId,
+        });
+      }
     } finally {
       if (initializedSessionId) registry.endPost(initializedSessionId);
       if (reservationId) registry.releaseInitialize(reservationId);
@@ -989,23 +667,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   tokenStore?.load();
   const oauthProvider = tokenStore ? createMcpOAuthProvider(tokenStore) : null;
   const configuredPublicOrigin = getConfiguredPublicOrigin(serviceConfig);
-  const sessionRegistry = new McpSessionRegistry<StreamableHTTPServerTransport, McpToolContext>({
-    maximumSessions: MAX_MCP_SESSIONS,
-    maximumSessionsPerPrincipal: MAX_MCP_SESSIONS_PER_PRINCIPAL,
-    idleTtlMs: MCP_SESSION_IDLE_TTL_MS,
-    streamLeaseMs: MCP_STREAM_LEASE_MS,
-    absoluteLifetimeMs: MCP_SESSION_ABSOLUTE_LIFETIME_MS,
-    activePostStallMs: MCP_ACTIVE_POST_STALL_MS,
+  const sessionRegistry = createMcpHttpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>({
     onSessionClosed: (session, reason) => {
-      const context = session.toolContext;
-      if (!('controllerHome' in context) || typeof context.controllerHome !== 'string') return;
-      const executionSessionId = typeof context.sessionId === 'string' ? context.sessionId.trim() : '';
-      if (!executionSessionId) return;
-      invalidateExecutionSession(
-        context.controllerHome,
-        executionSessionId,
-        `mcp_transport_${reason}`,
-      );
+      if (reason !== 'transport_close') return;
+      recordMcpTransportEvent(controllerHome, {
+        kind: 'interruption',
+        sessionId: session.sessionId,
+        connectionId: session.connectionId,
+        route: session.route,
+        principalId: session.principalId,
+        reason,
+      });
     },
   });
   const runtimeStats: McpRuntimeStats = { initializing: 0, activePosts: 0, rejectedOverload: 0 };
@@ -1052,295 +724,43 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       return await readCanonicalRuntimeToolSchema(context, sharedRuntimeProxy);
     }
     : undefined;
-  const localControllerConfig = {
-    enabled: serviceConfig?.localController?.enabled ?? profile === 'controller',
-    host: serviceConfig?.localController?.host ?? '127.0.0.1',
-    port: serviceConfig?.localController?.port ?? 8766,
-  };
-  const compatibilityToolDefinitions = buildMcpToolDefinitions(toolContext.policy, { enableChatgptBrowser: opts.enableChatgptBrowser === true });
   const toolSurface = toolContext.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
   const toolSurfaceSchemaVersion = toolContext.policy.profile === 'controller' ? FORGE_MCP_SCHEMA_VERSION : 1;
   const forgeVersion = FORGE_VERSION;
-  const repoId = toolContext.policy.profile === 'controller' || !repoRoot ? undefined : repositoryIdentity(repoRoot);
-  const startedAt = new Date().toISOString();
-  const localOrigin = `http://${host === '::' || host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
-  const advertisedOrigin = configuredPublicOrigin ?? localOrigin;
   const app = express();
   app.set('trust proxy', 1);
 
-  const controllerHealth = () => {
-    if (!('controllerHome' in toolContext)) return null;
-    const runtimeGeneration = currentRuntimeGeneration();
-    const exposure = controllerExposureSnapshot(toolContext);
-    // Health is a bounded diagnostic endpoint, not an MCP discovery authority.
-    // Session initialization and invocation obtain a live Runtime tools/list;
-    // health only reports the Runtime's published identity.
-    const runtimeFingerprint = currentRuntimeToolSurfaceFingerprint();
-    return {
-      configuredAccessMode: exposure.access.configuredAccessMode,
-      effectiveAccessMode: exposure.access.effectiveAccessMode,
-      effectiveToolset: exposure.access.effectiveToolset,
-      exposureRevision: exposure.access.exposureRevision,
-      accessModeSource: exposure.access.source,
-      accessModeLastAppliedAt: exposure.access.lastAppliedAt,
-      toolset: exposure.access.effectiveToolset,
-      toolSurfaceFingerprint: runtimeFingerprint,
-      runtimeToolSurfaceFingerprint: runtimeFingerprint,
-      toolCount: undefined,
-      generation: runtimeGeneration?.generation,
-      source: runtimeGeneration?.source,
-      runtimeIdentity: runtimeIdentitySnapshot(toolContext),
-    };
-  };
-
-  app.get('/health', (_req, res) => {
-    const health = controllerHealth();
-    res.setHeader('x-forge-tool-surface', toolSurface);
-    res.setHeader('x-forge-version', String(forgeVersion));
-    res.setHeader('x-forge-schema-version', String(toolSurfaceSchemaVersion));
-    if (health?.toolset) res.setHeader('x-forge-toolset', health.toolset);
-    if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
-    if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
-    const sessionSnapshot = sessionRegistry.snapshot();
-    res.json({
-      status: 'ok',
-      server: 'forge-mcp',
-      forgeInstanceId: forgeInstance.instanceId,
-      ...(process.env.FORGE_MCP_INSTANCE_ID
-        ? { controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID }
-        : {}),
-      version: forgeVersion,
-      profile: toolContext.policy.profile,
-      toolSurface,
-      schemaVersion: toolSurfaceSchemaVersion,
-      toolSurfaceFingerprint: health?.toolSurfaceFingerprint,
-      runtimeToolSurfaceFingerprint: health?.runtimeToolSurfaceFingerprint,
-      generation: health?.generation,
-      source: health?.source,
-      // Deprecated diagnostic alias; not a Runtime schema claim.
-      toolset: health?.toolset ?? 'full',
-      gatewayToolset: health?.toolset ?? 'full',
-      toolCount: health?.toolCount,
-      compatibilityToolCount: compatibilityToolDefinitions.length,
-      runtimeIdentity: health?.runtimeIdentity,
-      configuredAccessMode: health?.configuredAccessMode,
-      effectiveAccessMode: health?.effectiveAccessMode,
-      effectiveToolset: health?.effectiveToolset,
-      accessModeSource: health?.accessModeSource,
-      accessModeLastAppliedAt: health?.accessModeLastAppliedAt,
-      exposureRevision: health?.exposureRevision,
-      ...(repoId ? { repoId } : {}),
-      startedAt,
-      runner: {
-        enabled: toolContext.policy.execution.agentRunner,
-        defaultTimeoutMs: toolContext.policy.execution.runnerTimeoutMs,
-        maxTimeoutMs: toolContext.policy.execution.runnerMaxTimeoutMs,
-      },
-      auth: authMode === 'oauth'
-        ? (oauthPassphrase ? 'oauth' : 'missing')
-        : authMode === 'bearer'
-          ? (authToken ? 'required' : 'missing')
-          : 'none',
-      ...(oauthProvider ? { oauthAuthorizationCodes: oauthProvider.authorizationCodeDiagnostics() } : {}),
-      mcpEndpoint: `${advertisedOrigin}/mcp`,
-      // Grok now completes standard OAuth dynamic registration + PKCE on the
-      // canonical MCP resource. Keep /mcp-grok below only as a legacy alias.
-      grokEndpoint: `${advertisedOrigin}/mcp`,
-      bearerEndpoint: `${advertisedOrigin}/mcp-bearer`,
-      sessions: {
-        ...sessionSnapshot,
-        initializing: runtimeStats.initializing,
-        activePosts: runtimeStats.activePosts,
-        maximumActivePosts: MAX_ACTIVE_POSTS,
-        rejectedOverload: runtimeStats.rejectedOverload,
-      },
-    });
-  });
-
-  // Recovery probes this endpoint every few seconds. Keep it strictly in-memory
-  // and transport-scoped: whole-control-plane readiness below may traverse every
-  // repository projection and probe the local bridge, which must never become a
-  // periodic event-loop load generator for the public MCP Connector itself.
-  app.get('/transport-ready', (_req, res) => {
-    const sessionSnapshot = sessionRegistry.snapshot();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < MAX_INITIALIZING_SESSIONS
-      && runtimeStats.activePosts < MAX_ACTIVE_POSTS;
-    res.status(sessionCapacityReady ? 200 : 503).json({
-      ready: sessionCapacityReady,
-      profile: toolContext.policy.profile,
-      gateway: sessionCapacityReady ? 'ready' : 'saturated',
-      sessionCapacity: sessionSnapshot,
-      runtimeCapacity: {
-        initializing: runtimeStats.initializing,
-        maximumInitializing: MAX_INITIALIZING_SESSIONS,
-        activePosts: runtimeStats.activePosts,
-        maximumActivePosts: MAX_ACTIVE_POSTS,
-      },
-    });
-  });
-
-  app.get('/ready', async (_req, res) => {
-    const runtimeGeneration = currentRuntimeGeneration();
-    const sessionSnapshot = sessionRegistry.snapshot();
-    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
-      && runtimeStats.initializing < MAX_INITIALIZING_SESSIONS
-      && runtimeStats.activePosts < MAX_ACTIVE_POSTS;
-    if (!runtimeControllerHome) {
-      res.status(sessionCapacityReady ? 200 : 503).json({
-        ready: sessionCapacityReady,
-        profile: toolContext.policy.profile,
-        gateway: sessionCapacityReady ? 'ready' : 'saturated',
-        controllerDaemon: 'not-required',
-        sessionCapacity: sessionSnapshot,
-      });
-      return;
-    }
-    const daemon = readForgeRuntimeStatus(runtimeControllerHome);
-    const runtimeState = loadMcpServiceRuntimeState(runtimeControllerHome, repoRoot);
-    const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
-    const projectionSnapshots = repositories.map((repository) => {
-      const snapshot = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
-      const reconciliation = reconcileReadinessProjectionSource(
-        snapshot,
-        legacyIssueAuthorityRetired(repository.canonicalRoot)
-          ? undefined
-          : buildControllerTaskLedgerProjection(repository.canonicalRoot),
-      );
-      return { repoId: repository.repoId, snapshot, reconciliation };
-    });
-    const staleRepositories = projectionSnapshots
-      .filter(({ snapshot }) => snapshot.stale)
-      .map(({ repoId }) => repoId);
-    const blockingStaleRepositories = projectionSnapshots
-      .filter(({ snapshot }) => projectionBlocksReadiness(snapshot))
-      .map(({ repoId }) => repoId);
-    const sourceMismatches = projectionSnapshots
-      .filter(({ reconciliation }) => reconciliation.status === 'mismatch')
-      .map(({ repoId, reconciliation }) => ({ repoId, ...reconciliation }));
-    const localBridgeHealth = localControllerConfig.enabled
-      ? await jsonHealth(localControllerHealthUrl(localControllerConfig.host, localControllerConfig.port))
-      : null;
-    const localBridgeReady = !localControllerConfig.enabled
-      || localControllerDiagnosticMatchesRuntime(localBridgeHealth, runtimeGeneration?.generation);
-    const daemonReady = daemon.status === 'ready' && daemon.degraded !== true;
-    const projectionReady = blockingStaleRepositories.length === 0;
-    const publicConfigured = Boolean(runtimeState?.tunnel?.publicEndpoint);
-    const publicReady = !publicConfigured || runtimeState?.tunnel?.healthy === true;
-    const connectorReady = !publicConfigured || (
-      publicReady
-      && runtimeState?.tunnel?.connectorNeedsReconnect !== true
-    );
-    const ready = daemonReady && projectionReady && localBridgeReady && sessionCapacityReady;
-    res.status(ready ? 200 : 503).json({
-      ready,
-      generation: runtimeGeneration?.generation,
-      source: runtimeGeneration?.source,
-      gateway: { status: ready ? 'ready' : 'degraded', thin: true, eventLoopIsolatedFromWorkers: true },
-      controllerDaemon: daemon,
-      localBridge: {
-        enabled: localControllerConfig.enabled,
-        ready: localBridgeReady,
-        endpoint: `http://${localControllerConfig.host === '::1' ? '[::1]' : localControllerConfig.host}:${localControllerConfig.port}/`,
-      },
-      projections: {
-        ready: projectionReady,
-        repositoryCount: repositories.length,
-        staleRepositories,
-        blockingStaleRepositories,
-        sourceMismatches,
-      },
-      publicReadiness: {
-        configured: publicConfigured,
-        ready: publicReady,
-        endpoint: runtimeState?.tunnel?.publicEndpoint,
-      },
-      connectorReadiness: {
-        configured: publicConfigured,
-        ready: connectorReady,
-        connectorNeedsReconnect: runtimeState?.tunnel?.connectorNeedsReconnect === true,
-      },
-      sessionCapacity: sessionSnapshot,
-    });
-  });
-
-  app.get('/repos/:repoId/health', (req, res) => {
-    if (!runtimeControllerHome) {
-      res.status(404).json({ error: 'controller profile required' });
-      return;
-    }
-    try {
-      const repository = getRepository(req.params.repoId, runtimeControllerHome, { includeRemoved: true });
-      const projection = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
-      res.json({
-        status: repository.enabled && !repository.removedAt ? 'ok' : 'disabled',
-        repository: {
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          enabled: repository.enabled,
-          removedAt: repository.removedAt,
-        },
-        projection,
-      });
-    } catch (error) {
-      res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
-    }
+  registerMcpHttpObservationRoutes({
+    app,
+    toolContext,
+    sessionRegistry,
+    runtimeStats,
+    runtimeControllerHome,
+    repoRoot,
+    forgeInstanceId: forgeInstance.instanceId,
+    currentRuntimeToolSurfaceFingerprint,
+    toolSurface,
+    toolSurfaceSchemaVersion,
+    forgeVersion,
+    authMode,
+    authTokenConfigured: Boolean(authToken),
+    oauthPassphraseConfigured: Boolean(oauthPassphrase),
+    oauthAuthorizationCodeDiagnostics: oauthProvider ? () => oauthProvider.authorizationCodeDiagnostics() : undefined,
+    configuredPublicOrigin,
+    host,
+    port,
+    enableChatgptBrowser: opts.enableChatgptBrowser === true,
+    localController: {
+      enabled: serviceConfig?.localController?.enabled ?? profile === 'controller',
+      host: serviceConfig?.localController?.host ?? '127.0.0.1',
+      port: serviceConfig?.localController?.port ?? 8766,
+    },
+    maxInitializingSessions: MAX_INITIALIZING_SESSIONS,
+    maxActivePosts: MAX_ACTIVE_POSTS,
   });
 
   if (authMode === 'oauth' && oauthProvider) {
-    app.use('/authorize', express.urlencoded({ extended: false, limit: '10kb' }));
-    app.use('/authorize', oauthTraceMiddleware('authorize'));
-    // Reject incomplete OAuth requests before rendering the passphrase form.
-    app.use('/authorize', rejectIncompleteOAuthAuthorize);
-    app.use('/authorize', requirePassphrase(oauthPassphrase ?? ''));
-    app.use('/authorize', oauthAuthorizationHandler(oauthProvider));
-    app.use('/token', oauthTraceMiddleware('token'));
-    app.use('/token', tokenHandler({ provider: oauthProvider, rateLimit: false }));
-    app.use('/revoke', oauthTraceMiddleware('revoke'));
-    app.use('/revoke', revocationHandler({ provider: oauthProvider, rateLimit: false }));
-    app.use('/register', oauthTraceMiddleware('register'));
-    app.use('/register', clientRegistrationHandler({ clientsStore: oauthProvider.clientsStore, rateLimit: false }));
-    app.get('/.well-known/oauth-authorization-server', (req, res) => {
-      const origin = getPublicOrigin(req, configuredPublicOrigin);
-      res.json({
-        issuer: origin,
-        authorization_endpoint: `${origin}/authorize`,
-        token_endpoint: `${origin}/token`,
-        revocation_endpoint: `${origin}/revoke`,
-        registration_endpoint: `${origin}/register`,
-        response_types_supported: ['code'],
-        grant_types_supported: ['authorization_code', 'refresh_token'],
-        code_challenge_methods_supported: ['S256'],
-        token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-        scopes_supported: ['forge'],
-      });
-    });
-    app.get('/.well-known/openid-configuration', (req, res) => {
-      const origin = getPublicOrigin(req, configuredPublicOrigin);
-      res.json({
-        issuer: origin,
-        authorization_endpoint: `${origin}/authorize`,
-        token_endpoint: `${origin}/token`,
-        registration_endpoint: `${origin}/register`,
-        response_types_supported: ['code'],
-        grant_types_supported: ['authorization_code', 'refresh_token'],
-        code_challenge_methods_supported: ['S256'],
-        token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-        scopes_supported: ['forge'],
-      });
-    });
-    const protectedResourceMetadata = (resourcePath: '/mcp' | '/mcp-grok' | '/mcp-bearer') => (req: Request, res: Response): void => {
-      const origin = getPublicOrigin(req, configuredPublicOrigin);
-      res.json({
-        resource: `${origin}${resourcePath}`,
-        authorization_servers: [origin],
-        scopes_supported: ['forge'],
-        bearer_methods_supported: ['header'],
-      });
-    };
-    app.get('/.well-known/oauth-protected-resource/mcp', protectedResourceMetadata('/mcp'));
-    app.get('/.well-known/oauth-protected-resource/mcp-grok', protectedResourceMetadata('/mcp-grok'));
-    app.get('/.well-known/oauth-protected-resource/mcp-bearer', protectedResourceMetadata('/mcp-bearer'));
+    registerMcpOAuthHttpRoutes(app, oauthProvider, oauthPassphrase ?? '', configuredPublicOrigin);
   }
 
   const setMcpResponseHeaders = (_req: Request, res: Response, next: NextFunction): void => {
@@ -1350,10 +770,16 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     next();
   };
 
-  // Primary MCP path: OAuth (or bearer when --auth bearer). Unchanged for ChatGPT.
+  // Modern MCP 2026-07-28 is the canonical public serving boundary. The SDK
+  // owns protocol-era classification and serves modern requests without
+  // Mcp-Session-Id. Existing 2025-era traffic is routed explicitly to the
+  // bounded stateful compatibility path below.
+  const modernMcp = createModernMcpHttpHandler(baseOptions, resolveRuntimeSchema, sharedRuntimeProxy);
+
+  // Primary MCP path: OAuth (or bearer when --auth bearer).
   app.use('/mcp', setMcpResponseHeaders);
   app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1371,7 +797,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
   app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1389,7 +815,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
   app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1421,6 +847,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
     runtimeStatusWatcher?.close();
     void sessionRegistry.closeAll('shutdown');
+    void modernMcp.handler.close();
     void sharedRuntimeProxy?.close();
   });
 

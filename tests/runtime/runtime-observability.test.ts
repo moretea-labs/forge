@@ -1,11 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { classifyFailure } from '../../src/runtime/recovery/classifier';
 import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, type RuntimeHealthObservations } from '../../src/runtime/health';
 import {
@@ -19,9 +18,10 @@ import {
 import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
-import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
+import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -34,10 +34,12 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
@@ -189,6 +191,61 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
+
+  test('transport-session rollover is an explicit recovery capability rather than implicit authority', () => {
+    const ctx = {
+      principalId: 'principal-a',
+      sessionId: 'mcp-new-transport',
+      controllerInstanceId: 'runtime-a',
+      controllerType: 'chatgpt' as const,
+    } as any;
+
+    expect(() => authenticatedFacadeControllerIdentity(ctx, {
+      session_id: 'mcp-old-transport',
+    })).toThrow('CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED');
+
+    const recovered = authenticatedFacadeControllerIdentity(ctx, {
+      session_id: 'mcp-old-transport',
+    }, { allowTransportSessionRollover: true });
+    expect(recovered).toMatchObject({
+      principalId: 'principal-a',
+      sessionId: 'mcp-new-transport',
+      transportSessionId: 'mcp-new-transport',
+      controllerAuthorityId: 'mcp-old-transport',
+      authorityViaSessionCompatibility: true,
+    });
+
+    const explicitCapability = authenticatedFacadeControllerIdentity(ctx, {
+      controller_authority_id: 'ctrl-durable-authority',
+    });
+    expect(explicitCapability).toMatchObject({
+      sessionId: 'mcp-new-transport',
+      controllerAuthorityId: 'ctrl-durable-authority',
+    });
+  });
+  test('requires exact durable Work authority when modern MCP has no transport session', () => {
+    const authorityId = 'ctrl_exact_sessionless_authority';
+    const owner = {
+      schemaVersion: 1 as const,
+      workId: 'work-sessionless-authority',
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt' as const,
+      sessionId: 'legacy-session-a',
+      authorityDigest: createHash('sha256').update(authorityId).digest('hex'),
+      principalId: 'principal-a',
+      controllerInstanceId: 'runtime-a',
+      claimGeneration: 1,
+      claimedAt: '2026-09-08T00:00:00.000Z',
+      leaseExpiresAt: '2026-09-08T01:00:00.000Z',
+    };
+
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, { controllerAuthorityId: authorityId })).toBe(true);
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, { controllerAuthorityId: 'wrong-authority' })).toBe(false);
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, {})).toBe(false);
+    expect(sessionlessFacadeControllerAuthorityMatches({ ...owner, authorityDigest: undefined }, {})).toBe(false);
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, { transportSessionId: 'legacy-session-b' })).toBe(true);
+  });
+
   test('keeps legacy terminal execution attention in history without resurrecting it as a current release blocker', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-terminal-attention-ch-'));
     const repoId = 'repo-terminal-attention';
@@ -239,6 +296,80 @@ describe('runtime observability', () => {
       expect(health.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('does not make source-neutral active Work a release-blocking lifecycle attention', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-source-neutral-work-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-source-neutral-work-repo-'));
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const checkoutId = repository.checkouts[0]!.checkoutId;
+      const store = { controllerHome, repoId: repository.repoId };
+      const localEffectWorkId = 'work-local-effect-does-not-block-release';
+
+      createWorkContract(store, {
+        workId: localEffectWorkId,
+        repoId: repository.repoId,
+        checkoutId,
+        mode: 'goal_workloop',
+        workKind: 'local_effect',
+        objective: 'Perform an unrelated local UI effect.',
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'system',
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        status: 'running',
+      });
+
+      expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:work_active:${localEffectWorkId}`,
+      }));
+      rebuildRepositoryProjection(controllerHome, repository.repoId);
+      const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:work_active:${localEffectWorkId}`,
+      }));
+      const sourceNeutralHealth = evaluateRuntimeHealth(observations({
+        workers: {
+          queueDepth: projection.queueDepth,
+          runningWorkers: projection.runningWorkers,
+          activeLeases: projection.activeLeases,
+          activeAttentionCount: projection.currentAttention.length,
+        },
+      }));
+      expect(sourceNeutralHealth.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
+
+      const repositoryWorkId = 'work-repository-change-still-blocks-release';
+      createWorkContract(store, {
+        workId: repositoryWorkId,
+        repoId: repository.repoId,
+        checkoutId,
+        mode: 'goal_workloop',
+        workKind: 'repository_change',
+        objective: 'Mutate repository source.',
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'system',
+        allowedPaths: ['README.md'],
+        forbiddenPaths: [],
+        checks: [],
+        status: 'running',
+      });
+      expect(collectWorkLifecycleAttention(controllerHome, repository)).toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:work_active:${repositoryWorkId}`,
+      }));
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 
@@ -534,7 +665,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('treats patch-equivalent orphan Work branches as integrated while keeping unique patches blocking', () => {
+  test('uses the active canonical release branch for patch-equivalence instead of repository.defaultBranch', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-ch-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-repo-'));
     try {
@@ -545,20 +676,21 @@ describe('runtime observability', () => {
       spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      expect(repository.defaultBranch).toBe('main');
 
       spawnSync('git', ['switch', '-c', 'work/patch-equivalent'], { cwd: repoRoot, stdio: 'ignore' });
       writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
       spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
       const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
-      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', '-c', 'release/v2', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
 
-      spawnSync('git', ['switch', '-c', 'work/unique-patch'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', '-c', 'work/unique-patch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
       writeFileSync(join(repoRoot, 'unique.txt'), 'unique\n');
       spawnSync('git', ['add', 'unique.txt'], { cwd: repoRoot, stdio: 'ignore' });
       spawnSync('git', ['commit', '-m', 'unique patch'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', 'release/v2'], { cwd: repoRoot, stdio: 'ignore' });
 
       const findings = collectWorkLifecycleAttention(controllerHome, repository);
       expect(findings).not.toContainEqual(expect.objectContaining({
@@ -568,6 +700,62 @@ describe('runtime observability', () => {
         jobId: 'lifecycle:work_branch_not_integrated:work/unique-patch',
       }));
     } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('ignores clean integrated unregistered worktrees while keeping dirty or unique worktrees blocking', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-linked-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-linked-repo-'));
+    const equivalentRoot = join(tmpdir(), `forge-lifecycle-linked-equivalent-${process.pid}-${Date.now()}`);
+    const detachedRoot = join(tmpdir(), `forge-lifecycle-linked-detached-${process.pid}-${Date.now()}`);
+    const uniqueRoot = join(tmpdir(), `forge-lifecycle-linked-unique-${process.pid}-${Date.now()}`);
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const baseCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+
+      spawnSync('git', ['switch', '-c', 'work/linked-equivalent'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
+      spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
+      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      spawnSync('git', ['switch', '-c', 'release/v2', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
+      expect(spawnSync('git', ['worktree', 'add', equivalentRoot, 'work/linked-equivalent'], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync('git', ['worktree', 'add', '--detach', detachedRoot, baseCommit], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync('git', ['worktree', 'add', '-b', 'work/linked-unique', uniqueRoot, 'main'], { cwd: repoRoot }).status).toBe(0);
+      writeFileSync(join(uniqueRoot, 'unique.txt'), 'unique\n');
+      spawnSync('git', ['add', 'unique.txt'], { cwd: uniqueRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'unique linked patch'], { cwd: uniqueRoot, stdio: 'ignore' });
+
+      const cleanFindings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(cleanFindings).not.toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:linked_worktree_unregistered:work/linked-equivalent',
+      }));
+      expect(cleanFindings.some((finding) => finding.status === 'linked_worktree_unregistered' && finding.message.includes(detachedRoot))).toBe(false);
+      expect(cleanFindings).toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:linked_worktree_unregistered:work/linked-unique',
+      }));
+
+      writeFileSync(join(equivalentRoot, 'unfinished.txt'), 'dirty\n');
+      const dirtyFindings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(dirtyFindings).toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:dirty_linked_worktree_unregistered:work/linked-equivalent',
+      }));
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', equivalentRoot], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['worktree', 'remove', '--force', detachedRoot], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['worktree', 'remove', '--force', uniqueRoot], { cwd: repoRoot, stdio: 'ignore' });
+      rmSync(equivalentRoot, { recursive: true, force: true });
+      rmSync(detachedRoot, { recursive: true, force: true });
+      rmSync(uniqueRoot, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -707,7 +895,7 @@ describe('runtime observability', () => {
     expect(classifyFailure('worker quit unexpectedly')).toBe('agent_runtime_failure');
   });
 
-  test('persists request-level MCP timing and incident records with the same trace identity', () => {
+  test('persists request-level MCP timing and incident records with the same trace identity', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-observability-'));
     try {
       const traceId = 'trace-fixture';
@@ -734,6 +922,7 @@ describe('runtime observability', () => {
         code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY',
         message: 'fixture',
       });
+      await flushMcpDiagnostics(controllerHome);
       const timing = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')) as Record<string, unknown>;
       const incident = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')) as Record<string, unknown>;
       expect(timing).toMatchObject({
@@ -828,7 +1017,7 @@ describe('runtime observability', () => {
         action: { operation: 'external_controller_wake', arguments: { work_id: repairWorkId, controller_type: 'chatgpt' } },
       });
 
-      updateWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { status: 'cancelled' });
+      cancelWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { summary: 'Close the prior repair generation before registering a successor.' });
       const recurrentAfterTerminal = makeIncident(5);
       recordMcpIncident(controllerHome, recurrentAfterTerminal);
       const successor = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: repoRoot, incident: recurrentAfterTerminal });
@@ -880,7 +1069,7 @@ describe('runtime observability', () => {
       await server.connect(serverTransport);
       const client = new Client({ name: `runtime-tools-${toolset ?? 'default'}`, version: '1.0.0' }, { capabilities: {} });
       let toolListChanged = 0;
-      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      client.setNotificationHandler('notifications/tools/list_changed', () => {
         toolListChanged += 1;
       });
       await client.connect(clientTransport);
@@ -949,6 +1138,7 @@ describe('runtime observability', () => {
       const meta = structured?.responseMeta as Record<string, unknown> | undefined;
       expect(meta?.traceId).toBeTruthy();
       const traceId = String(meta!.traceId);
+      await flushMcpDiagnostics(controllerHome);
       const incidents = readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')
         .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; code: string });
       expect(incidents.some((entry) => entry.traceId === traceId && entry.code === 'TOOL_NOT_FOUND')).toBe(true);
@@ -961,6 +1151,56 @@ describe('runtime observability', () => {
     } finally {
       await client.close();
       await server.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('handoff resolve delegates continuation through the application port without importing workflow authority', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-handoff-application-port-'));
+    const store = { controllerHome, repoId: 'repo-handoff-port' };
+    try {
+      createHandoffItem(store, {
+        id: 'HND-APPLICATION-PORT',
+        repoId: store.repoId,
+        workId: 'WORK-APPLICATION-PORT',
+        title: 'Resolve through application port',
+        severity: 'needs_review',
+        creationReason: 'ambiguous_outcome',
+        reason: 'Fixture decision is pending.',
+        summary: 'Fixture handoff for dependency inversion.',
+        currentState: { repoId: store.repoId, workId: 'WORK-APPLICATION-PORT', statusSummary: 'waiting' },
+        attemptedActions: [],
+        evidenceRefs: [],
+        recommendedDecision: 'Resolve fixture.',
+        recommendedPrompt: 'Resolve fixture.',
+        suggestedNextActions: [],
+      });
+      const triggered: Array<{ id: string; workId?: string; status: string; decision?: string }> = [];
+      const result = await runHandoffInboxApplication({
+        operation: 'resolve',
+        store,
+        handoffId: 'HND-APPLICATION-PORT',
+        decision: 'continue exact work',
+        resolver: 'test-controller',
+      }, {
+        triggerResolvedContinuation: async (item) => {
+          triggered.push({ id: item.id, workId: item.workId, status: item.status, decision: item.decision });
+          return [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }];
+        },
+      });
+
+      expect(triggered).toEqual([{
+        id: 'HND-APPLICATION-PORT',
+        workId: 'WORK-APPLICATION-PORT',
+        status: 'resolved',
+        decision: 'continue exact work',
+      }]);
+      expect(result).toMatchObject({
+        operation: 'resolve',
+        item: { id: 'HND-APPLICATION-PORT', workId: 'WORK-APPLICATION-PORT', status: 'resolved' },
+        continuationOccurrences: [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }],
+      });
+    } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });

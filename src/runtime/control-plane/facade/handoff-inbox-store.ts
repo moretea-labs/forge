@@ -161,6 +161,16 @@ export function listHandoffItems(options: ListHandoffOptions): HandoffItem[] {
     .slice(0, limit);
 }
 
+export function countHandoffItems(options: Omit<ListHandoffOptions, 'limit' | 'detailLevel'>): number {
+  const store = readHandoffInboxStore(options);
+  const status = options.status ?? 'pending';
+  return store.items.reduce((count, item) => {
+    if (status === 'all') return count + 1;
+    if (status === 'active') return count + (isTerminalHandoffStatus(item.status) ? 0 : 1);
+    return count + (item.status === status ? 1 : 0);
+  }, 0);
+}
+
 export function summarizeHandoffItem(item: HandoffItem): HandoffItemSummary {
   return {
     id: item.id,

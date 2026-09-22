@@ -28,5 +28,6 @@ export function durationAwareInteractiveWaitMs(
   const normalized = normalizeRepositoryCommand(command);
   if (normalized.kind !== 'argv') return DEFAULT_COMPLETION_GRACE_MS;
   const executable = normalized.executable?.split(/[\\/]/).at(-1)?.toLowerCase();
-  return executable && SHORT_COMMANDS.has(executable) ? shortCommandWaitMs : DEFAULT_COMPLETION_GRACE_MS;
+  const shortGitMerge = executable === 'git' && normalized.args?.[0] === 'merge';
+  return executable && (SHORT_COMMANDS.has(executable) || shortGitMerge) ? shortCommandWaitMs : DEFAULT_COMPLETION_GRACE_MS;
 }

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
+import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import {
   activateConvergenceWorkAdmission,
@@ -18,6 +18,7 @@ import {
 } from '../../src/runtime/control-plane/facade/work-admission-policy';
 import {
   acceptSubmittedWorkContract,
+  cancelWorkContract,
   createWorkContract,
   updateWorkContract,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -155,6 +156,126 @@ function inertScheduler() {
 }
 
 describe('canonical single Runtime', () => {
+  test('SIGUSR2 heap diagnostics remain dormant until signaled and unregister on stop', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-jsc-heap-diagnostics' });
+    const diagnosticsPath = join(fixture.controllerHome, 'diagnostics', 'jsc-heap.json');
+    const listenersBefore = process.listenerCount('SIGUSR2');
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9881/mcp', host: '127.0.0.1', port: 9881, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    expect(existsSync(diagnosticsPath)).toBe(false);
+    await runtime.start();
+    expect(process.listenerCount('SIGUSR2')).toBe(listenersBefore + 1);
+    expect(existsSync(diagnosticsPath)).toBe(false);
+
+    process.emit('SIGUSR2', 'SIGUSR2');
+    for (let attempt = 0; attempt < 100 && !existsSync(diagnosticsPath); attempt += 1) {
+      await Bun.sleep(10);
+    }
+    expect(existsSync(diagnosticsPath)).toBe(true);
+    const diagnostics = JSON.parse(readFileSync(diagnosticsPath, 'utf8')) as Record<string, any>;
+    expect(diagnostics).toMatchObject({
+      schemaVersion: 1,
+      pid: process.pid,
+      runtimeInstanceId: 'runtime-jsc-heap-diagnostics',
+      releaseId: 'release-test-1',
+    });
+    expect(diagnostics.gc).toMatchObject({ forced: true, kind: 'full' });
+    expect(typeof diagnostics.gc?.durationMs).toBe('number');
+    expect(typeof diagnostics.heap?.objectCount).toBe('number');
+    expect(Array.isArray(diagnostics.heap?.topObjectTypes)).toBe(true);
+    expect(typeof diagnostics.memoryUsage?.current).toBe('number');
+
+    await runtime.stop('TEST_JSC_HEAP_DIAGNOSTICS_STOP');
+    expect(process.listenerCount('SIGUSR2')).toBe(listenersBefore);
+  });
+
+  test('SIGUSR1 JSC sampling profile is bounded, coalesces overlap, and unregisters on stop', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-jsc-sampling-profiler' });
+    const diagnosticsPath = join(fixture.controllerHome, 'diagnostics', 'jsc-sampling-profile.json');
+    const listenersBefore = process.listenerCount('SIGUSR1');
+    const captures: Array<{ durationMs: number; sampleIntervalUs: number }> = [];
+    let releaseCapture: (() => void) | undefined;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9882/mcp', host: '127.0.0.1', port: 9882, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+      captureJscSamplingProfile: async (options) => {
+        captures.push(options);
+        await new Promise<void>((resolve) => { releaseCapture = resolve; });
+        return {
+          requestedDurationMs: options.durationMs,
+          elapsedMs: options.durationMs,
+          sampleIntervalUs: options.sampleIntervalUs,
+          functions: 'functions',
+          bytecodes: 'bytecodes',
+          stackTraces: {
+            interval: 0.001,
+            totalTraceCount: 1,
+            retainedTraceCount: 1,
+            traces: [{ timestamp: 1, frames: [{ functionName: 'trace' }] }],
+            sources: [{ sourceId: 1 }],
+          },
+        };
+      },
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+    expect(process.listenerCount('SIGUSR1')).toBe(listenersBefore + 1);
+    expect(captures).toEqual([]);
+
+    process.emit('SIGUSR1', 'SIGUSR1');
+    for (let attempt = 0; attempt < 100 && captures.length === 0; attempt += 1) await Bun.sleep(1);
+    expect(captures).toEqual([{ durationMs: 2_000, sampleIntervalUs: 1_000 }]);
+
+    process.emit('SIGUSR1', 'SIGUSR1');
+    await Bun.sleep(5);
+    expect(captures).toHaveLength(1);
+
+    releaseCapture?.();
+    for (let attempt = 0; attempt < 100 && !existsSync(diagnosticsPath); attempt += 1) await Bun.sleep(1);
+    expect(existsSync(diagnosticsPath)).toBe(true);
+    expect(JSON.parse(readFileSync(diagnosticsPath, 'utf8'))).toMatchObject({
+      schemaVersion: 1,
+      bounded: true,
+      runtimeInstanceId: 'runtime-jsc-sampling-profiler',
+      requestedDurationMs: 2_000,
+      sampleIntervalUs: 1_000,
+      functions: 'functions',
+      bytecodes: 'bytecodes',
+      stackTraces: {
+        interval: 0.001,
+        totalTraceCount: 1,
+        retainedTraceCount: 1,
+        traces: [{ timestamp: 1, frames: [{ functionName: 'trace' }] }],
+        sources: [{ sourceId: 1 }],
+      },
+    });
+
+    process.emit('SIGUSR1', 'SIGUSR1');
+    for (let attempt = 0; attempt < 100 && captures.length < 2; attempt += 1) await Bun.sleep(1);
+    expect(captures).toHaveLength(2);
+    releaseCapture?.();
+
+    await runtime.stop('TEST_JSC_SAMPLING_PROFILER_STOP');
+    expect(process.listenerCount('SIGUSR1')).toBe(listenersBefore);
+  });
+
   test('materialized package Runtime needs no repository overlay while development Runtime still does', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-package-no-repo' });
     writeFileSync(fixture.manifestPath, JSON.stringify({
@@ -320,7 +441,7 @@ describe('canonical single Runtime', () => {
     let superseded = false;
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       readReleaseAuthority: () => superseded ? {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'committed',
         revision: 2,
         fencingToken: 'fence-superseded',
@@ -380,7 +501,7 @@ describe('canonical single Runtime', () => {
     let monitorStopped = false;
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       readReleaseAuthority: () => observation === 'matching' ? {
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'committed',
         revision: 1,
         fencingToken: 'fence-current',
@@ -426,6 +547,31 @@ describe('canonical single Runtime', () => {
 
     await runtime.stop('TEST_CLEANUP');
     expect(monitorStopped).toBe(true);
+  });
+
+  test('migrates complete release durable state before binding active Runtime authority', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-release-state-migration-order' });
+    const order: string[] = [];
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      migrateReleaseState: () => { order.push('migrate'); },
+      ensureReleaseAuthority: (controllerHome, manifestPath) => {
+        order.push('ensure');
+        return ensureActiveRuntimeRelease(controllerHome, manifestPath);
+      },
+      startScheduler: () => inertScheduler(),
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9877/mcp',
+        host: '127.0.0.1',
+        port: 9877,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+
+    expect(order.slice(0, 2)).toEqual(['migrate', 'ensure']);
   });
 
   test('Runtime Root rotates an exact source snapshot on every startup', async () => {
@@ -793,12 +939,12 @@ describe('canonical single Runtime', () => {
     expect(() => updateWorkContract(
       { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
       'WORK-HISTORICAL',
-      { status: 'blocked' },
+      { continuationPrompt: 'This metadata write must remain fenced during exclusive admission.' },
     )).toThrow('WORK_ADMISSION_BLOCKED');
-    expect(updateWorkContract(
+    expect(cancelWorkContract(
       { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
       'WORK-HISTORICAL',
-      { status: 'cancelled' },
+      { summary: 'Explicitly retire historical Work during exclusive admission.' },
     ).status).toBe('cancelled');
     const acceptedRetry = acceptSubmittedWorkContract(fixture.controllerHome, submittedInput);
     expect(acceptedRetry.deduplicated).toBe(true);
@@ -839,10 +985,10 @@ describe('canonical single Runtime', () => {
       historical.workId,
       { continuationPrompt: 'Continue converging this existing Work.' },
     ).continuationPrompt).toContain('Continue converging');
-    expect(updateWorkContract(
+    expect(cancelWorkContract(
       { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
       historical.workId,
-      { status: 'cancelled' },
+      { summary: 'Explicitly retire historical Work during convergence.' },
     ).status).toBe('cancelled');
 
     const reservedWorkId = 'WORK-CONVERGENCE-RESERVED';

@@ -2,10 +2,11 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkEvidenceState } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { workContractStorePath } from '../../packages/kernel/work/infrastructure/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import { writePersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import type { ManagedProcessRecord, ProcessCheckExecutionIdentity } from '../../src/runtime/execution/process-runtime/types';
 import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcilePendingWorkValidations, reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
 import {
@@ -27,6 +28,9 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
   worktreePath?: string;
   checkExecution?: ProcessCheckExecutionIdentity;
   bindingCheckExecution?: ProcessCheckExecutionIdentity;
+  omitCheckResultReceipt?: boolean;
+  semanticOk?: boolean;
+  semanticFailureClass?: 'acceptance_failure' | 'infrastructure_failure';
 } = {}) {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-'));
   roots.push(controllerHome);
@@ -36,6 +40,33 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
   const workId = `work-validation-${status}-${options.createProcess === false ? 'missing' : 'recorded'}`;
   const processId = `proc-validation-${status}-${options.createProcess === false ? 'missing' : 'recorded'}`;
   const checkId = options.checkId ?? 'check-validation';
+  const checkExecution: ProcessCheckExecutionIdentity = options.checkExecution ?? {
+    schemaVersion: 1,
+    checkId,
+    cacheKey: `cache-${checkId}`,
+    revision: 'fixture-revision',
+    definitionDigest: 'fixture-definition',
+    environmentFingerprint: 'fixture-environment',
+    timeoutMs: 30_000,
+    reuseScope: 'checkout',
+    scopeKey: `checkout:${checkoutId}|work:${workId}`,
+  };
+  const bindingCheckExecution = options.bindingCheckExecution ?? checkExecution;
+  const semanticOk = options.semanticOk ?? status === 'succeeded';
+  const semanticFailureClass = options.semanticFailureClass
+    ?? (semanticOk ? undefined : status === 'failed' ? 'acceptance_failure' : 'infrastructure_failure');
+  const checkResultReceiptPath = join(controllerHome, `${processId}.check-result.json`);
+  if (options.createProcess !== false && !options.omitCheckResultReceipt) {
+    writePersistedCheckResultReceipt(checkResultReceiptPath, {
+      checkId,
+      cacheKey: checkExecution.cacheKey,
+      ok: semanticOk,
+      status: semanticOk ? 0 : 1,
+      timedOut: status === 'timed_out',
+      ...(semanticFailureClass ? { failureClass: semanticFailureClass } : {}),
+      executedAt: now,
+    });
+  }
   createWorkContract({ controllerHome, repoId, now: () => now }, {
     workId,
     repoId,
@@ -81,9 +112,7 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
         [checkId]: {
           processId,
           requestId: 'request-validation',
-          ...((options.bindingCheckExecution ?? options.checkExecution)
-            ? { checkExecution: { ...(options.bindingCheckExecution ?? options.checkExecution)! } }
-            : {}),
+          checkExecution: { ...bindingCheckExecution },
         },
       },
     },
@@ -104,9 +133,10 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
       checkId,
       requestId: 'request-validation',
       executionSessionId: handle.sessionId,
+      ...(!options.omitCheckResultReceipt ? { checkResultReceiptPath } : {}),
     },
     resourceClaims: [],
-    ...(options.checkExecution ? { checkExecution: { ...options.checkExecution } } : {}),
+    checkExecution: { ...checkExecution },
     interactiveWaitMs: 0,
     timeoutMs: 30_000,
     maxOutputBytes: 1_024,
@@ -334,6 +364,8 @@ describe('Work validation receipt convergence', () => {
     });
     expect(existsSync(join(reused.root, 'node_modules', 'fixture-dependency', 'marker.txt'))).toBe(true);
     expect(realpathSync(join(reused.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+    expect(currentControllerCheckRevision(reused.root)).toBe(currentControllerCheckRevision(worktreeRoot));
+    expect(execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'node_modules'], { cwd: reused.root, encoding: 'utf8' }).trim()).toBe('');
 
     symlinkSync(join(repoRoot, 'node_modules'), join(worktreeRoot, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     const reusedFromManagedLink = materializeWorkVerificationSnapshot({
@@ -343,6 +375,7 @@ describe('Work validation receipt convergence', () => {
       scope: { workId: 'work-validation-dependency-reuse-linked', allowedPaths: ['package.json'], forbiddenPaths: [] },
     });
     expect(realpathSync(join(reusedFromManagedLink.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+    expect(currentControllerCheckRevision(reusedFromManagedLink.root)).toBe(currentControllerCheckRevision(worktreeRoot));
     rmSync(join(worktreeRoot, 'node_modules'), { recursive: true, force: true });
 
     writeFileSync(join(worktreeRoot, 'package.json'), '{\"name\":\"fixture\",\"private\":true,\"dependencies\":{\"new-package\":\"1.0.0\"}}\n');
@@ -399,7 +432,22 @@ describe('Work validation receipt convergence', () => {
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
     expect(result).toMatchObject({ outcome: 'failed', changed: true, handle: { state: 'failed' } });
     expect(result.handle.finalization.validation).toBe('failed');
-    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'failed' });
+    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'failed' });
+  });
+
+  test('bare Process exit failure without semantic Check evidence is infrastructure failure, not valid_fail', () => {
+    const fx = fixture('failed', { omitCheckResultReceipt: true });
+    const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
+    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
+    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
+  });
+
+  test('contradictory Process success and semantic failure evidence fails closed as infrastructure', () => {
+    const fx = fixture('succeeded', { semanticOk: false, semanticFailureClass: 'acceptance_failure' });
+    const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
+    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
+    expect(result.summary).toContain('contradict');
+    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
   });
 
   test('authorizes delivery only for valid evidence bound to the exact current input', () => {
@@ -417,7 +465,7 @@ describe('Work validation receipt convergence', () => {
 
   test('a changed-input revalidation marks prior valid evidence stale without rewriting receipts', () => {
     const fx = fixture('succeeded');
-    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { evidenceState: 'valid' });
+    recordWorkEvidenceState({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, 'valid');
 
     markWorkValidationPending(fx.controllerHome, fx.handle);
     expect(contractFor(fx)).toMatchObject({ evidenceState: 'stale' });
@@ -549,6 +597,7 @@ describe('workspace-bound validation identity', () => {
     const storePath = workContractStorePath({ root });
     const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
     const legacy = persisted.contracts[0]!;
+    legacy.schemaVersion = 2;
     legacy.phase = 'delivery';
     legacy.phaseEvidence.implementation.state = 'satisfied';
     legacy.phaseEvidence.verification.state = 'satisfied';
@@ -587,6 +636,7 @@ describe('workspace-bound validation identity', () => {
     const storePath = workContractStorePath({ root });
     const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
     const legacy = persisted.contracts[0]!;
+    legacy.schemaVersion = 2;
     legacy.phase = 'delivery';
     legacy.phaseEvidence.implementation.state = 'satisfied';
     legacy.phaseEvidence.verification.state = 'satisfied';

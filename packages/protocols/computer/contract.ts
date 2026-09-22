@@ -1,19 +1,36 @@
 export const COMPUTER_CAPABILITY_PROTOCOL_VERSION = 1 as const;
+export const COMPUTER_ELEMENT_PROTOCOL_VERSION = 2 as const;
 export const COMPUTER_CAPABILITY_EXECUTION_METHOD = 'computer_execute' as const;
 
+/** Compatibility-only Computer capability retained for providers that still expose Browser automation. */
 export const COMPUTER_BROWSER_AUTOMATION_CAPABILITY = 'computer.browser_automation.v1' as const;
 export const COMPUTER_OBSERVE_CAPABILITY = 'computer.observe.v1' as const;
 export const COMPUTER_INPUT_CAPABILITY = 'computer.input.v1' as const;
+export const COMPUTER_CONSOLE_UNLOCK_CAPABILITY = 'computer.console.unlock.v1' as const;
 export const COMPUTER_CAPTURE_CAPABILITY = 'computer.capture.v1' as const;
+export const COMPUTER_ELEMENT_OBSERVE_CAPABILITY = 'computer.element.observe.v2' as const;
+export const COMPUTER_ELEMENT_ACTION_CAPABILITY = 'computer.element.action.v2' as const;
 
 export type ComputerCapabilityId =
   | typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY
   | typeof COMPUTER_OBSERVE_CAPABILITY
   | typeof COMPUTER_INPUT_CAPABILITY
-  | typeof COMPUTER_CAPTURE_CAPABILITY;
+  | typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY
+  | typeof COMPUTER_CAPTURE_CAPABILITY
+  | typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY
+  | typeof COMPUTER_ELEMENT_ACTION_CAPABILITY;
 
-/** Every public Computer capability is dispatched through the same typed provider registry. */
-export type ComputerRuntimeProviderCapabilityId = ComputerCapabilityId;
+/** Unified Computer provider capabilities dispatched through the typed provider registry. Browser automation remains compatibility-only. */
+export type ComputerRuntimeProviderCapabilityId = Exclude<
+  ComputerCapabilityId,
+  typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY
+>;
+
+export function computerCapabilityProtocolVersion(capability: ComputerRuntimeProviderCapabilityId): 1 | 2 {
+  return capability === COMPUTER_ELEMENT_OBSERVE_CAPABILITY || capability === COMPUTER_ELEMENT_ACTION_CAPABILITY
+    ? COMPUTER_ELEMENT_PROTOCOL_VERSION
+    : COMPUTER_CAPABILITY_PROTOCOL_VERSION;
+}
 
 /** Runtime advertisement used to negotiate one provider-neutral Computer capability. */
 export interface ComputerCapabilityAdvertisement {
@@ -45,7 +62,7 @@ export type ComputerTrustedInput =
   | { kind: 'key'; key: string }
   | { kind: 'text'; text: string };
 
-/** Provider-neutral browser automation request carried over the Computer boundary. */
+/** Provider-neutral browser automation request retained only for explicit compatibility providers. */
 export type ComputerBrowserAutomationRequest =
   | { action: 'metadata'; product: ComputerBrowserProduct; ref?: ComputerBrowserTabRef }
   | { action: 'list_tabs'; product: ComputerBrowserProduct }
@@ -79,9 +96,62 @@ export interface ComputerObserveRequest {
 
 export type ComputerInputRequest =
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'press'; interactionId: string; selector: ComputerSemanticSelector; semanticAction?: 'press' | 'show_menu' | 'pick' | 'open' | 'confirm' | 'scroll_down_page' | 'scroll_up_page' }
+  | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'select_rows'; interactionId: string; selector: ComputerSemanticSelector; startIndex: number; endIndex?: number }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'type_text'; interactionId: string; selector: ComputerSemanticSelector; text: string; replace?: boolean }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'key'; interactionId: string; keys: string[] }
   | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'open_url'; url: string };
+
+
+export interface ComputerConsoleUnlockPrepareRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'prepare_unlock_console';
+}
+
+export interface ComputerConsoleUnlockRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'unlock_console';
+  /** Opaque provider-local handle. Raw console credential material never enters Forge Runtime. */
+  credentialHandle: string;
+}
+
+export interface ComputerConsoleUnlockEnrollRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_enroll';
+}
+
+export interface ComputerConsoleUnlockStatusRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_status';
+}
+
+export interface ComputerConsoleUnlockRecoverRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_recover';
+}
+
+export interface ComputerConsoleUnlockRevokeRequest {
+  capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY;
+  action: 'console_unlock_revoke';
+}
+
+export type ComputerConsoleUnlockCommandRequest =
+  | ComputerConsoleUnlockPrepareRequest
+  | ComputerConsoleUnlockRequest
+  | ComputerConsoleUnlockEnrollRequest
+  | ComputerConsoleUnlockStatusRequest
+  | ComputerConsoleUnlockRecoverRequest
+  | ComputerConsoleUnlockRevokeRequest;
+
+export interface ComputerConsoleUnlockAuthorization {
+  kind: 'explicit_single_use';
+  confirmed: true;
+  /** Unique per authorized attempt; provider replay protection consumes this exact id once. */
+  invocationId: string;
+}
+
+export type ComputerConsoleUnlockProviderRequest = ComputerConsoleUnlockCommandRequest & {
+  authorization: ComputerConsoleUnlockAuthorization;
+};
 
 export interface ComputerCaptureRequest {
   capability: typeof COMPUTER_CAPTURE_CAPABILITY;
@@ -92,8 +162,64 @@ export interface ComputerCaptureRequest {
   label?: string;
 }
 
+export interface ComputerElementTarget {
+  interactionId: string;
+  pid: number;
+  bundleIdentifier?: string | null;
+  appName: string;
+  /** Provider-local AX window ref. It is valid only inside the observed snapshot epoch. */
+  windowRef?: string | null;
+  snapshotRevision: number;
+}
+
+export interface ComputerElementObserveRequest {
+  capability: typeof COMPUTER_ELEMENT_OBSERVE_CAPABILITY;
+  action: 'observe_elements';
+  interactionId: string;
+  maxDepth?: number;
+  maxNodes?: number;
+  includeValues?: boolean;
+  rootSelector?: ComputerSemanticSelector;
+}
+
+export type ComputerElementSemanticAction =
+  | 'invoke'
+  | 'focus'
+  | 'set_value'
+  | 'toggle'
+  | 'expand'
+  | 'collapse'
+  | 'select'
+  | 'open'
+  | 'show_menu'
+  | 'scroll_page_down'
+  | 'scroll_page_up';
+
+export interface ComputerElementActionRequest {
+  capability: typeof COMPUTER_ELEMENT_ACTION_CAPABILITY;
+  action: ComputerElementSemanticAction;
+  target: ComputerElementTarget;
+  ref: string;
+  value?: unknown;
+}
+
 export type ComputerExecutionRequest =
   | { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY; request: ComputerBrowserAutomationRequest }
   | ComputerObserveRequest
   | ComputerInputRequest
-  | ComputerCaptureRequest;
+  | ComputerConsoleUnlockCommandRequest
+  | ComputerCaptureRequest
+  | ComputerElementObserveRequest
+  | ComputerElementActionRequest;
+
+/** Requests eligible for the Unified Computer provider registry. Browser automation remains an explicit compatibility path. */
+export type ComputerRuntimeExecutionRequest = Exclude<
+  ComputerExecutionRequest,
+  | { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY }
+  | { capability: typeof COMPUTER_CONSOLE_UNLOCK_CAPABILITY }
+>;
+
+/** Provider-internal execution includes protected capabilities after trusted Runtime authorization. */
+export type ComputerRuntimeProviderExecutionRequest =
+  | ComputerRuntimeExecutionRequest
+  | ComputerConsoleUnlockProviderRequest;

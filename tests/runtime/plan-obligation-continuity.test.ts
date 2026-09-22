@@ -148,7 +148,7 @@ function overwriteWork(options: { controllerHome: string; repoId: string }, work
 }
 
 describe('Plan obligation continuity', () => {
-  test('serial successor creation fails before predecessor supersession when obligations are uncovered', () => {
+  test('draft revision fails closed when predecessor obligations are uncovered', () => {
     const options = store();
     const predecessor = createPlanContract(options, input('PLAN-R1'));
     expect(listUnresolvedPlanObligations(predecessor).length).toBeGreaterThan(0);
@@ -159,24 +159,25 @@ describe('Plan obligation continuity', () => {
       relatedPlanId: predecessor.planId,
     })).toThrow('PLAN_OBLIGATION_CONTINUITY_REQUIRED');
 
-    expect(getPlanContract(options, predecessor.planId)?.status).toBe('draft');
+    expect(getPlanContract(options, predecessor.planId)).toMatchObject({ planId: 'PLAN-R1', revision: 1, status: 'draft' });
     expect(getPlanContract(options, 'PLAN-R2')).toBeUndefined();
   });
 
-  test('explicit coverage allows serial replanning and preserves the supersession edge', () => {
+  test('explicit coverage revises a draft in place without creating Plan lineage', () => {
     const options = store();
     const predecessor = createPlanContract(options, input('PLAN-R1'));
+    const dispositions = successorDispositions(predecessor);
     const admitted = admitPlanContract(options, {
       ...input('PLAN-R2'),
       planRelation: 'extend',
       relatedPlanId: predecessor.planId,
-      obligationDispositions: successorDispositions(predecessor),
+      obligationDispositions: dispositions,
     });
 
-    expect(admitted.plan?.planId).toBe('PLAN-R2');
-    expect(admitted.plan?.supersedes).toEqual(['PLAN-R1']);
-    expect(getPlanContract(options, 'PLAN-R1')).toMatchObject({ status: 'superseded', supersededBy: 'PLAN-R2' });
+    expect(admitted.plan).toMatchObject({ planId: 'PLAN-R1', revision: 1, status: 'draft', goal: 'PLAN-R2 preserves the intended V2 outcome.' });
+    expect(admitted.plan?.supersedes).toBeUndefined();
     expect(admitted.plan?.obligationDispositions?.length).toBe(listUnresolvedPlanObligations(predecessor).length);
+    expect(getPlanContract(options, 'PLAN-R2')).toBeUndefined();
   });
 
   test('coverage cannot point at invented successor locations', () => {
@@ -211,36 +212,49 @@ describe('Plan obligation continuity', () => {
     })).toThrow('change requires rationale');
   });
 
-  test('serial Plan replacement immediately retires predecessor-bound Work authority but keeps history', () => {
+  test('approved revision retires a bound Work only when its frozen execution contract changes', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-work-retirement-'));
     roots.push(controllerHome);
     const options = { controllerHome, repoId: 'repo-a' };
     createRequirement({ controllerHome }, {
       requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Deliver the requirement through current Plan authority.',
     });
-    const predecessor = createPlanContract(options, input('PLAN-R1'));
+    const draft = createPlanContract(options, input('PLAN-R1'));
+    const predecessor = approvePlanContract(options, draft.planId);
+    const step = predecessor.steps[0]!;
     createWorkContract(options, {
-      workId: 'WORK-R1', repoId: 'repo-a', requirementId: 'REQ-A', planId: predecessor.planId, planStepId: 'stage-a',
-      mode: 'goal_workloop', objective: 'Execute predecessor Plan stage.', acceptanceCriteria: ['Only current Plan Work remains active.'],
-      allowedPaths: ['src/**'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+      workId: 'WORK-R1', repoId: 'repo-a', requirementId: 'REQ-A', planId: predecessor.planId, planStepId: step.id,
+      planSourceRevision: predecessor.sourceRevision, baseRevision: predecessor.sourceRevision,
+      mode: 'goal_workloop', objective: step.objective, acceptanceCriteria: step.acceptanceCriteria,
+      allowedPaths: step.allowedPaths, forbiddenPaths: step.forbiddenPaths, checks: step.checks,
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
+    const executing = claimPlanStepForWork(options, { planId: predecessor.planId, stepId: step.id, workId: 'WORK-R1', sourceRevision: predecessor.sourceRevision });
+    const revision = input('PLAN-R2');
+    revision.sourceRevision = 'revision-b';
+    revision.steps[0]!.checks = ['package:check:main'];
 
-    const admitted = admitPlanContract(options, {
-      ...input('PLAN-R2'), planRelation: 'extend', relatedPlanId: predecessor.planId,
-      obligationDispositions: successorDispositions(predecessor),
-    });
-    expect(admitted.plan?.planId).toBe('PLAN-R2');
-    expect(getWorkContract(options, 'WORK-R1')).toMatchObject({ status: 'cancelled', phase: 'cleanup', dispatchState: 'terminal' });
+    const staged = admitPlanContract(options, {
+      ...revision, planRelation: 'extend', relatedPlanId: executing.planId,
+      obligationDispositions: successorDispositions(executing),
+    }).plan!;
+    expect(staged).toMatchObject({ planId: executing.planId, revision: 1, status: 'replanning', pendingRevision: { revision: 2, requestedRevisionLabel: 'PLAN-R2' } });
+    expect(getWorkContract(options, 'WORK-R1')).toMatchObject({ status: 'running', planId: executing.planId });
+
+    const approved = approvePlanContract(options, staged.planId);
+    expect(approved).toMatchObject({ planId: executing.planId, revision: 2, status: 'approved', steps: [{ status: 'ready' }] });
+    expect(getWorkContract(options, 'WORK-R1')).toMatchObject({ status: 'cancelled', phase: 'implementation', dispatchState: 'terminal', planId: executing.planId, phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
     expect(listWorkContracts({ ...options, status: 'active', limit: 20 }).map((work) => work.workId)).not.toContain('WORK-R1');
     expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).map((work) => work.workId)).toContain('WORK-R1');
+    expect(getPlanContract(options, 'PLAN-R2')).toBeUndefined();
   });
 
-  test('serial successor stages coherent active Work until approval and rebinds only an unchanged step contract', () => {
+  test('staged Plan revision preserves only the exact bound Work when the execution contract is unchanged', () => {
     for (const changed of [false, true]) {
       const controllerHome = mkdtempSync(join(tmpdir(), `forge-plan-active-carry-${changed ? 'changed' : 'same'}-`));
       roots.push(controllerHome);
       const options = { controllerHome, repoId: 'repo-a' };
-      createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Keep exact active Work through an obligation-only successor.' });
+      createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Keep exact active Work through an approved Plan revision.' });
       const predecessorDraft = createPlanContract(options, input(`PLAN-R1-${changed}`));
       const predecessor = approvePlanContract(options, predecessorDraft.planId);
       const step = predecessor.steps[0]!;
@@ -252,21 +266,19 @@ describe('Plan obligation continuity', () => {
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
       });
       const executing = claimPlanStepForWork(options, { planId: predecessor.planId, stepId: step.id, workId, sourceRevision: predecessor.sourceRevision });
-      const successor = input(`PLAN-R2-${changed}`);
-      successor.sourceRevision = 'revision-c';
-      if (changed) successor.steps[0]!.checks = ['package:check:main'];
-      const admitted = admitPlanContract(options, { ...successor, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: successorDispositions(executing) }).plan!;
-      expect(admitted).toMatchObject({ status: 'draft', supersedes: [executing.planId] });
-      expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
+      const revision = input(`PLAN-R2-${changed}`);
+      revision.sourceRevision = 'revision-c';
+      if (changed) revision.steps[0]!.checks = ['package:check:main'];
+      const admitted = admitPlanContract(options, { ...revision, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: successorDispositions(executing) }).plan!;
+      expect(admitted).toMatchObject({ planId: executing.planId, revision: 1, status: 'replanning', pendingRevision: { revision: 2, sourceRevision: 'revision-c' } });
+      expect(getPlanContract(options, revision.planId)).toBeUndefined();
       expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId });
       const repaired = repairDraftPlanContract(options, admitted.planId, {
-        ...successor,
-        expectedSourceRevision: successor.sourceRevision,
+        ...revision,
+        expectedSourceRevision: revision.sourceRevision,
         obligationDispositions: successorDispositions(executing),
       });
-      expect(repaired).toMatchObject({ status: 'draft', supersedes: [executing.planId], sourceRevision: 'revision-c' });
-      expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
-      expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId });
+      expect(repaired).toMatchObject({ planId: executing.planId, status: 'replanning', pendingRevision: { revision: 2, sourceRevision: 'revision-c' } });
       const lateWorkId = !changed ? `WORK-LATE-${changed}` : undefined;
       if (lateWorkId) {
         createWorkContract(options, {
@@ -275,23 +287,23 @@ describe('Plan obligation continuity', () => {
           acceptanceCriteria: step.acceptanceCriteria, allowedPaths: step.allowedPaths, forbiddenPaths: step.forbiddenPaths, checks: step.checks,
           constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
         });
-        expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'running', planId: executing.planId });
       }
       const approved = approvePlanContract(options, admitted.planId);
-      expect(getPlanContract(options, executing.planId)?.status).toBe('superseded');
+      expect(approved.planId).toBe(executing.planId);
+      expect(approved.revision).toBe(2);
       if (changed) {
         expect(approved).toMatchObject({ status: 'approved', steps: [{ status: 'ready' }] });
-        expect(getWorkContract(options, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup', planId: executing.planId });
+        expect(getWorkContract(options, workId)).toMatchObject({ status: 'cancelled', phase: 'implementation', planId: executing.planId, phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
       } else {
         expect(approved).toMatchObject({ status: 'executing', steps: [{ status: 'executing', workId }] });
-        expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: admitted.planId, planStepId: step.id, planSourceRevision: 'revision-c' });
+        expect(getWorkContract(options, workId)).toMatchObject({ status: 'running', planId: executing.planId, planStepId: step.id, planSourceRevision: 'revision-c' });
       }
       expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).filter((work) => work.workId === workId)).toHaveLength(1);
-      if (lateWorkId) expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'cancelled', phase: 'cleanup', planId: executing.planId });
+      if (lateWorkId) expect(getWorkContract(options, lateWorkId)).toMatchObject({ status: 'cancelled', phase: 'implementation', planId: executing.planId, phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
     }
   });
 
-  test('draft successor repair still rejects an unrelated nonterminal Plan that owns the same scope', () => {
+  test('pending revision repair still rejects an unrelated nonterminal Plan that owns the same scope', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-draft-repair-unrelated-scope-'));
     roots.push(controllerHome);
     const options = { controllerHome, repoId: 'repo-a' };
@@ -306,32 +318,31 @@ describe('Plan obligation continuity', () => {
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
     const executing = claimPlanStepForWork(options, { planId: predecessor.planId, stepId: step.id, workId: 'WORK-SCOPE', sourceRevision: predecessor.sourceRevision });
-    const successor = input('PLAN-R2-scope');
-    successor.sourceRevision = 'revision-c';
+    const revision = input('PLAN-R2-scope');
+    revision.sourceRevision = 'revision-c';
     const dispositions = successorDispositions(executing);
     const admitted = admitPlanContract(options, {
-      ...successor, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: dispositions,
+      ...revision, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: dispositions,
     }).plan!;
     const unrelated = createPlanContract(options, { ...input('PLAN-OTHER-scope'), scopeKey: 'unrelated-scope', sourceRevision: 'revision-other' });
     const storedUnrelated = readControlPlaneRecord<PlanContract>(controllerHome, 'plan_contract', options.repoId, unrelated.planId)!;
     writeControlPlaneRecord(controllerHome, {
       namespace: 'plan_contract', scope: options.repoId, key: unrelated.planId, schemaVersion: 1,
-      value: { ...storedUnrelated.value, scopeKey: successor.scopeKey },
+      value: { ...storedUnrelated.value, scopeKey: revision.scopeKey },
       action: 'test_seed_historical_same_scope_conflict', expectedRevision: storedUnrelated.revision,
     });
 
     expect(() => repairDraftPlanContract(options, admitted.planId, {
-      ...successor, expectedSourceRevision: successor.sourceRevision, obligationDispositions: dispositions,
+      ...revision, expectedSourceRevision: revision.sourceRevision, obligationDispositions: dispositions,
     })).toThrow('PLAN_SCOPE_ALREADY_OWNED: kernel-v2:PLAN-OTHER-scope');
-    expect(getPlanContract(options, admitted.planId)).toMatchObject({ status: 'draft', supersedes: [executing.planId] });
-    expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
+    expect(getPlanContract(options, admitted.planId)).toMatchObject({ planId: executing.planId, status: 'replanning', pendingRevision: { revision: 2 } });
   });
 
-  test('draft successor repair validates obligation continuity before allowing explicit predecessor scope coexistence', () => {
+  test('pending revision repair validates obligation continuity before mutating the staged revision', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-draft-repair-continuity-first-'));
     roots.push(controllerHome);
     const options = { controllerHome, repoId: 'repo-a' };
-    createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Never repair stale successor continuity into Plan state.' });
+    createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Never repair stale revision continuity into Plan state.' });
     const predecessorDraft = createPlanContract(options, input('PLAN-R1-continuity'));
     const predecessor = approvePlanContract(options, predecessorDraft.planId);
     const step = predecessor.steps[0]!;
@@ -342,91 +353,89 @@ describe('Plan obligation continuity', () => {
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
     const executing = claimPlanStepForWork(options, { planId: predecessor.planId, stepId: step.id, workId: 'WORK-CONTINUITY', sourceRevision: predecessor.sourceRevision });
-    const successor = input('PLAN-R2-continuity');
-    successor.sourceRevision = 'revision-c';
+    const revision = input('PLAN-R2-continuity');
+    revision.sourceRevision = 'revision-c';
     const dispositions = successorDispositions(executing);
     const admitted = admitPlanContract(options, {
-      ...successor, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: dispositions,
+      ...revision, planRelation: 'extend', relatedPlanId: executing.planId, obligationDispositions: dispositions,
     }).plan!;
     const stale = dispositions.map((entry, index) => index === 0 ? { ...entry, obligationId: 'obl_stale_not_authoritative' } : entry);
 
     expect(() => repairDraftPlanContract(options, admitted.planId, {
-      ...successor, expectedSourceRevision: successor.sourceRevision, obligationDispositions: stale,
+      ...revision, expectedSourceRevision: revision.sourceRevision, obligationDispositions: stale,
     })).toThrow('PLAN_DRAFT_REPAIR_INVALID: unknown predecessor obligation');
-    expect(getPlanContract(options, admitted.planId)?.obligationDispositions).toEqual(dispositions);
-    expect(getPlanContract(options, executing.planId)?.status).toBe('replanning');
+    expect(getPlanContract(options, admitted.planId)?.pendingRevision?.obligationDispositions).toEqual(dispositions);
   });
 
-  test('draft repair retires only exact predecessor obligations resolved after successor staging', () => {
+  test('pending revision repair retires only obligations resolved after revision staging', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-repair-resolved-obligations-'));
     roots.push(controllerHome);
     const options = { controllerHome, repoId: 'repo-a' };
     const { predecessor, workId } = deliveredValidatingPredecessor(options, 'PLAN-R1-resolved');
-    const successor = input('PLAN-R2-resolved');
-    successor.sourceRevision = 'revision-b';
+    const revision = input('PLAN-R2-resolved');
+    revision.sourceRevision = 'revision-b';
     const dispositions = successorDispositions(predecessor);
     const admitted = admitPlanContract(options, {
-      ...successor,
+      ...revision,
       planRelation: 'extend',
       relatedPlanId: predecessor.planId,
       obligationDispositions: dispositions,
     }).plan!;
-    expect(admitted).toMatchObject({ status: 'draft', supersedes: [predecessor.planId] });
-    expect(getPlanContract(options, predecessor.planId)).toMatchObject({ status: 'superseded', steps: [{ status: 'validating', workId }] });
+    expect(admitted).toMatchObject({ planId: predecessor.planId, status: 'replanning', pendingRevision: { revision: 2, sourceRevision: 'revision-b' } });
 
-    const acceptedPredecessor = acceptPlanStepEvidence(options, {
+    const acceptedCurrent = acceptPlanStepEvidence(options, {
       planId: predecessor.planId,
       stepId: 'stage-a',
       reviewer: 'chatgpt',
-      rationale: 'The predecessor delivery is semantically accepted after the successor draft was staged.',
+      rationale: 'The current revision delivery is semantically accepted after the next revision was staged.',
     });
-    expect(acceptedPredecessor).toMatchObject({ status: 'finalized', steps: [{ status: 'completed', workId }] });
-    const unresolvedIds = new Set(listUnresolvedPlanObligations(acceptedPredecessor).map((obligation) => obligation.obligationId));
+    expect(acceptedCurrent).toMatchObject({ status: 'replanning', steps: [{ status: 'completed', workId }] });
+    const unresolvedIds = new Set(listUnresolvedPlanObligations(acceptedCurrent).map((obligation) => obligation.obligationId));
     const resolvedStepIds = dispositions
       .map((disposition) => disposition.obligationId)
       .filter((obligationId) => !unresolvedIds.has(obligationId));
     expect(resolvedStepIds).toHaveLength(3);
 
-    const { planId: _planId, repoId: _repoId, requirementId: _requirementId, ...repairInput } = successor;
+    const { planId: _planId, repoId: _repoId, requirementId: _requirementId, ...repairInput } = revision;
     const repaired = repairDraftPlanContract(options, admitted.planId, {
       ...repairInput,
       sourceRevision: 'revision-c',
-      obligationDispositions: admitted.obligationDispositions,
-      expectedSourceRevision: admitted.sourceRevision,
+      obligationDispositions: admitted.pendingRevision?.obligationDispositions,
+      expectedSourceRevision: admitted.pendingRevision!.sourceRevision,
     });
-    expect(repaired).toMatchObject({ planId: admitted.planId, sourceRevision: 'revision-c', supersedes: [predecessor.planId] });
-    expect(repaired.obligationDispositions?.some((entry) => resolvedStepIds.includes(entry.obligationId))).toBe(false);
-    for (const obligation of listUnresolvedPlanObligations(acceptedPredecessor)) {
-      expect(repaired.obligationDispositions).toContainEqual(expect.objectContaining({
+    expect(repaired).toMatchObject({ planId: admitted.planId, status: 'replanning', pendingRevision: { revision: 2, sourceRevision: 'revision-c' } });
+    expect(repaired.pendingRevision?.obligationDispositions?.some((entry) => resolvedStepIds.includes(entry.obligationId))).toBe(false);
+    for (const obligation of listUnresolvedPlanObligations(acceptedCurrent)) {
+      expect(repaired.pendingRevision?.obligationDispositions).toContainEqual(expect.objectContaining({
         predecessorPlanId: predecessor.planId,
         obligationId: obligation.obligationId,
       }));
     }
-    expect(repaired.deliveryCarries ?? []).toEqual([]);
-    expect(approvePlanContract(options, repaired.planId)).toMatchObject({ status: 'approved', steps: [{ status: 'ready' }] });
+    expect(repaired.pendingRevision?.deliveryCarries ?? []).toEqual([]);
+    expect(approvePlanContract(options, repaired.planId)).toMatchObject({ planId: predecessor.planId, revision: 2, status: 'ready_to_finalize', steps: [{ status: 'completed', workId }] });
   });
 
-  test('draft repair still rejects a stale disposition when predecessor obligation content changed', () => {
+  test('pending revision repair rejects stale dispositions when current revision obligation content changes', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-repair-changed-obligation-'));
     roots.push(controllerHome);
     const options = { controllerHome, repoId: 'repo-a' };
     const { predecessor } = deliveredValidatingPredecessor(options, 'PLAN-R1-changed');
-    const successor = input('PLAN-R2-changed');
-    successor.sourceRevision = 'revision-b';
+    const revision = input('PLAN-R2-changed');
+    revision.sourceRevision = 'revision-b';
     const dispositions = successorDispositions(predecessor);
     const admitted = admitPlanContract(options, {
-      ...successor,
+      ...revision,
       planRelation: 'extend',
       relatedPlanId: predecessor.planId,
       obligationDispositions: dispositions,
     }).plan!;
-    const acceptedPredecessor = acceptPlanStepEvidence(options, {
+    const acceptedCurrent = acceptPlanStepEvidence(options, {
       planId: predecessor.planId,
       stepId: 'stage-a',
       reviewer: 'chatgpt',
-      rationale: 'Complete the predecessor before simulating an illegal semantic mutation.',
+      rationale: 'Complete the current revision before simulating an illegal semantic mutation.',
     });
-    const stored = readControlPlaneRecord<typeof acceptedPredecessor>(controllerHome, 'plan_contract', 'repo-a', predecessor.planId)!;
+    const stored = readControlPlaneRecord<typeof acceptedCurrent>(controllerHome, 'plan_contract', 'repo-a', predecessor.planId)!;
     writeControlPlaneRecord(controllerHome, {
       namespace: 'plan_contract',
       scope: 'repo-a',
@@ -443,50 +452,103 @@ describe('Plan obligation continuity', () => {
       expectedRevision: stored.revision,
     });
 
-    const { planId: _planId, repoId: _repoId, requirementId: _requirementId, ...repairInput } = successor;
+    const { planId: _planId, repoId: _repoId, requirementId: _requirementId, ...repairInput } = revision;
     expect(() => repairDraftPlanContract(options, admitted.planId, {
       ...repairInput,
       sourceRevision: 'revision-c',
-      obligationDispositions: admitted.obligationDispositions,
-      expectedSourceRevision: admitted.sourceRevision,
+      obligationDispositions: admitted.pendingRevision?.obligationDispositions,
+      expectedSourceRevision: admitted.pendingRevision!.sourceRevision,
     })).toThrow('PLAN_DRAFT_REPAIR_INVALID: unknown predecessor obligation');
   });
 
-  test('obligation-only successor reuses exact validating delivery after approval without replaying or rebinding terminal Work', () => {
+  test('obligation-only revision reuses exact validating delivery after approval without replaying terminal Work', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-delivery-carry-'));
     roots.push(controllerHome);
     const options = { controllerHome, repoId: 'repo-a' };
     const { predecessor, workId } = deliveredValidatingPredecessor(options);
-    const { successor, dispositions } = changedAcceptanceSuccessor(predecessor, 'PLAN-R2');
+    const { successor: revision, dispositions } = changedAcceptanceSuccessor(predecessor, 'PLAN-R2');
 
     const admitted = admitPlanContract(options, {
-      ...successor, planRelation: 'extend', relatedPlanId: predecessor.planId, obligationDispositions: dispositions,
+      ...revision, planRelation: 'extend', relatedPlanId: predecessor.planId, obligationDispositions: dispositions,
     }).plan!;
-    expect(admitted).toMatchObject({ status: 'draft', steps: [{ id: 'stage-a', status: 'pending' }] });
-    expect(admitted.deliveryCarries).toEqual([expect.objectContaining({
+    expect(admitted).toMatchObject({ planId: predecessor.planId, status: 'replanning', pendingRevision: { revision: 2, requestedRevisionLabel: 'PLAN-R2' } });
+    expect(admitted.pendingRevision?.deliveryCarries).toEqual([expect.objectContaining({
       predecessorPlanId: predecessor.planId, predecessorStepId: 'stage-a', successorStepId: 'stage-a', workId,
       completionReceiptId: `REC-${workId}`, deliveredSourceRevision: 'revision-b',
     })]);
-    const { planId: _planId, repoId: _repoId, requirementId: _requirementId, ...repairInput } = successor;
+    const { planId: _planId, repoId: _repoId, requirementId: _requirementId, ...repairInput } = revision;
     const repaired = repairDraftPlanContract(options, admitted.planId, {
-      ...repairInput, obligationDispositions: dispositions, expectedSourceRevision: successor.sourceRevision,
+      ...repairInput, obligationDispositions: dispositions, expectedSourceRevision: revision.sourceRevision,
     });
-    expect(repaired.supersedes).toEqual([predecessor.planId]);
-    expect(repaired.deliveryCarries).toEqual([expect.objectContaining({ workId, completionReceiptId: `REC-${workId}` })]);
+    expect(repaired.pendingRevision?.deliveryCarries).toEqual([expect.objectContaining({ workId, completionReceiptId: `REC-${workId}` })]);
 
     const approved = approvePlanContract(options, admitted.planId);
-    expect(approved).toMatchObject({ status: 'verifying', steps: [{ id: 'stage-a', status: 'validating', workId }] });
-    expect(approved.steps[0]?.evidenceRefs[0]).toMatchObject({ evidenceId: `REC-${workId}`, title: 'successor delivery carried' });
+    expect(approved).toMatchObject({ planId: predecessor.planId, revision: 2, status: 'verifying', steps: [{ id: 'stage-a', status: 'validating', workId }] });
     expect(getWorkContract(options, workId)).toMatchObject({ status: 'completed', planId: predecessor.planId, planStepId: 'stage-a' });
+    expect(getPlanContract(options, 'PLAN-R2')).toBeUndefined();
 
     const accepted = acceptPlanStepEvidence(options, {
-      planId: admitted.planId, stepId: 'stage-a', reviewer: 'chatgpt', rationale: 'Reviewed the successor criterion against the carried immutable delivery.',
+      planId: admitted.planId, stepId: 'stage-a', reviewer: 'chatgpt', rationale: 'Reviewed the revised criterion against the carried immutable delivery.',
     });
     expect(accepted).toMatchObject({ status: 'finalized', steps: [{ status: 'completed', workId }] });
     expect(listWorkContracts({ ...options, status: 'all', limit: 20 }).filter((work) => work.workId === workId)).toHaveLength(1);
   });
 
-  test('delivery carry accepts a later successor source only with explicit delivered-revision containment proof', () => {
+  test('delivery carry recovers an exact completed Work even when predecessor Plan projection regressed to ready', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-delivery-carry-ready-regression-'));
+    roots.push(controllerHome);
+    const options = { controllerHome, repoId: 'repo-a' };
+    const { predecessor, workId } = deliveredValidatingPredecessor(options, 'PLAN-ready-regression');
+    const accepted = acceptPlanStepEvidence(options, {
+      planId: predecessor.planId,
+      stepId: 'stage-a',
+      reviewer: 'chatgpt',
+      rationale: 'Complete the delivered step before simulating a stale Plan projection.',
+    });
+    const stored = readControlPlaneRecord<typeof accepted>(controllerHome, 'plan_contract', 'repo-a', predecessor.planId)!;
+    writeControlPlaneRecord(controllerHome, {
+      namespace: 'plan_contract',
+      scope: 'repo-a',
+      key: predecessor.planId,
+      schemaVersion: 1,
+      value: {
+        ...stored.value,
+        status: 'approved',
+        steps: stored.value.steps.map((step) => step.id === 'stage-a'
+          ? { ...step, status: 'ready', workId: undefined, evidenceRefs: [] }
+          : step),
+        updatedAt: '2026-09-20T00:00:00.000Z',
+      },
+      action: 'test_regress_completed_step_projection_to_ready',
+      expectedRevision: stored.revision,
+    });
+    const regressed = getPlanContract(options, predecessor.planId)!;
+    const revision = input('PLAN-ready-regression-r2');
+    revision.planId = predecessor.planId;
+    revision.sourceRevision = 'revision-b';
+    revision.goal = regressed.goal;
+    revision.requirementId = regressed.requirementId;
+    revision.scopeKey = regressed.scopeKey;
+    revision.steps = regressed.steps.map((step) => ({ ...step, status: 'pending', workId: undefined, evidenceRefs: [] }));
+    const dispositions = successorDispositions(regressed);
+
+    const admitted = admitPlanContract(options, {
+      ...revision,
+      planRelation: 'extend',
+      relatedPlanId: regressed.planId,
+      obligationDispositions: dispositions,
+    }).plan!;
+    expect(admitted.pendingRevision?.deliveryCarries).toEqual([expect.objectContaining({
+      predecessorStepId: 'stage-a',
+      successorStepId: 'stage-a',
+      workId,
+      completionReceiptId: `REC-${workId}`,
+    })]);
+    const approved = approvePlanContract(options, admitted.planId);
+    expect(approved.steps).toEqual([expect.objectContaining({ id: 'stage-a', status: 'validating', workId })]);
+  });
+
+  test('delivery carry accepts a later revision source only with explicit delivered-revision containment proof', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-delivery-carry-ancestor-'));
     roots.push(controllerHome);
     const options = {
@@ -495,27 +557,29 @@ describe('Plan obligation continuity', () => {
       revisionContains: (ancestor: string, descendant: string) => ancestor === 'revision-b' && descendant === 'revision-c',
     };
     const { predecessor, workId } = deliveredValidatingPredecessor(options);
-    const { successor, dispositions } = changedAcceptanceSuccessor(predecessor, 'PLAN-R2-later-source', 'revision-c');
+    const { successor: revision, dispositions } = changedAcceptanceSuccessor(predecessor, 'PLAN-R2-later-source', 'revision-c');
 
     const admitted = admitPlanContract(options, {
-      ...successor,
+      ...revision,
       planRelation: 'extend',
       relatedPlanId: predecessor.planId,
       obligationDispositions: dispositions,
     }).plan!;
-    expect(admitted.deliveryCarries).toEqual([expect.objectContaining({
+    expect(admitted.pendingRevision?.deliveryCarries).toEqual([expect.objectContaining({
       workId,
       deliveredSourceRevision: 'revision-b',
     })]);
     const approved = approvePlanContract(options, admitted.planId);
     expect(approved).toMatchObject({
+      planId: predecessor.planId,
+      revision: 2,
       status: 'verifying',
       sourceRevision: 'revision-c',
       steps: [{ status: 'validating', workId }],
     });
   });
 
-  test('delivery carry revalidates containment at approval and fails closed when the proof disappears', () => {
+  test('revision approval revalidates delivery containment and fails closed when proof disappears', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plan-delivery-carry-proof-loss-'));
     roots.push(controllerHome);
     let contained = true;
@@ -525,14 +589,14 @@ describe('Plan obligation continuity', () => {
       revisionContains: (ancestor: string, descendant: string) => contained && ancestor === 'revision-b' && descendant === 'revision-c',
     };
     const { predecessor } = deliveredValidatingPredecessor(options);
-    const { successor, dispositions } = changedAcceptanceSuccessor(predecessor, 'PLAN-R2-proof-loss', 'revision-c');
+    const { successor: revision, dispositions } = changedAcceptanceSuccessor(predecessor, 'PLAN-R2-proof-loss', 'revision-c');
     const admitted = admitPlanContract(options, {
-      ...successor,
+      ...revision,
       planRelation: 'extend',
       relatedPlanId: predecessor.planId,
       obligationDispositions: dispositions,
     }).plan!;
-    expect(admitted.deliveryCarries).toHaveLength(1);
+    expect(admitted.pendingRevision?.deliveryCarries).toHaveLength(1);
 
     contained = false;
     expect(() => approvePlanContract(options, admitted.planId)).toThrow('PLAN_DELIVERY_CARRY_INVALID');
@@ -550,7 +614,7 @@ describe('Plan obligation continuity', () => {
       const admitted = admitPlanContract(options, {
         ...successor, planRelation: 'extend', relatedPlanId: predecessor.planId, obligationDispositions: dispositions,
       }).plan!;
-      expect(admitted.deliveryCarries ?? []).toEqual([]);
+      expect(admitted.pendingRevision?.deliveryCarries ?? []).toEqual([]);
       const approved = approvePlanContract(options, admitted.planId);
       expect(approved).toMatchObject({ status: 'approved', steps: [{ status: 'ready' }] });
       expect(approved.steps[0]?.workId).toBeUndefined();
@@ -573,7 +637,7 @@ describe('Plan obligation continuity', () => {
       if (variant === 'missing_receipt') {
         expect(admit).toThrow();
       } else {
-        expect(admit().deliveryCarries ?? []).toEqual([]);
+        expect(admit().pendingRevision?.deliveryCarries ?? []).toEqual([]);
       }
     }
   });
@@ -590,7 +654,7 @@ describe('Plan obligation continuity', () => {
       ...successor, planRelation: 'extend', relatedPlanId: predecessor.planId,
       obligationDispositions: successorDispositions(predecessor),
     }).plan!;
-    expect(admitted.deliveryCarries ?? []).toEqual([]);
+    expect(admitted.pendingRevision?.deliveryCarries ?? []).toEqual([]);
   });
 
   test('maintenance retires legacy active Work whose Plan was already terminal', () => {
@@ -614,7 +678,7 @@ describe('Plan obligation continuity', () => {
     });
 
     expect(retireTerminalPlanBoundWorkAuthorities(options)).toEqual(['WORK-LEGACY']);
-    expect(getWorkContract(options, 'WORK-LEGACY')).toMatchObject({ status: 'cancelled', dispatchState: 'terminal', phase: 'cleanup' });
+    expect(getWorkContract(options, 'WORK-LEGACY')).toMatchObject({ status: 'cancelled', dispatchState: 'terminal', phase: 'implementation', phaseEvidence: { implementation: { state: 'skipped' }, cleanup: { state: 'pending' } } });
     expect(retireTerminalPlanBoundWorkAuthorities(options)).toEqual([]);
   });
 });

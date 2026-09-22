@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "forge-evaluation-baseline-reconstruction/v1",
+  "candidateId": "forge-v1.7.2",
+  "versionLabel": "v1.7.2",
+  "sourceRevision": "c873cfeb11a223ced342e7101c016261b4a93b38",
+  "executionSurface": "public_mcp",
+  "publishedPackage": {
+    "specifier": "@moretea-labs/forge@1.7.2",
+    "registry": "https://registry.npmjs.org/",
+    "tarballSha256": "sha256:2073bf8a6ab377e63ebe109c197039647bcf0626fb357954156c9f83f429fb10",
+    "releaseManifestPath": "evaluation/baselines/v1.7.2/release-package.json",
+    "releaseManifestSha256": "sha256:6b762411da7a6bb7488afe1a79831158f19f822064e6abf14c0f3536f3b31d62"
+  },
+  "dependencyLock": {
+    "path": "evaluation/baselines/v1.7.2/package-lock.json",
+    "sha256": "sha256:c7d5dc811b86862229a774ccaaed856f19084fb80d3c1f8e1bd91f184f104a8a",
+    "sourceRevision": "c873cfeb11a223ced342e7101c016261b4a93b38",
+    "sourcePath": "package-lock.json",
+    "sourceSha256": "sha256:333a53bfd14c0e4bde4caac29709c0850e3946d07d8ed50332f187b452868416",
+    "normalization": "root_manifest_metadata_only"
+  },
+  "installer": {
+    "executable": "npm",
+    "version": "11.19.0",
+    "arguments": [
+      "ci",
+      "--omit=dev",
+      "--omit=optional",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--prefer-offline",
+      "--offline"
+    ]
+  },
+  "builder": {
+    "entryPath": "evaluation/build-v172-baseline.ts",
+    "implementationFiles": {
+      "evaluation/build-v172-baseline.ts": "sha256:aa944011afdbc0e1a08d936e6280c550a44dc4d40588178f600c60c1dc22fd3d",
+      "evaluation/lib/baseline.ts": "sha256:d8877b90de865dd5ea59b70d7436f7f3d86db198c201b948474e504f40829f4e",
+      "evaluation/lib/candidate-artifact.ts": "sha256:d53a07a012043a175d4b8b1eec7296dfdda0fc4e897439aebdb01a91996b5bdc"
+    }
+  },
+  "entryPath": "bin/forge.mjs",
+  "historicalArtifactDigest": "sha256:52ef73f9299d84895cd1a0692bf53023608dff6bc4ba29942a8f8d2bc3837db0"
+}

@@ -300,6 +300,15 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(sessionAuthorization?.target).toEqual(openAuthorization?.target);
 
     await observeAndConfirmForeground(value, interactionId);
+    const automatedTyped = await submitAssistantPluginAction(value.controllerHome, repository, {
+      pluginId: 'ios', actionId: 'physical_device_type_text', requestId: 'physical-type-workflow',
+      args: { interaction_id: interactionId, text: 'Forge123' },
+      authorizationGrantRefs: [String(openedSubmission.authorization?.grantId)],
+      origin: { surface: 'system', actor: 'workflow-runtime' },
+    });
+    expect(automatedTyped.authorization).toMatchObject({ source: 'capability_grant', grantId: openedSubmission.authorization?.grantId });
+    expect((automatedTyped.result?.result as Record<string, unknown>).text).toBe('<redacted>');
+    await observeAndConfirmForeground(value, interactionId);
     const typed = await executeIosPhysicalDeviceAction(input(value, 'physical_device_type_text', {
       interaction_id: interactionId, text: 'Forge123',
     }));

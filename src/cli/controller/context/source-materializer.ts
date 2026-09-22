@@ -1,5 +1,5 @@
-import ts from 'typescript';
 import type { McpPolicy } from '../../mcp/types';
+import { extractTypeScriptSourceSymbolsInSidecar } from '../../../runtime/context/typescript-navigation-process';
 import { redactMcpText } from '../../mcp/redaction';
 import { readRepositoryRange, type RepositoryReadSession } from '../../repository/inspector';
 
@@ -46,16 +46,8 @@ interface SymbolRange {
   enclosing?: string;
 }
 
-interface IndexedDeclaration {
-  node: ts.Node;
-  kind: string;
-  fullStart: number;
-  end: number;
-}
-
 interface SourceSymbolIndex {
-  sourceFile: ts.SourceFile;
-  declarations: IndexedDeclaration[];
+  declarations: SymbolRange[];
 }
 
 const SOURCE_SYMBOL_INDEX_CACHE_MAX_ENTRIES = 32;
@@ -107,70 +99,13 @@ function mergeHitLines(lines: number[]): number[] {
   return merged;
 }
 
-function scriptKind(path: string): ts.ScriptKind | undefined {
-  if (/\.tsx$/i.test(path)) return ts.ScriptKind.TSX;
-  if (/\.jsx$/i.test(path)) return ts.ScriptKind.JSX;
-  if (/\.(?:mts|cts|ts)$/i.test(path)) return ts.ScriptKind.TS;
-  if (/\.(?:mjs|cjs|js)$/i.test(path)) return ts.ScriptKind.JS;
-  return undefined;
-}
-
-function declarationName(node: ts.Node): string | undefined {
-  const named = node as ts.Node & { name?: ts.Node };
-  if (!named.name) return undefined;
-  return named.name.getText().slice(0, 200);
-}
-
-function declarationKind(node: ts.Node): string | undefined {
-  if (ts.isFunctionDeclaration(node)) return 'function';
-  if (ts.isMethodDeclaration(node)) return 'method';
-  if (ts.isConstructorDeclaration(node)) return 'constructor';
-  if (ts.isGetAccessorDeclaration(node)) return 'getter';
-  if (ts.isSetAccessorDeclaration(node)) return 'setter';
-  if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return 'class';
-  if (ts.isInterfaceDeclaration(node)) return 'interface';
-  if (ts.isTypeAliasDeclaration(node)) return 'type';
-  if (ts.isEnumDeclaration(node)) return 'enum';
-  if (ts.isModuleDeclaration(node)) return 'module';
-  if (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) =>
-    declaration.initializer && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer)))) return 'function-variable';
-  return undefined;
-}
-
-function enclosingName(node: ts.Node): string | undefined {
-  let current = node.parent;
-  while (current) {
-    if (ts.isClassDeclaration(current) || ts.isClassExpression(current) || ts.isInterfaceDeclaration(current) || ts.isModuleDeclaration(current)) {
-      const kind = declarationKind(current) ?? 'container';
-      const name = declarationName(current);
-      return name ? `${kind}:${name}` : kind;
-    }
-    current = current.parent;
-  }
-  return undefined;
-}
-
-function buildSourceSymbolIndex(path: string, source: string, kind: ts.ScriptKind): SourceSymbolIndex {
-  const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, kind);
-  const declarations: IndexedDeclaration[] = [];
-  const visit = (node: ts.Node): void => {
-    const candidateKind = declarationKind(node);
-    if (candidateKind) {
-      declarations.push({
-        node,
-        kind: candidateKind,
-        fullStart: node.getFullStart(),
-        end: node.end,
-      });
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return { sourceFile, declarations };
+function sourceSyntaxKind(path: string): string | undefined {
+  const match = path.toLowerCase().match(/\.(tsx|jsx|mts|cts|ts|mjs|cjs|js)$/);
+  return match?.[1];
 }
 
 function cachedSourceSymbolIndex(path: string, fileSha: string, numberedSource: string): SourceSymbolIndex | undefined {
-  const kind = scriptKind(path);
+  const kind = sourceSyntaxKind(path);
   if (kind === undefined) return undefined;
   const key = `${kind}:${fileSha}`;
   const cached = sourceSymbolIndexCache.get(key);
@@ -182,7 +117,9 @@ function cachedSourceSymbolIndex(path: string, fileSha: string, numberedSource: 
   }
 
   sourceSymbolIndexCacheMisses += 1;
-  const built = buildSourceSymbolIndex(path, plainSource(numberedSource), kind);
+  const built: SourceSymbolIndex = {
+    declarations: extractTypeScriptSourceSymbolsInSidecar(path, plainSource(numberedSource)),
+  };
   sourceSymbolIndexCache.set(key, built);
   while (sourceSymbolIndexCache.size > SOURCE_SYMBOL_INDEX_CACHE_MAX_ENTRIES) {
     const oldest = sourceSymbolIndexCache.keys().next().value as string | undefined;
@@ -194,22 +131,13 @@ function cachedSourceSymbolIndex(path: string, fileSha: string, numberedSource: 
 
 function symbolAtLine(index: SourceSymbolIndex | undefined, line: number): SymbolRange | undefined {
   if (!index) return undefined;
-  const { sourceFile, declarations } = index;
-  const targetLine = Math.min(Math.max(1, line), sourceFile.getLineAndCharacterOfPosition(sourceFile.end).line + 1);
-  const position = sourceFile.getPositionOfLineAndCharacter(targetLine - 1, 0);
-  let selected: IndexedDeclaration | undefined;
-  for (const candidate of declarations) {
-    if (candidate.fullStart > position || candidate.end < position) continue;
-    if (!selected || (candidate.end - candidate.fullStart) < (selected.end - selected.fullStart)) selected = candidate;
+  const targetLine = Math.max(1, line);
+  let selected: SymbolRange | undefined;
+  for (const candidate of index.declarations) {
+    if (candidate.startLine > targetLine || candidate.endLine < targetLine) continue;
+    if (!selected || (candidate.endLine - candidate.startLine) < (selected.endLine - selected.startLine)) selected = candidate;
   }
-  if (!selected) return undefined;
-  return {
-    startLine: sourceFile.getLineAndCharacterOfPosition(selected.node.getStart(sourceFile)).line + 1,
-    endLine: sourceFile.getLineAndCharacterOfPosition(selected.node.end).line + 1,
-    kind: selected.kind,
-    name: declarationName(selected.node),
-    enclosing: enclosingName(selected.node),
-  };
+  return selected;
 }
 
 function materializedSnippet(

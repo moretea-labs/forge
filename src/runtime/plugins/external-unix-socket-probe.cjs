@@ -5,8 +5,7 @@ const net = require('net');
 const path = require('path');
 
 function fail(message) {
-  process.stderr.write(String(message).slice(0, 4000));
-  process.exitCode = 1;
+  process.stderr.write(String(message).slice(0, 4000), () => process.exit(1));
 }
 
 function bounded(value, fallback, min, max) {
@@ -61,7 +60,10 @@ function main() {
     if (settled) return;
     settled = true;
     cleanup();
-    process.stdout.write(line);
+    // A named-pipe Socket can keep Bun's event loop alive well after destroy()
+    // on Windows. Exit only after stdout flushes so sync diagnostics stay
+    // bounded by the RPC, not delayed handle reclamation.
+    process.stdout.write(line, () => process.exit(0));
   }
   socket.once('connect', () => socket.write(envelope));
   socket.on('data', (chunk) => {

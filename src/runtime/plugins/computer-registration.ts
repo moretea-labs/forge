@@ -1,10 +1,28 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type {
+  ComputerApplicationLaunchProvenance,
   ComputerApplicationTarget,
   ComputerApplicationStableIdentity,
   ComputerApplicationTargetLease,
 } from '../../../packages/plugin-runtime/computer/target-authority';
+import {
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+  type ComputerConsoleUnlockCommandRequest,
+  type ComputerConsoleUnlockPrepareRequest,
+  type ComputerConsoleUnlockRequest,
+  type ComputerElementSemanticAction,
+  type ComputerElementTarget,
+  type ComputerRuntimeExecutionRequest,
+  type ComputerSemanticSelector,
+} from '../../../packages/protocols/computer/index';
+import { executeRuntimeComputer, executeRuntimeComputerConsoleUnlock } from '../root/computer-composition';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
+import { currentComputerPlatform } from '../platform/computer-platform';
 import {
   buildBrowserPluginManifest,
   executeBrowserPluginAction,
@@ -28,9 +46,22 @@ const DESKTOP_PROVIDER_ID = 'desktop_operator';
 const computerTargetAuthority = runtimeComputerInteractionTargetAuthority();
 const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
 const DESKTOP_TARGET_CLOSE_ACTION = 'desktop_target_close';
+const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
+const DESKTOP_ELEMENT_ACTION_ACTION = 'desktop_element_action';
+export const COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION = 'console_unlock_prepare';
+export const COMPUTER_CONSOLE_UNLOCK_ACTION = 'console_unlock';
+export const COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION = 'console_unlock_enroll';
+export const COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION = 'console_unlock_status';
+export const COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION = 'console_unlock_recover';
+export const COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION = 'console_unlock_revoke';
+const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
+const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
+const CONSOLE_CREDENTIAL_HANDLE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = ['invoke', 'focus', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'open', 'show_menu', 'scroll_page_down', 'scroll_page_up'] as const;
 const DESKTOP_SEMANTIC_ACTION_IDS = new Set([
   'desktop_observe',
   'desktop_press',
+  'desktop_select_rows',
   'desktop_type_text',
   'desktop_key',
   'desktop_open_url',
@@ -40,6 +71,14 @@ const DESKTOP_PRODUCT_ACTION_IDS = new Set([
   DESKTOP_TARGET_OPEN_ACTION,
   DESKTOP_TARGET_CLOSE_ACTION,
   ...DESKTOP_SEMANTIC_ACTION_IDS,
+  DESKTOP_ELEMENT_OBSERVE_ACTION,
+  DESKTOP_ELEMENT_ACTION_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION,
+  COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION,
 ]);
 
 function providerActionDescriptor(actionId: string): AssistantPluginActionDescriptor {
@@ -65,6 +104,115 @@ function targetBoundDescriptor(actionId: string): AssistantPluginActionDescripto
   return { ...descriptor, argumentsSchema: schema };
 }
 
+export interface ProtectedConsoleUnlockPreparationInput {
+  confirmAuthorization: boolean;
+  timeoutMs?: number;
+}
+
+export interface ProtectedConsoleUnlockInvocationInput {
+  credentialHandle: string;
+  confirmAuthorization: boolean;
+  timeoutMs?: number;
+}
+
+function boundedConsoleUnlockTimeoutMs(value: number | undefined): number {
+  if (!Number.isFinite(value)) return DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS;
+  return Math.min(MAX_CONSOLE_UNLOCK_TIMEOUT_MS, Math.max(1_000, Math.trunc(value!)));
+}
+
+function requireConsoleUnlockAuthorization(confirmed: boolean): void {
+  if (confirmed !== true) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED: confirm_authorization=true is required for this one invocation.');
+  }
+}
+
+export async function executeProtectedConsoleUnlockPreparation(
+  input: ProtectedConsoleUnlockPreparationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireConsoleUnlockAuthorization(input.confirmAuthorization);
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockPrepareRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'prepare_unlock_console',
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedConsoleUnlockTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  const credentialHandle = typeof providerResult.credential_handle === 'string'
+    ? providerResult.credential_handle
+    : undefined;
+  if (!credentialHandle || !CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(credentialHandle)) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_PREPARATION_INVALID: provider did not return a valid opaque credential handle.');
+  }
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'prepare_unlock_console',
+    invocationId,
+    prepared: providerResult.prepared === true,
+    credentialHandle,
+    ...(typeof providerResult.expires_in_ms === 'number' ? { expiresInMs: providerResult.expires_in_ms } : {}),
+  };
+}
+
+export async function executeProtectedConsoleUnlockInvocation(
+  input: ProtectedConsoleUnlockInvocationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireConsoleUnlockAuthorization(input.confirmAuthorization);
+  if (!CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(input.credentialHandle)) {
+    throw new Error('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: a provider-local opaque credential handle is required.');
+  }
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'unlock_console',
+    credentialHandle: input.credentialHandle,
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedConsoleUnlockTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action: 'unlock_console',
+    invocationId,
+    unlocked: providerResult.unlocked === true,
+    verified: providerResult.verified === true,
+    ...(typeof providerResult.postcondition === 'string' ? { postcondition: providerResult.postcondition } : {}),
+  };
+}
+
+export async function executeProtectedConsoleUnlockLifecycle(
+  action: 'console_unlock_enroll' | 'console_unlock_status' | 'console_unlock_recover' | 'console_unlock_revoke',
+  input: ProtectedConsoleUnlockPreparationInput,
+  controllerHome: string,
+): Promise<Record<string, unknown>> {
+  requireConsoleUnlockAuthorization(input.confirmAuthorization);
+  const invocationId = randomUUID();
+  const request: ComputerConsoleUnlockCommandRequest = {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action,
+  };
+  const providerResult = await executeRuntimeComputerConsoleUnlock(
+    request,
+    { kind: 'explicit_single_use', confirmed: true, invocationId },
+    boundedConsoleUnlockTimeoutMs(input.timeoutMs),
+    controllerHome,
+  );
+  return {
+    capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+    action,
+    invocationId,
+    ...providerResult,
+  };
+}
+
 function desktopProductActions(): AssistantPluginActionDescriptor[] {
   const open = providerActionDescriptor('desktop_session_open');
   const close = providerActionDescriptor('desktop_session_close');
@@ -88,6 +236,178 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       },
     },
     ...[...DESKTOP_SEMANTIC_ACTION_IDS].map(targetBoundDescriptor),
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION,
+      title: 'Prepare protected console unlock',
+      description: 'Ask the native Computer provider to collect a console credential locally and return only a short-lived opaque single-use handle.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_ACTION,
+      title: 'Unlock protected console',
+      description: 'Consume one provider-local opaque credential handle to perform and verify one console unlock without durable replay state.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          credential_handle: { type: 'string', minLength: 36, maxLength: 64, description: 'Opaque short-lived single-use handle returned by console_unlock_prepare.' },
+        },
+        required: ['credential_handle'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION,
+      title: 'Enable unattended console recovery',
+      description: 'Enroll provider-local unattended console recovery. Credential collection and Keychain persistence remain entirely inside the native provider.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION,
+      title: 'Read unattended console recovery status',
+      description: 'Read whether provider-local unattended console recovery is enrolled and available without exposing credential material.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: true,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'none',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION,
+      title: 'Recover locked macOS console',
+      description: 'Recover an already-locked console using only the provider-local enrolled credential. No password or credential handle enters Forge.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'none',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'required',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION,
+      title: 'Disable unattended console recovery',
+      description: 'Delete the provider-local unattended console recovery credential and disable future recovery.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS,
+      cancellable: true,
+      idempotent: true,
+      executionMode: 'direct_non_persistent',
+      foregroundEffect: 'none',
+      scopes: ['console.unlock'],
+      resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: DESKTOP_ELEMENT_OBSERVE_ACTION,
+      title: 'Observe Computer elements',
+      description: 'Observe provider-neutral semantic elements for one Forge-owned desktop target. Returned refs and target context are valid only for the returned observation epoch.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'none',
+      scopes: ['desktop.observe'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          target_id: { type: 'string', description: 'Forge-owned durable Computer target id.' },
+          max_depth: { type: 'integer', minimum: 1, maximum: 20 },
+          max_nodes: { type: 'integer', minimum: 1, maximum: 5_000 },
+          include_values: { type: 'boolean' },
+          root_selector: {
+            type: 'object',
+            properties: { ref: { type: 'string' }, role: { type: 'string' }, title: { type: 'string' }, identifier: { type: 'string' } },
+            anyOf: [{ required: ['ref'] }, { required: ['role'] }, { required: ['title'] }, { required: ['identifier'] }],
+            additionalProperties: false,
+          },
+        },
+        required: ['target_id'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: DESKTOP_ELEMENT_ACTION_ACTION,
+      title: 'Act on observed Computer element',
+      description: 'Perform one provider-neutral semantic action against an exact element ref and observation target returned by desktop_element_observe. Stale or rebound observations fail closed.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      foregroundEffect: 'none',
+      scopes: ['desktop.interact'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          target_id: { type: 'string', description: 'Forge-owned durable Computer target id.' },
+          target: {
+            type: 'object',
+            properties: {
+              interactionId: { type: 'string' },
+              pid: { type: 'integer' },
+              bundleIdentifier: { type: 'string' },
+              appName: { type: 'string' },
+              windowRef: { type: 'string' },
+              snapshotRevision: { type: 'integer', minimum: 1 },
+            },
+            required: ['interactionId', 'pid', 'appName', 'snapshotRevision'],
+            additionalProperties: false,
+          },
+          ref: { type: 'string' },
+          action: { type: 'string', enum: [...COMPUTER_ELEMENT_SEMANTIC_ACTIONS] },
+          value: { anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }] },
+        },
+        required: ['target_id', 'target', 'ref', 'action'],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
@@ -97,6 +417,7 @@ function desktopProductPermissions(ready: boolean): AssistantPluginPermissionSco
     { scope: 'desktop.observe', mode: 'read', description: 'Observe bounded desktop accessibility state.', granted: ready, required: false },
     { scope: 'desktop.interact', mode: 'write', description: 'Perform bounded semantic desktop interaction.', granted: ready, required: false },
     { scope: 'desktop.capture', mode: 'read', description: 'Capture an authorized desktop target.', granted: ready, required: false },
+    { scope: 'console.unlock', mode: 'write', description: 'Use provider-local temporary unlock or explicitly enrolled unattended console recovery.', granted: ready, required: false },
   ];
 }
 
@@ -104,8 +425,11 @@ function desktopProductCapabilities(): AssistantPluginCapability[] {
   return [
     { capabilityId: 'computer.desktop_target.v1', title: 'Desktop targets', description: 'Bind and retire Forge-owned desktop application targets.', scopes: ['desktop.session'], actions: [DESKTOP_TARGET_OPEN_ACTION, DESKTOP_TARGET_CLOSE_ACTION] },
     { capabilityId: 'computer.observe.v1', title: 'Computer observation', description: 'Observe bounded desktop semantic state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
-    { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Perform bounded semantic desktop input.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+    { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Perform bounded semantic desktop input.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_select_rows', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
     { capabilityId: 'computer.capture.v1', title: 'Computer capture', description: 'Capture authorized desktop state.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
+    { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Observe exact provider-neutral semantic element snapshots for a Forge-owned target.', scopes: ['desktop.observe'], actions: [DESKTOP_ELEMENT_OBSERVE_ACTION] },
+    { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer element action', description: 'Act on exact observed element refs with observation-epoch fencing.', scopes: ['desktop.interact'], actions: [DESKTOP_ELEMENT_ACTION_ACTION] },
+    { capabilityId: COMPUTER_CONSOLE_UNLOCK_CAPABILITY, title: 'Protected console unlock', description: 'Keep console credential material provider-local while supporting temporary one-shot unlock and opt-in unattended recovery.', scopes: ['console.unlock'], actions: [COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION, COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION, COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION, COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION, COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION] },
   ];
 }
 
@@ -123,7 +447,8 @@ function buildComputerManifest(
 ): AssistantPluginManifest {
   const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context);
   const desktop = desktopProviderManifest(context);
-  const desktopSupported = process.platform === 'darwin';
+  const platform = currentComputerPlatform();
+  const desktopSupported = platform === 'darwin';
   const browserReady = browser.enabled && browser.health.ready;
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
   const ready = browserReady && desktopReady;
@@ -141,7 +466,6 @@ function buildComputerManifest(
       sourceOfTruth: [
         ...browser.authority.sourceOfTruth,
         'controllerHome:sqlite/computer_interaction_target',
-        'controllerHome:system/plugins/external/registrations/desktop_operator.json',
       ],
     },
     enabled: browser.enabled || desktop?.enabled === true,
@@ -151,22 +475,27 @@ function buildComputerManifest(
         ? 'Computer Browser and native Desktop semantic capabilities are ready.'
         : desktopSupported
           ? 'Computer is only partially ready; inspect Browser and native Desktop capability health.'
-          : `Computer has partial Browser-only support on ${process.platform}; native Desktop capabilities are unsupported on this platform.`,
+          : `Computer has partial Browser-only support on ${platform}; native Desktop capabilities are unsupported on this platform.`,
     },
     health: {
       state: ready ? 'ready' : partial ? 'degraded' : 'error',
       checkedAt,
       ready,
       probed: browser.health.probed || desktop?.health.probed === true,
-      errors: ready ? [] : [...browser.health.errors, ...(desktopSupported ? (desktop?.health.errors ?? (desktop ? [] : ['Native Computer provider is not installed.'])) : [])],
+      errors: ready ? [] : [
+        ...browser.health.errors,
+        ...(desktopSupported && !desktopReady ? ['Native Computer capabilities are unavailable or not ready.'] : []),
+      ],
       warnings: [
         ...browser.health.warnings,
-        ...(desktopSupported ? (desktop?.health.warnings ?? []) : [`Native Desktop Computer capabilities are unsupported on ${process.platform}.`]),
+        ...(desktopSupported
+          ? (desktopReady ? [] : ['Native Computer capability diagnostics are available through the internal platform provider.'])
+          : [`Native Desktop Computer capabilities are unsupported on ${platform}.`]),
       ],
       details: {
         partial: !ready && partial,
         browser: { ready: browserReady, state: browser.health.state },
-        desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported'), provider: DESKTOP_PROVIDER_ID },
+        desktop: { supported: desktopSupported, ready: desktopReady, state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported') },
       },
     },
     permissions: [...browser.permissions, ...desktopProductPermissions(desktopReady)],
@@ -185,6 +514,14 @@ function optionalDesktopProvider(input: AssistantPluginActionExecutionInput): As
 }
 
 function desktopProvider(input: AssistantPluginActionExecutionInput): AssistantPluginAdapter {
+  const platform = currentComputerPlatform();
+  if (platform !== 'darwin') {
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED',
+      `Computer native Desktop capabilities are unavailable on ${platform} until a platform provider is installed.`,
+      { retryable: false, details: { platform, actionId: input.actionId } },
+    );
+  }
   const provider = optionalDesktopProvider(input);
   if (!provider) {
     throw new AssistantPluginError(
@@ -204,12 +541,6 @@ function firstString(value: unknown, ...keys: string[]): string | undefined {
     if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
   }
   return undefined;
-}
-
-function providerSessions(status: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(status.sessions)
-    ? status.sessions.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
-    : [];
 }
 
 function stableIdentityFromArgs(args: Record<string, unknown>): ComputerApplicationStableIdentity {
@@ -241,20 +572,133 @@ function providerSessionId(result: Record<string, unknown>): string {
   return interactionId;
 }
 
-async function ensureProviderBinding(
+function desktopComputerRequest(
+  actionId: string,
+  args: Record<string, unknown>,
+  interactionId?: string,
+): ComputerRuntimeExecutionRequest {
+  const requireInteractionId = (): string => {
+    if (interactionId) return interactionId;
+    throw new AssistantPluginError('PLUGIN_COMPUTER_PROVIDER_BINDING_MISSING', `${actionId} requires a live provider interaction binding.`, { retryable: true });
+  };
+  if (actionId === 'desktop_observe') {
+    return {
+      capability: COMPUTER_OBSERVE_CAPABILITY,
+      action: 'observe',
+      interactionId: requireInteractionId(),
+      ...(typeof args.max_depth === 'number' ? { maxDepth: args.max_depth } : {}),
+      ...(typeof args.max_nodes === 'number' ? { maxNodes: args.max_nodes } : {}),
+      ...(typeof args.include_values === 'boolean' ? { includeValues: args.include_values } : {}),
+      ...(typeof args.include_actions === 'boolean' ? { includeActions: args.include_actions } : {}),
+      ...(typeof args.include_windows === 'boolean' ? { includeWindows: args.include_windows } : {}),
+      ...(args.root_selector && typeof args.root_selector === 'object' ? { rootSelector: args.root_selector as ComputerSemanticSelector } : {}),
+    };
+  }
+  if (actionId === 'desktop_press') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'press',
+      interactionId: requireInteractionId(),
+      selector: args.selector as ComputerSemanticSelector,
+      ...(typeof args.semantic_action === 'string' ? { semanticAction: args.semantic_action } : {}),
+    } as ComputerRuntimeExecutionRequest;
+  }
+  if (actionId === 'desktop_select_rows') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'select_rows',
+      interactionId: requireInteractionId(),
+      selector: args.selector as ComputerSemanticSelector,
+      startIndex: args.start_index as number,
+      ...(typeof args.end_index === 'number' ? { endIndex: args.end_index } : {}),
+    };
+  }
+  if (actionId === 'desktop_type_text') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'type_text',
+      interactionId: requireInteractionId(),
+      selector: args.selector as ComputerSemanticSelector,
+      text: String(args.text ?? ''),
+      ...(typeof args.replace === 'boolean' ? { replace: args.replace } : {}),
+    };
+  }
+  if (actionId === 'desktop_key') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'key',
+      interactionId: requireInteractionId(),
+      keys: Array.isArray(args.keys) ? args.keys.filter((value): value is string => typeof value === 'string') : [],
+    };
+  }
+  if (actionId === 'desktop_open_url') {
+    return { capability: COMPUTER_INPUT_CAPABILITY, action: 'open_url', url: String(args.url ?? '') };
+  }
+  if (actionId === 'desktop_screenshot') {
+    return {
+      capability: COMPUTER_CAPTURE_CAPABILITY,
+      action: 'screenshot',
+      ...(args.scope === 'display' || args.scope === 'window' ? { scope: args.scope } : {}),
+      ...(interactionId ? { interactionId } : {}),
+      ...(typeof args.window_id === 'number' ? { windowId: args.window_id } : {}),
+      ...(typeof args.label === 'string' ? { label: args.label } : {}),
+    };
+  }
+  if (actionId === DESKTOP_ELEMENT_OBSERVE_ACTION) {
+    return {
+      capability: COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
+      action: 'observe_elements',
+      interactionId: requireInteractionId(),
+      ...(typeof args.max_depth === 'number' ? { maxDepth: args.max_depth } : {}),
+      ...(typeof args.max_nodes === 'number' ? { maxNodes: args.max_nodes } : {}),
+      ...(typeof args.include_values === 'boolean' ? { includeValues: args.include_values } : {}),
+      ...(args.root_selector && typeof args.root_selector === 'object' ? { rootSelector: args.root_selector as ComputerSemanticSelector } : {}),
+    };
+  }
+  if (actionId === DESKTOP_ELEMENT_ACTION_ACTION) {
+    const semanticAction = typeof args.action === 'string' && (COMPUTER_ELEMENT_SEMANTIC_ACTIONS as readonly string[]).includes(args.action)
+      ? args.action as ComputerElementSemanticAction
+      : undefined;
+    if (!semanticAction || !args.target || typeof args.target !== 'object' || typeof args.ref !== 'string') {
+      throw new AssistantPluginError('PLUGIN_COMPUTER_ELEMENT_ACTION_INVALID', 'desktop_element_action requires target, ref, and one declared semantic action.', { retryable: false });
+    }
+    return {
+      capability: COMPUTER_ELEMENT_ACTION_CAPABILITY,
+      action: semanticAction,
+      target: args.target as ComputerElementTarget,
+      ref: args.ref,
+      ...(args.value !== undefined ? { value: args.value } : {}),
+    };
+  }
+  throw new AssistantPluginError('PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED', `Unsupported retained Desktop Computer action ${actionId}.`, { retryable: false });
+}
+
+async function executeRetainedDesktopAction(
+  input: AssistantPluginActionExecutionInput,
+  args: Record<string, unknown>,
+  interactionId?: string,
+): Promise<Record<string, unknown>> {
+  const descriptor = desktopProductActions().find((action) => action.actionId === input.actionId);
+  if (!descriptor) throw new AssistantPluginError('PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED', `Computer product action ${input.actionId} is not registered.`, { retryable: false });
+  return await executeRuntimeComputer(
+    desktopComputerRequest(input.actionId, args, interactionId),
+    input.timeoutMs ?? descriptor.defaultTimeoutMs ?? 30_000,
+    input.controllerHome,
+  );
+}
+
+function isMissingProviderSessionFailure(error: unknown): error is AssistantPluginError {
+  return error instanceof AssistantPluginError
+    && error.code === 'SESSION_NOT_FOUND'
+    && error.effectOutcome === 'failed';
+}
+
+async function rebindProviderSession(
   input: AssistantPluginActionExecutionInput,
   lease: ComputerApplicationTargetLease,
   provider: AssistantPluginAdapter,
 ): Promise<string> {
   const target = lease.current();
-  if (target.providerBinding?.providerId === DESKTOP_PROVIDER_ID) {
-    const status = await provider.executeAction(providerInput(input, 'desktop_status', { limit: 500 }, 'binding-status'));
-    const current = providerSessions(status).find((session) =>
-      firstString(session, 'interactionId', 'interaction_id') === target.providerBinding?.providerSessionId
-      && targetMatchesProviderSession(target, session));
-    if (current) return target.providerBinding.providerSessionId;
-  }
-
   const rebound = await provider.executeAction(providerInput(input, 'desktop_session_open', {
     ...(target.stableIdentity.bundleId ? { bundle_id: target.stableIdentity.bundleId } : { app_name: target.stableIdentity.appName }),
     launch: false,
@@ -277,12 +721,75 @@ async function ensureProviderBinding(
       { retryable: false, details: { targetId: target.targetId, stableIdentity: target.stableIdentity } },
     );
   }
+  const processId = providerProcessId(rebound);
   lease.bind({
     providerId: DESKTOP_PROVIDER_ID,
     providerSessionId: interactionId,
     observedAt: new Date().toISOString(),
+    ...(processId !== undefined ? { processId } : {}),
   });
   return interactionId;
+}
+
+async function ensureProviderBinding(
+  input: AssistantPluginActionExecutionInput,
+  lease: ComputerApplicationTargetLease,
+  provider: AssistantPluginAdapter,
+): Promise<string> {
+  const target = lease.current();
+  if (target.providerBinding?.providerId === DESKTOP_PROVIDER_ID) {
+    return target.providerBinding.providerSessionId;
+  }
+  return rebindProviderSession(input, lease, provider);
+}
+
+function providerProcessId(result: Record<string, unknown>): number | undefined {
+  const value = result.pid ?? result.process_id;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_TARGET_PROCESS_ID_INVALID',
+      'Native Computer provider returned an invalid application process identifier.',
+      { retryable: false, details: { processId: value } },
+    );
+  }
+  return value;
+}
+
+function explicitLaunchProvenanceFromProviderResult(
+  result: Record<string, unknown>,
+  processId: number | undefined,
+): ComputerApplicationLaunchProvenance | undefined {
+  const rawOwnership = result.applicationOwnership ?? result.application_ownership;
+  const rawOwnedPid = result.ownedProcessIdentifier ?? result.owned_process_identifier;
+  if (rawOwnership === undefined && rawOwnedPid === undefined) return undefined;
+  if (rawOwnership === 'preexisting' && rawOwnedPid === undefined) return { kind: 'preexisting' };
+  if (rawOwnership === 'provider_launched'
+      && typeof rawOwnedPid === 'number'
+      && Number.isInteger(rawOwnedPid)
+      && rawOwnedPid > 0
+      && rawOwnedPid <= 2_147_483_647
+      && processId === rawOwnedPid) {
+    return { kind: 'provider_launched', processId: rawOwnedPid };
+  }
+  throw new AssistantPluginError(
+    'PLUGIN_COMPUTER_TARGET_LAUNCH_PROVENANCE_INVALID',
+    'Native Computer provider returned inconsistent application launch provenance.',
+    { retryable: false, details: { applicationOwnership: rawOwnership, ownedProcessIdentifier: rawOwnedPid, processId } },
+  );
+}
+
+function inheritedLaunchProvenance(
+  controllerHome: string,
+  processId: number | undefined,
+): ComputerApplicationLaunchProvenance | undefined {
+  if (processId === undefined) return undefined;
+  const owner = computerTargetAuthority.listAllApplications(controllerHome).find((target) =>
+    target.launchProvenance?.kind === 'provider_launched'
+    && target.launchProvenance.processId === processId
+    && target.providerBinding?.processId === processId,
+  );
+  return owner ? { kind: 'provider_launched', processId } : undefined;
 }
 
 function stableIdentityFromProviderResult(
@@ -336,10 +843,35 @@ async function openDesktopTarget(
     }
     throw error;
   }
+  let processId: number | undefined;
+  let explicitProvenance: ComputerApplicationLaunchProvenance | undefined;
   try {
+    processId = providerProcessId(opened);
+    explicitProvenance = explicitLaunchProvenanceFromProviderResult(opened, processId);
+  } catch (error) {
+    try {
+      await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: interactionId }, 'target-open-provenance-compensate'));
+    } catch (cleanupError) {
+      throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_LAUNCH_PROVENANCE_CLEANUP_UNKNOWN', 'Computer target launch provenance was invalid and provider-session cleanup could not be confirmed.', {
+        retryable: false,
+        details: { cause: error instanceof Error ? error.message : String(error), cleanupCause: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) },
+      });
+    }
+    throw error;
+  }
+  try {
+    const launchProvenance = explicitProvenance?.kind === 'provider_launched'
+      ? explicitProvenance
+      : inheritedLaunchProvenance(input.controllerHome, processId) ?? explicitProvenance;
     const target = computerTargetAuthority.create(input.controllerHome, {
       stableIdentity,
-      providerBinding: { providerId: DESKTOP_PROVIDER_ID, providerSessionId: interactionId, observedAt: new Date().toISOString() },
+      ...(launchProvenance ? { launchProvenance } : {}),
+      providerBinding: {
+        providerId: DESKTOP_PROVIDER_ID,
+        providerSessionId: interactionId,
+        observedAt: new Date().toISOString(),
+        ...(processId !== undefined ? { processId } : {}),
+      },
     });
     return {
       targetId: target.targetId,
@@ -377,12 +909,26 @@ async function closeDesktopTarget(
         );
       }
       if (provider) {
-        const status = await provider.executeAction(providerInput(input, 'desktop_status', { limit: 500 }, 'target-close-status'));
-        const stillBound = providerSessions(status).some((session) =>
-          firstString(session, 'interactionId', 'interaction_id') === target.providerBinding?.providerSessionId
-          && targetMatchesProviderSession(target, session));
-        if (stillBound) {
-          await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: target.providerBinding.providerSessionId }, 'target-close-provider'));
+        const activeTargets = computerTargetAuthority.listAllApplications(input.controllerHome);
+        const anotherActiveTargetUsesBinding = activeTargets.some((candidate) =>
+          candidate.targetId !== target.targetId
+          && candidate.providerBinding?.providerId === target.providerBinding?.providerId
+          && candidate.providerBinding?.providerSessionId === target.providerBinding?.providerSessionId,
+        );
+        if (!anotherActiveTargetUsesBinding) {
+          const ownedProcessId = target.launchProvenance?.kind === 'provider_launched'
+            ? target.launchProvenance.processId
+            : undefined;
+          const anotherActiveTargetUsesOwnedProcess = ownedProcessId !== undefined
+            && activeTargets.some((candidate) =>
+              candidate.targetId !== target.targetId && candidate.providerBinding?.processId === ownedProcessId,
+            );
+          await provider.executeAction(providerInput(input, 'desktop_session_close', {
+            interaction_id: target.providerBinding.providerSessionId,
+            ...(ownedProcessId !== undefined && !anotherActiveTargetUsesOwnedProcess
+              ? { terminate_owned_pid: ownedProcessId }
+              : {}),
+          }, 'target-close-provider'));
         }
       }
       // A missing registration is authoritative absence only because provider uninstall
@@ -398,21 +944,47 @@ async function executeDesktopSemanticAction(
   provider: AssistantPluginAdapter,
 ): Promise<Record<string, unknown>> {
   if (input.actionId === 'desktop_open_url') {
-    return provider.executeAction(providerInput(input, input.actionId, input.args));
+    return executeRetainedDesktopAction(input, input.args);
   }
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
+  if (input.actionId === DESKTOP_ELEMENT_ACTION_ACTION) {
+    if (!targetId) throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_REQUIRED', 'desktop_element_action requires target_id.', { retryable: false });
+    return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
+      const current = lease.current();
+      const observedTarget = input.args.target && typeof input.args.target === 'object' ? input.args.target as Record<string, unknown> : undefined;
+      const observedInteractionId = typeof observedTarget?.interactionId === 'string' ? observedTarget.interactionId : '';
+      const binding = current.providerBinding;
+      if (!binding || binding.providerId !== DESKTOP_PROVIDER_ID || !observedInteractionId || binding.providerSessionId !== observedInteractionId) {
+        throw new AssistantPluginError(
+          'COMPUTER_ELEMENT_OBSERVATION_STALE',
+          'Observed element target no longer matches the current provider binding. Re-observe the Forge Computer target instead of replaying an old element ref after rebind.',
+          { retryable: true, details: { targetId, providerBound: Boolean(binding), observedInteractionId: observedInteractionId || undefined } },
+        );
+      }
+      const { target_id: _targetId, ...rest } = input.args;
+      return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+    });
+  }
   if (!targetId) {
     if (input.actionId === 'desktop_screenshot') {
-      return provider.executeAction(providerInput(input, input.actionId, input.args));
+      return executeRetainedDesktopAction(input, input.args);
     }
     throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_REQUIRED', `${input.actionId} requires target_id.`, { retryable: false });
   }
   return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
-    const interactionId = await ensureProviderBinding(input, lease, provider);
+    let interactionId = await ensureProviderBinding(input, lease, provider);
     const { target_id: _targetId, ...rest } = input.args;
-    // Binding verification/rebuild completes before the semantic dispatch. Once this
-    // provider call starts, failures are returned unchanged and are never replayed here.
-    return provider.executeAction(providerInput(input, input.actionId, { ...rest, interaction_id: interactionId }));
+    const dispatch = () => executeRetainedDesktopAction(input, rest, interactionId);
+    try {
+      return await dispatch();
+    } catch (error) {
+      // SESSION_NOT_FOUND is emitted by Desktop Operator before UI/input dispatch.
+      // It is the only provider failure that permits one binding rebuild + retry.
+      // Transport/timeout/outcome-unknown failures remain fenced and are never replayed.
+      if (!isMissingProviderSessionFailure(error)) throw error;
+      interactionId = await rebindProviderSession(input, lease, provider);
+      return await dispatch();
+    }
   });
 }
 
@@ -423,6 +995,7 @@ function targetAuthorization(identity: ComputerApplicationStableIdentity): Assis
 }
 
 async function resolveDesktopAuthorizationContext(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined> {
+  if ([COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION, COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION, COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION, COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION, COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION].includes(input.actionId)) return undefined;
   if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) return targetAuthorization(stableIdentityFromArgs(input.args));
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
   if (targetId) return targetAuthorization(computerTargetAuthority.require(input.controllerHome, targetId).stableIdentity);
@@ -443,6 +1016,28 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
   async executeAction(input) {
     if (!isDesktopProductAction(input.actionId)) {
       return executeBrowserPluginAction({ ...input, pluginId: 'browser' });
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION) {
+      return executeProtectedConsoleUnlockPreparation({ confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) {
+      return executeProtectedConsoleUnlockInvocation({
+        credentialHandle: typeof input.args.credential_handle === 'string' ? input.args.credential_handle : '',
+        confirmAuthorization: true,
+        timeoutMs: input.timeoutMs,
+      }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_enroll', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_status', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_recover', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
+    }
+    if (input.actionId === COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION) {
+      return executeProtectedConsoleUnlockLifecycle('console_unlock_revoke', { confirmAuthorization: true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
     if (input.actionId === DESKTOP_TARGET_CLOSE_ACTION) return closeDesktopTarget(input, optionalDesktopProvider(input));
     const provider = desktopProvider(input);

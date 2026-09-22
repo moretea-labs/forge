@@ -15,8 +15,8 @@ import {
 import { dirname, join, relative, resolve, sep } from 'path';
 import { writeJsonAtomic } from '../shared/json-files';
 
-export const RECOVERY_RELEASE_BINARIES = [
-  'forge-recovery',
+export const RECOVERY_RELEASE_BINARIES = ['forge-recovery'] as const;
+export const RECOVERY_RELEASE_COMPATIBILITY_BINARIES = [
   'forge-recovery-gateway',
   'forge-recovery-watchdog',
 ] as const;
@@ -24,7 +24,8 @@ export const RECOVERY_RELEASE_BINARIES = [
 export const RECOVERY_RELEASE_ROLE_CANARY_ARG = '--forge-release-role-canary';
 
 export type RecoveryReleaseBinary = (typeof RECOVERY_RELEASE_BINARIES)[number];
-export type RecoveryRuntimeRole = 'gateway' | 'watchdog';
+/** daemon is the only current persistent owner; gateway/watchdog remain legacy CLI compatibility roles. */
+export type RecoveryRuntimeRole = 'daemon' | 'gateway' | 'watchdog';
 export interface RecoveryReleaseManifest {
   schemaVersion: 1;
   releaseRevision: string;
@@ -184,11 +185,15 @@ export function publishRecoveryCompatibilityLinks(controllerHome: string): void 
   assertRecoveryReleaseContained(controllerHome, current);
   const binRoot = join(recoveryRoot(controllerHome), 'bin');
   mkdirSync(binRoot, { recursive: true, mode: 0o700 });
-  for (const binary of RECOVERY_RELEASE_BINARIES) {
+  const compatibilityTargets = [
+    ...RECOVERY_RELEASE_BINARIES.map((binary) => ({ binary, target: binary })),
+    ...RECOVERY_RELEASE_COMPATIBILITY_BINARIES.map((binary) => ({ binary, target: 'forge-recovery' as const })),
+  ];
+  for (const { binary, target } of compatibilityTargets) {
     const destination = join(binRoot, binary);
     const temporary = `${destination}.${process.pid}.tmp`;
     rmSync(temporary, { force: true });
-    symlinkSync(join('..', 'current', binary), temporary);
+    symlinkSync(join('..', 'current', target), temporary);
     renameSync(temporary, destination);
   }
 }

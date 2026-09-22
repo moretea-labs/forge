@@ -10,11 +10,14 @@ The default deployment model is:
 
 ```text
 launchd
-  └── forge-runtime
-       ├── MCP transport and gateway modules
-       ├── controller and scheduler modules
-       ├── SQLite control plane
-       └── isolated worker process groups
+  ├── forge-runtime
+  │    ├── MCP transport and gateway modules
+  │    ├── controller and scheduler modules
+  │    ├── SQLite control plane
+  │    └── isolated worker process groups
+  └── forge-recovery
+       ├── Recovery HTTP/MCP provider surface
+       └── in-process watchdog / repair policy
 ```
 
 A short-lived updater may be used for self-update transactions. It is not a resident service, health owner, or second control plane.
@@ -23,9 +26,12 @@ A short-lived updater may be used for self-update transactions. It is not a resi
 
 - Gateway, MCP transport, Controller, Scheduler, configuration, runtime code, and schema compatibility belong to one Runtime release and one lifecycle.
 - Code modules may remain separated internally. They must not become independently deployable, independently versioned, independently restarted, or independently rolled back without a proven isolation requirement.
-- Independent processes are reserved for real security, resource, crash, or incompatible-runtime isolation. Workers are the default valid example.
+- Independent processes are reserved for real security, resource, crash, or incompatible-runtime isolation. Workers are the default valid example; standalone Recovery is the deliberate fault-domain exception because it must repair or roll back a dead primary Runtime.
 - Component-level rollout, component-level rollback, and cross-release adoption are forbidden by default.
 - Prefer `stop -> switch complete release -> start -> verify -> full rollback` over ingress routing, blue/green slots, process adoption, or mixed generations.
+- Recovery itself has exactly one persistent lifecycle owner. Gateway transport and watchdog/repair policy are modules inside that service, not independently versioned or mutually supervising resident services.
+- A normal Runtime ReleaseSession never activates a Recovery upgrade solely because Runtime source changed. Recovery has its own explicit upgrade boundary and must remain reusable across compatible Runtime releases.
+- Tests should bind to durable behavior and authority invariants. Exact process labels, plist/unit layout, helper field names, and internal module counts are tested only when they are themselves compatibility or safety contracts.
 
 ## Architecture subtraction before addition
 

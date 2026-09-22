@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { resolveBunExecutable } from '../../shared/process-environment';
 
 const WORKER_ENVIRONMENT_KEYS = [
@@ -31,15 +31,24 @@ export interface SchedulerWorkerCommand {
   entry: string;
   loader: string;
   cwd: string;
+  /** Manifest-owned compiled artifact. Spawn directly without Bun/Node/source loaders. */
+  directExecutable?: true;
 }
 
 export function resolveSchedulerWorkerCommand(input: {
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
+  standaloneExecutable?: string;
   isBun?: boolean;
   cwd?: string;
   pathExists?: (path: string) => boolean;
 } = {}): SchedulerWorkerCommand {
+  const pathExists = input.pathExists ?? existsSync;
+  if (input.standaloneExecutable) {
+    const entry = resolve(input.standaloneExecutable);
+    if (!pathExists(entry)) throw new Error(`WORKER_ENTRYPOINT_MISSING: ${entry}`);
+    return { entry, loader: '', cwd: input.cwd ?? dirname(entry), directExecutable: true };
+  }
   const runtimeSourceRoot = input.runtimeSourceRoot ? resolve(input.runtimeSourceRoot) : undefined;
   const sourceEntry = runtimeSourceRoot
     ? join(runtimeSourceRoot, 'src', 'runtime', 'execution', 'workers', 'worker-entry.ts')
@@ -49,7 +58,6 @@ export function resolveSchedulerWorkerCommand(input: {
     : fileURLToPath(new URL('../../shared/node-ts-loader.mjs', import.meta.url));
   const entry = input.workerEntrypoint ? resolve(input.workerEntrypoint) : sourceEntry;
   const cwd = runtimeSourceRoot ?? input.cwd ?? process.cwd();
-  const pathExists = input.pathExists ?? existsSync;
   const isBun = input.isBun ?? Boolean(process.versions.bun);
   if (!pathExists(entry)) throw new Error(`WORKER_ENTRYPOINT_MISSING: ${entry}`);
   if (!isBun && !pathExists(loader)) throw new Error(`WORKER_LOADER_MISSING: ${loader}`);
@@ -84,16 +92,20 @@ export function buildSchedulerWorkerLaunchDescriptor(input: {
 }): SchedulerWorkerLaunchDescriptor {
   const isBun = input.isBun ?? Boolean(process.versions.bun);
   const environmentSource = input.environment ?? process.env;
-  const executable = resolveSchedulerWorkerExecutable(isBun, input.execPath ?? process.execPath, environmentSource);
+  const executable = input.command.directExecutable
+    ? input.command.entry
+    : resolveSchedulerWorkerExecutable(isBun, input.execPath ?? process.execPath, environmentSource);
   const workerArgs = [
     '--controller-home', input.controllerHome,
     '--repo-id', input.repoId,
     '--job-id', input.jobId,
     '--controller-pid', String(input.controllerPid),
   ];
-  const args = isBun
-    ? [input.command.entry, ...workerArgs]
-    : ['--loader', input.command.loader, input.command.entry, ...workerArgs];
+  const args = input.command.directExecutable
+    ? workerArgs
+    : isBun
+      ? [input.command.entry, ...workerArgs]
+      : ['--loader', input.command.loader, input.command.entry, ...workerArgs];
   const environment: NodeJS.ProcessEnv = {
     ...environmentSource,
     FORGE_EXECUTION_WORKER: '1',

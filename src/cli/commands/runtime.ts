@@ -5,13 +5,14 @@ import { fileURLToPath } from 'url';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
-import { getRepository, listRepositories } from '../repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories } from '../repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runtime/diagnostics/read-only-tool';
 import { readRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../../../adapters/mcp/auth';
 import { createSetupBootstrapControlApi } from './bootstrap-control';
+import { readSetupProfile, runtimeDeploymentTopologyForSetupProfile } from './setup-profile';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
 import { activateScheduledPackageRuntimeServiceFromPath, installPackageRuntimeService, readPackageRuntimeActivationReceipt } from '../../runtime/root/package-runtime-service';
@@ -73,12 +74,14 @@ export function buildRuntimeCommand(): Command {
         writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
       }
       const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+      const setupProfile = readSetupProfile();
       const result = await installPackageRuntimeService({
         controllerHome: home,
         packageRoot,
         host: opts.host,
         port,
         authTokenFile: tokenPath,
+        ...(setupProfile ? { topology: runtimeDeploymentTopologyForSetupProfile(setupProfile) } : {}),
         forcePortable: opts.portable === true,
         refreshConnector: opts.refreshConnector === true,
       });
@@ -136,7 +139,9 @@ export function buildRuntimeCommand(): Command {
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_SERVICE_PORT_INVALID');
 
-      const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome: home, sourceRoot: repoRoot });
+      const sourceRepository = findRegisteredRepositoryByCheckoutRoot(repoRoot, home);
+      if (!sourceRepository) throw new Error(`RUNTIME_SERVICE_REPOSITORY_NOT_REGISTERED: ${repoRoot}`);
+      const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome: home, sourceRoot: repoRoot, sourceRepositoryId: sourceRepository.repoId });
       assertRuntimeReleaseFiles(staged);
       if (opts.stageOnly === true) {
         output({

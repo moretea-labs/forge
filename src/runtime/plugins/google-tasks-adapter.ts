@@ -457,7 +457,7 @@ function tasksProvider(config: GoogleTasksPluginConfig, repoRoot?: string): Task
 export function buildGoogleTasksPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
   const config = loadGoogleTasksPluginConfig(root, context);
-  const auth = resolveGoogleAuth('tasks', config, { repoRoot: root });
+  const auth = resolveGoogleAuth('tasks', config, { repoRoot: root, controllerHome: context?.controllerHome });
   const state = pluginStateFromGoogleAuth(config, auth);
   return {
     schemaVersion: 1,
@@ -504,7 +504,7 @@ export async function executeGoogleTasksPluginAction(input: AssistantPluginActio
       });
       return {
         config,
-        auth: resolveGoogleAuth('tasks', config, { repoRoot: input.repoRoot }),
+        auth: resolveGoogleAuth('tasks', config, { repoRoot: input.repoRoot, controllerHome: input.controllerHome }),
       };
     }
     case 'list_tasklists':

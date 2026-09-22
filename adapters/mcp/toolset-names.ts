@@ -28,6 +28,10 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   // Focused checks through Process Runtime.
   'run_check',
 
+  // Protected Computer preparation/input use typed direct-non-persistent actions
+  // behind the stable plugin dispatcher. Their full-profile atomic tools remain
+  // registered only for compatibility clients and are not part of this frozen ABI.
+
   // One typed plugin dispatcher. Plugin discovery/action schemas stay routed
   // through rh_context(capability_id=plugin.<plugin>.<action>) to avoid widening
   // the default surface with list/get plugin atomics.

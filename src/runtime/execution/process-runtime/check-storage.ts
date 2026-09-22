@@ -1,5 +1,5 @@
-import { lstatSync, mkdirSync } from 'fs';
-import { join, resolve } from 'path';
+import { cpSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, unlinkSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { durableControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../../../cli/repositories/registry';
 
@@ -17,6 +17,120 @@ export interface ResolvedRepositoryCheckStorage extends RepositoryCheckStorageAu
 function pathEntryExists(path: string): boolean {
   try { lstatSync(path); return true; } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error
+    && String((error as { code?: unknown }).code ?? '') === 'ENOENT');
+}
+
+function nextLegacyCheckQuarantinePath(storage: ResolvedRepositoryCheckStorage): string {
+  const root = join(dirname(storage.physicalRoot), 'quarantine', 'legacy-checks');
+  const stem = `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
+  let index = 0;
+  while (true) {
+    const suffix = index === 0 ? stem : `${stem}-${index}`;
+    const candidate = join(root, suffix);
+    if (!pathEntryExists(candidate)) return candidate;
+    index += 1;
+  }
+}
+
+function moveLegacyCheckDirectory(source: string, target: string): void {
+  try {
+    renameSync(source, target);
+    return;
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+    if (code !== 'EXDEV') throw error;
+  }
+  mkdirSync(target, { recursive: true });
+  try {
+    cpSync(source, target, { recursive: true, force: false, errorOnExist: true });
+    rmSync(source, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(target, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/**
+ * Retire the pre-Controller-Home check directory only when the repository has
+ * an explicit registry authority. The old bytes are moved into a bounded
+ * Controller-Home quarantine so a stale project-local directory cannot block
+ * the current runner and no legacy evidence is silently discarded. Unknown or
+ * unregistered paths remain fail-closed because their ownership is unproven.
+ */
+function retireRegisteredLegacyCheckStorage(storage: ResolvedRepositoryCheckStorage): void {
+  const repositoryPath = join(storage.repoRoot, '.ai', 'harness', 'checks');
+  if (!pathEntryExists(repositoryPath)) return;
+
+  const registered = findRegisteredRepositoryByCheckoutRoot(storage.repoRoot, storage.controllerHome);
+  if (!registered || registered.repoId !== storage.repoId) {
+    throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
+  }
+
+  let stat;
+  try {
+    stat = lstatSync(repositoryPath);
+  } catch (error) {
+    // Another Runner may have retired the directory after the existence
+    // probe. Treat that interleaving as successful convergence.
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
+  if (stat.isSymbolicLink()) {
+    let target: string;
+    try {
+      target = realpathSync(repositoryPath);
+    } catch (error) {
+      if (isMissingPathError(error)) return;
+      throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
+    }
+    if (target !== realpathSync(storage.physicalRoot)) {
+      throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
+    }
+    // A retired compatibility link has no independent authority. Remove only
+    // the link; the Controller-Home target remains untouched.
+    try {
+      unlinkSync(repositoryPath);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
+    return;
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
+  }
+
+  let entries: string[];
+  try {
+    entries = readdirSync(repositoryPath);
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
+  if (entries.length === 0) {
+    try {
+      rmSync(repositoryPath, { recursive: true, force: true });
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
+    return;
+  }
+
+  const quarantine = nextLegacyCheckQuarantinePath(storage);
+  mkdirSync(dirname(quarantine), { recursive: true });
+  try {
+    moveLegacyCheckDirectory(repositoryPath, quarantine);
+  } catch (error) {
+    // A concurrent retire may have won the rename race. Do not turn a
+    // converged Controller-Home state into a spurious check failure.
+    if (isMissingPathError(error)) return;
     throw error;
   }
 }
@@ -42,8 +156,9 @@ function resolveAuthority(repoRoot: string, explicit?: RepositoryCheckStorageAut
 
 /**
  * Check/cache state is Controller-Home-owned. New execution never creates a
- * repository-local `.ai/harness/checks` path or compatibility link. Existing
- * repository-local state is rejected rather than adopted, merged, or deleted.
+ * repository-local `.ai/harness/checks` path or compatibility link. Registered
+ * repositories may retire old machine state into Controller-Home quarantine;
+ * unknown paths remain rejected rather than adopted as a second authority.
  */
 export function resolveRepositoryCheckStorage(
   repoRoot: string,
@@ -65,11 +180,8 @@ export function ensureRepositoryCheckStorage(
   explicit?: RepositoryCheckStorageAuthority,
 ): ResolvedRepositoryCheckStorage {
   const storage = resolveRepositoryCheckStorage(repoRoot, explicit);
-  const repositoryPath = join(storage.repoRoot, '.ai', 'harness', 'checks');
-  if (pathEntryExists(repositoryPath)) {
-    throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
-  }
   mkdirSync(storage.physicalRoot, { recursive: true });
+  retireRegisteredLegacyCheckStorage(storage);
   mkdirSync(storage.lockRoot, { recursive: true });
   return storage;
 }

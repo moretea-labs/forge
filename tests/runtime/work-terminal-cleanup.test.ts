@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import type { CompletionReceipt } from '../../src/cli/controller/types';
-import { createWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import {
   readWorkHandle,
@@ -20,6 +20,7 @@ import type { ManagedProcessRecord } from '../../src/runtime/execution/process-r
 import { resetFinalizationStagesForRequest, selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
@@ -167,7 +168,192 @@ describe('terminal Work cleanup', () => {
       branchCleanup: 'pending',
       worktreeCleanup: 'pending',
     });
+
+    expect(resetFinalizationStagesForRequest(
+      {
+        validation: 'done',
+        commit: 'skipped',
+        merge: 'skipped',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+      { commit: true, merge: true, cleanup: false },
+      { managedWorktree: true, workspaceDirty: true },
+    )).toEqual({
+      validation: 'done',
+      commit: 'pending',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
   });
+  test('periodic reconciler retires a preserved branch residue from a cleaned complete terminal Work', async () => {
+    const fx = fixture('cleaned-branch-residue');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Retire a historically retained branch after preservation is durable.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    writeFileSync(join(fx.workspace.root!, 'preserved.txt'), 'preserved unique content\n');
+    git(fx.workspace.root!, ['add', 'preserved.txt']);
+    git(fx.workspace.root!, ['commit', '-m', 'feat: preserved terminal branch']);
+    const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    const committed = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+
+    const retained = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: committed,
+      targetBranch: 'main',
+      deleteBranch: false,
+      terminalOutcome: 'cancelled',
+    });
+    expect(retained.handle.state).toBe('cleaned');
+    expect(retained.receipt).toMatchObject({
+      complete: true,
+      worktree: { status: 'removed' },
+      checkoutRegistry: { status: 'removed' },
+      branchCleanup: { status: 'retained', uniqueCommits: 1 },
+    });
+    expect(retained.receipt.preservation.bundlePath).toBeTruthy();
+    expect(existsSync(retained.receipt.preservation.bundlePath!)).toBe(true);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+    expect(collectWorkLifecycleAttention(fx.controllerHome, getRepository(fx.repository.repoId, fx.controllerHome)))
+      .toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+
+    expect(report.attempted).toBe(1);
+    expect(report.cleaned).toContain(fx.handle.workId);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    const after = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    expect(after.state).toBe('cleaned');
+    expect(after.finalization.branchCleanup).toBe('done');
+    expect(after.cleanupReceipt).toMatchObject({
+      complete: true,
+      partial: false,
+      branchCleanup: { status: 'archived', uniqueCommits: 1 },
+    });
+    expect(existsSync(after.cleanupReceipt!.preservation.bundlePath!)).toBe(true);
+    expect(collectWorkLifecycleAttention(fx.controllerHome, getRepository(fx.repository.repoId, fx.controllerHome)))
+      .not.toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
+  });
+
+  test('periodic reconciler completes branch retirement after deletion wins a crash race with receipt persistence', async () => {
+    const fx = fixture('cleaned-branch-crash-window');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Reconcile a branch deletion that completed before its final cleanup receipt write.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    writeFileSync(join(fx.workspace.root!, 'preserved-crash.txt'), 'preserved before crash\n');
+    git(fx.workspace.root!, ['add', 'preserved-crash.txt']);
+    git(fx.workspace.root!, ['commit', '-m', 'feat: preserved branch before crash']);
+    const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    const committed = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+    const retained = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: committed,
+      targetBranch: 'main',
+      deleteBranch: false,
+      terminalOutcome: 'cancelled',
+    });
+    expect(retained.receipt.preservation.bundlePath).toBeTruthy();
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+
+    git(fx.repositoryRoot, ['branch', '-D', fx.branch]);
+    const interruptedReceipt = {
+      ...retained.receipt,
+      complete: false,
+      partial: true,
+      completedAt: undefined,
+      branchCleanup: { ...retained.receipt.branchCleanup, status: 'pending' as const, reason: undefined },
+    };
+    writeWorkHandle(fx.controllerHome, {
+      ...retained.handle,
+      cleanupReceipt: interruptedReceipt,
+      finalization: { ...retained.handle.finalization, branchCleanup: 'pending' },
+    });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+
+    expect(report.attempted).toBe(1);
+    expect(report.cleaned).toContain(fx.handle.workId);
+    const after = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    expect(after.state).toBe('cleaned');
+    expect(after.finalization.branchCleanup).toBe('done');
+    expect(after.cleanupReceipt).toMatchObject({
+      complete: true,
+      partial: false,
+      branchCleanup: { status: 'already_deleted' },
+    });
+  });
+
+  test('periodic reconciler leaves an already settled cleaned terminal Work as a no-op', async () => {
+    const fx = fixture('cleaned-no-residue');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Already settled cleaned Work must not be reprocessed.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    const cleaned = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: fx.handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'cancelled',
+    });
+    expect(cleaned.handle.state).toBe('cleaned');
+    expect(cleaned.receipt.complete).toBe(true);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+
+    expect(report.attempted).toBe(0);
+    expect(report.cleaned).not.toContain(fx.handle.workId);
+    const cleanedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId);
+    expect(cleanedHandle?.state).toBe('cleaned');
+    expect(cleanedHandle?.cleanupReceipt?.complete).toBe(true);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
+      status: 'cancelled',
+      phase: 'cleanup',
+      phaseEvidence: {
+        implementation: { state: 'satisfied' },
+        verification: { state: 'satisfied' },
+        review: { state: 'satisfied' },
+        delivery: { state: 'satisfied' },
+        cleanup: { state: 'satisfied', receiptId: cleanedHandle?.cleanupReceipt?.receiptId },
+      },
+    });
+  });
+
   test('periodic reconciler never reclaims a cancelled Work explicitly retained by terminal resource disposition', async () => {
     const fx = fixture('retained-cancelled');
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
@@ -228,33 +414,14 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
-      status: 'cancelled',
-      phase: 'cleanup',
+      status: 'running',
+      phase: 'implementation',
     });
-    const validTerminalRecord = readControlPlaneRecord<WorkContract>(
-      fx.controllerHome,
-      'work_contract',
-      fx.repository.repoId,
+    cancelWorkContract(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
       fx.handle.workId,
-    )!;
-    writeControlPlaneRecord(fx.controllerHome, {
-      namespace: 'work_contract',
-      scope: fx.repository.repoId,
-      key: fx.handle.workId,
-      schemaVersion: 2,
-      expectedRevision: validTerminalRecord.revision,
-      action: 'test_valid_terminal_phase_evidence',
-      value: {
-        ...validTerminalRecord.value,
-        phaseEvidence: {
-          ...validTerminalRecord.value.phaseEvidence,
-          implementation: { ...validTerminalRecord.value.phaseEvidence!.implementation, state: 'skipped' },
-          verification: { ...validTerminalRecord.value.phaseEvidence!.verification, state: 'skipped' },
-          review: { ...validTerminalRecord.value.phaseEvidence!.review, state: 'skipped' },
-          delivery: { ...validTerminalRecord.value.phaseEvidence!.delivery, state: 'skipped' },
-        },
-      },
-    });
+      { summary: 'Retire the valid control Work through the canonical cancellation path.' },
+    );
 
     const malformedWorkId = 'work-terminal-cleanup-malformed-work-isolation-invalid';
     const malformedBranch = 'work/terminal-cleanup-malformed-work-isolation-invalid';
@@ -327,10 +494,10 @@ describe('terminal Work cleanup', () => {
       .toThrow('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
-    expect(report.errors).toContainEqual({
+    expect(report.errors).toEqual([{
       workId: malformedWorkId,
       error: 'WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review',
-    });
+    }]);
     expect(report.cleaned).toContain(fx.handle.workId);
     expect(existsSync(malformedWorkspace.root!)).toBe(true);
     expect(branchExists(fx.repositoryRoot, malformedBranch)).toBe(true);
@@ -359,8 +526,24 @@ describe('terminal Work cleanup', () => {
       forbiddenPaths: [],
       checks: [],
       requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    cancelWorkContract(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      fx.handle.workId,
+      { summary: 'Ownerless execution authority expired before implementation completed.' },
+    );
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
       status: 'cancelled',
-      phase: 'cleanup',
+      phase: 'implementation',
+      phaseEvidence: {
+        implementation: { state: 'skipped' },
+        verification: { state: 'pending' },
+        review: { state: 'pending' },
+        delivery: { state: 'pending' },
+        cleanup: { state: 'pending' },
+      },
     });
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
@@ -369,6 +552,59 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(fx.workspace.root!)).toBe(false);
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.state).toBe('cleaned');
+  });
+
+  test('cancelled cleanup preserves failed phase evidence and only satisfies physical cleanup', async () => {
+    const fx = fixture('cancelled-failed-evidence');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Failed implementation evidence must survive cancellation cleanup.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    failWorkContract(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      fx.handle.workId,
+      {
+        phase: 'implementation',
+        summary: 'Implementation failed with authoritative evidence.',
+        evidenceRefs: [{ title: 'implementation failure', summary: 'Failure evidence must remain durable.', detailLevel: 'summary' }],
+      },
+    );
+    cancelWorkContract(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      fx.handle.workId,
+      { summary: 'Retire failed technical authority without rewriting failure history.' },
+    );
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
+      status: 'cancelled',
+      phase: 'implementation',
+      phaseEvidence: { implementation: { state: 'failed', summary: 'Implementation failed with authoritative evidence.' } },
+    });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(report.cleaned).toContain(fx.handle.workId);
+    const cleanedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId);
+    expect(cleanedHandle?.cleanupReceipt?.complete).toBe(true);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)).toMatchObject({
+      status: 'cancelled',
+      phase: 'cleanup',
+      phaseEvidence: {
+        implementation: { state: 'failed', summary: 'Implementation failed with authoritative evidence.' },
+        verification: { state: 'skipped' },
+        review: { state: 'skipped' },
+        delivery: { state: 'skipped' },
+        cleanup: { state: 'satisfied', receiptId: cleanedHandle?.cleanupReceipt?.receiptId },
+      },
+    });
   });
 
   test('periodic reconciler reconstructs missing physical ownership from a completed WorkContract', async () => {
@@ -503,6 +739,39 @@ describe('terminal Work cleanup', () => {
     expect(repeated.receipt.receiptId).toBe(first.receipt.receiptId);
     expect(repeated.receipt.complete).toBe(true);
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
+  });
+
+  test('reconciles a legacy cleaned handle with an incomplete receipt without regressing lifecycle', async () => {
+    const fx = fixture('legacy-cleaned-receipt');
+    const first = await cleanup(fx);
+    const legacyReceipt = {
+      ...first.receipt,
+      complete: false,
+      partial: true,
+      completedAt: undefined,
+      blockers: ['legacy incomplete receipt'],
+      processes: { ...first.receipt.processes, allTerminal: false },
+      ownership: { controllerLease: 'pending' as const, processLeases: 'pending' as const },
+      worktree: { ...first.receipt.worktree, status: 'pending' as const },
+      checkoutRegistry: { ...first.receipt.checkoutRegistry, status: 'pending' as const },
+      prune: { ...first.receipt.prune, status: 'pending' as const },
+      branchCleanup: { ...first.receipt.branchCleanup, status: 'pending' as const },
+    };
+    const legacy = writeWorkHandle(fx.controllerHome, { ...first.handle, state: 'cleaned', cleanupReceipt: legacyReceipt });
+
+    const reconciled = await cleanup(fx, legacy);
+    expect(reconciled.handle.state).toBe('cleaned');
+    expect(reconciled.receipt).toMatchObject({
+      complete: true,
+      partial: false,
+      blockers: [],
+      processes: { allTerminal: true },
+      ownership: { controllerLease: 'already_released', processLeases: 'released' },
+      worktree: { status: 'already_removed' },
+      checkoutRegistry: { status: 'already_removed' },
+      prune: { status: 'done' },
+      branchCleanup: { status: 'retained' },
+    });
   });
 
   test('cleans a migrated managed worktree whose checkout metadata was not transferred', async () => {

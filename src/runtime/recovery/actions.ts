@@ -93,13 +93,13 @@ export const RECOVERY_ACTIONS = {
   },
   stageAndActivateRuntimeRelease: {
     id: 'recovery.stage_and_activate_runtime_release',
-    title: 'Stage and activate canonical Runtime release',
-    description: 'Build one immutable Runtime release from the selected registered repository, then hand lifecycle activation to the standalone Recovery transaction.',
+    title: 'Prepare isolated Runtime ReleaseSession',
+    description: 'Compatibility action id: ask standalone Recovery to freeze its configured source and Stable A authority, create isolated Candidate B, and build a portable release. It no longer activates Stable A.',
     class: 'stale_runtime_state',
     risk: 'medium',
     confirmation: 'authorization',
     localOnly: true,
-    boundedTo: ['registered_repository', 'runtime_release_storage', 'external_runtime_lifecycle'],
+    boundedTo: ['registered_repository', 'runtime_release_storage'],
   },
   restartPrimaryConnector: {
     id: 'recovery.restart_primary_connector',

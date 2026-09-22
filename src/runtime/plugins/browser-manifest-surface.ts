@@ -33,6 +33,13 @@ export function browserPermissions(ready: boolean): AssistantPluginPermissionSco
       granted: ready,
       required: true,
     },
+    {
+      scope: 'browser.extensions',
+      mode: 'write',
+      description: 'List or load bounded unpacked extensions through the existing Browser provider control plane.',
+      granted: ready,
+      required: false,
+    },
   ];
 }
 
@@ -59,10 +66,17 @@ export function browserCapabilities(): AssistantPluginCapability[] {
       scopes: ['browser.read', 'browser.profile'],
       actions: [
         'open_page', 'navigate', 'reload', 'go_back', 'wait_for_load_state',
-        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state',
+        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state', 'reconcile_effect',
         'screenshot', 'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive',
         'get_console_errors', 'get_failed_requests',
       ],
+    },
+    {
+      capabilityId: 'browser-extensions',
+      title: 'Browser Extensions',
+      description: 'List or load unpacked extensions from policy-bounded local directories without exposing raw CDP methods.',
+      scopes: ['browser.extensions', 'browser.profile'],
+      actions: ['list_unpacked_extensions', 'install_unpacked_extension'],
     },
     {
       capabilityId: 'browser-interaction',
@@ -104,7 +118,7 @@ const frameScopeProperties = {
 
 function interactSchema(extra: Record<string, unknown>, required: string[]): Record<string, unknown> {
   return sessionTargetSchema({
-    post_action_wait_ms: { type: 'number' },
+    post_action_wait_ms: { type: 'number', minimum: 0, description: 'Optional explicit compatibility settle delay after a semantic action. Omit for normal provider completion; native foreground activation retains its provider-specific verification budget.' },
     ...extra,
   }, required);
 }
@@ -112,11 +126,11 @@ function interactSchema(extra: Record<string, unknown>, required: string[]): Rec
 export function browserActions(): AssistantPluginActionDescriptor[] {
   const readRemote = [
     { resource: 'remote' as const, mode: 'read' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
+    { resource: 'provider-state' as const, mode: 'write' as const },
   ];
   const writeRemote = [
     { resource: 'remote' as const, mode: 'exclusive' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
+    { resource: 'provider-state' as const, mode: 'write' as const },
   ];
   const descriptors: AssistantPluginActionDescriptor[] = [
     {
@@ -130,7 +144,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: true,
       scopes: ['browser.profile'],
-      resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -159,11 +173,30 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'list_unpacked_extensions',
+      title: 'List unpacked browser extensions',
+      description: 'List unpacked extensions visible to the selected Browser provider. No arbitrary CDP method is accepted.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
+      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: readRemote,
+      argumentsSchema: sessionTargetSchema({}, []),
+    },
+    {
+      actionId: 'install_unpacked_extension',
+      title: 'Install unpacked browser extension',
+      description: 'Load one policy-bounded unpacked extension directory through the selected Browser provider and verify its exact installed identity.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: false, idempotent: false,
+      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: sessionTargetSchema({
+        extension_path: { type: 'string' },
+        enable_in_incognito: { type: 'boolean' },
+      }, ['extension_path']),
+    },
+    {
       actionId: 'create_session',
       title: 'Create browser session',
       description: 'Open an HTTP(S) URL or explicitly adopt the matching frontmost native tab, then persist a reusable session id.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }, ...readRemote],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: readRemote,
       argumentsSchema: sessionTargetSchema({
         extract_text: { type: 'boolean' },
         max_chars: { type: 'number' },
@@ -178,7 +211,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'List browser sessions',
       description: 'List saved browser session metadata without secrets or cookies.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -193,7 +226,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Reconcile browser sessions',
       description: 'Prune only saved managed-session metadata whose exact Runtime-bound page is positively proven gone. Never removes profiles, cookies, or unverified native sessions.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -201,7 +234,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Close browser session',
       description: 'Remove one saved session metadata record.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
     },
     {
@@ -209,7 +242,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Clear all browser sessions',
       description: 'Remove all saved session metadata while keeping the profile.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -229,7 +262,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Get browser handoff status',
       description: 'Read durable browser handoff status and reconcile a stale or crashed host.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
       argumentsSchema: { type: 'object', properties: { interaction_id: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
@@ -237,7 +270,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Resolve browser handoff',
       description: 'Resume or cancel a foreground browser handoff.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -345,12 +378,36 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: sessionTargetSchema({
         expected_url: { type: 'string' },
         url_contains: { type: 'string' },
+        url_contains_any: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 2000 } },
+        url_contains_none: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 2000 } },
         selector: { type: 'string' },
         require_visible: { type: 'boolean' },
         text_contains: { type: 'string', maxLength: 10000 },
+        text_contains_any: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 10000 } },
+        text_contains_none: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 10000 } },
         max_chars: { type: 'number', minimum: 1, maximum: 100000 },
         ...frameScopeProperties,
       }, ['session_id']),
+    },
+    {
+      actionId: 'reconcile_effect',
+      title: 'Reconcile browser effect',
+      description: 'Read the already-bound browser session and classify one exact prior effect request as applied, not_applied, or unknown from declared observation criteria. Never navigates or replays the effect.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
+      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: sessionTargetSchema({
+        effect_request_id: { type: 'string' },
+        applied_url_contains_any: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 2000 } },
+        applied_url_contains_none: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 2000 } },
+        applied_text_contains_any: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 10000 } },
+        applied_text_contains_none: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 10000 } },
+        applied_selector: { type: 'string' },
+        not_applied_url_contains_any: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 2000 } },
+        not_applied_text_contains_any: { type: 'array', minItems: 1, maxItems: 16, items: { type: 'string', maxLength: 10000 } },
+        not_applied_selector: { type: 'string' },
+        max_chars: { type: 'number', minimum: 1, maximum: 100000 },
+        ...frameScopeProperties,
+      }, ['session_id', 'effect_request_id']),
     },
     {
       actionId: 'screenshot',
@@ -581,7 +638,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Close session',
       description: 'Remove saved session metadata while keeping the persistent profile.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
     },
   ];

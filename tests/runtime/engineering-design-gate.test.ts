@@ -216,6 +216,16 @@ describe('Stage7C upstream engineering authority', () => {
       allowed: false, code: 'ENGINEERING_DESIGN_REVISIT_REQUIRED',
     });
 
+    const observeOnly = buildEngineeringContextReceipt({
+      risk: 'medium', sourceIdentity: { kind: 'revision', revision: 'revision-a' }, recordedAt,
+    });
+    const observeOnlySameRoot = applyEngineeringBlockerDisposition(observeOnly, buildEngineeringBlockerDispositionReceipt({
+      sourceRevision: 'revision-a', blockerId: 'blocker-observe-only', classification: 'same_root_cause',
+      semanticScopeKeys: ['kernel.work.engineering-admission'], rationale: 'No prior formal design authority exists to supersede.', recordedAt,
+    }));
+    expect(observeOnlySameRoot.designState).toBeUndefined();
+    expect(observeOnlySameRoot.blockerDispositions?.at(-1)?.action).toBe('return_to_design');
+
     const unrelated = applyEngineeringBlockerDisposition(base, buildEngineeringBlockerDispositionReceipt({
       sourceRevision: 'revision-a', blockerId: 'blocker-unrelated', classification: 'unrelated',
       semanticScopeKeys: ['other.scope'], linkedWorkId: 'work-linked-test', rationale: 'The blocker belongs to a disjoint product scope.', recordedAt,
@@ -256,7 +266,18 @@ describe('Stage7C upstream engineering authority', () => {
       },
     });
     expect(blocked.status).toBe('blocked');
+    expect(blocked.suggestedNextActions).toContainEqual(expect.objectContaining({
+      label: 'Refresh design evidence',
+      tool: 'rh_context',
+      operation: 'search',
+      payload: expect.objectContaining({ work_id: workId!, query: expect.any(String) }),
+    }));
     expect(getWorkContract(context.workStore, workId!)?.engineeringContext?.designState).toBe('revisit_required');
+
+    const bypass = continueGoalWorkloop(context, { workId: workId!, allowedPaths: ['src/**'] });
+    expect(bypass.status).toBe('blocked');
+    expect(bypass.summary).toContain('ENGINEERING_DESIGN_REVISIT_REQUIRED');
+    expect(getWorkContract(context.workStore, workId!)?.allowedPaths).not.toContain('src/**');
 
     const withoutSupersession = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a') });
     expect(withoutSupersession.status).toBe('blocked');
@@ -283,9 +304,24 @@ describe('Stage7C upstream engineering authority', () => {
       designDecisionReceiptId: nextDesign.receiptId,
       requirementDigest: 'b'.repeat(64),
       projectContractDigest: 'a'.repeat(64),
+      decision: 'changes_required',
+      findings: [{ severity: 'medium', summary: 'The superseding design still needs revision.' }],
+      recordedAt: '2026-09-03T00:01:00.000Z',
+    });
+    const critiqueBlocked = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: refreshed });
+    expect(critiqueBlocked.status).toBe('blocked');
+    expect(critiqueBlocked.summary).toContain('ENGINEERING_DESIGN_CRITIQUE_APPROVAL_REQUIRED');
+
+    refreshed.independentCritiqueReceipt = buildIndependentCritiqueReceipt({
+      sourceRevision: 'revision-a',
+      contextClosureReceiptId: refreshed.contextClosureReceipt!.receiptId,
+      productDodReceiptId: refreshed.productDodReceipt!.receiptId,
+      designDecisionReceiptId: nextDesign.receiptId,
+      requirementDigest: 'b'.repeat(64),
+      projectContractDigest: 'a'.repeat(64),
       decision: 'approved',
       findings: [],
-      recordedAt: '2026-09-03T00:01:00.000Z',
+      recordedAt: '2026-09-03T00:02:00.000Z',
     });
     const resumed = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: refreshed });
     expect(resumed.summary).not.toContain('ENGINEERING_DESIGN_SUPERSESSION_REQUIRED');

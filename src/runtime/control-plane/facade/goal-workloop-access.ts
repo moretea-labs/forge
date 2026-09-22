@@ -167,7 +167,7 @@ export function runGoalWorkloop(
       requiresInvestigation: args.requires_investigation === true,
       requiresLongRunningChecks: args.requires_long_running_checks === true,
       requiresParallelism: args.requires_parallelism === true,
-      explicitMode: args.mode === 'scale' ? 'scale' : undefined,
+      explicitMode: args.mode === 'plan' || args.mode === 'scale' ? args.mode : undefined,
       needsDependencies: args.needs_dependencies === true,
       requiresRecovery: args.requires_recovery === true,
       requiresWorker: args.requires_worker === true,

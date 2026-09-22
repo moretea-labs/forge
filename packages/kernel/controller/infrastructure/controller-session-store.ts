@@ -2,13 +2,29 @@ import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
-import { peekExecutionSession } from '../../../../src/runtime/control-plane/execution/session-store';
+import {
+  peekExecutionSession,
+  peekExecutionSessionWithinTransaction,
+} from '../../../../src/runtime/control-plane/execution/session-store';
 import { readJsonFile } from '../../../../src/runtime/shared/json-files';
-import { readControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  readControlPlaneRecord,
+  readControlPlaneRecordWithinTransaction,
+  readOrImportControlPlaneRecord,
+  writeControlPlaneRecord,
+  writeControlPlaneRecordWithinTransaction,
+  type SqliteDatabase,
+} from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { getWorkContract, isTerminalWorkContractStatus } from '../../work/api/index';
 import { type ControllerSession, type ControllerSessionStore, type ControllerType } from '../domain/types';
 
 export interface ControllerSessionStoreOptions { controllerHome: string; repoId: string; now?: () => string; }
+
+const SESSION_STORE_NAMESPACE = 'controller_session_claim_store';
+const SESSION_STORE_KEY = 'index';
+const SESSION_STORE_SCHEMA_VERSION = 1;
+
+export type ClaimedControllerSession = ControllerSession & { claimGeneration: number };
 
 export interface ControllerSessionClaimInput {
   workId: string;
@@ -39,20 +55,20 @@ function now(options: ControllerSessionStoreOptions): string { return options.no
 function read(options: ControllerSessionStoreOptions): ControllerSessionStore {
   const legacyPath = path(options);
   return readOrImportControlPlaneRecord<ControllerSessionStore>(options.controllerHome, {
-    namespace: 'controller_session_claim_store',
+    namespace: SESSION_STORE_NAMESPACE,
     scope: options.repoId,
-    key: 'index',
-    schemaVersion: 1,
+    key: SESSION_STORE_KEY,
+    schemaVersion: SESSION_STORE_SCHEMA_VERSION,
     readLegacy: () => readJsonFile<ControllerSessionStore>(legacyPath, { schemaVersion: 1, updatedAt: now(options), sessions: [] }),
   })?.value ?? { schemaVersion: 1, updatedAt: now(options), sessions: [] };
 }
 
 function write(options: ControllerSessionStoreOptions, store: ControllerSessionStore): void {
   writeControlPlaneRecord(options.controllerHome, {
-    namespace: 'controller_session_claim_store',
+    namespace: SESSION_STORE_NAMESPACE,
     scope: options.repoId,
-    key: 'index',
-    schemaVersion: 1,
+    key: SESSION_STORE_KEY,
+    schemaVersion: SESSION_STORE_SCHEMA_VERSION,
     value: store,
     action: 'controller_session_claim_write',
   });
@@ -67,18 +83,42 @@ interface RetainedControllerSessionRecord {
   releasedAt?: string;
 }
 
+function retainedControllerSessionRecord(
+  options: ControllerSessionStoreOptions,
+  session: ControllerSession,
+  releasedAt?: string,
+): RetainedControllerSessionRecord {
+  const retainedAt = now(options);
+  return { schemaVersion: 1, session, retainedAt, ...(releasedAt ? { releasedAt } : {}) };
+}
+
 function persistRetainedControllerSession(
   options: ControllerSessionStoreOptions,
   session: ControllerSession,
   releasedAt?: string,
 ): void {
-  const retainedAt = now(options);
   writeControlPlaneRecord(options.controllerHome, {
     namespace: RETAINED_SESSION_NAMESPACE,
     scope: options.repoId,
     key: session.workId,
     schemaVersion: 1,
-    value: { schemaVersion: 1, session, retainedAt, ...(releasedAt ? { releasedAt } : {}) } satisfies RetainedControllerSessionRecord,
+    value: retainedControllerSessionRecord(options, session, releasedAt),
+    action: releasedAt ? 'controller_session_identity_released' : 'controller_session_identity_retained',
+  });
+}
+
+function persistRetainedControllerSessionWithinTransaction(
+  database: SqliteDatabase,
+  options: ControllerSessionStoreOptions,
+  session: ControllerSession,
+  releasedAt?: string,
+): void {
+  writeControlPlaneRecordWithinTransaction(database, {
+    namespace: RETAINED_SESSION_NAMESPACE,
+    scope: options.repoId,
+    key: session.workId,
+    schemaVersion: 1,
+    value: retainedControllerSessionRecord(options, session, releasedAt),
     action: releasedAt ? 'controller_session_identity_released' : 'controller_session_identity_retained',
   });
 }
@@ -157,12 +197,17 @@ function assertWorkClaimable(options: ControllerSessionStoreOptions, workId: str
   }
 }
 
+/** Validate Work claimability while the canonical ControllerSession lock is held, before opening a SQLite write transaction. */
+export function assertControllerSessionWorkClaimable(options: ControllerSessionStoreOptions, workId: string): void {
+  assertWorkClaimable(options, workId);
+}
+
 function claimedSession(
   options: ControllerSessionStoreOptions,
   input: ControllerSessionClaimInput,
   claimedAt: string,
   previous?: ControllerSession,
-): ControllerSession {
+): ClaimedControllerSession {
   const leaseExpiresAt = new Date(
     Date.parse(claimedAt) + Math.max(1_000, Math.min(input.leaseMs ?? DEFAULT_CONTROLLER_LEASE_MS, MAX_CONTROLLER_LEASE_MS)),
   ).toISOString();
@@ -199,12 +244,12 @@ function assertExpectedGeneration(input: ControllerSessionClaimInput, current: C
   }
 }
 
-function persistClaim(
+function preparedClaim(
   options: ControllerSessionStoreOptions,
   store: ControllerSessionStore,
   input: ControllerSessionClaimInput,
   previous?: ControllerSession,
-): ControllerSession {
+): { claimedAt: string; session: ClaimedControllerSession; nextStore: ControllerSessionStore } {
   const claimedAt = now(options);
   const claimedAtMs = Date.parse(claimedAt);
   const session = claimedSession(options, input, claimedAt, previous);
@@ -212,9 +257,61 @@ function persistClaim(
     ...store.sessions.filter((entry) => entry.workId !== input.workId && Date.parse(entry.leaseExpiresAt) > claimedAtMs),
     session,
   ];
-  write(options, { schemaVersion: 1, updatedAt: claimedAt, sessions });
-  persistRetainedControllerSession(options, session);
-  return session;
+  return { claimedAt, session, nextStore: { schemaVersion: 1, updatedAt: claimedAt, sessions } };
+}
+
+function persistClaim(
+  options: ControllerSessionStoreOptions,
+  store: ControllerSessionStore,
+  input: ControllerSessionClaimInput,
+  previous?: ControllerSession,
+): ClaimedControllerSession {
+  const prepared = preparedClaim(options, store, input, previous);
+  write(options, prepared.nextStore);
+  persistRetainedControllerSession(options, prepared.session);
+  return prepared.session;
+}
+
+function readSessionStoreWithinTransaction(
+  database: SqliteDatabase,
+  options: ControllerSessionStoreOptions,
+) {
+  let current = readControlPlaneRecordWithinTransaction<ControllerSessionStore>(
+    database, SESSION_STORE_NAMESPACE, options.repoId, SESSION_STORE_KEY,
+  );
+  if (current) return current;
+  const legacy = readJsonFile<ControllerSessionStore>(path(options), { schemaVersion: 1, updatedAt: now(options), sessions: [] });
+  current = writeControlPlaneRecordWithinTransaction(database, {
+    namespace: SESSION_STORE_NAMESPACE,
+    scope: options.repoId,
+    key: SESSION_STORE_KEY,
+    schemaVersion: SESSION_STORE_SCHEMA_VERSION,
+    value: legacy,
+    action: 'legacy_import',
+    expectedRevision: null,
+  });
+  return current;
+}
+
+function persistClaimWithinTransaction(
+  database: SqliteDatabase,
+  options: ControllerSessionStoreOptions,
+  storeRecord: ReturnType<typeof readSessionStoreWithinTransaction>,
+  input: ControllerSessionClaimInput,
+  previous?: ControllerSession,
+): ClaimedControllerSession {
+  const prepared = preparedClaim(options, storeRecord.value, input, previous);
+  writeControlPlaneRecordWithinTransaction(database, {
+    namespace: SESSION_STORE_NAMESPACE,
+    scope: options.repoId,
+    key: SESSION_STORE_KEY,
+    schemaVersion: SESSION_STORE_SCHEMA_VERSION,
+    value: prepared.nextStore,
+    action: 'controller_session_claim_write',
+    expectedRevision: storeRecord.revision,
+  });
+  persistRetainedControllerSessionWithinTransaction(database, options, prepared.session);
+  return prepared.session;
 }
 
 export function getControllerSession(options: ControllerSessionStoreOptions, workId: string): ControllerSession | undefined {
@@ -250,6 +347,13 @@ function digestControllerAuthority(authorityId: string): string {
 export function mintControllerSessionAuthority(): { authorityId: string; authorityDigest: string } {
   const authorityId = `ctrl_${randomUUID().replace(/-/g, '')}`;
   return { authorityId, authorityDigest: digestControllerAuthority(authorityId) };
+}
+
+/** Bind an already-authorized opaque capability without persisting its plaintext value. */
+export function controllerSessionAuthorityDigest(authorityId: string): string {
+  const normalized = authorityId.trim();
+  if (!normalized) throw new Error('WORK_CONTROLLER_AUTHORITY_REQUIRED');
+  return digestControllerAuthority(normalized);
 }
 
 /** Verify an opaque capability without exposing or persisting its plaintext value. */
@@ -435,7 +539,7 @@ export function releaseObservedControllerSession(
 export function claimControllerSession(
   options: ControllerSessionStoreOptions,
   input: ControllerSessionClaimInput,
-): ControllerSession {
+): ClaimedControllerSession {
   assertIdentity(input);
   return withControllerLock(
     options.controllerHome,
@@ -463,45 +567,86 @@ export function claimControllerSession(
  * A same-principal session rotation therefore preserves ownership generation;
  * a controller-epoch change is recovery and advances the generation fence.
  */
+function resumableControllerSessionPrevious(
+  options: ControllerSessionStoreOptions,
+  store: ControllerSessionStore,
+  input: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string },
+  database?: SqliteDatabase,
+): ControllerSession | undefined {
+  const currentNowMs = optionsNowMs(options);
+  const current = activeSession(store, input.workId, currentNowMs);
+  assertExpectedGeneration(input, current);
+  if (!current) {
+    return store.sessions
+      .filter((entry) => entry.workId === input.workId)
+      .sort((left, right) => (right.claimGeneration ?? 0) - (left.claimGeneration ?? 0))[0];
+  }
+  const explicitPrincipal = current.principalId?.trim();
+  const priorExecution = explicitPrincipal
+    ? undefined
+    : database
+      ? peekExecutionSessionWithinTransaction(database, options.controllerHome, current.sessionId)
+      : peekExecutionSession(options.controllerHome, current.sessionId);
+  const currentPrincipal = explicitPrincipal || priorExecution?.principalId?.trim() || current.controllerId;
+  const staleRecoveryAllowed = input.allowStaleRecovery === true
+    && input.expectedClaimGeneration !== undefined
+    && !sessionBlocksRecovery(options, current, { nowMs: currentNowMs });
+  if (currentPrincipal !== input.principalId.trim() && !staleRecoveryAllowed) {
+    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId} is owned by another authenticated principal`);
+  }
+  if (current.controllerId !== input.controllerId && !staleRecoveryAllowed) {
+    throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
+  }
+  if (current.controllerType !== input.controllerType && !staleRecoveryAllowed) {
+    throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${input.workId} is owned by ${current.controllerType}`);
+  }
+  return current;
+}
+
+export function withControllerSessionMutationLock<T>(
+  options: ControllerSessionStoreOptions,
+  workId: string,
+  actor: string,
+  operation: () => T,
+): T {
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${workId}` },
+    actor,
+    operation,
+  );
+}
+
+/** Transaction-aware resume used only by higher-level Controller claim orchestration while the canonical session lock is held. */
+export function resumeControllerSessionWithinTransaction(
+  database: SqliteDatabase,
+  options: ControllerSessionStoreOptions,
+  input: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string },
+): ClaimedControllerSession {
+  assertIdentity(input);
+  if (!input.principalId.trim() || !input.controllerInstanceId.trim()) throw new Error('CONTROLLER_RESUME_AUTHORITY_REQUIRED');
+  const storeRecord = readSessionStoreWithinTransaction(database, options);
+  const previous = resumableControllerSessionPrevious(options, storeRecord.value, input, database);
+  return persistClaimWithinTransaction(database, options, storeRecord, input, previous);
+}
+
 export function resumeControllerSession(
   options: ControllerSessionStoreOptions,
   input: ControllerSessionClaimInput & { principalId: string; controllerInstanceId: string },
-): ControllerSession {
+): ClaimedControllerSession {
   assertIdentity(input);
   if (!input.principalId.trim() || !input.controllerInstanceId.trim()) {
     throw new Error('CONTROLLER_RESUME_AUTHORITY_REQUIRED');
   }
-  return withControllerLock(
-    options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
+  return withControllerSessionMutationLock(
+    options,
+    input.workId,
     `controller-resume:${input.controllerId}:${input.sessionId}`,
     () => {
       assertWorkClaimable(options, input.workId);
       const store = read(options);
-      const currentNowMs = optionsNowMs(options);
-      const current = activeSession(store, input.workId, currentNowMs);
-      assertExpectedGeneration(input, current);
-      if (!current) {
-        const previous = store.sessions
-          .filter((entry) => entry.workId === input.workId)
-          .sort((left, right) => (right.claimGeneration ?? 0) - (left.claimGeneration ?? 0))[0];
-        return persistClaim(options, store, input, previous);
-      }
-      const priorExecution = peekExecutionSession(options.controllerHome, current.sessionId);
-      const currentPrincipal = current.principalId?.trim() || priorExecution?.principalId?.trim() || current.controllerId;
-      const staleRecoveryAllowed = input.allowStaleRecovery === true
-        && input.expectedClaimGeneration !== undefined
-        && !sessionBlocksRecovery(options, current, { nowMs: currentNowMs });
-      if (currentPrincipal !== input.principalId.trim() && !staleRecoveryAllowed) {
-        throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId} is owned by another authenticated principal`);
-      }
-      if (current.controllerId !== input.controllerId && !staleRecoveryAllowed) {
-        throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
-      }
-      if (current.controllerType !== input.controllerType && !staleRecoveryAllowed) {
-        throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${input.workId} is owned by ${current.controllerType}`);
-      }
-      return persistClaim(options, store, input, current);
+      const previous = resumableControllerSessionPrevious(options, store, input);
+      return persistClaim(options, store, input, previous);
     },
   );
 }
@@ -547,9 +692,20 @@ export function bindControllerSessionToCurrentRuntime(
       throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${input.workId}`);
     }
   }
-  if (ownerInstanceId === requestedInstanceId && current.sessionId === input.sessionId) return current;
+  const requestedAuthorityDigest = input.authorityDigest?.trim() || '';
+  const currentAuthorityDigest = current.authorityDigest?.trim() || '';
+  if (
+    ownerInstanceId === requestedInstanceId
+    && current.sessionId === input.sessionId
+    && (!requestedAuthorityDigest || requestedAuthorityDigest === currentAuthorityDigest)
+  ) return current;
+  // The opaque Work capability belongs to durable ownership, not to one
+  // transport or Runtime process. A positively-current Runtime migration keeps
+  // the same digest while claim generation fences the new controller epoch.
+  const preservedAuthorityDigest = input.authorityDigest?.trim() || current.authorityDigest?.trim() || undefined;
   return resumeControllerSession(options, {
     ...input,
+    ...(preservedAuthorityDigest ? { authorityDigest: preservedAuthorityDigest } : {}),
     expectedClaimGeneration: current.claimGeneration,
   });
 }

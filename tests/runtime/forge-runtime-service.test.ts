@@ -26,7 +26,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorReadinessEndpoint, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
@@ -43,18 +43,26 @@ function fixture(): { root: string; home: string; repo: string; token: string } 
   return { root, home, repo, token };
 }
 
-function writePackageRuntimeCanaryFixture(packageRoot: string): void {
+function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCanary = true): void {
   const executionRoot = join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime');
+  const cliRoot = join(packageRoot, 'src', 'cli');
   mkdirSync(executionRoot, { recursive: true });
-  const canaryOnly = [
-    `if (process.argv.includes('--forge-release-canary-child')) {`,
-    `  process.exit(0);`,
-    `}`,
-    `process.exit(2);`,
-    '',
-  ].join('\n');
+  mkdirSync(cliRoot, { recursive: true });
+  const canaryOnly = supportsCurrentCanary
+    ? [
+      `if (process.argv.includes('--forge-release-canary-child')) {`,
+      `  process.exit(0);`,
+      `}`,
+      `process.exit(2);`,
+      '',
+    ].join('\n')
+    : `process.exit(process.argv.includes('--forge-release-canary-child') ? 17 : 2);\n`;
   writeFileSync(join(executionRoot, 'process-runner-entry.ts'), canaryOnly);
   writeFileSync(join(executionRoot, 'check-runner-sidecar.ts'), canaryOnly);
+  writeFileSync(
+    join(cliRoot, 'index.ts'),
+    "if (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(0);\nprocess.exit(4);\n",
+  );
 }
 
 afterEach(() => {
@@ -118,17 +126,22 @@ describe('Forge Runtime service', () => {
       releaseId: 'release-a',
       entrypoint: 'forge-runtime',
       diagnosticEntrypoint: 'forge-cli',
+      diagnosticArtifactIdentity: `sha256:${'b'.repeat(64)}`,
       packageRoot: 'package',
-      packageArtifactIdentity: 'sha256:package-test',
+      packageArtifactIdentity: `sha256:${'a'.repeat(64)}`,
       controllerHome: fx.home,
       artifactIdentity: 'sha256:test',
       releaseRevision: 'release-revision-a',
       sourceCommit: 'source-a',
       cleanWorkspace: true,
       arguments: [],
+      configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'committed',
       active: { releaseId: 'release-a', manifestPath, artifactIdentity: 'sha256:test' },
     })}\n`);
@@ -200,13 +213,17 @@ describe('Forge Runtime service', () => {
       releaseId: 'release-invalid-version',
       entrypoint: 'forge-runtime',
       packageRoot: 'package',
-      packageArtifactIdentity: 'sha256:package-test',
+      packageArtifactIdentity: `sha256:${'a'.repeat(64)}`,
       controllerHome: fx.home,
       artifactIdentity: 'sha256:test',
       arguments: [],
+      configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: new Date().toISOString(),
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: 'committed',
       active: { releaseId: 'release-invalid-version', manifestPath, artifactIdentity: 'sha256:test' },
     })}\n`);
@@ -240,9 +257,13 @@ describe('Forge Runtime service', () => {
         controllerHome: fx.home,
         artifactIdentity: `sha256:${releaseId}`,
         arguments: [],
+        configurationSchemaVersion: 1,
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: new Date().toISOString(),
       })}\n`);
       writeFileSync(authorityPath, `${JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         status: 'committed',
         active: { releaseId, manifestPath, artifactIdentity: `sha256:${releaseId}` },
       })}\n`);
@@ -282,11 +303,13 @@ describe('Forge Runtime service', () => {
     writeFileSync(entry, 'runtime');
     writeFileSync(manifestPath, `${JSON.stringify({
       schemaVersion: 1, releaseId: 'release-legacy-helper', entrypoint: 'forge-runtime', controllerHome: fx.home,
-      artifactIdentity: 'sha256:runtime', arguments: [], browserAutomationHelperEntrypoint: 'browser-automation-helper',
+      artifactIdentity: 'sha256:runtime', arguments: [], configurationSchemaVersion: 1,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, createdAt: new Date().toISOString(),
+      browserAutomationHelperEntrypoint: 'browser-automation-helper',
       browserAutomationHelperArtifactIdentity: `sha256:${'a'.repeat(64)}`, browserAutomationHelperContractIdentity: `sha256:${'b'.repeat(64)}`,
     })}\n`);
     writeFileSync(join(fx.home, 'runtime', 'releases', 'authority.json'), `${JSON.stringify({
-      schemaVersion: 1, status: 'committed', active: { releaseId: 'release-legacy-helper', manifestPath, artifactIdentity: 'sha256:runtime' },
+      schemaVersion: 2, status: 'committed', active: { releaseId: 'release-legacy-helper', manifestPath, artifactIdentity: 'sha256:runtime' },
     })}\n`);
     const paths = forgeRuntimeServicePaths(fx.home);
     mkdirSync(paths.serviceRoot, { recursive: true });
@@ -317,12 +340,40 @@ describe('Forge Runtime service', () => {
     expect(launcherBytes).not.toContain('FORGE_FORCE_NODE');
     const launchdEnvironment = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(launched.status).toBe(0);
+    // launchd executes the TCC-stable byte mirror rather than the immutable
+    // release entrypoint. The mirror must retain the release-root binding,
+    // otherwise it looks for package-files.json beside itself in runtime/service.
+    const stableEntrypoint = syncForgeRuntimeActiveEntrypoint(fx.home).path;
+    const stableLaunched = spawnSync(stableEntrypoint, [], {
+      encoding: 'utf8',
+      env: { ...launchdEnvironment, FORGE_RELEASE_PATH: release.releaseRoot },
+    });
+    expect(stableLaunched.status).toBe(0);
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     const unchanged = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(unchanged.status).toBe(0);
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
     const changed = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test-changed' });
     expect(changed.releaseId).not.toBe(release.releaseId);
     expect(readFileSync(join(changed.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 2;\n');
+  });
+
+  test('owns the current execution canary at the package wrapper boundary for older sidecars', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package-legacy-canary');
+    for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '1.7.2-legacy-canary' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+    writePackageRuntimeCanaryFixture(packageRoot, false);
+
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-legacy-canary' });
+    const processRunner = spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' });
+    const checkRunner = spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' });
+    expect(processRunner.status).toBe(0);
+    expect(checkRunner.status).toBe(0);
+
+    const delegated = spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--not-a-canary'], { encoding: 'utf8' });
+    expect(delegated.status).toBe(2);
   });
 
   test('does not duplicate a systemd process-group shutdown signal', async () => {
@@ -729,6 +780,10 @@ describe('Forge Runtime service', () => {
     expect(packageConnectorEndpointStatusHealthy(404)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(500)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(502)).toBe(false);
+  });
+
+  test('uses the transport readiness surface instead of an unauthenticated MCP session request', () => {
+    expect(packageConnectorReadinessEndpoint('http://127.0.0.1:8767/mcp')).toBe('http://127.0.0.1:8767/transport-ready');
   });
 
   test('waits for the package Connector OAuth listener before declaring cutover ready', async () => {

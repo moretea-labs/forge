@@ -1,7 +1,17 @@
 import type { AccessMode } from '../governance/access-policy';
 import type { RouteDecision } from '../routing/route-policy';
-import { createWorkContract, getWorkContract, updateWorkContract, type WorkContractStoreOptions } from '../../../../packages/kernel/work/api/index';
+import { createWorkContract, executionPlacementForWork, getWorkContract, updateWorkContract, type WorkContractStoreOptions } from '../../../../packages/kernel/work/api/index';
+import { executionPlacement, readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import type { WorkContract } from './types';
+
+function repositoryExecutionPlacement(store: WorkContractStoreOptions, repoId: string, checkoutId?: string) {
+  const forgeInstanceId = store.controllerHome ? readForgeInstanceIdentity(store.controllerHome)?.instanceId : undefined;
+  return executionPlacement({
+    ...(forgeInstanceId ? { forgeInstanceId } : {}),
+    repositoryId: repoId,
+    ...(checkoutId?.trim() ? { checkoutId: checkoutId.trim() } : {}),
+  });
+}
 
 export interface PreparedRepositoryWorkAdmissionInput {
   workId: string;
@@ -28,6 +38,7 @@ export function admitPreparedRepositoryWorkContract(
   return createWorkContract(store, {
     workId: input.workId,
     repoId: input.repoId,
+    executionPlacement: repositoryExecutionPlacement(store, input.repoId),
     mode: input.isolated ? 'goal_workloop' : 'direct_control',
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria,
@@ -85,6 +96,7 @@ export function admitDirectEditWorkContract(
     workId: input.workId,
     repoId: input.repoId,
     checkoutId: input.checkoutId,
+    executionPlacement: repositoryExecutionPlacement(store, input.repoId, input.checkoutId),
     principalId: input.principalId,
     controllerInstanceId: input.controllerInstanceId,
     baseRevision: input.baseRevision,
@@ -138,8 +150,14 @@ export function materializeRepositoryWorkPlacement(
   if (!workspace.managed || !workspace.checkoutId || !workspace.root) {
     throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
   }
+  const currentPlacement = executionPlacementForWork(contract);
   return updateWorkContract(store, workId, {
     checkoutId: workspace.checkoutId,
+    executionPlacement: executionPlacement({
+      ...(currentPlacement.forgeInstanceId ? { forgeInstanceId: currentPlacement.forgeInstanceId } : {}),
+      repositoryId: contract.repoId,
+      checkoutId: workspace.checkoutId,
+    }),
     baseRevision: workspace.baseRevision ?? contract.baseRevision,
     worktreeRef: workspace.root,
     driver: { ...contract.driver, preferred: 'isolated_worktree', allowDirectEdit: false },

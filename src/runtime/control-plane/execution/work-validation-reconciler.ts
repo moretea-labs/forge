@@ -1,5 +1,7 @@
 import {
+  failWorkContract,
   getWorkContract,
+  recordWorkEvidenceState,
   requestWorkImplementationReview,
   transitionWorkContractPhase,
   updateWorkContract,
@@ -14,7 +16,8 @@ import {
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
 import { processCheckSemanticScopeKey } from '../../execution/process-runtime/check-facade';
 import { getProcessRecord } from '../../execution/process-runtime/store';
-import { controllerCheckExecutionIdentity } from '../../../cli/controller/check-runner';
+import { controllerCheckExecutionIdentity, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
+import { projectTerminalCheckVerification } from '../../execution/process-runtime/check-result';
 
 export type WorkValidationOutcome =
   | 'not_validating'
@@ -56,7 +59,7 @@ export function markWorkValidationPending(controllerHome: string, handle: WorkHa
   const evidenceState = contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
     ? 'stale'
     : 'partial';
-  if (contract.evidenceState !== evidenceState) updateWorkContract(options, contractId, { evidenceState });
+  if (contract.evidenceState !== evidenceState) recordWorkEvidenceState(options, contractId, evidenceState);
 }
 
 /**
@@ -75,7 +78,7 @@ export function markWorkValidationCurrentFromReusedEvidence(controllerHome: stri
   const options = { controllerHome, repoId: handle.repositoryId };
   const contract = getWorkContract(options, contractId);
   if (!contract || contract.completionReceipt) return;
-  if (contract.evidenceState !== 'valid') updateWorkContract(options, contractId, { evidenceState: 'valid' });
+  if (contract.evidenceState !== 'valid') recordWorkEvidenceState(options, contractId, 'valid');
 }
 
 /**
@@ -123,7 +126,7 @@ export function projectWorkValidationOutcome(
       && (!validationWasRearmed || approvedReviewMatchesCurrentCandidate);
     if (currentReviewIsAuthoritative || approvedDeliveryIsAuthoritative) {
       if (approvedReviewMatchesCurrentCandidate && contract.evidenceState !== 'valid') {
-        updateWorkContract(options, contractId, { evidenceState: 'valid' });
+        recordWorkEvidenceState(options, contractId, 'valid');
       }
       return;
     }
@@ -134,7 +137,7 @@ export function projectWorkValidationOutcome(
       summary: summary ?? 'All requested validation receipts passed.',
       evidenceRefs: contract.evidenceRefs,
     });
-    updateWorkContract(options, contractId, { evidenceState: 'valid' });
+    recordWorkEvidenceState(options, contractId, 'valid');
     if (workRequiresImplementationReview(verified.workKind, verified.scopeEvidence?.actualChangedPaths ?? [])) {
       requestWorkImplementationReview(
         options,
@@ -154,14 +157,11 @@ export function projectWorkValidationOutcome(
   }
 
   if (outcome === 'failed') {
-    transitionWorkContractPhase(options, contractId, {
-      phase: 'cleanup',
-      status: 'failed',
-      state: 'failed',
-      summary: summary ?? 'A requested validation check failed; terminal cleanup is next.',
+    failWorkContract(options, contractId, {
+      phase: contract.phase,
+      summary: summary ?? `A requested validation check failed while Work was in ${contract.phase}.`,
       evidenceRefs: contract.evidenceRefs,
     });
-    updateWorkContract(options, contractId, { evidenceState: 'failed' });
     return;
   }
 
@@ -169,12 +169,15 @@ export function projectWorkValidationOutcome(
     phase: 'verification',
     status: 'running',
     state: 'blocked',
+    dispatchState: 'blocked',
     summary: summary ?? 'Validation infrastructure failed; retain the finite Work for retry without treating this as an acceptance failure.',
     evidenceRefs: contract.evidenceRefs,
   });
-  updateWorkContract(options, contractId, {
-    evidenceState: contract.evidenceState === 'valid' || contract.evidenceState === 'stale' ? 'stale' : 'partial',
-  });
+  recordWorkEvidenceState(
+    options,
+    contractId,
+    contract.evidenceState === 'valid' || contract.evidenceState === 'stale' ? 'stale' : 'partial',
+  );
 }
 
 function settleInfrastructureFailure(
@@ -183,7 +186,7 @@ function settleInfrastructureFailure(
   summary: string,
 ): WorkValidationReconciliation {
   const next = transitionWorkHandle(controllerHome, handle, 'failed', {
-    finalization: { ...handle.finalization, validation: 'failed', lastError: summary },
+    finalization: { ...handle.finalization, validation: 'failed', failureCode: undefined, lastError: summary },
     validationRun: undefined,
     failureReason: summary,
   });
@@ -209,7 +212,7 @@ export function reconcileWorkValidation(
 
   if (run.requestedChecks.length === 0) {
     const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
-      finalization: { ...handle.finalization, validation: 'done', lastError: undefined },
+      finalization: { ...handle.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
       validationRun: undefined,
       validatedInputFingerprint: run.fingerprint,
       failureReason: undefined,
@@ -266,12 +269,20 @@ export function reconcileWorkValidation(
           },
         } : {}),
       });
-      if (!receipt.ok) {
-        if (receipt.status === 'timed_out' || receipt.status === 'cancelled') {
-          return settleInfrastructureFailure(controllerHome, handle, receipt.summary);
-        }
+      const legacyEvidence = record.origin?.checkResultReceiptPath
+        ? undefined
+        : readLatestControllerCheckEvidence(handle.worktreePath, checkId);
+      const projection = projectTerminalCheckVerification(record, checkId, receipt, { legacyEvidence });
+      if (projection.outcome === 'infrastructure_failure') {
+        return settleInfrastructureFailure(
+          controllerHome,
+          handle,
+          projection.infrastructureReason ?? projection.evidence.warning ?? receipt.summary,
+        );
+      }
+      if (projection.outcome === 'valid_fail') {
         const next = transitionWorkHandle(controllerHome, handle, 'failed', {
-          finalization: { ...handle.finalization, validation: 'failed', lastError: receipt.summary },
+          finalization: { ...handle.finalization, validation: 'failed', failureCode: undefined, lastError: receipt.summary },
           validationRun: undefined,
           failureReason: receipt.summary,
         });
@@ -285,7 +296,7 @@ export function reconcileWorkValidation(
   }
 
   const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
-    finalization: { ...handle.finalization, validation: 'done', lastError: undefined },
+    finalization: { ...handle.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
     validationRun: undefined,
     validatedInputFingerprint: run.fingerprint,
     failureReason: undefined,

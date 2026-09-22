@@ -13,13 +13,84 @@ import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import {
+  beginControllerRoundProviderDispatch,
   claimStalledControllerRoundRelays,
+  controllerRoundBlockerClass,
   finishControllerRoundRelayDispatch,
+  listCurrentControllerRoundRelays,
 } from '../../../../packages/kernel/controller/api/index';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
-import { runWorkChatgptContinuation } from '../launcher/chatgpt-work-continuation';
+import { runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../launcher/chatgpt-work-continuation';
 import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
-import { buildChatgptControllerRoundPrompt } from '../../../../adapters/chatgpt/controller-round-host';
+import { getChatgptControllerRoundSettlement } from '../../../../adapters/chatgpt/controller-round-settlement-store';
+import { recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
+import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
+import { classifySchedulerProviderFailure, ensureSchedulerProviderUserActionHandoff } from './autonomous-continuation';
+import { ensureControllerDispositionContinuation } from '../../workflow/schedules/work-continuation';
+import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
+
+const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
+const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
+// A provider-ambiguous ControllerRound remains durable and claimable, but its
+// Forge-owned Chrome tab is not durable authority. Give an in-flight ChatGPT
+// turn a bounded claim window, then release the ephemeral resource without
+// replaying or clearing the semantic outcome-unknown fence.
+const CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS = 5 * 60_000;
+
+function registerSchedulerFailure(input: {
+  controllerHome: string;
+  source: 'progression' | 'maintenance';
+  prefix: string;
+  message: string;
+  observationId: string;
+  repoId?: string;
+  workId?: string;
+  atMs?: number;
+}): void {
+  try {
+    maybeRegisterForgeActionableFailureRepair({
+      controllerHome: input.controllerHome,
+      observation: {
+        observationId: input.observationId,
+        source: input.source,
+        code: deriveForgeActionableFailureCode(input.prefix, input.message),
+        message: input.message,
+        at: new Date(input.atMs ?? Date.now()).toISOString(),
+        repoId: input.repoId,
+        workId: input.workId,
+      },
+    });
+  } catch {
+    // Repair promotion is evidence-side reconciliation, not the owning maintenance result.
+  }
+}
+
+export function planSchedulerPeriodicMaintenance(input: {
+  nowMs: number;
+  cleanupIntervalMs: number;
+  repositoryCount: number;
+}): {
+  periodicSequence: number;
+  runRetention: boolean;
+  runDeepRetention: boolean;
+  processGcRepositoryIndex?: number;
+  deepRetentionRepositoryIndex?: number;
+} {
+  const cleanupIntervalMs = Math.max(1, input.cleanupIntervalMs);
+  const periodicSequence = Math.floor(input.nowMs / cleanupIntervalMs);
+  const retentionEvery = Math.max(1, Math.ceil(PERIODIC_RETENTION_INTERVAL_MS / cleanupIntervalMs));
+  const deepRetentionEvery = Math.max(retentionEvery, Math.ceil(PERIODIC_DEEP_RETENTION_INTERVAL_MS / cleanupIntervalMs));
+  const repositoryCount = Math.max(0, Math.trunc(input.repositoryCount));
+  return {
+    periodicSequence,
+    runRetention: periodicSequence % retentionEvery === 0,
+    runDeepRetention: periodicSequence % deepRetentionEvery === 0,
+    processGcRepositoryIndex: repositoryCount > 0 ? periodicSequence % repositoryCount : undefined,
+    deepRetentionRepositoryIndex: repositoryCount > 0 && periodicSequence % deepRetentionEvery === 0
+      ? Math.floor(periodicSequence / deepRetentionEvery) % repositoryCount
+      : undefined,
+  };
+}
 
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
@@ -30,51 +101,149 @@ export async function runSchedulerPeriodicCleanup(input: {
   runtimeCleanup: typeof cleanupControllerRuntimeState;
   terminalWorkCleanup: typeof reconcileTerminalWorkCleanups;
   processGc: typeof gcTerminalProcesses;
+  settleBrowserTab?: typeof settleWorkChatgptAutomationTab;
 }): Promise<void> {
+  const plan = planSchedulerPeriodicMaintenance({
+    nowMs: input.nowMs,
+    cleanupIntervalMs: input.cleanupIntervalMs,
+    repositoryCount: input.repositories.length,
+  });
+  // Runtime-state phase rotation and terminal Work cleanup are lifecycle
+  // reconciliation, not retention. Keep them at the base cleanup cadence.
   try {
     input.runtimeCleanup(input.controllerHome, {
       reason: 'periodic',
       nowMs: input.nowMs,
-      periodicSequence: Math.floor(input.nowMs / input.cleanupIntervalMs),
+      periodicSequence: plan.periodicSequence,
       protectedControllerPid: input.controllerPid,
     });
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    registerSchedulerFailure({
+      controllerHome: input.controllerHome,
+      source: 'maintenance',
+      prefix: 'RUNTIME_CLEANUP_FAILED',
+      message: reason,
+      observationId: `maintenance:runtime-cleanup:${plan.periodicSequence}`,
+      atMs: input.nowMs,
+    });
     console.error('[forge cleanup] periodic cleanup failed:', error);
   }
   try {
     await input.terminalWorkCleanup(input.controllerHome, { nowMs: input.nowMs });
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    registerSchedulerFailure({
+      controllerHome: input.controllerHome,
+      source: 'maintenance',
+      prefix: 'TERMINAL_WORK_CLEANUP_FAILED',
+      message: reason,
+      observationId: `maintenance:terminal-work-cleanup:${plan.periodicSequence}`,
+      atMs: input.nowMs,
+    });
     console.error('[forge cleanup] terminal Work cleanup failed:', error);
   }
+
+  try {
+    maybeRegisterFailedReleaseSessionRepairs({ controllerHome: input.controllerHome, now: () => input.nowMs });
+  } catch (error) {
+    console.error('[forge cleanup] release failure repair reconciliation failed:', error);
+  }
+
+  // Browser/computer tombstones are retention state. Their lifecycle truth is
+  // written synchronously by their owning authorities, so a five-minute sweep
+  // is sufficient and avoids repeating controller-wide scans every minute.
+  if (plan.runRetention) {
+    try {
+      closeRuntimeBrowserSessionLegacyImportCutover(
+        input.controllerHome,
+        input.repositories.map((repository) => ({ repoId: repository.repoId, repoRoot: repository.canonicalRoot })),
+      );
+      const browserSessions = cleanupRuntimeBrowserSessionTombstones(input.controllerHome, { nowMs: input.nowMs });
+      if (browserSessions.blockers.length > 0 || browserSessions.budgetExhausted) {
+        console.error('[forge cleanup] Browser session retention reported bounded blockers');
+      }
+    } catch (error) {
+      console.error('[forge cleanup] Browser session retention failed:', error);
+    }
+    try {
+      const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
+      if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
+        console.error('[forge cleanup] Computer interaction-target retention reported bounded blockers');
+      }
+    } catch (error) {
+      console.error('[forge cleanup] Computer interaction-target retention failed:', error);
+    }
+    for (const repository of input.repositories) {
+      const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
+      for (const relay of listCurrentControllerRoundRelays(store, 100)) {
+        const blocker = controllerRoundBlockerClass(relay);
+        const outcomeUnknown = blocker === 'provider_dispatch_outcome_unknown';
+        const durableInactiveRound = ['waiting', 'waiting_for_user', 'goal_complete', 'failed'].includes(relay.status)
+          || (relay.status === 'blocked' && !outcomeUnknown);
+        if (!durableInactiveRound && !outcomeUnknown) continue;
+        if (outcomeUnknown) {
+          const blockedAtMs = Date.parse(relay.updatedAt);
+          if (!Number.isFinite(blockedAtMs) || input.nowMs - blockedAtMs < CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS) continue;
+        }
+        const existingSettlement = getChatgptControllerRoundSettlement(store, {
+          workId: relay.originWorkId,
+          relayScopeId: relay.relayScopeId,
+        });
+        if (existingSettlement && ['closed', 'preserved_user_owned', 'session_closed'].includes(existingSettlement.status)) continue;
+        const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
+        if (!binding?.latestBrowserSessionId) continue;
+        const settlement = await (input.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
+          controllerHome: input.controllerHome,
+          workId: relay.originWorkId,
+          browserSessionId: binding.latestBrowserSessionId,
+          authorizationGrantRefs: binding.authorizationGrantRefs,
+        });
+        recordChatgptControllerRoundTabSettlement(store, {
+          workId: relay.originWorkId,
+          relayScopeId: relay.relayScopeId,
+          status: settlement.status,
+          error: settlement.error?.message,
+        });
+      }
+    }
+  }
+
+  // Process GC includes stale-active reconciliation with a five-minute minimum
+  // age. Preserve the existing one-repository-per-base-pass round robin so that
+  // recovery remains smooth instead of concentrating all repositories in one
+  // periodic spike.
+  if (plan.processGcRepositoryIndex !== undefined) {
+    const processRepo = input.repositories[plan.processGcRepositoryIndex]!;
+    const result = input.processGc({ controllerHome: input.controllerHome, repoId: processRepo.repoId });
+    if (!result.ok) {
+      const reason = result.error ?? 'unknown error';
+      registerSchedulerFailure({
+        controllerHome: input.controllerHome,
+        source: 'maintenance',
+        prefix: 'PROCESS_GC_FAILED',
+        message: reason,
+        observationId: `maintenance:process-gc:${processRepo.repoId}:${plan.periodicSequence}`,
+        repoId: processRepo.repoId,
+        atMs: input.nowMs,
+      });
+      console.error('[forge cleanup] Process GC failed:', reason);
+    }
+  }
+
+  if (!plan.runDeepRetention) return;
+
+  // Generated caches and persisted artifacts have hour/day-scale retention
+  // thresholds. Run one repository per deep-retention pass, and rotate the
+  // repository index on the deep cadence rather than the one-minute sequence.
   try {
     const xctestCleanup = cleanupIdleXCTestDevices(input.controllerHome);
     if (xctestCleanup.error) console.error('[forge cleanup] XCTest device cleanup failed:', xctestCleanup.error);
   } catch (error) {
     console.error('[forge cleanup] XCTest device cleanup failed:', error);
   }
-  try {
-    closeRuntimeBrowserSessionLegacyImportCutover(
-      input.controllerHome,
-      input.repositories.map((repository) => ({ repoId: repository.repoId, repoRoot: repository.canonicalRoot })),
-    );
-    const browserSessions = cleanupRuntimeBrowserSessionTombstones(input.controllerHome, { nowMs: input.nowMs });
-    if (browserSessions.blockers.length > 0 || browserSessions.budgetExhausted) {
-      console.error('[forge cleanup] Browser session retention reported bounded blockers');
-    }
-  } catch (error) {
-    console.error('[forge cleanup] Browser session retention failed:', error);
-  }
-  try {
-    const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
-    if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
-      console.error('[forge cleanup] Computer interaction-target retention reported bounded blockers');
-    }
-  } catch (error) {
-    console.error('[forge cleanup] Computer interaction-target retention failed:', error);
-  }
-  if (input.repositories.length === 0) return;
-  const slot = Math.floor(input.nowMs / input.cleanupIntervalMs) % input.repositories.length;
-  const repo = input.repositories[slot]!;
+  if (plan.deepRetentionRepositoryIndex === undefined) return;
+  const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
   try {
     const generated = cleanupGeneratedRepositoryCaches(repo.canonicalRoot, { nowMs: input.nowMs });
     if (generated.errors.length > 0) {
@@ -91,8 +260,6 @@ export async function runSchedulerPeriodicCleanup(input: {
   } catch (error) {
     console.error(`[forge cleanup] Browser artifact retention failed for ${repo.repoId}:`, error);
   }
-  const result = input.processGc({ controllerHome: input.controllerHome, repoId: repo.repoId });
-  if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
   try {
     const checkResults = cleanupPersistedCheckResults(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
     if (checkResults.blockers.length > 0 || checkResults.budgetExhausted) {
@@ -163,6 +330,15 @@ export async function runSchedulerControllerRoundRecovery(input: {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       failed += 1;
+      registerSchedulerFailure({
+        controllerHome: input.controllerHome,
+        source: 'progression',
+        prefix: 'CONTROLLER_RELAY_SCAN_FAILED',
+        message: reason,
+        observationId: `progression:relay-scan:${repository.repoId}:${input.nowMs}`,
+        repoId: repository.repoId,
+        atMs: input.nowMs,
+      });
       console.error(`[forge controller relay] stalled round scan failed for ${repository.repoId}:`, reason);
       continue;
     }
@@ -175,21 +351,81 @@ export async function runSchedulerControllerRoundRecovery(input: {
           relay_scope_id: record.relayScopeId,
           recovery_reason: 'unclosed_dispatched_round',
         });
+        const boundary = workflowSupervisorBoundaryForWork(store, record.originWorkId);
+        if (boundary.status === 'outer_turn') {
+          await ensureWorkflowSupervisorEnrollmentForWork(store, record.originWorkId, {
+            schedulerRecoveryKey: record.occurrenceId ?? record.updatedAt,
+          });
+          continue;
+        }
+        if (boundary.status === 'conversation_pending') {
+          // Automatic recovery must never manufacture a replacement ChatGPT
+          // conversation while current-conversation enrollment is unresolved.
+          // An explicit launcher may still create a new conversation by design.
+          continue;
+        }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
+        const predecessorBinding = !binding && record.predecessorWorkId
+          ? getChatgptWorkConversationBinding(store, record.predecessorWorkId)
+          : undefined;
+        const deliveryBinding = binding ?? predecessorBinding;
+        if (!record.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${record.relayScopeId}`);
+        const dispatchingRecord = beginControllerRoundProviderDispatch(store, {
+          workId: record.originWorkId,
+          authorityId: record.authorityId,
+          expectedUpdatedAt: record.updatedAt,
+          bindingId: binding?.bindingId,
+        });
         const result = await dispatchPrompt({
           controllerHome: input.controllerHome,
           repoId: repository.repoId,
           repoRoot: repository.canonicalRoot ?? repository.localRoot,
           workId: record.originWorkId,
-          prompt: buildChatgptControllerRoundPrompt(store, record, { exactOriginWork: true }),
-          browserSessionId: binding?.latestBrowserSessionId,
-          conversationUrl: binding?.conversationUrl,
+          prompt: renderChatgptControllerRoundPrompt(store, dispatchingRecord, { exactOriginWork: !dispatchingRecord.requirementId }),
+          controllerAuthorityId: dispatchingRecord.authorityId,
+          relayScopeId: dispatchingRecord.relayScopeId,
+          browserSessionId: deliveryBinding?.latestBrowserSessionId,
+          conversationUrl: deliveryBinding?.conversationUrl,
+          authorizationGrantRefs: deliveryBinding?.authorizationGrantRefs,
           model: 'gpt-5.6',
-          reasoning: 'high',
+          reasoning: 'medium',
           tabPolicy: 'auto',
           timeoutMs: 30_000,
         });
-        if (result.status === 'failed') throw new Error(result.error?.message ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED');
+        if (result.status === 'failed') {
+          const reason = result.error?.message ?? result.error?.code ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED';
+          const disposition = classifySchedulerProviderFailure(reason);
+          if (disposition === 'outcome_unknown') {
+            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason, outcomeUnknown: true });
+            failed += 1;
+            continue;
+          }
+          if (disposition === 'wait_for_user') {
+            if (!record.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED:${record.relayScopeId}`);
+            const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+              workId: record.originWorkId, relayScopeId: record.relayScopeId, authorityId: record.authorityId, reason,
+            });
+            const waiting = finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+            if (waiting) ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, waiting);
+            continue;
+          }
+          if (disposition === 'failed') {
+            finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason });
+            registerSchedulerFailure({
+              controllerHome: input.controllerHome,
+              source: 'progression',
+              prefix: 'CONTROLLER_RELAY_RECOVERY_FAILED',
+              message: reason,
+              observationId: `progression:relay:${record.originWorkId}:${record.updatedAt}:failed`,
+              repoId: repository.repoId,
+              workId: record.originWorkId,
+              atMs: input.nowMs,
+            });
+            failed += 1;
+            continue;
+          }
+          throw new Error(reason);
+        }
         const updatedBinding = getChatgptWorkConversationBinding(store, record.originWorkId);
         finishControllerRoundRelayDispatch(store, {
           workId: record.originWorkId,
@@ -199,13 +435,23 @@ export async function runSchedulerControllerRoundRecovery(input: {
         dispatched += 1;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        finishControllerRoundRelayDispatch(store, {
-          workId: record.originWorkId,
-          ok: false,
-          error: reason,
-          recovery: true,
-          nowMs: input.nowMs,
-        });
+        const disposition = classifySchedulerProviderFailure(reason);
+        if (disposition === 'wait_for_user' && record.authorityId) {
+          const handoffId = ensureSchedulerProviderUserActionHandoff(store, {
+            workId: record.originWorkId, relayScopeId: record.relayScopeId, authorityId: record.authorityId, reason,
+          });
+          const waiting = finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, waitForUser: true, handoffId, error: reason });
+          if (waiting) ensureControllerDispositionContinuation(input.controllerHome, repository.repoId, waiting);
+        } else {
+          finishControllerRoundRelayDispatch(store, {
+            workId: record.originWorkId,
+            ok: false,
+            error: reason,
+            outcomeUnknown: disposition === 'outcome_unknown',
+            recovery: disposition === 'retryable',
+            nowMs: input.nowMs,
+          });
+        }
         failed += 1;
         console.error(`[forge controller relay] stalled round recovery failed for ${record.relayScopeId}:`, reason);
       }

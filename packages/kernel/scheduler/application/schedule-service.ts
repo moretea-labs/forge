@@ -10,6 +10,7 @@ export {
   getScheduleDecision,
   listActiveOccurrences,
   listOccurrences,
+  reclaimStaleCreatedOccurrences,
   listSchedules,
   recordScheduleOccurrenceHandoff,
   saveOccurrence,

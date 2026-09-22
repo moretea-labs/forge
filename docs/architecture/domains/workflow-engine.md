@@ -28,3 +28,9 @@ verify without a live service.
 - `bun test tests/migration-script.test.ts tests/create-project-dirs.runtime.test.ts tests/workflow-contract.test.ts`
 - `bash scripts/migrate-project-template.sh --repo . --dry-run`
 - `bash scripts/check-task-workflow.sh --strict`
+
+## Autonomous WorkflowRun name boundary
+
+This repo-mutation **Workflow Engine** and the existing declarative `workflow_run` checkpoint records are not the cross-assistant-turn lifecycle authority for an autonomous development Goal.
+
+The V1 Workflow Supervisor defined in [`../decisions/20260916-workflow-supervisor-authority.md`](../decisions/20260916-workflow-supervisor-authority.md) uses a distinct Supervisor persistence authority/namespace. It may eventually converge with declarative Workflow assets only through an explicit migration and authority decision. Shared terminology is not permission to share writers, reinterpret persisted states, or copy lower-layer lifecycle states upward.

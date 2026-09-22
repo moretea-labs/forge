@@ -8,8 +8,17 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { claimPlanStepForWork, getPlanContract, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
+import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
+import {
+  resolveProjectForRepositoryPlacement,
+  writeProjectIdentity,
+  writeProjectPlacement,
+  writeWorkspaceIdentity,
+} from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { buildFrozenSemanticCompatibilityCapability, parseFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 
@@ -63,6 +72,166 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('automatically onboards Project/Workspace identity during normal Work start admission', async () => {
+    const repoRoot = tempRoot('forge-work-project-onboarding-repo-');
+    const controllerHome = tempRoot('forge-work-project-onboarding-home-');
+    initRepo(repoRoot);
+    mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+    writeFileSync(join(repoRoot, '.forge', 'project-engineering.json'), JSON.stringify({
+      schemaVersion: 1,
+      contractId: 'work-onboarding-contract',
+      contractVersion: '1',
+      projectId: 'work-onboarding-project',
+      authority: {},
+      quality: {},
+      checks: [],
+      journeys: [],
+    }, null, 2));
+    git(repoRoot, 'add', '.forge/project-engineering.json');
+    git(repoRoot, 'commit', '-m', 'add project contract');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Work onboarding fixture' });
+    const ctx = {
+      ...mcpContext(controllerHome, repository),
+      principalId: 'project-onboarding-principal',
+      sessionId: 'project-onboarding-session',
+      controllerInstanceId: 'project-onboarding-runtime',
+      controllerType: 'chatgpt',
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const started = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'start',
+      objective: 'Verify semantic project onboarding at Work admission.',
+      requested_by: 'user',
+      scope_clear: true,
+      work_kind: 'completed_no_change',
+    }));
+    expect(started.status).toBe('ok');
+    expect(started.data.projectOnboarding).toMatchObject({
+      status: 'bound',
+      projectId: 'work-onboarding-project',
+      workspaceId: 'workspace-personal',
+      identitySource: 'project_contract',
+      createdProject: true,
+      createdPlacement: true,
+    });
+    const instance = readForgeInstanceIdentity(controllerHome);
+    expect(instance).toBeTruthy();
+    expect(resolveProjectForRepositoryPlacement({
+      controllerHome,
+      forgeInstanceId: instance!.instanceId,
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    })).toMatchObject({
+      projectId: 'work-onboarding-project',
+      workspaceId: 'workspace-personal',
+    });
+  });
+
+  test('explicitly promotes one Workspace Cognitive requirement candidate into exactly one canonical Requirement', async () => {
+    const repoRoot = tempRoot('forge-requirement-candidate-repo-');
+    const controllerHome = tempRoot('forge-requirement-candidate-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement candidate fixture' });
+    const instance = ensureForgeInstanceIdentity({ controllerHome });
+    const workspaceId = 'workspace-requirement-candidate';
+    const projectId = 'project-requirement-candidate';
+    writeWorkspaceIdentity({
+      controllerHome,
+      value: { workspaceId, title: 'Requirement Candidate Workspace' },
+    });
+    writeProjectIdentity({
+      controllerHome,
+      value: { projectId, workspaceId, displayName: 'Requirement Candidate Project' },
+    });
+    writeProjectPlacement({
+      controllerHome,
+      value: {
+        projectId,
+        forgeInstanceId: instance.instanceId,
+        repositoryId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      },
+    });
+
+    const scope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: workspaceId };
+    const store = cognitionMemoryStore(controllerHome);
+    const authority: CognitiveWriteAuthorityPort = {
+      assertMemoryWrite: () => undefined,
+      assertEdgeWrite: () => undefined,
+      evidenceAvailable: () => true,
+    };
+    const observedAt = '2026-09-20T09:00:00.000Z';
+    recordCognitiveMemory(store, authority, {
+      id: 'promoted:requirement-candidate-source',
+      scope,
+      facets: ['knowledge', 'pattern', 'engineering-principle', 'cross-project', 'repeated_root_cause'],
+      canonicalText: 'Repeated root cause shows a systemic architecture defect.',
+      concepts: ['forge.execution-quality.repeated_root_cause'],
+      provenance: {
+        sourceKind: 'system',
+        sourceId: 'project-learning-promotion:project-source:consolidated-source',
+        recordedAt: observedAt,
+        evidenceRefs: ['receipt-root-cause-1', 'receipt-root-cause-2', 'receipt-root-cause-3'],
+      },
+      confidence: 0.95,
+      utility: 0.9,
+      tier: 'warm',
+      validFrom: observedAt,
+      counterEvidenceRefs: [],
+    });
+    recordCognitiveMemory(store, authority, {
+      id: 'candidate:requirement-candidate-source',
+      scope,
+      facets: ['candidate-finding', 'requirement-candidate', 'advisory', 'engineering-improvement', 'repeated_root_cause'],
+      canonicalText: 'Candidate finding for normal Requirement promotion only.',
+      concepts: ['forge.requirement-candidate', 'forge.engineering-improvement', 'forge.execution-quality.repeated_root_cause'],
+      provenance: {
+        sourceKind: 'system',
+        sourceId: 'cognitive-requirement-candidate:promoted:requirement-candidate-source',
+        recordedAt: observedAt,
+        evidenceRefs: ['receipt-root-cause-1', 'receipt-root-cause-2', 'receipt-root-cause-3'],
+      },
+      confidence: 0.95,
+      utility: 0.9,
+      tier: 'warm',
+      validFrom: observedAt,
+      counterEvidenceRefs: [],
+    });
+
+    const ctx = mcpContext(controllerHome, repository);
+    const promoted = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_promote_candidate',
+      requirement_candidate_id: 'candidate:requirement-candidate-source',
+      requirement_id: 'REQ-COGNITIVE-CANDIDATE',
+      requirement_title: 'Resolve repeated systemic root cause',
+      requirement_outcome: 'Replace the repeated root cause with one coherent architecture correction.',
+      requirement_acceptance_criteria: ['The root cause is corrected through normal Requirement/Plan/Work authority.'],
+    }));
+    expect(promoted.status).toBe('ok');
+    expect(promoted.data.requirementCreated).toBe(true);
+    expect(promoted.data.admissionDecision).toBe('created');
+    expect(promoted.data.requirementCandidatePromoted).toBe(true);
+    expect(promoted.data.requirement.auditRefs).toContain(promoted.data.candidateAuditRef);
+
+    const duplicate = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_promote_candidate',
+      requirement_candidate_id: 'candidate:requirement-candidate-source',
+      requirement_id: 'REQ-COGNITIVE-CANDIDATE-DUPLICATE',
+      requirement_title: 'Duplicate semantic branch must not be created',
+      requirement_outcome: 'This should reuse the original candidate-bound Requirement.',
+    }));
+    expect(duplicate.status).toBe('ok');
+    expect(duplicate.data.requirementCreated).toBe(false);
+    expect(duplicate.data.admissionDecision).toBe('candidate_already_promoted');
+    expect(duplicate.data.requirement.requirementId).toBe('REQ-COGNITIVE-CANDIDATE');
+    expect(readRequirement({ controllerHome }, 'REQ-COGNITIVE-CANDIDATE-DUPLICATE')).toBeUndefined();
+  });
+
   test('lets a frozen rh_work schema create Requirement authority through a bounded semantic transport envelope', async () => {
     const repoRoot = tempRoot('forge-frozen-requirement-repo-');
     const controllerHome = tempRoot('forge-frozen-requirement-home-');
@@ -203,19 +372,29 @@ describe('rh_work Requirement bootstrap', () => {
 
     const successor = structured(await callRuntimeTool(ctx, 'rh_work', successorArgs));
     expect(successor.status).toBe('ok');
-    expect(successor.data.planContractCreated).toBe(true);
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)?.status).toBe('superseded');
-    const successorBeforeRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)!;
-    expect(successorBeforeRepair).toMatchObject({
-      status: 'draft',
-      supersedes: [predecessorPlanId],
+    expect(successor.summary).toContain('PLAN_REVISION_REUSED_AUTHORITY');
+    expect(successor.data).toMatchObject({
+      planContractCreated: false,
+      admissionDecision: 'reuse_existing',
+      plan: { planId: predecessorPlanId },
     });
-    expect(successorBeforeRepair.obligationDispositions).toHaveLength(obligations.length);
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
+    const stagedBeforeRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)!;
+    expect(stagedBeforeRepair).toMatchObject({
+      planId: predecessorPlanId,
+      revision: 1,
+      status: 'replanning',
+      pendingRevision: {
+        revision: 2,
+        requestedRevisionLabel: successorPlanId,
+      },
+    });
+    expect(stagedBeforeRepair.pendingRevision?.obligationDispositions).toHaveLength(obligations.length);
 
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'repair',
-      plan_id: successorPlanId,
+      plan_id: predecessorPlanId,
       repair_operation: 'repair',
       dry_run: false,
       plan_steps: [{
@@ -225,19 +404,20 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(repaired.status).toBe('ok');
     expect(repaired.data.repaired).toBe(true);
-    const successorAfterRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)!;
-    expect(successorAfterRepair.planId).toBe(successorPlanId);
-    expect(successorAfterRepair.supersedes).toEqual([predecessorPlanId]);
-    expect(successorAfterRepair.obligationDispositions).toEqual(successorBeforeRepair.obligationDispositions);
-    expect(successorAfterRepair.steps[0]?.acceptanceCriteria).toContain('Draft repair preserves predecessor continuity.');
+    const stagedAfterRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)!;
+    expect(stagedAfterRepair.planId).toBe(predecessorPlanId);
+    expect(stagedAfterRepair.pendingRevision?.requestedRevisionLabel).toBe(successorPlanId);
+    expect(stagedAfterRepair.pendingRevision?.obligationDispositions).toEqual(stagedBeforeRepair.pendingRevision?.obligationDispositions);
+    expect(stagedAfterRepair.pendingRevision?.steps[0]?.acceptanceCriteria).toContain('Draft repair preserves predecessor continuity.');
 
     const approvedSuccessor = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'plan_approve',
-      plan_id: successorPlanId,
+      plan_id: predecessorPlanId,
     }));
     expect(approvedSuccessor.status).toBe('ok');
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)?.status).toBe('approved');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({ planId: predecessorPlanId, revision: 2, status: 'approved' });
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
 
     const conflictingNativeField = structured(await callRuntimeTool(ctx, 'rh_work', {
       ...successorArgs,
@@ -248,7 +428,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(conflictingNativeField.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
   }, 15_000);
 
-  test('lets an explicit frozen successor recover an invalidated predecessor without replacing an unrelated active Plan', async () => {
+  test('lets an execution-baseline shift preserve Plan authority without replacing an unrelated active Plan', async () => {
     const repoRoot = tempRoot('forge-frozen-invalidated-plan-repo-');
     const controllerHome = tempRoot('forge-frozen-invalidated-plan-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -257,7 +437,6 @@ describe('rh_work Requirement bootstrap', () => {
     const ctx = mcpContext(controllerHome, repository);
     const requirementId = 'REQ-FROZEN-INVALIDATED-PLAN';
     const predecessorPlanId = 'PLAN-FROZEN-INVALIDATED-R1';
-    const successorPlanId = 'PLAN-FROZEN-INVALIDATED-R2';
     const unrelatedPlanId = 'PLAN-FROZEN-POST-V2';
     const step = {
       id: 'stage-a', objective: 'Preserve exact successor lineage.', dependencies: [], authoritative_files: [],
@@ -266,7 +445,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'requirement_create', requirement_id: requirementId,
-      requirement_title: 'Recover invalidated Plan', requirement_outcome: 'Keep source-drift replanning on the intended Plan lineage.',
+      requirement_title: 'Preserve Plan execution baseline', requirement_outcome: 'Keep execution-baseline changes separate from semantic Plan replanning.',
     })).status).toBe('ok');
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_create', plan_id: predecessorPlanId, requirement_id: requirementId,
@@ -275,34 +454,27 @@ describe('rh_work Requirement bootstrap', () => {
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_approve', plan_id: predecessorPlanId,
     })).status).toBe('ok');
-    expect(claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, {
+    const claimed = claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, {
       planId: predecessorPlanId, stepId: 'stage-a', workId: 'work-never-created', sourceRevision: 'different-source-revision',
-    }).status).toBe('invalidated_by_drift');
+    });
+    expect(claimed).toMatchObject({
+      planId: predecessorPlanId,
+      status: 'executing',
+      steps: [{ id: 'stage-a', status: 'executing', workId: 'work-never-created' }],
+    });
+    expect(getPlanExecutionBaselineRevision({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toBe('different-source-revision');
 
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_create', plan_id: unrelatedPlanId, requirement_id: requirementId,
       scope_key: 'post-v2', source_revision: sourceRevision, objective: 'Unrelated post-V2 Plan.', plan_relation: 'parallel', plan_steps: [step],
     })).status).toBe('ok');
 
-    const predecessor = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)!;
-    const capability = buildFrozenSemanticCompatibilityCapability({
-      operation: 'plan_create',
-      args: { obligation_dispositions: listUnresolvedPlanObligations(predecessor).map((obligation) => ({
-        predecessor_plan_id: predecessorPlanId,
-        obligation_id: obligation.obligationId,
-        disposition: 'keep' as const,
-        successor_refs: [obligation.sourceRef],
-      })) },
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({
+      planId: predecessorPlanId,
+      revision: 1,
+      status: 'executing',
+      steps: [{ id: 'stage-a', status: 'executing', workId: 'work-never-created' }],
     });
-    const successor = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId, operation: 'repair', capability_id: capability,
-      plan_id: successorPlanId, requirement_id: requirementId, scope_key: 'v2-release', source_revision: sourceRevision,
-      objective: 'Recovered successor Plan.', plan_relation: 'extend', related_plan_id: predecessorPlanId, plan_steps: [step],
-    }));
-    expect(successor.status).toBe('ok');
-    expect(successor.data.planContractCreated).toBe(true);
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({ status: 'superseded', supersededBy: successorPlanId });
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toMatchObject({ status: 'draft', supersedes: [predecessorPlanId] });
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.status).toBe('draft');
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.supersededBy).toBeUndefined();
   }, 15_000);
@@ -355,6 +527,40 @@ describe('rh_work Requirement bootstrap', () => {
       status: 'running',
     });
 
+    const continueCapability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'continue',
+      args: { engineering_preconditions: { context_closure: { receipt_id: 'intentionally-invalid-runtime-receipt' } } },
+    });
+    const frozenContinue = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: continueCapability,
+      work_id: workId,
+    }));
+    expect(frozenContinue.status).toBe('blocked');
+    expect(frozenContinue.summary).toBe('CONTEXT_CLOSURE_RECEIPT_SCHEMA_INVALID');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      workId,
+      status: 'running',
+    });
+
+    const continueConflict = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: continueCapability,
+      work_id: workId,
+      engineering_preconditions: { context_closure: { receipt_id: 'native-conflict' } },
+    }));
+    expect(continueConflict.status).toBe('blocked');
+    expect(continueConflict.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
+
+    const continueMissingScope = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: continueCapability,
+    }));
+    expect(continueMissingScope.status).toBe('blocked');
+    expect(continueMissingScope.summary).toContain('work_id must remain explicit outside the continue envelope');
 
     const authorityId = `cra_${'a'.repeat(32)}`;
     const terminalCarrier = buildFrozenSemanticCompatibilityCapability({
@@ -578,7 +784,7 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(diagnosed.status).toBe('ok');
     expect(diagnosed.summary).toContain('PLAN_WORK_SCOPE_REPLAN_AVAILABLE');
-    expect(diagnosed.data).toMatchObject({ boundWorkId: 'work-active-scope', successorPlanId: 'PLAN-ACTIVE-SCOPE-R2', repaired: false, reusedExistingWork: true });
+    expect(diagnosed.data).toMatchObject({ boundWorkId: 'work-active-scope', requestedRevisionLabel: 'PLAN-ACTIVE-SCOPE-R2', repaired: false, reusedExistingWork: true });
     expect(diagnosed.data.requestedAllowedPaths).toEqual(['src/**', 'src/runtime/context/**']);
 
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
@@ -594,13 +800,15 @@ describe('rh_work Requirement bootstrap', () => {
       reason: 'Current-source evidence proved the active Plan omitted a path required by its own accepted scope.',
     }));
     expect(repaired.status).toBe('ok');
+    expect(repaired.summary).toContain('PLAN-ACTIVE-SCOPE-R1 r2');
     expect(repaired.data).toMatchObject({ repaired: true, replacementWorkCreated: false, reusedExistingWork: true });
-    expect(repaired.data.predecessor).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', status: 'superseded' });
-    expect(repaired.data.successor).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R2', status: 'executing' });
+    expect(repaired.data.priorPlan).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 1, status: 'executing' });
+    expect(repaired.data.currentPlan).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 2, status: 'executing' });
     expect(repaired.data.work).toMatchObject({ workId: 'work-active-scope', status: 'running' });
-    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')?.supersededBy).toBe('PLAN-ACTIVE-SCOPE-R2');
-    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')?.steps[0]).toMatchObject({ workId: 'work-active-scope', allowedPaths: ['src/**', 'src/runtime/context/**'] });
-    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R2', allowedPaths: ['src/**', 'src/runtime/context/**'], checks: ['package:check:type'] });
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 2, status: 'executing' });
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')).toBeUndefined();
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')?.steps[0]).toMatchObject({ workId: 'work-active-scope', allowedPaths: ['src/**', 'src/runtime/context/**'] });
+    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', allowedPaths: ['src/**', 'src/runtime/context/**'], checks: ['package:check:type'] });
   }, 15_000);
 
   test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {
@@ -733,12 +941,28 @@ describe('rh_work verification registry', () => {
       },
     }, null, 2));
 
-    const verified = structured(await callRuntimeTool(mcpContext(controllerHome, repositoryWithCandidate), 'rh_work', {
+    const ctx = {
+      ...mcpContext(controllerHome, repositoryWithCandidate),
+      principalId: 'candidate-registry-test-principal',
+      controllerInstanceId: 'candidate-registry-test-runtime',
+      controllerType: 'chatgpt' as const,
+    } as MultiRepositoryMcpToolContext;
+    const claimed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+    }));
+    expect(claimed.status).toBe('ok');
+    const controllerAuthorityId = String(claimed.data?.controllerAuthorityId ?? '');
+    expect(controllerAuthorityId).toStartWith('ctrl_');
+
+    const verified = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'verify',
       work_id: workId,
       check_id: 'package:check:candidate',
       simulate_check: true,
+      controller_authority_id: controllerAuthorityId,
     }));
     expect(verified.status).toBe('ok');
     expect(verified.data.verification).toMatchObject({ checkId: 'package:check:candidate', outcome: 'valid_pass' });

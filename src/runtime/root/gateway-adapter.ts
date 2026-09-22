@@ -1,4 +1,4 @@
-import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import type { Server } from "@modelcontextprotocol/server";
 import { createForgeMcpServerFromContext, createMcpToolContext } from '../../../adapters/mcp/server';
 import { controllerExposureSnapshot } from '../../../adapters/mcp/toolset';
 import type { RuntimeControllerServices } from './controller-services';

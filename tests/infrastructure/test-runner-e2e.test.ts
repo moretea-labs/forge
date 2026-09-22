@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createServer } from 'net';
-import { loadTestManifest, runTestSelection } from '../../src/testing/test-governance';
+import { loadTestManifest, runTestSelection, type TestRunReceipt } from '../../src/testing/test-governance';
+import { consumeStructuredCheckResultPath } from '../../scripts/test-governance';
 
 const ROOT = join(import.meta.dir, '../..');
 const TEST_FILE_RUNNER = join(ROOT, 'scripts', 'run-bun-test-file.ts');
@@ -19,6 +20,12 @@ function processExists(pid: number): boolean {
 }
 
 describe('test runner infrastructure', () => {
+  test('consumes the parent structured-result path before spawning nested test processes', () => {
+    const env: NodeJS.ProcessEnv = { FORGE_CHECK_STRUCTURED_RESULT_PATH: join(tmpdir(), 'forge-structured-result.json') };
+    const path = consumeStructuredCheckResultPath(env);
+    expect(path).toBe(join(tmpdir(), 'forge-structured-result.json'));
+    expect(env.FORGE_CHECK_STRUCTURED_RESULT_PATH).toBeUndefined();
+  });
   test('keeps a source assertion failure distinct from infrastructure failure', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-test-runner-source-'));
     const testFile = join(dir, 'fails.test.ts');
@@ -117,6 +124,7 @@ describe('test runner infrastructure', () => {
     };
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-test-runner-controller-'));
     try {
+      let receipt: TestRunReceipt | undefined;
       const status = await runTestSelection(repo, manifest, {
         gate: 'infrastructure',
         changedPaths: [],
@@ -126,8 +134,16 @@ describe('test runner infrastructure', () => {
       }, {
         useCache: false,
         storageAuthority: { controllerHome, repoId: 'repo-test-runner-mutation' },
+        onReceipt: (value) => { receipt = value; },
       });
       expect(status).toBe(1);
+      expect(receipt?.failureEvidence).toMatchObject({
+        status: 'failed',
+        failures: 1,
+        failureClasses: ['infrastructure'],
+        contaminated: true,
+        failureDetails: [{ file: testPath, failureClass: 'infrastructure', failureCode: 'TEST_INFRA_WORKTREE_MUTATION' }],
+      });
       expect(readFileSync(join(repo, 'tracked.txt'), 'utf8')).toBe('mutated\n');
       expect(existsSync(join(repo, '.ai', 'harness', 'checks'))).toBe(false);
       expect(existsSync(join(controllerHome, 'repositories', 'repo-test-runner-mutation', 'checks', 'tests', 'receipts'))).toBe(true);
@@ -176,14 +192,23 @@ describe('test runner infrastructure', () => {
       expect(infraStatus).toBe(0);
       expect(readFileSync(infraMarker, 'utf8')).toBe('xx');
 
+      let sourceReceipt: TestRunReceipt | undefined;
       const sourceStatus = await runTestSelection(repo, manifest, {
         gate: 'integration', changedPaths: [], modules: ['runner'], files: [sourcePath], reason: 'source fixture',
       }, {
         useCache: false, tempConcurrency: 1,
         storageAuthority: { controllerHome, repoId: 'repo-test-runner-retry' },
+        onReceipt: (value) => { sourceReceipt = value; },
       });
       expect(sourceStatus).toBe(1);
       expect(readFileSync(sourceMarker, 'utf8')).toBe('x');
+      expect(sourceReceipt?.failureEvidence).toMatchObject({
+        status: 'failed',
+        failures: 1,
+        failureClasses: ['source'],
+        contaminated: false,
+        failureDetails: [{ file: sourcePath, failureClass: 'source', failureCode: 'TEST_SOURCE_ASSERTION_FAILED', attempts: 1 }],
+      });
     } finally {
       rmSync(repo, { recursive: true, force: true });
       rmSync(markerDir, { recursive: true, force: true });

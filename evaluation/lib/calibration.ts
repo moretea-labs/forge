@@ -11,17 +11,22 @@ import {
   type EvaluationMetricDefinition,
   type FrozenEvaluationProtocol,
 } from './protocol.ts';
+import { readV172BaselineAuthority, v172BaselineAuthorityDigest } from './baseline-authority.ts';
+import { v172BaselineReconstructionDigest } from './baseline.ts';
 import { evaluationScenarioDigest } from './scenario.ts';
 
-export const CROSS_VERSION_FREEZE_SCHEMA = 'forge-cross-version-freeze/v1' as const;
+export const CROSS_VERSION_FREEZE_SCHEMA = 'forge-cross-version-freeze/v2' as const;
 export const CROSS_VERSION_EVALUATOR_VERSION = 'forge-cross-version/v1' as const;
 export const V172_SOURCE_REVISION = 'c873cfeb11a223ced342e7101c016261b4a93b38' as const;
-export const V172_ARTIFACT_DIGEST = 'sha256:52ef73f9299d84895cd1a0692bf53023608dff6bc4ba29942a8f8d2bc3837db0' as const;
+export const V172_HISTORICAL_ARTIFACT_DIGEST = 'sha256:52ef73f9299d84895cd1a0692bf53023608dff6bc4ba29942a8f8d2bc3837db0' as const;
+export const V172_ARTIFACT_DIGEST = readV172BaselineAuthority().artifactDigest;
 export const V172_PUBLISHED_TARBALL_SHA256 = '2073bf8a6ab377e63ebe109c197039647bcf0626fb357954156c9f83f429fb10' as const;
 
 /** Candidate-neutral execution/verdict implementation only. Candidate-internal diagnostics are intentionally excluded. */
 export const CROSS_VERSION_EVALUATOR_FILES = Object.freeze([
   'evaluation/run-paired.ts',
+  'evaluation/lib/baseline.ts',
+  'evaluation/lib/baseline-authority.ts',
   'evaluation/lib/calibration.ts',
   'evaluation/lib/candidate-artifact.ts',
   'evaluation/lib/candidate-runner.ts',
@@ -37,10 +42,16 @@ export const CROSS_VERSION_EVALUATOR_FILES = Object.freeze([
   'evaluation/lib/trace.ts',
   'evaluation/lib/types.ts',
   'evaluation/lib/validators.ts',
+  'scripts/run-supervised-command.ts',
+  'src/runtime/shared/bounded-child-supervisor.ts',
+  'src/runtime/shared/process-tree.ts',
 ] as const);
 
 export const CROSS_VERSION_EVALUATOR_RUNTIME_PACKAGES = Object.freeze([
-  '@modelcontextprotocol/sdk',
+  '@modelcontextprotocol/client',
+  '@modelcontextprotocol/node',
+  '@modelcontextprotocol/server',
+  '@modelcontextprotocol/server-legacy',
 ] as const);
 
 export const FORMAL_CROSS_VERSION_METRICS: readonly EvaluationMetricDefinition[] = Object.freeze([
@@ -51,6 +62,8 @@ export const FORMAL_CROSS_VERSION_METRICS: readonly EvaluationMetricDefinition[]
   { id: 'change_precision', tier: 'execution_quality', direction: 'higher_is_better', unit: 'ratio', gate: 'non_blocking', regressionTolerance: 0 },
   { id: 'tool_interaction_count', tier: 'efficiency', direction: 'lower_is_better', unit: 'count', gate: 'non_blocking', regressionTolerance: 0 },
   { id: 'latency_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking', regressionTolerance: 0 },
+  { id: 'cpu_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking', regressionTolerance: 0 },
+  { id: 'peak_rss_bytes', tier: 'performance', direction: 'lower_is_better', unit: 'bytes', gate: 'non_blocking', regressionTolerance: 0 },
 ]);
 
 export const FORMAL_FAILURE_TAXONOMY = Object.freeze(['candidate_failure', 'candidate_timeout'] as const);
@@ -82,6 +95,8 @@ export interface AaCalibrationEvidence {
   formalTrialSample: false;
   baselineSourceRevision: string;
   baselineArtifactDigest: string;
+  baselineReconstructionDigest: string;
+  baselineAuthorityDigest: string;
   sharedCorpusDigest: string;
   publishedTarballSha256: string;
   scenarioCount: number;
@@ -114,6 +129,8 @@ export interface FrozenCrossVersionAuthorityManifest {
   corpusDigest: string;
   protocolDigest: string;
   baselineIdentityDigest: string;
+  baselineReconstructionDigest: string;
+  baselineAuthorityDigest: string;
   aaCalibrationDigest: string;
   environmentPolicyDigest: string;
 }
@@ -192,6 +209,8 @@ export function buildFrozenCrossVersionAuthorityManifest(repoRoot = process.cwd(
     corpusDigest: protocol.corpus.digest,
     protocolDigest: protocol.protocolDigest,
     baselineIdentityDigest: digestJson(v172BaselineIdentity()),
+    baselineReconstructionDigest: v172BaselineReconstructionDigest(repoRoot),
+    baselineAuthorityDigest: v172BaselineAuthorityDigest(repoRoot),
     aaCalibrationDigest: digestJson(V172_AA_CALIBRATION),
     environmentPolicyDigest: digestJson(FORMAL_ENVIRONMENT_POLICY),
   });
@@ -205,6 +224,8 @@ export function readFrozenCrossVersionAuthority(repoRoot = process.cwd()): Froze
     'corpusDigest',
     'protocolDigest',
     'baselineIdentityDigest',
+    'baselineReconstructionDigest',
+    'baselineAuthorityDigest',
     'aaCalibrationDigest',
     'environmentPolicyDigest',
   ];
@@ -232,6 +253,8 @@ export function assertFrozenCrossVersionAuthority(repoRoot = process.cwd()): Fro
   const protocol = buildFormalCrossVersionProtocol(repoRoot);
   assertProtocolMatchesFrozenAuthority(protocol, frozen);
   if (frozen.baselineIdentityDigest !== digestJson(v172BaselineIdentity())) throw new Error('EVALUATION_FREEZE_BASELINE_DRIFT');
+  if (frozen.baselineReconstructionDigest !== v172BaselineReconstructionDigest(repoRoot)) throw new Error('EVALUATION_FREEZE_BASELINE_RECONSTRUCTION_DRIFT');
+  if (frozen.baselineAuthorityDigest !== v172BaselineAuthorityDigest(repoRoot)) throw new Error('EVALUATION_FREEZE_BASELINE_AUTHORITY_DRIFT');
   if (frozen.aaCalibrationDigest !== digestJson(V172_AA_CALIBRATION)) throw new Error('EVALUATION_FREEZE_AA_CALIBRATION_DRIFT');
   if (frozen.environmentPolicyDigest !== digestJson(FORMAL_ENVIRONMENT_POLICY)) throw new Error('EVALUATION_FREEZE_ENVIRONMENT_POLICY_DRIFT');
   const ci = V172_AA_CALIBRATION.latencyDeltaMs.confidence95;
@@ -239,6 +262,8 @@ export function assertFrozenCrossVersionAuthority(repoRoot = process.cwd()): Fro
     || !/^sha256:[0-9a-f]{64}$/.test(V172_AA_CALIBRATION.rawBundleDigest ?? '')
     || V172_AA_CALIBRATION.baselineSourceRevision !== V172_SOURCE_REVISION
     || V172_AA_CALIBRATION.baselineArtifactDigest !== V172_ARTIFACT_DIGEST
+    || V172_AA_CALIBRATION.baselineReconstructionDigest !== v172BaselineReconstructionDigest(repoRoot)
+    || V172_AA_CALIBRATION.baselineAuthorityDigest !== v172BaselineAuthorityDigest(repoRoot)
     || V172_AA_CALIBRATION.publishedTarballSha256 !== V172_PUBLISHED_TARBALL_SHA256
     || V172_AA_CALIBRATION.trialCount !== protocol.corpus.scenarioIds.length * 2
     || V172_AA_CALIBRATION.sharedCorpusDigest !== protocol.corpus.digest

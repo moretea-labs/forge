@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
@@ -16,6 +17,7 @@ import {
   ensureControllerHome,
   ensureRepositoryControllerLayout,
 } from './controller-home';
+import { withControllerLock } from './locks';
 import {
   inferDisplayName,
   newLocalRepoId,
@@ -290,6 +292,51 @@ function readRegistryFile(path: string, strict: boolean): RepositoryRegistry | u
   }
 }
 
+interface RepositoryRegistryReadSnapshot {
+  fileIdentity: string;
+  registry: RepositoryRegistry;
+}
+
+const repositoryRegistryReadSnapshots = new Map<string, RepositoryRegistryReadSnapshot>();
+
+function registryFileIdentity(path: string): string | undefined {
+  try {
+    const stat = statSync(path, { bigint: true });
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function cloneRepositoryRecord(record: RepositoryRecord): RepositoryRecord {
+  return {
+    ...record,
+    checkouts: record.checkouts.map((checkout) => ({ ...checkout })),
+    github: record.github
+      ? { ...record.github, labels: record.github.labels ? [...record.github.labels] : undefined }
+      : undefined,
+  };
+}
+
+function loadRepositoryRegistryReadSnapshot(controllerHome?: string): RepositoryRegistry {
+  const path = registryPath(controllerHome);
+  const beforeIdentity = registryFileIdentity(path);
+  const cached = beforeIdentity ? repositoryRegistryReadSnapshots.get(path) : undefined;
+  if (cached && cached.fileIdentity === beforeIdentity) return cached.registry;
+
+  let registry = readRegistryFile(path, true) ?? defaultRegistry();
+  let afterIdentity = registryFileIdentity(path);
+  if (beforeIdentity && afterIdentity && beforeIdentity !== afterIdentity) {
+    // A cross-process atomic replacement raced this read. Re-read once from the
+    // new physical authority instead of caching a mixed-generation snapshot.
+    registry = readRegistryFile(path, true) ?? defaultRegistry();
+    afterIdentity = registryFileIdentity(path);
+  }
+  if (afterIdentity) repositoryRegistryReadSnapshots.set(path, { fileIdentity: afterIdentity, registry });
+  else repositoryRegistryReadSnapshots.delete(path);
+  return registry;
+}
+
 function timestampValue(value: string | undefined): number {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : 0;
@@ -354,9 +401,27 @@ export function loadRepositoryRegistry(controllerHome?: string): RepositoryRegis
 
 export function saveRepositoryRegistry(registry: RepositoryRegistry, controllerHome?: string): RepositoryRegistry {
   const home = ensureControllerHome(registryHome(controllerHome));
-  const next = { ...registry, schemaVersion: 1 as const, updatedAt: now() };
-  atomicJson(join(home, REGISTRY_FILE), next);
-  return next;
+  return withControllerLock(
+    home,
+    { scope: 'global', resource: 'repository-registry' },
+    'repository-registry:save',
+    () => {
+      const path = join(home, REGISTRY_FILE);
+      const current = readRegistryFile(path, true);
+      if (current && current.updatedAt !== registry.updatedAt) {
+        throw new Error(
+          `REPOSITORY_REGISTRY_STALE: expected=${registry.updatedAt}; current=${current.updatedAt}; reload canonical Repository Registry and retry`,
+        );
+      }
+      const previousRevision = timestampValue(registry.updatedAt);
+      const updatedAt = new Date(Math.max(Date.now(), previousRevision + 1)).toISOString();
+      const next = { ...registry, schemaVersion: 1 as const, updatedAt };
+      atomicJson(path, next);
+      return next;
+    },
+    30_000,
+    5_000,
+  );
 }
 
 export function consolidateRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
@@ -536,17 +601,39 @@ export function repositorySummary(record: RepositoryRecord): RepositorySummary {
 }
 
 export function listRepositories(controllerHome?: string, options: { includeRemoved?: boolean } = {}): RepositoryRecord[] {
-  return loadRepositoryRegistry(controllerHome).repositories
+  return loadRepositoryRegistryReadSnapshot(controllerHome).repositories
     .filter((record) => options.includeRemoved === true || !record.removedAt)
-    .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.repoId.localeCompare(b.repoId));
+    .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.repoId.localeCompare(b.repoId))
+    .map(cloneRepositoryRecord);
 }
 
 export function getRepository(repoId: string, controllerHome?: string, options: { includeRemoved?: boolean } = {}): RepositoryRecord {
-  const record = loadRepositoryRegistry(controllerHome).repositories.find((candidate) => candidate.repoId === repoId);
+  const record = loadRepositoryRegistryReadSnapshot(controllerHome).repositories.find((candidate) => candidate.repoId === repoId);
   if (!record || (record.removedAt && options.includeRemoved !== true)) {
     throw new Error(`repository not found: ${repoId}`);
   }
-  return record;
+  return cloneRepositoryRecord(record);
+}
+
+export type RepositoryCheckoutSelectionErrorCode = 'CHECKOUT_NOT_FOUND' | 'CHECKOUT_NOT_ACTIVE';
+
+export class RepositoryCheckoutSelectionError extends Error {
+  readonly code: RepositoryCheckoutSelectionErrorCode;
+  readonly repoId: string;
+  readonly checkoutId: string;
+  readonly lifecycle?: RepositoryCheckoutLifecycle;
+
+  constructor(input: { code: RepositoryCheckoutSelectionErrorCode; repoId: string; checkoutId: string; lifecycle?: RepositoryCheckoutLifecycle }) {
+    const message = input.code === 'CHECKOUT_NOT_FOUND'
+      ? `checkout not found for ${input.repoId}: ${input.checkoutId}`
+      : `CHECKOUT_NOT_ACTIVE: ${input.repoId}/${input.checkoutId} is ${input.lifecycle ?? 'unknown'}`;
+    super(message);
+    this.name = 'RepositoryCheckoutSelectionError';
+    this.code = input.code;
+    this.repoId = input.repoId;
+    this.checkoutId = input.checkoutId;
+    this.lifecycle = input.lifecycle;
+  }
 }
 
 export function selectRepositoryCheckout(
@@ -556,10 +643,10 @@ export function selectRepositoryCheckout(
 ): RepositoryRecord {
   if (!checkoutId?.trim()) return record;
   const checkout = record.checkouts.find((candidate) => candidate.checkoutId === checkoutId.trim());
-  if (!checkout) throw new Error(`checkout not found for ${record.repoId}: ${checkoutId}`);
+  if (!checkout) throw new RepositoryCheckoutSelectionError({ code: 'CHECKOUT_NOT_FOUND', repoId: record.repoId, checkoutId: checkoutId.trim() });
   const lifecycle = repositoryCheckoutLifecycle(checkout);
   if (lifecycle !== 'active' && !(options.allowArchived === true && lifecycle === 'archived')) {
-    throw new Error(`CHECKOUT_NOT_ACTIVE: ${record.repoId}/${checkout.checkoutId} is ${lifecycle}`);
+    throw new RepositoryCheckoutSelectionError({ code: 'CHECKOUT_NOT_ACTIVE', repoId: record.repoId, checkoutId: checkout.checkoutId, lifecycle });
   }
   return {
     ...record,

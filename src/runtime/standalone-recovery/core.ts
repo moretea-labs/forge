@@ -1,19 +1,34 @@
+import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerformanceIdentity, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
+import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
+import { createServer as createNetServer } from 'net';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
-import { assertStorageHeadroom } from '../shared/storage-capacity';
-import { resolveBunExecutable } from '../shared/process-environment';
-import { observeRuntimeStatus } from '../root/status';
+import { assertStorageHeadroom, STORAGE_WARNING_BYTES } from '../shared/storage-capacity';
+import { resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
+import { backupControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
+import { observeRuntimeStatus, readRuntimeStartupFailureEvidence } from '../root/status';
+import { reconcileStoppedRuntimeOwnership, terminateVerifiedRuntimeOwner } from '../root/ownership';
 import {
   activeRuntimeEntrypoint,
   activeRuntimeLaunchSpec,
   ensureForgeRuntimeLaunchAgentContract,
   forgeRuntimeServicePaths,
   inspectForgeRuntimeLaunchAgentContract,
+  installForgeRuntimeService,
   readForgeRuntimeServiceConfig,
+  syncForgeRuntimeActiveEntrypoint,
+  uninstallForgeRuntimeService,
 } from '../root/service';
+import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
+import {
+  inspectKnownGoodRecoveryBundle,
+  knownGoodRecoveryBundleRoot,
+  sha256FileBounded,
+  type KnownGoodRecoveryBundle,
+} from '../root/known-good-recovery';
 import { systemdUserUnitName, systemdUserUnitPath } from '../../cli/controller/systemd-user';
 import {
   openAiSecureTunnelConnectArgs,
@@ -23,14 +38,16 @@ import {
 } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
 import {
   renderPackageRuntimeSystemdUserService,
+  systemdRuntimeInstallCommands,
   writePackageRuntimeSystemdUserService,
 } from '../root/package-runtime-service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
-import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
+import { assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, promotePortableRuntimeRelease, runtimeReleaseTreeSha256, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type RuntimeReleaseExecutionCanaryDependencies, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
   publishRuntimeRelease,
   readRuntimeReleaseAuthority,
-  rollbackRuntimeRelease,
+  rollbackRuntimeReleaseWithResult,
+  type RuntimeDatabaseRollbackDisposition,
   type RuntimePublishedRelease,
   type RuntimeReleaseAuthority,
 } from '../root/release-store';
@@ -38,15 +55,29 @@ import type { RuntimeReleaseManifest } from '../root/types';
 import { ensurePackageConnectorService, packageConnectorAuthMode, packageConnectorServicePaths, type PackageConnectorReleaseBinding } from '../root/package-connector-service';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
-import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
+import { RECOVERY_DAEMON_LABEL } from './service-labels';
+import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
+import { reconcileStoppedWorkflowSupervisorSocket } from '../../../supervisor/server';
 import {
   migrateStoppedRepoLocalControllerHomeStorage,
   repoLocalControllerHomeStorageNeedsMigration,
   rollbackStoppedRepoLocalControllerHomeStorage,
   type ControllerHomeStorageMigration,
 } from '../../cli/repositories/controller-home';
-import { readCurrentRecoveryRelease } from './release';
+import { readCurrentRecoveryRelease, type RecoveryRuntimeRole } from './release';
 import { recoveryOperationLockPath } from './operation-lock';
+import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';
+import { createCandidateExecutionLane, readStableExecutionLane } from '../root/runtime-lane';
+import {
+  advanceReleaseSession,
+  createReleaseSession,
+  listReleaseSessions,
+  readReleaseSession,
+  recordReleaseSessionTransaction,
+  type ReleaseSession,
+  type ReleaseSessionCandidateRelease,
+  type ReleaseSessionStableRelease,
+} from '../release/release-session';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 interface PublicTunnelRecoveryPolicy {
@@ -123,9 +154,24 @@ export interface SystemdPrimaryConnectorServiceConfig extends PrimaryConnectorRe
 
 export type PrimaryConnectorServiceConfig = LaunchdPrimaryConnectorServiceConfig | SystemdPrimaryConnectorServiceConfig;
 
+export type RecoveryInstallProfile = 'manual' | 'gateway' | 'self-healing';
+
+export function normalizeRecoveryInstallProfile(value: unknown, fallback: RecoveryInstallProfile = 'self-healing'): RecoveryInstallProfile {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (value === 'manual' || value === 'gateway' || value === 'self-healing') return value;
+  throw new Error(`RECOVERY_INSTALL_PROFILE_INVALID: ${String(value)}`);
+}
+
+export function recoveryInstallProfileRoles(profile: RecoveryInstallProfile): RecoveryRuntimeRole[] {
+  if (profile === 'manual') return [];
+  return ['daemon'];
+}
+
 export interface RecoveryConfig {
   schemaVersion: 1;
   controllerHome: string;
+  /** Persistent Recovery role selection. Legacy configs default to self-healing. */
+  installProfile: RecoveryInstallProfile;
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: RecoveryTunnelServiceConfig;
@@ -133,6 +179,8 @@ export interface RecoveryConfig {
   primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   primaryRuntimeSourceRoot?: string;
+  /** Repository Registry authority paired with primaryRuntimeSourceRoot. */
+  primaryRuntimeSourceRepositoryId?: string;
   primaryConnectorService?: PrimaryConnectorServiceConfig;
   mainMcpTokenFile?: string;
   expectedToolFingerprint?: string;
@@ -157,14 +205,6 @@ export interface RecoveryMachineIdentity {
     authorityRevision?: number;
   };
 }
-
-export const RECOVERY_MUTATION_IDENTITY_FIELDS = [
-  'expected_host',
-  'expected_platform',
-  'expected_controller_home',
-  'expected_recovery_release',
-  'expected_target_runtime',
-] as const;
 
 export function recoveryMachineIdentity(
   config: RecoveryConfig,
@@ -196,15 +236,19 @@ export function recoveryMachineIdentity(
   };
 }
 
-export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
-  const identity = recoveryMachineIdentity(config);
-  const expected: Record<(typeof RECOVERY_MUTATION_IDENTITY_FIELDS)[number], string> = {
+export function recoveryMutationIdentityExpectations(identity: Pick<RecoveryMachineIdentity, 'host' | 'platform' | 'controllerHome' | 'recovery' | 'targetRuntime'>): RecoveryMutationIdentityArguments {
+  return {
     expected_host: identity.host,
     expected_platform: identity.platform,
     expected_controller_home: identity.controllerHome,
     expected_recovery_release: identity.recovery.releaseRevision ?? 'none',
     expected_target_runtime: identity.targetRuntime.id,
   };
+}
+
+export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
+  const identity = recoveryMachineIdentity(config);
+  const expected = recoveryMutationIdentityExpectations(identity);
   for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
     const supplied = typeof args[field] === 'string' ? args[field].trim() : '';
     if (!supplied) throw new Error(`RECOVERY_TARGET_IDENTITY_REQUIRED:${field}`);
@@ -220,14 +264,24 @@ interface ReleaseEvidence {
   manifestSha256: string;
   workerProtocolVersion: number;
   controllerHome?: string;
+  sourceRepositoryId?: string;
   releaseAuthorityRevision?: number;
   releaseFencingTokenSha256?: string;
   attestedAt?: string;
+  pinnedAt?: string;
+  performance?: RuntimePerformanceEvidence;
+  recoveryBundle?: KnownGoodRecoveryBundle;
 }
 
 interface KnownGoodStore {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   releases: ReleaseEvidence[];
+  updatedAt: string;
+}
+
+interface RuntimePinStore {
+  schemaVersion: 1;
+  release: ReleaseEvidence;
   updatedAt: string;
 }
 
@@ -237,10 +291,19 @@ export type RecoveryMutationAction =
   | 'restart_primary_runtime'
   | 'recover_primary_runtime'
   | 'activate_runtime_release'
+  | 'pin_runtime_release'
+  | 'unpin_runtime_release'
+  | 'activate_pinned_runtime_release'
   | 'stage_and_activate_runtime_release'
+  | 'release_session_prepare'
+  | 'release_session_static_verify'
+  | 'release_session_candidate_boot'
+  | 'release_session_cutover'
+  | 'release_session_cancel'
+  | 'release_session_rollback'
+  | 'release_session_known_good'
   | 'restart_primary_connector'
   | 'restart_recovery_gateway'
-  | 'restart_recovery_watchdog'
   | 'repair_public_tunnel';
 
 interface RecoveryLock {
@@ -369,6 +432,8 @@ export interface ConfiguredRuntimeActivationResult {
   noOp?: boolean;
   detail: string;
   staged?: StagedRuntimeRelease;
+  releaseSession?: ReleaseSession;
+  /** Legacy/home-bound recovery activation only. Fresh portable source candidates never set this during preparation. */
   activation?: RuntimeReleaseActivationResult;
 }
 
@@ -414,6 +479,7 @@ export function defaultPrimaryRuntimeServiceConfig(platform: NodeJS.Platform = p
 
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
+  installProfile: 'self-healing',
   readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
 };
@@ -438,6 +504,7 @@ function writeJson(path: string, value: unknown): void {
 
 function recoveryRoot(config: RecoveryConfig): string { return join(resolve(config.controllerHome), 'recovery'); }
 function statePath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'known-good.json'); }
+function runtimePinPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'runtime-pin.json'); }
 function lockPath(config: RecoveryConfig): string { return recoveryOperationLockPath(config.controllerHome); }
 function auditPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'audit', 'recovery.jsonl'); }
 function watchdogDiagnosticPath(config: RecoveryConfig): string { return join(recoveryRoot(config), 'state', 'watchdog-diagnostics.json'); }
@@ -487,12 +554,14 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
     ...DEFAULT_CONFIG,
     schemaVersion: 1,
     controllerHome: resolve(typeof loaded.controllerHome === 'string' ? loaded.controllerHome : controllerHome),
+    installProfile: normalizeRecoveryInstallProfile(loaded.installProfile, 'self-healing'),
     ...(typeof loaded.publicMcpUrl === 'string' ? { publicMcpUrl: loaded.publicMcpUrl } : {}),
     ...(typeof loaded.recoveryPublicUrl === 'string' ? { recoveryPublicUrl: loaded.recoveryPublicUrl } : {}),
     ...(loaded.recoveryTunnelService ? { recoveryTunnelService: loaded.recoveryTunnelService } : {}),
     ...(loaded.primaryPublicTunnelService ? { primaryPublicTunnelService: loaded.primaryPublicTunnelService } : {}),
     ...(loaded.primaryRuntimeService ? { primaryRuntimeService: loaded.primaryRuntimeService } : {}),
     ...(typeof loaded.primaryRuntimeSourceRoot === 'string' ? { primaryRuntimeSourceRoot: resolve(loaded.primaryRuntimeSourceRoot) } : {}),
+    ...(typeof loaded.primaryRuntimeSourceRepositoryId === 'string' && loaded.primaryRuntimeSourceRepositoryId.trim() ? { primaryRuntimeSourceRepositoryId: loaded.primaryRuntimeSourceRepositoryId.trim() } : {}),
     ...(loaded.primaryConnectorService ? { primaryConnectorService: loaded.primaryConnectorService } : {}),
     ...(typeof loaded.mainMcpTokenFile === 'string' ? { mainMcpTokenFile: loaded.mainMcpTokenFile } : {}),
     ...(typeof loaded.expectedToolFingerprint === 'string' ? { expectedToolFingerprint: loaded.expectedToolFingerprint } : {}),
@@ -548,33 +617,186 @@ function previousAuthorityRelease(config: RecoveryConfig): ReleaseEvidence | und
   return releaseEvidence(config.controllerHome, authority?.previous, authority);
 }
 
-function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+function sameReleaseIdentity(left: ReleaseEvidence, right: ReleaseEvidence): boolean {
+  return left.path === right.path
+    && left.revision === right.revision
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256
+    && left.workerProtocolVersion === right.workerProtocolVersion;
+}
+
+function knownGoodAttestationEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
   if (!entry || !entry.attestedAt || !entry.releaseFencingTokenSha256 || typeof entry.controllerHome !== 'string') return undefined;
+  // Legacy metadata-only attestations are audit history, not recoverable authority.
+  // The cheap tier requires durable bundle identity but never reads bundle contents.
+  if (!entry.recoveryBundle || entry.recoveryBundle.schemaVersion !== 1) return undefined;
   if (resolve(entry.controllerHome) !== resolve(config.controllerHome)) return undefined;
   const authority = releaseAuthority(config);
   const candidates = [
     releaseEvidence(config.controllerHome, authority?.active, authority),
     releaseEvidence(config.controllerHome, authority?.previous, authority),
   ].filter((item): item is ReleaseEvidence => Boolean(item));
-  const matched = candidates.find((release) =>
-    release.path === entry.path
-    && release.revision === entry.revision
-    && release.artifactIdentity === entry.artifactIdentity
-    && release.manifestSha256 === entry.manifestSha256
-    && release.workerProtocolVersion === entry.workerProtocolVersion,
-  );
-  return matched ? entry : undefined;
+  return candidates.some((release) => sameReleaseIdentity(release, entry)) ? entry : undefined;
+}
+
+function knownGoodEvidence(config: RecoveryConfig, entry: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  const attested = knownGoodAttestationEvidence(config, entry);
+  if (!attested) return undefined;
+  try { inspectKnownGoodRecoveryBundle(config.controllerHome, attested); }
+  catch { return undefined; }
+  return attested;
 }
 
 function knownGood(config: RecoveryConfig): KnownGoodStore {
   return json<KnownGoodStore>(statePath(config)) ?? { schemaVersion: 1, releases: [], updatedAt: new Date(0).toISOString() };
 }
 
+function inspectKnownGoodRecoverability(config: RecoveryConfig): {
+  available: ReleaseEvidence[];
+  unavailable: Array<{ revision: string; path: string; reason: string }>;
+} {
+  const available: ReleaseEvidence[] = [];
+  const unavailable: Array<{ revision: string; path: string; reason: string }> = [];
+  const store = knownGood(config);
+  // Pre-bundle records remain audit history only. They are deliberately
+  // neither usable Recovery authority nor a readiness failure for an
+  // otherwise healthy Runtime, because no action can make them restorable.
+  if (store.schemaVersion !== 2) return { available, unavailable };
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  for (const entry of store.releases) {
+    try {
+      const inspected = inspectKnownGoodRecoveryBundle(config.controllerHome, entry);
+      if (dirname(inspected.releaseRoot) !== releasesRoot) throw new Error('known-good path is outside Runtime release authority');
+      available.push(entry);
+    } catch (error) {
+      unavailable.push({
+        revision: entry.revision,
+        path: entry.path,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { available, unavailable };
+}
+
+function matchingKnownGoodAttestation(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
+  if (!release) return undefined;
+  return knownGoodAttestationEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
+}
+
 function matchingKnownGood(config: RecoveryConfig, release: ReleaseEvidence | undefined): ReleaseEvidence | undefined {
   if (!release) return undefined;
-  return knownGoodEvidence(config, knownGood(config).releases.find((entry) =>
-    entry.revision === release.revision && entry.manifestSha256 === release.manifestSha256 && entry.path === release.path,
-  ));
+  return knownGoodEvidence(config, knownGood(config).releases.find((entry) => sameReleaseIdentity(entry, release)));
+}
+
+function sameReleaseEvidenceIdentity(left: ReleaseEvidence | undefined, right: ReleaseEvidence | undefined): boolean {
+  return Boolean(
+    left
+    && right
+    && left.path === right.path
+    && left.revision === right.revision
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256
+    && left.workerProtocolVersion === right.workerProtocolVersion,
+  );
+}
+
+function liveRuntimeOwnsRelease(config: RecoveryConfig, release: ReleaseEvidence): boolean {
+  const active = activeAuthorityRelease(config);
+  const observed = observeRuntimeStatus(config.controllerHome);
+  const snapshot = observed.snapshot;
+  return Boolean(
+    sameReleaseEvidenceIdentity(active, release)
+    && observed.running
+    && observed.ready
+    && !observed.stale
+    && snapshot
+    && snapshot.releaseId === release.revision
+    && snapshot.artifactIdentity === release.artifactIdentity,
+  );
+}
+
+function runtimePin(config: RecoveryConfig): RuntimePinStore | undefined {
+  const path = runtimePinPath(config);
+  if (!existsSync(path)) return undefined;
+  let parsed: RuntimePinStore;
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')) as RuntimePinStore; }
+  catch (error) { throw new Error(`RUNTIME_PIN_AUTHORITY_INVALID: ${error instanceof Error ? error.message : String(error)}`); }
+  const release = parsed?.release;
+  if (parsed?.schemaVersion !== 1 || !release || !release.revision?.trim() || !release.path?.trim() || !release.artifactIdentity?.trim() || !release.manifestSha256?.trim() || !Number.isInteger(release.workerProtocolVersion)) {
+    throw new Error('RUNTIME_PIN_AUTHORITY_INVALID');
+  }
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  const manifestPath = resolve(release.path);
+  const releaseRoot = dirname(manifestPath);
+  if (basename(manifestPath) !== 'manifest.json' || basename(releaseRoot) !== release.revision || dirname(releaseRoot) !== releasesRoot) {
+    throw new Error('RUNTIME_PIN_AUTHORITY_PATH_INVALID');
+  }
+  return parsed;
+}
+
+function releaseEvidenceForPin(
+  config: RecoveryConfig,
+  candidate: { manifest: RuntimeReleaseManifest; manifestPath: string },
+): ReleaseEvidence {
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  const releaseRoot = dirname(resolve(candidate.manifestPath));
+  if (!existsSync(releasesRoot) || dirname(realpathSync(releaseRoot)) !== realpathSync(releasesRoot)) {
+    throw new Error('RUNTIME_PIN_RELEASE_OUTSIDE_CONTROLLER_RUNTIME_ROOT');
+  }
+  const expectedRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (expectedRepositoryId && candidate.manifest.sourceRepositoryId !== expectedRepositoryId) {
+    throw new Error(`RUNTIME_PIN_SOURCE_REPOSITORY_MISMATCH: expected ${expectedRepositoryId}, got ${candidate.manifest.sourceRepositoryId ?? 'missing'}`);
+  }
+  return {
+    path: candidate.manifestPath,
+    revision: candidate.manifest.releaseId,
+    artifactIdentity: candidate.manifest.artifactIdentity,
+    manifestSha256: createHash('sha256').update(readFileSync(candidate.manifestPath)).digest('hex'),
+    workerProtocolVersion: candidate.manifest.workerProtocolVersion,
+    controllerHome: resolve(config.controllerHome),
+    ...(candidate.manifest.sourceRepositoryId ? { sourceRepositoryId: candidate.manifest.sourceRepositoryId } : {}),
+    pinnedAt: new Date().toISOString(),
+  };
+}
+
+export async function pinRuntimeRelease(config: RecoveryConfig, candidateManifestPath: string, requestId?: string): Promise<Record<string, unknown>> {
+  let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
+  try { candidate = validateRuntimeReleaseCandidate(config, candidateManifestPath); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  if (candidate.manifest.deploymentScope === 'portable') {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RUNTIME_PIN_PORTABLE_RELEASE_FORBIDDEN: portable source candidates require a verified Recovery ReleaseSession',
+    };
+  }
+  let evidence: ReleaseEvidence;
+  try { evidence = releaseEvidenceForPin(config, candidate); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  const locked = await withLock(config, { action: 'pin_runtime_release', requestId }, async () => {
+    const current = runtimePin(config);
+    if (current?.release.revision === evidence.revision && current.release.manifestSha256 === evidence.manifestSha256) {
+      return { ok: true, attempted: false, noOp: true, detail: 'requested Runtime release is already pinned', pinned: current.release };
+    }
+    const store: RuntimePinStore = { schemaVersion: 1, release: evidence, updatedAt: new Date().toISOString() };
+    writeJson(runtimePinPath(config), store);
+    audit(config, 'runtime_release_pinned', { requestId, revision: evidence.revision, artifactIdentity: evidence.artifactIdentity });
+    return { ok: true, attempted: true, detail: 'Runtime release pinned for retention and explicit Runtime-only activation', pinned: evidence };
+  });
+  return locked.acquired ? locked.value : { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+}
+
+export async function unpinRuntimeRelease(config: RecoveryConfig, requestId?: string): Promise<Record<string, unknown>> {
+  const locked = await withLock(config, { action: 'unpin_runtime_release', requestId }, async () => {
+    const current = runtimePin(config);
+    if (!current) return { ok: true, attempted: false, noOp: true, detail: 'no Runtime release is pinned' };
+    rmSync(runtimePinPath(config), { force: true });
+    audit(config, 'runtime_release_unpinned', { requestId, revision: current.release.revision, artifactIdentity: current.release.artifactIdentity });
+    return { ok: true, attempted: true, detail: 'Runtime release pin removed', unpinned: current.release };
+  });
+  return locked.acquired ? locked.value : { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
 }
 
 
@@ -647,7 +869,7 @@ function recoveryLockOwnerAlive(lock: RecoveryLock): boolean {
   if (!pidAlive(lock.pid)) return false;
   if (!lock.processStartTime) return true;
   const observed = processStartTime(lock.pid);
-  return observed === undefined || observed === lock.processStartTime;
+  return observed === lock.processStartTime;
 }
 
 function recoveryLockOwnerAttributable(owner: RecoveryLock): boolean {
@@ -891,8 +1113,30 @@ function connectorCapacityRecoveryRecommended(verified: VerifyResult): boolean {
   );
 }
 
+function canonicalRuntimeSafeForTargetedConnectorRecovery(verified: VerifyResult): boolean {
+  // Targeted Connector/public-transport recovery mutates no Runtime release or
+  // Work authority. Use durable Runtime ownership + release/execution evidence
+  // as the safety fence; a single failed HTTP gateway/MCP observation is the
+  // symptom this action may need to repair and must not deadlock the recovery path.
+  return verified.runtime.ok
+    && verified.runtime.running
+    && verified.runtime.ready
+    && !verified.runtime.stale
+    && verified.releases.coherent !== false
+    && verified.probes.runtime_execution_surface?.ok !== false;
+}
+
 function mainToken(config: RecoveryConfig): string | undefined {
-  const candidate = config.mainMcpTokenFile ?? join(config.controllerHome, 'mcp', 'mcp.tokens.json');
+  const explicit = config.mainMcpTokenFile?.trim();
+  const candidate = explicit || join(config.controllerHome, 'mcp', 'mcp.tokens.json');
+  if (explicit) {
+    try {
+      const raw = readFileSync(candidate, 'utf8').trim();
+      if (raw.length >= 24 && !raw.startsWith('{')) return raw;
+    } catch {
+      return undefined;
+    }
+  }
   const parsed = json<{ bearerToken?: unknown }>(candidate);
   return typeof parsed?.bearerToken === 'string' && parsed.bearerToken.length >= 24 ? parsed.bearerToken : undefined;
 }
@@ -1215,6 +1459,24 @@ export async function verifyStableRuntime(
         : 'canonical Runtime is not running',
     },
   };
+  const knownGoodRecoverability = inspectKnownGoodRecoverability(config);
+  probes.recovery_known_good_recoverability = {
+    ok: knownGoodRecoverability.unavailable.length === 0,
+    detail: knownGoodRecoverability.unavailable.length === 0
+      ? `${knownGoodRecoverability.available.length} bounded known-good Runtime release(s) are physically recoverable`
+      : `${knownGoodRecoverability.unavailable.length} known-good attestation(s) no longer have a matching immutable Runtime release`,
+    value: knownGoodRecoverability,
+  };
+  if (!observation.running || !observation.ready) {
+    const startupFailure = readRuntimeStartupFailureEvidence(config.controllerHome);
+    if (startupFailure && (!active || !startupFailure.releaseId || startupFailure.releaseId === active.revision)) {
+      probes.runtime_startup_failure = {
+        ok: false,
+        detail: `latest Runtime startup failed during ${startupFailure.stage}: ${startupFailure.reasonCode}${startupFailure.message ? ` — ${startupFailure.message}` : ''}`,
+        value: startupFailure,
+      };
+    }
+  }
   const endpoint = observation.snapshot?.endpoint;
   probes.active_gateway = endpoint
     ? await probe(transport, runtimeHealthEndpoint(endpoint))
@@ -1252,8 +1514,16 @@ export async function verifyStableRuntime(
   const recoveryTunnelRuntime = await probeOpenAiRecoveryTunnel(config);
   if (recoveryTunnelRuntime) probes.recovery_tunnel_runtime = recoveryTunnelRuntime;
   if (options.probeMcpProtocol !== false) Object.assign(probes, await probeMcp(config, transport));
+  const mcpProtocolProbeNames = ['mcp_initialize', 'mcp_initialized_notification', 'mcp_tools_list', 'mcp_read_only_call', 'mcp_session_close'] as const;
+  const mcpProtocolHealthy = options.probeMcpProtocol !== false
+    && mcpProtocolProbeNames.every((name) => probes[name]?.ok === true);
   const coreChecks = Object.entries(probes)
     .filter(([name]) => !name.startsWith('recovery_'))
+    // The unauthenticated public initialize probe remains diagnostic and is the
+    // authority for dedicated external/tunnel verification. Once the stronger
+    // authenticated MCP session completes end-to-end, that raw reachability
+    // probe cannot independently veto full stable Runtime verification.
+    .filter(([name]) => !(name === 'external_mcp_http' && mcpProtocolHealthy))
     .every(([, entry]) => entry.ok);
   const runtimeHealthy = observation.running && observation.ready && !observation.stale;
   const coherent = Boolean(
@@ -1294,8 +1564,71 @@ export async function verifyStableRuntime(
   });
   return result;
 }
+function recoveryBundleId(): string {
+  return `attestation-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+}
+
+/**
+ * Build a self-contained, Recovery-owned restore point before publishing its
+ * attestation.  The copy is intentionally made while the full Runtime is
+ * still verified and fenced; a later crash cannot turn a metadata-only record
+ * into a false known-good authority.
+ */
+function createKnownGoodRecoveryBundle(config: RecoveryConfig): KnownGoodRecoveryBundle {
+  const attestationId = recoveryBundleId();
+  const root = join(knownGoodRecoveryBundleRoot(config.controllerHome), attestationId);
+  const databasePath = join(root, 'controller.sqlite');
+  const serviceContractPath = join(root, 'service-contract.json');
+  try {
+    const database = backupControlPlaneDatabase(config.controllerHome, databasePath);
+    const servicePaths = forgeRuntimeServicePaths(config.controllerHome);
+    const serviceConfig = readForgeRuntimeServiceConfig(servicePaths.configPath);
+    const serviceContract = {
+      schemaVersion: 1 as const,
+      configPath: servicePaths.configPath,
+      serviceConfig,
+      // The label and fixed executable path are derived, never copied from a
+      // mutable launchd plist. Recovery can rebuild that contract from this
+      // declarative service configuration plus the immutable release.
+      label: servicePaths.label,
+      activeEntrypointPath: servicePaths.activeEntrypointPath,
+      createdAt: new Date().toISOString(),
+    };
+    writeJson(serviceContractPath, serviceContract);
+    return {
+      schemaVersion: 1,
+      attestationId,
+      root,
+      database: {
+        path: databasePath,
+        sha256: sha256FileBounded(databasePath),
+        schemaVersion: database.schemaVersion,
+        recordCount: database.recordCount,
+        auditEventCount: database.auditEventCount,
+      },
+      serviceContract: { path: serviceContractPath, sha256: sha256FileBounded(serviceContractPath) },
+      createdAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function pruneRetiredKnownGoodRecoveryBundles(config: RecoveryConfig, releases: readonly ReleaseEvidence[]): void {
+  const root = knownGoodRecoveryBundleRoot(config.controllerHome);
+  if (!existsSync(root)) return;
+  const retained = new Set(releases.flatMap((release) => release.recoveryBundle ? [resolve(release.recoveryBundle.root)] : []));
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const path = resolve(root, entry.name);
+    if (dirname(path) !== resolve(root) || retained.has(path)) continue;
+    rmSync(path, { recursive: true, force: true });
+  }
+}
+
 /** Explicitly records evidence only after the full independent verification passed. */
-function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): ReleaseEvidence {
+function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult, performance: RuntimePerformanceEvidence): ReleaseEvidence {
   const authority = releaseAuthority(config);
     const active = verified.releases.active;
     if (
@@ -1309,19 +1642,30 @@ function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult
     ) {
       throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
     }
+    assertRuntimePerformanceEvidence(performance, runtimePerformanceIdentity(config));
     const attested: ReleaseEvidence = {
       ...active,
+      performance,
       controllerHome: resolve(config.controllerHome),
       releaseAuthorityRevision: authority.revision,
       releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
       attestedAt: new Date().toISOString(),
+      recoveryBundle: createKnownGoodRecoveryBundle(config),
     };
     const store = knownGood(config);
     const releases = [
       attested,
-      ...store.releases.filter((entry) => entry.path !== active.path && existsSync(entry.path)),
+      ...store.releases.filter((entry) => {
+        if (entry.path === active.path) return false;
+        try { inspectKnownGoodRecoveryBundle(config.controllerHome, entry); return true; }
+        catch { return false; }
+      }),
     ].slice(0, 8);
-    writeJson(statePath(config), { schemaVersion: 1, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
+    writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
+    // State is durable before cleanup. A crash between these lines leaves an
+    // orphaned bundle, which this same owner removes on the next attestation;
+    // it never invalidates a published recovery point.
+    pruneRetiredKnownGoodRecoveryBundles(config, releases);
     audit(config, 'known_good_attested', {
       revision: active.revision,
       artifactIdentity: active.artifactIdentity,
@@ -1331,10 +1675,130 @@ function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult
   return attested;
 }
 
-export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
-  const locked = await withLock(config, { action: 'attest_known_good' }, async () => (
-    persistVerifiedKnownGood(config, await verifyStableRuntime(config))
-  ));
+function runtimePerformanceIdentity(config: RecoveryConfig): RuntimePerformanceIdentity {
+  const authority = releaseAuthority(config);
+  const status = observeRuntimeStatus(config.controllerHome);
+  const snapshot = status.snapshot;
+  if (!authority || !status.running || !status.ready || status.stale || !snapshot
+    || snapshot.releaseId !== authority.active.releaseId
+    || snapshot.artifactIdentity !== authority.active.artifactIdentity) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: coherent live Runtime required');
+  }
+  return {
+    releaseId: authority.active.releaseId, authorityRevision: authority.revision,
+    pid: snapshot.pid, runtimeInstanceId: snapshot.runtimeInstanceId, startedAt: snapshot.startedAt,
+  };
+}
+
+export const RECOVERY_INTERNAL_PERFORMANCE_COMMAND = '__measure-runtime-performance';
+
+export async function measureConfiguredRuntimePerformance(
+  config: RecoveryConfig,
+  dependencies: RuntimePerformanceDependencies = {},
+): Promise<RuntimePerformanceEvidence> {
+  return await measureRuntimePerformance(() => runtimePerformanceIdentity(config), dependencies);
+}
+
+function hasRuntimePerformanceTestSeam(dependencies: RuntimePerformanceDependencies): boolean {
+  return dependencies.readCpu !== undefined
+    || dependencies.monotonicNow !== undefined
+    || dependencies.wallNow !== undefined
+    || dependencies.sleep !== undefined;
+}
+
+async function measureRuntimePerformanceIsolated(
+  config: RecoveryConfig,
+  expectedIdentity: RuntimePerformanceIdentity,
+): Promise<RuntimePerformanceEvidence> {
+  const recoveryBefore = readCurrentRecoveryRelease(config.controllerHome);
+  if (!recoveryBefore) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: current immutable Recovery release unavailable');
+  const executable = join(recoveryBefore.releasePath, 'forge-recovery');
+  if (!existsSync(executable)) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: immutable Recovery sampler executable unavailable');
+
+  const result = await runBoundedChild(
+    executable,
+    [RECOVERY_INTERNAL_PERFORMANCE_COMMAND, '--controller-home', config.controllerHome],
+    {
+      timeoutMs: 100_000,
+      maxOutputBytes: 32 * 1024,
+      forwardSignals: false,
+      env: runtimeAuthorityFreeEnvironment(process.env),
+    },
+  );
+  if (result.status !== 0 || result.failureCode || result.timedOut) {
+    const detail = result.failureCode ?? result.error ?? (result.stderr.trim() || `exit=${result.status}`);
+    throw new Error(`RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler failed (${detail.slice(0, 240)})`);
+  }
+
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(result.stdout);
+  } catch {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned malformed evidence');
+  }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
+  }
+  const parsed = envelope as { schemaVersion?: unknown; ok?: unknown; evidence?: unknown; error?: unknown };
+  if (parsed.schemaVersion !== 1 || typeof parsed.ok !== 'boolean') {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
+  }
+  if (!parsed.ok) {
+    const detail = typeof parsed.error === 'string' ? parsed.error : '';
+    if (/^RECOVERY_PERFORMANCE_(?:UNKNOWN|REJECTED):/.test(detail)) throw new Error(detail);
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned an unclassified failure');
+  }
+  if (!parsed.evidence || typeof parsed.evidence !== 'object' || Array.isArray(parsed.evidence)) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler omitted performance evidence');
+  }
+  const performance = parsed.evidence as RuntimePerformanceEvidence;
+  assertRuntimePerformanceEvidence(performance, expectedIdentity);
+
+  const recoveryAfter = readCurrentRecoveryRelease(config.controllerHome);
+  if (!recoveryAfter
+    || recoveryAfter.releaseRevision !== recoveryBefore.releaseRevision
+    || recoveryAfter.manifestSha256 !== recoveryBefore.manifestSha256) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Recovery release changed during performance observation');
+  }
+  if (!samePerformanceIdentity(expectedIdentity, runtimePerformanceIdentity(config))) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after performance observation');
+  }
+  return performance;
+}
+
+export async function attestKnownGood(
+  config: RecoveryConfig,
+  dependencies: RuntimePerformanceDependencies = {},
+): Promise<ReleaseEvidence> {
+  const initialIdentity = runtimePerformanceIdentity(config);
+  const before = await verifyStableRuntime(config);
+  if (!before.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+  const verifiedIdentity = runtimePerformanceIdentity(config);
+  if (!samePerformanceIdentity(initialIdentity, verifiedIdentity)
+    || before.releases.active?.revision !== verifiedIdentity.releaseId) {
+    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed during functional verification');
+  }
+
+  // Production observation executes in one short-lived child of the exact
+  // immutable Recovery release so Gateway/watchdog work in the persistent
+  // daemon cannot stretch the sampler's monotonic windows. Explicit dependency
+  // hooks remain the in-process test seam only. Both paths stay read-only and
+  // outside the Recovery mutation lock; exact Runtime identity remains fenced.
+  const performance = hasRuntimePerformanceTestSeam(dependencies)
+    ? await measureRuntimePerformance(() => {
+        const current = runtimePerformanceIdentity(config);
+        if (!samePerformanceIdentity(verifiedIdentity, current)) {
+          throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after functional verification');
+        }
+        return current;
+      }, dependencies)
+    : await measureRuntimePerformanceIsolated(config, verifiedIdentity);
+
+  const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
+    const verified = await verifyStableRuntime(config);
+    if (!verified.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+    return persistVerifiedKnownGood(config, verified, performance);
+  });
   if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
   return locked.value;
 }
@@ -1349,9 +1813,6 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
 async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): Promise<RollbackResult> {
   const before = await verifyStableRuntime(config);
   const active = before.releases.active;
-  if (before.ok && matchingKnownGood(config, active)) {
-    return { ok: true, noOp: true, detail: 'active whole-Runtime release is currently healthy and independently attested known-good', verify: before };
-  }
   if (before.runtime.running) {
     return {
       ok: false,
@@ -1387,7 +1848,8 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
   }
   const operationId = `recovery-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
   try {
-    const committed = rollbackRuntimeRelease(config.controllerHome, operationId);
+    const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, operationId);
+    const committed = rollbackResult.authority;
     if (
       committed.active.releaseId !== target.revision
       || committed.active.artifactIdentity !== target.artifactIdentity
@@ -1400,11 +1862,16 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
       activeRevision: active.revision,
       restoredRevision: target.revision,
       restoredManifestSha256: target.manifestSha256,
+      databaseDisposition: rollbackResult.databaseDisposition,
+      liveAuditEventCount: rollbackResult.liveAuditEventCount,
+      rollbackAuditEventCount: rollbackResult.rollbackAuditEventCount,
     });
     return {
       ok: true,
       operationId,
-      detail: 'whole-Runtime release and SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it',
+      detail: rollbackResult.databaseDisposition === 'restored_backup'
+        ? 'whole-Runtime release and unchanged SQLite backup restored; Canonical Runtime remains stopped until its sole launcher starts it'
+        : 'whole-Runtime release restored while newer live SQLite state was preserved; Canonical Runtime remains stopped until its sole launcher starts it',
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'whole-Runtime rollback failed';
@@ -1451,6 +1918,83 @@ async function verifyLocalRuntime(
     primaryPublicTunnelService: undefined,
     readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   }, createRecoveryHttpTransport(config.controllerHome), options);
+}
+
+/**
+ * Five-second Watchdog cadence owns health observation, not release
+ * verification. Keep this path deliberately bounded to already-published
+ * Runtime authority/status plus local HTTP transport checks needed for prompt
+ * targeted repair. Expensive execution canaries, known-good bundle inspection,
+ * tunnel commands, external transport probes and MCP initialize/list/call stay
+ * in verifyStableRuntime/verifyLocalRuntime and run only on the periodic
+ * verification deadline or after this health tier degrades.
+ */
+async function observeWatchdogHealthTier(
+  config: RecoveryConfig,
+  transport = createRecoveryHttpTransport(config.controllerHome),
+): Promise<VerifyResult> {
+  const observation = observeRuntimeStatus(config.controllerHome);
+  const authority = releaseAuthority(config);
+  const active = activeAuthorityRelease(config);
+  const previous = previousAuthorityRelease(config);
+  const runtimeHealthy = observation.running && observation.ready && !observation.stale;
+  const coherent = Boolean(
+    authority
+    && active
+    && observation.snapshot?.releaseId === active.revision
+    && observation.snapshot?.artifactIdentity === active.artifactIdentity
+    && authority.active.workerProtocolVersion === active.workerProtocolVersion
+  );
+  const probes: VerifyResult['probes'] = {
+    runtime_status: {
+      ok: observation.running && !observation.stale,
+      detail: observation.running
+        ? observation.stale ? 'canonical Runtime status is stale' : 'canonical Runtime owner is live'
+        : 'canonical Runtime is not running',
+    },
+  };
+  const endpoint = observation.snapshot?.endpoint;
+  probes.active_gateway = endpoint
+    ? await probe(transport, runtimeHealthEndpoint(endpoint))
+    : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
+  const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
+  if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
+  if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
+  const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
+  probes.recovery_watchdog = {
+    ok: watchdogHealth.ok,
+    detail: watchdogHealth.detail,
+    value: {
+      pulseAgeMs: watchdogHealth.pulseAgeMs,
+      tickAgeMs: watchdogHealth.tickAgeMs,
+      currentReleaseRevision: watchdogHealth.currentReleaseRevision,
+      watchdogReleaseRevision: watchdogHealth.runtimeIdentity?.releaseRevision,
+      watchdogPid: watchdogHealth.runtimeIdentity?.pid,
+    },
+  };
+  const localChecks = Object.entries(probes)
+    .filter(([name]) => !name.startsWith('recovery_'))
+    .every(([, entry]) => entry.ok);
+  return {
+    ok: Boolean(runtimeHealthy && coherent && localChecks),
+    at: new Date().toISOString(),
+    runtime: {
+      ok: runtimeHealthy,
+      running: observation.running,
+      ready: observation.ready,
+      stale: observation.stale,
+      reasonCodes: [...observation.reasonCodes],
+    },
+    releases: {
+      active,
+      previous,
+      // This tier reports durable attestation identity only. Physical bundle
+      // integrity is deliberately reserved for strict verification boundaries.
+      knownGood: matchingKnownGoodAttestation(config, active),
+      coherent,
+    },
+    probes,
+  };
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
@@ -1668,17 +2212,20 @@ export function decideWatchdog(input: {
 
 export async function diagnose(config: RecoveryConfig): Promise<Record<string, unknown>> {
   const verified = await verifyStableRuntime(config);
-  return { verified, knownGood: knownGood(config), quarantine: json(quarantinePath(config)) ?? { releases: [] } };
+  return { verified, knownGood: inspectKnownGoodRecoverability(config), quarantine: json(quarantinePath(config)) ?? { releases: [] } };
 }
 
 export async function listReleases(config: RecoveryConfig): Promise<Record<string, unknown>> {
   const observation = observeRuntimeStatus(config.controllerHome);
+  const knownGoodRecoverability = inspectKnownGoodRecoverability(config);
   return {
     runtimeRunning: observation.running,
     runtimeReady: observation.ready,
     active: activeAuthorityRelease(config),
     previous: previousAuthorityRelease(config),
-    knownGood: knownGood(config).releases,
+    knownGood: knownGoodRecoverability.available,
+    knownGoodUnavailable: knownGoodRecoverability.unavailable,
+    pinned: runtimePin(config)?.release,
   };
 }
 
@@ -1720,7 +2267,7 @@ function command(commandName: string, args: string[], timeoutMs = 10_000, option
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       cwd: options.cwd,
-      env: { ...process.env, PATH: recoveryCommandPath() },
+      env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -1810,13 +2357,26 @@ export interface PrimaryRuntimeRecoveryDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
+export interface RuntimeReleaseKnownGoodDependencies extends RuntimePerformanceDependencies {
+  /** Test/host seam for the existing whole-Runtime rollback transaction. */
+  rollback?: PrimaryRuntimeRecoveryDependencies;
+}
+
 export interface RuntimeReleaseActivationGuard {
   /** External caller identity for audit/lock attribution. */
   requestId?: string;
+  /** Internal Recovery-only mode: allow explicit activation of current.previous when it is durably pinned. */
+  allowPreviousRelease?: boolean;
+  /** Internal Recovery-only mode: restore Runtime authority without restoring an older SQLite backup on activation failure. */
+  preserveDatabaseOnFailure?: boolean;
+  /** Internal Recovery-only pin fence checked after acquiring the mutation lock. */
+  requiredPinnedReleaseRevision?: string;
   /** Authority snapshot observed when the caller decided to activate; null means the caller observed no authority. */
   expectedAuthorityRevision?: number | null;
   /** Active release observed when the caller decided to activate; null means the caller observed no active release. */
   expectedActiveReleaseId?: string | null;
+  /** Fresh portable source candidates may activate only after this exact Recovery ReleaseSession becomes cutover-eligible. */
+  releaseSessionId?: string;
 }
 
 function configuredPrimaryRuntimeService(config: RecoveryConfig, platform: NodeJS.Platform = process.platform): PrimaryRuntimeServiceConfig {
@@ -2112,17 +2672,13 @@ export async function restartPrimaryConnector(
   // That probe is expected to be false when this recovery action is needed,
   // so it must not prevent a healthy canonical Runtime from repairing the
   // Connector service.
-  const canonicalRuntimeHealthy = initialLocal.runtime.ok
-    && initialLocal.runtime.running
-    && initialLocal.runtime.ready
-    && !initialLocal.runtime.stale
-    && initialLocal.probes.active_gateway?.ok === true;
+  const canonicalRuntimeHealthy = canonicalRuntimeSafeForTargetedConnectorRecovery(initialLocal);
   if (!canonicalRuntimeHealthy) {
     return {
       ok: false,
       attempted: false,
       noOp: true,
-      detail: 'Canonical Runtime must be locally healthy before the primary Connector is restarted',
+      detail: 'Canonical Runtime ownership/release execution authority must be healthy before the primary Connector is restarted',
       verify: initialLocal,
     };
   }
@@ -2460,17 +3016,6 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
 }): Promise<PrimaryRuntimeStoppedTransition> {
   const stopped = await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
   if (!stopped.ok) return { ok: false, detail: stopped.detail };
-  const runtimeStopped = await waitForPrimaryRuntimeState({
-    config: input.config,
-    expectedRunning: false,
-    timeoutMs: 20_000,
-    now: input.now,
-    wait: input.wait,
-    runtimeRunning: input.runtimeRunning,
-  });
-  if (!runtimeStopped) {
-    return { ok: false, detail: `primary Runtime owner remained live after bounded ${input.service.platform} stop` };
-  }
   const serviceStopped = await waitForPrimaryRuntimeServiceStopped({
     owner: input.service,
     timeoutMs: 20_000,
@@ -2485,6 +3030,35 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
         ? 'primary Runtime launchd service remained loaded after bounded bootout'
         : 'primary Runtime systemd-user service remained active after bounded stop',
     };
+  }
+
+  let runtimeStopped = await waitForPrimaryRuntimeState({
+    config: input.config,
+    expectedRunning: false,
+    timeoutMs: 5_000,
+    now: input.now,
+    wait: input.wait,
+    runtimeRunning: input.runtimeRunning,
+  });
+  if (!runtimeStopped) {
+    const orphanTermination = await terminateVerifiedRuntimeOwner(input.config.controllerHome);
+    if (!orphanTermination.ok) {
+      return {
+        ok: false,
+        detail: `primary Runtime owner remained live after service shutdown and bounded identity-verified termination was refused/failed: ${orphanTermination.detail}`,
+      };
+    }
+    runtimeStopped = await waitForPrimaryRuntimeState({
+      config: input.config,
+      expectedRunning: false,
+      timeoutMs: 10_000,
+      now: input.now,
+      wait: input.wait,
+      runtimeRunning: input.runtimeRunning,
+    });
+    if (!runtimeStopped) {
+      return { ok: false, detail: 'primary Runtime owner remained live after verified orphan termination' };
+    }
   }
 
   let portReleased = await waitForPrimaryRuntimePortReleased({
@@ -2512,7 +3086,29 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
       staleListenerCleanup,
     };
   }
-  return { ok: true, detail: `primary Runtime ${input.service.platform} service, owner, and TCP listener are stopped`, staleListenerCleanup };
+
+  const ownership = reconcileStoppedRuntimeOwnership(input.config.controllerHome);
+  if (!ownership.ok) {
+    return {
+      ok: false,
+      detail: `primary Runtime ownership did not quiesce after bounded ${input.service.platform} stop: ${ownership.detail}`,
+      staleListenerCleanup,
+    };
+  }
+  const supervisorSocket = workflowSupervisorSocketPath(resolveWorkflowSupervisorForgeHome(input.config.controllerHome));
+  const supervisor = await reconcileStoppedWorkflowSupervisorSocket(supervisorSocket);
+  if (!supervisor.ok) {
+    return {
+      ok: false,
+      detail: `Workflow Supervisor writer did not quiesce after Runtime stop: ${supervisor.detail}`,
+      staleListenerCleanup,
+    };
+  }
+  return {
+    ok: true,
+    detail: `primary Runtime ${input.service.platform} service, owner, TCP listener, and Workflow Supervisor writer are quiescent`,
+    staleListenerCleanup,
+  };
 }
 
 async function verifyPrimaryRuntimeAfterStart(input: {
@@ -2552,6 +3148,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   verifyLocal: (config: RecoveryConfig) => Promise<VerifyResult>;
   ensureRuntimeLaunchContract?: (controllerHome: string) => void;
   beforeStart?: () => void;
+  afterRuntimeReady?: () => Promise<{ ok: boolean; detail: string }>;
   contractFailureContext?: string;
   timeoutMs: number;
   successDetail: string;
@@ -2597,6 +3194,28 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   if (!started.ok) {
     return { ok: false, detail: started.detail, verify: await input.verifyLocal(input.config) };
   }
+  if (input.afterRuntimeReady) {
+    const deadline = input.now() + input.timeoutMs;
+    let runtimeVerify = await input.verifyLocal(input.config);
+    const runtimeReady = (value: VerifyResult) => value.runtime.ok && value.runtime.running && value.runtime.ready && !value.runtime.stale;
+    while (!runtimeReady(runtimeVerify) && input.now() < deadline) {
+      await input.wait(1_000);
+      runtimeVerify = await input.verifyLocal(input.config);
+    }
+    if (!runtimeReady(runtimeVerify)) {
+      await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+      return {
+        ok: false,
+        detail: 'release transition candidate Runtime did not reach local readiness before Connector rebinding',
+        verify: runtimeVerify,
+      };
+    }
+    const postReady = await input.afterRuntimeReady();
+    if (!postReady.ok) {
+      await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+      return { ok: false, detail: postReady.detail, verify: await input.verifyLocal(input.config) };
+    }
+  }
   const verify = await verifyPrimaryRuntimeAfterStart({
     config: input.config,
     timeoutMs: input.timeoutMs,
@@ -2631,7 +3250,21 @@ export async function restartPrimaryRuntime(
   const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
     const before = await verifyLocal(config);
     if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
-    const started = await ensurePrimaryRuntimeServiceStarted(service, dependencies.runCommand ?? command, 'restart');
+    const runCommand = dependencies.runCommand ?? command;
+    const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
+    const stopped = await stopPrimaryRuntimeForReleaseTransition({
+      config,
+      service,
+      now,
+      wait,
+      runCommand,
+      runtimeRunning,
+    });
+    if (!stopped.ok) {
+      audit(config, 'primary_runtime_restart_quiescence_failed', { serviceTarget: service.target, detail: stopped.detail });
+      return { ok: false, attempted: true, detail: stopped.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    }
+    const started = await ensurePrimaryRuntimeServiceStarted(service, runCommand, 'restart');
     if (!started.ok) {
       audit(config, 'primary_runtime_restart_failed', { serviceTarget: service.target, detail: started.detail });
       return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
@@ -2662,6 +3295,60 @@ export async function recoverPrimaryRuntime(
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
+
+  const releaseAuthoritySnapshot = releaseAuthority(config);
+  if (releaseAuthoritySnapshot) {
+    const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
+    if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+        verify: initial,
+      };
+    }
+    const matching = inventory.sessions.filter((session) => (
+      ['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)
+      && session.transaction
+      && session.candidateRelease?.releaseId === releaseAuthoritySnapshot.active.releaseId
+      && session.candidateRelease.artifactIdentity === releaseAuthoritySnapshot.active.artifactIdentity
+    ));
+    if (matching.length > 1) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_MULTIPLE_ACTIVE_FOR_RUNTIME: ${matching.map((session) => session.sessionId).join(',')}`,
+        verify: initial,
+      };
+    }
+    const session = matching[0];
+    if (session) {
+      const sessionRollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        session.sessionId,
+        dependencies,
+        `recover-primary-runtime:${session.transaction!.operationId}`,
+      );
+      const after = await verifyLocal(config);
+      const rollback: RollbackResult = {
+        ok: sessionRollback.ok,
+        ...(sessionRollback.noOp === true ? { noOp: true } : {}),
+        detail: sessionRollback.detail,
+        verify: after,
+      };
+      return {
+        ok: sessionRollback.ok,
+        attempted: sessionRollback.attempted,
+        ...(sessionRollback.noOp === true ? { noOp: true } : {}),
+        detail: sessionRollback.detail,
+        rollback,
+        verify: after,
+      };
+    }
+  }
+
   const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
   const service = primaryRuntimeServiceOwner(config, platform, uid);
@@ -2778,17 +3465,17 @@ function validateRuntimeReleaseCandidate(
 
 /**
  * Activate an already staged and validated immutable Runtime release without
- * depending on the primary Runtime execution plane. The transaction mirrors
- * recoverPrimaryRuntime: stop the complete canonical service, atomically switch
- * active/previous whole-release authority (with a local SQLite backup), start
- * the one Runtime service, require whole-Runtime verification, and on failure
- * restore the previous whole release and its SQLite backup before restarting.
+ * depending on the primary Runtime execution plane. RuntimeReleaseAuthority
+ * changes only physical active/previous identity plus the SQLite backup; when a
+ * ReleaseSession owns the cutover, its transaction snapshot is the sole durable
+ * semantic rollback authority through soak.
  */
-export async function activateRuntimeRelease(
+async function activateRuntimeReleaseInternal(
   config: RecoveryConfig,
   candidateManifestPath: string,
   dependencies: PrimaryRuntimeRecoveryDependencies = {},
   guard: RuntimeReleaseActivationGuard = {},
+  heldRecoveryLock?: RecoveryLock,
 ): Promise<RuntimeReleaseActivationResult> {
   let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
   try {
@@ -2797,6 +3484,56 @@ export async function activateRuntimeRelease(
     const detail = error instanceof Error ? error.message : 'runtime release candidate validation failed';
     audit(config, 'runtime_release_activation_candidate_invalid', { detail, ...(guard.requestId ? { requestId: guard.requestId } : {}) });
     return { ok: false, attempted: false, noOp: true, detail };
+  }
+  if (candidate.manifest.deploymentScope === 'portable' && !guard.requiredPinnedReleaseRevision) {
+    const releaseSessionId = guard.releaseSessionId?.trim();
+    if (!releaseSessionId) {
+      const detail = 'RELEASE_SESSION_CUTOVER_REQUIRED: portable Runtime candidates cannot activate outside an exact ReleaseSession';
+      audit(config, 'runtime_release_activation_release_session_required', {
+        candidateRevision: candidate.manifest.releaseId,
+        ...(guard.requestId ? { requestId: guard.requestId } : {}),
+      });
+      return { ok: false, attempted: false, noOp: true, detail };
+    }
+    let session: ReleaseSession | undefined;
+    try {
+      session = readReleaseSession(config.controllerHome, releaseSessionId);
+    } catch {
+      session = undefined;
+    }
+    if (!session) {
+      return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    }
+    if (session.phase !== 'cutover_attempting') {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_NOT_CUTOVER_ATTEMPTING: ${session.phase}`,
+      };
+    }
+    if (resolve(session.stable.controllerHome) !== resolve(config.controllerHome)) {
+      return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_STABLE_LANE_MISMATCH' };
+    }
+    const bound = session.candidateRelease;
+    if (!bound) {
+      return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED' };
+    }
+    const observedManifestSha256 = createHash('sha256').update(readFileSync(candidate.manifestPath)).digest('hex');
+    const observedTreeSha256 = runtimeReleaseTreeSha256(candidate.releaseRoot);
+    if (
+      bound.releaseId !== candidate.manifest.releaseId
+      || bound.artifactIdentity !== candidate.manifest.artifactIdentity
+      || bound.manifestSha256 !== observedManifestSha256
+      || bound.treeSha256 !== observedTreeSha256
+    ) {
+      return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH' };
+    }
+    try {
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+    } catch (error) {
+      return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) };
+    }
   }
   const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
@@ -2813,13 +3550,20 @@ export async function activateRuntimeRelease(
     ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const lockRequestId = guard.requestId?.trim() || operationId;
-  const locked = await withLock(config, { action: 'activate_runtime_release', requestId: lockRequestId }, async () => {
+  const activateUnderRecoveryAuthority = async () => {
     // Re-read authority only after acquiring the mutation lock. A caller may
     // have selected its candidate before another activation completed; stale
     // decisions must fail before bootout/publish rather than overwrite the newer
     // active release.
     const current = releaseAuthority(config);
     const previousActive = current?.active;
+    if (guard.requiredPinnedReleaseRevision) {
+      const pinned = runtimePin(config)?.release;
+      if (!pinned || pinned.revision !== guard.requiredPinnedReleaseRevision || pinned.revision !== candidate.manifest.releaseId) {
+        const detail = `RUNTIME_PIN_AUTHORITY_CHANGED: expected ${guard.requiredPinnedReleaseRevision}, observed ${pinned?.revision ?? 'none'}`;
+        return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
+      }
+    }
     const expectedRevision = guard.expectedAuthorityRevision;
     const expectedActiveReleaseId = typeof guard.expectedActiveReleaseId === 'string' ? guard.expectedActiveReleaseId.trim() : guard.expectedActiveReleaseId;
     if (expectedRevision !== undefined && (expectedRevision === null ? current !== undefined : current?.revision !== expectedRevision)) {
@@ -2907,7 +3651,7 @@ export async function activateRuntimeRelease(
         } satisfies RuntimeReleaseActivationResult;
       }
     }
-    if (current?.previous?.releaseId === candidate.manifest.releaseId) {
+    if (!guard.allowPreviousRelease && current?.previous?.releaseId === candidate.manifest.releaseId) {
       const detail = 'RUNTIME_RELEASE_REVERSE_ACTIVATION_REQUIRES_ROLLBACK: activate_runtime_release cannot replace the active release with current.previous; use rollback_previous or recover_primary_runtime';
       audit(config, 'runtime_release_reverse_activation_rejected', {
         operationId,
@@ -2938,7 +3682,11 @@ export async function activateRuntimeRelease(
     }
     let committed: RuntimeReleaseAuthority;
     try {
-      committed = publishRuntimeRelease(config.controllerHome, candidate.manifestPath, operationId);
+      committed = publishRuntimeRelease(
+        config.controllerHome,
+        candidate.manifestPath,
+        operationId,
+      );
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'runtime release authority publish failed';
       audit(config, 'runtime_release_activation_publish_failed', { serviceTarget: service.target, operationId, detail });
@@ -2949,69 +3697,115 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
-    // The Connector is independently supervised, but its executable is part of
-    // this immutable Runtime release. Rebind it immediately after publishing
-    // authority and before starting the candidate: full Runtime verification
-    // includes the Connector and must never observe a stale previous release.
-    const candidateConnectorBinding = await repairConnectorBinding(config);
+    // The Connector is independently supervised, but its package snapshot proxies
+    // the Canonical Runtime. Starting/rebinding it while the Runtime is stopped
+    // creates a dependency cycle: Connector readiness waits on a Runtime that has
+    // not started yet. Start the candidate first, require Runtime-only readiness,
+    // then rebind the Connector and finally require whole-Runtime verification.
+    let candidateConnectorBinding: { ok: boolean; attempted: boolean; noOp?: boolean; detail: string } | undefined;
     let storageMigration: ControllerHomeStorageMigration | undefined;
     let activationFailureDetail: string | undefined;
-    let activated: PrimaryRuntimeRebindStartResult;
-    if (!candidateConnectorBinding.ok) {
-      const detail = `persistent Connector binding failed before Runtime activation: ${candidateConnectorBinding.detail}`;
-      activationFailureDetail = detail;
-      audit(config, 'runtime_release_activation_connector_binding_failed', {
-        serviceTarget: service.target,
-        operationId,
-        requestId: lockRequestId,
-        detail: candidateConnectorBinding.detail,
-      });
-      activated = { ok: false, detail, verify: await verifyLocal(config) };
-    } else {
-      activated = await rebindStartAndVerifyPrimaryRuntime({
-        config,
-        service,
-        runCommand,
-        now,
-        wait,
-        verifyLocal,
-        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-        successDetail: 'requested Runtime release started and passed whole-Runtime verification',
-        beforeStart: () => {
-          storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
-          if (storageMigration.migrated) {
-            audit(config, 'runtime_controller_home_noindex_migrated', {
-              serviceTarget: service.target,
-              operationId,
-              logicalHome: storageMigration.logicalHome,
-              physicalHome: storageMigration.physicalHome,
-            });
-          }
-        },
-      });
-    }
+    const activated = await rebindStartAndVerifyPrimaryRuntime({
+      config,
+      service,
+      runCommand,
+      now,
+      wait,
+      verifyLocal,
+      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+      successDetail: 'requested Runtime release started and passed whole-Runtime verification',
+      beforeStart: () => {
+        storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
+        if (storageMigration.migrated) {
+          audit(config, 'runtime_controller_home_noindex_migrated', {
+            serviceTarget: service.target,
+            operationId,
+            logicalHome: storageMigration.logicalHome,
+            physicalHome: storageMigration.physicalHome,
+          });
+        }
+      },
+      afterRuntimeReady: async () => {
+        candidateConnectorBinding = await repairConnectorBinding(config);
+        if (candidateConnectorBinding.ok) return { ok: true, detail: candidateConnectorBinding.detail };
+        const detail = `persistent Connector binding failed after Runtime readiness: ${candidateConnectorBinding.detail}`;
+        activationFailureDetail = detail;
+        audit(config, 'runtime_release_activation_connector_binding_failed', {
+          serviceTarget: service.target,
+          operationId,
+          requestId: lockRequestId,
+          detail: candidateConnectorBinding.detail,
+        });
+        return { ok: false, detail };
+      },
+    });
     let after = activated.verify;
     if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      audit(config, 'runtime_release_activation_succeeded', {
-        serviceTarget: service.target,
-        operationId,
-        requestId: lockRequestId,
-        activeRevision: after.releases.active?.revision,
-        expectedAuthorityRevision: guard.expectedAuthorityRevision,
-        expectedActiveReleaseId: guard.expectedActiveReleaseId,
-        controllerHomeStorageMigrated: storageMigration?.migrated === true,
-        connectorBindingRepaired: candidateConnectorBinding.attempted,
-      });
-      return {
-        ok: true,
-        attempted: true,
-        detail: storageMigration?.migrated
-          ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
-          : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
-        serviceTarget: service.target,
-        operationId,
-        verify: after,
-      } satisfies RuntimeReleaseActivationResult;
+      let activationReady = true;
+      let releaseSessionTransactionPersisted = false;
+      if (!guard.preserveDatabaseOnFailure && guard.releaseSessionId?.trim()) {
+        try {
+          const authority = readRuntimeReleaseAuthority(config.controllerHome);
+          const session = readReleaseSession(config.controllerHome, guard.releaseSessionId.trim());
+          if (
+            !authority
+            || authority.operationId !== operationId
+            || !authority.previous?.databaseBackup
+            || !session
+            || session.phase !== 'cutover_attempting'
+          ) throw new Error('RELEASE_SESSION_TRANSACTION_CAPTURE_PRECONDITION_FAILED');
+          recordReleaseSessionTransaction({
+            controllerHome: config.controllerHome,
+            sessionId: session.sessionId,
+            expectedRevision: session.revision,
+            transaction: {
+              schemaVersion: 1,
+              operationId,
+              candidateReleaseId: candidate.manifest.releaseId,
+              cutoverAuthorityRevision: authority.revision,
+              rollbackRelease: authority.previous,
+              startedAt: authority.committedAt,
+            },
+          });
+          releaseSessionTransactionPersisted = true;
+        } catch (error) {
+          activationReady = false;
+          activationFailureDetail = `Runtime became healthy but ReleaseSession rollback transaction capture failed: ${error instanceof Error ? error.message : String(error)}`;
+          audit(config, 'release_session_transaction_capture_failed', {
+            serviceTarget: service.target,
+            operationId,
+            requestId: lockRequestId,
+            releaseSessionId: guard.releaseSessionId.trim(),
+            detail: activationFailureDetail,
+          });
+        }
+      }
+      if (activationReady) {
+        audit(config, 'runtime_release_activation_succeeded', {
+          serviceTarget: service.target,
+          operationId,
+          requestId: lockRequestId,
+          activeRevision: after.releases.active?.revision,
+          expectedAuthorityRevision: guard.expectedAuthorityRevision,
+          expectedActiveReleaseId: guard.expectedActiveReleaseId,
+          controllerHomeStorageMigrated: storageMigration?.migrated === true,
+          connectorBindingRepaired: candidateConnectorBinding?.attempted === true,
+          releaseSessionTransactionPersisted,
+          ...(guard.releaseSessionId?.trim() ? { releaseSessionId: guard.releaseSessionId.trim() } : {}),
+        });
+        return {
+          ok: true,
+          attempted: true,
+          detail: releaseSessionTransactionPersisted
+            ? 'requested Runtime release activated and verified; physical activation committed and ReleaseSession owns rollback authority through soak'
+            : storageMigration?.migrated
+              ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
+              : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
+          serviceTarget: service.target,
+          operationId,
+          verify: after,
+        } satisfies RuntimeReleaseActivationResult;
+      }
     }
     if (!activated.ok && !activationFailureDetail) {
       activationFailureDetail = activated.detail;
@@ -3028,8 +3822,9 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId, detail: activationFailureDetail });
     }
 
-    // Activation failed: stop, restore the previous whole release and its SQLite
-    // backup, restart the one service, and require verification again.
+    // Activation failed: stop and restore the previous whole release. SQLite
+    // rollback is allowed only when the live durable-mutation generation still
+    // equals the captured backup; newer Controller Home state is preserved.
     let rollback: RollbackResult;
     const rollbackStop = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
     if (!rollbackStop.ok) {
@@ -3041,8 +3836,17 @@ export async function activateRuntimeRelease(
       };
     } else {
       try {
-        const rollbackOperationId = `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`;
-        const restored = rollbackRuntimeRelease(config.controllerHome, rollbackOperationId);
+        const rollbackOperationId = guard.preserveDatabaseOnFailure
+          ? `recovery-activate-runtime-rollback-${Date.now()}-${randomUUID().slice(0, 8)}`
+          : operationId;
+        let rollbackDatabaseDisposition: RuntimeDatabaseRollbackDisposition | 'preserved_by_guard' = 'preserved_by_guard';
+        const restored = guard.preserveDatabaseOnFailure && previousActive
+          ? publishRuntimeRelease(config.controllerHome, previousActive.manifestPath, rollbackOperationId)
+          : (() => {
+            const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, rollbackOperationId);
+            rollbackDatabaseDisposition = rollbackResult.databaseDisposition;
+            return rollbackResult.authority;
+          })();
         if (storageMigration?.migrated) {
           rollbackStoppedRepoLocalControllerHomeStorage(storageMigration);
           audit(config, 'runtime_controller_home_noindex_migration_rolled_back', {
@@ -3061,6 +3865,7 @@ export async function activateRuntimeRelease(
         ) {
           throw new Error('RECOVERY_RUNTIME_RELEASE_ROLLBACK_AUTHORITY_MISMATCH');
         }
+        let rollbackConnectorBinding: { ok: boolean; attempted: boolean; noOp?: boolean; detail: string } | undefined;
         const restarted = await rebindStartAndVerifyPrimaryRuntime({
           config,
           service,
@@ -3070,23 +3875,28 @@ export async function activateRuntimeRelease(
           verifyLocal,
           contractFailureContext: 'after rollback',
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-          successDetail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified',
+          successDetail: rollbackDatabaseDisposition === 'restored_backup'
+            ? 'previous whole-Runtime release and unchanged SQLite backup restored, restarted, rebound, and verified'
+            : 'previous Runtime release restored while live SQLite state was preserved, restarted, rebound, and verified',
+          afterRuntimeReady: async () => {
+            rollbackConnectorBinding = await repairConnectorBinding(config);
+            if (rollbackConnectorBinding.ok) return { ok: true, detail: rollbackConnectorBinding.detail };
+            audit(config, 'runtime_release_activation_rollback_connector_binding_failed', {
+              serviceTarget: service.target,
+              operationId,
+              rollbackOperationId,
+              detail: rollbackConnectorBinding.detail,
+            });
+            return {
+              ok: false,
+              detail: `previous persistent Connector binding failed after rollback Runtime readiness: ${rollbackConnectorBinding.detail}`,
+            };
+          },
         });
-        const connectorBinding = restarted.ok ? await repairConnectorBinding(config) : undefined;
-        if (connectorBinding && !connectorBinding.ok) {
-          audit(config, 'runtime_release_activation_rollback_connector_binding_failed', {
-            serviceTarget: service.target,
-            operationId,
-            rollbackOperationId,
-            detail: connectorBinding.detail,
-          });
-        }
         rollback = {
-          ok: restarted.ok && (connectorBinding?.ok ?? true),
+          ok: restarted.ok,
           operationId: rollbackOperationId,
-          detail: connectorBinding && !connectorBinding.ok
-            ? `${restarted.detail}; previous persistent Connector binding failed: ${connectorBinding.detail}`
-            : restarted.detail,
+          detail: restarted.detail,
           verify: restarted.verify,
         };
       } catch (error) {
@@ -3113,10 +3923,1579 @@ export async function activateRuntimeRelease(
       rollback,
       verify: after,
     } satisfies RuntimeReleaseActivationResult;
-  });
+  };
+
+  if (heldRecoveryLock) {
+    const live = liveRecoveryMutationLock(config);
+    if (
+      !live
+      || live.instanceId !== heldRecoveryLock.instanceId
+      || live.pid !== heldRecoveryLock.pid
+      || live.processStartTime !== heldRecoveryLock.processStartTime
+    ) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: 'RECOVERY_OPERATION_LOCK_AUTHORITY_CHANGED',
+        serviceTarget: service.target,
+        verify: await verifyStableRuntime(config),
+      };
+    }
+    return activateUnderRecoveryAuthority();
+  }
+
+  const locked = await withLock(
+    config,
+    { action: 'activate_runtime_release', requestId: lockRequestId },
+    async () => activateUnderRecoveryAuthority(),
+  );
   if (!locked.acquired) {
     return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: await verifyStableRuntime(config) };
   }
+  return locked.value;
+}
+
+export async function activateRuntimeRelease(
+  config: RecoveryConfig,
+  candidateManifestPath: string,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  guard: RuntimeReleaseActivationGuard = {},
+): Promise<RuntimeReleaseActivationResult> {
+  return activateRuntimeReleaseInternal(config, candidateManifestPath, dependencies, guard);
+}
+
+export async function activatePinnedRuntimeRelease(
+  config: RecoveryConfig,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  guard: RuntimeReleaseActivationGuard = {},
+): Promise<RuntimeReleaseActivationResult> {
+  let pin: RuntimePinStore | undefined;
+  try { pin = runtimePin(config); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  if (!pin) return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_PIN_REQUIRED: no Runtime release is pinned' };
+  let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
+  try { candidate = validateRuntimeReleaseCandidate(config, pin.release.path); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  if (candidate.manifest.deploymentScope === 'portable') {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RUNTIME_PIN_PORTABLE_RELEASE_FORBIDDEN: portable source candidates require a verified Recovery ReleaseSession',
+    };
+  }
+  let observed: ReleaseEvidence;
+  try { observed = releaseEvidenceForPin(config, candidate); }
+  catch (error) { return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : String(error) }; }
+  if (observed.revision !== pin.release.revision || observed.artifactIdentity !== pin.release.artifactIdentity || observed.manifestSha256 !== pin.release.manifestSha256) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_PIN_IDENTITY_MISMATCH: pinned immutable release changed on disk' };
+  }
+  return activateRuntimeRelease(config, pin.release.path, dependencies, {
+    ...guard,
+    allowPreviousRelease: true,
+    preserveDatabaseOnFailure: true,
+    requiredPinnedReleaseRevision: pin.release.revision,
+  });
+}
+
+
+function configuredSourceRevision(sourceRoot: string): string {
+  const env = {
+    ...runtimeAuthorityFreeEnvironment(process.env),
+    PATH: recoveryCommandPath(),
+  };
+  // ReleaseSession source authority is the exact committed Git object selected
+  // internally by Recovery. The configured checkout is only an object/dependency
+  // provider: concurrent working-tree edits are intentionally non-authoritative
+  // and are excluded by the detached immutable source snapshot used below.
+  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'HEAD^{commit}'], {
+    encoding: 'utf8',
+    env,
+    timeout: 10_000,
+  });
+  const revision = (head.stdout ?? '').trim();
+  if (head.status !== 0 || !/^[a-f0-9]{40}$/i.test(revision)) {
+    throw new Error('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
+  }
+  return revision;
+}
+
+export interface ConfiguredRuntimeReleaseSourceState {
+  configured: boolean;
+  sourceRevision?: string;
+  activeSourceCommit?: string;
+  activeReleaseId?: string;
+}
+
+/**
+ * Read the two immutable identities used only to decide whether automatic
+ * release reconciliation is warranted. This does not create or advance a
+ * ReleaseSession and therefore never becomes release intent authority.
+ */
+export function configuredRuntimeReleaseSourceState(config: RecoveryConfig): ConfiguredRuntimeReleaseSourceState {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) return { configured: false };
+  const authority = readRuntimeReleaseAuthority(config.controllerHome);
+  if (!authority) throw new Error('RELEASE_AUTOMATION_ACTIVE_RELEASE_AUTHORITY_UNKNOWN');
+  const manifest = loadRuntimeReleaseManifest(authority.active.manifestPath, config.controllerHome);
+  return {
+    configured: true,
+    sourceRevision: configuredSourceRevision(sourceRoot),
+    activeSourceCommit: manifest.sourceCommit?.trim() || undefined,
+    activeReleaseId: authority.active.releaseId,
+  };
+}
+
+async function allocateCandidateLoopbackPort(stablePort: number): Promise<number> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const port = await new Promise<number>((resolvePort, rejectPort) => {
+      const server = createNetServer();
+      server.unref();
+      server.once('error', rejectPort);
+      server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => {
+        const address = server.address();
+        const selected = address && typeof address === 'object' ? address.port : 0;
+        server.close((error) => error ? rejectPort(error) : resolvePort(selected));
+      });
+    });
+    if (port > 0 && port !== stablePort) return port;
+  }
+  throw new Error('RELEASE_SESSION_CANDIDATE_PORT_UNAVAILABLE');
+}
+
+function stableReleaseSessionIdentity(config: RecoveryConfig): ReleaseSessionStableRelease {
+  const authority = releaseAuthority(config);
+  if (!authority) throw new Error('RELEASE_SESSION_STABLE_RELEASE_AUTHORITY_REQUIRED');
+  return {
+    authorityRevision: authority.revision,
+    releaseId: authority.active.releaseId,
+    artifactIdentity: authority.active.artifactIdentity,
+    manifestSha256: authority.active.manifestSha256,
+    workerProtocolVersion: authority.active.workerProtocolVersion,
+    releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
+  };
+}
+
+function sameStableReleaseSessionIdentity(left: ReleaseSessionStableRelease, right: ReleaseSessionStableRelease): boolean {
+  return left.authorityRevision === right.authorityRevision
+    && left.releaseId === right.releaseId
+    && left.artifactIdentity === right.artifactIdentity
+    && left.manifestSha256 === right.manifestSha256
+    && left.workerProtocolVersion === right.workerProtocolVersion
+    && left.releaseFencingTokenSha256 === right.releaseFencingTokenSha256;
+}
+
+function assertStableReleaseSessionIdentityCurrent(config: RecoveryConfig, expected: ReleaseSessionStableRelease): void {
+  const actual = stableReleaseSessionIdentity(config);
+  if (
+    actual.authorityRevision !== expected.authorityRevision
+    || actual.releaseId !== expected.releaseId
+    || actual.artifactIdentity !== expected.artifactIdentity
+    || actual.manifestSha256 !== expected.manifestSha256
+    || actual.workerProtocolVersion !== expected.workerProtocolVersion
+    || actual.releaseFencingTokenSha256 !== expected.releaseFencingTokenSha256
+  ) throw new Error('RELEASE_SESSION_STABLE_AUTHORITY_CHANGED');
+}
+
+function candidateControllerHomeForSession(config: RecoveryConfig, sessionId: string): string {
+  return join(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes', sessionId);
+}
+
+export async function prepareConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
+  const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (!sourceRepositoryId) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source repository id is not configured in standalone Recovery' };
+
+  const verifiedStable = await verifyStableRuntime(config);
+  if (!verifiedStable.ok) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED' };
+  }
+
+  const locked = await withLock(config, {
+    action: 'release_session_prepare',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    const stable = readStableExecutionLane(config.controllerHome);
+    const stableRelease = stableReleaseSessionIdentity(config);
+    const sourceRevision = configuredSourceRevision(sourceRoot);
+
+    // ReleaseSession owns semantic progression. This Recovery lock serializes only
+    // physical preparation. Resume the exact source_frozen session after an
+    // interruption instead of inventing a second release authority.
+    const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
+    if (inventory.truncated || inventory.invalidSessionFiles.length > 0) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+      };
+    }
+    let resumableSourceFrozen: ReleaseSession | undefined;
+    for (const existing of [...inventory.sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
+      if (existing.phase === 'failed' || existing.phase === 'rolled_back' || existing.phase === 'known_good') continue;
+      if (
+        existing.phase === 'source_frozen'
+        && existing.sourceRevision === sourceRevision
+        && sameStableReleaseSessionIdentity(existing.stableRelease, stableRelease)
+      ) {
+        if (resumableSourceFrozen) {
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: `RELEASE_SESSION_MULTIPLE_ACTIVE: ${resumableSourceFrozen.sessionId}:source_frozen,${existing.sessionId}:source_frozen`,
+          };
+        }
+        resumableSourceFrozen = existing;
+        continue;
+      }
+      if (existing.phase === 'cutover_attempting' || existing.phase === 'cutover_committed') {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_PREPARE_REQUIRES_RECONCILIATION: ${existing.sessionId}:${existing.phase}`,
+          releaseSession: existing,
+        };
+      }
+      if (existing.phase === 'soaking') {
+        const candidate = existing.candidateRelease;
+        const candidateIsCurrentStable = Boolean(candidate
+          && candidate.releaseId === stableRelease.releaseId
+          && candidate.artifactIdentity === stableRelease.artifactIdentity);
+        if (candidateIsCurrentStable) {
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: `RELEASE_SESSION_PREPARE_REQUIRES_SOAK_RESOLUTION: ${existing.sessionId}`,
+            releaseSession: existing,
+          };
+        }
+        continue;
+      }
+      const superseded = await cancelReleaseSessionUnderLock(
+        config,
+        existing,
+        'superseded by a newer ReleaseSession source freeze',
+      );
+      if (!superseded.ok) return superseded;
+    }
+
+    // Candidate B currently costs several GiB because it contains a consistent
+    // SQLite snapshot plus an immutable Runtime tree. Preserve the host warning
+    // reserve *after* admitting a conservative 4 GiB candidate budget.
+    const candidateRoot = join(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes');
+    assertStorageHeadroom(candidateRoot, {
+      operation: 'release_session_prepare',
+      requiredBytes: 4 * 1024 ** 3,
+      reserveBytes: STORAGE_WARNING_BYTES,
+    });
+
+    let session: ReleaseSession;
+    let candidateLane: ReturnType<typeof createCandidateExecutionLane>['candidate'];
+    if (resumableSourceFrozen) {
+      session = resumableSourceFrozen;
+      candidateLane = session.candidate;
+    } else {
+      const nextSessionId = `release-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+      const candidatePort = await allocateCandidateLoopbackPort(stable.port);
+      candidateLane = createCandidateExecutionLane({
+        stableControllerHome: stable.controllerHome,
+        candidateControllerHome: candidateControllerHomeForSession(config, nextSessionId),
+        candidatePort,
+        sessionId: nextSessionId,
+      }).candidate;
+      session = createReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId: nextSessionId,
+        stable,
+        stableRelease,
+        candidate: candidateLane,
+        sourceRevision,
+      });
+    }
+    const sessionId = session.sessionId;
+
+    try {
+      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+      const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
+        (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
+          controllerHome: candidateLane.controllerHome,
+          sourceRoot: frozenSourceRoot,
+          dependencyRoot: sourceRoot,
+          sourceRepositoryId,
+        }));
+      assertRuntimeReleaseFiles(staged);
+      if (staged.sourceCommit !== sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_CHANGED_DURING_BUILD');
+      const candidateRelease: ReleaseSessionCandidateRelease = {
+        releaseId: staged.releaseId,
+        manifestPath: staged.manifestPath,
+        artifactIdentity: staged.artifactIdentity,
+        manifestSha256: staged.manifestSha256,
+        treeSha256: runtimeReleaseTreeSha256(staged.releasePath),
+        sourceCommit: staged.sourceCommit,
+        ...(staged.sourceRepositoryId ? { sourceRepositoryId: staged.sourceRepositoryId } : {}),
+      };
+      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'built',
+        candidateRelease,
+        receipts: [{
+          id: 'build',
+          kind: 'build',
+          summary: `portable candidate ${staged.releaseId} built under isolated Candidate B; Stable A unchanged`,
+        }],
+      });
+      audit(config, 'release_session_candidate_built', {
+        sessionId,
+        sourceRevision,
+        stableReleaseId: stableRelease.releaseId,
+        stableAuthorityRevision: stableRelease.authorityRevision,
+        candidateControllerHome: candidateLane.controllerHome,
+        candidatePort: candidateLane.port,
+        candidateReleaseId: staged.releaseId,
+        candidateTreeSha256: candidateRelease.treeSha256,
+      });
+      return {
+        ok: true as const,
+        attempted: true,
+        detail: 'configured Runtime source was built into an isolated Candidate B ReleaseSession; Stable A was not stopped or activated',
+        staged,
+        releaseSession: session,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      try {
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'failed',
+          receipts: [{ id: 'build_failed', kind: 'build', summary: detail.slice(0, 500) }],
+        });
+      } catch { /* Preserve the original build failure. */ }
+      cleanupRetiredCandidateLane(config, session);
+      audit(config, 'release_session_candidate_build_failed', { sessionId, sourceRevision, detail });
+      return { ok: false as const, attempted: true, detail, releaseSession: session };
+    }
+  });
+
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
+  return locked.value;
+}
+
+
+const RELEASE_SESSION_STATIC_GATES = [
+  { id: 'type', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
+  { id: 'runtime_architecture', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
+  { id: 'architecture_sync', args: ['run', 'check:architecture-sync'], timeoutMs: 5 * 60_000 },
+  { id: 'bootstrap', args: ['run', 'check:bootstrap-files'], timeoutMs: 5 * 60_000 },
+] as const;
+
+export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
+  const locked = await withLock(config, {
+    action: 'release_session_static_verify',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase !== 'built') {
+      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_STATIC_VERIFY_REQUIRES_BUILT: ${session.phase}`, releaseSession: session };
+    }
+    const candidate = session.candidateRelease;
+    if (!candidate) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+    const frozenSourceRevision = session.sourceRevision;
+    const stableRelease = session.stableRelease;
+    try {
+      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+      const manifest = loadRuntimeReleaseManifest(candidate.manifestPath, session.candidate.controllerHome);
+      if (
+        manifest.deploymentScope !== 'portable'
+        || manifest.releaseId !== candidate.releaseId
+        || manifest.artifactIdentity !== candidate.artifactIdentity
+        || createHash('sha256').update(readFileSync(candidate.manifestPath)).digest('hex') !== candidate.manifestSha256
+        || runtimeReleaseTreeSha256(dirname(candidate.manifestPath)) !== candidate.treeSha256
+      ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
+
+      const receipts = withRuntimeReleaseSourceSnapshot({
+        sourceRoot,
+        sourceRevision: frozenSourceRevision,
+      }, frozenSourceRoot => {
+        const gateReceipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
+        for (const gate of RELEASE_SESSION_STATIC_GATES) {
+          assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+          const startedAt = Date.now();
+          const result = spawnSync(resolveBunExecutable(), gate.args, {
+            cwd: frozenSourceRoot,
+            env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
+            encoding: 'utf8',
+            timeout: gate.timeoutMs,
+            maxBuffer: 8 * 1024 * 1024,
+          });
+          const durationMs = Date.now() - startedAt;
+          if (result.error || result.status !== 0) {
+            const detail = result.error instanceof Error
+              ? result.error.message
+              : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
+            throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
+          }
+          gateReceipts.push({
+            id: gate.id,
+            kind: 'static_gate',
+            summary: `${gate.id} passed on frozen source ${frozenSourceRevision} in ${durationMs}ms`,
+          });
+        }
+        return gateReceipts;
+      });
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'static_verified',
+        receipts,
+      });
+      audit(config, 'release_session_static_verified', {
+        sessionId,
+        sourceRevision: session.sourceRevision,
+        candidateReleaseId: candidate.releaseId,
+        gates: RELEASE_SESSION_STATIC_GATES.map((gate) => gate.id),
+      });
+      return {
+        ok: true as const,
+        attempted: true,
+        detail: 'ReleaseSession static gates passed on the frozen source revision; Stable A remained unchanged',
+        releaseSession: session,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      try {
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'failed',
+          receipts: [{ id: 'static_failed', kind: 'static_gate', summary: detail.slice(0, 500) }],
+        });
+      } catch { /* preserve the original static verification failure */ }
+      cleanupRetiredCandidateLane(config, session);
+      audit(config, 'release_session_static_failed', { sessionId, detail });
+      return { ok: false as const, attempted: true, detail, releaseSession: session };
+    }
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  return locked.value;
+}
+
+
+function candidateRecoveryConfig(session: ReleaseSession): RecoveryConfig {
+  return {
+    schemaVersion: 1,
+    controllerHome: session.candidate.controllerHome,
+    installProfile: 'manual',
+    primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
+    mainMcpTokenFile: session.candidate.authTokenFile,
+    readOnlyTool: {
+      name: STABLE_RECOVERY_READ_ONLY_TOOL.name,
+      arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments },
+    },
+  };
+}
+
+async function installReleaseSessionCandidateService(
+  session: ReleaseSession,
+  runCommand: CommandRunner = command,
+): Promise<void> {
+  const candidateRelease = session.candidateRelease;
+  if (!candidateRelease) throw new Error('RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED');
+  const home = session.candidate.controllerHome;
+  const serviceConfig = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(home).configPath);
+  if (
+    resolve(serviceConfig.controllerHome) !== resolve(home)
+    || serviceConfig.port !== session.candidate.port
+    || resolve(serviceConfig.authTokenFile) !== resolve(session.candidate.authTokenFile)
+  ) throw new Error('RELEASE_SESSION_CANDIDATE_SERVICE_CONTRACT_MISMATCH');
+
+  const operationId = `release-session-candidate-${session.sessionId}`;
+  const authority = publishRuntimeRelease(home, candidateRelease.manifestPath, operationId);
+  if (
+    authority.active.releaseId !== candidateRelease.releaseId
+    || authority.active.artifactIdentity !== candidateRelease.artifactIdentity
+    || authority.active.manifestSha256 !== candidateRelease.manifestSha256
+  ) throw new Error('RELEASE_SESSION_CANDIDATE_AUTHORITY_MISMATCH');
+  syncForgeRuntimeActiveEntrypoint(home);
+
+  if (process.platform === 'darwin') {
+    await installForgeRuntimeService({
+      config: serviceConfig,
+      // Ignored in release mode; a non-empty bounded path keeps bootstrap fallback explicit.
+      runnerPath: candidateRelease.manifestPath,
+    });
+    return;
+  }
+  if (process.platform === 'linux') {
+    const env = runtimeAuthorityFreeEnvironment(process.env);
+    writePackageRuntimeSystemdUserService(home, env);
+    for (const argv of systemdRuntimeInstallCommands(forgeRuntimeServicePaths(home).label)) {
+      const [executable, ...args] = argv;
+      if (!executable) continue;
+      const result = await runCommand(executable, args, 20_000);
+      if (!result.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_SYSTEMD_INSTALL_FAILED: ${result.stderr || result.stdout || executable}`);
+    }
+    return;
+  }
+  throw new Error(`RELEASE_SESSION_CANDIDATE_SERVICE_PLATFORM_UNSUPPORTED: ${process.platform}`);
+}
+
+interface ReleaseSessionCandidateRetirement {
+  ok: boolean;
+  detail: string;
+}
+
+function cleanupRetiredCandidateLane(config: RecoveryConfig, session: ReleaseSession): ReleaseSessionCandidateRetirement {
+  try {
+    removeRetiredCandidateExecutionLane(session.stable, session.candidate);
+    audit(config, 'release_session_candidate_lane_cleaned', {
+      sessionId: session.sessionId,
+      candidateControllerHome: session.candidate.controllerHome,
+      phase: session.phase,
+    });
+    return { ok: true, detail: 'Candidate B Controller Home was removed after terminal ReleaseSession cleanup' };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    audit(config, 'release_session_candidate_lane_cleanup_failed', {
+      sessionId: session.sessionId,
+      candidateControllerHome: session.candidate.controllerHome,
+      phase: session.phase,
+      detail,
+    });
+    return { ok: false, detail };
+  }
+}
+
+async function stopReleaseSessionCandidateService(
+  session: ReleaseSession,
+  runCommand: CommandRunner = command,
+): Promise<ReleaseSessionCandidateRetirement> {
+  const home = session.candidate.controllerHome;
+  try {
+    if (process.platform === 'darwin') {
+      try {
+        await uninstallForgeRuntimeService(home);
+      } catch (error) {
+        const uid = await currentUid();
+        if (uid === undefined) {
+          return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+        const paths = forgeRuntimeServicePaths(home);
+        const loaded = await runCommand('launchctl', ['print', `gui/${uid}/${paths.label}`], 5_000);
+        if (loaded.ok) {
+          return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+        }
+        // An already-absent launchd job is an idempotent retirement. Remove only
+        // its stale installed declaration, then verify the Runtime itself below.
+        rmSync(paths.installedPlistPath, { force: true });
+      }
+    } else if (process.platform === 'linux') {
+      const label = forgeRuntimeServicePaths(home).label;
+      const unitName = systemdUserUnitName(label);
+      const stopped = await runCommand('systemctl', ['--user', 'disable', '--now', unitName], 20_000);
+      const stoppedDetail = `${stopped.stderr}\n${stopped.stdout}`;
+      if (!stopped.ok && !/not loaded|not found|does not exist|no such file/i.test(stoppedDetail)) {
+        return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_STOP_FAILED: ${stoppedDetail.trim() || stopped.status}` };
+      }
+      rmSync(systemdUserUnitPath(unitName), { force: true });
+      const reloaded = await runCommand('systemctl', ['--user', 'daemon-reload'], 20_000);
+      if (!reloaded.ok) {
+        return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_RELOAD_FAILED: ${reloaded.stderr || reloaded.stdout || reloaded.status}` };
+      }
+    } else {
+      return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SERVICE_PLATFORM_UNSUPPORTED: ${process.platform}` };
+    }
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+
+  const observation = observeRuntimeStatus(home);
+  if (observation.running) {
+    return { ok: false, detail: 'RELEASE_SESSION_CANDIDATE_STILL_RUNNING_AFTER_RETIREMENT' };
+  }
+  return { ok: true, detail: 'Candidate B persistent service is absent and its Runtime process is not running' };
+}
+
+function candidateCanaryReceipts(
+  session: ReleaseSession,
+  verified: VerifyResult,
+): Array<{ id: string; kind: 'candidate_canary'; summary: string }> {
+  const observation = observeRuntimeStatus(session.candidate.controllerHome);
+  const diagnostics = observation.snapshot?.readiness.diagnostics;
+  const mcpProbeNames = ['mcp_initialize', 'mcp_initialized_notification', 'mcp_tools_list', 'mcp_read_only_call', 'mcp_session_close'];
+  const failedMcp = mcpProbeNames.filter((name) => verified.probes[name]?.ok !== true);
+  if (failedMcp.length > 0) throw new Error(`RELEASE_SESSION_CANDIDATE_MCP_CANARY_FAILED: ${failedMcp.join(',')}`);
+  if (diagnostics?.scheduler.outcome !== 'pass') throw new Error('RELEASE_SESSION_CANDIDATE_SCHEDULER_CANARY_FAILED');
+  if (diagnostics?.database.outcome !== 'pass' || diagnostics?.releaseCoherence.outcome !== 'pass' || diagnostics?.mcpEndToEnd.outcome !== 'pass') {
+    throw new Error('RELEASE_SESSION_CANDIDATE_RUNTIME_DIAGNOSTICS_FAILED');
+  }
+  const supervisorSocket = workflowSupervisorSocketPath(resolveWorkflowSupervisorForgeHome(session.candidate.controllerHome));
+  if (!existsSync(supervisorSocket)) throw new Error('RELEASE_SESSION_CANDIDATE_SUPERVISOR_CANARY_FAILED');
+  return [
+    { id: 'recovery', kind: 'candidate_canary', summary: 'Candidate B stopped and restarted through Recovery service lifecycle and returned whole-Runtime healthy' },
+    { id: 'mcp', kind: 'candidate_canary', summary: 'Candidate B MCP initialize/tools-list/read-only-call/session-close passed using the Candidate credential' },
+    { id: 'scheduler', kind: 'candidate_canary', summary: 'Candidate B scheduler readiness diagnostic passed after recovery restart' },
+    { id: 'supervisor', kind: 'candidate_canary', summary: `Candidate B Workflow Supervisor socket is live at ${supervisorSocket}` },
+    { id: 'controller', kind: 'candidate_canary', summary: 'Candidate B controller read-only facade completed through MCP after restart' },
+  ];
+}
+
+export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_candidate_boot',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase === 'candidate_booted') {
+      const retirement = await stopReleaseSessionCandidateService(session);
+      if (!retirement.ok) {
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `Candidate B boot/restart canary was interrupted and retirement failed: ${retirement.detail}`,
+          releaseSession: session,
+        };
+      }
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'failed',
+        receipts: [{
+          id: 'candidate_failed',
+          kind: 'candidate_canary',
+          summary: 'Candidate B boot/restart canary was interrupted; Candidate B was retired before terminalizing the ReleaseSession',
+        }],
+      });
+      cleanupRetiredCandidateLane(config, session);
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: 'Candidate B boot/restart canary was interrupted; Candidate B is retired and the ReleaseSession is terminal failed',
+        releaseSession: session,
+      };
+    }
+    if (session.phase !== 'static_verified') {
+      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CANDIDATE_BOOT_REQUIRES_STATIC_VERIFIED: ${session.phase}`, releaseSession: session };
+    }
+    const candidateRelease = session.candidateRelease;
+    if (!candidateRelease) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+    const runCommand = command;
+    const candidateConfig = candidateRecoveryConfig(session);
+    try {
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+      if (runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256) {
+        throw new Error('RELEASE_SESSION_CANDIDATE_TREE_CHANGED');
+      }
+      await installReleaseSessionCandidateService(session, runCommand);
+
+      let initialVerify = await verifyPrimaryRuntimeAfterStart({
+        config: candidateConfig,
+        timeoutMs: 60_000,
+        now: Date.now,
+        wait: sleep,
+        verifyLocal: verifyLocalRuntime,
+      });
+      if (!initialVerify.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_BOOT_UNVERIFIED: ${initialVerify.runtime.reasonCodes.join(',')}`);
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_booted',
+        receipts: [{ id: 'candidate_boot', kind: 'candidate_canary', summary: 'Candidate B booted and passed initial whole-Runtime verification while Stable A remained healthy' }],
+      });
+
+      const platform = process.platform;
+      const uid = await currentUid();
+      const service = primaryRuntimeServiceOwner(candidateConfig, platform, uid);
+      if (!service) throw new Error('RELEASE_SESSION_CANDIDATE_SERVICE_OWNER_MISSING');
+      const stopped = await stopPrimaryRuntimeForReleaseTransition({
+        config: candidateConfig,
+        service,
+        now: Date.now,
+        wait: sleep,
+        runCommand,
+        runtimeRunning: (candidate) => observeRuntimeStatus(candidate.controllerHome).running,
+      });
+      if (!stopped.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_RECOVERY_STOP_FAILED: ${stopped.detail}`);
+      const restarted = await restartPrimaryRuntime(candidateConfig);
+      if (!restarted.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_RECOVERY_RESTART_FAILED: ${restarted.detail}`);
+      initialVerify = restarted.verify;
+      const receipts = candidateCanaryReceipts(session, initialVerify);
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts,
+      });
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_eligible',
+      });
+      audit(config, 'release_session_candidate_verified', {
+        sessionId,
+        candidateReleaseId: candidateRelease.releaseId,
+        candidateControllerHome: session.candidate.controllerHome,
+        candidatePort: session.candidate.port,
+        stableReleaseId: session.stableRelease.releaseId,
+      });
+      return {
+        ok: true as const,
+        attempted: true,
+        detail: 'Candidate B booted in isolation, survived a Recovery restart canary, passed MCP/Scheduler/Supervisor/Controller canaries, and is cutover-eligible; Stable A remains active',
+        releaseSession: session,
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const retirement = await stopReleaseSessionCandidateService(session, runCommand);
+      const terminalDetail = retirement.ok
+        ? detail
+        : `${detail}; Candidate B retirement failed: ${retirement.detail}`;
+      try {
+        const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
+        session = latest;
+        if (retirement.ok && !['failed', 'rolled_back', 'known_good'].includes(latest.phase)) {
+          session = advanceReleaseSession({
+            controllerHome: config.controllerHome,
+            sessionId,
+            expectedRevision: latest.revision,
+            phase: 'failed',
+            receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: terminalDetail.slice(0, 500) }],
+          });
+        }
+        if (retirement.ok && ['failed', 'rolled_back'].includes(session.phase)) {
+          cleanupRetiredCandidateLane(config, session);
+        }
+      } catch { /* preserve original Candidate B failure */ }
+      audit(config, 'release_session_candidate_failed', {
+        sessionId,
+        detail,
+        candidateRetired: retirement.ok,
+        candidateRetirementDetail: retirement.detail,
+      });
+      return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: session };
+    }
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  return locked.value;
+}
+
+
+export async function cutoverConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_cutover',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async (releaseSessionLock) => {
+    const initialSession = readReleaseSession(config.controllerHome, sessionId);
+    if (!initialSession) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    let session: ReleaseSession = initialSession;
+    const candidateRelease = session.candidateRelease;
+    if (!candidateRelease) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+
+    const reconcileCutoverAttempt = async (
+      reason: string,
+      activation?: RuntimeReleaseActivationResult,
+    ): Promise<ConfiguredRuntimeActivationResult> => {
+      // Activation may have durably captured the ReleaseSession rollback
+      // transaction and advanced its CAS revision. Re-read the one semantic
+      // authority before any post-cutover phase transition.
+      session = readReleaseSession(config.controllerHome, sessionId) ?? session;
+      const retirement = await stopReleaseSessionCandidateService(session);
+      if (!retirement.ok) {
+        audit(config, 'release_session_candidate_retirement_failed', {
+          sessionId,
+          phase: session.phase,
+          candidateControllerHome: session.candidate.controllerHome,
+          detail: retirement.detail,
+          reconciliationReason: reason,
+        });
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `${reason}; Candidate B retirement failed: ${retirement.detail}`,
+          releaseSession: session,
+          ...(activation ? { activation } : {}),
+        };
+      }
+
+      const stableNow = observeRuntimeStatus(config.controllerHome);
+      const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale;
+      const candidateIsStable = Boolean(
+        liveRuntimeIdentityVerified
+        && stableNow.snapshot?.releaseId === candidateRelease.releaseId
+        && stableNow.snapshot?.artifactIdentity === candidateRelease.artifactIdentity,
+      );
+      const originalStableRestored = Boolean(
+        liveRuntimeIdentityVerified
+        && stableNow.snapshot?.releaseId === session.stableRelease.releaseId
+        && stableNow.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity,
+      );
+
+      if (candidateIsStable) {
+        if (session.phase === 'cutover_attempting') {
+          session = advanceReleaseSession({
+            controllerHome: config.controllerHome,
+            sessionId,
+            expectedRevision: session.revision,
+            phase: 'cutover_committed',
+            receipts: [{
+              id: 'cutover',
+              kind: 'cutover',
+              summary: `Stable A runs verified Candidate B release ${candidateRelease.releaseId}; Candidate B retired before cutover commit`,
+            }],
+          });
+        }
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'soaking',
+          receipts: [{
+            id: 'soak_started',
+            kind: 'soak',
+            summary: `cutover reconciled at ${new Date().toISOString()}; Candidate B is retired and known-good promotion remains gated on later stable verification`,
+          }],
+        });
+        const cleanup = cleanupRetiredCandidateLane(config, session);
+        audit(config, 'release_session_cutover_reconciled_committed', {
+          sessionId,
+          releaseId: candidateRelease.releaseId,
+          candidateRetired: true,
+          reason,
+        });
+        return {
+          ok: true as const,
+          attempted: true,
+          detail: `ReleaseSession cutover reconciled to committed: Stable A runs the verified candidate artifact and Candidate B is retired${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
+          releaseSession: session,
+          ...(activation ? { activation } : {}),
+        };
+      }
+
+      if (originalStableRestored) {
+        session = advanceReleaseSession({
+          controllerHome: config.controllerHome,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'rolled_back',
+          receipts: [{
+            id: 'rollback',
+            kind: 'rollback',
+            summary: `cutover did not commit; exact Stable A ${session.stableRelease.releaseId} is active and verified, and Candidate B is retired`,
+          }],
+        });
+        const cleanup = cleanupRetiredCandidateLane(config, session);
+        audit(config, 'release_session_cutover_reconciled_rolled_back', {
+          sessionId,
+          restoredStableReleaseId: session.stableRelease.releaseId,
+          candidateRetired: true,
+          reason,
+        });
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: `ReleaseSession cutover reconciled to rolled_back: exact Stable A is active and Candidate B is retired${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
+          releaseSession: session,
+          ...(activation ? { activation } : {}),
+        };
+      }
+
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'failed',
+        receipts: [{
+          id: 'cutover_failed',
+          kind: 'cutover',
+          summary: `${reason}; Stable A outcome is not fully verified; Candidate B is retired`.slice(0, 500),
+        }],
+      });
+      const cleanup = cleanupRetiredCandidateLane(config, session);
+      audit(config, 'release_session_cutover_reconciled_failed', {
+        sessionId,
+        candidateReleaseId: candidateRelease.releaseId,
+        candidateRetired: true,
+        reason,
+        observedActiveReleaseId: stableNow.snapshot?.releaseId,
+      });
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
+        releaseSession: session,
+        ...(activation ? { activation } : {}),
+      };
+    };
+
+    if (session.phase === 'cutover_attempting' || session.phase === 'cutover_committed') {
+      return reconcileCutoverAttempt(`resuming ReleaseSession from ${session.phase} without a second activation attempt`);
+    }
+    if (session.phase !== 'cutover_eligible') {
+      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CUTOVER_REQUIRES_ELIGIBLE: ${session.phase}`, releaseSession: session };
+    }
+
+    try {
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+      const stableBefore = await verifyLocalRuntime(config);
+      if (!stableBefore.ok) {
+        const reasonCodes = stableBefore.runtime.reasonCodes.join(',') || 'unknown';
+        audit(config, 'release_session_cutover_precondition_deferred', {
+          sessionId,
+          detail: 'stable Runtime verification is temporarily unavailable before cutover',
+          reasonCodes,
+        });
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_STABLE_RUNTIME_VERIFICATION_DEFERRED: ${reasonCodes}`,
+          releaseSession: session,
+        };
+      }
+      if (
+        stableBefore.releases.active?.revision !== session.stableRelease.releaseId
+        || stableBefore.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
+      ) throw new Error('RELEASE_SESSION_STABLE_RUNTIME_IDENTITY_CHANGED');
+
+      const candidateConfig = candidateRecoveryConfig(session);
+      const candidateBefore = await verifyLocalRuntime(candidateConfig);
+      if (
+        !candidateBefore.ok
+        || candidateBefore.releases.active?.revision !== candidateRelease.releaseId
+        || candidateBefore.releases.active?.artifactIdentity !== candidateRelease.artifactIdentity
+      ) throw new Error('RELEASE_SESSION_CANDIDATE_NO_LONGER_VERIFIED');
+      if (runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256) {
+        throw new Error('RELEASE_SESSION_CANDIDATE_TREE_CHANGED');
+      }
+
+      const promoted = promotePortableRuntimeRelease({
+        sourceManifestPath: candidateRelease.manifestPath,
+        targetControllerHome: config.controllerHome,
+        expectedTreeSha256: candidateRelease.treeSha256,
+      });
+      if (
+        promoted.releaseId !== candidateRelease.releaseId
+        || promoted.artifactIdentity !== candidateRelease.artifactIdentity
+        || promoted.manifestSha256 !== candidateRelease.manifestSha256
+        || promoted.treeSha256 !== candidateRelease.treeSha256
+      ) throw new Error('RELEASE_SESSION_PROMOTION_IDENTITY_MISMATCH');
+
+      // Promotion writes only a new immutable release tree. Stable A must still
+      // be the exact frozen authority before we enter the one cutover attempt.
+      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
+      const stableAfterPromotion = await verifyLocalRuntime(config);
+      if (!stableAfterPromotion.ok) {
+        const reasonCodes = stableAfterPromotion.runtime.reasonCodes.join(',') || 'unknown';
+        audit(config, 'release_session_cutover_post_promotion_verification_deferred', {
+          sessionId,
+          detail: 'stable Runtime verification is temporarily unavailable after immutable promotion and before activation',
+          reasonCodes,
+        });
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_STABLE_POST_PROMOTION_VERIFICATION_DEFERRED: ${reasonCodes}`,
+          releaseSession: session,
+        };
+      }
+      if (
+        stableAfterPromotion.releases.active?.revision !== session.stableRelease.releaseId
+        || stableAfterPromotion.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
+      ) throw new Error('RELEASE_SESSION_STABLE_CHANGED_DURING_PROMOTION');
+
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_attempting',
+        receipts: [{
+          id: 'cutover_attempt',
+          kind: 'cutover',
+          summary: `byte-identical Candidate B ${candidateRelease.releaseId} promoted to Stable A release storage; beginning the single fenced cutover attempt`,
+        }],
+      });
+
+      const activation = await activateRuntimeReleaseInternal(config, promoted.manifestPath, {}, {
+        ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+        expectedAuthorityRevision: session.stableRelease.authorityRevision,
+        expectedActiveReleaseId: session.stableRelease.releaseId,
+        releaseSessionId: session.sessionId,
+      }, releaseSessionLock);
+
+      return reconcileCutoverAttempt(
+        activation.ok
+          ? 'cutover activation completed; reconciling canonical Runtime identity before phase progression'
+          : `cutover activation returned failure: ${activation.detail}`,
+        activation,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
+      session = latest;
+      if (latest.phase === 'cutover_attempting' || latest.phase === 'cutover_committed') {
+        return reconcileCutoverAttempt(`cutover interrupted after entering ${latest.phase}: ${detail}`);
+      }
+      if (latest.phase === 'cutover_eligible') {
+        const retirement = await stopReleaseSessionCandidateService(latest);
+        if (!retirement.ok) {
+          audit(config, 'release_session_candidate_retirement_failed', {
+            sessionId,
+            phase: latest.phase,
+            candidateControllerHome: latest.candidate.controllerHome,
+            detail: retirement.detail,
+            cutoverError: detail,
+          });
+          return {
+            ok: false as const,
+            attempted: false,
+            noOp: true,
+            detail: `${detail}; Candidate B retirement failed: ${retirement.detail}`,
+            releaseSession: latest,
+          };
+        }
+        try {
+          session = advanceReleaseSession({
+            controllerHome: config.controllerHome,
+            sessionId,
+            expectedRevision: latest.revision,
+            phase: 'failed',
+            receipts: [{
+              id: 'cutover_precondition_failed',
+              kind: 'cutover',
+              summary: `${detail}; Candidate B retired`.slice(0, 500),
+            }],
+          });
+          cleanupRetiredCandidateLane(config, session);
+        } catch { /* preserve original cutover precondition failure */ }
+        audit(config, 'release_session_cutover_precondition_failed', {
+          sessionId,
+          detail,
+          candidateRetired: true,
+        });
+      }
+      return { ok: false as const, attempted: false, noOp: true, detail, releaseSession: session };
+    }
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  return locked.value;
+}
+
+
+async function cancelReleaseSessionUnderLock(
+  config: RecoveryConfig,
+  initialSession: ReleaseSession,
+  reason: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  let session = initialSession;
+  if (session.phase === 'failed') {
+    return { ok: true, attempted: false, noOp: true, detail: 'ReleaseSession is already terminal failed', releaseSession: session };
+  }
+  if (['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: `RELEASE_SESSION_CANCEL_AFTER_CUTOVER_FORBIDDEN: ${session.phase}; use exact ReleaseSession rollback/soak resolution`,
+      releaseSession: session,
+    };
+  }
+  if (session.phase === 'known_good' || session.phase === 'rolled_back') {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: `RELEASE_SESSION_CANCEL_TERMINAL: ${session.phase}`,
+      releaseSession: session,
+    };
+  }
+
+  const priorPhase = session.phase;
+  if (['candidate_booted', 'candidate_verified', 'cutover_eligible'].includes(session.phase)) {
+    const retirement = await stopReleaseSessionCandidateService(session);
+    if (!retirement.ok) {
+      return {
+        ok: false,
+        attempted: true,
+        detail: `RELEASE_SESSION_CANCEL_CANDIDATE_RETIRE_FAILED: ${retirement.detail}`,
+        releaseSession: session,
+      };
+    }
+  }
+
+  session = advanceReleaseSession({
+    controllerHome: config.controllerHome,
+    sessionId: session.sessionId,
+    expectedRevision: session.revision,
+    phase: 'failed',
+    receipts: [{
+      id: 'candidate_cancelled',
+      kind: 'candidate_canary',
+      summary: `Candidate B was retired before cutover: ${reason}`.slice(0, 500),
+    }],
+  });
+  const cleanup = cleanupRetiredCandidateLane(config, session);
+  audit(config, cleanup.ok ? 'release_session_cancelled' : 'release_session_cancelled_cleanup_failed', {
+    sessionId: session.sessionId,
+    priorPhase,
+    candidateControllerHome: session.candidate.controllerHome,
+    reason,
+    cleanupDetail: cleanup.detail,
+  });
+  return {
+    ok: cleanup.ok,
+    attempted: true,
+    detail: cleanup.ok
+      ? 'ReleaseSession Candidate B was terminalized failed and its isolated lane was retired before cutover; Stable A remained unchanged'
+      : `ReleaseSession was terminalized failed but Candidate B lane cleanup failed: ${cleanup.detail}`,
+    releaseSession: session,
+  };
+}
+
+export async function cancelConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_cancel',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    const session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    return cancelReleaseSessionUnderLock(config, session, 'explicit Recovery cancellation');
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
+  return locked.value;
+}
+
+
+function releaseSessionRollbackTransaction(
+  config: RecoveryConfig,
+  session: ReleaseSession,
+): NonNullable<ReleaseSession['transaction']> {
+  const authority = readRuntimeReleaseAuthority(config.controllerHome);
+  const transaction = session.transaction;
+  const candidateRelease = session.candidateRelease;
+  const previous = authority?.previous;
+  if (!authority || !transaction || !candidateRelease || !previous?.databaseBackup) {
+    throw new Error('RELEASE_SESSION_ROLLBACK_TRANSACTION_REQUIRED');
+  }
+  if (
+    transaction.candidateReleaseId !== candidateRelease.releaseId
+    || authority.active.releaseId !== candidateRelease.releaseId
+    || authority.active.artifactIdentity !== candidateRelease.artifactIdentity
+    || previous.releaseId !== transaction.rollbackRelease.releaseId
+    || previous.artifactIdentity !== transaction.rollbackRelease.artifactIdentity
+    || previous.manifestSha256 !== transaction.rollbackRelease.manifestSha256
+    || previous.databaseBackup.path !== transaction.rollbackRelease.databaseBackup?.path
+    || transaction.rollbackRelease.releaseId !== session.stableRelease.releaseId
+    || transaction.rollbackRelease.artifactIdentity !== session.stableRelease.artifactIdentity
+    || transaction.rollbackRelease.manifestSha256 !== session.stableRelease.manifestSha256
+  ) {
+    throw new Error('RELEASE_SESSION_ROLLBACK_TRANSACTION_IDENTITY_MISMATCH');
+  }
+  return transaction;
+}
+
+export async function rollbackConfiguredRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sessionId: string,
+  dependencies: PrimaryRuntimeRecoveryDependencies = {},
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const locked = await withLock(config, {
+    action: 'release_session_rollback',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase === 'rolled_back') {
+      return { ok: true as const, attempted: false, noOp: true, detail: 'ReleaseSession is already rolled back', releaseSession: session };
+    }
+    if (!['cutover_attempting', 'cutover_committed', 'soaking'].includes(session.phase)) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `RELEASE_SESSION_ROLLBACK_REQUIRES_CUTOVER: ${session.phase}`,
+        releaseSession: session,
+      };
+    }
+
+    const candidateRelease = session.candidateRelease;
+    const transactionBeforeRollback = session.transaction;
+    const authorityBeforeRollback = readRuntimeReleaseAuthority(config.controllerHome);
+    const rollbackAlreadyCommitted = Boolean(
+      candidateRelease
+      && transactionBeforeRollback
+      && authorityBeforeRollback?.operationId?.startsWith(`release-session-rollback:${session.sessionId}:`)
+      && authorityBeforeRollback.active.releaseId === session.stableRelease.releaseId
+      && authorityBeforeRollback.active.artifactIdentity === session.stableRelease.artifactIdentity
+      && authorityBeforeRollback.active.manifestSha256 === session.stableRelease.manifestSha256
+      && authorityBeforeRollback.previous?.releaseId === candidateRelease.releaseId
+      && authorityBeforeRollback.previous?.artifactIdentity === candidateRelease.artifactIdentity
+      && transactionBeforeRollback.candidateReleaseId === candidateRelease.releaseId
+      && transactionBeforeRollback.rollbackRelease.releaseId === session.stableRelease.releaseId
+      && transactionBeforeRollback.rollbackRelease.artifactIdentity === session.stableRelease.artifactIdentity
+    );
+    if (rollbackAlreadyCommitted) {
+      const live = observeRuntimeStatus(config.controllerHome);
+      const stableIsLive = live.running && live.ready && !live.stale
+        && live.snapshot?.releaseId === session.stableRelease.releaseId
+        && live.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity;
+      if (!stableIsLive) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_ROLLBACK_COMMITTED_RUNTIME_NOT_YET_OBSERVED',
+          releaseSession: session,
+        };
+      }
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'rolled_back',
+        receipts: [{
+          id: 'rollback',
+          kind: 'rollback',
+          summary: `reconciled already-committed rollback ${authorityBeforeRollback!.operationId}; exact Stable A ${session.stableRelease.releaseId} is live and no rollback effect was replayed`,
+        }],
+      });
+      audit(config, 'release_session_rollback_reconciled_committed', {
+        sessionId,
+        rollbackOperationId: authorityBeforeRollback!.operationId,
+        restoredStableReleaseId: session.stableRelease.releaseId,
+        candidateReleaseId: candidateRelease!.releaseId,
+      });
+      return {
+        ok: true as const,
+        attempted: false,
+        noOp: true,
+        detail: 'ReleaseSession reconciled the already-committed Stable A rollback from durable authority without replaying the rollback effect',
+        releaseSession: session,
+      };
+    }
+
+    let transaction: NonNullable<ReleaseSession['transaction']>;
+    try {
+      transaction = releaseSessionRollbackTransaction(config, session);
+    } catch (error) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: error instanceof Error ? error.message : String(error),
+        releaseSession: session,
+      };
+    }
+
+    const platform = dependencies.platform ?? process.platform;
+    const uid = await (dependencies.currentUid ?? currentUid)();
+    const service = primaryRuntimeServiceOwner(config, platform, uid);
+    if (!service) {
+      return {
+        ok: false as const,
+        attempted: false,
+        noOp: true,
+        detail: `primary Forge Runtime ${configuredPrimaryRuntimeService(config, platform).platform} service is not installed for ${platform}`,
+        releaseSession: session,
+      };
+    }
+    const runCommand = dependencies.runCommand ?? command;
+    const now = dependencies.now ?? Date.now;
+    const wait = dependencies.sleep ?? sleep;
+    const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
+    const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+    const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
+      ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
+
+    const stopped = await stopPrimaryRuntimeForReleaseTransition({ config, service, now, wait, runCommand, runtimeRunning });
+    if (!stopped.ok) {
+      return { ok: false as const, attempted: true, detail: stopped.detail, releaseSession: session };
+    }
+
+    let restored: RuntimeReleaseAuthority;
+    let databaseRollbackDisposition: RuntimeDatabaseRollbackDisposition = 'preserved_unversioned_backup';
+    try {
+      const rollbackResult = rollbackRuntimeReleaseWithResult(config.controllerHome, `release-session-rollback:${session.sessionId}:${Date.now()}`);
+      restored = rollbackResult.authority;
+      databaseRollbackDisposition = rollbackResult.databaseDisposition;
+      if (
+        restored.active.releaseId !== session.stableRelease.releaseId
+        || restored.active.artifactIdentity !== session.stableRelease.artifactIdentity
+        || restored.active.manifestSha256 !== session.stableRelease.manifestSha256
+      ) throw new Error('RELEASE_SESSION_ROLLBACK_STABLE_IDENTITY_MISMATCH');
+    } catch (error) {
+      const restart = await rebindStartAndVerifyPrimaryRuntime({
+        config,
+        service,
+        runCommand,
+        now,
+        wait,
+        verifyLocal,
+        ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
+        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+        successDetail: 'ReleaseSession rollback transaction failed; current authoritative Runtime was restarted and verified',
+      });
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: `${error instanceof Error ? error.message : String(error)}; authoritative Runtime restart: ${restart.detail}`,
+        releaseSession: session,
+      };
+    }
+
+    let rollbackConnectorBinding: { ok: boolean; attempted: boolean; noOp?: boolean; detail: string } | undefined;
+    const restarted = await rebindStartAndVerifyPrimaryRuntime({
+      config,
+      service,
+      runCommand,
+      now,
+      wait,
+      verifyLocal,
+      ensureRuntimeLaunchContract: dependencies.ensureRuntimeLaunchContract,
+      contractFailureContext: 'after ReleaseSession rollback',
+      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+      successDetail: databaseRollbackDisposition === 'restored_backup'
+        ? 'exact Stable A whole-Runtime release and unchanged SQLite backup restored, restarted, rebound, and verified'
+        : 'exact Stable A Runtime release restored while newer live SQLite state was preserved, restarted, rebound, and verified',
+      afterRuntimeReady: async () => {
+        rollbackConnectorBinding = await repairConnectorBinding(config);
+        return rollbackConnectorBinding.ok
+          ? { ok: true, detail: rollbackConnectorBinding.detail }
+          : { ok: false, detail: `Stable A persistent Connector binding failed after ReleaseSession rollback: ${rollbackConnectorBinding.detail}` };
+      },
+    });
+
+    const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
+    session = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: latest.revision,
+      phase: restarted.ok ? 'rolled_back' : 'failed',
+      receipts: [{
+        id: restarted.ok ? 'rollback' : 'rollback_failed',
+        kind: 'rollback',
+        summary: restarted.ok
+          ? databaseRollbackDisposition === 'restored_backup'
+            ? `exact Stable A ${latest.stableRelease.releaseId} and its unchanged SQLite backup restored from ReleaseSession activation transaction`
+            : `exact Stable A ${latest.stableRelease.releaseId} restored while newer live SQLite state was preserved across rollback`
+          : `Stable A authority restored but Runtime verification failed after rollback: ${restarted.detail}`.slice(0, 500),
+      }],
+    });
+    audit(config, restarted.ok ? 'release_session_rolled_back' : 'release_session_rollback_restart_failed', {
+      sessionId,
+      releaseSessionTransactionOperationId: transaction.operationId,
+      restoredStableReleaseId: restored.active.releaseId,
+      connectorBindingRepaired: rollbackConnectorBinding?.ok === true,
+      databaseRollbackDisposition,
+      detail: restarted.detail,
+    });
+    return {
+      ok: restarted.ok,
+      attempted: true,
+      detail: restarted.ok
+        ? databaseRollbackDisposition === 'restored_backup'
+          ? 'ReleaseSession rollback restored the exact frozen Stable A release, unchanged SQLite backup, service binding, and verified Runtime'
+          : 'ReleaseSession rollback restored the exact frozen Stable A release while preserving newer live SQLite state, service binding, and verified Runtime'
+        : `ReleaseSession restored Stable A authority but failed post-rollback Runtime verification: ${restarted.detail}`,
+      releaseSession: session,
+    };
+  });
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
+  return locked.value;
+}
+
+
+export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
+  config: RecoveryConfig,
+  sessionId: string,
+  dependencies: RuntimeReleaseKnownGoodDependencies = {},
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const initial = readReleaseSession(config.controllerHome, sessionId);
+  if (!initial) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+  if (initial.phase !== 'soaking') {
+    return { ok: false, attempted: false, noOp: true, detail: `RELEASE_SESSION_KNOWN_GOOD_REQUIRES_SOAKING: ${initial.phase}`, releaseSession: initial };
+  }
+  const candidateRelease = initial.candidateRelease;
+  if (!candidateRelease) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: initial };
+
+  let attested: ReleaseEvidence;
+  try {
+    const active = activeAuthorityRelease(config);
+    if (
+      !active
+      || active.revision !== candidateRelease.releaseId
+      || active.artifactIdentity !== candidateRelease.artifactIdentity
+      || active.manifestSha256 !== candidateRelease.manifestSha256
+    ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+
+    const existingAttestation = matchingKnownGood(config, active);
+    if (existingAttestation) {
+      // A known-good attestation is durable release authority, not a transient
+      // observation. Crash/retry reconciliation must reuse it instead of
+      // replaying performance observation and public MCP probes. The live
+      // Runtime still has to own the exact same release and remain locally
+      // live/ready/non-stale before the ReleaseSession can terminalize.
+      if (!liveRuntimeOwnsRelease(config, existingAttestation)) {
+        throw new Error('RELEASE_SESSION_ATTESTED_RUNTIME_NOT_CURRENT');
+      }
+      attested = existingAttestation;
+    } else {
+      const before = await verifyStableRuntime(config);
+      if (!before.ok) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_VERIFY_FAILED');
+      if (!sameReleaseEvidenceIdentity(before.releases.active, active)) {
+        throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+      }
+      attested = await attestKnownGood(config, dependencies);
+    }
+    if (
+      attested.revision !== candidateRelease.releaseId
+      || attested.artifactIdentity !== candidateRelease.artifactIdentity
+      || attested.manifestSha256 !== candidateRelease.manifestSha256
+      || !attested.recoveryBundle
+    ) throw new Error('RELEASE_SESSION_KNOWN_GOOD_ATTESTATION_IDENTITY_MISMATCH');
+    inspectKnownGoodRecoveryBundle(config.controllerHome, attested);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    audit(config, 'release_session_known_good_failed', { sessionId, detail });
+
+    // A hard runaway-CPU rejection is terminal acceptance evidence, not a
+    // transient observation failure. Keeping Candidate B live in `soaking`
+    // caused the automatic release driver to launch another full 60-second
+    // sampler on every reconciliation cycle. Restore the exact frozen Stable A
+    // through the existing ReleaseSession rollback transaction instead. The
+    // coordinator will then treat this source revision as already attempted and
+    // will not autonomously replay it until source authority changes.
+    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
+      const rollback = await rollbackConfiguredRuntimeReleaseSession(
+        config,
+        sessionId,
+        dependencies.rollback ?? {},
+        requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
+      );
+      audit(config, 'release_session_known_good_performance_rejected', {
+        sessionId,
+        detail,
+        rollbackOk: rollback.ok,
+        rollbackDetail: rollback.detail,
+      });
+      return {
+        ok: false,
+        attempted: true,
+        detail: rollback.ok
+          ? `${detail}; Candidate B rejected by the Recovery runaway-CPU gate and Stable A restored`
+          : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
+        releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
+      };
+    }
+
+    return { ok: false, attempted: true, detail, releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? initial };
+  }
+
+  const locked = await withLock(config, {
+    action: 'release_session_known_good',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let session = readReleaseSession(config.controllerHome, sessionId);
+    if (!session) return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_MISSING' };
+    if (session.phase !== 'soaking') {
+      return { ok: false as const, attempted: true, detail: `RELEASE_SESSION_CHANGED_DURING_KNOWN_GOOD_ATTESTATION: ${session.phase}`, releaseSession: session };
+    }
+    // The expensive independent verification and performance observation are
+    // already embodied by `attested`. Re-running the full network probe suite
+    // here created a split-brain transaction: the durable recovery bundle could
+    // be published successfully, then one transient Gateway/MCP timeout left the
+    // ReleaseSession permanently soaking. Under the mutation lock, only fence
+    // the identity that could invalidate that attestation.
+    if (!liveRuntimeOwnsRelease(config, attested)) {
+      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
+    }
+    try {
+      releaseSessionRollbackTransaction(config, session);
+    } catch (error) {
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: error instanceof Error ? error.message : String(error),
+        releaseSession: session,
+      };
+    }
+    session = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'known_good',
+      receipts: [{
+        id: 'known_good',
+        kind: 'known_good',
+        summary: `release ${attested.revision} passed soak/performance observation and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
+      }],
+    });
+    audit(config, 'release_session_known_good', {
+      sessionId,
+      releaseId: attested.revision,
+      attestationId: attested.recoveryBundle!.attestationId,
+      releaseAuthorityRevision: attested.releaseAuthorityRevision,
+      releaseSessionTransactionOperationId: session.transaction?.operationId,
+    });
+    return {
+      ok: true as const,
+      attempted: true,
+      detail: 'ReleaseSession became known-good only after full Runtime verification, performance observation, and recoverable release+SQLite+service bundle attestation',
+      releaseSession: session,
+    };
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
   return locked.value;
 }
 
@@ -3130,59 +5509,9 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   dependencies: ConfiguredRuntimeActivationDependencies = {},
   requestId?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot) {
-    return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
-  }
-  // Capture the base before staging. Staging can take long enough for another
-  // activation to win; the later publish must prove this base is still current.
-  const expectedAuthority = releaseAuthority(config);
-  const stagedAttempt = await withLock(config, {
-    action: 'stage_and_activate_runtime_release',
-    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-  }, async () => {
-    try {
-      const staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot });
-      assertRuntimeReleaseFiles(staged);
-      return { ok: true as const, staged };
-    } catch (error) {
-      return { ok: false as const, detail: error instanceof Error ? error.message : 'Runtime release staging failed' };
-    }
-  });
-  if (!stagedAttempt.acquired) {
-    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(stagedAttempt.owner) };
-  }
-  if (!stagedAttempt.value.ok) {
-    audit(config, 'runtime_release_stage_failed', { sourceRoot, detail: stagedAttempt.value.detail });
-    return { ok: false, attempted: false, noOp: true, detail: stagedAttempt.value.detail };
-  }
-  const staged: StagedRuntimeRelease = stagedAttempt.value.staged;
-  const activationGuard: RuntimeReleaseActivationGuard = {
-    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-    expectedAuthorityRevision: expectedAuthority?.revision ?? null,
-    expectedActiveReleaseId: expectedAuthority?.active.releaseId ?? null,
-  };
-  const activation = dependencies.activate
-    ? await dependencies.activate(config, staged.manifestPath, activationGuard)
-    : await activateRuntimeRelease(config, staged.manifestPath, {}, activationGuard);
-  audit(config, activation.ok ? 'runtime_release_stage_and_activate_succeeded' : 'runtime_release_stage_and_activate_failed', {
-    sourceRoot,
-    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-    expectedAuthorityRevision: activationGuard.expectedAuthorityRevision,
-    expectedActiveReleaseId: activationGuard.expectedActiveReleaseId,
-    releaseId: staged.releaseId,
-    sourceCommit: staged.sourceCommit,
-    activationAttempted: activation.attempted,
-    activationDetail: activation.detail,
-  });
-  return {
-    ok: activation.ok,
-    attempted: activation.attempted,
-    noOp: activation.noOp,
-    detail: activation.ok ? 'configured Runtime source was staged as one immutable release and activated through standalone Recovery' : activation.detail,
-    staged,
-    activation,
-  };
+  // Frozen-client compatibility alias. It deliberately stops at Candidate B
+  // build/session preparation. Activation is a separate ReleaseSession phase.
+  return prepareConfiguredRuntimeReleaseSession(config, dependencies, requestId);
 }
 
 function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
@@ -3221,8 +5550,21 @@ function tunnelRepairAllowed(config: RecoveryConfig, now: number): boolean {
   return typeof prior?.lastAttemptAt !== 'number' || now - prior.lastAttemptAt >= cooldownMs;
 }
 
+async function verifyRecoveryTunnelRepairSurface(config: RecoveryConfig): Promise<VerifyResult> {
+  // Recovery tunnel repair is a bootstrap control-plane operation. It must not
+  // depend on the primary public MCP/Connector transport that Recovery exists
+  // to repair around. Keep canonical Runtime/Recovery authority checks and the
+  // dedicated Recovery external probe, but exclude primary transport probes.
+  return verifyStableRuntime({
+    ...config,
+    publicMcpUrl: undefined,
+    primaryPublicTunnelService: undefined,
+    primaryConnectorService: undefined,
+  }, createRecoveryHttpTransport(config.controllerHome), { probeMcpProtocol: false });
+}
+
 export async function repairPublicTunnel(config: RecoveryConfig, dependencies: PublicTunnelRepairDependencies = {}): Promise<PublicTunnelRepairResult> {
-  const verify = dependencies.verify ?? verifyStableRuntime;
+  const verify = dependencies.verify ?? verifyRecoveryTunnelRepairSurface;
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
@@ -3398,8 +5740,8 @@ export interface RecoveryWatchdogRestartDependencies extends RecoveryRoleRestart
   probeWatchdog?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
 }
 
-function recoveryRoleLaunchdService(config: RecoveryConfig, uid: number, role: 'gateway' | 'watchdog'): LaunchdService {
-  const label = role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+function recoveryRoleLaunchdService(config: RecoveryConfig, uid: number, _role: 'gateway'): LaunchdService {
+  const label = RECOVERY_DAEMON_LABEL;
   const generated = join(recoveryRoot(config), 'launchd', `${label}.plist`);
   const installed = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   return {
@@ -3416,19 +5758,14 @@ async function probeRecoveryGateway(config: RecoveryConfig): Promise<{ ok: boole
   return probe(createRecoveryHttpTransport(config.controllerHome), `http://${config.gateway.host}:${config.gateway.port}/health`);
 }
 
-async function probeRecoveryWatchdog(config: RecoveryConfig): Promise<{ ok: boolean; detail: string }> {
-  const health = observeRecoveryWatchdogHealth(config.controllerHome);
-  return { ok: health.ok, detail: health.detail };
-}
-
 async function restartRecoveryRole(input: {
   config: RecoveryConfig;
-  role: 'gateway' | 'watchdog';
-  action: 'restart_recovery_gateway' | 'restart_recovery_watchdog';
+  role: 'gateway';
+  action: 'restart_recovery_gateway';
   check: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
   dependencies: RecoveryRoleRestartDependencies;
 }): Promise<RecoveryGatewayRestartResult> {
-  const display = input.role === 'gateway' ? 'Recovery Gateway' : 'Recovery Watchdog';
+  const display = 'Recovery daemon';
   if ((input.dependencies.platform ?? process.platform) !== 'darwin') return { ok: false, attempted: false, noOp: true, detail: `${display} launchd restart is only supported on macOS` };
   const initial = await input.check(input.config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: `${display} is already healthy` };
@@ -3436,7 +5773,7 @@ async function restartRecoveryRole(input: {
   if (uid === undefined) return { ok: false, attempted: false, noOp: true, detail: `${display} launchd UID is unavailable` };
   const service = recoveryRoleLaunchdService(input.config, uid, input.role);
   if (!existsSync(service.plistPath)) return { ok: false, attempted: false, noOp: true, detail: `${display} launchd plist is missing: ${service.plistPath}`, serviceTarget: service.target };
-  const eventPrefix = input.role === 'gateway' ? 'recovery_gateway' : 'recovery_watchdog';
+  const eventPrefix = 'recovery_daemon';
   const locked = await withLock(input.config, { action: input.action }, async () => {
     const before = await input.check(input.config);
     if (before.ok) return { ok: true, attempted: false, noOp: true, detail: `${display} recovered before restart`, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
@@ -3478,19 +5815,6 @@ export async function restartRecoveryGateway(
   });
 }
 
-export async function restartRecoveryWatchdog(
-  config: RecoveryConfig,
-  dependencies: RecoveryWatchdogRestartDependencies = {},
-): Promise<RecoveryWatchdogRestartResult> {
-  return restartRecoveryRole({
-    config,
-    role: 'watchdog',
-    action: 'restart_recovery_watchdog',
-    check: dependencies.probeWatchdog ?? probeRecoveryWatchdog,
-    dependencies,
-  });
-}
-
 function pidAlive(pid: number | undefined): boolean {
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -3510,7 +5834,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'installProfile' | 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryRuntimeSourceRepositoryId' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');
@@ -3549,27 +5873,17 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     now,
     watchdogRuntimeStartupGraceMs(config),
   );
-  // Five-second watchdog ticks must stay cheap while the system is healthy.
-  // Full MCP protocol verification serializes the entire tool surface, so run
-  // it periodically and immediately escalate to it when a local health probe
-  // fails. A live Runtime that was just started gets a bounded grace window so
-  // startup/reconciliation cannot itself trigger a Recovery restart storm.
-  // Explicit verify/attest/release operations remain strict by default.
-  const fullVerifyDue = !runtimeStartupGrace
-    && (scopedPrior.lastFullVerifyAt === undefined || now - scopedPrior.lastFullVerifyAt >= 60_000);
-  let fullVerificationPerformed = fullVerifyDue;
-  let verified = await verifyStableRuntime(
-    config,
-    createRecoveryHttpTransport(config.controllerHome),
-    { probeMcpProtocol: fullVerifyDue },
-  );
-  let localVerify = await verifyLocalRuntime(config, { probeMcpProtocol: fullVerifyDue });
-  if (!localVerify.ok && !fullVerifyDue && !runtimeStartupGrace) {
-    verified = await verifyStableRuntime(config);
-    localVerify = await verifyLocalRuntime(config);
-    fullVerificationPerformed = true;
-  }
-  const lastFullVerifyAt = fullVerificationPerformed ? now : scopedPrior.lastFullVerifyAt;
+  // Watchdog owns bounded health observation only. Never run strict Runtime or
+  // known-good bundle verification from startup or the five-second tick, even
+  // when the bounded tier degrades: those checks can hash/inspect multi-GB
+  // recovery evidence and would make liveness depend on release-acceptance cost.
+  // Explicit verify/attest/release/rollback operations remain the sole strict
+  // recoverability boundaries. Keep the legacy timestamp as non-authoritative
+  // compatibility state so existing persisted WatchdogState remains readable.
+  const health = await observeWatchdogHealthTier(config);
+  const verified = health;
+  const localVerify = health;
+  const lastFullVerifyAt = scopedPrior.lastFullVerifyAt ?? now;
   const activeMutation = liveRecoveryMutationLock(config);
   if (activeMutation) {
     const attributable = recoveryLockOwnerAttributable(activeMutation);
@@ -3617,11 +5931,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   }
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
-  const primaryRuntimeHealthy = localVerify.runtime.ok
-    && localVerify.runtime.running
-    && localVerify.runtime.ready
-    && !localVerify.runtime.stale
-    && localVerify.probes.active_gateway?.ok === true;
+  const primaryRuntimeHealthy = canonicalRuntimeSafeForTargetedConnectorRecovery(localVerify);
   const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
   const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
   const primaryConnectorCapacityFailed = connectorCapacityRecoveryRecommended(verified);
@@ -3645,18 +5955,6 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     ),
   );
   if (primaryRuntimeHealthy && !primaryConnectorFailed && !primaryPublicTransportFailed && recoveryHealthy) {
-    if (fullVerificationPerformed && verified.ok && !matchingKnownGood(config, verified.releases.active)) {
-      try {
-        const attestation = await withLock(config, { action: 'attest_known_good' }, async () => persistVerifiedKnownGood(config, verified));
-        if (!attestation.acquired) {
-          audit(config, 'known_good_attestation_deferred', { reason: recoveryBusyDetail(attestation.owner) });
-        }
-      } catch (error) {
-        audit(config, 'known_good_attestation_deferred', {
-          reason: error instanceof Error ? error.message : 'watchdog known-good attestation failed',
-        });
-      }
-    }
     const stable = recordWatchdogRuntimeHealthy(
       scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
       now,

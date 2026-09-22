@@ -145,8 +145,15 @@ async function handleRequest(request) {
 
   let graph;
   const openStartedAt = performance.now();
+  const refreshIfStale = request.refresh === 'if_stale';
   try {
-    graph = await loaded.CodeGraph.open(request.projectRoot, { sync: false, readOnly: true });
+    // Structural refresh mutates only the Forge-owned derived CodeGraph cache.
+    // Ordinary/auto reads stay strictly read-only so they never acquire hidden
+    // lifecycle authority or pay an indexing latency tax.
+    graph = await loaded.CodeGraph.open(request.projectRoot, {
+      sync: refreshIfStale,
+      readOnly: !refreshIfStale,
+    });
   } catch (error) {
     return failure(operation, 'CODEGRAPH_OPEN_FAILED', error instanceof Error ? error.message : error);
   }

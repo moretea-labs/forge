@@ -27,6 +27,7 @@ function toAssistantPluginError(error: unknown): AssistantPluginError {
   if (error instanceof ExternalUnixJsonlTransportError) {
     return new AssistantPluginError(error.code, error.detailMessage, {
       retryable: error.retryable,
+      effectOutcome: error.effectOutcome,
       details: error.details,
     });
   }

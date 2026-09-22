@@ -1,15 +1,34 @@
 import { randomUUID } from 'crypto';
-import { buildBrowserPluginManifest } from '../../src/runtime/plugins/browser-adapter';
-import { executeControllerScopedPluginAction } from '../../src/runtime/plugins/store';
-import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types';
+import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
+import { controllerPluginRepository, executeControllerScopedPluginAction, getControllerPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
+  ChatgptProviderDeliveryError,
+  chatgptProviderPageFailure,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
+  type ChatgptProviderPageFailureCode,
 } from './provider-delivery';
 
 const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
+
+type ChatgptBrowserActionOrigin = Pick<ExecutionJobOrigin, 'surface' | 'actor'>;
+interface ChatgptBrowserActionContext {
+  origin: ChatgptBrowserActionOrigin;
+  authorizationGrantRefs: Set<string>;
+}
+const chatgptBrowserActionOrigin = new AsyncLocalStorage<ChatgptBrowserActionContext>();
+
+export function withChatgptBrowserActionOrigin<T>(
+  origin: ChatgptBrowserActionOrigin,
+  operation: () => Promise<T>,
+  authorizationGrantRefs: Set<string> = new Set(),
+): Promise<T> {
+  return chatgptBrowserActionOrigin.run({ origin, authorizationGrantRefs }, operation);
+}
 
 function withForgePluginMention(prompt: string): string {
   const value = prompt.trim();
@@ -21,6 +40,8 @@ function withForgePluginMention(prompt: string): string {
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
 const CHATGPT_USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
+const CHATGPT_ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
+const CHATGPT_STOP_GENERATING_SELECTOR = '[data-testid="stop-button"], button[aria-label*="Stop"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTORS = [
   'main button, main [role="button"]',
   'button, [role="button"]',
@@ -32,16 +53,29 @@ function requestId(workId: string, actionId: string): string {
   return `chatgpt-work:${workId}:${actionId}:${randomUUID()}`;
 }
 
-const CHATGPT_BROWSER_TRANSPORT_OVERRIDES = {
-  browser_mode: 'attach_preferred',
-  cdp_attach_fallback: 'fail_closed',
-  native_attach_mode: 'auto',
-  native_browser_candidates: ['chrome'],
-} as const;
+const CHATGPT_BROWSER_AUTHORIZATION_ACTIONS = new Set(
+  browserActions()
+    .filter((action) => !action.readOnly && action.confirmation === 'authorization')
+    .map((action) => action.actionId),
+);
 
 export function chatgptBrowserActionArgs(actionId: string, args: Record<string, unknown>): Record<string, unknown> {
-  if (actionId === 'configure' || actionId === 'list_sessions' || actionId === 'reconcile_sessions') return args;
-  return { ...args, ...CHATGPT_BROWSER_TRANSPORT_OVERRIDES };
+  // Browser transport policy is controller-scoped configuration. Do not copy
+  // it into every action envelope: older Browser action schemas legitimately
+  // reject these optional fields even though the persisted configuration still
+  // supports the same policy. Keeping the envelope action-specific also lets a
+  // resumed ChatGPT round cross a connector/schema rotation without failing
+  // before the provider can observe the conversation.
+  void actionId;
+  return args;
+}
+
+export function chatgptBrowserActionResult(envelope: Record<string, unknown>, actionId: string): Record<string, unknown> {
+  const result = envelope.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new Error(`CHATGPT_BROWSER_ACTION_RESULT_INVALID:${actionId}`);
+  }
+  return result as Record<string, unknown>;
 }
 
 async function controllerBrowserAction(
@@ -51,24 +85,47 @@ async function controllerBrowserAction(
   args: Record<string, unknown>,
   timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
-  return executeControllerScopedPluginAction({
-    controllerHome,
+  const context = chatgptBrowserActionOrigin.getStore();
+  const origin = context?.origin ?? { surface: 'schedule', actor: 'chatgpt-work-continuation' };
+  const actionRequest = {
     pluginId: 'browser',
     actionId,
     requestId: requestId(workId, actionId),
     args: chatgptBrowserActionArgs(actionId, args),
     timeoutMs,
-    origin: { surface: 'schedule', actor: 'chatgpt-work-continuation' },
+    origin,
+  };
+
+  // Interactive ChatGPT delivery is the only place allowed to establish a
+  // reusable controller-scoped Browser grant. Scheduled delivery stays on the
+  // low-level executor and must present explicit refs already bound to this Work.
+  if (origin.surface === 'chatgpt-action' && CHATGPT_BROWSER_AUTHORIZATION_ACTIONS.has(actionId)) {
+    const submitted = await submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      actionRequest,
+    );
+    const grantId = submitted.authorization?.grantId?.trim();
+    if (grantId) context?.authorizationGrantRefs.add(grantId);
+    if (!submitted.result) throw new Error(`CHATGPT_BROWSER_ACTION_RESULT_INVALID:${actionId}`);
+    return chatgptBrowserActionResult(submitted.result, actionId);
+  }
+
+  const envelope = await executeControllerScopedPluginAction({
+    controllerHome,
+    ...actionRequest,
+    authorizationGrantRefs: [...(context?.authorizationGrantRefs ?? [])],
   });
+  return chatgptBrowserActionResult(envelope, actionId);
 }
 
 export async function ensureControllerChatgptBrowser(controllerHome: string, workId: string): Promise<void> {
-  const repoRoot = controllerSystemRoot(controllerHome);
   // Browser configure is not a read: it persists configuration and closes managed
   // contexts. Scheduled continuations must not disturb an already-enabled provider
-  // merely to prove it is available. Only enable it when the persisted authority is
-  // explicitly disabled; action-level transport overrides still fail closed later.
-  if (buildBrowserPluginManifest(0, undefined, repoRoot).enabled) return;
+  // merely to prove it is available. Read the existing controller-scoped manifest
+  // authority, and only enable it when that persisted authority is explicitly disabled;
+  // action-level transport overrides still fail closed later.
+  if (getControllerPluginManifest(controllerHome, 'browser').enabled) return;
   await controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true });
 }
 
@@ -98,10 +155,51 @@ function normalizeChatgptOutboundText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-export function chatgptOutboundMessageMatchesPrompt(messageText: string, prompt: string): boolean {
+const CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES = ['收起', 'Collapse', 'Show less'] as const;
+const MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS = 100_000;
+const MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS = 256;
+const MAX_CHATGPT_DELIVERY_FAILURE_SCAN_CHARS = 250_000;
+const CHATGPT_DELIVERY_FAILURE_PROBE_INTERVAL_MS = 500;
+
+export function chatgptOutboundMessageMatchesPrompt(
+  messageText: string,
+  prompt: string,
+  options: { truncated?: boolean } = {},
+): boolean {
   const message = normalizeChatgptOutboundText(messageText);
   const normalizedPrompt = normalizeChatgptOutboundText(prompt);
-  return Boolean(message && normalizedPrompt && message === normalizedPrompt);
+  if (!message || !normalizedPrompt) return false;
+  if (message === normalizedPrompt) return true;
+  if (CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${normalizedPrompt} ${suffix}`)) return true;
+  // Browser text extraction is deliberately bounded. A large ControllerRound
+  // prompt can exceed that bound, so requiring exact equality makes successful
+  // submissions mechanically unverifiable. Accept only an explicitly reported
+  // truncation of a substantial exact prefix; ordinary partial/mismatched text
+  // remains insufficient evidence.
+  return options.truncated === true
+    && message.length >= MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS
+    && normalizedPrompt.startsWith(message);
+}
+
+export function chatgptAutomationDeliveryFailure(
+  bodyText: string | undefined,
+): ChatgptProviderPageFailureCode | undefined {
+  return chatgptProviderPageFailure(bodyText);
+}
+
+export function chatgptSubmissionSettlementWaitBudget(timeoutMs?: number): number {
+  return Math.min(Math.max(timeoutMs ?? 30_000, 3_000), 30_000);
+}
+
+export function chatgptSubmissionAcceptanceObserved(input: {
+  outboundConfirmed: boolean;
+  hasConversationIdentity: boolean;
+  assistantResponseObserved: boolean;
+  generationInProgress: boolean;
+}): boolean {
+  return input.outboundConfirmed
+    && input.hasConversationIdentity
+    && (input.assistantResponseObserved || input.generationInProgress);
 }
 
 async function latestChatgptUserMessage(
@@ -127,15 +225,76 @@ async function fullChatgptMessageText(
   browserSessionId: string,
   message: { selector?: string; preview: string },
   timeoutMs?: number,
-): Promise<string> {
-  if (!message.selector) return message.preview;
+): Promise<{ text: string; truncated: boolean }> {
+  if (!message.selector) return { text: message.preview, truncated: false };
   const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
     session_id: browserSessionId,
     selector: message.selector,
-    max_chars: 20_000,
+    max_chars: MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS,
     timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
   }, timeoutMs).catch(() => undefined);
-  return stringField(result?.text) ?? message.preview;
+  return {
+    text: stringField(result?.text) ?? message.preview,
+    truncated: result?.truncated === true,
+  };
+}
+
+async function latestChatgptAssistantMessage(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<{ selector?: string; preview: string }> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_ASSISTANT_MESSAGE_SELECTOR,
+    limit: 1,
+    from_end: true,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs);
+  const latest = queryMatches(result).at(-1);
+  return { selector: matchSelector(latest), preview: latest ? matchText(latest) : '' };
+}
+
+function chatgptMessageObservationChanged(
+  before: { selector?: string; preview: string },
+  latest: { selector?: string; preview: string },
+): boolean {
+  return Boolean(
+    (latest.selector && latest.selector !== before.selector)
+    || (!before.preview && latest.preview)
+    || latest.preview !== before.preview,
+  );
+}
+
+async function chatgptGenerationInProgress(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<boolean> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_STOP_GENERATING_SELECTOR,
+    limit: 1,
+    timeout_ms: Math.min(timeoutMs ?? 1_000, 1_000),
+  }, timeoutMs).catch(() => undefined);
+  return queryMatches(result).length > 0;
+}
+
+async function chatgptDeliveryFailureOnPage(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<ChatgptProviderPageFailureCode | undefined> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
+    session_id: browserSessionId,
+    selector: 'body',
+    max_chars: MAX_CHATGPT_DELIVERY_FAILURE_SCAN_CHARS,
+    timeout_ms: Math.min(timeoutMs ?? 2_000, 2_000),
+  }, timeoutMs).catch(() => undefined);
+  return chatgptAutomationDeliveryFailure(stringField(result?.text));
 }
 
 function chatgptSendControlUnavailable(error: unknown): boolean {
@@ -173,6 +332,18 @@ function modelLabelMatches(label: string | undefined, model: string): boolean {
   return normalized.includes('5.6sol') || normalized.includes('gpt5.6sol');
 }
 
+export function chatgptAutomationModelFamilyMenuTrigger(
+  label: string | undefined,
+  ariaHasPopup: string | undefined,
+): boolean {
+  if (ariaHasPopup !== 'menu') return false;
+  const normalized = normalizeExecutionControlLabel(label);
+  // ChatGPT's composer can rotate model names independently of Forge releases.
+  // Locate the combined intelligence control by a bounded model-family prefix
+  // plus its menu-trigger role; do not treat arbitrary GPT prose/buttons as authority.
+  return /^gpt\d/.test(normalized);
+}
+
 function reasoningLabelMatches(label: string | undefined, reasoning: ChatgptAutomationReasoning): boolean {
   return chatgptAutomationReasoningLevelFromLabel(label) === reasoning;
 }
@@ -205,11 +376,23 @@ async function findChatgptIntelligenceControl(
       limit: chatgptAutomationControlQueryLimit(selector),
       timeout_ms: timeoutMs ?? 60_000,
     }, timeoutMs);
-    const match = queryMatches(result).find((candidate) => {
+    const candidates = queryMatches(result);
+    const exactMatch = candidates.find((candidate) => {
       const label = matchText(candidate);
       return modelLabelMatches(label, DEFAULT_CHATGPT_AUTOMATION_MODEL) || isReasoningControlLabel(label);
     });
-    if (match) return match;
+    if (exactMatch) return exactMatch;
+    for (const candidate of candidates) {
+      const candidateSelector = matchSelector(candidate);
+      if (!candidateSelector || !/^gpt\d/.test(normalizeExecutionControlLabel(matchText(candidate)))) continue;
+      const popup = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
+        session_id: browserSessionId,
+        selector: candidateSelector,
+        attribute: 'aria-haspopup',
+        timeout_ms: timeoutMs ?? 60_000,
+      }, timeoutMs).catch(() => undefined);
+      if (chatgptAutomationModelFamilyMenuTrigger(matchText(candidate), stringField(popup?.value))) return candidate;
+    }
   }
   return undefined;
 }
@@ -458,11 +641,19 @@ export async function closeChatgptAutomationTabAfterDispatch(
   workId: string,
   browserSessionId: string,
   timeoutMs?: number,
+  authorizationGrantRefs: readonly string[] = [],
 ): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
   try {
-    const closed = await controllerBrowserAction(controllerHome, workId, 'close_page', {
+    const closePage = () => controllerBrowserAction(controllerHome, workId, 'close_page', {
       session_id: browserSessionId,
     }, Math.min(timeoutMs ?? 15_000, 15_000));
+    const closed = authorizationGrantRefs.length > 0
+      ? await withChatgptBrowserActionOrigin(
+          { surface: 'schedule', actor: 'chatgpt-work-continuation' },
+          closePage,
+          new Set(authorizationGrantRefs),
+        )
+      : await closePage();
     if (closed.preservedUserOwnedTab === true) return { status: 'preserved_user_owned' };
     if (closed.resourceClosed === true) return { status: 'closed' };
     return { status: 'session_closed' };
@@ -489,6 +680,7 @@ export async function settleWorkChatgptAutomationTab(input: {
   workId: string;
   browserSessionId: string;
   timeoutMs?: number;
+  authorizationGrantRefs?: readonly string[];
 }): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
   if (input.browserSessionId.startsWith('forge-chatgpt-bridge-')) return { status: 'session_closed' };
   return closeChatgptAutomationTabAfterDispatch(
@@ -496,6 +688,7 @@ export async function settleWorkChatgptAutomationTab(input: {
     input.workId,
     input.browserSessionId,
     input.timeoutMs,
+    input.authorizationGrantRefs,
   );
 }
 
@@ -524,31 +717,34 @@ export async function navigateWorkConversation(
     timeout_ms: timeoutMs ?? 60_000,
     retries: 1,
   }, timeoutMs);
-  const openReplacement = async (url: string): Promise<string> => {
-    // Browser owns new-session identity. Passing any session_id makes open_page an
-    // existing-resource action, which is exactly wrong after the saved Work binding
-    // has proven stale. Snapshot complete inventory before dispatch so an unknown
-    // mutation outcome can be reconciled by one exact new live session only.
-    const beforeInventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 200 }, timeoutMs);
-    if (!completeChatgptBrowserInventorySessions(beforeInventory)) {
-      throw new Error('CHATGPT_AUTOMATION_SESSION_INVENTORY_TRUNCATED');
-    }
+  const openReplacement = async (sessionId: string, url: string): Promise<string> => {
+    // Fresh ControllerRound transport already owns an explicit Browser session
+    // identity. Use create_session with that exact id so native Browser never has
+    // to guess among multiple reusable Forge-owned tabs. The Browser adapter still
+    // owns tab identity/replacement and can recover a stale saved tab behind this id.
     try {
-      const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
+      const opened = await controllerBrowserAction(controllerHome, workId, 'create_session', {
+        session_id: sessionId,
         url,
         wait_until: 'domcontentloaded',
         timeout_ms: timeoutMs ?? 60_000,
         retries: 1,
       }, timeoutMs);
       const replacementSessionId = resultSessionId(opened);
-      if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
+      if (replacementSessionId !== sessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
       return replacementSessionId;
     } catch (error) {
-      if (!browserMutationOutcomeUnknown(error, 'open_page')) throw error;
-      const afterInventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 200 }, timeoutMs);
-      const reconciledSessionId = reconciledNewChatgptOpenPageSessionId(beforeInventory, afterInventory, url);
-      if (!reconciledSessionId) throw error;
-      return reconciledSessionId;
+      if (!browserMutationOutcomeUnknown(error, 'create_session')) throw error;
+      try {
+        const verified = await controllerBrowserAction(controllerHome, workId, 'verify_state', {
+          session_id: sessionId,
+          expected_url: url,
+        }, timeoutMs);
+        if (verified.matched === true && stringField(verified.sessionId) === sessionId) return sessionId;
+      } catch {
+        // Preserve the original create_session mutation-unknown evidence.
+      }
+      throw error;
     }
   };
   try {
@@ -562,7 +758,7 @@ export async function navigateWorkConversation(
       }, timeoutMs);
     } catch (preflightError) {
       if (!chatgptAutomationNavigationRequiresReplacement(preflightError)) throw preflightError;
-      const replacementSessionId = await openReplacement(targetUrl);
+      const replacementSessionId = await openReplacement(browserSessionId, targetUrl);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
     await navigate(browserSessionId, targetUrl);
@@ -584,7 +780,7 @@ export async function navigateWorkConversation(
       throw error;
     }
     if (chatgptAutomationNavigationRequiresReplacement(error)) {
-      const replacementSessionId = await openReplacement(targetUrl);
+      const replacementSessionId = await openReplacement(browserSessionId, targetUrl);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false, browserSessionId: replacementSessionId };
     }
     if (!isChatgptConversationUrl(targetUrl)) throw error;
@@ -593,7 +789,7 @@ export async function navigateWorkConversation(
       return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId };
     } catch (fallbackError) {
       if (!chatgptAutomationNavigationRequiresReplacement(fallbackError)) throw fallbackError;
-      const replacementSessionId = await openReplacement('https://chatgpt.com/');
+      const replacementSessionId = await openReplacement(browserSessionId, 'https://chatgpt.com/');
       return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
   }
@@ -610,6 +806,8 @@ export async function submitChatgptPrompt(
   const renderedPrompt = withForgePluginMention(prompt);
   const before = await latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs)
     .catch((): { selector?: string; preview: string; url?: string } => ({ selector: undefined, preview: '', url: targetUrl }));
+  const beforeAssistant = await latestChatgptAssistantMessage(controllerHome, workId, browserSessionId, timeoutMs)
+    .catch((): { selector?: string; preview: string } => ({ selector: undefined, preview: '' }));
   await controllerBrowserAction(controllerHome, workId, 'fill', {
     session_id: browserSessionId,
     selector: CHATGPT_PROMPT_SELECTOR,
@@ -620,6 +818,7 @@ export async function submitChatgptPrompt(
 
   let observedUrl = targetUrl;
   let submitOutcomeUnknown = false;
+  let observedNewOutbound = false;
   try {
     const sent = await controllerBrowserAction(controllerHome, workId, 'click', {
       session_id: browserSessionId,
@@ -647,25 +846,63 @@ export async function submitChatgptPrompt(
     }
   }
 
-  const deadline = Date.now() + Math.min(Math.max(timeoutMs ?? 10_000, 3_000), 10_000);
+  const deadline = Date.now() + chatgptSubmissionSettlementWaitBudget(timeoutMs);
+  let nextFailureProbeAt = 0;
   do {
     const latest = await latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs).catch(() => undefined);
     if (latest) {
       observedUrl = latest.url ?? observedUrl;
-      const isNewOutbound = Boolean(
-        (latest.selector && latest.selector !== before.selector)
-        || (!before.preview && latest.preview)
-        || latest.preview !== before.preview,
-      );
+      const isNewOutbound = chatgptMessageObservationChanged(before, latest);
       if (isNewOutbound) {
+        observedNewOutbound = true;
         const fullText = await fullChatgptMessageText(controllerHome, workId, browserSessionId, latest, timeoutMs);
-        if (chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt) && /\/c\/[^/?#]+/.test(observedUrl)) {
-          return observedUrl;
+        const outboundConfirmed = chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated });
+        const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
+        if (outboundConfirmed && hasConversationIdentity) {
+          const [latestAssistant, generationInProgress] = await Promise.all([
+            latestChatgptAssistantMessage(controllerHome, workId, browserSessionId, timeoutMs).catch(() => undefined),
+            chatgptGenerationInProgress(controllerHome, workId, browserSessionId, timeoutMs),
+          ]);
+          const assistantResponseObserved = Boolean(
+            latestAssistant?.preview
+            && chatgptMessageObservationChanged(beforeAssistant, latestAssistant),
+          );
+          if (chatgptSubmissionAcceptanceObserved({
+            outboundConfirmed,
+            hasConversationIdentity,
+            assistantResponseObserved,
+            generationInProgress,
+          })) {
+            return observedUrl;
+          }
+          if (Date.now() >= nextFailureProbeAt) {
+            const deliveryFailure = await chatgptDeliveryFailureOnPage(controllerHome, workId, browserSessionId, timeoutMs);
+            if (deliveryFailure) {
+              throw new ChatgptProviderDeliveryError(
+                deliveryFailure,
+                `${deliveryFailure}:${observedUrl}`,
+                { conversationUrl: observedUrl },
+              );
+            }
+            nextFailureProbeAt = Date.now() + CHATGPT_DELIVERY_FAILURE_PROBE_INTERVAL_MS;
+          }
         }
       }
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
-  throw new Error(`${submitOutcomeUnknown ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'}:${observedUrl}`);
+  const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
+  // A fresh /c/<id> is provider-side evidence that the send may have committed
+  // even when DOM observation lagged. Keep that ambiguity fenced. Conversely,
+  // a known-success click that never produced either an outbound message or a
+  // conversation identity is a confirmed delivery failure and its ephemeral
+  // Browser resource may be settled by the Work delivery owner.
+  const failureCode = submitOutcomeUnknown || hasConversationIdentity
+    ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN
+    : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED';
+  throw new ChatgptProviderDeliveryError(
+    failureCode,
+    `${failureCode}:${observedUrl}`,
+    { conversationUrl: observedUrl },
+  );
 }
-

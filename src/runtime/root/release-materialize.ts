@@ -4,10 +4,10 @@ import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, read
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
-import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
-import type { ProcessRuntimeReleaseCanaryCommand } from '../execution/process-runtime/canary';
-import { assertRuntimeReleaseExecutionCanaries } from './release-execution-canary';
+import { assertRuntimeReleaseExecutionSurface, loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
+import { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryCommand } from './release-execution-canary';
 export { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryDependencies } from './release-execution-canary';
 import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
@@ -34,11 +34,19 @@ export interface StagedRuntimeRelease {
   manifestPath: string;
   releaseId: string;
   artifactIdentity: string;
+  runtimeBundleArtifactIdentity?: string;
+  runtimeInterpreterArtifactIdentity?: string;
   diagnosticArtifactIdentity?: string;
+  connectorArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffArtifactIdentity?: string;
+  workflowSupervisorNativeHostArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
+  typescriptNavigationArtifactIdentity?: string;
+  contextPackArtifactIdentity?: string;
+  schedulerWorkerArtifactIdentity?: string;
+  periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeArtifactIdentity?: string;
   codeGraphNodeArtifactIdentity?: string;
@@ -49,6 +57,7 @@ export interface StagedRuntimeRelease {
   macosCodeSigning?: MacOSRuntimeCodeSigning;
   manifestSha256: string;
   sourceCommit: string;
+  sourceRepositoryId?: string;
 }
 
 export interface RuntimeReleaseMaterializerDependencies {
@@ -57,6 +66,8 @@ export interface RuntimeReleaseMaterializerDependencies {
   signMacOSRuntime?: (input: { executable: string; controllerHome: string }) => MacOSRuntimeCodeSigning;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string; entryPath?: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  bundleRuntime?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  materializeRuntimeInterpreter?: (input: { sourceRoot: string; outputPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleNodeHost?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   bundleProcessRunner?: (input: { sourceRoot: string; outputPath: string; entryPath: string }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
   materializeCodeGraphRuntime?: (input: {
@@ -75,6 +86,7 @@ export interface CandidateRuntimeStageReceiptV1 {
   artifactIdentity: string;
   manifestSha256: string;
   sourceCommit: string;
+  sourceRepositoryId: string;
 }
 
 export interface CandidateRuntimeReleaseStagerDependencies {
@@ -84,16 +96,62 @@ export interface CandidateRuntimeReleaseStagerDependencies {
     bunExecutable: string;
     scriptPath: string;
     sourceRoot: string;
+    dependencyRoot: string;
     controllerHome: string;
     expectedHead: string;
+    sourceRepositoryId: string;
   }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
-  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  runExecutionEntryCanary?: (input: RuntimeReleaseExecutionCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 function gitText(root: string, args: string[]): string {
   const result = runProcess('git', ['-C', root, ...args], { timeoutMs: 15_000, maxOutputBytes: 128 * 1024 });
   if (!result.ok) throw new Error(`RUNTIME_RELEASE_GIT_FAILED: ${result.stderr || result.stdout || result.error}`.slice(0, 2_000));
   return result.stdout.trim();
+}
+
+/**
+ * Materialize one exact tracked Git revision into a detached temporary worktree.
+ * The mutable source checkout remains only the object/dependency provider and may
+ * advance while the callback runs. Lifecycle/Runtime authority is untouched.
+ */
+export function withRuntimeReleaseSourceSnapshot<T>(input: {
+  sourceRoot: string;
+  sourceRevision: string;
+}, operation: (snapshotRoot: string) => T): T {
+  const sourceRoot = resolve(input.sourceRoot);
+  const requestedRevision = input.sourceRevision.trim();
+  if (!/^[a-f0-9]{40}$/i.test(requestedRevision)) throw new Error('RUNTIME_RELEASE_SOURCE_REVISION_INVALID');
+  const resolvedRevision = gitText(sourceRoot, ['rev-parse', '--verify', `${requestedRevision}^{commit}`]);
+  if (resolvedRevision !== requestedRevision) throw new Error('RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH');
+  const snapshotsRoot = join(sourceRoot, '.forge', 'runtime-release-source-snapshots');
+  mkdirSync(snapshotsRoot, { recursive: true, mode: 0o700 });
+  const snapshotRoot = join(snapshotsRoot, `${requestedRevision}-${process.pid}-${randomUUID().slice(0, 8)}`);
+  const materialized = runProcess('git', ['-C', sourceRoot, 'worktree', 'add', '--detach', '--force', snapshotRoot, requestedRevision], {
+    timeoutMs: 60_000,
+    maxOutputBytes: 128 * 1024,
+  });
+  if (!materialized.ok) {
+    throw new Error(`RUNTIME_RELEASE_SOURCE_SNAPSHOT_FAILED: ${materialized.stderr || materialized.stdout || materialized.error}`.slice(0, 2_000));
+  }
+  try {
+    if (gitText(snapshotRoot, ['rev-parse', '--verify', 'HEAD']) !== requestedRevision) {
+      throw new Error('RUNTIME_RELEASE_SOURCE_SNAPSHOT_REVISION_MISMATCH');
+    }
+    if (gitText(snapshotRoot, ['status', '--porcelain=v1', '--untracked-files=no'])) {
+      throw new Error('RUNTIME_RELEASE_SOURCE_SNAPSHOT_DIRTY');
+    }
+    return operation(snapshotRoot);
+  } finally {
+    const removed = runProcess('git', ['-C', sourceRoot, 'worktree', 'remove', '--force', snapshotRoot], {
+      timeoutMs: 60_000,
+      maxOutputBytes: 128 * 1024,
+    });
+    if (!removed.ok) {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+      runProcess('git', ['-C', sourceRoot, 'worktree', 'prune'], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+    }
+  }
 }
 
 function sha256(path: string): string {
@@ -228,6 +286,7 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
     artifactIdentity: requireCandidateStageString(value.artifactIdentity, 'artifactIdentity'),
     manifestSha256: requireCandidateStageString(value.manifestSha256, 'manifestSha256'),
     sourceCommit: requireCandidateStageString(value.sourceCommit, 'sourceCommit'),
+    sourceRepositoryId: requireCandidateStageString(value.sourceRepositoryId, 'sourceRepositoryId'),
   };
   if (!/^sha256:[a-f0-9]{64}$/i.test(receipt.artifactIdentity)) {
     throw new Error('RUNTIME_RELEASE_CANDIDATE_RECEIPT_INVALID: artifactIdentity must be sha256:<64 hex>');
@@ -251,9 +310,14 @@ function parseCandidateStageReceipt(stdout: string): CandidateRuntimeStageReceip
 export function stageRuntimeReleaseFromCandidateSource(input: {
   controllerHome: string;
   sourceRoot: string;
+  dependencyRoot?: string;
+  sourceRepositoryId: string;
 }, dependencies: CandidateRuntimeReleaseStagerDependencies = {}): StagedRuntimeRelease {
   const controllerHome = resolve(input.controllerHome);
   const sourceRoot = resolve(input.sourceRoot);
+  const dependencyRoot = resolve(input.dependencyRoot ?? input.sourceRoot);
+  const sourceRepositoryId = input.sourceRepositoryId.trim();
+  if (!sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_REQUIRED');
   const expectedHead = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(expectedHead)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
   const dirtyBefore = gitText(sourceRoot, ['status', '--porcelain=v1', '--untracked-files=no']);
@@ -269,15 +333,20 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     request.scriptPath,
     '--controller-home', request.controllerHome,
     '--source-root', request.sourceRoot,
+    '--dependency-root', request.dependencyRoot,
     '--expected-head', request.expectedHead,
+    '--source-repository-id', request.sourceRepositoryId,
   ], { cwd: request.sourceRoot, timeoutMs: 600_000, maxOutputBytes: 512 * 1024 }));
-  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, controllerHome, expectedHead });
+  const executed = runCandidateStager({ bunExecutable, scriptPath, sourceRoot, dependencyRoot, controllerHome, expectedHead, sourceRepositoryId });
   if (!executed.ok) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_STAGE_FAILED: ${executed.stderr || executed.stdout || executed.error}`.slice(0, 2_000));
   }
   const receipt = parseCandidateStageReceipt(executed.stdout ?? '');
   if (receipt.sourceCommit !== expectedHead) {
     throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_MISMATCH: expected ${expectedHead}, got ${receipt.sourceCommit}`);
+  }
+  if (receipt.sourceRepositoryId !== sourceRepositoryId) {
+    throw new Error(`RUNTIME_RELEASE_CANDIDATE_SOURCE_REPOSITORY_MISMATCH: expected ${sourceRepositoryId}, got ${receipt.sourceRepositoryId}`);
   }
 
   const headAfter = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
@@ -321,7 +390,9 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
   requireCompleteCompiledRuntimeReleaseManifest(manifest);
   if (manifest.releaseId !== receipt.releaseId
     || manifest.artifactIdentity !== receipt.artifactIdentity
-    || manifest.sourceCommit !== receipt.sourceCommit) {
+    || manifest.sourceCommit !== receipt.sourceCommit
+    || manifest.sourceRepositoryId !== sourceRepositoryId
+    || receipt.sourceRepositoryId !== sourceRepositoryId) {
     throw new Error('RUNTIME_RELEASE_CANDIDATE_MANIFEST_RECEIPT_MISMATCH');
   }
   const platform = dependencies.platform ?? process.platform;
@@ -343,11 +414,17 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     manifestPath,
     releaseId: receipt.releaseId,
     artifactIdentity: receipt.artifactIdentity,
+    runtimeBundleArtifactIdentity: manifest.runtimeBundleArtifactIdentity,
+    runtimeInterpreterArtifactIdentity: manifest.runtimeInterpreterArtifactIdentity,
     diagnosticArtifactIdentity: manifest.diagnosticArtifactIdentity,
+    connectorArtifactIdentity: manifest.connectorArtifactIdentity,
     browserNodeBridgeArtifactIdentity: manifest.browserNodeBridgeArtifactIdentity,
     browserHandoffArtifactIdentity: manifest.browserHandoffArtifactIdentity,
+    workflowSupervisorNativeHostArtifactIdentity: manifest.workflowSupervisorNativeHostArtifactIdentity,
     processRunnerArtifactIdentity: manifest.processRunnerArtifactIdentity,
     checkRunnerArtifactIdentity: manifest.checkRunnerArtifactIdentity,
+    schedulerWorkerArtifactIdentity: manifest.schedulerWorkerArtifactIdentity,
+    periodicCleanupArtifactIdentity: manifest.periodicCleanupArtifactIdentity,
     pluginActionSidecarArtifactIdentity: manifest.pluginActionSidecarArtifactIdentity,
     externalPluginProbeArtifactIdentity: manifest.externalPluginProbeArtifactIdentity,
     codeGraphNodeArtifactIdentity: manifest.codeGraphNodeArtifactIdentity,
@@ -358,6 +435,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     ...(macosCodeSigning ? { macosCodeSigning } : {}),
     manifestSha256: receipt.manifestSha256,
     sourceCommit: receipt.sourceCommit,
+    sourceRepositoryId,
   };
   assertRuntimeReleaseFiles(staged, dependencies);
   assertRuntimeReleaseExecutionCanaries(manifestPath, controllerHome, dependencies);
@@ -371,6 +449,43 @@ function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; e
     'build',
     input.entryPath ?? join(input.sourceRoot, 'src/runtime/root/entry.ts'),
     '--compile',
+    '--outfile',
+    input.outputPath,
+  ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
+}
+
+function defaultMaterializeRuntimeInterpreter(input: { sourceRoot: string; outputPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
+  const configured = process.env.FORGE_BUN_BIN?.trim();
+  const bun = configured || resolveBunExecutable(process.execPath, process.env);
+  const probe = runProcess(bun, ['-e', 'process.stdout.write(process.execPath)'], {
+    cwd: input.sourceRoot,
+    timeoutMs: 15_000,
+    maxOutputBytes: 16 * 1024,
+  });
+  if (!probe.ok) return probe;
+  try {
+    const reported = probe.stdout.trim();
+    if (!reported) return { ok: false, error: 'Bun did not report process.execPath' };
+    const source = realpathSync(resolve(reported));
+    const status = lstatSync(source);
+    if (status.isSymbolicLink() || !status.isFile() || (status.mode & 0o111) === 0) {
+      return { ok: false, error: `resolved Bun interpreter is not a regular executable: ${source}` };
+    }
+    copyFileSync(source, input.outputPath);
+    chmodSync(input.outputPath, 0o700);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function defaultBundleRuntimeScript(input: { sourceRoot: string; outputPath: string; entryPath: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
+  const configured = process.env.FORGE_BUN_BIN?.trim();
+  const bun = configured || resolveBunExecutable(process.execPath, process.env);
+  return runProcess(bun, [
+    'build',
+    input.entryPath,
+    '--target=bun',
     '--outfile',
     input.outputPath,
   ], { cwd: input.sourceRoot, timeoutMs: 300_000, maxOutputBytes: 512 * 1024 });
@@ -417,8 +532,13 @@ function defaultMaterializeCodeGraphRuntime(input: {
 export function stageRuntimeRelease(input: {
   controllerHome: string;
   sourceRoot: string;
+  dependencyRoot?: string;
+  sourceRepositoryId?: string;
 }, dependencies: RuntimeReleaseMaterializerDependencies = {}): StagedRuntimeRelease {
   const sourceRoot = resolve(input.sourceRoot);
+  const dependencyRoot = resolve(input.dependencyRoot ?? input.sourceRoot);
+  const sourceRepositoryId = input.sourceRepositoryId?.trim();
+  if (input.sourceRepositoryId !== undefined && !sourceRepositoryId) throw new Error('RUNTIME_RELEASE_SOURCE_REPOSITORY_ID_INVALID');
   const sourceCommit = gitText(sourceRoot, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(sourceCommit)) throw new Error('RUNTIME_RELEASE_SOURCE_COMMIT_INVALID');
   // Immutable release source is the tracked working tree. Untracked files are
@@ -437,17 +557,44 @@ export function stageRuntimeRelease(input: {
   mkdirSync(staging, { recursive: true, mode: 0o700 });
   try {
     const compileBinary = dependencies.compileBinary ?? defaultCompileBinary;
+    const platform = dependencies.platform ?? process.platform;
+    const runtimeBundleEntrypoint = 'forge-runtime-bundle.js' as const;
+    const runtimeBundlePath = join(staging, runtimeBundleEntrypoint);
+    const runtimeBundle = (dependencies.bundleRuntime ?? defaultBundleRuntimeScript)({
+      sourceRoot,
+      outputPath: runtimeBundlePath,
+      entryPath: join(sourceRoot, 'src/runtime/root/entry.ts'),
+    });
+    if (!runtimeBundle.ok) {
+      throw new Error(`RUNTIME_RELEASE_BUNDLE_BUILD_FAILED: ${runtimeBundle.stderr || runtimeBundle.stdout || runtimeBundle.error}`.slice(0, 2_000));
+    }
+    chmodSync(runtimeBundlePath, 0o600);
+    const runtimeBundleArtifactIdentity = `sha256:${sha256(runtimeBundlePath)}`;
+
+    const runtimeInterpreterEntrypoint = platform === 'win32'
+      ? 'forge-runtime-bun.exe' as const
+      : 'forge-runtime-bun' as const;
+    const runtimeInterpreterPath = join(staging, runtimeInterpreterEntrypoint);
+    const runtimeInterpreter = (dependencies.materializeRuntimeInterpreter ?? defaultMaterializeRuntimeInterpreter)({
+      sourceRoot,
+      outputPath: runtimeInterpreterPath,
+    });
+    if (!runtimeInterpreter.ok) {
+      throw new Error(`RUNTIME_RELEASE_INTERPRETER_BUILD_FAILED: ${runtimeInterpreter.stderr || runtimeInterpreter.stdout || runtimeInterpreter.error}`.slice(0, 2_000));
+    }
+    chmodSync(runtimeInterpreterPath, 0o700);
+    const runtimeInterpreterArtifactIdentity = `sha256:${sha256(runtimeInterpreterPath)}`;
+
     const executable = join(staging, 'forge-runtime');
     const compile = compileBinary({
       sourceRoot,
       outputPath: executable,
-      entryPath: join(sourceRoot, 'src/runtime/root/entry.ts'),
+      entryPath: join(sourceRoot, 'src/runtime/root/release-loader.ts'),
     });
     if (!compile.ok) {
       throw new Error(`RUNTIME_RELEASE_BUILD_FAILED: ${compile.stderr || compile.stdout || compile.error}`.slice(0, 2_000));
     }
     chmodSync(executable, 0o700);
-    const platform = dependencies.platform ?? process.platform;
     const macosCodeSigning = platform === 'darwin'
       ? (dependencies.signMacOSRuntime ?? defaultSignMacOSRuntime)({ executable, controllerHome: resolve(input.controllerHome) })
       : undefined;
@@ -468,6 +615,19 @@ export function stageRuntimeRelease(input: {
     }
     chmodSync(diagnosticExecutable, 0o700);
     const diagnosticArtifactIdentity = `sha256:${sha256(diagnosticExecutable)}`;
+
+    const connectorEntrypoint = 'forge-mcp-gateway' as const;
+    const connectorPath = join(staging, connectorEntrypoint);
+    const connectorCompile = compileBinary({
+      sourceRoot,
+      outputPath: connectorPath,
+      entryPath: join(sourceRoot, 'src/cli/index.ts'),
+    });
+    if (!connectorCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_CONNECTOR_BUILD_FAILED: ${connectorCompile.stderr || connectorCompile.stdout || connectorCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(connectorPath, 0o700);
+    const connectorArtifactIdentity = `sha256:${sha256(connectorPath)}`;
 
     const browserNodeBridgeEntrypoint = 'browser-node-bridge-host.js' as const;
     const browserNodeBridgePath = join(staging, browserNodeBridgeEntrypoint);
@@ -495,6 +655,19 @@ export function stageRuntimeRelease(input: {
     }
     chmodSync(browserHandoffPath, 0o700);
     const browserHandoffArtifactIdentity = `sha256:${sha256(browserHandoffPath)}`;
+
+    const workflowSupervisorNativeHostEntrypoint = 'forge-workflow-supervisor-native-host' as const;
+    const workflowSupervisorNativeHostPath = join(staging, workflowSupervisorNativeHostEntrypoint);
+    const workflowSupervisorNativeHostCompile = compileBinary({
+      sourceRoot,
+      outputPath: workflowSupervisorNativeHostPath,
+      entryPath: join(sourceRoot, 'supervisor', 'native-messaging', 'host.ts'),
+    });
+    if (!workflowSupervisorNativeHostCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_WORKFLOW_SUPERVISOR_NATIVE_HOST_BUILD_FAILED: ${workflowSupervisorNativeHostCompile.stderr || workflowSupervisorNativeHostCompile.stdout || workflowSupervisorNativeHostCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(workflowSupervisorNativeHostPath, 0o700);
+    const workflowSupervisorNativeHostArtifactIdentity = `sha256:${sha256(workflowSupervisorNativeHostPath)}`;
 
     const processRunnerEntrypoint = 'process-runner.js' as const;
     const processRunnerPath = join(staging, processRunnerEntrypoint);
@@ -527,6 +700,58 @@ export function stageRuntimeRelease(input: {
     }
     chmodSync(checkRunnerPath, 0o700);
     const checkRunnerArtifactIdentity = `sha256:${sha256(checkRunnerPath)}`;
+
+    const typescriptNavigationEntrypoint = 'forge-typescript-navigation' as const;
+    const typescriptNavigationPath = join(staging, typescriptNavigationEntrypoint);
+    const typescriptNavigationCompile = compileBinary({
+      sourceRoot,
+      outputPath: typescriptNavigationPath,
+      entryPath: join(sourceRoot, 'adapters/mcp/runtime-gateway/typescript-navigation-sidecar.ts'),
+    });
+    if (!typescriptNavigationCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_TYPESCRIPT_NAVIGATION_BUILD_FAILED: ${typescriptNavigationCompile.stderr || typescriptNavigationCompile.stdout || typescriptNavigationCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(typescriptNavigationPath, 0o700);
+    const typescriptNavigationArtifactIdentity = `sha256:${sha256(typescriptNavigationPath)}`;
+
+    const contextPackEntrypoint = 'forge-context-pack' as const;
+    const contextPackPath = join(staging, contextPackEntrypoint);
+    const contextPackCompile = compileBinary({
+      sourceRoot,
+      outputPath: contextPackPath,
+      entryPath: join(sourceRoot, 'adapters/mcp/runtime-gateway/context-pack-sidecar.ts'),
+    });
+    if (!contextPackCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_CONTEXT_PACK_BUILD_FAILED: ${contextPackCompile.stderr || contextPackCompile.stdout || contextPackCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(contextPackPath, 0o700);
+    const contextPackArtifactIdentity = `sha256:${sha256(contextPackPath)}`;
+
+    const schedulerWorkerEntrypoint = 'forge-scheduler-worker' as const;
+    const schedulerWorkerPath = join(staging, schedulerWorkerEntrypoint);
+    const schedulerWorkerCompile = compileBinary({
+      sourceRoot,
+      outputPath: schedulerWorkerPath,
+      entryPath: join(sourceRoot, 'src/runtime/control-plane/global-scheduler/scheduler-worker-entry.ts'),
+    });
+    if (!schedulerWorkerCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_SCHEDULER_WORKER_BUILD_FAILED: ${schedulerWorkerCompile.stderr || schedulerWorkerCompile.stdout || schedulerWorkerCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(schedulerWorkerPath, 0o700);
+    const schedulerWorkerArtifactIdentity = `sha256:${sha256(schedulerWorkerPath)}`;
+
+    const periodicCleanupEntrypoint = 'forge-periodic-cleanup' as const;
+    const periodicCleanupPath = join(staging, periodicCleanupEntrypoint);
+    const periodicCleanupCompile = compileBinary({
+      sourceRoot,
+      outputPath: periodicCleanupPath,
+      entryPath: join(sourceRoot, 'src/runtime/control-plane/global-scheduler/periodic-cleanup-entry.ts'),
+    });
+    if (!periodicCleanupCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_PERIODIC_CLEANUP_BUILD_FAILED: ${periodicCleanupCompile.stderr || periodicCleanupCompile.stdout || periodicCleanupCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(periodicCleanupPath, 0o700);
+    const periodicCleanupArtifactIdentity = `sha256:${sha256(periodicCleanupPath)}`;
 
     const pluginActionSidecarEntrypoint = 'forge-plugin-action-sidecar' as const;
     const pluginActionSidecarPath = join(staging, pluginActionSidecarEntrypoint);
@@ -583,14 +808,17 @@ export function stageRuntimeRelease(input: {
     cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
     const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
 
-    // The persistent OAuth/Connector is source-backed even when the primary
-    // Runtime itself is compiled. Co-locate one immutable package snapshot in
-    // the same release so standalone Recovery can bind the Connector to the
-    // exact active release instead of retaining an older package release.
+    // Keep the source-backed package projection during the Recovery migration.
+    // The active standalone Recovery release can predate the compiled Connector
+    // sidecar and still rebind the primary Connector through package/src/cli.
+    // Removing that surface here makes a candidate pass isolated Runtime
+    // canaries but fail the real cutover with missing CLI command modules. Once
+    // every supported Recovery release launches forge-mcp-gateway, this
+    // compatibility projection can be removed together with the fallback.
     const packageRoot = 'package' as const;
     const packagePath = join(staging, packageRoot);
-    const packageRecords = packageRuntimeFileIndex(sourceRoot);
-    stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords);
+    const packageRecords = packageRuntimeFileIndex(sourceRoot, dependencyRoot);
+    stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords, dependencyRoot);
     const packageArtifactIdentity = `sha256:${sha256Directory(packagePath)}`;
 
     const manifest = {
@@ -599,17 +827,33 @@ export function stageRuntimeRelease(input: {
       artifactIdentity,
       entrypoint: 'forge-runtime',
       executionMode: 'standalone-binary',
+      runtimeBundleEntrypoint,
+      runtimeBundleArtifactIdentity,
+      runtimeInterpreterEntrypoint,
+      runtimeInterpreterArtifactIdentity,
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticEntrypoint: 'forge-cli',
       diagnosticArtifactIdentity,
+      connectorEntrypoint,
+      connectorArtifactIdentity,
       browserNodeBridgeEntrypoint,
       browserNodeBridgeArtifactIdentity,
       browserHandoffEntrypoint,
       browserHandoffArtifactIdentity,
+      workflowSupervisorNativeHostEntrypoint,
+      workflowSupervisorNativeHostArtifactIdentity,
       processRunnerEntrypoint,
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
       checkRunnerArtifactIdentity,
+      typescriptNavigationEntrypoint,
+      typescriptNavigationArtifactIdentity,
+      contextPackEntrypoint,
+      contextPackArtifactIdentity,
+      schedulerWorkerEntrypoint,
+      schedulerWorkerArtifactIdentity,
+      periodicCleanupEntrypoint,
+      periodicCleanupArtifactIdentity,
       pluginActionSidecarEntrypoint,
       pluginActionSidecarArtifactIdentity,
       externalPluginProbeEntrypoint,
@@ -626,12 +870,13 @@ export function stageRuntimeRelease(input: {
       controllerUiArtifactIdentity,
       arguments: [],
       configurationSchemaVersion: 1,
-      controllerHome: resolve(input.controllerHome),
+      deploymentScope: 'portable',
       databaseSchemaCompatibility: {
         minimum: CONTROL_PLANE_SCHEMA_VERSION,
         maximum: CONTROL_PLANE_SCHEMA_VERSION,
       },
       workerProtocolVersion: 1,
+      ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
       sourceCommit,
       releaseRevision: releaseId,
       cleanWorkspace: true,
@@ -646,12 +891,20 @@ export function stageRuntimeRelease(input: {
       manifestPath: join(releasePath, 'manifest.json'),
       releaseId,
       artifactIdentity,
+      runtimeBundleArtifactIdentity,
+      runtimeInterpreterArtifactIdentity,
       ...(normalizedMacOSCodeSigning ? { macosCodeSigning: normalizedMacOSCodeSigning } : {}),
       diagnosticArtifactIdentity,
+      connectorArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
+      workflowSupervisorNativeHostArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
+      typescriptNavigationArtifactIdentity,
+      contextPackArtifactIdentity,
+      schedulerWorkerArtifactIdentity,
+      periodicCleanupArtifactIdentity,
       pluginActionSidecarArtifactIdentity,
       externalPluginProbeArtifactIdentity,
       codeGraphNodeArtifactIdentity,
@@ -661,7 +914,139 @@ export function stageRuntimeRelease(input: {
       controllerUiArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
+      ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
     };
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+
+interface RuntimeReleaseTreeInspection {
+  sha256: string;
+  bytes: number;
+  files: number;
+}
+
+function inspectRuntimeReleaseTree(releaseRootInput: string): RuntimeReleaseTreeInspection {
+  const requestedRoot = resolve(releaseRootInput);
+  if (!existsSync(requestedRoot)) throw new Error('RUNTIME_RELEASE_TREE_MISSING');
+  const rootStat = lstatSync(requestedRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('RUNTIME_RELEASE_TREE_ROOT_INVALID');
+  const root = realpathSync(requestedRoot);
+  const records: Array<{ path: string; mode: number; bytes: number; sha256: string }> = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(directory, entry.name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) throw new Error(`RUNTIME_RELEASE_TREE_SYMLINK_FORBIDDEN: ${relative(root, path)}`);
+      if (stat.isDirectory()) {
+        visit(path);
+        continue;
+      }
+      if (!stat.isFile()) throw new Error(`RUNTIME_RELEASE_TREE_SPECIAL_FILE_FORBIDDEN: ${relative(root, path)}`);
+      const bytes = readFileSync(path);
+      records.push({
+        path: relative(root, path).replaceAll('\\', '/'),
+        mode: stat.mode & 0o777,
+        bytes: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      });
+    }
+  };
+  visit(root);
+  const digest = createHash('sha256').update(JSON.stringify(records)).digest('hex');
+  return {
+    sha256: digest,
+    bytes: records.reduce((sum, record) => sum + record.bytes, 0),
+    files: records.length,
+  };
+}
+
+export function runtimeReleaseTreeSha256(releaseRoot: string): string {
+  return inspectRuntimeReleaseTree(releaseRoot).sha256;
+}
+
+export interface PromotedPortableRuntimeRelease {
+  releaseId: string;
+  artifactIdentity: string;
+  manifestPath: string;
+  manifestSha256: string;
+  treeSha256: string;
+  sourceReleaseRoot: string;
+  targetReleaseRoot: string;
+  reusedExisting: boolean;
+}
+
+export function promotePortableRuntimeRelease(input: {
+  sourceManifestPath: string;
+  targetControllerHome: string;
+  expectedTreeSha256: string;
+}): PromotedPortableRuntimeRelease {
+  const sourceManifestPath = resolve(input.sourceManifestPath);
+  const sourceReleaseRoot = dirname(sourceManifestPath);
+  const targetControllerHome = resolve(input.targetControllerHome);
+  const manifest = loadRuntimeReleaseManifest(sourceManifestPath, targetControllerHome);
+  if (manifest.deploymentScope !== 'portable') throw new Error('RUNTIME_RELEASE_PROMOTION_REQUIRES_PORTABLE_ARTIFACT');
+  requireCompleteCompiledRuntimeReleaseManifest(manifest);
+  assertRuntimeReleaseExecutionSurface(sourceManifestPath, targetControllerHome);
+
+  const sourceTree = inspectRuntimeReleaseTree(sourceReleaseRoot);
+  if (sourceTree.sha256 !== input.expectedTreeSha256) throw new Error('RUNTIME_RELEASE_PROMOTION_SOURCE_TREE_MISMATCH');
+  const sourceManifestSha256 = createHash('sha256').update(readFileSync(sourceManifestPath)).digest('hex');
+
+  const releasesRoot = join(targetControllerHome, 'runtime', 'releases');
+  mkdirSync(releasesRoot, { recursive: true, mode: 0o700 });
+  const targetReleaseRoot = join(releasesRoot, manifest.releaseId);
+  const targetManifestPath = join(targetReleaseRoot, 'manifest.json');
+
+  const verifyTarget = (reusedExisting: boolean): PromotedPortableRuntimeRelease => {
+    const targetManifest = loadRuntimeReleaseManifest(targetManifestPath, targetControllerHome);
+    if (
+      targetManifest.deploymentScope !== 'portable'
+      || targetManifest.releaseId !== manifest.releaseId
+      || targetManifest.artifactIdentity !== manifest.artifactIdentity
+    ) throw new Error('RUNTIME_RELEASE_PROMOTION_TARGET_IDENTITY_MISMATCH');
+    requireCompleteCompiledRuntimeReleaseManifest(targetManifest);
+    assertRuntimeReleaseExecutionSurface(targetManifestPath, targetControllerHome);
+    const targetManifestSha256 = createHash('sha256').update(readFileSync(targetManifestPath)).digest('hex');
+    const targetTreeSha256 = runtimeReleaseTreeSha256(targetReleaseRoot);
+    if (targetManifestSha256 !== sourceManifestSha256 || targetTreeSha256 !== sourceTree.sha256) {
+      throw new Error('RUNTIME_RELEASE_PROMOTION_NOT_BYTE_IDENTICAL');
+    }
+    return {
+      releaseId: manifest.releaseId,
+      artifactIdentity: manifest.artifactIdentity,
+      manifestPath: targetManifestPath,
+      manifestSha256: targetManifestSha256,
+      treeSha256: targetTreeSha256,
+      sourceReleaseRoot,
+      targetReleaseRoot,
+      reusedExisting,
+    };
+  };
+
+  if (existsSync(targetReleaseRoot)) return verifyTarget(true);
+
+  assertStorageHeadroom(releasesRoot, {
+    operation: 'runtime_release_promotion',
+    requiredBytes: sourceTree.bytes,
+    reserveBytes: 64 * 1024 * 1024,
+  });
+  const staging = join(releasesRoot, `.${manifest.releaseId}.promote-${process.pid}-${randomUUID().slice(0, 8)}`);
+  try {
+    cpSync(sourceReleaseRoot, staging, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      preserveTimestamps: false,
+      dereference: false,
+    });
+    const stagedTree = inspectRuntimeReleaseTree(staging);
+    if (stagedTree.sha256 !== sourceTree.sha256) throw new Error('RUNTIME_RELEASE_PROMOTION_STAGING_TREE_MISMATCH');
+    renameSync(staging, targetReleaseRoot);
+    return verifyTarget(false);
   } catch (error) {
     rmSync(staging, { recursive: true, force: true });
     throw error;
@@ -716,7 +1101,15 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   assertRegularFile(runtimePath, 'RUNTIME_RELEASE_ENTRYPOINT_MISSING');
   assertExecutable(runtimePath);
   assertFileIdentity(runtimePath, release.artifactIdentity);
+  assertComponentFile({ path: join(release.releasePath, 'forge-runtime-bundle.js'), identity: release.runtimeBundleArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BUNDLE_MISSING' });
   const platform = dependencies.platform ?? process.platform;
+  const runtimeInterpreterEntrypoint = platform === 'win32' ? 'forge-runtime-bun.exe' : 'forge-runtime-bun';
+  assertComponentFile({
+    path: join(release.releasePath, runtimeInterpreterEntrypoint),
+    identity: release.runtimeInterpreterArtifactIdentity,
+    missingCode: 'RUNTIME_RELEASE_INTERPRETER_MISSING',
+    executable: true,
+  });
   if (platform === 'darwin' && release.macosCodeSigning) {
     const actual = (dependencies.inspectMacOSRuntime ?? inspectMacOSRuntimeCodeSigning)(runtimePath);
     if (actual.identifier !== release.macosCodeSigning.identifier
@@ -727,10 +1120,16 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
     }
   }
   assertComponentFile({ path: join(release.releasePath, 'forge-cli'), identity: release.diagnosticArtifactIdentity, missingCode: 'RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-mcp-gateway'), identity: release.connectorArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CONNECTOR_ENTRYPOINT_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'browser-node-bridge-host.js'), identity: release.browserNodeBridgeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'browser-handoff-host.js'), identity: release.browserHandoffArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-workflow-supervisor-native-host'), identity: release.workflowSupervisorNativeHostArtifactIdentity, missingCode: 'RUNTIME_RELEASE_WORKFLOW_SUPERVISOR_NATIVE_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'process-runner.js'), identity: release.processRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PROCESS_RUNNER_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-check-runner'), identity: release.checkRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CHECK_RUNNER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-typescript-navigation'), identity: release.typescriptNavigationArtifactIdentity, missingCode: 'RUNTIME_RELEASE_TYPESCRIPT_NAVIGATION_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-context-pack'), identity: release.contextPackArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CONTEXT_PACK_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-scheduler-worker'), identity: release.schedulerWorkerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_SCHEDULER_WORKER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-periodic-cleanup'), identity: release.periodicCleanupArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PERIODIC_CLEANUP_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-plugin-action-sidecar'), identity: release.pluginActionSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'external-unix-socket-probe.cjs'), identity: release.externalPluginProbeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'codegraph-node'), identity: release.codeGraphNodeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CODEGRAPH_NODE_MISSING', executable: true });

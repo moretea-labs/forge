@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "xiaohongshu.publish-long-text",
+  "version": "1",
+  "title": "Xiaohongshu long-text publication",
+  "description": "First-party Xiaohongshu publication workflow. Platform URL/selector/login/verification facts are asset-owned; unknown page structure fails closed.",
+  "inputContract": {
+    "account": {
+      "type": "string",
+      "required": true
+    },
+    "session_id": {
+      "type": "string",
+      "required": true
+    },
+    "profile_url": {
+      "type": "string",
+      "required": true
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "body": {
+      "type": "string",
+      "required": true
+    },
+    "image_paths": {
+      "type": "json",
+      "default": []
+    },
+    "summary": {
+      "type": "string",
+      "default": ""
+    },
+    "template_text": {
+      "type": "string",
+      "default": ""
+    }
+  },
+  "requiredCapabilities": [
+    "browser.attach_local_file",
+    "browser.click_text",
+    "browser.dispatch_event",
+    "browser.fill",
+    "browser.navigate",
+    "browser.query_all",
+    "browser.reconcile_effect",
+    "browser.verify_state",
+    "browser.wait_for_selector"
+  ],
+  "steps": [
+    {
+      "stepId": "preflight.navigate_creator",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{resource.creatorArticleUrl}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "preflight.verify_ready",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url_contains_none": [
+          "/login",
+          "passport.xiaohongshu.com",
+          "login.xiaohongshu.com"
+        ],
+        "text_contains_any": [
+          "创作服务平台",
+          "发布笔记"
+        ],
+        "text_contains_none": [
+          "手机号登录",
+          "扫码登录",
+          "验证码登录"
+        ],
+        "max_chars": 8000
+      },
+      "outputContract": {
+        "matched": {
+          "type": "boolean",
+          "required": true
+        },
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "article.new",
+      "capabilityId": "browser.click_text",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "text": "{{prompt.articleNew}}",
+        "post_action_wait_ms": 900
+      }
+    },
+    {
+      "stepId": "article.wait_editor",
+      "capabilityId": "browser.wait_for_selector",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{selector.articleTitle}}",
+        "state": "visible",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "stepId": "article.fill_title",
+      "capabilityId": "browser.fill",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{selector.articleTitle}}",
+        "text": "{{input.title}}"
+      }
+    },
+    {
+      "stepId": "article.fill_body",
+      "capabilityId": "browser.fill",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{selector.articleBody}}",
+        "text": "{{input.body}}"
+      }
+    },
+    {
+      "stepId": "article.layout",
+      "capabilityId": "browser.click_text",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "text": "{{prompt.articleLayout}}",
+        "post_action_wait_ms": 1500
+      }
+    },
+    {
+      "stepId": "article.next",
+      "capabilityId": "browser.click_text",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "text": "{{prompt.articleNext}}",
+        "post_action_wait_ms": 1200
+      }
+    },
+    {
+      "stepId": "article.wait_publish",
+      "capabilityId": "browser.wait_for_selector",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{selector.publish}}",
+        "state": "visible",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "stepId": "publish.semantic_submit",
+      "capabilityId": "browser.dispatch_event",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{selector.publish}}",
+        "event": "publish",
+        "post_action_wait_ms": 1500
+      },
+      "idempotency": "non_idempotent",
+      "reconcileWithCapabilityId": "browser.reconcile_effect",
+      "reconciliationInput": {
+        "session_id": "{{input.session_id}}",
+        "applied_url_contains_any": [
+          "published=true",
+          "/publish/success",
+          "/publish/editsuccess"
+        ],
+        "effect_request_id": "{{runtime.effect_request_id}}"
+      }
+    },
+    {
+      "stepId": "verify.creator_receipt",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url_contains_any": [
+          "published=true",
+          "/publish/success",
+          "/publish/editsuccess"
+        ],
+        "url_contains_none": [
+          "/login",
+          "passport.xiaohongshu.com",
+          "login.xiaohongshu.com"
+        ],
+        "text_contains_none": [
+          "手机号登录",
+          "扫码登录",
+          "验证码登录"
+        ],
+        "max_chars": 4000
+      },
+      "outputContract": {
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        },
+        "matched": {
+          "type": "boolean",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "verify.note_manager",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{resource.creatorNoteManagerUrl}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "verify.query_links",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{selector.publicationLinks}}",
+        "limit": 100
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "verify.derive_publication",
+      "kind": "script",
+      "scriptRef": "derivePublication",
+      "input": {
+        "matches": "{{output.verify.query_links.matches}}",
+        "title": "{{input.title}}",
+        "body": "{{input.body}}",
+        "image_paths": "{{input.image_paths}}",
+        "summary": "{{input.summary}}",
+        "template_text": "{{input.template_text}}"
+      },
+      "outputContract": {
+        "post_id": {
+          "type": "string",
+          "required": true
+        },
+        "post_url": {
+          "type": "string",
+          "required": true
+        },
+        "content_digest": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  ],
+  "prompts": {
+    "imageTab": "上传图文",
+    "articleNew": "新的创作",
+    "articleLayout": "一键排版",
+    "articleNext": "下一步"
+  },
+  "scripts": {
+    "derivePublication": {
+      "runtime": "node",
+      "body": "const crypto = require('crypto');\nconst input = JSON.parse(process.argv[1] || '{}');\nconst title = String(input.title || '').trim();\nconst matches = Array.isArray(input.matches) ? input.matches : [];\nconst candidates = matches.filter((entry) => entry && typeof entry === 'object' && String(entry.text || '').trim() === title && typeof entry.href === 'string' && entry.href.trim());\nif (candidates.length !== 1) throw new Error(`XHS_PUBLICATION_IDENTITY_NOT_UNIQUE:${candidates.length}`);\nconst url = new URL(String(candidates[0].href), 'https://www.xiaohongshu.com');\nif (url.protocol !== 'https:' || !/(^|\\.)xiaohongshu\\.com$/i.test(url.hostname)) throw new Error('XHS_PUBLICATION_URL_INVALID');\nconst parts = url.pathname.split('/').filter(Boolean);\nconst postId = parts[parts.length - 1] || '';\nif (!postId) throw new Error('XHS_PUBLICATION_POST_ID_MISSING');\nconst content = { title, body: String(input.body || ''), imagePaths: Array.isArray(input.image_paths) ? input.image_paths : [], summary: String(input.summary || ''), templateText: String(input.template_text || '') };\nconst contentDigest = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex');\nprocess.stdout.write(JSON.stringify({ post_id: postId, post_url: url.toString(), content_digest: contentDigest }));",
+      "deterministic": true,
+      "outputFormat": "json"
+    }
+  },
+  "selectors": {
+    "imageFile": "input[type=file]",
+    "imageTitle": "input[placeholder*=\"标题\"]",
+    "imageBody": "[contenteditable=\"true\"][role=\"textbox\"]",
+    "articleTitle": "textarea:nth-of-type(1)",
+    "articleBody": "[contenteditable=\"true\"]",
+    "publish": "xhs-publish-btn",
+    "publicationLinks": "a[href]"
+  },
+  "resources": {
+    "creatorBaseUrl": "https://creator.xiaohongshu.com/publish/publish?source=official",
+    "creatorArticleUrl": "https://creator.xiaohongshu.com/publish/publish?source=official&target=article",
+    "creatorNoteManagerUrl": "https://creator.xiaohongshu.com/new/note-manager",
+    "loginUrlMarkers": "[\"/login\",\"passport.xiaohongshu.com\",\"login.xiaohongshu.com\"]",
+    "loginTextMarkers": "[\"手机号登录\",\"扫码登录\",\"验证码登录\"]",
+    "successUrlMarkers": "[\"published=true\",\"/publish/success\",\"/publish/editsuccess\"]"
+  },
+  "publication": {
+    "channel": "xiaohongshu",
+    "accountInput": "account",
+    "effectStepId": "publish.semantic_submit",
+    "contentDigestOutput": {
+      "stepId": "verify.derive_publication",
+      "field": "content_digest"
+    },
+    "postIdOutput": {
+      "stepId": "verify.derive_publication",
+      "field": "post_id"
+    },
+    "postUrlOutput": {
+      "stepId": "verify.derive_publication",
+      "field": "post_url"
+    },
+    "verificationStepIds": [
+      "verify.creator_receipt",
+      "verify.query_links",
+      "verify.derive_publication"
+    ]
+  }
+}

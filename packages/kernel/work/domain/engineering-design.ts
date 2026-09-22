@@ -31,8 +31,8 @@ export const ENGINEERING_DECISION_AREAS = [
 ] as const;
 export type EngineeringDecisionArea = (typeof ENGINEERING_DECISION_AREAS)[number];
 export type EngineeringCritiqueDecision = 'approved' | 'changes_required' | 'blocked';
-export type EngineeringBlockerClassification = 'same_root_cause' | 'unrelated';
-export type EngineeringBlockerAction = 'return_to_design' | 'linked_work';
+export type EngineeringBlockerClassification = 'same_root_cause' | 'same_root_cause_scope_extension' | 'unrelated';
+export type EngineeringBlockerAction = 'return_to_design' | 'extend_candidate' | 'linked_work';
 
 const MAX_ITEMS = 64;
 const MAX_TEXT = 2_000;
@@ -256,15 +256,20 @@ export function buildEngineeringBlockerDispositionReceipt(input: {
   rationale: string;
   recordedAt: string;
 }): EngineeringBlockerDispositionReceipt {
-  if (!['same_root_cause', 'unrelated'].includes(input.classification)) throw new Error('ENGINEERING_BLOCKER_CLASSIFICATION_INVALID');
+  if (!['same_root_cause', 'same_root_cause_scope_extension', 'unrelated'].includes(input.classification)) throw new Error('ENGINEERING_BLOCKER_CLASSIFICATION_INVALID');
   const linkedWorkId = input.linkedWorkId?.trim() || undefined;
+  const sameRootCause = input.classification !== 'unrelated';
   if (input.classification === 'unrelated' && !linkedWorkId) throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
-  if (input.classification === 'same_root_cause' && linkedWorkId) throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_FORBIDDEN');
+  if (sameRootCause && linkedWorkId) throw new Error('ENGINEERING_BLOCKER_LINKED_WORK_FORBIDDEN');
   const core = {
     sourceRevision: text(input.sourceRevision, 'ENGINEERING_BLOCKER_SOURCE_REQUIRED'),
     blockerId: text(input.blockerId, 'ENGINEERING_BLOCKER_ID_REQUIRED'),
     classification: input.classification,
-    action: input.classification === 'same_root_cause' ? 'return_to_design' as const : 'linked_work' as const,
+    action: input.classification === 'same_root_cause'
+      ? 'return_to_design' as const
+      : input.classification === 'same_root_cause_scope_extension'
+        ? 'extend_candidate' as const
+        : 'linked_work' as const,
     semanticScopeKeys: list(input.semanticScopeKeys ?? [], 'ENGINEERING_BLOCKER_SCOPE_INVALID', false),
     ...(linkedWorkId ? { linkedWorkId: text(linkedWorkId, 'ENGINEERING_BLOCKER_LINKED_WORK_INVALID') } : {}),
     rationale: text(input.rationale, 'ENGINEERING_BLOCKER_RATIONALE_REQUIRED'),

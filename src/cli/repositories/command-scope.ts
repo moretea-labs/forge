@@ -7,7 +7,7 @@ import { normalizeRepositoryCommand, type CanonicalRepositoryCommand } from './c
 
 const MAX_COMMAND_LENGTH = 32 * 1024;
 
-export type RepositoryCommandExternalPathOperation = 'external_read' | 'external_copy_into_workspace';
+export type RepositoryCommandExternalPathOperation = 'external_read' | 'external_copy_into_workspace' | 'controller_local_effect';
 
 export interface RepositoryCommandExternalPathUsage {
   token: string;
@@ -154,11 +154,30 @@ export function assertRepositoryCommandStableHostIdentity(input: unknown): Canon
   return command;
 }
 
+function assertNoUnmanagedControllerWorktreeLifecycle(command: CanonicalRepositoryCommand): void {
+  const isGitWorktreeAdd = (words: string[]) => {
+    const executable = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+    return executable === 'git' && words[1]?.toLowerCase() === 'worktree' && words[2]?.toLowerCase() === 'add';
+  };
+  if (command.kind === 'argv') {
+    if (isGitWorktreeAdd([command.executable!, ...(command.args ?? [])])) {
+      throw new Error('MANAGED_WORKSPACE_REQUIRED: repository_command_execute must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
+    }
+    return;
+  }
+  for (const segment of shellSegments(command.shellCommand ?? '')) {
+    if (isGitWorktreeAdd(shellWords(segment))) {
+      throw new Error('MANAGED_WORKSPACE_REQUIRED: repository_command_execute must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
+    }
+  }
+}
+
 export function assertRepositoryCommandInputAllowed(
   input: unknown,
   options: RepositoryCommandInputPolicyOptions = {},
 ): CanonicalRepositoryCommand {
   const command = assertRepositoryCommandStableHostIdentity(input);
+  assertNoUnmanagedControllerWorktreeLifecycle(command);
   if (command.kind === 'shell') {
     assertRepositoryCommandAllowed(command.shellCommand!, options);
   }
@@ -233,7 +252,74 @@ function readOnlyProgram(program: string | undefined): boolean {
   ].includes(program.toLowerCase()));
 }
 
+interface RepositoryCommandPathPolicyOptions {
+  controllerHome?: string;
+  repositoryId?: string;
+}
+
+interface SourceControllerRoundCompatibilityScope {
+  operation: 'round-continue' | 'round-close';
+  controllerHome: string;
+  workId: string;
+  controllerAuthorityId: string;
+  relayScopeId: string;
+}
+
+function sourceControllerRoundCompatibilityScope(
+  command: CanonicalRepositoryCommand,
+  options: RepositoryCommandPathPolicyOptions,
+): SourceControllerRoundCompatibilityScope | undefined {
+  if (command.kind !== 'argv' || !options.controllerHome || !options.repositoryId) return undefined;
+  const executable = command.executable?.split(/[\\/]/).at(-1)?.toLowerCase();
+  const args = command.args ?? [];
+  if (executable !== 'bun' || args[0] !== 'src/cli/index.ts' || args[1] !== 'chatgpt') return undefined;
+  const operation = args[2];
+  if (operation !== 'round-continue' && operation !== 'round-close') return undefined;
+
+  const allowedFlags = operation === 'round-continue'
+    ? new Set(['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id', '--reason', '--timeout-ms'])
+    : new Set(['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id', '--disposition', '--handoff-id', '--reason']);
+  const values = new Map<string, string>();
+  for (let index = 3; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+    if (!flag || !allowedFlags.has(flag) || !value || value.startsWith('--') || values.has(flag)) {
+      throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTRACT_INVALID:${operation}:${flag ?? 'missing'}`);
+    }
+    values.set(flag, value);
+  }
+  const required = ['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id'];
+  for (const flag of required) {
+    if (!values.get(flag)?.trim()) throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTRACT_INVALID:${operation}:${flag}`);
+  }
+  if (values.get('--repo-id') !== options.repositoryId) {
+    throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_REPOSITORY_MISMATCH:${values.get('--repo-id')}`);
+  }
+  const configuredControllerHome = realpathSync(options.controllerHome);
+  const requestedControllerHome = realpathSync(resolve(values.get('--controller-home')!));
+  if (requestedControllerHome !== configuredControllerHome) {
+    throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTROLLER_HOME_MISMATCH:${requestedControllerHome}`);
+  }
+  if (operation === 'round-close') {
+    const disposition = values.get('--disposition');
+    if (!disposition || !['wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
+      throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_DISPOSITION_INVALID:${disposition ?? 'missing'}`);
+    }
+    if (disposition === 'wait_for_user' && !values.get('--handoff-id')?.trim()) {
+      throw new Error('SOURCE_CONTROLLER_ROUND_COMMAND_HANDOFF_REQUIRED');
+    }
+  }
+  return {
+    operation,
+    controllerHome: configuredControllerHome,
+    workId: values.get('--work-id')!,
+    controllerAuthorityId: values.get('--controller-authority-id')!,
+    relayScopeId: values.get('--relay-scope-id')!,
+  };
+}
+
 function grantCoversPath(grant: ExternalFilesystemGrant, canonicalPath: string, operation: RepositoryCommandExternalPathOperation): boolean {
+  if (operation === 'controller_local_effect') return false;
   if (externalFilesystemGrantExpired(grant)) return false;
   if (operation === 'external_read' && grant.mode !== 'read') return false;
   if (operation === 'external_copy_into_workspace' && grant.mode !== 'copy_into_repo') return false;
@@ -279,8 +365,10 @@ export function assertCommandPathOperandsStayInRepository(
   cwd: string,
   root: string,
   externalGrants: ExternalFilesystemGrant[] = [],
+  options: RepositoryCommandPathPolicyOptions = {},
 ): RepositoryCommandExternalPathUsage[] {
   const usages: RepositoryCommandExternalPathUsage[] = [];
+  const controllerRoundScope = typeof command === 'string' ? undefined : sourceControllerRoundCompatibilityScope(command, options);
   const segments = typeof command === 'string'
     ? shellSegments(command).map((segment) => ({ raw: segment, words: shellWords(segment) }))
     : command.kind === 'shell'
@@ -310,6 +398,18 @@ export function assertCommandPathOperandsStayInRepository(
       if (pathInside(root, resolved)) continue;
       if (!absoluteInput) {
         throw new Error(`COMMAND_SCOPE_DENIED: command operand escapes repository root through a symlink or parent path: ${token}`);
+      }
+      if (controllerRoundScope
+        && words[index - 1] === '--controller-home'
+        && resolved === controllerRoundScope.controllerHome) {
+        usages.push({
+          token,
+          canonicalPath: resolved,
+          operation: 'controller_local_effect',
+          grantKey: `tool-contract-abi:${controllerRoundScope.operation}:${controllerRoundScope.workId}`,
+          grantRoot: controllerRoundScope.controllerHome,
+        });
+        continue;
       }
       if (sensitivePathDenied(resolved)) {
         throw new Error(`COMMAND_SCOPE_DENIED: sensitive external path is never allowed in repository commands: ${token}`);

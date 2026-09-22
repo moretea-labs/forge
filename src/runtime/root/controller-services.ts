@@ -1,3 +1,4 @@
+import { initializeWorkCandidateIndex } from '../../../packages/kernel/work/api/index';
 import {
   inspectControlPlaneDatabase,
   type ControlPlaneDatabaseInspection,
@@ -21,6 +22,7 @@ export class RuntimeControllerServices {
 
   initialize(): ControlPlaneDatabaseInspection {
     this.initializedDatabase = this.inspectDatabase(this.controllerHome);
+    initializeWorkCandidateIndex(this.controllerHome);
     return this.initializedDatabase;
   }
 

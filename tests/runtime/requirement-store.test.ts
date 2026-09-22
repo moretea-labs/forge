@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { completeRequirementFromWork, createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, requestWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -144,9 +144,7 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
     mutate: (current) => ({ ...current, state: 'active' }),
   })).toThrow(/REQUIREMENT_STATE_TRANSITION_INVALID/);
 
-  const retained = updateWorkContract({ controllerHome: home, repoId: 'repo-reviewed' }, work.workId, {
-    evidenceState: 'failed',
-  });
+  const retained = recordWorkEvidenceState({ controllerHome: home, repoId: 'repo-reviewed' }, work.workId, 'failed');
   expect(retained.status).toBe('cancelled');
   expect(readRequirement(options, 'req-reviewed')?.value.state).toBe('done');
 });

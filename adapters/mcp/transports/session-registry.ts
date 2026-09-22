@@ -1,6 +1,6 @@
 import { clearSessionCachesForSession } from '../../../src/cli/repository/session-cache';
 
-export type McpSessionRoute = '/mcp' | '/mcp-grok' | '/mcp-bearer';
+export type McpSessionRoute = '/mcp' | '/mcp-grok' | '/mcp-bearer' | '/recovery/mcp';
 
 export type McpSessionCloseReason =
   | 'client_delete'
@@ -70,6 +70,7 @@ export interface McpSessionSnapshot {
   maximum: number;
   capacityAvailable: number;
   utilization: number;
+  admissionMode: 'immediate' | 'eviction' | 'blocked';
   acceptingNewSessions: boolean;
   evictable: number;
   protected: number;
@@ -302,31 +303,44 @@ export class McpSessionRegistry<
     if (session) session.pendingCloseReason = reason;
   }
 
-  detach(sessionId: string, reason: McpSessionCloseReason = 'transport_close'): boolean {
+  private retireSession(sessionId: string, reason: McpSessionCloseReason): ManagedMcpSession<TTransport, TContext> | undefined {
     const session = this.sessions.get(sessionId);
-    if (!session) return false;
-    const closeReason = session.pendingCloseReason ?? reason;
-    this.sessions.delete(sessionId);
-    clearSessionCachesForSession(sessionId);
-    this.incrementCloseCounter(closeReason);
-    this.observeSessionClosed(session, closeReason);
-    return true;
-  }
-
-  async close(sessionId: string, reason: McpSessionCloseReason): Promise<boolean> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return false;
+    if (!session) return undefined;
     this.sessions.delete(sessionId);
     clearSessionCachesForSession(sessionId);
     session.pendingCloseReason = reason;
     this.incrementCloseCounter(reason);
     this.observeSessionClosed(session, reason);
-    try {
-      await session.transport.close();
-    } catch {
-      // The peer may have already closed the stream. Registry ownership is
-      // released before awaiting transport cleanup so reconnect can proceed.
-    }
+    return session;
+  }
+
+  private cleanupTransport(session: ManagedMcpSession<TTransport, TContext>): Promise<void> {
+    return Promise.resolve()
+      .then(() => session.transport.close())
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+
+  private closeForAdmission(sessionId: string, reason: McpSessionCloseReason): boolean {
+    const session = this.retireSession(sessionId, reason);
+    if (!session) return false;
+    // Admission authority is released synchronously. A slow peer/stream cleanup
+    // must not hold the serialized initialize lane after the registry has already
+    // fenced the old session out of routing.
+    void this.cleanupTransport(session);
+    return true;
+  }
+
+  detach(sessionId: string, reason: McpSessionCloseReason = 'transport_close'): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    return Boolean(this.retireSession(sessionId, session.pendingCloseReason ?? reason));
+  }
+
+  async close(sessionId: string, reason: McpSessionCloseReason): Promise<boolean> {
+    const session = this.retireSession(sessionId, reason);
+    if (!session) return false;
+    await this.cleanupTransport(session);
     return true;
   }
 
@@ -349,7 +363,7 @@ export class McpSessionRegistry<
           && previous.principalId === request.principalId
           && previous.route === request.route
           && previous.inFlightPosts === 0) {
-          await this.close(previous.sessionId, 'superseded');
+          this.closeForAdmission(previous.sessionId, 'superseded');
         }
       }
 
@@ -361,14 +375,14 @@ export class McpSessionRegistry<
         while (this.principalSessionCount(request.principalId) + this.principalReservationCount(request.principalId) + 1 > principalLimit) {
           const candidate = this.safeCandidates((session) => session.principalId === request.principalId)[0];
           if (!candidate) return undefined;
-          await this.close(candidate.sessionId, 'principal_capacity');
+          this.closeForAdmission(candidate.sessionId, 'principal_capacity');
         }
       }
 
       while (this.sessions.size + this.initializeReservations.size + 1 > this.maximumSessions) {
         const candidate = this.safeCandidates()[0];
         if (!candidate) return undefined;
-        await this.close(candidate.sessionId, 'capacity_eviction');
+        this.closeForAdmission(candidate.sessionId, 'capacity_eviction');
       }
 
       const reservationId = `initialize-${++this.nextReservationId}`;
@@ -440,12 +454,14 @@ export class McpSessionRegistry<
       .map((session) => session.postOpenedAt!)
       .concat(reservations.map((reservation) => reservation.createdAt));
     const oldestPostAgeMs = postOpenedAt.length === 0 ? 0 : Math.max(0, this.now() - Math.min(...postOpenedAt));
-    const acceptingNewSessions = capacityAvailable > 0 || evictable > 0;
+    const admissionMode = capacityAvailable > 0 ? 'immediate' : evictable > 0 ? 'eviction' : 'blocked';
+    const acceptingNewSessions = admissionMode !== 'blocked';
     return {
       active: sessions.length,
       maximum: this.maximumSessions,
       capacityAvailable,
       utilization: this.maximumSessions === 0 ? 1 : (sessions.length + reserved) / this.maximumSessions,
+      admissionMode,
       acceptingNewSessions,
       evictable,
       protected: protectedCount,

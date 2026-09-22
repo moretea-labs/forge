@@ -1,0 +1,186 @@
+{
+  "schemaVersion": "forge-cognitive-skill-retirement-decision/v1",
+  "decisionDate": "2026-09-21",
+  "requirementId": "REQ-forge-cognitive-skill-retirement-evaluation-20260921",
+  "planId": "PLAN-forge-cognitive-skill-retirement-evaluation-20260921-r1",
+  "sourceRevision": "29cdb4e223f75c7bcefeef1b82b9a4c23d55d75f",
+  "benchmark": {
+    "revision": "c992cc96ff1d51434c63da2726fa06c29ba23b13",
+    "report": "evaluation/results/ios-cognitive-skill-ab-20260921.json",
+    "evaluatorVersion": "forge-cognitive-skill-retirement-evaluator/v2",
+    "protocolDigest": "45279c4c71c8fc782cd44b89a6104167b2c8ae6f66b3e4ea8dd4d3a4f9a8a2bb",
+    "modelAnswerQuality": "not_measured",
+    "globalRetirementGatePassed": false,
+    "globalGateGaps": [
+      "critical_regression",
+      "semantic_coverage_regression"
+    ],
+    "coveredScenarioIds": [
+      "ios-interaction-state-single-owner",
+      "swiftui-state-ownership-performance",
+      "swiftui-native-accessibility",
+      "swift-concurrency-isolation",
+      "ios-design-system-governance"
+    ],
+    "fallbackScenarioIds": [
+      "ios-product-self-explaining-interaction"
+    ],
+    "fallbackCriticalConcepts": [
+      "product.user-job"
+    ]
+  },
+  "canary": {
+    "revision": "0f73f17f1d33ee449b56977bef9b6dfd9c46c946",
+    "version": "forge-cognitive-skill-canary/v1",
+    "realScenarioResult": {
+      "covered": 5,
+      "fallback": 1
+    },
+    "policy": "Only concepts present in the production final AssistantContext pack can satisfy a covered profile. Evaluation-gated fallback profiles cannot self-promote without a new benchmark decision.",
+    "procedures": "typed_capabilities"
+  },
+  "measuredSavings": {
+    "coveredFrozenCorpus": {
+      "scenarioCount": 5,
+      "skillFirstReads": 7,
+      "knowledgeFirstReads": 0,
+      "skillFirstContextBytes": 71644,
+      "knowledgeFirstContextBytes": 18085,
+      "contextByteReductionRatio": 0.7475713248841493
+    },
+    "fullFrozenCorpus": {
+      "skillFirstReads": 8,
+      "hybridSkillReads": 1,
+      "medianSkillFirstContextBytes": 11752.5,
+      "medianHybridContextBytes": 3688,
+      "medianContextByteReductionRatio": 0.6861965539246969
+    }
+  },
+  "physicalDeletionAuthorized": false,
+  "deletionBlockers": [
+    "The frozen six-scenario global retirement gate is not passed because the product-design scenario still has a critical product.user-job gap.",
+    "Model answer quality was not measured; retrieval/context evidence must not be reinterpreted as proof of complete answer quality.",
+    "Several Skill directories contain auxiliary scripts, detailed references, templates, or workflows outside the frozen corpus and not yet migrated to typed Forge capabilities."
+  ],
+  "skillDecisions": [
+    {
+      "skillId": "ios-engineering",
+      "sourceDigestSha256": "92d8dc8e5b14ea0d07f631c1f3b6aeb08fe8c7579f129cd7328e3606270906d4",
+      "sourceBytes": 8457,
+      "classification": "still_required",
+      "semanticStatus": "partially_covered",
+      "coveredScenarioIds": [
+        "ios-interaction-state-single-owner"
+      ],
+      "retainedScenarioIds": [
+        "ios-product-self-explaining-interaction"
+      ],
+      "missingSemanticObligations": [
+        "product.user-job"
+      ],
+      "proceduralCoverage": "partial",
+      "typedForgeCoverage": [
+        "Xcode/toolchain status",
+        "project and scheme discovery",
+        "build",
+        "Simulator preparation and boot",
+        "install and launch",
+        "screenshot and bounded logs",
+        "UI smoke review"
+      ],
+      "remainingObligations": [
+        "Product-design/user-job semantics for the retained fallback scenario.",
+        "Whole-app plan/debug/audit/test/verify workflows are broader than the frozen corpus.",
+        "scan_swift_patterns.py and report/test templates have not been migrated or independently proven unnecessary."
+      ],
+      "semanticSkillReadPolicy": "retain_for_uncovered_product_design; skip_for_evaluation_covered_interaction_state",
+      "physicalRetirement": "blocked"
+    },
+    {
+      "skillId": "swiftui-expert",
+      "sourceDigestSha256": "f13eb0641265759def71715e1f256d2963d8baa1f0eb950878110527cc47e497",
+      "sourceBytes": 11383,
+      "classification": "partially_covered",
+      "semanticStatus": "covered_for_frozen_scenarios",
+      "coveredScenarioIds": [
+        "swiftui-state-ownership-performance",
+        "swiftui-native-accessibility"
+      ],
+      "retainedScenarioIds": [],
+      "missingSemanticObligations": [],
+      "proceduralCoverage": "partial",
+      "typedForgeCoverage": [
+        "Xcode build and Simulator execution through existing iOS typed capabilities",
+        "normal Cognitive delivery of evaluated SwiftUI state/performance/accessibility principles"
+      ],
+      "remainingObligations": [
+        "Instruments trace recording and trace-analysis scripts are not represented by an equivalent typed Forge capability in this evaluation.",
+        "Detailed SwiftUI references outside the frozen state/performance/accessibility scenarios remain unbenchmarked."
+      ],
+      "semanticSkillReadPolicy": "skip_for_evaluation_covered_scenarios",
+      "physicalRetirement": "blocked"
+    },
+    {
+      "skillId": "swift-concurrency",
+      "sourceDigestSha256": "a84a3874320a955d5c0bd1841f84303cded83485007eda1b0c585c41827fa6a3",
+      "sourceBytes": 12526,
+      "classification": "partially_covered",
+      "semanticStatus": "covered_for_frozen_scenario",
+      "coveredScenarioIds": [
+        "swift-concurrency-isolation"
+      ],
+      "retainedScenarioIds": [],
+      "missingSemanticObligations": [],
+      "proceduralCoverage": "partial",
+      "typedForgeCoverage": [
+        "Repository build/test execution through existing process and iOS capabilities",
+        "normal Cognitive delivery of evaluated isolation/MainActor/Sendable/task-entry principles"
+      ],
+      "remainingObligations": [
+        "Actors, async algorithms, Core Data, memory management, testing, threading, migration, and other detailed references were not all exercised by the frozen corpus.",
+        "Physical deletion requires either explicit migration or broader held-out evidence for these reference obligations."
+      ],
+      "semanticSkillReadPolicy": "skip_for_evaluation_covered_scenario",
+      "physicalRetirement": "blocked"
+    },
+    {
+      "skillId": "ios-design-system",
+      "sourceDigestSha256": "736fc64994a25598414fe10cb475f2b6ea29f2b286a2944aef62873394db7b2e",
+      "sourceBytes": 10979,
+      "classification": "partially_covered",
+      "semanticStatus": "covered_for_frozen_scenario",
+      "coveredScenarioIds": [
+        "ios-design-system-governance"
+      ],
+      "retainedScenarioIds": [],
+      "missingSemanticObligations": [],
+      "proceduralCoverage": "partial",
+      "typedForgeCoverage": [
+        "normal Cognitive delivery of evaluated token/governance/system-first/single-source-of-truth principles",
+        "repository build and Simulator validation through existing typed iOS capabilities"
+      ],
+      "remainingObligations": [
+        "Fine-grained asset, color, spacing, typography, theme, component-style, and migration references remain outside the frozen corpus.",
+        "The bundled template/metadata and detailed governance references have not been independently migrated or proven unnecessary."
+      ],
+      "semanticSkillReadPolicy": "skip_for_evaluation_covered_scenario",
+      "physicalRetirement": "blocked"
+    }
+  ],
+  "retirementDecision": {
+    "semanticReadRetirement": "approved_only_for_the_five_evaluation_covered_scenarios",
+    "physicalSkillDirectoryRetirement": "not_approved",
+    "rationale": "Cognitive Knowledge plus the bounded canary removes repeated semantic Skill reads for the five covered scenarios, but the global gate still has one critical product-design gap and the Skill directories retain auxiliary obligations outside the frozen corpus.",
+    "rollback": [
+      "Revert the Knowledge-first canary commit to restore pre-canary context behavior.",
+      "Retained local Skill directories remain available because this Plan performs no deletion.",
+      "If a covered domain later emits a critical gap, treat it as fallback until a new benchmark/canary decision is accepted."
+    ],
+    "nextEvidenceNeeded": [
+      "Teach or otherwise admit a portable product.user-job principle, then rerun the unchanged product-design scenario and global gate.",
+      "Migrate SwiftUI Instruments procedures to typed capability or explicitly retain that auxiliary tool surface.",
+      "Expand held-out coverage for concurrency and design-system reference obligations before considering physical directory deletion.",
+      "Add model-answer-quality canary evidence before treating retrieval equivalence as full behavioral equivalence."
+    ]
+  }
+}

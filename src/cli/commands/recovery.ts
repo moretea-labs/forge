@@ -11,6 +11,7 @@ import {
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
 } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
 import {
   resolveControllerHome,
   rollbackStoppedControllerHomeAuthorityRelocation,
@@ -18,8 +19,7 @@ import {
 } from '../repositories/controller-home';
 import { FORGE_VERSION } from '../../version';
 import {
-  RECOVERY_GATEWAY_LABEL,
-  RECOVERY_WATCHDOG_LABEL,
+  RECOVERY_DAEMON_LABEL,
   inspectRecoveryTunnelLaunchdContract,
   installStandaloneRecovery,
   recoveryLaunchdPid,
@@ -36,6 +36,7 @@ import {
   activateRuntimeRelease,
   defaultPrimaryRuntimeServiceConfig,
   loadRecoveryConfig,
+  normalizeRecoveryInstallProfile,
   recoverPrimaryRuntime,
   recoveryMachineIdentity,
   restartPrimaryConnector,
@@ -148,12 +149,57 @@ export type { RecoveryControllerHomeMigrationPreflight };
 export interface RecoveryConnectorDependencies {
   platform?: NodeJS.Platform;
   pathExists?: (path: string) => boolean;
-  launchdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
-  systemdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
+  launchdPid?: (role: 'daemon') => number | undefined;
+  systemdPid?: (role: 'daemon') => number | undefined;
   tunnelLaunchdPid?: (label: string) => number | undefined;
   tunnelSystemdPid?: (unitName: string) => number | undefined;
   openAiTunnelStatus?: (service: OpenAiSecureTunnelServiceConfig) => OpenAiSecureTunnelRuntimeObservation;
   processAlive?: (pid: number) => boolean;
+  processParentPid?: (pid: number) => number | undefined;
+}
+
+function recoveryProcessParentPid(pid: number): number | undefined {
+  if (process.platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return undefined;
+  const result = spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 2_000,
+    maxBuffer: 8 * 1024,
+  });
+  if (result.status !== 0) return undefined;
+  const parent = Number.parseInt((result.stdout ?? '').trim(), 10);
+  return Number.isInteger(parent) && parent > 0 ? parent : undefined;
+}
+
+/**
+ * launchd may own a tiny wrapper (/usr/bin/env) while Recovery records the
+ * compiled child PID in its runtime identity. Treat only that bounded process
+ * lineage as the same managed service; unrelated live PIDs still fail closed.
+ */
+export function recoveryManagedServiceOwnsRuntimeProcess(
+  managedPid: number | undefined,
+  runtimePid: number | undefined,
+  dependencies: {
+    processAlive?: (pid: number) => boolean;
+    processParentPid?: (pid: number) => number | undefined;
+    maxDepth?: number;
+  } = {},
+): boolean {
+  if (!managedPid || !runtimePid || managedPid <= 0 || runtimePid <= 0) return false;
+  const processAlive = dependencies.processAlive ?? isProcessAlive;
+  if (!processAlive(managedPid) || !processAlive(runtimePid)) return false;
+  if (managedPid === runtimePid) return true;
+  const parentPid = dependencies.processParentPid ?? recoveryProcessParentPid;
+  const maxDepth = Math.max(1, Math.min(Math.trunc(dependencies.maxDepth ?? 8), 32));
+  const visited = new Set<number>([runtimePid]);
+  let current = runtimePid;
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    const parent = parentPid(current);
+    if (!parent || parent <= 0 || visited.has(parent)) return false;
+    if (parent === managedPid) return true;
+    visited.add(parent);
+    current = parent;
+  }
+  return false;
 }
 
 export interface RecoveryConnectorDescriptor {
@@ -173,8 +219,7 @@ export interface RecoveryConnectorDescriptor {
   };
   healthUrl: string;
   services: {
-    gateway: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
-    watchdog: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
+    recovery: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
     tunnel: {
       configured: boolean;
       platform?: 'launchd' | 'systemd-user' | 'openai-secure-tunnel';
@@ -207,15 +252,19 @@ export function recoveryConnectorDescriptor(
   const url = configuredUrl ?? `${localOrigin}/recovery/mcp`;
   const origin = new URL(url).origin;
   const passphraseConfigured = Boolean(readMcpServiceOAuthPassphrase(home));
-  const gatewayIdentity = readRecoveryRuntimeIdentity(home, 'gateway');
-  const watchdogIdentity = readRecoveryRuntimeIdentity(home, 'watchdog');
+  const recoveryIdentity = readRecoveryRuntimeIdentity(home, 'daemon');
   const platform = dependencies.platform ?? process.platform;
   const servicePlatform: 'launchd' | 'systemd-user' = platform === 'linux' ? 'systemd-user' : 'launchd';
   const pathExists = dependencies.pathExists ?? existsSync;
   const launchdPid = dependencies.launchdPid ?? recoveryLaunchdPid;
-  const systemdPid = dependencies.systemdPid ?? ((role: 'gateway' | 'watchdog') => systemdUserServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL));
-  const managedPid = (role: 'gateway' | 'watchdog') => servicePlatform === 'systemd-user' ? systemdPid(role) : launchdPid(role);
+  const systemdPid = dependencies.systemdPid ?? ((_role: 'daemon') => systemdUserServicePid(RECOVERY_DAEMON_LABEL));
+  const managedPid = () => servicePlatform === 'systemd-user' ? systemdPid('daemon') : launchdPid('daemon');
   const processAlive = dependencies.processAlive ?? isProcessAlive;
+  const serviceOwnsRuntimeProcess = (managedPid: number | undefined, runtimePid: number | undefined) =>
+    recoveryManagedServiceOwnsRuntimeProcess(managedPid, runtimePid, {
+      processAlive,
+      processParentPid: dependencies.processParentPid,
+    });
   const configuredTunnel = config.recoveryTunnelService;
   const tunnelService = configuredTunnel?.platform === 'launchd' ? configuredTunnel : undefined;
   const systemdTunnelService = configuredTunnel?.platform === 'systemd-user' ? configuredTunnel : undefined;
@@ -255,40 +304,24 @@ export function recoveryConnectorDescriptor(
       : Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
   const tunnelHealthy = openAiTunnelService ? openAiTunnelStatus?.healthy === true : tunnelRunning;
   const tunnelReady = openAiTunnelService ? openAiTunnelStatus?.ok === true : tunnelRestartSafe && tunnelRunning;
-  const gatewayPlistInstalled = pathExists(authority.gatewayLaunchAgent);
-  const watchdogPlistInstalled = pathExists(authority.watchdogLaunchAgent);
-  const gatewayServiceInstalled = servicePlatform === 'systemd-user'
-    ? pathExists(systemdUserUnitPath(RECOVERY_GATEWAY_LABEL))
-    : gatewayPlistInstalled;
-  const watchdogServiceInstalled = servicePlatform === 'systemd-user'
-    ? pathExists(systemdUserUnitPath(RECOVERY_WATCHDOG_LABEL))
-    : watchdogPlistInstalled;
-  const gatewayManagedPid = managedPid('gateway');
-  const watchdogManagedPid = managedPid('watchdog');
-  const gatewayRunning = Boolean(
-    gatewayIdentity
-    && gatewayManagedPid
-    && gatewayIdentity.pid === gatewayManagedPid
-    && processAlive(gatewayIdentity.pid)
+  const recoveryPlistInstalled = pathExists(authority.daemonLaunchAgent);
+  const recoveryServiceInstalled = servicePlatform === 'systemd-user'
+    ? pathExists(systemdUserUnitPath(RECOVERY_DAEMON_LABEL))
+    : recoveryPlistInstalled;
+  const recoveryManagedPid = managedPid();
+  const recoveryRunning = Boolean(
+    recoveryIdentity
+    && serviceOwnsRuntimeProcess(recoveryManagedPid, recoveryIdentity.pid)
     && authority.current
-    && gatewayIdentity.releaseRevision === authority.current.releaseRevision
-    && gatewayIdentity.manifestSha256 === authority.current.manifestSha256,
+    && recoveryIdentity.releaseRevision === authority.current.releaseRevision
+    && recoveryIdentity.manifestSha256 === authority.current.manifestSha256,
   );
-  const watchdogRunning = Boolean(
-    watchdogIdentity
-    && watchdogManagedPid
-    && watchdogIdentity.pid === watchdogManagedPid
-    && processAlive(watchdogIdentity.pid)
-    && authority.current
-    && watchdogIdentity.releaseRevision === authority.current.releaseRevision
-    && watchdogIdentity.manifestSha256 === authority.current.manifestSha256,
-  );
-  const installed = Boolean(authority.current && gatewayServiceInstalled && watchdogServiceInstalled);
+  const installed = Boolean(authority.current && recoveryServiceInstalled);
   const publicEndpoint = Boolean(configuredUrl?.startsWith('https://'));
   const warnings: string[] = [];
   if (!authority.current) warnings.push('No current immutable Forge Recovery release is installed. Run forge recovery install.');
-  if (!gatewayServiceInstalled || !watchdogServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} services are not fully installed. Run forge recovery install.`);
-  if (!gatewayRunning || !watchdogRunning) warnings.push('Forge Recovery Gateway or Watchdog is not running on the current Recovery release.');
+  if (!recoveryServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} service is not installed. Run forge recovery install.`);
+  if (!recoveryRunning) warnings.push('Forge Recovery service is not running on the current Recovery release.');
   if (!configuredTunnel) warnings.push('Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.');
   else if (openAiTunnelService) {
     if (!tunnelRestartSafe) warnings.push('The dedicated OpenAI Recovery tunnel must use a valid alias, tunnel id, loopback MCP endpoint, and env:/file: runtime API key reference.');
@@ -309,7 +342,7 @@ export function recoveryConnectorDescriptor(
     transport: 'streamable_http',
     url,
     public: publicEndpoint,
-    readyForChatGPT: installed && gatewayRunning && watchdogRunning && tunnelReady && (openAiTunnelService ? true : publicEndpoint) && passphraseConfigured,
+    readyForChatGPT: installed && recoveryRunning && tunnelReady && (openAiTunnelService ? true : publicEndpoint) && passphraseConfigured,
     installed,
     currentRelease: authority.current?.releaseRevision,
     previousRelease: authority.previous?.releaseRevision,
@@ -320,21 +353,13 @@ export function recoveryConnectorDescriptor(
     },
     healthUrl: `${origin}/recovery/health`,
     services: {
-      gateway: {
-        label: RECOVERY_GATEWAY_LABEL,
+      recovery: {
+        label: RECOVERY_DAEMON_LABEL,
         platform: servicePlatform,
-        serviceInstalled: gatewayServiceInstalled,
-        plistInstalled: gatewayPlistInstalled,
-        running: gatewayRunning,
-        ...(gatewayIdentity ? { pid: gatewayIdentity.pid } : {}),
-      },
-      watchdog: {
-        label: RECOVERY_WATCHDOG_LABEL,
-        platform: servicePlatform,
-        serviceInstalled: watchdogServiceInstalled,
-        plistInstalled: watchdogPlistInstalled,
-        running: watchdogRunning,
-        ...(watchdogIdentity ? { pid: watchdogIdentity.pid } : {}),
+        serviceInstalled: recoveryServiceInstalled,
+        plistInstalled: recoveryPlistInstalled,
+        running: recoveryRunning,
+        ...(recoveryIdentity ? { pid: recoveryIdentity.pid } : {}),
       },
       tunnel: {
         configured: Boolean(configuredTunnel),
@@ -404,7 +429,25 @@ function jsonObject(value: unknown): Record<string, unknown> {
 }
 
 async function responseJson(response: Response): Promise<Record<string, unknown>> {
-  try { return jsonObject(await response.json()); } catch { return {}; }
+  try {
+    const text = await response.text();
+    if (!text.trim()) return {};
+    if (/text\/event-stream/i.test(response.headers.get('content-type') ?? '')) {
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.startsWith('data:')) continue;
+        try {
+          const payload = jsonObject(JSON.parse(line.slice('data:'.length).trim()));
+          if (Object.keys(payload).length > 0) return payload;
+        } catch {
+          // Ignore non-JSON SSE fields and keep looking for the MCP data event.
+        }
+      }
+      return {};
+    }
+    return jsonObject(JSON.parse(text));
+  } catch {
+    return {};
+  }
 }
 
 export async function verifyRecoveryConnector(
@@ -595,7 +638,13 @@ export async function verifyRecoveryConnector(
           },
           body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params ? { params } : {}) }),
         });
-        if (method === 'notifications/initialized') return { response, result: {} as Record<string, unknown> };
+        if (response.headers.get('mcp-session-id')?.trim()) {
+          throw new Error(`${method} unexpectedly established transport session state`);
+        }
+        if (method === 'notifications/initialized') {
+          if (response.status !== 202) throw new Error(`${method} HTTP ${response.status}`);
+          return { response, result: {} as Record<string, unknown> };
+        }
         const body = await responseJson(response);
         const rpcError = jsonObject(body.error);
         if (response.status !== 200 || Object.keys(rpcError).length > 0) {
@@ -638,7 +687,7 @@ export async function verifyRecoveryConnector(
         runtimeStatusCall: runtimeStatusCall.response.status === 200,
         listReleasesCall: listReleasesCall.response.status === 200,
       };
-      if (!mcpOk) failures.push('mcp: initialize, Forge version, tool surface, or read-only calls did not match the Recovery contract.');
+      if (!mcpOk) failures.push('mcp: stateless initialize, Forge version, tool surface, or read-only calls did not match the Recovery contract.');
     } catch (error) {
       failures.push(`oauthPkce/mcp: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -710,6 +759,10 @@ export function buildRecoveryCommand(): Command {
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const repoRoot = resolve(opts.repo);
+      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(repoRoot, home);
+      if (!primaryRuntimeSourceRepository) {
+        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${repoRoot}`);
+      }
       const current = loadRecoveryConfig(home);
       const primaryConnectorBase = launchdService(
         opts.primaryConnectorServiceLabel,
@@ -723,6 +776,7 @@ export function buildRecoveryCommand(): Command {
       const installed = await installStandaloneRecovery({
         controllerHome: home,
         repoRoot,
+        primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId,
         port: current.gateway?.port ?? 8787,
         publicMcpUrl: current.publicMcpUrl,
         recoveryPublicUrl: current.recoveryPublicUrl,
@@ -730,6 +784,7 @@ export function buildRecoveryCommand(): Command {
         primaryPublicTunnelService: current.primaryPublicTunnelService,
         primaryRuntimeService: current.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(),
         primaryConnectorService,
+        profile: 'self-healing',
       });
       const refreshed = loadRecoveryConfig(home);
       const runtime = await stageAndActivateConfiguredRuntimeRelease(refreshed);
@@ -901,8 +956,9 @@ export function buildRecoveryCommand(): Command {
     });
 
   command.command('install')
-    .description('Build and activate the independent Forge Recovery Gateway and Watchdog release')
+    .description('Build Forge Recovery artifacts and activate only the explicitly selected persistent Recovery profile')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
+    .option('--profile <profile>', 'Recovery install profile: manual, gateway, or self-healing', 'manual')
     .option('--port <port>', 'Loopback Recovery Gateway port', '8787')
     .option('--public-mcp-url <url>', 'Primary Forge MCP public URL')
     .option('--recovery-public-url <url>', 'Dedicated Forge Recovery MCP public URL')
@@ -927,7 +983,7 @@ export function buildRecoveryCommand(): Command {
     .option('--primary-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for primary Forge')
     .option('--primary-openai-admin-profile <profile>', 'Optional tunnel-client admin profile used for primary runtime connect')
     .option('--primary-runtime-source-root <path>', 'Stable canonical/package source used by Recovery for future Runtime staging')
-    .option('--stage-only', 'Build and canary the Recovery release without activating services')
+    .option('--stage-only', 'Compatibility alias: build/canary only and do not mutate installed Recovery config or services')
     .action(async (opts: {
       controllerHome: string;
       port: string;
@@ -954,9 +1010,12 @@ export function buildRecoveryCommand(): Command {
       primaryOpenaiProfileDir?: string;
       primaryOpenaiAdminProfile?: string;
       primaryRuntimeSourceRoot?: string;
+      profile: string;
       stageOnly?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
+      const profile = normalizeRecoveryInstallProfile(opts.stageOnly ? 'manual' : opts.profile, 'manual');
+      if (opts.stageOnly && opts.profile !== 'manual') throw new Error('RECOVERY_STAGE_ONLY_PROFILE_CONFLICT');
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
       const recoveryLaunchdTunnel = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
@@ -1012,20 +1071,30 @@ export function buildRecoveryCommand(): Command {
       assertDistinctRecoveryOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
 
       const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
+      if (profile === 'manual' && (recoveryTunnelService || recoveryPublicUrl)) throw new Error('RECOVERY_PROFILE_GATEWAY_REQUIRED');
       if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
       if ((recoveryLaunchdTunnel || recoverySystemdTunnel) && !recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
       if (!recoveryTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 
       const packageRoot = resolve(import.meta.dir, '..', '..', '..');
       const primaryRuntimeSourceRoot = opts.primaryRuntimeSourceRoot ? resolve(opts.primaryRuntimeSourceRoot) : packageRoot;
+      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(primaryRuntimeSourceRoot, home);
+      if (!opts.stageOnly && !primaryRuntimeSourceRepository) {
+        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${primaryRuntimeSourceRoot}`);
+      }
       if (!opts.stageOnly && /[\\/]\.forge[\\/]managed-worktrees[\\/]/.test(primaryRuntimeSourceRoot)) {
         throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
       }
       const result = await installStandaloneRecovery({
         controllerHome: home,
         repoRoot: primaryRuntimeSourceRoot,
-        sourceRoot: packageRoot,
+        ...(primaryRuntimeSourceRepository ? { primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId } : {}),
+        // The package root is only the CLI's location. A package installation
+        // is not a Git checkout, while the explicitly registered primary
+        // Runtime source is the immutable Recovery release's provenance.
+        sourceRoot: primaryRuntimeSourceRoot,
         port,
+        profile,
         stageOnly: opts.stageOnly === true,
         primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
         publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
@@ -1036,6 +1105,7 @@ export function buildRecoveryCommand(): Command {
       });
       output({
         status: opts.stageOnly ? 'staged' : 'installed',
+        profile: result.profile,
         staged: result.staged.release,
         activation: result.activated,
         connector: recoveryConnectorDescriptor(home),

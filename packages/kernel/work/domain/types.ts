@@ -371,7 +371,7 @@ export interface WorkReconciliationRecord {
 }
 
 export interface WorkContract {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   workId: string;
   /** Portable semantic scope. New records derive this from Requirement/Plan/Work identity, never local repository registration. */
   scopeRef?: ScopeRef;
@@ -403,7 +403,7 @@ export interface WorkContract {
   phase: WorkPhase;
   /** Work-owned phase checkpoints. Task/Run/Process records may contribute evidence but cannot write this map directly. */
   phaseEvidence: WorkPhaseEvidenceMap;
-  /** Explicit v2 execution semantics. `status` is retained for compatibility. */
+  /** Explicit lifecycle semantics. `status` is retained as a compatibility/read projection, not transition authority. */
   workKind: WorkKind;
   /** Primary is an objective-level business execution lane; execution_child is a resumable low-level operation handle owned by a primary Work or standalone caller. */
   lifecycleRole?: 'primary' | 'execution_child';
@@ -518,7 +518,7 @@ export function executionPlacementForWork(
 }
 
 export interface WorkContractStore {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   updatedAt: string;
   contracts: WorkContract[];
 }

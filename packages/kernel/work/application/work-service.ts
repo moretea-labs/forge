@@ -2,7 +2,9 @@ import {
   appendWorkEvidence as persistWorkEvidence,
   getWorkContract as readWorkContract,
   recordWorkCompletionReceipt as persistWorkCompletionReceipt,
+  canonicalizeWorkContractForAuthority,
   rebindPlanBoundWorkContract as buildPlanBoundWorkRebind,
+  refreshPlanBoundWorkRevision as buildPlanBoundWorkRevisionRefresh,
   retirePlanBoundWorkContract as buildPlanBoundWorkRetirement,
 } from '../infrastructure/work-contract-store';
 import type { WorkContract } from '../domain/types';
@@ -80,21 +82,30 @@ export {
   acceptSubmittedWorkContract,
   listWorkContracts,
   readActiveWorkCandidates,
+  initializeWorkCandidateIndex,
   isCurrentWorkContract,
   supersedeWorkContract,
   getWorkContract,
   summarizeWorkContract,
   updateWorkContract,
+  promoteWorkToRepositoryChange,
+  recordWorkEvidenceState,
+  activateWorkContract,
+  failWorkContract,
+  cancelWorkContract,
+  recordCancelledWorkCleanupCompleted,
   resumeRetainedCancelledWorkContract,
   recordWorkScopeEvidence,
   transitionWorkContractPhase,
   requestWorkImplementationReview,
   recordWorkImplementationReview,
+  recordContentEquivalentCommitAuthorityTransfer,
   reconcileApprovedWorkImplementationReviewProjection,
   appendWorkEvidence,
   appendWorkHandoffRef,
   appendVerificationRecord,
   recordWorkCompletionReceipt,
+  canonicalizeWorkContractForAuthority,
 } from '../infrastructure/work-contract-store';
 export type {
   CreateWorkContractInput,
@@ -106,6 +117,7 @@ export type {
   AcceptSubmittedWorkInput,
   WorkContractStoreLocation,
   WorkContractStoreOptions,
+  WorkContractMetadataPatch,
 } from '../infrastructure/work-contract-store';
 
 /**
@@ -121,6 +133,14 @@ export function rebindPlanBoundWorkContract(
 }
 
 /** Build a validated terminal authority-retirement transition for a Work whose Plan is no longer current. */
+/** Refresh a Work against a newer revision of the same stable Plan identity. */
+export function refreshPlanBoundWorkRevision(
+  current: WorkContract,
+  input: Parameters<typeof buildPlanBoundWorkRevisionRefresh>[1],
+): WorkContract {
+  return buildPlanBoundWorkRevisionRefresh(current, input);
+}
+
 export function retirePlanBoundWorkContract(
   current: WorkContract,
   input: Parameters<typeof buildPlanBoundWorkRetirement>[1],

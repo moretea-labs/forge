@@ -33,9 +33,11 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment.ts';
+import { currentRuntimeWriteClaimEnvironment } from '../../root/write-fence.ts';
+import { readRuntimeReleaseAuthority } from '../../root/release-store.ts';
 import { StreamingSensitiveTextRedactor } from '../../evidence/sensitive-output.ts';
 import { PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG } from './canary.ts';
 
@@ -44,6 +46,7 @@ export interface ProcessCommandDescriptor {
   processId: string;
   repoId: string;
   controllerHome: string;
+  trustedRuntimeChild?: 'plugin_action_sidecar';
   command: {
     kind: 'argv' | 'shell';
     executable?: string;
@@ -101,9 +104,26 @@ function loadDescriptor(path: string): ProcessCommandDescriptor {
   return value;
 }
 
-function spawnCommand(command: ProcessCommandDescriptor['command']): ChildProcess {
+function commandEnvironment(descriptor: ProcessCommandDescriptor): NodeJS.ProcessEnv {
+  const command = descriptor.command;
+  const sanitized = repositoryChildProcessEnvironment({ ...process.env, ...(command.env ?? {}) });
+  if (descriptor.trustedRuntimeChild !== 'plugin_action_sidecar') return sanitized;
+  if (command.kind !== 'argv' || !command.executable) {
+    throw new Error('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: plugin action sidecar requires argv executable');
+  }
+  const authority = readRuntimeReleaseAuthority(descriptor.controllerHome);
+  if (!authority) throw new Error('PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: Runtime release authority is missing');
+  const expected = resolve(dirname(authority.active.manifestPath), 'forge-plugin-action-sidecar');
+  if (resolve(command.executable) !== expected) {
+    throw new Error(`PROCESS_RUNNER_TRUSTED_RUNTIME_CHILD_INVALID: expected ${expected}`);
+  }
+  return { ...sanitized, ...currentRuntimeWriteClaimEnvironment(descriptor.controllerHome) };
+}
+
+function spawnCommand(descriptor: ProcessCommandDescriptor): ChildProcess {
+  const command = descriptor.command;
   const useProcessGroup = process.platform !== 'win32';
-  const env = repositoryChildProcessEnvironment({ ...process.env, ...(command.env ?? {}) });
+  const env = commandEnvironment(descriptor);
   if (command.kind === 'shell') {
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
     const shellArgs = process.platform === 'win32'
@@ -316,7 +336,7 @@ export async function runProcessRunnerFromDescriptor(
 
   let spawnedChild: ChildProcess;
   try {
-    spawnedChild = spawnCommand(descriptor.command);
+    spawnedChild = spawnCommand(descriptor);
     child = spawnedChild;
     if (pendingSignal) void killTree(spawnedChild);
   } catch (error) {

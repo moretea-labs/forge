@@ -16,6 +16,8 @@ TEST_FILES=(
   "tests/cli/local-bridge.test.ts"
   "tests/runtime/thin-harness-gateway-routing.test.ts"
   "tests/runtime/runtime-observability.test.ts"
+  "tests/runtime/release-session.test.ts"
+  "tests/runtime/local-recovery-plugin.test.ts"
   "tests/unit/test-governance.test.ts"
 )
 

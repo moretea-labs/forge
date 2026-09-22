@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'path';
 import { openAiSecureTunnelStatusArgs, parseOpenAiSecureTunnelRuntimeStatus, tunnelRuntimeProfileTargetsEndpoint } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
 import { discoverExecutable, type ExecutableDiscoveryResult } from '../../runtime/platform/executable-discovery';
 import { resolvePlatformServiceManager, type PlatformServiceManagerKind } from '../../runtime/platform/service-manager';
+import { deriveRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from '../../runtime/root/deployment-topology';
 
 export type SetupControllerKind = 'chatgpt' | 'codex' | 'claude' | 'mcp';
 export type SetupTunnelProvider = 'auto' | 'openai' | 'cloudflare' | 'tailscale' | 'existing' | 'none';
@@ -185,6 +186,13 @@ export function setupHostTarget(profile: SetupProfile | undefined): SetupHostTar
 
 export function setupNeedsRemoteAccess(profile: SetupProfile | undefined): boolean {
   return Boolean(profile?.controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp'));
+}
+
+export function runtimeDeploymentTopologyForSetupProfile(profile: SetupProfile): RuntimeDeploymentTopology {
+  return deriveRuntimeDeploymentTopology({
+    controllers: profile.controllers,
+    capabilityIntents: profile.capabilityIntents,
+  });
 }
 
 export type SetupConnectorAuthMode = 'oauth' | 'none';

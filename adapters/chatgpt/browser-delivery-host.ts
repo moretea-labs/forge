@@ -21,19 +21,21 @@ export interface ChatgptBrowserDeliveryOperations {
 export function createChatgptBrowserDeliveryHost(operations: ChatgptBrowserDeliveryOperations): ChatgptProviderDeliveryHost {
   return {
     async dispatch(input) {
+      let effectiveBrowserSessionId = input.browserSessionId;
       try {
         await operations.ensureBrowser(input.controllerHome, input.workId);
         const navigation = await operations.navigate(
           input.controllerHome,
           input.workId,
-          input.browserSessionId,
+          effectiveBrowserSessionId,
           input.targetUrl,
           input.timeoutMs,
         );
+        effectiveBrowserSessionId = navigation.browserSessionId;
         const executionPreferenceVerified = await operations.ensureExecutionPreference(
           input.controllerHome,
           input.workId,
-          navigation.browserSessionId,
+          effectiveBrowserSessionId,
           input.model,
           input.reasoning,
           input.timeoutMs,
@@ -41,7 +43,7 @@ export function createChatgptBrowserDeliveryHost(operations: ChatgptBrowserDeliv
         const observedUrl = await operations.submitPrompt(
           input.controllerHome,
           input.workId,
-          navigation.browserSessionId,
+          effectiveBrowserSessionId,
           input.prompt,
           navigation.submissionTargetUrl,
           input.timeoutMs,
@@ -49,17 +51,23 @@ export function createChatgptBrowserDeliveryHost(operations: ChatgptBrowserDeliv
         return {
           status: 'dispatch_confirmed',
           provider: 'controller-browser',
-          browserSessionId: navigation.browserSessionId,
+          browserSessionId: effectiveBrowserSessionId,
           conversationUrl: observedUrl,
           executionPreferenceVerified,
         };
       } catch (error) {
         const providerError = chatgptProviderError(error, 'CHATGPT_CONTROLLER_BROWSER_FAILED');
+        // SUBMISSION_NOT_CONFIRMED is only a known failure when no provider-side
+        // conversation identity appeared. A new /c/<id> means the send may have
+        // committed despite lagging DOM confirmation, so preserve outcome_unknown.
+        const status = providerError.code === 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED' && providerError.conversationUrl
+          ? 'outcome_unknown'
+          : classifyChatgptProviderFailure(providerError.code, providerError.message);
         return {
-          status: classifyChatgptProviderFailure(providerError.code, providerError.message),
+          status,
           provider: 'controller-browser',
-          browserSessionId: input.browserSessionId,
-          conversationUrl: input.targetUrl,
+          browserSessionId: effectiveBrowserSessionId,
+          conversationUrl: providerError.conversationUrl ?? input.targetUrl,
           executionPreferenceVerified: false,
           error: providerError,
         };

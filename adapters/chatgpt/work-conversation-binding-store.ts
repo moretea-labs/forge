@@ -1,5 +1,6 @@
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { parseCanonicalChatgptConversationIdentity } from './conversation-identity';
 
 const NAMESPACE = 'chatgpt_work_conversation_binding';
 
@@ -13,6 +14,8 @@ export interface ChatgptWorkConversationBinding {
   conversationId: string;
   localAlias: string;
   latestBrowserSessionId?: string;
+  /** Explicit controller-scoped Browser grants reusable by scheduled delivery. */
+  authorizationGrantRefs?: string[];
   createdAt: string;
   updatedAt: string;
   lastContinuedAt?: string;
@@ -33,24 +36,13 @@ function nowIso(options: ChatgptWorkBindingStoreOptions): string {
 }
 
 export function parseChatgptConversationIdentity(value: string): { conversationUrl: string; conversationId: string } {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error('CHATGPT_WORK_CONVERSATION_URL_INVALID');
+  try { return parseCanonicalChatgptConversationIdentity(value); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'CHATGPT_CONVERSATION_URL_INVALID') throw new Error('CHATGPT_WORK_CONVERSATION_URL_INVALID');
+    if (message === 'CHATGPT_CONVERSATION_ID_MISSING') throw new Error('CHATGPT_WORK_CONVERSATION_ID_MISSING');
+    throw new Error('CHATGPT_WORK_CONVERSATION_ID_INVALID');
   }
-  if (url.protocol !== 'https:' || !['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(url.hostname)) {
-    throw new Error('CHATGPT_WORK_CONVERSATION_URL_INVALID');
-  }
-  const parts = url.pathname.split('/').filter(Boolean);
-  const c = parts.lastIndexOf('c');
-  const conversationId = c >= 0 ? parts[c + 1]?.trim() : undefined;
-  if (!conversationId) throw new Error('CHATGPT_WORK_CONVERSATION_ID_MISSING');
-  url.protocol = 'https:';
-  url.hostname = 'chatgpt.com';
-  url.search = '';
-  url.hash = '';
-  return { conversationUrl: url.toString(), conversationId };
 }
 
 export function hasChatgptConversationIdentity(value: string): boolean {
@@ -90,6 +82,7 @@ export function rebindChatgptWorkConversation(
     previousConversationId: string;
     conversationUrl: string;
     latestBrowserSessionId?: string;
+    authorizationGrantRefs?: readonly string[];
     localAlias?: string;
   },
 ): ChatgptWorkConversationBinding {
@@ -116,6 +109,7 @@ export function rebindChatgptWorkConversation(
         conversationId: identity.conversationId,
         localAlias: (input.localAlias?.trim() || existing.value.localAlias).slice(0, 180),
         latestBrowserSessionId: input.latestBrowserSessionId ?? existing.value.latestBrowserSessionId,
+        authorizationGrantRefs: [...new Set((input.authorizationGrantRefs ?? existing.value.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean))],
         createdAt: existing.value.createdAt,
         updatedAt: now,
         lastContinuedAt: now,
@@ -140,6 +134,7 @@ export function bindChatgptWorkConversation(
     workId: string;
     conversationUrl: string;
     latestBrowserSessionId?: string;
+    authorizationGrantRefs?: readonly string[];
     localAlias?: string;
   },
 ): ChatgptWorkConversationBinding {
@@ -167,6 +162,7 @@ export function bindChatgptWorkConversation(
         conversationId: identity.conversationId,
         localAlias: localAlias.slice(0, 180),
         latestBrowserSessionId: input.latestBrowserSessionId ?? existing?.value.latestBrowserSessionId,
+        authorizationGrantRefs: [...new Set((input.authorizationGrantRefs ?? existing?.value.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean))],
         createdAt: existing?.value.createdAt ?? now,
         updatedAt: now,
         lastContinuedAt: now,

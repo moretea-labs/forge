@@ -81,7 +81,10 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
     const checkpoint = contract.phaseEvidence?.[phase];
     if (!checkpoint) throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
     const index = phaseIndex(phase);
-    if (index < currentPhaseIndex && !['satisfied', 'skipped'].includes(checkpoint.state)) {
+    const historicalCancellationEvidence = contract.status === 'cancelled'
+      && contract.phase === 'cleanup'
+      && ['blocked', 'failed'].includes(checkpoint.state);
+    if (index < currentPhaseIndex && !['satisfied', 'skipped'].includes(checkpoint.state) && !historicalCancellationEvidence) {
       throw new Error(`WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: ${phase}`);
     }
     if (index === currentPhaseIndex && checkpoint.state === 'pending') {
@@ -214,7 +217,7 @@ const EVIDENCE_TRANSITIONS: Readonly<Record<EvidenceState, readonly EvidenceStat
 export function validateWorkSemanticTransition(
   current: WorkContract,
   next: WorkContract,
-  options: { allowRetainedCancelledResume?: boolean } = {},
+  options: { allowRetainedCancelledResume?: boolean; allowPhaseRegression?: boolean } = {},
 ): WorkContract {
   const retryingFailedWork = current.status === 'failed'
     && !current.completionOutcome
@@ -222,13 +225,15 @@ export function validateWorkSemanticTransition(
   const resumingRetainedCancelledWork = options.allowRetainedCancelledResume === true
     && current.status === 'cancelled'
     && current.dispatchState === 'terminal'
-    && current.phase === 'cleanup'
-    && current.phaseEvidence.cleanup.state === 'skipped'
+    && current.phaseEvidence[current.phase].state === 'skipped'
     && !current.completionReceipt
     && !current.completionOutcome
     && next.status === 'running'
     && next.dispatchState === 'running'
     && next.phase === 'implementation';
+  if (phaseIndex(next.phase) < phaseIndex(current.phase) && options.allowPhaseRegression !== true) {
+    throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: phase ${current.phase} -> ${next.phase} requires explicit regression authority`);
+  }
   if (!retryingFailedWork && !resumingRetainedCancelledWork && !DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
     throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: dispatch ${current.dispatchState} -> ${next.dispatchState}`);
   }

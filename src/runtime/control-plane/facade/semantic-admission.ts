@@ -11,7 +11,6 @@ export type PlanAdmissionRelation = (typeof PLAN_ADMISSION_RELATIONS)[number];
 
 export type PlanAdmissionReason =
   | 'exact_scope_authority'
-  | 'requirement_relation_required'
   | 'extension_target_required'
   | 'extend_existing'
   | 'create_new';
@@ -61,9 +60,9 @@ export function resolvePlanAdmission(
     ? activePlans.find((candidate) => candidate.scopeKey === normalizedScopeKey)
     : undefined;
 
-  // An explicit extension is a serial replan, not a second active Plan. Resolve
-  // it before exact-scope reuse so a successor may retain the predecessor scope.
-  // If another Plan owns the requested successor scope, preserve that authority.
+  // An explicit extension is a serial replan of one stable Plan identity, not a
+  // second active Plan. Resolve it before exact-scope reuse so the same Plan may
+  // revise its semantic scope. If another Plan owns that scope, preserve it.
   if (input.planRelation === 'extend') {
     if (!relatedPlan) {
       return {
@@ -103,17 +102,6 @@ export function resolvePlanAdmission(
       normalizedScopeKey,
       plan: exactScopeAuthority,
       candidates: [exactScopeAuthority],
-    };
-  }
-
-  if (requirementPlans.length > 0 && !input.planRelation) {
-    return {
-      admissionDecision: 'resolution_required',
-      resolutionRequired: true,
-      reason: 'requirement_relation_required',
-      normalizedScopeKey,
-      candidates: requirementPlans.slice(0, 8),
-      allowedPlanRelations: PLAN_ADMISSION_RELATIONS,
     };
   }
 

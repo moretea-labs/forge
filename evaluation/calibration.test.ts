@@ -4,6 +4,7 @@ import {
   FORMAL_ENVIRONMENT_POLICY,
   V172_AA_CALIBRATION,
   V172_ARTIFACT_DIGEST,
+  V172_HISTORICAL_ARTIFACT_DIGEST,
   V172_PUBLISHED_TARBALL_SHA256,
   V172_SOURCE_REVISION,
   assertFormalEnvironmentIdentity,
@@ -13,15 +14,39 @@ import {
   readFrozenCrossVersionAuthority,
   v172BaselineIdentity,
 } from './lib/calibration.ts';
+import { readV172BaselineAuthority, v172BaselineAuthorityDigest } from './lib/baseline-authority.ts';
+import { readV172BaselineReconstructionAuthority, v172BaselineReconstructionDigest } from './lib/baseline.ts';
 import { freezeEnvironmentIdentity, freezeEvaluationCorpus, freezeEvaluationProtocol, freezeEvaluatorIdentity } from './lib/protocol.ts';
 
 describe('frozen cross-version evaluation authority', () => {
-  test('pins v1.7.2 immutable source and published artifact identity', () => {
+  test('pins v1.7.2 source, reproducible baseline reconstruction and output authority', () => {
     const baseline = v172BaselineIdentity();
+    const frozen = readFrozenCrossVersionAuthority();
+    const reconstruction = readV172BaselineReconstructionAuthority();
+    const authority = readV172BaselineAuthority();
     expect(baseline.sourceRevision).toBe(V172_SOURCE_REVISION);
     expect(baseline.artifactDigest).toBe(V172_ARTIFACT_DIGEST);
     expect(baseline.executionSurface).toBe('public_mcp');
     expect(V172_PUBLISHED_TARBALL_SHA256).toMatch(/^[0-9a-f]{64}$/);
+    expect(V172_HISTORICAL_ARTIFACT_DIGEST).toBe('sha256:52ef73f9299d84895cd1a0692bf53023608dff6bc4ba29942a8f8d2bc3837db0');
+    expect(V172_ARTIFACT_DIGEST).toBe('sha256:1a0bb50ad97c414f4c553ef790b29c8786a76d0f6ca29e04bbd9fed3bb46d43e');
+    expect(V172_ARTIFACT_DIGEST).not.toBe(V172_HISTORICAL_ARTIFACT_DIGEST);
+    expect(v172BaselineReconstructionDigest()).toBe(frozen.baselineReconstructionDigest);
+    expect(v172BaselineAuthorityDigest()).toBe(frozen.baselineAuthorityDigest);
+    expect(reconstruction.sourceRevision).toBe(V172_SOURCE_REVISION);
+    expect(reconstruction.publishedPackage.tarballSha256).toBe(`sha256:${V172_PUBLISHED_TARBALL_SHA256}`);
+    expect(authority.reconstructionDigest).toBe(v172BaselineReconstructionDigest());
+    expect(authority.artifactDigest).toBe(V172_ARTIFACT_DIGEST);
+    expect(authority.productionDependencies).toEqual({
+      packageEntryCount: 100,
+      uniqueBlobCount: 99,
+      digest: 'sha256:4acfb83f4e977d16a077020e3c3279dedaf7e307f12d06a99d8fb2701c78c16c',
+    });
+    expect(authority.reproducibilityProof.method).toBe('independent_offline_builds');
+    expect(authority.reproducibilityProof.buildCount).toBe(2);
+    expect(authority.reproducibilityProof.receiptDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(authority.reproducibilityProof.artifactDigests).toEqual([V172_ARTIFACT_DIGEST, V172_ARTIFACT_DIGEST]);
+    expect(authority.reproducibilityProof.buildProcessIds.every(Boolean)).toBe(true);
   });
 
   test('binds the durable A/A calibration evidence and records noise without turning it into a formal threshold', () => {
@@ -31,6 +56,8 @@ describe('frozen cross-version evaluation authority', () => {
       scenarioCount: 24,
       trialCount: 48,
       sharedCorpusDigest: 'sha256:cd45a4ff9b3a5a7b84aed736f72fd7d920115225c2b35fcb74fd0e80337233ee',
+      baselineReconstructionDigest: v172BaselineReconstructionDigest(),
+      baselineAuthorityDigest: v172BaselineAuthorityDigest(),
       passedScenarioCount: 24,
       failedScenarioCount: 0,
       failureCount: 0,

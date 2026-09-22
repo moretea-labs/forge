@@ -24,8 +24,11 @@ import {
   PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
   rollbackEditSession,
   verifyEditSession,
-  type EditOperation,
 } from "../../../src/cli/editing/edit-session";
+import {
+  EDIT_OPERATION_INPUT_SCHEMA,
+  normalizeEditOperations,
+} from "../../../src/cli/editing/edit-operation-contract";
 import {
   cancelAgentJob,
   getAgentJob,
@@ -88,7 +91,7 @@ import { assessWorkMode, parseExplicitTaskMode } from "../../../src/cli/controll
 import { taskExecutionPolicy } from "../../../src/cli/controller/execution-policy";
 import { finishEditSession, finishTaskRun } from "../../../src/cli/controller/completion-orchestrator";
 import { buildControllerTaskLedgerProjection } from "../../../src/cli/controller/task-ledger";
-import { buildControllerContextPack } from "../../../src/cli/controller/context-pack";
+import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { loadControllerProjectState, saveControllerProjectState } from "../../../src/cli/controller/project-state";
 import {
   FORGE_MCP_SCHEMA_VERSION,
@@ -1040,49 +1043,6 @@ function controllerTaskDrafts(value: unknown): TaskDraft[] {
     recommendedAgent:
       parseControllerAgent(task.agent ?? task.recommendedAgent) ?? undefined,
   }));
-}
-
-function controllerEditOperations(value: unknown): EditOperation[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter(
-      (entry): entry is Record<string, unknown> =>
-        typeof entry === "object" && entry !== null && !Array.isArray(entry),
-    )
-    .map((entry) => {
-      const type = String(entry.type);
-      const path = String(entry.path ?? "");
-      const expectedSha256 = String(entry.expected_sha256 ?? entry.expectedSha256 ?? "");
-      if (type === "create") return { type, path, content: String(entry.content ?? "") };
-      if (type === "delete") return { type, path, expectedSha256 };
-      if (type === "write") return { type, path, expectedSha256, content: String(entry.content ?? "") };
-      if (type === "replace") {
-        return {
-          type,
-          path,
-          expectedSha256,
-          replacements: taskObjects(entry.replacements).map((replacement) => ({
-            oldText: String(replacement.old_text ?? replacement.oldText ?? ""),
-            newText: String(replacement.new_text ?? replacement.newText ?? ""),
-            replaceAll: replacement.replace_all === true || replacement.replaceAll === true,
-          })),
-        };
-      }
-      if (type === "insert_before" || type === "insert_after") {
-        return {
-          type,
-          path,
-          expectedSha256,
-          anchor: String(entry.anchor ?? ""),
-          content: String(entry.content ?? ""),
-          occurrence: typeof entry.occurrence === "number" ? Math.trunc(entry.occurrence) : undefined,
-        };
-      }
-      if (type === "prepend" || type === "append") {
-        return { type, path, expectedSha256, content: String(entry.content ?? "") };
-      }
-      throw new Error(`invalid edit operation type: ${type}`);
-    });
 }
 
 function renderPrdFromIdeaBody(args: Record<string, unknown>): string {
@@ -2659,35 +2619,7 @@ export function buildMcpToolDefinitions(
             expected_revision: { type: "number", description: "Optional current revision precondition for the edit session." },
             operations: {
               type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  type: {
-                    type: "string",
-                    enum: ["create", "write", "replace", "insert_before", "insert_after", "prepend", "append", "delete"],
-                  },
-                  path: { type: "string" },
-                  content: { type: "string" },
-                  expected_sha256: { type: "string" },
-                  anchor: { type: "string", description: "Anchor text for insert_before or insert_after." },
-                  occurrence: { type: "number", description: "1-based anchor occurrence; defaults to 1." },
-                  replacements: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        old_text: { type: "string" },
-                        new_text: { type: "string" },
-                        replace_all: { type: "boolean" },
-                      },
-                      required: ["old_text", "new_text"],
-                      additionalProperties: false,
-                    },
-                  },
-                },
-                required: ["type", "path"],
-                additionalProperties: false,
-              },
+              items: EDIT_OPERATION_INPUT_SCHEMA,
             },
           },
           required: ["session_id", "operations"],
@@ -3286,12 +3218,16 @@ export async function callMcpTool(
             ?? (typeof args.description === "string" && args.description.trim() ? undefined : "direct"),
         });
         const modeContextPack = assessment.modeBehavior.structuralContext === "required"
-          ? buildControllerContextPack(ctx.repoRoot, ctx.policy, {
-              description: typeof args.description === "string" ? args.description : undefined,
-              knownPaths: stringList(args.known_paths),
-              structuralContext: "required",
-              maxFiles: 8,
-              maxSnippets: 20,
+          ? await buildControllerContextPackInSidecar({
+              repoRoot: ctx.repoRoot,
+              policy: ctx.policy,
+              options: {
+                description: typeof args.description === "string" ? args.description : undefined,
+                knownPaths: stringList(args.known_paths),
+                structuralContext: "required",
+                maxFiles: 8,
+                maxSnippets: 20,
+              },
             })
           : undefined;
         const payload = {
@@ -4640,7 +4576,7 @@ export async function callMcpTool(
             ctx.repoRoot,
             ctx.policy,
             current.sessionId,
-            controllerEditOperations(args.operations),
+            normalizeEditOperations(args.operations),
             {
               expectedRevision:
                 typeof args.expected_revision === "number"

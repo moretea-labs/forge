@@ -4,7 +4,8 @@ import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { createPlatformServiceManagerHost, probeSystemdUserAvailable, type PlatformServiceManagerHost, type PlatformServiceManagerKind, type SystemdUserUnitInput } from '../platform/service-manager';
-import { RUNTIME_WRITE_CLAIM_ENV } from './write-fence';
+import { reconcileRetiredForgePersistentServices, type ForgeRetiredServiceReconciliation } from '../platform/service-inventory';
+import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import {
   activeRuntimeEntrypoint,
   activeRuntimeLaunchSpec,
@@ -19,6 +20,7 @@ import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './
 import { readRuntimeReleaseAuthority, revertInitialRuntimeReleasePublication, rollbackRuntimeRelease } from './release-store';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
+import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 
 export type PackageRuntimeServiceMode = PlatformServiceManagerKind;
 
@@ -74,6 +76,7 @@ export interface PackageRuntimeServiceInstallResult {
   pid?: number;
   warnings: string[];
   connector?: PackageConnectorServiceResult;
+  retiredServices?: ForgeRetiredServiceReconciliation[];
   activation?: {
     operationId: string;
     status: 'activation_scheduled';
@@ -94,6 +97,7 @@ export interface PackageRuntimeServiceOptions {
   env?: NodeJS.ProcessEnv;
   forcePortable?: boolean;
   refreshConnector?: boolean;
+  topology?: RuntimeDeploymentTopology;
 }
 
 export interface PackageRuntimeServiceDependencies {
@@ -101,6 +105,7 @@ export interface PackageRuntimeServiceDependencies {
   ensureConnectorService?: typeof ensurePackageConnectorService;
   scheduleDarwinActivation?: (request: PackageRuntimeActivationRequest) => Promise<{ label: string; servicePath: string }>;
   activationMode?: 'detached' | 'inline';
+  reconcileRetiredServices?: typeof reconcileRetiredForgePersistentServices;
 }
 
 export interface PackageRuntimeActivationDependencies {
@@ -131,14 +136,10 @@ export function systemdUserAvailable(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnvironment: Record<string, string>): NodeJS.ProcessEnv {
-  const next = { ...env };
-  for (const key of Object.values(RUNTIME_WRITE_CLAIM_ENV)) delete next[key];
-  delete next.FORGE_CONTROLLER_LIFECYCLE_OWNER;
-  delete next.FORGE_RELEASE_PATH;
-  delete next.FORGE_RELEASE_REVISION;
-  delete next.FORGE_RELEASE_SOURCE_COMMIT;
-  delete next.FORGE_RELEASE_CLEAN_WORKSPACE;
-  return { ...next, ...releaseEnvironment };
+  // The selected immutable release is the only authority reintroduced below.
+  // Do not carry an installer, host Runtime or Supervisor writer claim across
+  // this service boundary.
+  return { ...runtimeAuthorityFreeEnvironment(env), ...releaseEnvironment };
 }
 
 export function systemdRuntimeInstallCommands(unitName: string): string[][] {
@@ -471,6 +472,7 @@ export async function installPackageRuntimeService(
     host: options.host ?? '127.0.0.1',
     port: options.port ?? 8765,
     authTokenFile: options.authTokenFile,
+    topology: normalizeRuntimeDeploymentTopology(options.topology),
     ...(options.exclusiveWorkId?.trim() ? { exclusiveWorkId: options.exclusiveWorkId.trim() } : {}),
   };
   writeForgeRuntimeServiceConfig(config);
@@ -479,6 +481,11 @@ export async function installPackageRuntimeService(
   const env = options.env ?? process.env;
   const serviceHost = createPlatformServiceManagerHost({ platform, env, forcePortable: options.forcePortable });
   const serviceManager = serviceHost.selection;
+  const retiredServices = await (dependencies.reconcileRetiredServices ?? reconcileRetiredForgePersistentServices)({
+    host: serviceHost,
+    env,
+    accountHome: env.HOME,
+  });
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
   const explicitInjectedInline = Boolean(dependencies.installDarwinService && !dependencies.scheduleDarwinActivation && !dependencies.activationMode);
   const activationMode = dependencies.activationMode ?? (explicitInjectedInline ? 'inline' : 'detached');
@@ -592,6 +599,7 @@ export async function installPackageRuntimeService(
     }
   }
 
+  base = { ...base, retiredServices };
   if (!connectorEndpoint || base.status === 'activation_scheduled') return base;
   const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const connector = await ensureConnectorService({

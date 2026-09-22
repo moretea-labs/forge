@@ -1,4 +1,5 @@
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
+import { touchSchedulerWakeSignal } from '../global-scheduler/wake-signal';
 import {
   WORK_ADMISSION_POLICY_KEY as KEY,
   WORK_ADMISSION_POLICY_NAMESPACE as NAMESPACE,
@@ -35,7 +36,7 @@ export function activateExclusiveWorkAdmission(
       : at,
     updatedAt: at,
   };
-  return writeControlPlaneRecord(controllerHome, {
+  const written = writeControlPlaneRecord(controllerHome, {
     namespace: NAMESPACE,
     scope: SCOPE,
     key: KEY,
@@ -44,6 +45,8 @@ export function activateExclusiveWorkAdmission(
     action: 'work_admission_exclusive',
     expectedRevision: current?.revision ?? null,
   }).value;
+  touchSchedulerWakeSignal(controllerHome, 'work-admission-policy');
+  return written;
 }
 
 export function activateConvergenceWorkAdmission(
@@ -62,7 +65,7 @@ export function activateConvergenceWorkAdmission(
       : at,
     updatedAt: at,
   };
-  return writeControlPlaneRecord(controllerHome, {
+  const written = writeControlPlaneRecord(controllerHome, {
     namespace: NAMESPACE,
     scope: SCOPE,
     key: KEY,
@@ -71,6 +74,8 @@ export function activateConvergenceWorkAdmission(
     action: 'work_admission_convergence',
     expectedRevision: current?.revision ?? null,
   }).value;
+  touchSchedulerWakeSignal(controllerHome, 'work-admission-policy');
+  return written;
 }
 
 export function transitionConvergenceToExclusiveWorkAdmission(
@@ -96,7 +101,7 @@ export function transitionConvergenceToExclusiveWorkAdmission(
     activatedAt: at,
     updatedAt: at,
   };
-  return writeControlPlaneRecord(controllerHome, {
+  const written = writeControlPlaneRecord(controllerHome, {
     namespace: NAMESPACE,
     scope: SCOPE,
     key: KEY,
@@ -105,12 +110,14 @@ export function transitionConvergenceToExclusiveWorkAdmission(
     action: 'work_admission_convergence_to_exclusive',
     expectedRevision: current.revision,
   }).value;
+  touchSchedulerWakeSignal(controllerHome, 'work-admission-policy');
+  return written;
 }
 
 export function restoreNormalWorkAdmission(controllerHome: string, now = new Date().toISOString()): WorkAdmissionPolicy {
   const current = readControlPlaneRecord<WorkAdmissionPolicy>(controllerHome, NAMESPACE, SCOPE, KEY);
   const value = normalPolicy(now);
-  return writeControlPlaneRecord(controllerHome, {
+  const written = writeControlPlaneRecord(controllerHome, {
     namespace: NAMESPACE,
     scope: SCOPE,
     key: KEY,
@@ -119,6 +126,8 @@ export function restoreNormalWorkAdmission(controllerHome: string, now = new Dat
     action: 'work_admission_normal',
     expectedRevision: current?.revision ?? null,
   }).value;
+  touchSchedulerWakeSignal(controllerHome, 'work-admission-policy');
+  return written;
 }
 
 export function assertWorkAdmissionAllowed(

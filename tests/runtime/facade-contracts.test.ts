@@ -32,8 +32,45 @@ describe('handoff and facade contracts', () => {
     expect(properties).toHaveProperty('checkout_id');
     expect(properties?.operation?.enum).toContain('controller_disposition');
     expect(properties).toHaveProperty('disposition');
+    expect(properties).toHaveProperty('enroll_current_conversation');
     expect(properties).toHaveProperty('relay_scope_id');
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
+  });
+
+  test('keeps controller learning drafts bounded and provenance server-owned', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
+    const learning = properties?.learning_signals;
+    expect(learning?.maxItems).toBe(8);
+    expect(learning?.items?.additionalProperties).toBe(false);
+    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project', 'workspace']);
+    expect(learning?.items?.properties?.admission_source?.enum).toContain('explicit_human');
+    expect(learning?.items?.properties?.portability?.enum).toContain('portable');
+    expect(learning?.items?.properties).not.toHaveProperty('source_work_id');
+    expect(learning?.items?.properties).not.toHaveProperty('source_round_id');
+    expect(learning?.items?.properties).not.toHaveProperty('observed_at');
+    expect(learning?.items?.properties).not.toHaveProperty('source_kind');
+    expect(learning?.items?.properties).not.toHaveProperty('id');
+  });
+
+  test('derives stable rh_work schema and suggested-action admission from one operation ABI', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toEqual([...allowedFacadeOperations('rh_work')]);
+    expect(properties?.operation?.enum).toContain('review');
+    expect(properties?.operation?.enum).toContain('outcome_record');
+    expect(properties?.operation?.enum).toContain('experience_record');
+
+    const review = validateSuggestedNextActions([
+      { label: 'Review implementation', tool: 'rh_work', operation: 'review', risk: 'workspace_write' },
+    ]);
+    expect(review.actions).toHaveLength(1);
+
+    const invalid = validateSuggestedNextActions([
+      { label: 'Impossible transition', tool: 'rh_work', operation: 'not_in_stable_schema', risk: 'workspace_write' },
+    ]);
+    expect(invalid.actions).toHaveLength(0);
+    expect(invalid.warnings[0]).toContain('unsupported rh_work.not_in_stable_schema');
   });
 
   test('keeps direct Work authority recovery discoverable on the frozen rh_work schema', () => {
@@ -41,6 +78,7 @@ describe('handoff and facade contracts', () => {
     const properties = rhWork?.inputSchema.properties as Record<string, { description?: string; enum?: string[] }> | undefined;
     expect(properties).toHaveProperty('controller_authority_id');
     expect(properties?.capability_id?.description).toContain('controller.authority.recover:<workId>');
+    expect(properties?.capability_id?.description).toContain('controller.current_conversation.enroll');
     expect(properties?.capability_id?.description).toContain('plan.step.retry:<workId>');
   });
 
@@ -48,6 +86,8 @@ describe('handoff and facade contracts', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toContain('requirement_create');
+    expect(properties?.operation?.enum).toContain('requirement_promote_candidate');
+    expect(properties).toHaveProperty('requirement_candidate_id');
     expect(properties).toHaveProperty('requirement_title');
     expect(properties).toHaveProperty('requirement_outcome');
     expect(properties).toHaveProperty('requirement_acceptance_criteria');
@@ -305,7 +345,7 @@ describe('handoff and facade contracts', () => {
   test('routes typed plugin capabilities through the real plugin executor instead of rh_work', () => {
     const capabilities = listCapabilityDescriptors([]);
     expect(capabilities.find((entry) => entry.capabilityId === 'platform.ios')?.exposedVia).toBe('plugin_action_execute');
-    expect(capabilities.find((entry) => entry.capabilityId === 'plugin.browser')?.exposedVia).toBe('plugin_action_execute');
+    expect(capabilities.some((entry) => entry.capabilityId === 'plugin.browser')).toBe(false);
     const iosGroup = summarizeCapabilityGroups([]).find((entry) => entry.group === 'ios');
     expect(iosGroup?.executionSurfaces).toEqual(['plugin_action_execute']);
     expect(iosGroup?.facadeTools).toEqual([]);
@@ -320,7 +360,6 @@ describe('handoff and facade contracts', () => {
     expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
-      'browser',
       'controller',
       'evidence',
       'git',
@@ -381,8 +420,9 @@ describe('handoff and facade contracts', () => {
 
     const browser = searchCapabilityDescriptors('browser login authentication', manifests, 12);
     const browserIds = browser.map((entry) => entry.capabilityId);
-    expect(browserIds).toContain('plugin.browser');
+    expect(browserIds).not.toContain('plugin.browser');
     expect(browserIds).toContain('plugin.native_computer.observe_ui');
+    expect(browserIds).toContain('plugin.native_computer.press_ui');
     expect(browser.find((entry) => entry.capabilityId === 'plugin.native_computer.observe_ui')?.descriptor.exposedVia).toBe('plugin_action_execute');
   });
 

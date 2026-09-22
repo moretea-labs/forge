@@ -1,2 +1,5 @@
-export const RECOVERY_GATEWAY_LABEL = 'com.moretea.forge-recovery-gateway';
-export const RECOVERY_WATCHDOG_LABEL = 'com.moretea.forge-recovery-watchdog';
+export {
+  FORGE_RECOVERY_DAEMON_LABEL as RECOVERY_DAEMON_LABEL,
+  FORGE_RECOVERY_GATEWAY_LABEL as RECOVERY_GATEWAY_LABEL,
+  FORGE_RECOVERY_WATCHDOG_LABEL as RECOVERY_WATCHDOG_LABEL,
+} from '../platform/service-inventory';

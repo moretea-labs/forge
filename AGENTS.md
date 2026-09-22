@@ -21,6 +21,36 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - When no such conflict exists, do not set `workspace_mode=isolated`, `require_worktree=true`, or `direct_main_prohibited=true`; prefer the current canonical checkout and serialize writes there.
 - Integrate completed isolated work promptly back to `main` and remove its managed worktree/branch after containment and cleanup are proven. Do not accumulate completed worktrees as standing development environments.
 
+## Root-Cause-First Learning Discipline
+
+- Treat a newly observed failure or inefficiency as evidence, not an automatic patch trigger. Accumulate and cluster related symptoms by violated invariant, semantic owner, authority, and lifecycle before changing source.
+- Default learning loop: `observe -> cluster -> identify common root cause -> one coherent correction -> whole-diff review -> focused verification -> institutionalize the reusable rule/capability`. This is the **Root-Cause-First / Batch-Convergence** default; do not turn every symptom into its own patch/Work/validation cycle.
+- **Learn early, trust gradually.** High-signal explicit teaching/correction may be stored immediately as advisory knowledge at the narrowest justified scope; repetition determines strengthening/generalization/promotion, not whether the observation is allowed to be remembered.
+- Automatically inferred Project observations remain local evidence until corroborated. Repeated Forge engineering patterns may promote into portable Workspace guidance after the Cognitive corroboration contract; explicitly human-taught guidance may enter Workspace advisory memory only when marked portable and resolved through the existing Workspace/ControllerRound authority. Neither path silently overrides product/domain contracts, architecture authority, authorization, Requirement/Plan/Work, acceptance, or verification gates.
+- Emergency containment is narrow: active security exposure, data corruption/loss, production-wide outage, or a foundational blocker that prevents safe investigation may receive the smallest reversible containment first. Containment must be recorded as such and followed by root-cause closure; it is never the final architecture.
+- When a learned pattern can recur, prefer strengthening the existing typed contract, workflow, architecture rule, or gate over retaining a prose-only lesson. Do not create a second learning store, policy authority, lifecycle owner, fallback, or project-specific helper.
+
+## Mandatory Delivery Transaction
+
+### Current Task Lineage Isolation
+
+- The current task is selected by explicit user intent and the exact current Work/Requirement/Plan lineage. Repository-wide active Work is not a task queue.
+- `rh_status`, Plan listings, scheduler inventories, and other global projections may be consulted only to detect path conflicts, writer/authority ownership, blockers, or release admission conditions. They must not cause unrelated Work to enter discovery, implementation, validation, review, release, cleanup, or completion decisions for the current task.
+- Do not switch to another active Work because it looks urgent, is nearby in the repository, shares a broad Requirement, or appears in a global status response. A task switch requires explicit user intent or an explicit typed lineage transition from the current Work/Requirement.
+- When global state contains unrelated active Work, ignore its objectives and evidence unless they directly conflict with the current Work's files/authority or block the current delivery boundary. Record the conflict narrowly; do not absorb the unrelated Work.
+- When reporting progress, count only the current lineage. Repository-wide active counts must be labeled as unrelated inventory and never presented as remaining work for the current task.
+
+For Kernel V2 and other architecture migrations, optimize for one coherent delivery transaction rather than issue-by-issue lifecycle churn.
+
+- Default execution shape: `batch factual discovery -> root-cause/architecture decision -> freeze one delivery scope -> coherent implementation -> whole-diff review -> one focused validation wave -> one canonical-gate wave -> one final delivery -> terminal cleanup`.
+- Do not create a new Work, commit, validation cycle, or release merely because a new symptom, file, or same-root-cause path is discovered. Extend the current candidate when the architecture invariant and delivery objective remain the same.
+- During implementation, do not repeatedly re-check baseline, run broad gates, stage Candidate releases, or activate Runtime baselines. Early checks are reserved for facts that can invalidate the architecture/design or for safety-critical ambiguity.
+- Git commits are delivery/history boundaries, not scratch savepoints. Preserve intermediate state with the Work/edit-session/savepoint mechanisms; prefer one coherent candidate commit over per-file or per-fix commits.
+- Release is a Requirement/candidate boundary, not a per-Work boundary. Do not start Candidate/canary/cutover while source-changing Works for the same delivery remain active or the candidate scope is still moving.
+- A failed focused/canonical check returns to the same candidate and reruns only the affected check set after repair unless the failure invalidates the architecture. Do not restart the entire lifecycle by default.
+- Before opening another Work for an observed defect, cluster symptoms by root cause and owner. If the new fact belongs to the same invariant, keep it in the current Work; only a genuinely independent authority, delivery, security boundary, or architecture decision justifies a sibling Work.
+- Superseded, covered, or delivery-complete Work/Plan records must be reconciled and retired promptly so active lifecycle state represents real remaining work.
+- If lifecycle machinery itself is inefficient but the current V2 candidate can still converge safely, record a bounded post-V2 Plan and defer the machinery refactor. Do not expand the current release scope to fix the workflow that is executing it.
 ## Canonical Workflow Authority
 
 - Root `forge.config.json` is the modern declarative opt-in marker. It selects Controller Home Runtime authority; it is not a mirror of mutable state.

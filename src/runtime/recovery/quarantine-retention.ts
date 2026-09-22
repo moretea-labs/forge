@@ -18,12 +18,15 @@ export interface RuntimeQuarantineRetentionOptions {
   maxRetainedBytes?: number;
   maxEntries?: number;
   maxRemovals?: number;
+  /** Additional Controller-Home quarantine namespaces sharing this GC budget. */
+  additionalRoots?: readonly string[];
 }
 
 export interface RuntimeQuarantineRetentionReport {
   schemaVersion: 1;
   policyVersion: typeof RUNTIME_QUARANTINE_RETENTION_POLICY_VERSION;
   root: string;
+  roots: string[];
   inspected: number;
   migratedLegacyCount: number;
   eligible: number;
@@ -39,6 +42,10 @@ export interface RuntimeQuarantineRetentionReport {
 
 export function runtimeQuarantineRoot(controllerHome: string, repoId: string): string {
   return join(repositoryControllerRoot(controllerHome, repoId), 'quarantine', 'local-jobs');
+}
+
+export function runtimeLegacyCheckQuarantineRoot(controllerHome: string, repoId: string): string {
+  return join(repositoryControllerRoot(controllerHome, repoId), 'quarantine', 'legacy-checks');
 }
 
 export function runtimeQuarantinePath(controllerHome: string, repoId: string, id: string, at = new Date()): string {
@@ -119,10 +126,12 @@ export function cleanupRuntimeQuarantine(
   const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_RUNTIME_QUARANTINE_SCAN_BUDGET));
   let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_RUNTIME_QUARANTINE_REMOVAL_BUDGET));
   const root = runtimeQuarantineRoot(controllerHome, repoId);
+  const roots = [...new Set([root, ...(options.additionalRoots ?? [])])];
   const report: RuntimeQuarantineRetentionReport = {
     schemaVersion: 1,
     policyVersion: RUNTIME_QUARANTINE_RETENTION_POLICY_VERSION,
     root,
+    roots,
     inspected: 0,
     migratedLegacyCount: 0,
     eligible: 0,
@@ -183,22 +192,21 @@ export function cleanupRuntimeQuarantine(
     removeEmptyLegacyRoot(legacyRoot);
   }
 
-  let entries;
-  try {
-    entries = readdirSync(root, { withFileTypes: true })
-      .map((entry) => {
-        const path = join(root, entry.name);
-        try {
-          return { name: entry.name, path, mtimeMs: lstatSync(path).mtimeMs };
-        } catch {
-          return { name: entry.name, path, mtimeMs: nowMs };
-        }
-      })
-      .sort((left, right) => right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name));
-  } catch (error) {
-    report.errors.push(`quarantine root read: ${error instanceof Error ? error.message : String(error)}`);
-    return report;
+  const entries: Array<{ name: string; path: string; mtimeMs: number }> = [];
+  for (const currentRoot of roots) {
+    if (currentRoot !== root && !existsSync(currentRoot)) continue;
+    try {
+      for (const entry of readdirSync(currentRoot, { withFileTypes: true })) {
+        const path = join(currentRoot, entry.name);
+        let mtimeMs = nowMs;
+        try { mtimeMs = lstatSync(path).mtimeMs; } catch { /* concurrent removal is handled during the scan */ }
+        entries.push({ name: `${basename(currentRoot)}:${entry.name}`, path, mtimeMs });
+      }
+    } catch (error) {
+      report.errors.push(`quarantine root read ${currentRoot}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+  entries.sort((left, right) => right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name));
 
   let retainedBytes = 0;
   const scanned = entries.slice(0, maxEntries);

@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { bindTaskToWork, createIssue, getIssue, getIssueReadView, planIssue, updateTask } from '../../src/cli/controller/issue-store';
-import { createWorkContract, getWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkEvidenceState, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { projectControllerTaskFromWork } from '../../src/runtime/control-plane/facade/work-task-projection';
 import { finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
@@ -28,7 +28,7 @@ function git(repoRoot: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolean; requirementId?: string } = {}) {
+function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolean; requirementId?: string; workKind?: 'repository_change' | 'completed_no_change' } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-receipt-'));
   roots.push(repoRoot);
   git(repoRoot, ['init', '-b', 'main']);
@@ -82,6 +82,7 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
     forbiddenPaths: [],
     checks: [],
     requestedBy: 'chatgpt',
+    workKind: options.workKind ?? 'repository_change',
     ...(options.requirementId ? { requirementId: options.requirementId } : {}),
     status: options.equivalentHistoricalWork ? 'failed' : 'running',
     phase: 'cleanup',
@@ -129,7 +130,7 @@ describe('controller Work Task completion receipt', () => {
       delivery: { state: 'satisfied' },
       cleanup: { state: 'active' },
     });
-    expect(() => updateWorkContract(options, fx.workId, { phase: 'verification' })).toThrow(/WORK_PHASE_REQUIRES_TRANSITION_API/);
+    expect(() => updateWorkContract(options, fx.workId, { phase: 'verification' } as never)).toThrow(/WORK_LIFECYCLE_REQUIRES_TRANSITION_API/);
     const rewound = transitionWorkContractPhase(options, fx.workId, {
       phase: 'verification',
       status: 'running',
@@ -142,14 +143,21 @@ describe('controller Work Task completion receipt', () => {
       delivery: { state: 'pending' },
       cleanup: { state: 'pending' },
     });
-    const blocked = updateWorkContract(options, fx.workId, { status: 'blocked' });
+    const blocked = transitionWorkContractPhase(options, fx.workId, {
+      phase: 'verification',
+      status: 'blocked',
+      state: 'blocked',
+      dispatchState: 'blocked',
+      summary: 'Explicitly block verification while retaining the real Work phase.',
+    });
     expect(blocked.phase).toBe('verification');
-    expect(blocked.phaseEvidence.verification.state).toBe('active');
+    expect(blocked.dispatchState).toBe('blocked');
+    expect(blocked.phaseEvidence.verification.state).toBe('blocked');
   });
 
   test('does not allow generic writes to manufacture terminal Work or inject a receipt', () => {
     const fx = fixture();
-    expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { status: 'completed' })).toThrow(/WORK_COMPLETION_REQUIRES_RECORD_API/);
+    expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { status: 'completed' } as never)).toThrow(/WORK_LIFECYCLE_REQUIRES_TRANSITION_API/);
     expect(() => updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
       status: 'completed',
       completionOutcome: 'completed_changed',
@@ -168,7 +176,7 @@ describe('controller Work Task completion receipt', () => {
         verifiedAt: new Date().toISOString(),
         recordedAt: new Date().toISOString(),
       },
-    })).toThrow(/WORK_COMPLETION_REQUIRES_RECORD_API/);
+    } as never)).toThrow(/WORK_LIFECYCLE_REQUIRES_TRANSITION_API/);
   });
 
   test('binds a completed cleaned Work to the exact verified Task even when Requirement projection is unavailable', () => {
@@ -452,12 +460,11 @@ describe('controller Work Task completion receipt', () => {
   });
 
   test('emits an idempotent no-change receipt only with explicit clean proof', () => {
-    const fx = fixture({ changed: false });
+    const fx = fixture({ changed: false, workKind: 'completed_no_change' });
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
-      workKind: 'completed_no_change',
-      evidenceState: 'valid',
       evidenceRefs: [{ title: 'objective-specific no-change proof', summary: 'The required repository state was observed at the exact target revision.', detailLevel: 'summary' }],
     });
+    recordWorkEvidenceState({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, 'valid');
     writeWorkHandle(fx.controllerHome, {
       ...fx.handle,
       state: 'prepared',

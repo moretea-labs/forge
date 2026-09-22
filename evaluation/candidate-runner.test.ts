@@ -19,6 +19,7 @@ import {
 } from './lib/protocol.ts';
 import { evaluationScenarioDigest, parseScenario } from './lib/scenario.ts';
 import type { EvaluationReport } from './lib/types.ts';
+import { isProcessAlive } from '../src/runtime/shared/process-tree.ts';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -100,6 +101,7 @@ function fixtureWarmupTimeoutCandidate(root: string, id: string): EvaluationCand
   writeFileSync(entryPath, `
 const fs = require('fs');
 if (process.argv.includes('--warmup')) {
+  console.log('WARMUP_PID=' + process.pid);
   setInterval(() => {}, 1_000);
 } else {
   fs.writeFileSync('execution-evidence.txt', ${JSON.stringify(id)});
@@ -121,7 +123,9 @@ if (process.argv.includes('--warmup')) {
     artifactPath,
     artifactBinding: { kind: 'prefix_argument', index: 0, entryPath: 'entry.cjs' },
     command: { executable: process.execPath, prefixArguments: [entryPath] },
-    warmup: { arguments: ['--warmup'], timeoutMs: 25 },
+    // Leave enough startup budget for the supervised Node child to publish its
+    // PID marker before the intentional long-lived warmup timeout.
+    warmup: { arguments: ['--warmup'], timeoutMs: 250 },
   };
 }
 
@@ -755,6 +759,13 @@ describe('candidate-neutral paired evaluation runner', () => {
       expect(timedOut.every((trial) => trial.failure?.code === 'candidate_timeout')).toBe(true);
       expect(timedOut.every((trial) => trial.report.trace.finalResult.status === 'failed')).toBe(true);
       expect(timedOut.every((trial) => trial.report.trace.commands.some((command) => command.timedOut))).toBe(true);
+      for (const trial of timedOut) {
+        const supervision = trial.warmupCommands[0]?.supervision;
+        expect(supervision).toBeDefined();
+        expect(supervision?.pid).toBeGreaterThan(0);
+        expect(supervision?.remainingPids).toEqual([]);
+        expect(supervision?.pidReuseFenced).toBe(false);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

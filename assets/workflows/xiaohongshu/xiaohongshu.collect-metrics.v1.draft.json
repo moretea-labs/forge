@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "xiaohongshu.collect-metrics",
+  "version": "1",
+  "title": "Xiaohongshu metrics observation bootstrap",
+  "description": "Read-only bootstrap for a real post page. It captures bounded observed text and a digest but intentionally does not invent metric selectors or values before a real page contract is observed.",
+  "inputContract": {
+    "session_id": {
+      "type": "string",
+      "required": true
+    },
+    "account": {
+      "type": "string",
+      "required": true
+    },
+    "post_id": {
+      "type": "string",
+      "required": true
+    },
+    "post_url": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "requiredCapabilities": [
+    "browser.get_text",
+    "browser.navigate",
+    "browser.verify_state"
+  ],
+  "steps": [
+    {
+      "stepId": "metrics.navigate_post",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{input.post_url}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "metrics.verify_auth",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url_contains_none": [
+          "/login",
+          "passport.xiaohongshu.com",
+          "login.xiaohongshu.com"
+        ],
+        "text_contains_none": [
+          "手机号登录",
+          "扫码登录",
+          "验证码登录"
+        ],
+        "max_chars": 8000
+      },
+      "outputContract": {
+        "matched": {
+          "type": "boolean",
+          "required": true
+        },
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "metrics.observe_text",
+      "capabilityId": "browser.get_text",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "max_chars": 20000
+      },
+      "outputContract": {
+        "text": {
+          "type": "string",
+          "required": true
+        },
+        "url": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "metrics.contract_status",
+      "kind": "script",
+      "scriptRef": "metricContractStatus",
+      "input": {
+        "text": "{{output.metrics.observe_text.text}}"
+      },
+      "outputContract": {
+        "observation_text_digest": {
+          "type": "string",
+          "required": true
+        },
+        "metric_contract_status": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  ],
+  "scripts": {
+    "metricContractStatus": {
+      "runtime": "node",
+      "body": "const crypto=require('crypto'); const input=JSON.parse(process.argv[1]||'{}'); const text=String(input.text||''); process.stdout.write(JSON.stringify({ observation_text_digest:'sha256:'+crypto.createHash('sha256').update(text).digest('hex'), metric_contract_status:'observation_required' }));",
+      "deterministic": true,
+      "outputFormat": "json"
+    }
+  },
+  "resources": {
+    "metricContract": "observation_required",
+    "policy": "Do not infer or zero-fill metrics until a real Xiaohongshu page observation establishes a versioned selector/label contract."
+  }
+}

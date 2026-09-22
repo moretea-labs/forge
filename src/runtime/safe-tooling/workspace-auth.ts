@@ -88,10 +88,10 @@ export function prepareWorkspaceAuthLogin(
   controllerHomeOrInput: string | WorkspaceAuthLoginInput = {},
   maybeInput: WorkspaceAuthLoginInput = {},
 ): Record<string, unknown> {
-  bootstrapManagedRuntimeEnv();
   const controllerHome = typeof controllerHomeOrInput === 'string'
     ? controllerHomeOrInput
     : process.env.FORGE_CONTROLLER_HOME?.trim() || process.cwd();
+  bootstrapManagedRuntimeEnv({ controllerHome });
   const input = typeof controllerHomeOrInput === 'string' ? maybeInput : controllerHomeOrInput;
   const service = normalizeService(input.service);
   const redirectUri = input.redirectUri || process.env.FORGE_GOOGLE_REDIRECT_URI || 'http://127.0.0.1:8766/oauth/google/callback';

@@ -6,7 +6,7 @@ import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } f
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
-import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { activateWorkContract, appendWorkEvidence, failWorkContract, getWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
@@ -251,12 +251,16 @@ function adoptExistingWorkHead(
     validatedInputFingerprint: undefined,
   });
   try {
-    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
-      evidenceState: contract.checkRefs.length === 0
+    recordWorkEvidenceState(
+      { controllerHome: ctx.controllerHome, repoId: handle.repositoryId },
+      contract.workId,
+      contract.checkRefs.length === 0
         ? contract.evidenceState
         : contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
           ? 'stale'
           : 'partial',
+    );
+    updateWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
       reconciliations: [reconciliation, ...contract.reconciliations.filter((entry) => entry.reconciliationId !== reconciliationId)],
     });
     appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
@@ -392,7 +396,11 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         };
       }
       if (existingContract.status === 'open' || existingContract.status === 'failed') {
-        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId, { status: 'running', worktreeRef: existingHandle.worktreePath });
+        activateWorkContract(
+          { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+          createdWorkId,
+          { phase: 'implementation', summary: 'Prepared Work ownership resumed on the existing WorkHandle.', worktreeRef: existingHandle.worktreePath },
+        );
       }
       const delegation = createGoalDelegation({
         sessionId: session.sessionId,
@@ -467,12 +475,20 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         cleanupResponsibility: { owner: 'work_finalizer', registeredAt: new Date().toISOString() },
       };
       writeWorkHandle(ctx.controllerHome, handle);
-      updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'running', worktreeRef: checkout.canonicalRoot });
+      activateWorkContract(
+        { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+        contract.workId,
+        { phase: 'implementation', summary: 'Repository Work preparation completed and execution ownership is active.', worktreeRef: checkout.canonicalRoot },
+      );
       const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: checkout.activeCheckoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
       claimPreparedWorkOwnership(ctx, nextSession, handle, args);
       return { session: nextSession, work: compactHandle(handle), reused: requestReused, isolation: workspace.mode, controllerClaimed: true };
     } catch (error) {
-      updateWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId, { status: 'failed' });
+      failWorkContract(
+        { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+        contract.workId,
+        { phase: 'implementation', summary: `Repository Work preparation failed: ${error instanceof Error ? error.message : String(error)}` },
+      );
       throw error;
     }
   });

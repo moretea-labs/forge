@@ -553,7 +553,10 @@ export function claimsForRepositoryCommand(
 
 /**
  * Claims for run_check by check id / command.
- * Only full CI / release / multi-phase checks take heavy-check exclusive.
+ * Full CI/release/multi-phase checks and compiler-intensive latency gates take
+ * heavy-check exclusive. The latter fence protects performance assertions from
+ * same-repository CPU/JSC contention; it does not replace their real read/cache
+ * claims.
  */
 export function claimsForCheck(
   checkId: string,
@@ -563,7 +566,7 @@ export function claimsForCheck(
   effects?: ControllerCheckEffects,
   executionAuthority?: ControllerCheckExecutionAuthority,
 ): ResourceClaimSpec[] {
-  const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?))$/.test(checkId)
+  const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?|type|typescript-navigation))$/.test(checkId)
     || /release|migration|integrate/i.test(checkId);
   const baseClaims = effects
     ? claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId)

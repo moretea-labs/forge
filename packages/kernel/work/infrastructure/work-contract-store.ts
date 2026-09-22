@@ -6,6 +6,8 @@ import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import {
   listControlPlaneRecords,
+  listControlPlaneRecordsExcludingPayloadTextValues,
+  initializeControlPlanePayloadTextExclusionIndex,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
@@ -13,8 +15,10 @@ import {
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   MAX_IMPLEMENTATION_REVIEW_HISTORY,
+  authoritativeImplementationReviewVerificationEvidence,
   implementationReviewDecisionTarget,
   latestImplementationReview,
+  normalizeImplementationReviewEvidence,
   validateImplementationReviewRecord,
   workRequiresImplementationReview,
   type WorkImplementationReviewRecord,
@@ -29,6 +33,7 @@ import {
   type WorkAdmissionPolicy,
 } from '../domain/admission-policy';
 import {
+  WORK_PHASES,
   type EvidenceRef,
   type CompletionOutcome,
   type DispatchState,
@@ -51,6 +56,7 @@ import {
   isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
+  TERMINAL_WORK_CONTRACT_STATUSES,
   semanticScopeRefForWork,
 } from '../domain/types';
 
@@ -148,42 +154,67 @@ export function workContractStorePath(location: WorkContractStoreLocation): stri
 }
 
 export function emptyWorkContractStore(updatedAt: string): WorkContractStore {
-  return { schemaVersion: 2, updatedAt, contracts: [] };
+  return { schemaVersion: 3, updatedAt, contracts: [] };
 }
 
-function inferredDispatchState(status: WorkContractStatus): DispatchState {
+function initialLifecycleForNewWork(status: WorkContractStatus): Pick<WorkContract, 'phase' | 'dispatchState' | 'evidenceState'> {
+  if (status === 'completed') throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
+  if (status === 'running') return { phase: 'implementation', dispatchState: 'running', evidenceState: 'none' };
+  if (status === 'ready') return { phase: 'verification', dispatchState: 'not_dispatched', evidenceState: 'none' };
+  if (status === 'blocked') return { phase: 'implementation', dispatchState: 'blocked', evidenceState: 'none' };
+  if (status === 'failed') return { phase: 'implementation', dispatchState: 'terminal', evidenceState: 'failed' };
+  if (status === 'cancelled') return { phase: 'implementation', dispatchState: 'terminal', evidenceState: 'none' };
+  return { phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'none' };
+}
+
+function legacyInferredDispatchState(status: WorkContractStatus): DispatchState {
   if (status === 'open' || status === 'ready') return 'not_dispatched';
   if (status === 'running') return 'running';
   if (status === 'blocked') return 'blocked';
   return 'terminal';
 }
 
-function inferredPhase(status: WorkContractStatus): WorkContract['phase'] {
+function legacyInferredPhase(status: WorkContractStatus): WorkContract['phase'] {
   if (status === 'ready') return 'verification';
   if (status === 'completed' || status === 'failed' || status === 'cancelled') return 'cleanup';
   return 'implementation';
 }
 
-/** Legacy status writes are normalized into the bounded Work phase projection. */
-function phaseForStatusUpdate(current: WorkContract['phase'], status: WorkContractStatus | undefined): WorkContract['phase'] {
-  if (!status) return current;
-  if (status === 'ready') return 'verification';
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 'cleanup';
-  return current;
-}
-
-function dispatchStateForStatusUpdate(current: DispatchState, status: WorkContractStatus | undefined): DispatchState {
-  // `ready` means evidence/approval readiness in the legacy projection; it
-  // does not mean a running dispatch was never launched.
-  if (!status || status === 'ready') return current;
-  return inferredDispatchState(status);
-}
-
-function inferredEvidenceState(status: WorkContractStatus): EvidenceState {
+function legacyInferredEvidenceState(status: WorkContractStatus): EvidenceState {
   if (status === 'failed') return 'failed';
-  // A legacy completed status never proves that its evidence remains current.
   if (status === 'completed') return 'partial';
   return 'none';
+}
+
+function initialPhaseEvidenceForNewWork(
+  input: Pick<WorkContract, 'phase' | 'status' | 'evidenceRefs' | 'updatedAt'>,
+): WorkPhaseEvidenceMap {
+  const currentIndex = phaseIndex(input.phase);
+  return Object.fromEntries((['implementation', 'verification', 'review', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
+    const index = phaseIndex(phase);
+    const state: WorkPhaseEvidenceState = index < currentIndex
+      ? 'satisfied'
+      : index > currentIndex
+        ? 'pending'
+        : input.status === 'failed'
+          ? 'failed'
+          : input.status === 'cancelled'
+            ? 'skipped'
+            : input.status === 'blocked' || input.status === 'ready'
+              ? 'blocked'
+              : 'active';
+    return [phase, {
+      state,
+      source: 'recorded' as const,
+      summary: index < currentIndex
+        ? `Canonical Work was admitted after phase ${phase}.`
+        : index > currentIndex
+          ? `Waiting for Work phase ${phase}.`
+          : `Canonical Work admitted in ${phase} with status ${input.status}.`,
+      evidenceRefs: index <= currentIndex ? input.evidenceRefs.slice(0, 20) : [],
+      recordedAt: input.updatedAt,
+    } satisfies WorkPhaseEvidence];
+  })) as WorkPhaseEvidenceMap;
 }
 
 function legacyPhaseEvidence(
@@ -224,7 +255,7 @@ function sqliteBacked(options: WorkContractStoreOptions): options is WorkContrac
   return Boolean(!options.root && options.controllerHome?.trim() && options.repoId?.trim());
 }
 
-function normalizeWorkContract(legacy: WorkContract): WorkContract {
+function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
   const mappedStatus = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
   // Historical terminal labels without the Work-owned receipt are not
   // completion authority. Reopen them at delivery so callers can obtain an
@@ -234,7 +265,7 @@ function normalizeWorkContract(legacy: WorkContract): WorkContract {
     ? 'cleanup'
     : mappedStatus === 'completed'
       ? 'delivery'
-      : legacy.phase ?? inferredPhase(status);
+      : legacy.phase ?? legacyInferredPhase(status);
   const legacyDefaults = legacyPhaseEvidence({
     phase,
     status,
@@ -275,7 +306,7 @@ function normalizeWorkContract(legacy: WorkContract): WorkContract {
     : legacyDefaults;
   return validateWorkSemantics({
     ...legacy,
-    schemaVersion: legacy.schemaVersion ?? 1,
+    schemaVersion: 3,
     scopeRef: semanticScopeRefForWork(legacy),
     executionPlacement: executionPlacementForWork(legacy),
     status,
@@ -283,8 +314,8 @@ function normalizeWorkContract(legacy: WorkContract): WorkContract {
     phaseEvidence,
     risk: legacy.risk ?? 'medium',
     workKind: legacy.workKind ?? 'repository_change',
-    dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
-    evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
+    dispatchState: legacy.dispatchState ?? legacyInferredDispatchState(status),
+    evidenceState: legacy.evidenceState ?? legacyInferredEvidenceState(status),
     suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
     implementationReviews: legacy.implementationReviews ?? [],
     reconciliations: legacy.reconciliations ?? [],
@@ -294,14 +325,58 @@ function normalizeWorkContract(legacy: WorkContract): WorkContract {
   });
 }
 
+function validateCanonicalWorkContract(contract: WorkContract): WorkContract {
+  if (contract.schemaVersion !== 3) {
+    throw new Error(`WORK_CONTRACT_SCHEMA_MIGRATION_REQUIRED: ${contract.workId}:schema=${String(contract.schemaVersion)}`);
+  }
+  return validateWorkSemantics(contract);
+}
+
+function storedWorkContractNeedsMigration(contract: WorkContract): boolean {
+  const phaseEvidence = contract.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
+  // Some pre-review-checkpoint rows were stamped with the current outer
+  // schema while omitting only `review`. That exact historical shape remains
+  // migration-compatible, but it must be persisted once rather than inferred
+  // repeatedly by the normal read path.
+  const legacyReviewGap = contract.schemaVersion === 3
+    && phaseEvidence
+    && !phaseEvidence.review
+    && phaseEvidence.implementation
+    && phaseEvidence.verification
+    && phaseEvidence.delivery
+    && phaseEvidence.cleanup;
+  return contract.schemaVersion !== 3 || Boolean(legacyReviewGap);
+}
+
+function canonicalizeStoredWorkContract(contract: WorkContract): WorkContract {
+  return storedWorkContractNeedsMigration(contract)
+    ? migrateLegacyWorkContract(contract)
+    : validateCanonicalWorkContract(contract);
+}
+
+/**
+ * Normalize one row at a transaction boundary without reading or mutating a
+ * second Work authority. Higher-level control-plane transactions use this to
+ * validate legacy rows against the same canonical Work semantics as reads.
+ */
+export function canonicalizeWorkContractForAuthority(contract: WorkContract): WorkContract {
+  return canonicalizeStoredWorkContract(contract);
+}
+
 function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore {
-  // Read legacy facade records without retaining the old state machine.
-  return { ...store, contracts: store.contracts.map(normalizeWorkContract) };
+  // v1/v2 compatibility is a one-way cutover. v3 records are validated as-is;
+  // no current lifecycle field is inferred from status during normal reads.
+  return { schemaVersion: 3, updatedAt: store.updatedAt, contracts: store.contracts.map(canonicalizeStoredWorkContract) };
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
   if (!sqliteBacked(options)) {
-    return normalizeWorkContractStore(readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options))));
+    const raw = readJsonFile<WorkContractStore>(workContractStorePath(options), emptyWorkContractStore(nowIso(options)));
+    const normalized = normalizeWorkContractStore(raw);
+    if (raw.schemaVersion !== 3 || raw.contracts.some(storedWorkContractNeedsMigration)) {
+      writeJsonAtomic(workContractStorePath(options), normalized);
+    }
+    return normalized;
   }
   const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
     namespace: 'work_contract',
@@ -309,11 +384,30 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
     limit: 5_000,
   });
   if (records.length > 0) {
-    return normalizeWorkContractStore({
-      schemaVersion: 2,
+    const normalized = normalizeWorkContractStore({
+      schemaVersion: 3,
       updatedAt: records[0]?.updatedAt ?? nowIso(options),
       contracts: records.map((record) => record.value),
     });
+    const legacyRows = records
+      .map((record, index) => ({ record, contract: normalized.contracts[index]! }))
+      .filter(({ record }) => storedWorkContractNeedsMigration(record.value));
+    if (legacyRows.length > 0) {
+      withControlPlaneTransaction(options.controllerHome, (database) => {
+        for (const { record, contract } of legacyRows) {
+          writeControlPlaneRecordWithinTransaction(database, {
+            namespace: 'work_contract',
+            scope: options.repoId,
+            key: contract.workId,
+            schemaVersion: 3,
+            value: contract,
+            action: 'work_contract_schema_v3_migrated',
+            expectedRevision: record.revision,
+          });
+        }
+      });
+    }
+    return normalized;
   }
 
   // One-time import only. Once a per-Work row exists, legacy index/file data is
@@ -335,7 +429,7 @@ export function readWorkContractStore(options: WorkContractStoreOptions): WorkCo
           namespace: 'work_contract',
           scope: options.repoId,
           key: contract.workId,
-          schemaVersion: 2,
+          schemaVersion: 3,
           value: contract,
           action: 'work_contract_legacy_import',
           expectedRevision: null,
@@ -353,18 +447,23 @@ export function writeWorkContractStore(options: WorkContractStoreOptions, store:
   }
   withControlPlaneTransaction(options.controllerHome, (database) => {
     for (const contract of store.contracts) {
+      const value = validateCanonicalWorkContract(contract);
       const current = readControlPlaneRecordWithinTransaction<WorkContract>(
         database,
         'work_contract',
         options.repoId,
         contract.workId,
       );
+      // SQLite is authoritative per Work row. Aggregate-store callers may still
+      // construct a complete compatibility snapshot, but unchanged siblings are
+      // not authoritative mutations and must not advance revision/audit history.
+      if (current && JSON.stringify(current.value) === JSON.stringify(value)) continue;
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'work_contract',
         scope: options.repoId,
         key: contract.workId,
-        schemaVersion: 2,
-        value: contract,
+        schemaVersion: 3,
+        value,
         action: 'work_contract_write',
         expectedRevision: current?.revision ?? null,
       });
@@ -423,7 +522,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     const predecessorWorkId = input.predecessorWorkId ? sanitizeFileComponent(input.predecessorWorkId) : undefined;
     if (predecessorWorkId === workId) throw new Error('WORK_PREDECESSOR_SELF_REFERENCE');
     const contract: WorkContract = validateWorkSemantics({
-      schemaVersion: 2,
+      schemaVersion: 3,
       workId,
       scopeRef: semanticScopeRefForWork({
         workId,
@@ -455,17 +554,16 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       supersedes: input.supersedes?.map((value) => sanitizeFileComponent(value)).filter((value) => value !== 'unknown').slice(0, 50),
       supersededBy: input.supersededBy ? sanitizeFileComponent(input.supersededBy) : undefined,
       supersessionReason: input.supersessionReason?.trim().slice(0, 500),
-      dispatchState: input.dispatchState ?? inferredDispatchState(input.status ?? 'open'),
-      evidenceState: input.evidenceState ?? inferredEvidenceState(input.status ?? 'open'),
+      dispatchState: input.dispatchState ?? initialLifecycleForNewWork(input.status ?? 'open').dispatchState,
+      evidenceState: input.evidenceState ?? initialLifecycleForNewWork(input.status ?? 'open').evidenceState,
       completionOutcome: input.completionOutcome,
-      phase: input.phase ?? inferredPhase(input.status ?? 'open'),
-      phaseEvidence: legacyPhaseEvidence({
-        phase: input.phase ?? inferredPhase(input.status ?? 'open'),
+      phase: input.phase ?? initialLifecycleForNewWork(input.status ?? 'open').phase,
+      phaseEvidence: initialPhaseEvidenceForNewWork({
+        phase: input.phase ?? initialLifecycleForNewWork(input.status ?? 'open').phase,
         status: input.status ?? 'open',
         evidenceRefs: input.evidenceRefs ?? [],
-        completionReceipt: input.completionReceipt,
         updatedAt: input.updatedAt ?? at,
-      }, 'recorded'),
+      }),
       completionReceipt: input.completionReceipt,
       status: input.status ?? 'open',
       createdAt: at,
@@ -526,7 +624,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
           namespace: 'work_contract',
           scope: options.repoId,
           key: contract.workId,
-          schemaVersion: 2,
+          schemaVersion: 3,
           value: contract,
           action: 'work_contract_created',
           expectedRevision: null,
@@ -539,7 +637,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       throw new Error(`work contract already exists: ${contract.workId}`);
     }
     const nextStore: WorkContractStore = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       updatedAt: contract.updatedAt,
       contracts: [contract, ...store.contracts],
     };
@@ -660,9 +758,19 @@ export function isCurrentWorkContract(contract: WorkContract): boolean {
 }
 
 export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {
-  const store = readWorkContractStore(options);
   const status = options.status ?? 'active';
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
+  if (status === 'active' && sqliteBacked(options)) {
+    const active = readActiveWorkCandidates({ ...options, limit });
+    if (active.invalid.length > 0) {
+      // Preserve the aggregate list API's fail-closed semantics. Callers that
+      // intentionally need row-isolated corruption diagnostics use
+      // readActiveWorkCandidates() directly and can inspect every invalid row.
+      throw new Error(active.invalid[0]!.error);
+    }
+    return active.contracts;
+  }
+  const store = readWorkContractStore(options);
   return store.contracts
     .filter((contract) => {
       if (status === 'all') return true;
@@ -706,6 +814,12 @@ function rawWorkMayBeCurrent(contract: WorkContract): boolean {
  * admission. Invalid active rows stay explicit and conservative by identity,
  * lineage, scope and isolation; they are never mutated or silently accepted.
  */
+export function initializeWorkCandidateIndex(controllerHome: string): void {
+  initializeControlPlanePayloadTextExclusionIndex(controllerHome, {
+    namespace: 'work_contract', field: 'status', excludedValues: TERMINAL_WORK_CONTRACT_STATUSES,
+  });
+}
+
 export function readActiveWorkCandidates(
   options: WorkContractStoreOptions & { limit?: number },
 ): ActiveWorkCandidateSnapshot {
@@ -713,18 +827,22 @@ export function readActiveWorkCandidates(
   if (!sqliteBacked(options)) {
     return { contracts: listWorkContracts({ ...options, status: 'active', limit }), invalid: [] };
   }
-  const records = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+  const records = listControlPlaneRecordsExcludingPayloadTextValues<WorkContract>(options.controllerHome, {
     namespace: 'work_contract',
     scope: options.repoId,
+    field: 'status',
+    excludedValues: TERMINAL_WORK_CONTRACT_STATUSES,
     limit: 5_000,
   });
   const contracts: WorkContract[] = [];
   const invalid: InvalidActiveWorkCandidate[] = [];
+  const migrations: Array<{ record: (typeof records)[number]; contract: WorkContract }> = [];
   for (const record of records) {
     const raw = record.value;
     if (!rawWorkMayBeCurrent(raw)) continue;
     try {
-      const normalized = normalizeWorkContract(raw);
+      const normalized = canonicalizeStoredWorkContract(raw);
+      if (storedWorkContractNeedsMigration(raw)) migrations.push({ record, contract: normalized });
       if (isCurrentWorkContract(normalized)) contracts.push(normalized);
     } catch (error) {
       invalid.push({
@@ -740,6 +858,21 @@ export function readActiveWorkCandidates(
       });
     }
   }
+  if (migrations.length > 0) {
+    withControlPlaneTransaction(options.controllerHome, (database) => {
+      for (const { record, contract } of migrations) {
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract',
+          scope: options.repoId,
+          key: contract.workId,
+          schemaVersion: 3,
+          value: contract,
+          action: 'work_contract_schema_v3_migrated',
+          expectedRevision: record.revision,
+        });
+      }
+    });
+  }
   contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   invalid.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   return { contracts: contracts.slice(0, limit), invalid };
@@ -751,7 +884,23 @@ export function getWorkContract(options: WorkContractStoreOptions, workId: strin
     return readWorkContractStore(options).contracts.find((contract) => contract.workId === sanitizedId);
   }
   const exact = readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', options.repoId, sanitizedId);
-  if (exact) return normalizeWorkContract(exact.value);
+  if (exact) {
+    const canonical = canonicalizeStoredWorkContract(exact.value);
+    if (storedWorkContractNeedsMigration(exact.value)) {
+      withControlPlaneTransaction(options.controllerHome, (database) => {
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract',
+          scope: options.repoId,
+          key: canonical.workId,
+          schemaVersion: 3,
+          value: canonical,
+          action: 'work_contract_schema_v3_migrated',
+          expectedRevision: exact.revision,
+        });
+      });
+    }
+    return canonical;
+  }
   // Preserve the one-time legacy import path only while this repository has no
   // per-Work rows. Once any per-Work row exists, absence of this exact key is
   // authoritative and unrelated rows must never be normalized for an exact get.
@@ -811,13 +960,13 @@ export function supersedeWorkContract(
     contracts[predecessorIndex] = predecessorNext;
     contracts[successorIndex] = successorNext;
     if (!sqliteBacked(options)) {
-      writeJsonAtomic(workContractStorePath(options), { schemaVersion: 2, updatedAt: at, contracts });
+      writeJsonAtomic(workContractStorePath(options), { schemaVersion: 3, updatedAt: at, contracts });
     } else {
       withControlPlaneTransaction(options.controllerHome, (database) => {
         for (const contract of [predecessorNext, successorNext]) {
           const current = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, contract.workId);
           if (!current) throw new Error(`WORK_LINEAGE_RECORD_MISSING: ${contract.workId}`);
-          writeControlPlaneRecordWithinTransaction(database, { namespace: 'work_contract', scope: options.repoId, key: contract.workId, schemaVersion: 2, value: contract, action: 'work_contract_supersession_linked', expectedRevision: current.revision });
+          writeControlPlaneRecordWithinTransaction(database, { namespace: 'work_contract', scope: options.repoId, key: contract.workId, schemaVersion: 3, value: contract, action: 'work_contract_supersession_linked', expectedRevision: current.revision });
         }
       });
     }
@@ -848,22 +997,37 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
   };
 }
 
+type WorkContractMutationPatch = Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>;
+type WorkContractMutation = WorkContractMutationPatch | ((current: WorkContract, recordedAt: string) => WorkContractMutationPatch | undefined);
+
 function updateWorkContractInternal(
   options: WorkContractStoreOptions,
   workId: string,
-  patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
+  mutation: WorkContractMutation,
   allowCompletionWrite: boolean,
-  allowPhaseWrite = false,
+  allowLifecycleWrite = false,
   allowRetainedCancelledResume = false,
   allowImplementationReviewWrite = false,
+  allowPhaseRegression = false,
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
-    const store = readWorkContractStore(options);
-    const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
-    if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
+    const exact = sqliteBacked(options)
+      ? readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', options.repoId, sanitizedId)
+      : undefined;
+    const store = exact ? undefined : readWorkContractStore(options);
+    const index = store?.contracts.findIndex((contract) => contract.workId === sanitizedId) ?? -1;
+    if (!exact && index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const at = nowIso(options);
-    const current = store.contracts[index];
+    // A per-Work SQLite row is the mutable authority.  Do not normalize every
+    // sibling just to update this row: malformed historical evidence must stay
+    // visible and fenced, but cannot prevent a different terminal Work from
+    // recording its physical cleanup.
+    const current = exact
+      ? canonicalizeStoredWorkContract(exact.value)
+      : store!.contracts[index]!;
+    const patch = typeof mutation === 'function' ? mutation(current, at) : mutation;
+    if (!patch) return current;
     if (options.controllerHome) {
       assertCanonicalWorkAdmissionAllowed(options, {
         operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)
@@ -875,20 +1039,16 @@ function updateWorkContractInternal(
     const writesCompletionReceipt = Object.prototype.hasOwnProperty.call(patch, 'completionReceipt');
     const changesCompletionOutcome = patch.completionOutcome !== undefined && patch.completionOutcome !== current.completionOutcome;
     const writesPhase = Object.prototype.hasOwnProperty.call(patch, 'phase') || Object.prototype.hasOwnProperty.call(patch, 'phaseEvidence');
+    const writesLifecycle = writesPhase
+      || Object.prototype.hasOwnProperty.call(patch, 'status')
+      || Object.prototype.hasOwnProperty.call(patch, 'dispatchState')
+      || Object.prototype.hasOwnProperty.call(patch, 'evidenceState')
+      || Object.prototype.hasOwnProperty.call(patch, 'workKind');
     const writesImplementationReviews = Object.prototype.hasOwnProperty.call(patch, 'implementationReviews');
-    if (!allowPhaseWrite && writesPhase) throw new Error('WORK_PHASE_REQUIRES_TRANSITION_API');
+    if (!allowLifecycleWrite && writesLifecycle) throw new Error('WORK_LIFECYCLE_REQUIRES_TRANSITION_API');
     if (!allowImplementationReviewWrite && writesImplementationReviews) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
-    const projectedPhase = patch.phase ?? phaseForStatusUpdate(current.phase, patch.status);
-    const projectedPhaseEvidence = patch.phaseEvidence ?? (
-      patch.status !== undefined && projectedPhase !== current.phase
-        ? transitionPhaseEvidence(current, projectedPhase, {
-            status: patch.status,
-            summary: `Compatibility status transition ${current.status} -> ${patch.status}.`,
-            evidenceRefs: patch.evidenceRefs ?? current.evidenceRefs,
-            recordedAt: at,
-          })
-        : current.phaseEvidence
-    );
+    const projectedPhase = patch.phase ?? current.phase;
+    const projectedPhaseEvidence = patch.phaseEvidence ?? current.phaseEvidence;
     if (!allowCompletionWrite && (writesCompletionReceipt || changesCompletionOutcome || (patch.status === 'completed' && current.status !== 'completed'))) {
       throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
     }
@@ -901,7 +1061,7 @@ function updateWorkContractInternal(
     const next: WorkContract = validateWorkSemanticTransition(current, validateWorkSemantics({
     ...current,
     ...patch,
-    schemaVersion: 2,
+    schemaVersion: 3,
     workId: current.workId,
     repoId: current.repoId,
     createdAt: current.createdAt,
@@ -910,7 +1070,7 @@ function updateWorkContractInternal(
     workKind: patch.workKind ?? current.workKind,
     phase: projectedPhase,
     phaseEvidence: projectedPhaseEvidence,
-    dispatchState: patch.dispatchState ?? dispatchStateForStatusUpdate(current.dispatchState, patch.status),
+    dispatchState: patch.dispatchState ?? current.dispatchState,
     evidenceState: patch.evidenceState ?? current.evidenceState,
     completionOutcome: patch.completionOutcome ?? current.completionOutcome,
     evidenceRefs: (patch.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs),
@@ -922,10 +1082,24 @@ function updateWorkContractInternal(
     reconciliations: (patch.reconciliations ?? current.reconciliations ?? []).slice(0, 20),
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
-    }), { allowRetainedCancelledResume });
-    const contracts = [...store.contracts];
+    }), { allowRetainedCancelledResume, allowPhaseRegression });
+    if (exact && sqliteBacked(options)) {
+      withControlPlaneTransaction(options.controllerHome, (database) => {
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract',
+          scope: options.repoId,
+          key: next.workId,
+          schemaVersion: 3,
+          value: next,
+          action: 'work_contract_updated',
+          expectedRevision: exact.revision,
+        });
+      });
+      return next;
+    }
+    const contracts = [...store!.contracts];
     contracts[index] = next;
-    writeWorkContractStore(options, { schemaVersion: 2, updatedAt: at, contracts });
+    writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
     return next;
   });
 }
@@ -951,7 +1125,7 @@ export function rebindPlanBoundWorkContract(
     reason: string;
   },
 ): WorkContract {
-  const canonicalCurrent = normalizeWorkContractStore({ schemaVersion: 2, updatedAt: current.updatedAt, contracts: [current] }).contracts[0]!;
+  const canonicalCurrent = validateCanonicalWorkContract(current);
   if (isTerminalWorkContractStatus(canonicalCurrent.status) || canonicalCurrent.completionReceipt || canonicalCurrent.completionOutcome) {
     throw new Error(`WORK_PLAN_REBIND_TERMINAL: ${canonicalCurrent.workId}`);
   }
@@ -1003,6 +1177,86 @@ export function rebindPlanBoundWorkContract(
 }
 
 /**
+ * Refresh one active Work against a newer revision of the same stable Plan.
+ * This deliberately does not change Plan identity or semantic scope. Only the
+ * source fence and an allowed-path widening may change; forbidden paths and
+ * machine checks remain exact.
+ */
+export function refreshPlanBoundWorkRevision(
+  current: WorkContract,
+  input: {
+    planId: string;
+    planStepId: string;
+    planSourceRevision: string;
+    allowedPaths: string[];
+    forbiddenPaths: string[];
+    checks: string[];
+    recordedAt: string;
+    reason: string;
+  },
+): WorkContract {
+  const canonicalCurrent = validateCanonicalWorkContract(current);
+  if (isTerminalWorkContractStatus(canonicalCurrent.status) || canonicalCurrent.completionReceipt || canonicalCurrent.completionOutcome) {
+    throw new Error(`WORK_PLAN_REVISION_REFRESH_TERMINAL: ${canonicalCurrent.workId}`);
+  }
+  const planId = sanitizeFileComponent(input.planId);
+  const planStepId = sanitizeFileComponent(input.planStepId);
+  if (!planId || planId === 'unknown' || canonicalCurrent.planId !== planId || canonicalCurrent.planStepId !== planStepId) {
+    throw new Error(`WORK_PLAN_REVISION_REFRESH_SOURCE_MISMATCH: ${canonicalCurrent.workId}`);
+  }
+  const planSourceRevision = input.planSourceRevision.trim();
+  if (!planSourceRevision) throw new Error('WORK_PLAN_REVISION_REFRESH_SOURCE_REVISION_REQUIRED');
+  const allowedPaths = [...new Set(input.allowedPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+  const forbiddenPaths = [...new Set(input.forbiddenPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+  const checks = [...new Set(input.checks.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
+  for (const path of canonicalCurrent.allowedPaths) {
+    if (!allowedPaths.includes(path)) throw new Error(`WORK_PLAN_REVISION_REFRESH_SCOPE_NARROWING_FORBIDDEN: ${path}`);
+  }
+  if (JSON.stringify(forbiddenPaths) !== JSON.stringify(canonicalCurrent.forbiddenPaths)) {
+    throw new Error('WORK_PLAN_REVISION_REFRESH_FORBIDDEN_SCOPE_CHANGE');
+  }
+  if (JSON.stringify(checks) !== JSON.stringify(canonicalCurrent.checks)) {
+    throw new Error('WORK_PLAN_REVISION_REFRESH_CHECK_CHANGE');
+  }
+  const reason = input.reason.trim().slice(0, 1_000);
+  if (!reason) throw new Error('WORK_PLAN_REVISION_REFRESH_REASON_REQUIRED');
+  const evidenceRefs = [{
+    title: 'Plan revision refreshed Work authority',
+    summary: `${planId}@${canonicalCurrent.planSourceRevision ?? 'unknown'} -> ${planId}@${planSourceRevision}: ${reason}`,
+    detailLevel: 'summary' as const,
+  }, ...canonicalCurrent.evidenceRefs].slice(0, canonicalCurrent.evidencePolicy.maxEvidenceRefs);
+  const next = validateWorkSemantics({
+    ...canonicalCurrent,
+    planSourceRevision,
+    allowedPaths,
+    forbiddenPaths,
+    checks,
+    evidenceRefs,
+    updatedAt: input.recordedAt,
+  });
+  return validateWorkSemanticTransition(canonicalCurrent, next);
+}
+
+function cancellationPhaseEvidence(
+  current: WorkContract,
+  input: { summary: string; evidenceRefs?: EvidenceRef[]; recordedAt: string },
+): WorkPhaseEvidenceMap {
+  const evidenceRefs = (input.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs);
+  const existing = current.phaseEvidence[current.phase];
+  if (!['pending', 'active'].includes(existing.state)) return current.phaseEvidence;
+  return {
+    ...current.phaseEvidence,
+    [current.phase]: {
+      state: 'skipped',
+      source: 'recorded',
+      summary: input.summary.trim().slice(0, 1_000) || 'Work cancelled.',
+      evidenceRefs,
+      recordedAt: input.recordedAt,
+    },
+  };
+}
+
+/**
  * Retire technical Work authority when its owning Plan is no longer current.
  *
  * This is authority retirement, not history deletion. The cancelled Work and
@@ -1019,7 +1273,7 @@ export function retirePlanBoundWorkContract(
     reason: string;
   },
 ): WorkContract {
-  const canonicalCurrent = normalizeWorkContractStore({ schemaVersion: 2, updatedAt: current.updatedAt, contracts: [current] }).contracts[0]!;
+  const canonicalCurrent = validateCanonicalWorkContract(current);
   if (isTerminalWorkContractStatus(canonicalCurrent.status)) return canonicalCurrent;
   if (canonicalCurrent.planId !== input.predecessorPlanId) {
     throw new Error(`WORK_PLAN_RETIRE_SOURCE_MISMATCH: ${canonicalCurrent.workId}:expected=${input.predecessorPlanId}:actual=${canonicalCurrent.planId ?? 'none'}`);
@@ -1041,9 +1295,8 @@ export function retirePlanBoundWorkContract(
   const next = validateWorkSemantics({
     ...canonicalCurrent,
     status: 'cancelled',
-    phase: 'cleanup',
-    phaseEvidence: transitionPhaseEvidence(canonicalCurrent, 'cleanup', {
-      status: 'cancelled',
+    phase: canonicalCurrent.phase,
+    phaseEvidence: cancellationPhaseEvidence(canonicalCurrent, {
       summary,
       evidenceRefs,
       recordedAt: input.recordedAt,
@@ -1056,12 +1309,194 @@ export function retirePlanBoundWorkContract(
   return validateWorkSemanticTransition(canonicalCurrent, next);
 }
 
+export type WorkContractMetadataPatch = Partial<Omit<
+  WorkContract,
+  | 'schemaVersion'
+  | 'workId'
+  | 'repoId'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'status'
+  | 'phase'
+  | 'phaseEvidence'
+  | 'dispatchState'
+  | 'evidenceState'
+  | 'completionReceipt'
+  | 'completionOutcome'
+  | 'implementationReviews'
+  | 'workKind'
+>>;
+
 export function updateWorkContract(
   options: WorkContractStoreOptions,
   workId: string,
-  patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
+  patch: WorkContractMetadataPatch,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, patch, false);
+}
+
+/** Explicit semantic transition used only when an effect Work begins governed repository mutation. */
+export function promoteWorkToRepositoryChange(
+  options: WorkContractStoreOptions,
+  workId: string,
+): WorkContract {
+  return updateWorkContractInternal(options, workId, (current) => {
+    if (isTerminalWorkContractStatus(current.status) || current.completionReceipt || current.completionOutcome) {
+      throw new Error(`WORK_KIND_PROMOTION_TERMINAL: ${workId}`);
+    }
+    if (current.workKind === 'repository_change') return undefined;
+    if (current.workKind !== 'local_effect' && current.workKind !== 'remote_effect') {
+      throw new Error(`WORK_KIND_PROMOTION_INVALID: ${workId}:${current.workKind}`);
+    }
+    return { workKind: 'repository_change' };
+  }, false, true);
+}
+
+export function recordWorkEvidenceState(
+  options: WorkContractStoreOptions,
+  workId: string,
+  evidenceState: EvidenceState,
+): WorkContract {
+  return updateWorkContractInternal(options, workId, { evidenceState }, false, true);
+}
+
+export function activateWorkContract(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: {
+    summary: string;
+    phase?: WorkPhase;
+    worktreeRef?: string;
+    evidenceState?: EvidenceState;
+  },
+): WorkContract {
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.status === 'completed' || current.status === 'cancelled') {
+      throw new Error(`WORK_ACTIVATION_TERMINAL: ${workId}:${current.status}`);
+    }
+    const phase = input.phase ?? current.phase;
+    const phaseEvidence = transitionPhaseEvidence(current, phase, {
+      status: 'running',
+      summary: input.summary,
+      recordedAt: at,
+      source: 'recorded',
+    });
+    const evidenceState = input.evidenceState
+      ?? (current.evidenceState === 'failed' ? 'partial' : current.evidenceState);
+    return {
+      status: 'running',
+      phase,
+      phaseEvidence,
+      dispatchState: 'running',
+      evidenceState,
+      worktreeRef: input.worktreeRef ?? current.worktreeRef,
+    };
+  }, false, true, false, false, true);
+}
+
+export function failWorkContract(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: { phase: WorkPhase; summary: string; evidenceRefs?: EvidenceRef[] },
+): WorkContract {
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.status === 'completed' || current.status === 'cancelled') {
+      throw new Error(`WORK_FAILURE_TERMINAL: ${workId}:${current.status}`);
+    }
+    if (input.phase !== current.phase) {
+      throw new Error(`WORK_FAILURE_PHASE_MISMATCH: ${workId}:expected=${current.phase}:actual=${input.phase}`);
+    }
+    const phaseEvidence = transitionPhaseEvidence(current, current.phase, {
+      status: 'failed',
+      summary: input.summary,
+      evidenceRefs: input.evidenceRefs,
+      recordedAt: at,
+      source: 'recorded',
+    });
+    return {
+      status: 'failed',
+      phase: current.phase,
+      phaseEvidence,
+      dispatchState: 'terminal',
+      evidenceState: 'failed',
+      ...(input.evidenceRefs ? { evidenceRefs: input.evidenceRefs } : {}),
+    };
+  }, false, true);
+}
+
+export function cancelWorkContract(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: { summary: string; evidenceRefs?: EvidenceRef[] },
+): WorkContract {
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.status === 'completed') throw new Error(`WORK_CANCEL_COMPLETED: ${workId}`);
+    if (current.status === 'cancelled') return undefined;
+    const phaseEvidence = cancellationPhaseEvidence(current, {
+      summary: input.summary,
+      evidenceRefs: input.evidenceRefs,
+      recordedAt: at,
+    });
+    return {
+      status: 'cancelled',
+      phase: current.phase,
+      phaseEvidence,
+      dispatchState: 'terminal',
+      ...(input.evidenceRefs ? { evidenceRefs: input.evidenceRefs } : {}),
+      suggestedNextActions: [],
+    };
+  }, false, true);
+}
+
+/**
+ * Record verified physical cleanup for an already-cancelled Work without
+ * inventing semantic success. Phases that never ran are skipped, while prior
+ * satisfied/skipped/blocked/failed evidence remains immutable. The cleanup
+ * receipt is the authority for the only newly satisfied phase.
+ */
+export function recordCancelledWorkCleanupCompleted(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: { summary: string; receiptId: string; evidenceRefs?: EvidenceRef[] },
+): WorkContract {
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.status !== 'cancelled') {
+      throw new Error(`WORK_CANCELLED_CLEANUP_STATUS_REQUIRED: ${workId}:${current.status}`);
+    }
+    const summary = input.summary.trim().slice(0, 1_000);
+    if (!summary) throw new Error('WORK_CANCELLED_CLEANUP_SUMMARY_REQUIRED');
+    const receiptId = input.receiptId.trim();
+    if (!receiptId) throw new Error('WORK_CANCELLED_CLEANUP_RECEIPT_REQUIRED');
+    const evidenceRefs = (input.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs);
+    const phaseEvidence: WorkPhaseEvidenceMap = { ...current.phaseEvidence };
+    for (const phase of WORK_PHASES) {
+      if (phase === 'cleanup') continue;
+      const existing = phaseEvidence[phase];
+      if (!['pending', 'active'].includes(existing.state)) continue;
+      phaseEvidence[phase] = {
+        state: 'skipped',
+        source: 'recorded',
+        summary: `Skipped after Work cancellation: ${summary}`.slice(0, 1_000),
+        evidenceRefs,
+        recordedAt: at,
+      };
+    }
+    phaseEvidence.cleanup = {
+      state: 'satisfied',
+      source: 'recorded',
+      summary,
+      evidenceRefs,
+      recordedAt: at,
+      receiptId,
+    };
+    return {
+      phase: 'cleanup',
+      phaseEvidence,
+      dispatchState: 'terminal',
+      evidenceRefs,
+      suggestedNextActions: [],
+    };
+  }, false, true);
 }
 
 /**
@@ -1080,44 +1515,43 @@ export function resumeRetainedCancelledWorkContract(
     worktreeRef?: string;
   },
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  if (current.status !== 'cancelled' || current.dispatchState !== 'terminal' || current.phase !== 'cleanup') {
-    throw new Error(`WORK_CANCELLED_RESUME_STATUS_INVALID: ${workId}`);
-  }
-  if (current.workKind !== 'repository_change') throw new Error(`WORK_CANCELLED_RESUME_KIND_INVALID: ${workId}`);
-  if (current.completionReceipt || current.completionOutcome) throw new Error(`WORK_CANCELLED_RESUME_COMPLETION_CONFLICT: ${workId}`);
-  if (current.phaseEvidence.cleanup.state !== 'skipped' || current.phaseEvidence.cleanup.source !== 'recorded') {
-    throw new Error(`WORK_CANCELLED_RESUME_HISTORY_AMBIGUOUS: ${workId}`);
-  }
-  const originalPrincipal = current.principalId?.trim();
-  if (!originalPrincipal || originalPrincipal !== input.principalId.trim()) {
-    throw new Error(`WORK_CANCELLED_RESUME_PRINCIPAL_MISMATCH: ${workId}`);
-  }
-  const at = nowIso(options);
-  const evidenceRefs = [...current.evidenceRefs, {
-    title: 'explicit current-user Work reauthorization',
-    summary: input.summary.trim().slice(0, 1_000),
-    detailLevel: 'summary' as const,
-  }].slice(-current.evidencePolicy.maxEvidenceRefs);
-  const phaseEvidence = transitionPhaseEvidence({ ...current, evidenceRefs }, 'implementation', {
-    status: 'running',
-    summary: input.summary,
-    evidenceRefs,
-    recordedAt: at,
-    source: 'recorded',
-  });
-  return updateWorkContractInternal(options, workId, {
-    status: 'running',
-    phase: 'implementation',
-    phaseEvidence,
-    dispatchState: 'running',
-    evidenceRefs,
-    checkoutId: input.checkoutId ?? current.checkoutId,
-    worktreeRef: input.worktreeRef ?? current.worktreeRef,
-    controllerInstanceId: input.controllerInstanceId,
-    continuationPrompt: input.summary,
-  }, false, true, true);
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.status !== 'cancelled' || current.dispatchState !== 'terminal') {
+      throw new Error(`WORK_CANCELLED_RESUME_STATUS_INVALID: ${workId}`);
+    }
+    if (current.workKind !== 'repository_change') throw new Error(`WORK_CANCELLED_RESUME_KIND_INVALID: ${workId}`);
+    if (current.completionReceipt || current.completionOutcome) throw new Error(`WORK_CANCELLED_RESUME_COMPLETION_CONFLICT: ${workId}`);
+    if (current.phaseEvidence[current.phase].state !== 'skipped' || current.phaseEvidence[current.phase].source !== 'recorded') {
+      throw new Error(`WORK_CANCELLED_RESUME_HISTORY_AMBIGUOUS: ${workId}`);
+    }
+    const originalPrincipal = current.principalId?.trim();
+    if (!originalPrincipal || originalPrincipal !== input.principalId.trim()) {
+      throw new Error(`WORK_CANCELLED_RESUME_PRINCIPAL_MISMATCH: ${workId}`);
+    }
+    const evidenceRefs = [...current.evidenceRefs, {
+      title: 'explicit current-user Work reauthorization',
+      summary: input.summary.trim().slice(0, 1_000),
+      detailLevel: 'summary' as const,
+    }].slice(-current.evidencePolicy.maxEvidenceRefs);
+    const phaseEvidence = transitionPhaseEvidence({ ...current, evidenceRefs }, 'implementation', {
+      status: 'running',
+      summary: input.summary,
+      evidenceRefs,
+      recordedAt: at,
+      source: 'recorded',
+    });
+    return {
+      status: 'running',
+      phase: 'implementation',
+      phaseEvidence,
+      dispatchState: 'running',
+      evidenceRefs,
+      checkoutId: input.checkoutId ?? current.checkoutId,
+      worktreeRef: input.worktreeRef ?? current.worktreeRef,
+      controllerInstanceId: input.controllerInstanceId,
+      continuationPrompt: input.summary,
+    };
+  }, false, true, true, false, true);
 }
 
 /** Merge non-authoritative discovery/change evidence without changing policy fences. */
@@ -1126,19 +1560,19 @@ export function recordWorkScopeEvidence(
   workId: string,
   input: { initialLikelyPaths?: string[]; inspectedPaths?: string[]; actualChangedPaths?: string[] },
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  const previous = current.scopeEvidence ?? {
-    initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: current.createdAt,
-  };
-  return updateWorkContract(options, workId, {
-    scopeEvidence: {
-      initialLikelyPaths: [...new Set([...previous.initialLikelyPaths, ...(input.initialLikelyPaths ?? [])])].slice(0, 100),
-      inspectedPaths: [...new Set([...previous.inspectedPaths, ...(input.inspectedPaths ?? [])])].slice(0, 500),
-      actualChangedPaths: [...new Set([...previous.actualChangedPaths, ...(input.actualChangedPaths ?? [])])].slice(0, 500),
-      recordedAt: nowIso(options),
-    },
-  });
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    const previous = current.scopeEvidence ?? {
+      initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: current.createdAt,
+    };
+    return {
+      scopeEvidence: {
+        initialLikelyPaths: [...new Set([...previous.initialLikelyPaths, ...(input.initialLikelyPaths ?? [])])].slice(0, 100),
+        inspectedPaths: [...new Set([...previous.inspectedPaths, ...(input.inspectedPaths ?? [])])].slice(0, 500),
+        actualChangedPaths: [...new Set([...previous.actualChangedPaths, ...(input.actualChangedPaths ?? [])])].slice(0, 500),
+        recordedAt: at,
+      },
+    };
+  }, false);
 }
 
 export function transitionWorkContractPhase(
@@ -1150,31 +1584,48 @@ export function transitionWorkContractPhase(
     state?: Exclude<WorkPhaseEvidenceState, 'pending'>;
     summary: string;
     evidenceRefs?: EvidenceRef[];
+    dispatchState?: DispatchState;
+    evidenceState?: EvidenceState;
   },
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  const at = nowIso(options);
-  if (input.phase === 'review') {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_REQUEST_API');
-  }
-  if (input.phase === 'delivery'
-    && current.phase !== 'delivery'
-    && workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [])) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
-  }
-  const phaseEvidence = transitionPhaseEvidence(current, input.phase, {
-    status: input.status,
-    summary: input.summary,
-    evidenceRefs: input.evidenceRefs,
-    recordedAt: at,
-  });
-  if (input.state) phaseEvidence[input.phase] = { ...phaseEvidence[input.phase], state: input.state };
-  return updateWorkContractInternal(options, workId, {
-    phase: input.phase,
-    phaseEvidence,
-    status: input.status,
-  }, false, true);
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (input.phase === 'review') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_REQUEST_API');
+    }
+    if (input.phase === 'delivery'
+      && current.phase !== 'delivery'
+      && workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [], current.engineeringContext?.riskClass)) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
+    }
+    const phaseEvidence = transitionPhaseEvidence(current, input.phase, {
+      status: input.status,
+      summary: input.summary,
+      evidenceRefs: input.evidenceRefs,
+      recordedAt: at,
+    });
+    if (
+      input.phase === 'delivery'
+      && current.phase !== 'delivery'
+      && current.phaseEvidence.review.state !== 'satisfied'
+      && !workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [], current.engineeringContext?.riskClass)
+    ) {
+      phaseEvidence.review = {
+        state: 'skipped',
+        source: 'recorded',
+        summary: 'Implementation review is not required for this Work candidate under the current risk policy.',
+        evidenceRefs: [],
+        recordedAt: at,
+      };
+    }
+    if (input.state) phaseEvidence[input.phase] = { ...phaseEvidence[input.phase], state: input.state };
+    return {
+      phase: input.phase,
+      phaseEvidence,
+      status: input.status,
+      dispatchState: input.dispatchState ?? current.dispatchState,
+      evidenceState: input.evidenceState ?? current.evidenceState,
+    };
+  }, false, true, false, false, true);
 }
 
 /** Enter the first-class implementation-review phase without recording a decision. */
@@ -1183,22 +1634,21 @@ export function requestWorkImplementationReview(
   workId: string,
   summary: string,
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
-  if (current.phase !== 'verification' || current.phaseEvidence.verification.state !== 'satisfied') {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_VERIFIED_CANDIDATE_REQUIRED');
-  }
-  const at = nowIso(options);
-  const phaseEvidence = transitionPhaseEvidence(current, 'review', {
-    status: 'running',
-    summary,
-    recordedAt: at,
-  });
-  return updateWorkContractInternal(options, workId, {
-    phase: 'review',
-    phaseEvidence,
-    status: 'running',
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
+    if (current.phase !== 'verification' || current.phaseEvidence.verification.state !== 'satisfied') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_VERIFIED_CANDIDATE_REQUIRED');
+    }
+    const phaseEvidence = transitionPhaseEvidence(current, 'review', {
+      status: 'running',
+      summary,
+      recordedAt: at,
+    });
+    return {
+      phase: 'review',
+      phaseEvidence,
+      status: 'running',
+    };
   }, false, true);
 }
 
@@ -1208,48 +1658,156 @@ export function recordWorkImplementationReview(
   workId: string,
   review: WorkImplementationReviewRecord,
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
-  if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
   validateImplementationReviewRecord(review);
   if (review.derivation === 'content_equivalent_commit') {
-    const parent = latestImplementationReview(current.implementationReviews);
-    if (current.phase !== 'delivery'
-      || !review.derivedFromReviewId
-      || parent?.reviewId !== review.derivedFromReviewId
-      || parent.decision !== 'approved') {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_DERIVATION_PHASE_REQUIRED');
-    }
-  } else if (current.phase !== 'review') {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED');
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_DERIVATION_REQUIRES_TRANSFER_API');
   }
-  const target = implementationReviewDecisionTarget(review.decision);
-  const at = nowIso(options);
-  const history = [...(current.implementationReviews ?? []), review];
-  if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
-  const phaseEvidence = transitionPhaseEvidence(current, target.phase, {
-    status: target.status,
-    summary: `Implementation review ${review.reviewId}: ${review.decision}. ${review.rationale}`,
-    recordedAt: at,
-  });
-  if (review.decision === 'approved') {
-    phaseEvidence.review = {
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
+    if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
+    if (current.phase !== 'review') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED');
+    }
+    const target = implementationReviewDecisionTarget(review.decision);
+    const history = [...(current.implementationReviews ?? []), review];
+    if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
+    const phaseEvidence = transitionPhaseEvidence(current, target.phase, {
+      status: target.status,
+      summary: `Implementation review ${review.reviewId}: ${review.decision}. ${review.rationale}`,
+      recordedAt: at,
+    });
+    if (review.decision === 'approved') {
+      phaseEvidence.review = {
+        state: 'satisfied',
+        source: 'recorded',
+        summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
+        evidenceRefs: current.evidenceRefs.slice(0, 20),
+        recordedAt: review.recordedAt,
+      };
+    } else if (review.decision === 'blocked') {
+      phaseEvidence.review = { ...phaseEvidence.review, state: 'blocked', recordedAt: review.recordedAt };
+    }
+    return {
+      phase: target.phase,
+      phaseEvidence,
+      status: target.status,
+      dispatchState: target.status === 'blocked'
+        ? 'blocked'
+        : current.dispatchState === 'blocked'
+          ? 'running'
+          : current.dispatchState,
+      implementationReviews: history,
+    };
+  }, false, true, false, true, review.decision === 'changes_required');
+}
+
+export interface ContentEquivalentCommitAuthorityTransferInput {
+  transferredVerificationRecords: VerificationRecord[];
+  derivedReview: WorkImplementationReviewRecord;
+}
+
+/**
+ * Persist the representation-only commit authority transfer in one Work-store
+ * transaction. The immutable parent review plus exact post-commit verification
+ * evidence authorize this write; mutable lifecycle phase is only a projection.
+ */
+export function recordContentEquivalentCommitAuthorityTransfer(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: ContentEquivalentCommitAuthorityTransferInput,
+): WorkContract {
+  return withWorkContractStoreWrite(options, () => {
+    const sanitizedId = sanitizeFileComponent(workId);
+    if (options.controllerHome) assertCanonicalWorkAdmissionAllowed(options, { operation: 'continue', workId: sanitizedId });
+    const store = readWorkContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
+    if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
+    const current = store.contracts[index]!;
+    if (current.completionReceipt || isTerminalWorkContractStatus(current.status)) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_TERMINAL: ${sanitizedId}`);
+    }
+
+    const review = input.derivedReview;
+    validateImplementationReviewRecord(review);
+    if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
+    if (review.derivation !== 'content_equivalent_commit'
+      || review.decision !== 'approved'
+      || !review.derivedFromReviewId) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_DERIVATION_REQUIRED');
+    }
+    const parent = latestImplementationReview(current.implementationReviews);
+    if (!parent || parent.reviewId !== review.derivedFromReviewId || parent.decision !== 'approved') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_PARENT_REQUIRED');
+    }
+    if (!['verification', 'review', 'delivery'].includes(current.phase)) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_PHASE_INVALID: ${current.phase}`);
+    }
+
+    const requestedCheckIds = new Set(current.checks);
+    for (const record of input.transferredVerificationRecords) {
+      if (!requestedCheckIds.has(record.checkId)) {
+        throw new Error(`WORK_VERIFICATION_TRANSFER_UNDECLARED_CHECK: ${record.checkId}`);
+      }
+    }
+    const transferredVerificationRecords = input.transferredVerificationRecords.filter((record) =>
+      !current.checkRefs.some((existing) => sameSuccessfulVerificationExecutionFact(existing, record)));
+    const checkRefs = [...transferredVerificationRecords, ...current.checkRefs].slice(0, 50);
+    const postVerification = authoritativeImplementationReviewVerificationEvidence({
+      repoId: current.repoId,
+      workId: current.workId,
+      requiredCheckIds: current.checks,
+      records: checkRefs,
+      sourceRevision: review.sourceRevision,
+      workspaceFingerprint: review.verificationWorkspaceFingerprint,
+    });
+    if (postVerification.missingCheckIds.length > 0) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
+    }
+    const expectedEvidence = normalizeImplementationReviewEvidence(review.verificationEvidence);
+    if (JSON.stringify(postVerification.evidence) !== JSON.stringify(expectedEvidence)) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_IDENTITY_MISMATCH');
+    }
+
+    const history = [...current.implementationReviews, review];
+    if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
+    const at = nowIso(options);
+    const summary = `Transferred verification and implementation-review authority to content-equivalent commit ${review.sourceRevision}.`;
+    const phaseEvidence = transitionPhaseEvidence(current, 'delivery', {
+      status: 'running',
+      summary,
+      evidenceRefs: current.evidenceRefs,
+      recordedAt: at,
+    });
+    phaseEvidence.verification = {
+      ...phaseEvidence.verification,
       state: 'satisfied',
       source: 'recorded',
-      summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
+      summary: `Exact post-commit verification authority supports derived review ${review.reviewId}.`,
       evidenceRefs: current.evidenceRefs.slice(0, 20),
       recordedAt: review.recordedAt,
     };
-  } else if (review.decision === 'blocked') {
-    phaseEvidence.review = { ...phaseEvidence.review, state: 'blocked', recordedAt: review.recordedAt };
-  }
-  return updateWorkContractInternal(options, workId, {
-    phase: target.phase,
-    phaseEvidence,
-    status: target.status,
-    implementationReviews: history,
-  }, false, true, false, true);
+    phaseEvidence.review = {
+      state: 'satisfied',
+      source: 'recorded',
+      summary: `Controller approval ${parent.reviewId} was transferred as ${review.reviewId} after content-equivalence proof.`,
+      evidenceRefs: current.evidenceRefs.slice(0, 20),
+      recordedAt: review.recordedAt,
+    };
+    const next = validateWorkSemanticTransition(current, validateWorkSemantics({
+      ...current,
+      updatedAt: at,
+      status: 'running',
+      phase: 'delivery',
+      phaseEvidence,
+      evidenceState: 'valid',
+      checkRefs,
+      implementationReviews: history,
+    }));
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
+    return next;
+  });
 }
 
 /**
@@ -1263,40 +1821,39 @@ export function reconcileApprovedWorkImplementationReviewProjection(
   workId: string,
   expected: { reviewId: string; sourceRevision: string; changedPathDigest: string },
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  if (current.completionReceipt) return current;
-  if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_TERMINAL: ${workId}`);
-  const review = latestImplementationReview(current.implementationReviews);
-  if (!review || review.decision !== 'approved') throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
-  if (review.reviewId !== expected.reviewId
-    || review.sourceRevision !== expected.sourceRevision
-    || review.changedPathDigest !== expected.changedPathDigest) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_PROJECTION_IDENTITY_MISMATCH');
-  }
-  if (current.phase === 'delivery' && current.phaseEvidence.review.state === 'satisfied') return current;
-  if (!['verification', 'review', 'delivery'].includes(current.phase)) {
-    throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_PHASE_INVALID: ${current.phase}`);
-  }
-  const at = nowIso(options);
-  const summary = `Recovered lifecycle projection from durable approved implementation review ${review.reviewId}; review authority was not rewritten.`;
-  const phaseEvidence = transitionPhaseEvidence(current, 'delivery', {
-    status: 'running',
-    summary,
-    evidenceRefs: current.evidenceRefs,
-    recordedAt: at,
-  });
-  phaseEvidence.review = {
-    state: 'satisfied',
-    source: 'recorded',
-    summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
-    evidenceRefs: current.evidenceRefs.slice(0, 20),
-    recordedAt: review.recordedAt,
-  };
-  return updateWorkContractInternal(options, workId, {
-    phase: 'delivery',
-    phaseEvidence,
-    status: 'running',
+  return updateWorkContractInternal(options, workId, (current, at) => {
+    if (current.completionReceipt) return undefined;
+    if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_TERMINAL: ${workId}`);
+    const review = latestImplementationReview(current.implementationReviews);
+    if (!review || review.decision !== 'approved') throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+    if (review.reviewId !== expected.reviewId
+      || review.sourceRevision !== expected.sourceRevision
+      || review.changedPathDigest !== expected.changedPathDigest) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_PROJECTION_IDENTITY_MISMATCH');
+    }
+    if (current.phase === 'delivery' && current.phaseEvidence.review.state === 'satisfied') return undefined;
+    if (!['verification', 'review', 'delivery'].includes(current.phase)) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_PHASE_INVALID: ${current.phase}`);
+    }
+    const summary = `Recovered lifecycle projection from durable approved implementation review ${review.reviewId}; review authority was not rewritten.`;
+    const phaseEvidence = transitionPhaseEvidence(current, 'delivery', {
+      status: 'running',
+      summary,
+      evidenceRefs: current.evidenceRefs,
+      recordedAt: at,
+    });
+    phaseEvidence.review = {
+      state: 'satisfied',
+      source: 'recorded',
+      summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
+      evidenceRefs: current.evidenceRefs.slice(0, 20),
+      recordedAt: review.recordedAt,
+    };
+    return {
+      phase: 'delivery',
+      phaseEvidence,
+      status: 'running',
+    };
   }, false, true);
 }
 
@@ -1305,11 +1862,9 @@ export function appendWorkEvidence(
   workId: string,
   evidence: EvidenceRef,
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  return updateWorkContract(options, workId, {
+  return updateWorkContractInternal(options, workId, (current) => ({
     evidenceRefs: [evidence, ...current.evidenceRefs].slice(0, current.evidencePolicy.maxEvidenceRefs),
-  });
+  }), false);
 }
 
 export function appendWorkHandoffRef(
@@ -1317,10 +1872,10 @@ export function appendWorkHandoffRef(
   workId: string,
   handoffId: string,
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  const handoffRefs = [sanitizeFileComponent(handoffId), ...current.handoffRefs.filter((id) => id !== sanitizeFileComponent(handoffId))].slice(0, 20);
-  return updateWorkContract(options, workId, { handoffRefs });
+  const sanitizedHandoffId = sanitizeFileComponent(handoffId);
+  return updateWorkContractInternal(options, workId, (current) => ({
+    handoffRefs: [sanitizedHandoffId, ...current.handoffRefs.filter((id) => id !== sanitizedHandoffId)].slice(0, 20),
+  }), false);
 }
 
 function sameSuccessfulVerificationExecutionFact(left: VerificationRecord, right: VerificationRecord): boolean {
@@ -1343,18 +1898,17 @@ export function appendVerificationRecord(
   workId: string,
   record: VerificationRecord,
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  // Re-consuming the exact same successful Process against the exact same
-  // source/workspace is request provenance, not a new Work verification fact.
-  // Keep the original durable VerificationRecord so an approved review remains
-  // bound to one stable evidence identity. A changed source/workspace, Process,
-  // Check definition, environment, or cache identity still appends normally.
-  if (current.checkRefs.some((existing) => sameSuccessfulVerificationExecutionFact(existing, record))) {
-    return current;
-  }
-  const checkRefs = [record, ...current.checkRefs].slice(0, 50);
-  return updateWorkContract(options, workId, { checkRefs });
+  return updateWorkContractInternal(options, workId, (current) => {
+    // Re-consuming the exact same successful Process against the exact same
+    // source/workspace is request provenance, not a new Work verification fact.
+    // Keep the original durable VerificationRecord so an approved review remains
+    // bound to one stable evidence identity. A changed source/workspace, Process,
+    // Check definition, environment, or cache identity still appends normally.
+    if (current.checkRefs.some((existing) => sameSuccessfulVerificationExecutionFact(existing, record))) {
+      return undefined;
+    }
+    return { checkRefs: [record, ...current.checkRefs].slice(0, 50) };
+  }, false);
 }
 
 /**
@@ -1369,51 +1923,51 @@ export function recordWorkCompletionReceipt(
   completionOutcome: NonNullable<WorkContract['completionOutcome']>,
   completionWorkKind?: WorkKind,
 ): WorkContract {
-  const current = getWorkContract(options, workId);
-  if (!current) throw new Error(`work contract not found: ${workId}`);
-  if (receipt.workId !== current.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
-  if (current.completionReceipt) {
-    if (current.completionReceipt.receiptId !== receipt.receiptId) throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
-    return current;
-  }
-  const recordedAt = receipt.recordedAt;
-  const receiptChangedPaths = isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)
-    ? receipt.changedPaths
-    : [];
-  const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
-    && Boolean(receipt.reconciliationId?.trim())
-    && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
-  const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths);
-  if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
-  }
-  const phaseEvidence: WorkPhaseEvidenceMap = {
-    ...current.phaseEvidence,
-    implementation: { ...current.phaseEvidence.implementation, state: 'satisfied' },
-    verification: { ...current.phaseEvidence.verification, state: 'satisfied' },
-    review: reviewRequired
-      ? historicalReconciliationException
-        ? { state: 'skipped', source: 'recorded', summary: `Historical reviewed reconciliation ${receipt.reconciliationId} is the narrow compatibility authority for this already-delivered Direct Edit Work.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt }
-        : { ...current.phaseEvidence.review, state: 'satisfied' }
-      : { state: 'skipped', source: 'recorded', summary: 'Implementation review is not required for this source-free Work completion.', evidenceRefs: [], recordedAt },
-    delivery: { state: 'satisfied', source: 'recorded', summary: `Phase delivery accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
-    cleanup: { state: 'satisfied', source: 'recorded', summary: `Phase cleanup accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
-  };
-  return updateWorkContractInternal(options, current.workId, {
-    phase: 'cleanup',
-    phaseEvidence,
-    status: 'completed',
-    dispatchState: 'terminal',
-    evidenceState: 'valid',
-    completionOutcome,
-    ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
-    completionReceipt: receipt,
-    scopeEvidence: {
-      initialLikelyPaths: current.scopeEvidence?.initialLikelyPaths ?? current.allowedPaths,
-      inspectedPaths: current.scopeEvidence?.inspectedPaths ?? [],
-      actualChangedPaths: [...new Set(receiptChangedPaths)].slice(0, 500),
-      recordedAt,
-    },
+  return updateWorkContractInternal(options, workId, (current) => {
+    if (receipt.workId !== current.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
+    if (current.completionReceipt) {
+      if (current.completionReceipt.receiptId !== receipt.receiptId) throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
+      return undefined;
+    }
+    const recordedAt = receipt.recordedAt;
+    const receiptChangedPaths = isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)
+      ? receipt.changedPaths
+      : [];
+    const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
+      && Boolean(receipt.reconciliationId?.trim())
+      && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
+    const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
+    if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+    }
+    const phaseEvidence: WorkPhaseEvidenceMap = {
+      ...current.phaseEvidence,
+      implementation: { ...current.phaseEvidence.implementation, state: 'satisfied' },
+      verification: { ...current.phaseEvidence.verification, state: 'satisfied' },
+      review: reviewRequired
+        ? historicalReconciliationException
+          ? { state: 'skipped', source: 'recorded', summary: `Historical reviewed reconciliation ${receipt.reconciliationId} is the narrow compatibility authority for this already-delivered Direct Edit Work.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt }
+          : { ...current.phaseEvidence.review, state: 'satisfied' }
+        : { state: 'skipped', source: 'recorded', summary: 'Implementation review is not required for this Work completion under the current candidate risk policy.', evidenceRefs: [], recordedAt },
+      delivery: { state: 'satisfied', source: 'recorded', summary: `Phase delivery accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
+      cleanup: { state: 'satisfied', source: 'recorded', summary: `Phase cleanup accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
+    };
+    return {
+      phase: 'cleanup',
+      phaseEvidence,
+      status: 'completed',
+      dispatchState: 'terminal',
+      evidenceState: 'valid',
+      completionOutcome,
+      ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
+      completionReceipt: receipt,
+      scopeEvidence: {
+        initialLikelyPaths: current.scopeEvidence?.initialLikelyPaths ?? current.allowedPaths,
+        inspectedPaths: current.scopeEvidence?.inspectedPaths ?? [],
+        actualChangedPaths: [...new Set(receiptChangedPaths)].slice(0, 500),
+        recordedAt,
+      },
+    };
   }, true, true);
 }
 export interface AcceptSubmittedWorkInput {

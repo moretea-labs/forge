@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
+import { materializePackageRuntimeRelease, packageRuntimeFileIndex } from '../../src/runtime/root/package-runtime-release';
 import { assertStorageHeadroom, readStorageCapacity } from '../../src/runtime/shared/storage-capacity';
 
 const roots: string[] = [];
@@ -17,10 +17,12 @@ function fixture(): { home: string; packageRoot: string } {
   roots.push(root);
   const home = join(root, 'home');
   const packageRoot = join(root, 'package-source');
-  for (const dir of ['src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'adapters/mcp', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
+  for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'adapters/mcp', 'packages/kernel/scheduler/api', 'supervisor', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+  writeFileSync(join(packageRoot, 'supervisor', 'client.ts'), 'export const supervisorClient = 1;\n');
+  writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), "import { supervisorClient } from '../../supervisor/client';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(supervisorClient === 1 ? 0 : 3);\nprocess.exit(4);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
   writeFileSync(join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'export const scheduler = 1;\n');
@@ -29,6 +31,13 @@ function fixture(): { home: string; packageRoot: string } {
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'process-runner-entry.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge process-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime', 'check-runner-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge check-runner release canary'); process.exit(0); } process.exit(2);\n");
   writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+  writeFileSync(join(packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'), 'throw new Error(\"benchmark only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'check-release-readiness.sh'), 'exit 99\n');
+  writeFileSync(join(packageRoot, 'scripts', 'public-release.ts'), 'throw new Error(\"release management only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'stage-runtime-release.ts'), 'throw new Error(\"release staging only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'route-nl-vs-ts-eval.ts'), 'throw new Error(\"evaluation only\");\n');
+  writeFileSync(join(packageRoot, 'scripts', 'verify-forge-runtime.sh'), 'exit 0\n');
+  writeFileSync(join(packageRoot, 'scripts', 'bootstrap-runtime-maintenance-recovery.sh'), 'exit 0\n');
   mkdirSync(join(packageRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
   writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'), 'export const linked = 1;\n');
@@ -45,6 +54,7 @@ describe('package Runtime release immutability', () => {
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'utf8')).toBe('export const adapter = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe('export const scheduler = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'supervisor', 'client.ts'), 'utf8')).toBe('export const supervisorClient = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8')).toBe('export const linked = 1;\n');
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;
@@ -61,6 +71,25 @@ describe('package Runtime release immutability', () => {
 
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' } });
     expect(launched.status).toBe(0);
+  });
+
+  test('excludes non-runtime evaluation and release helpers while retaining runtime and recovery scripts', () => {
+    const { home, packageRoot } = fixture();
+    const paths = new Set(packageRuntimeFileIndex(packageRoot).map((record) => record.path));
+
+    expect(paths.has('scripts/benchmark-cognitive-memory-activation.ts')).toBe(false);
+    expect(paths.has('scripts/check-release-readiness.sh')).toBe(false);
+    expect(paths.has('scripts/public-release.ts')).toBe(false);
+    expect(paths.has('scripts/stage-runtime-release.ts')).toBe(false);
+    expect(paths.has('scripts/route-nl-vs-ts-eval.ts')).toBe(false);
+    expect(paths.has('scripts/verify-forge-runtime.sh')).toBe(true);
+    expect(paths.has('scripts/bootstrap-runtime-maintenance-recovery.sh')).toBe(true);
+
+    const release = materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'non-runtime-exclusion' });
+    expect(existsSync(join(release.packageRoot, 'scripts', 'benchmark-cognitive-memory-activation.ts'))).toBe(false);
+    expect(existsSync(join(release.packageRoot, 'scripts', 'public-release.ts'))).toBe(false);
+    expect(existsSync(join(release.packageRoot, 'scripts', 'verify-forge-runtime.sh'))).toBe(true);
+    expect(existsSync(join(release.packageRoot, 'scripts', 'bootstrap-runtime-maintenance-recovery.sh'))).toBe(true);
   });
 
   test('fails closed when bytes inside an existing immutable package snapshot change', () => {
@@ -82,6 +111,21 @@ describe('package Runtime release immutability', () => {
 
     expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'execution-surface-repeat' }))
       .toThrow(/PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION|RUNTIME_RELEASE_EXECUTION_ENTRY_NOT_EXECUTABLE/);
+  });
+
+  test('does not promote a package release whose staged Connector CLI dependency graph is incomplete', () => {
+    const { home, packageRoot } = fixture();
+    mkdirSync(join(packageRoot, 'future-runtime-root'), { recursive: true });
+    writeFileSync(join(packageRoot, 'future-runtime-root', 'dependency.ts'), 'export const futureDependency = 1;\n');
+    writeFileSync(
+      join(packageRoot, 'src', 'cli', 'index.ts'),
+      "import { futureDependency } from '../../future-runtime-root/dependency';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(futureDependency === 1 ? 0 : 3);\nprocess.exit(4);\n",
+    );
+
+    expect(() => materializePackageRuntimeRelease({ controllerHome: home, packageRoot, operationId: 'connector-canary-fail' }))
+      .toThrow(/RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: connector_cli/);
+    const releasesRoot = join(home, 'runtime', 'releases');
+    expect(existsSync(releasesRoot) ? readdirSync(releasesRoot) : []).toEqual([]);
   });
 
   test('does not promote a package release whose staged Process Runner canary fails', () => {

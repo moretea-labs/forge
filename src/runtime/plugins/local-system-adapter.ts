@@ -16,7 +16,8 @@ import {
 } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
 import { forgeRuntimeServicePaths } from '../root/service';
-import { createRecoveryConfig, loadRecoveryConfig } from '../standalone-recovery/core';
+import { installWorkflowSupervisorBrowserAdapter, inspectWorkflowSupervisorBrowserAdapter } from '../../../supervisor/browser-adapter-installer';
+import { createRecoveryConfig, loadRecoveryConfig, repairPublicTunnel } from '../standalone-recovery/core';
 import { activateRecoveryRelease, recoverySourceIdentity, stageRecoveryRelease } from '../standalone-recovery/installer';
 import { readCurrentRecoveryRelease, type RecoveryReleaseDescriptor } from '../standalone-recovery/release';
 import {
@@ -51,7 +52,7 @@ import {
   assertRepositoryCommandInputAllowed,
 } from '../../cli/repositories/command-scope';
 import { runCanonicalCommand } from '../../cli/repositories/command-executor';
-import { listRepositories, repositoryCheckoutLifecycle } from '../../cli/repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot, listRepositories, repositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 
 const PLUGIN_ID = 'local_system';
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -78,6 +79,9 @@ export interface LocalSystemPluginHooks {
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   scheduleLaunchAgentRestart?: (service: string) => { pid: number };
   upgradeStandaloneRecovery?: (controllerHome: string) => Promise<Record<string, unknown>>;
+  installWorkflowSupervisorBrowserAdapter?: typeof installWorkflowSupervisorBrowserAdapter;
+  inspectWorkflowSupervisorBrowserAdapter?: typeof inspectWorkflowSupervisorBrowserAdapter;
+  repairPublicTunnel?: typeof repairPublicTunnel;
   recoverySourceIdentity?: typeof recoverySourceIdentity;
   stageRecoveryRelease?: typeof stageRecoveryRelease;
   activateRecoveryRelease?: typeof activateRecoveryRelease;
@@ -652,10 +656,15 @@ interface RecoveryUpgradeSourceRepair {
 
 function resolveRecoveryUpgradeSource(controllerHome: string, configuredSourceRoot: string): {
   sourceRoot: string;
+  repositoryId: string;
   repair?: RecoveryUpgradeSourceRepair;
 } {
   const configured = resolve(configuredSourceRoot);
-  if (existsSync(configured)) return { sourceRoot: configured };
+  if (existsSync(configured)) {
+    const owner = findRegisteredRepositoryByCheckoutRoot(configured, controllerHome);
+    if (!owner) throw new Error(`RECOVERY_SOURCE_REPOSITORY_NOT_REGISTERED: ${configured}`);
+    return { sourceRoot: configured, repositoryId: owner.repoId };
+  }
 
   const owners = listRepositories(controllerHome)
     .filter((repository) => repository.enabled !== false)
@@ -678,6 +687,7 @@ function resolveRecoveryUpgradeSource(controllerHome: string, configuredSourceRo
   }
   return {
     sourceRoot: canonical,
+    repositoryId: owner.repoId,
     repair: {
       performed: true,
       repositoryId: owner.repoId,
@@ -716,12 +726,16 @@ async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record
         throw new Error('RECOVERY_RELEASE_SOURCE_IDENTITY_DRIFT');
       }
     }
-    const activationConfig = sourceRepair
-      ? { ...config, primaryRuntimeSourceRoot: source.sourceRoot }
+    const sourceAuthorityChanged = sourceRepair || config.primaryRuntimeSourceRepositoryId !== resolvedSource.repositoryId;
+    const activationConfig = sourceAuthorityChanged
+      ? { ...config, primaryRuntimeSourceRoot: source.sourceRoot, primaryRuntimeSourceRepositoryId: resolvedSource.repositoryId }
       : config;
     const activated = await (hooks.activateRecoveryRelease ?? activateRecoveryRelease)({ controllerHome, config: activationConfig, candidate });
-    if (sourceRepair) {
-      createRecoveryConfig(controllerHome, { primaryRuntimeSourceRoot: source.sourceRoot });
+    if (sourceAuthorityChanged) {
+      createRecoveryConfig(controllerHome, {
+        primaryRuntimeSourceRoot: source.sourceRoot,
+        primaryRuntimeSourceRepositoryId: resolvedSource.repositoryId,
+      });
     }
     return {
       upgraded: activated.noOp !== true,
@@ -758,9 +772,40 @@ async function upgradeStandaloneRecovery(controllerHome: string): Promise<Record
   }
 }
 
+async function repairStandaloneRecoveryTunnel(controllerHome: string): Promise<Record<string, unknown>> {
+  const config = loadRecoveryConfig(controllerHome);
+  try {
+    const result = await (hooks.repairPublicTunnel ?? repairPublicTunnel)(config);
+    if (!result.ok) {
+      throw new AssistantPluginError(
+        'LOCAL_SYSTEM_RECOVERY_TUNNEL_REPAIR_FAILED',
+        bounded(result.detail, 2_000).content,
+        { retryable: result.attempted === true || result.detail.includes('cooldown') },
+      );
+    }
+    return {
+      repaired: result.attempted === true,
+      noOp: result.noOp === true,
+      detail: result.detail,
+      ...(result.serviceLabel ? { serviceLabel: result.serviceLabel } : {}),
+      ...(result.serviceTarget ? { serviceTarget: result.serviceTarget } : {}),
+      verification: { ok: result.verify.ok },
+      ...(result.localVerify ? { localVerification: { ok: result.localVerify.ok } } : {}),
+    };
+  } catch (error) {
+    if (error instanceof AssistantPluginError) throw error;
+    throw new AssistantPluginError(
+      'LOCAL_SYSTEM_RECOVERY_TUNNEL_REPAIR_FAILED',
+      bounded(error instanceof Error ? error.message : String(error), 2_000).content,
+      { retryable: false },
+    );
+  }
+}
+
 function actions(): AssistantPluginActionDescriptor[] {
   const controllerRead = [{ resource: 'repo-state' as const, mode: 'read' as const }];
   const controllerWrite = [{ resource: 'repo-state' as const, mode: 'write' as const }];
+  const providerWrite = [{ resource: 'provider-state' as const, mode: 'write' as const }];
   const targetProperties = {
     target_key: { type: 'string' },
     path: { type: 'string' },
@@ -773,6 +818,9 @@ function actions(): AssistantPluginActionDescriptor[] {
     { actionId: 'stop_user_launch_agent', title: 'Stop verified user LaunchAgent', description: 'Boot out one exact loaded user LaunchAgent only after its launchd identity matches the expected program.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { label: { type: 'string' }, expected_program_contains: { type: 'string' } }, required: ['label', 'expected_program_contains'], additionalProperties: false } },
     { actionId: 'start_user_launch_agent', title: 'Start verified user LaunchAgent', description: 'Bootstrap or start one exact current-user LaunchAgent from ~/Library/LaunchAgents only after the installed plist matches the expected program identity.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { label: { type: 'string' }, expected_program_contains: { type: 'string' } }, required: ['label', 'expected_program_contains'], additionalProperties: false } },
     { actionId: 'upgrade_standalone_recovery', title: 'Upgrade standalone Recovery', description: 'Upgrade the installed standalone Recovery from its configured primary Runtime source using the existing immutable Recovery release authority. No caller source path or command is accepted.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 240_000, cancellable: false, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+    { actionId: 'repair_standalone_recovery_tunnel', title: 'Repair standalone Recovery tunnel', description: 'Repair only the installed standalone Recovery public tunnel using its existing configured tunnel identity and Recovery repair authority. No caller tunnel identity, path, executable, or command is accepted.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: false, idempotent: true, scopes: ['local-system.process'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+    { actionId: 'workflow_supervisor_browser_adapter_status', title: 'Workflow Supervisor browser adapter status', description: 'Inspect the Controller-owned Workflow Supervisor Chrome adapter projection and exact package-derived Native Messaging registration.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.browser-adapter'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+    { actionId: 'install_workflow_supervisor_browser_adapter', title: 'Install Workflow Supervisor browser adapter', description: 'Project the active immutable Runtime browser adapter into Controller-owned paths and register Native Messaging only for the extension package-derived stable id. No caller path, command, extension id, or browser profile is accepted.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: false, idempotent: true, scopes: ['local-system.browser-adapter'], resourceClaims: providerWrite, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'open_application', title: 'Open application', description: 'Open one macOS application by name or bundle id in the background without stealing foreground focus.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false, scopes: ['local-system.open'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { app_name: { type: 'string' }, bundle_id: { type: 'string' } }, additionalProperties: false } },
     { actionId: 'list_targets', title: 'List filesystem targets', description: 'List active expiring local filesystem grants.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['local-system.files.read'], resourceClaims: controllerRead, argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'authorize_target', title: 'Authorize filesystem target', description: 'Authorize an expiring filesystem target. By default, a path inside a Git project authorizes the whole project/repository root; use scope=directory only when intentionally granting a narrower directory.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true, scopes: ['local-system.files.write'], resourceClaims: controllerWrite, argumentsSchema: { type: 'object', properties: { target_key: { type: 'string' }, root_path: { type: 'string' }, scope: { type: 'string', enum: ['auto', 'project', 'directory'] }, expires_in_minutes: { type: 'number' }, reason: { type: 'string' }, access: { type: 'string', enum: ['read_only', 'read_write'] } }, required: ['target_key', 'root_path', 'reason'], additionalProperties: false } },
@@ -817,6 +865,7 @@ function permissions(): AssistantPluginPermissionScope[] {
     { scope: 'local-system.read', mode: 'read', description: 'Read bounded local process and memory diagnostics.', granted: true, required: true },
     { scope: 'local-system.process', mode: 'write', description: 'Terminate one verified PID or control one verified current-user LaunchAgent after explicit authorization.', granted: true, required: false },
     { scope: 'local-system.open', mode: 'write', description: 'Open applications or authorized files.', granted: true, required: false },
+    { scope: 'local-system.browser-adapter', mode: 'write', description: 'Install and inspect the Controller-owned Workflow Supervisor Chrome adapter and exact Native Messaging registration.', granted: true, required: false },
     { scope: 'local-system.files.read', mode: 'read', description: 'Read files only below active target grants.', granted: true, required: false },
     { scope: 'local-system.files.write', mode: 'write', description: 'Create, copy, move, rename, or explicitly delete bounded files and empty directories below active read-write target grants.', granted: true, required: false },
   ];
@@ -827,6 +876,8 @@ function capabilities(): AssistantPluginCapability[] {
     { capabilityId: 'local-system-diagnostics', title: 'Local diagnostics', description: 'Inspect CPU, processes, and memory with bounded typed commands.', scopes: ['local-system.read'], actions: ['system_snapshot', 'process_detail'] },
     { capabilityId: 'local-system-process-control', title: 'Verified process lifecycle', description: 'Terminate one verified PID or stop/start/restart one verified macOS user LaunchAgent without exposing arbitrary shell execution.', scopes: ['local-system.process'], actions: ['terminate_process', 'restart_user_launch_agent', 'stop_user_launch_agent', 'start_user_launch_agent'] },
     { capabilityId: 'local-system-recovery-upgrade', title: 'Managed standalone Recovery upgrade', description: 'Upgrade standalone Recovery only from its installed configured source through the immutable Recovery release and rollback authority.', scopes: ['local-system.process'], actions: ['upgrade_standalone_recovery'] },
+    { capabilityId: 'local-system-recovery-tunnel-repair', title: 'Managed standalone Recovery tunnel repair', description: 'Repair only the installed Recovery public tunnel through the existing Recovery tunnel repair authority when the Recovery transport itself is unreachable.', scopes: ['local-system.process'], actions: ['repair_standalone_recovery_tunnel'] },
+    { capabilityId: 'local-system-workflow-supervisor-browser-adapter', title: 'Workflow Supervisor browser adapter', description: 'Inspect or install the stateless Chrome adapter projection used by the Goal-level Workflow Supervisor authority.', scopes: ['local-system.browser-adapter'], actions: ['workflow_supervisor_browser_adapter_status', 'install_workflow_supervisor_browser_adapter'] },
     { capabilityId: 'local-system-open', title: 'Open local applications and files', description: 'Open applications and authorized files without arbitrary shell access.', scopes: ['local-system.open'], actions: ['open_application', 'reveal_in_finder', 'open_file'] },
     { capabilityId: 'local-system-files', title: 'Authorized local files', description: 'Use expiring target grants for bounded local file operations and typed-argv commands without repository registration.', scopes: ['local-system.files.read', 'local-system.files.write'], actions: ['list_targets', 'authorize_target', 'revoke_target', 'list_directory', 'read_text', 'write_text', 'delete_file', 'delete_empty_directory', 'initialize_git', 'execute_command', 'execute_project_script', 'create_directory', 'copy_file', 'move_file', 'rename_file'] },
   ];
@@ -841,7 +892,7 @@ export function buildLocalSystemPluginManifest(previousRevision = 0, previousUpd
     pluginId: PLUGIN_ID,
     provider: 'local-macos',
     displayName: 'Local System Assistant',
-    pluginVersion: '1.5.1',
+    pluginVersion: '1.5.3',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controllerHome:system/local-system'] },
     enabled: true,
     lifecycle: { state: currentHealth.ready ? 'enabled' : 'degraded', reason: currentHealth.ready ? 'Local system capabilities are ready.' : currentHealth.warnings[0] },
@@ -883,6 +934,9 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     case 'stop_user_launch_agent': return stopVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'start_user_launch_agent': return startVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'upgrade_standalone_recovery': return await upgradeStandaloneRecovery(input.controllerHome);
+    case 'repair_standalone_recovery_tunnel': return await repairStandaloneRecoveryTunnel(input.controllerHome);
+    case 'workflow_supervisor_browser_adapter_status': return (hooks.inspectWorkflowSupervisorBrowserAdapter ?? inspectWorkflowSupervisorBrowserAdapter)(input.controllerHome, { repository: { repoId: input.repoId, repoRoot: input.repoRoot } }) as unknown as Record<string, unknown>;
+    case 'install_workflow_supervisor_browser_adapter': return (hooks.installWorkflowSupervisorBrowserAdapter ?? installWorkflowSupervisorBrowserAdapter)(input.controllerHome, { repository: { repoId: input.repoId, repoRoot: input.repoRoot } }) as unknown as Record<string, unknown>;
     case 'open_application': {
       const appName = optionalString(input.args, 'app_name');
       const bundleId = optionalString(input.args, 'bundle_id');

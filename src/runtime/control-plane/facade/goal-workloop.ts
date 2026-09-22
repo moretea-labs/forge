@@ -6,6 +6,7 @@ import {
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
+import { executionPlacement, readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import { projectAutonomousGoalProgression, type ProgressionWorkSnapshot } from '../../../../packages/kernel/progression/api/index';
 import {
   applyEngineeringBlockerDisposition,
@@ -13,14 +14,18 @@ import {
   buildEngineeringContextReceipt,
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
+  evaluationPromotionReceiptArchitectureEvidence,
   appendVerificationRecord,
   appendWorkEvidence,
   appendWorkHandoffRef,
+  cancelWorkContract,
   createWorkContract,
+  failWorkContract,
   getWorkContract,
   isTerminalWorkContractStatus,
   listWorkContracts,
   readActiveWorkCandidates,
+  recordWorkEvidenceState,
   recordWorkScopeEvidence,
   recordWorkImplementationReview,
   requestWorkImplementationReview,
@@ -28,17 +33,19 @@ import {
   transitionWorkContractPhase,
   updateWorkContract,
   type EngineeringAdmissionEvidence,
+  type EvaluationPromotionReceipt,
   type WorkContractStoreOptions,
 } from '../../../../packages/kernel/work/api/index';
 import {
   claimPlanStepForWork,
   completePlanStepForWork,
   getPlanContract,
+  getPlanExecutionBaselineRevision,
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
 import { completeWorkWithReceipt } from '../execution/work-completion-authority';
-import { evaluateReadOnlyReviewSourceIdentity, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence, verificationRecordAppliesToCurrentWorkspace } from '../execution/work-evidence-policy';
+import { effectiveCurrentWorkVerificationRecords, evaluateReadOnlyReviewSourceIdentity, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
 import { readRequirement } from '../persistence/requirement-store';
 import {
   classifyVerificationOutcome,
@@ -166,7 +173,7 @@ export interface GoalWorkloopContinueInput {
   /** Semantic Controller blocker classification; Forge derives the permitted action and persists the receipt. */
   engineeringBlocker?: {
     blockerId: string;
-    classification: 'same_root_cause' | 'unrelated';
+    classification: 'same_root_cause' | 'same_root_cause_scope_extension' | 'unrelated';
     rationale: string;
     semanticScopeKeys?: string[];
   };
@@ -198,6 +205,8 @@ export interface GoalWorkloopReviewInput {
   decision: ImplementationReviewDecision;
   rationale: string;
   findings?: WorkImplementationReviewFinding[];
+  /** Trusted evaluator output only. Raw MCP review arguments never populate this field. */
+  evaluationPromotionReceipt?: EvaluationPromotionReceipt;
 }
 
 export interface GoalWorkloopFinalizeInput {
@@ -219,6 +228,7 @@ function nowIso(ctx: GoalWorkloopContext): string {
 function currentImplementationReviewCandidate(
   ctx: GoalWorkloopContext,
   work: WorkContract,
+  architectureEvidenceOverride?: ImplementationReviewCandidateIdentity['architectureEvidence'],
 ): ImplementationReviewCandidateIdentity {
   const sourceRevision = ctx.sourceRevision?.trim() ?? '';
   const verificationWorkspaceFingerprint = ctx.workspaceFingerprint?.trim() ?? '';
@@ -240,13 +250,17 @@ function currentImplementationReviewCandidate(
   if (verification.missingCheckIds.length > 0) {
     throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
   }
+  const latestReview = latestImplementationReview(work.implementationReviews);
+  const retainedArchitectureEvidence = latestReview?.sourceRevision === sourceRevision
+    ? latestReview.architectureEvidence
+    : [];
   return {
     sourceRevision,
     workspaceFingerprint,
     verificationWorkspaceFingerprint,
     changedPaths,
     verificationEvidence: verification.evidence,
-    architectureEvidence: [],
+    architectureEvidence: architectureEvidenceOverride ?? retainedArchitectureEvidence,
   };
 }
 
@@ -294,6 +308,7 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
   if (risk === 'destructive' || risk === 'destructive_remote' || risk === 'raw_secret_config') return 'destructive';
   if (risk === 'remote_write') return 'high';
   if (risk === 'local_repo_write') return 'low';
+  if (risk === undefined) return 'low';
   return 'medium';
 }
 
@@ -914,6 +929,7 @@ export function startGoalWorkloop(
         planId: plan.planId,
         requirementId: plan.requirementId,
         sourceRevision: plan.sourceRevision,
+        executionBaselineRevision: ctx.planStore ? getPlanExecutionBaselineRevision(ctx.planStore, plan) : undefined,
         status: plan.status,
         steps: plan.steps.map((candidate) => ({ id: candidate.id, dependencies: candidate.dependencies, status: candidate.status, workId: candidate.workId })),
       },
@@ -1036,8 +1052,8 @@ export function startGoalWorkloop(
   const effectiveChecks = planStep?.checks ?? input.checks ?? [];
   const normalized = normalizeCheckIds(effectiveChecks, available);
   const invalidLineageWork = activeAdmissionSnapshot.invalid.find((candidate) =>
-    (resolvedPlanId && resolvedPlanStepId && candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId)
-    || (effectiveRequirementId && candidate.requirementId === effectiveRequirementId));
+    (input.relatedWorkId && candidate.workId === input.relatedWorkId)
+    || (resolvedPlanId && resolvedPlanStepId && candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId));
   if (invalidLineageWork) {
     return buildFacadeResult({
       status: 'blocked',
@@ -1073,18 +1089,19 @@ export function startGoalWorkloop(
     : [];
   const explicitPlanStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
   const planStepWork = explicitPlanStepWork ?? (boundPlanStepWorks.length === 1 ? boundPlanStepWorks[0] : undefined);
-  const requirementWorks = effectiveRequirementId
-    ? activeWorks.filter((candidate) => candidate.requirementId === effectiveRequirementId)
-    : [];
+  // Requirement membership is portfolio ownership, not semantic Work identity.
+  // Only an explicit related Work or the exact bound Plan step may select an
+  // existing Work authority. Siblings under one Requirement remain unrelated
+  // for semantic admission and meet only in placement/resource arbitration.
   const deterministicTarget = input.relatedWorkId
     ? explicitRelatedWork
-    : planStepWork ?? (requirementWorks.length === 1 ? requirementWorks[0] : undefined);
+    : planStepWork;
   const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
   // Only strong semantic bindings participate in ownership resolution. An
   // unrelated active Work or a checkout writer is a placement fact, not a
   // semantic candidate for continue/extend/parallel/new_goal.
   const candidateWorks = [...new Map(
-    [explicitRelatedWork, planStepWork, ...boundPlanStepWorks, ...requirementWorks]
+    [explicitRelatedWork, planStepWork, ...boundPlanStepWorks]
       .filter((candidate): candidate is WorkContract => Boolean(candidate))
       .map((candidate) => [candidate.workId, candidate]),
   ).values()].slice(0, 8);
@@ -1189,7 +1206,7 @@ export function startGoalWorkloop(
 
   if ((requestedRelation === 'continue' || requestedRelation === 'extend') && !terminalContinuationSource) {
     if (!deterministicTarget) {
-      return resolutionRequired(`${requestedRelation.toUpperCase()}_TARGET_REQUIRED: select related_work_id or bind the request to an active Plan/Requirement before execution.`);
+      return resolutionRequired(`${requestedRelation.toUpperCase()}_TARGET_REQUIRED: select related_work_id or bind the request to an exact active Plan step before execution.`);
     }
     if (requestedRelation === 'extend' && deterministicTarget.planId) {
       return resolutionRequired(
@@ -1299,22 +1316,23 @@ export function startGoalWorkloop(
     if (plan.status !== 'approved' && plan.status !== 'executing') {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_NOT_EXECUTABLE: ${plan.planId} is ${plan.status}`, data: { executionStarted: false, planId: plan.planId } });
     }
-    if (plan.sourceRevision !== ctx.sourceRevision) {
-      const invalidated = claimPlanStepForWork(ctx.planStore, {
-        planId: resolvedPlanId,
-        stepId: resolvedPlanStepId,
-        workId: generatedWorkId,
-        sourceRevision: ctx.sourceRevision,
-      });
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_SOURCE_DRIFT: ${invalidated.planId} was invalidated because its source revision no longer matches. Replan before execution.`,
-        data: { planId: invalidated.planId, executionStarted: false, workContractCreated: false, replanRequired: true },
-      });
+    const executionBaselineRevision = getPlanExecutionBaselineRevision(ctx.planStore, plan);
+    if (executionBaselineRevision !== ctx.sourceRevision) {
+      const activeStep = plan.steps.find((candidate) => candidate.status === 'executing' || candidate.status === 'validating');
+      if (activeStep) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_EXECUTION_BASELINE_LOCKED: ${plan.planId}:${activeStep.id}:${executionBaselineRevision}`,
+          data: { planId: plan.planId, planStepId: planStep.id, executionStarted: false, workContractCreated: false },
+        });
+      }
     }
     const unresolved = planStep.dependencies.filter((dependency) => plan.steps.find((candidate) => candidate.id === dependency)?.status !== 'completed');
     if (unresolved.length > 0) {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_DEPENDENCIES_PENDING: ${unresolved.join(', ')}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
+    }
+    if (planStep.status === 'executing' || planStep.status === 'validating') {
+      return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_ALREADY_ACTIVE: ${planStep.id}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
     }
     if (planStep.status === 'completed') {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_ALREADY_COMPLETED: ${planStep.id}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
@@ -1342,10 +1360,18 @@ export function startGoalWorkloop(
         : repositoryWorkspaceParticipant && input.modeInput.requiresParallelism === true
           ? 'Parallel Work requires isolated placement.'
           : 'Current workspace is the stability-first default; isolation remains opt-in.';
+  const forgeInstanceId = ctx.workStore.controllerHome
+    ? readForgeInstanceIdentity(ctx.workStore.controllerHome)?.instanceId
+    : undefined;
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
     checkoutId: needsWorktree ? undefined : ctx.checkoutId,
+    executionPlacement: executionPlacement({
+      ...(forgeInstanceId ? { forgeInstanceId } : {}),
+      repositoryId: ctx.repoId,
+      ...(!needsWorktree && ctx.checkoutId ? { checkoutId: ctx.checkoutId } : {}),
+    }),
     principalId: ctx.principalId,
     controllerInstanceId: ctx.controllerInstanceId,
     baseRevision: ctx.sourceRevision,
@@ -1371,7 +1397,7 @@ export function startGoalWorkloop(
     predecessorWorkId: terminalContinuationSource?.workId,
     planId: resolvedPlanId,
     planStepId: resolvedPlanStepId,
-    planSourceRevision: resolvedPlanId ? ctx.sourceRevision : undefined,
+    planSourceRevision: resolvedPlanId ? plan?.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
     scopeEvidence: {
       initialLikelyPaths: [...new Set(input.initialLikelyPaths ?? effectiveAllowedPaths)].slice(0, 100),
@@ -1419,19 +1445,12 @@ export function startGoalWorkloop(
 
   if (resolvedPlanId && resolvedPlanStepId && ctx.planStore && ctx.sourceRevision) {
     try {
-      const claimed = claimPlanStepForWork(ctx.planStore, {
+      claimPlanStepForWork(ctx.planStore, {
         planId: resolvedPlanId,
         stepId: resolvedPlanStepId,
         workId: work.workId,
         sourceRevision: ctx.sourceRevision,
       });
-      if (claimed.status === 'invalidated_by_drift') {
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: `PLAN_SOURCE_DRIFT: ${claimed.planId} was invalidated because its source revision no longer matches. Repair or replan before execution.`,
-          data: { executionStarted: false, workContractCreated: true, work: summarizeWorkContract(work), planId: claimed.planId, canonicalWorkRetained: true, replanRequired: true },
-        });
-      }
     } catch (error) {
       return buildFacadeResult({
         status: 'blocked',
@@ -1532,8 +1551,30 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId },
         });
       }
+      if (refreshedEngineeringContext.evidence.independentCritiqueReceipt?.decision !== 'approved') {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: 'ENGINEERING_DESIGN_CRITIQUE_APPROVAL_REQUIRED: same-root-cause re-entry requires an independently approved critique of the superseding design.',
+          data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId, nextDesignReceiptId: nextDesign.receiptId },
+        });
+      }
     }
     work = updateWorkContract(ctx.workStore, work.workId, { engineeringContext: refreshedEngineeringContext });
+  }
+
+  if (work.engineeringContext?.designState === 'revisit_required') {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'ENGINEERING_DESIGN_REVISIT_REQUIRED: same-root-cause design authority must be explicitly superseded and independently approved before further Work mutation.',
+      data: { work: summarizeWorkContract(work) },
+      suggestedNextActions: [{
+        label: 'Refresh design evidence',
+        tool: 'rh_context',
+        operation: 'search',
+        payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
+        risk: 'readonly',
+      }],
+    });
   }
 
   if (input.engineeringBlocker) {
@@ -1597,24 +1638,46 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     } catch (error) {
       return buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'ENGINEERING_BLOCKER_INVALID', data: { work: summarizeWorkContract(work) } });
     }
-    const returnToDesign = blocker.action === 'return_to_design';
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: returnToDesign
-        ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
-        : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
-      data: {
-        work: summarizeWorkContract(work),
-        engineeringBlocker: blocker,
-        ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
-        nextStep: blocker.action,
-      },
-      suggestedNextActions: returnToDesign
-        ? [{ label: 'Refresh design evidence', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly' }]
-        : linkedWork
-          ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
-          : [],
-    });
+    if (blocker.action === 'extend_candidate') {
+      work = appendWorkEvidence(ctx.workStore, work.workId, {
+        title: 'same-root candidate scope extension',
+        summary: `Blocker ${blocker.blockerId} remains inside the current architecture authority; continue the exact candidate without Design re-entry or sibling Work.`,
+        detailLevel: 'summary',
+      });
+    } else {
+      const returnToDesign = blocker.action === 'return_to_design';
+      const formalDesignReentryRequired = returnToDesign && work.engineeringContext?.designState === 'revisit_required';
+      const observeProfileWithoutPriorDesign = returnToDesign
+        && !formalDesignReentryRequired
+        && (work.engineeringContext?.riskClass === 'low' || work.engineeringContext?.riskClass === 'normal');
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: observeProfileWithoutPriorDesign
+          ? `Same-root-cause blocker ${blocker.blockerId} was recorded. This observe-profile Work has no formal Design authority to supersede, so it remains governed by its existing engineering risk profile.`
+          : returnToDesign
+            ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
+            : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
+        data: {
+          work: summarizeWorkContract(work),
+          engineeringBlocker: blocker,
+          ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
+          nextStep: observeProfileWithoutPriorDesign ? 'continue' : blocker.action,
+        },
+        suggestedNextActions: observeProfileWithoutPriorDesign
+          ? [{ label: 'Continue Work under existing engineering profile', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write' }]
+          : returnToDesign
+            ? [{
+                label: 'Refresh design evidence',
+                tool: 'rh_context',
+                operation: 'search',
+                payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
+                risk: 'readonly',
+              }]
+            : linkedWork
+              ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
+              : [],
+      });
+    }
   }
 
   if ((input.reviewFindings?.length ?? 0) > 0 && work.workKind !== 'read_only_review') {
@@ -1776,8 +1839,11 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     }
   }
 
-  const currentCheckRefs = work.checkRefs.filter((record) =>
-    verificationRecordAppliesToCurrentWorkspace(record, ctx.sourceRevision, ctx.workspaceFingerprint));
+  const currentCheckRefs = effectiveCurrentWorkVerificationRecords(
+    work,
+    ctx.sourceRevision,
+    ctx.workspaceFingerprint,
+  );
   const history = reconcileVerificationHistory(
     currentCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
@@ -2122,7 +2188,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   const changedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
-  if (workRequiresImplementationReview(work.workKind, changedPaths)) {
+  if (workRequiresImplementationReview(work.workKind, changedPaths, work.engineeringContext?.riskClass)) {
     recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: changedPaths });
     transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'running',
@@ -2146,7 +2212,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }]).actions;
   transitionWorkContractPhase(ctx.workStore, work.workId, {
     status: 'running', phase: 'delivery', state: 'active',
-    summary: 'Source-free Work evidence is complete; implementation review is not required and semantic finalization is next.', evidenceRefs: work.evidenceRefs,
+    summary: 'Work evidence is complete; this candidate does not require implementation review and semantic finalization is next.', evidenceRefs: work.evidenceRefs,
   });
   const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
   return buildFacadeResult({ status: 'ok', summary: 'Continue: evidence is complete; ready to finalize.', data: { work: summarizeWorkContract(updated), backgroundCompleted: false, nextStep: 'finalize' }, suggestedNextActions: suggested });
@@ -2272,9 +2338,9 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
   );
   const reviewRequiredAfterPass = validPassReadyForNextBoundary
     && !approvedReviewRemainsAuthoritative
-    && workRequiresImplementationReview(updated.workKind, currentChangedPaths);
+    && workRequiresImplementationReview(updated.workKind, currentChangedPaths, updated.engineeringContext?.riskClass);
   if (approvedReviewRemainsAuthoritative && updated.evidenceState !== 'valid') {
-    updateWorkContract(ctx.workStore, updated.workId, { evidenceState: 'valid' });
+    recordWorkEvidenceState(ctx.workStore, updated.workId, 'valid');
   }
   if (reviewRequiredAfterPass) {
     recordWorkScopeEvidence(ctx.workStore, updated.workId, { actualChangedPaths: [...(ctx.workspaceChangedPaths ?? [])] });
@@ -2286,6 +2352,16 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
       evidenceRefs: updated.evidenceRefs,
     });
     requestWorkImplementationReview(ctx.workStore, updated.workId, 'Verification is complete; explicit Controller implementation review is required before delivery.');
+  }
+  if (validPassReadyForNextBoundary && !reviewRequiredAfterPass && !approvedReviewRemainsAuthoritative) {
+    transitionWorkContractPhase(ctx.workStore, updated.workId, {
+      status: 'running',
+      phase: 'delivery',
+      state: 'satisfied',
+      summary: 'All required exact Work verification receipts are current and this Work does not require implementation review; delivery admission advanced automatically.',
+      evidenceRefs: updated.evidenceRefs,
+      evidenceState: 'valid',
+    });
   }
   const suggested = validateSuggestedNextActions(
     classified.outcome === 'valid_pass'
@@ -2357,7 +2433,10 @@ export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     return buildFacadeResult({ status: 'blocked', summary: 'WORK_IMPLEMENTATION_REVIEW_RATIONALE_REQUIRED: explicit review rationale is required.', data: { work: summarizeWorkContract(work) } });
   }
   try {
-    const candidate = currentImplementationReviewCandidate(ctx, work);
+    const promotionEvidence = input.evaluationPromotionReceipt
+      ? [evaluationPromotionReceiptArchitectureEvidence(input.evaluationPromotionReceipt, ctx.sourceRevision?.trim() ?? '')]
+      : undefined;
+    const candidate = currentImplementationReviewCandidate(ctx, work, promotionEvidence);
     recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: [...candidate.changedPaths] });
     work = getWorkContract(ctx.workStore, work.workId) ?? work;
     if (work.phase !== 'review') {
@@ -2449,7 +2528,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
-  if (workRequiresImplementationReview(work.workKind, currentChangedPaths)) {
+  if (workRequiresImplementationReview(work.workKind, currentChangedPaths, work.engineeringContext?.riskClass)) {
     try {
       const candidate = currentImplementationReviewCandidate(ctx, work);
       assertImplementationReviewPreDeliveryBoundary({
@@ -2517,11 +2596,9 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {
-    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'failed',
-      phase: 'cleanup',
-      state: 'failed',
-      summary: `Work failed acceptance/finalization: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
+    const updated = failWorkContract(ctx.workStore, work.workId, {
+      phase: work.phase,
+      summary: `Work failed acceptance/finalization while in ${work.phase}: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
       evidenceRefs: work.evidenceRefs,
     });
     if (updated.planId && updated.planStepId && ctx.planStore) {
@@ -2760,10 +2837,7 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   }
 
   const destructiveCleanup = input.authorizeDestructiveCleanup === true;
-  transitionWorkContractPhase(ctx.workStore, work.workId, {
-    status: 'cancelled',
-    phase: 'cleanup',
-    state: 'skipped',
+  cancelWorkContract(ctx.workStore, work.workId, {
     summary: input.reason ? `Stopped: ${input.reason}` : 'Work stopped without destructive cleanup.',
     evidenceRefs: work.evidenceRefs,
   });
@@ -2789,13 +2863,11 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
 
   return buildFacadeResult({
     status: 'ok',
-    summary: `WorkContract ${work.workId} cancelled/stopped. Evidence retained. Worktree cleanup ${destructiveCleanup ? 'authorized but pending verification' : 'not performed'}.`,
+    summary: `WorkContract ${work.workId} cancelled/stopped. Evidence retained. Managed resource cleanup/retention is settled by the canonical Work finalization service.`,
     data: {
       work: summarizeWorkContract(updated),
       finalStatus: 'cancelled',
       evidenceRetained: true,
-      worktreeDeleted: false,
-      cleanupPending: destructiveCleanup && Boolean(work.worktreeRef),
       destructiveCleanupAuthorized: destructiveCleanup,
       ...(plan ? { plan } : {}),
     },
@@ -2814,6 +2886,11 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
 export interface GoalWorkloopTrustedInput {
   /** Runtime-composed source-bound evidence. This channel is intentionally separate from raw MCP/tool arguments. */
   verifiedEngineeringEvidence?: EngineeringAdmissionEvidence;
+  /**
+   * Evaluator-minted evidence for one exact candidate. Kept off the raw MCP
+   * argument surface so callers cannot manufacture architecture evidence.
+   */
+  evaluationPromotionReceipt?: EvaluationPromotionReceipt;
 }
 
 export function runGoalWorkloop(
@@ -2840,7 +2917,7 @@ export function runGoalWorkloop(
           requiresInvestigation: args.requires_investigation === true,
           requiresLongRunningChecks: args.requires_long_running_checks === true,
           requiresParallelism: args.requires_parallelism === true,
-          explicitMode: args.mode === 'scale' ? 'scale' : undefined,
+          explicitMode: args.mode === 'plan' || args.mode === 'scale' ? args.mode : undefined,
           needsDependencies: args.needs_dependencies === true,
           requiresRecovery: args.requires_recovery === true,
           requiresWorker: args.requires_worker === true,
@@ -2886,7 +2963,7 @@ export function runGoalWorkloop(
         }
         const rawBlocker = args.engineering_blocker as Record<string, unknown>;
         const classification = rawBlocker.classification;
-        if (classification !== 'same_root_cause' && classification !== 'unrelated') {
+        if (classification !== 'same_root_cause' && classification !== 'same_root_cause_scope_extension' && classification !== 'unrelated') {
           return buildFacadeResult({ status: 'blocked', summary: 'ENGINEERING_BLOCKER_CLASSIFICATION_INVALID', data: { workId: String(args.work_id ?? '') } });
         }
         engineeringBlocker = {
@@ -2950,6 +3027,7 @@ export function runGoalWorkloop(
                 ...(typeof value.symbol === 'string' ? { symbol: value.symbol } : {}),
               }))
           : undefined,
+        evaluationPromotionReceipt: trusted.evaluationPromotionReceipt,
       });
     }
     case 'finalize':

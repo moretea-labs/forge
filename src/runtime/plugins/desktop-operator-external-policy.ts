@@ -128,6 +128,56 @@ function desktopFrameCenter(frame: DesktopFrame): { x: number; y: number } {
   return { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2 };
 }
 
+type DesktopObservedPointerTarget = {
+  frame: DesktopFrame;
+  point: { x: number; y: number };
+  reboundSelector?: Record<string, string>;
+};
+
+async function observeDesktopPointerTarget(
+  requestId: string,
+  interactionId: string,
+  selector: Record<string, string>,
+  referenceLabel: string,
+  requestedWindowId: number,
+  staleCode: 'DESKTOP_POINTER_REF_STALE' | 'DESKTOP_POINTER_TARGET_STALE',
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+  context: DesktopOperatorExternalPolicyContext,
+): Promise<DesktopObservedPointerTarget> {
+  const observation = await context.callProvider(
+    requestId,
+    'desktop_observe',
+    {
+      interaction_id: interactionId,
+      root_selector: selector,
+      max_depth: 1,
+      max_nodes: 4,
+      include_values: false,
+      include_actions: false,
+      include_windows: true,
+    },
+    timeoutMs,
+    signal,
+  );
+  const root = desktopObservedRoot(observation);
+  const frame = desktopFrame(root?.frame);
+  if (!root || !frame || root.enabled === false) {
+    throw providerError(staleCode, `Desktop ref ${referenceLabel} no longer resolves to an enabled element with bounded geometry.`, true);
+  }
+  const window = desktopWindowById(observation, requestedWindowId);
+  const windowFrame = desktopFrame(window?.frame);
+  if (!window || window.onScreen === false || !windowFrame) {
+    throw providerError('DESKTOP_POINTER_WINDOW_STALE', `Desktop window ${requestedWindowId} is not an on-screen window in session ${interactionId}.`, true);
+  }
+  const point = desktopFrameCenter(frame);
+  if (!frameContainsPoint(windowFrame, point.x, point.y)) {
+    throw providerError('DESKTOP_POINTER_WINDOW_MISMATCH', `Desktop ref ${referenceLabel} does not belong to requested window ${requestedWindowId}.`, true);
+  }
+  const reboundSelector = desktopStableSelector(root);
+  return { frame, point, ...(reboundSelector ? { reboundSelector } : {}) };
+}
+
 function exactFocusedDesktopWindowId(observation: Record<string, unknown>): number | undefined {
   const snapshot = recordValue(observation.snapshot);
   const root = recordValue(snapshot?.root);
@@ -612,6 +662,149 @@ export async function executeDesktopOperatorPolicyAction(
         frame: clickFrame,
         screenshot,
         click,
+      },
+    };
+  }
+
+  if (input.actionId === 'desktop_pointer_drag') {
+    const sourceInteractionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
+    const requestedWindowId = typeof input.args.window_id === 'number' && Number.isInteger(input.args.window_id) && input.args.window_id > 0
+      ? input.args.window_id
+      : undefined;
+    const sourceSelector = recordValue(input.args.source_selector);
+    const targetSelector = recordValue(input.args.target_selector);
+    const sourceRef = sourceSelector ? firstString(sourceSelector, 'ref') : '';
+    const targetRef = targetSelector ? firstString(targetSelector, 'ref') : '';
+    if (!sourceInteractionId || !requestedWindowId || !sourceRef || !targetRef || sourceRef === targetRef) {
+      throw providerError('DESKTOP_POINTER_ARGUMENT_INVALID', 'desktop_pointer_drag requires interaction_id, distinct source_selector.ref and target_selector.ref values, and a positive window_id.');
+    }
+
+    const sourceStatus = await context.callProvider(
+      `${input.requestId}:source-status`,
+      'desktop_status',
+      { limit: 500 },
+      input.timeoutMs,
+      input.signal,
+    );
+    const sourceSession = desktopSession(sourceStatus, sourceInteractionId);
+    if (!sourceSession) {
+      throw providerError('DESKTOP_POINTER_SESSION_NOT_FOUND', `Desktop session ${sourceInteractionId} is no longer available.`, true);
+    }
+    const bundleId = firstString(sourceSession, 'bundleIdentifier', 'bundle_id');
+    const appName = firstString(sourceSession, 'appName', 'app_name');
+    if (!bundleId && !appName) {
+      throw providerError('DESKTOP_POINTER_TARGET_UNAVAILABLE', `Desktop session ${sourceInteractionId} has no stable application identity.`);
+    }
+
+    let dragInteractionId = sourceInteractionId;
+    let sourceTarget = await observeDesktopPointerTarget(
+      `${input.requestId}:source-observe`,
+      sourceInteractionId,
+      { ref: sourceRef },
+      sourceRef,
+      requestedWindowId,
+      'DESKTOP_POINTER_REF_STALE',
+      input.timeoutMs,
+      input.signal,
+      context,
+    );
+    let destinationTarget = await observeDesktopPointerTarget(
+      `${input.requestId}:target-observe`,
+      sourceInteractionId,
+      { ref: targetRef },
+      targetRef,
+      requestedWindowId,
+      'DESKTOP_POINTER_REF_STALE',
+      input.timeoutMs,
+      input.signal,
+      context,
+    );
+    let activationVerified = false;
+
+    if (sourceTarget.reboundSelector && destinationTarget.reboundSelector) {
+      const activation = await openVerifiedDesktopSession(
+        `${input.requestId}:activate`,
+        { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
+        input.timeoutMs,
+        input.signal,
+        context,
+      );
+      const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
+      if (!activationInteractionId) {
+        throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
+      }
+      dragInteractionId = activationInteractionId;
+      sourceTarget = await observeDesktopPointerTarget(
+        `${input.requestId}:fresh-source-observe`,
+        activationInteractionId,
+        sourceTarget.reboundSelector,
+        sourceRef,
+        requestedWindowId,
+        'DESKTOP_POINTER_TARGET_STALE',
+        input.timeoutMs,
+        input.signal,
+        context,
+      );
+      destinationTarget = await observeDesktopPointerTarget(
+        `${input.requestId}:fresh-target-observe`,
+        activationInteractionId,
+        destinationTarget.reboundSelector,
+        targetRef,
+        requestedWindowId,
+        'DESKTOP_POINTER_TARGET_STALE',
+        input.timeoutMs,
+        input.signal,
+        context,
+      );
+      activationVerified = true;
+    }
+
+    const screenshot = await context.callProvider(
+      `${input.requestId}:screenshot`,
+      'desktop_screenshot',
+      {
+        interaction_id: dragInteractionId,
+        scope: 'window',
+        window_id: requestedWindowId,
+        ...(typeof input.args.label === 'string' && input.args.label.trim() ? { label: input.args.label.trim() } : {}),
+      },
+      input.timeoutMs,
+      input.signal,
+    );
+    const visualRevision = firstNumber(screenshot, 'visual_revision', 'visualRevision');
+    const capturedWindowId = firstNumber(screenshot, 'windowId', 'window_id') ?? requestedWindowId;
+    if (!visualRevision || capturedWindowId !== requestedWindowId) {
+      throw providerError('DESKTOP_POINTER_CAPTURE_STALE', `Desktop window ${requestedWindowId} did not produce a matching fresh visual revision.`, true);
+    }
+
+    const drag = await context.callProvider(
+      `${input.requestId}:drag`,
+      'desktop_pointer_drag',
+      {
+        interaction_id: dragInteractionId,
+        window_id: requestedWindowId,
+        visual_revision: visualRevision,
+        from_x: sourceTarget.point.x,
+        from_y: sourceTarget.point.y,
+        to_x: destinationTarget.point.x,
+        to_y: destinationTarget.point.y,
+      },
+      input.timeoutMs,
+      input.signal,
+    );
+    return {
+      handled: true,
+      result: {
+        interactionId: dragInteractionId,
+        activationVerified,
+        sourceRef,
+        targetRef,
+        windowId: requestedWindowId,
+        visualRevision,
+        sourceFrame: sourceTarget.frame,
+        targetFrame: destinationTarget.frame,
+        screenshot,
+        drag,
       },
     };
   }

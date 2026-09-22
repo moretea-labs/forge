@@ -11,6 +11,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { configuredBrainRoot } from './brain-root';
+import { addBrainAssistantCommands } from './brain-assistant';
+import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
+import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
+import { getWorkContract, validateWorkSemantics } from '../../../packages/kernel/work/api/index';
 
 export type BrainLifecycle = 'always-sync' | 'archive-only' | 'never-sync';
 export type BrainCategory = 'decisions' | 'runbooks' | 'patterns' | 'references';
@@ -89,6 +93,9 @@ export interface BrainPromoteOptions {
   repo?: string;
   slug: string;
   category: BrainCategory;
+  workId?: string;
+  controllerHome?: string;
+  legacyGitHistory?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -530,39 +537,112 @@ function yamlQuote(value: string): string {
   return JSON.stringify(value);
 }
 
+function modernBrainPromotionSource(repoRoot: string, opts: BrainPromoteOptions, issues: BrainIssue[]): {
+  sources: string[]; sections: string[]; relatedPlan: string; terminalAt: string; outcome: string; sourceWork: string; completionReceipt: string; workScope: string;
+} {
+  const workId = opts.workId?.trim();
+  if (!workId) {
+    issue(issues, 'error', 'Modern Brain promotion requires --work-id; use --legacy-git-history only for retired Git delete/rename imports.');
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceWork: '', completionReceipt: '', workScope: '' };
+  }
+  const controllerHome = resolveRepoPreferredControllerHome(repoRoot, opts.controllerHome);
+  const repository = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
+  if (!repository) {
+    issue(issues, 'error', `Repository is not registered in Controller Home; cannot resolve Work evidence for ${workId}.`);
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
+  }
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+  if (!work) {
+    issue(issues, 'error', `Work not found in registered repository: ${workId}`);
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
+  }
+  if (!work.scopeRef) {
+    issue(issues, 'error', `Modern Brain promotion requires a portable Work scope: ${workId}; use --legacy-git-history only for retired unscoped imports.`);
+    return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
+  }
+  const workScope = `${work.scopeRef.kind}:${work.scopeRef.id}`;
+  if (work.status !== 'completed' || !work.completionReceipt) {
+    issue(issues, 'error', `Brain promotion requires a completed Work with a durable completion receipt: ${workId}`);
+    return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope };
+  }
+  try {
+    validateWorkSemantics(work);
+  } catch (error) {
+    issue(issues, 'error', `Work completion evidence is invalid for Brain promotion: ${error instanceof Error ? error.message : String(error)}`);
+    return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: work.completionReceipt.receiptId, workScope };
+  }
+  const receipt = work.completionReceipt;
+  const repositoryDetails = ('targetRevision' in receipt)
+    ? [`- Target revision: ${receipt.targetRevision}`, `- Changed paths: ${receipt.changedPaths.length}`]
+    : [];
+  const section = [
+    `## Source: work:${work.workId}`,
+    '',
+    `- Objective: ${work.objective}`,
+    `- Completion outcome: ${work.completionOutcome ?? 'completed'}`,
+    `- Completion receipt: ${receipt.receiptId}`,
+    `- Completion authority: ${receipt.source}`,
+    `- Work scope: ${workScope}`,
+    ...repositoryDetails,
+    '',
+    'This entry is promoted from validated durable Work metadata. Raw process logs, credentials, and chat history are not copied into Brain.',
+    '',
+  ].join('\n');
+  return {
+    sources: [`work:${work.workId}`, `completion:${receipt.receiptId}`],
+    sections: [section], relatedPlan: work.planId ?? '', terminalAt: receipt.recordedAt,
+    outcome: work.completionOutcome ?? 'completed', sourceWork: work.workId,
+    completionReceipt: receipt.receiptId, workScope,
+  };
+}
+
 export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   if (!VALID_CATEGORIES.has(opts.category)) {
     throw new Error(`invalid category "${opts.category}" (expected: ${Array.from(VALID_CATEGORIES).join(', ')})`);
   }
+  if (opts.legacyGitHistory && opts.workId?.trim()) throw new Error('BRAIN_PROMOTION_MODE_CONFLICT');
   const repoRoot = resolveRepoRoot(opts.repo);
   const { manifest } = readManifest(repoRoot);
   const project = manifest.project || path.basename(repoRoot);
   const root = brainRoot();
   const issues: BrainIssue[] = [];
-  const historicalSources = findTerminalHistorySources(repoRoot, opts.slug);
-  const sources = historicalSources.map((source) => `git:${source.gitRef}`);
   const brainPath = logicalBrainPath(project, opts.category, `${opts.slug}.md`);
   const targetPath = safeBrainPath(root, brainPath, `promote:${opts.slug}`, issues) || path.resolve(root, project, opts.category, `${opts.slug}.md`);
 
-  if (historicalSources.length === 0) {
-    issue(issues, 'error', `No terminal plan or notes found in Git history for slug: ${opts.slug}`);
+  let sources: string[] = [];
+  let sections: string[] = [];
+  let relatedPlan = '';
+  let terminalAt = '';
+  let outcome = '';
+  let sourceWork = '';
+  let completionReceipt = '';
+  let workScope = '';
+
+  if (opts.legacyGitHistory) {
+    const historicalSources = findTerminalHistorySources(repoRoot, opts.slug);
+    sources = historicalSources.map((source) => `git:${source.gitRef}`);
+    if (historicalSources.length === 0) issue(issues, 'error', `No terminal plan or notes found in Git history for slug: ${opts.slug}`);
+    sections = historicalSources.map((source) => `## Source: git:${source.gitRef}\n\n${source.content.trim()}\n`);
+    const firstContent = historicalSources[0]?.content ?? '';
+    const relatedPlanSource = historicalSources.find((source) => terminalSourceKind(source.sourcePath) === 'plan');
+    relatedPlan = relatedPlanSource ? `git:${relatedPlanSource.gitRef}` : frontmatterValue(firstContent, 'Related Plan');
+    terminalAt = historicalSources[0]?.terminalAt || frontmatterValue(firstContent, 'Archived') || new Date().toISOString();
+    outcome = frontmatterValue(firstContent, 'Outcome') || 'Promoted';
+  } else {
+    const modern = modernBrainPromotionSource(repoRoot, opts, issues);
+    ({ sources, sections, relatedPlan, terminalAt, outcome, sourceWork, completionReceipt, workScope } = modern);
   }
 
-  const sections = historicalSources.map((source) =>
-    `## Source: git:${source.gitRef}\n\n${source.content.trim()}\n`
-  );
-  const firstContent = historicalSources[0]?.content ?? '';
-  const relatedPlanSource = historicalSources.find((source) => terminalSourceKind(source.sourcePath) === 'plan');
-  const relatedPlan = relatedPlanSource ? `git:${relatedPlanSource.gitRef}` : frontmatterValue(firstContent, 'Related Plan');
-  const terminalAt = historicalSources[0]?.terminalAt || frontmatterValue(firstContent, 'Archived') || new Date().toISOString();
-  const outcome = frontmatterValue(firstContent, 'Outcome') || 'Promoted';
   const body = [
     '---',
     `slug: ${yamlQuote(opts.slug)}`,
     `category: ${yamlQuote(opts.category)}`,
     `source_plan: ${yamlQuote(relatedPlan || '')}`,
-    `terminal_at: ${yamlQuote(terminalAt)}`,
-    `outcome: ${yamlQuote(outcome)}`,
+    ...(sourceWork ? [`source_work: ${yamlQuote(sourceWork)}`] : []),
+    ...(completionReceipt ? [`completion_receipt: ${yamlQuote(completionReceipt)}`] : []),
+    ...(workScope ? [`work_scope: ${yamlQuote(workScope)}`] : []),
+    `terminal_at: ${yamlQuote(terminalAt || '')}`,
+    `outcome: ${yamlQuote(outcome || '')}`,
     `repo: ${yamlQuote(repoRoot)}`,
     '---',
     '',
@@ -578,17 +658,8 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   }
 
   return {
-    repoRoot,
-    brainRoot: root,
-    project,
-    slug: opts.slug,
-    category: opts.category,
-    targetPath,
-    brainPath,
-    sources,
-    issues,
-    dryRun: opts.dryRun === true,
-    written: !hasErrors && !opts.dryRun,
+    repoRoot, brainRoot: root, project, slug: opts.slug, category: opts.category, targetPath, brainPath,
+    sources, issues, dryRun: opts.dryRun === true, written: !hasErrors && !opts.dryRun,
   };
 }
 
@@ -630,6 +701,7 @@ function exitCodeFor(issues: BrainIssue[]): number {
 
 export function buildBrainCommand(): Command {
   const brain = new Command('brain').description('Manage explicit repo-to-brain sync and terminal-workflow promotion');
+  addBrainAssistantCommands(brain);
 
   brain
     .command('status')
@@ -671,10 +743,13 @@ export function buildBrainCommand(): Command {
 
   brain
     .command('promote')
-    .description('Promote terminal plan/notes from Git history into ~/brain/<project>/<category>/')
-    .requiredOption('--slug <slug>', 'Terminal workflow slug')
+    .description('Promote one validated terminal Work into ~/brain/<project>/<category>/; Git-history import is explicit legacy compatibility only')
+    .requiredOption('--slug <slug>', 'Brain entry slug')
     .requiredOption('--category <category>', 'Target category: decisions|runbooks|patterns|references')
     .option('--repo <path>', 'Repository root to inspect')
+    .option('--work-id <id>', 'Completed Work identity for modern promotion')
+    .option('--controller-home <path>', 'Override Controller Home used to resolve the registered repository and Work')
+    .option('--legacy-git-history', 'Explicitly use retired Git delete/rename promotion compatibility')
     .option('--dry-run', 'Show planned promotion without writing files')
     .option('--json', 'Output JSON instead of human-readable text')
     .action((rawOpts: BrainPromoteOptions) => {

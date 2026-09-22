@@ -6,6 +6,7 @@ import { join } from 'path';
 import { installExternalPluginRegistration, type ExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
@@ -43,7 +44,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(enabled = true, exposure?: 'product' | 'provider') {
+function fixture(enabled = true, exposure?: 'product' | 'provider', includeSlowMutation = false) {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-store-'));
   roots.push(controllerHome);
   const socketPath = join(controllerHome, 'missing-desktop.sock');
@@ -60,7 +61,10 @@ function fixture(enabled = true, exposure?: 'product' | 'provider') {
     transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 100, actionTimeoutMs: 500 },
     permissions: [{ scope: 'desktop.observe', mode: 'read', description: 'Observe desktop.', granted: true, required: true }],
     capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
-    actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
+    actions: [
+      { actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
+      ...(includeSlowMutation ? [{ actionId: 'desktop_mutate_slow', title: 'Slow mutation', description: 'Slow resource-claimed mutation fixture.', readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, defaultTimeoutMs: 2_000, cancellable: true, idempotent: false, scopes: ['desktop.observe'], resourceClaims: [{ resource: 'provider-state' as const, mode: 'write' as const }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }] : []),
+    ],
   });
   return { controllerHome, socketPath, repository: controllerPluginRepository(controllerHome) };
 }
@@ -87,12 +91,15 @@ const server = net.createServer((socket) => {
       result = {
         id: 'desktop_operator', name: 'Forge Desktop Operator', version: fs.existsSync(driftPath) ? '0.2.0' : '0.1.0',
         protocolVersion: '1.0', mode: 'external', scope: 'controller', provider: 'local-macos',
-        capabilities: ['desktop-observe'], actions: ['desktop_status'],
+        capabilities: ['desktop-observe'], actions: ['desktop_status', 'desktop_mutate_slow'],
       };
     } else if (request.method === 'health') {
       result = { state: 'ready', warnings: [] };
     } else {
       result = { observed: true };
+      if (request.params && request.params.action === 'desktop_mutate_slow') {
+        return setTimeout(() => socket.end(JSON.stringify({ id: request.id, ok: true, result }) + '\\n'), 250);
+      }
     }
     socket.end(JSON.stringify({ id: request.id, ok: true, result }) + '\\n');
   });
@@ -115,6 +122,34 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     });
   });
 }
+
+describe('plugin action resource replay fencing', () => {
+  test('concurrent same-request replay contends instead of executing the non-idempotent action twice', async () => {
+    const { controllerHome, socketPath, repository } = fixture(true, undefined, true);
+    const logPath = join(controllerHome, 'provider-replay.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+
+    const request = {
+      pluginId: 'desktop_operator',
+      actionId: 'desktop_mutate_slow',
+      requestId: 'same-request-resource-replay',
+      args: {},
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const first = submitAssistantPluginAction(controllerHome, repository, request);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(submitAssistantPluginAction(controllerHome, repository, request))
+      .rejects.toThrow('PLUGIN_RESOURCE_CONTENTION');
+    const completed = await first;
+    expect(completed.receipt.status).toBe('succeeded');
+
+    const replayed = await submitAssistantPluginAction(controllerHome, repository, request);
+    expect(replayed.deduplicated).toBe(true);
+    expect(replayed.receipt.receiptId).toBe(completed.receipt.receiptId);
+    const executes = readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute');
+    expect(executes).toHaveLength(1);
+  });
+});
 
 describe('controller-scoped plugin Work attribution', () => {
   test('keeps provider receipts controller-scoped while fencing Work in the caller repository', async () => {
@@ -556,6 +591,57 @@ describe('external plugin store integration', () => {
       Date.now = realDateNow;
       clearAssistantPluginManifestCacheForTest();
     }
+  });
+
+  test('controller-scoped Computer provider state executes while a business repository projection refresh lock is held', async () => {
+    if (process.platform === 'win32') return;
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-projection-lock-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-external-projection-repo-'));
+    roots.push(controllerHome, repoRoot);
+    const socketPath = join(controllerHome, 'desktop.sock');
+    const logPath = join(controllerHome, 'provider.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' });
+    expect(initialized.status).toBe(0);
+    const businessRepository = registerRepository({ path: repoRoot, controllerHome, displayName: 'projection-lock-fixture' });
+    installExternalPluginRegistration(controllerHome, {
+      pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator',
+      provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller', enabled: true,
+      transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 1_000, actionTimeoutMs: 1_000 },
+      permissions: [{ scope: 'desktop.observe', mode: 'read', description: 'Observe desktop.', granted: true, required: true }],
+      capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_mutate_slow'] }],
+      actions: [{
+        actionId: 'desktop_mutate_slow', title: 'Slow mutation', description: 'Provider-state mutation.', readOnly: false, risk: 'workspace_write',
+        confirmation: 'authorization', defaultTimeoutMs: 2_000, cancellable: true, idempotent: false, scopes: ['desktop.observe'],
+        resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
+        argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      }],
+    });
+    const providerRepository = controllerPluginRepository(controllerHome);
+
+    await withControllerLockAsync(
+      controllerHome,
+      { scope: 'task', repoId: businessRepository.repoId, taskId: 'projection-refresh' },
+      'projection-refresh:test-held',
+      async () => {
+        const result = await submitAssistantPluginAction(
+          controllerHome,
+          providerRepository,
+          {
+            pluginId: 'desktop_operator',
+            actionId: 'desktop_mutate_slow',
+            requestId: 'projection-lock-provider-action',
+            args: {},
+            origin: { surface: 'mcp' },
+            timeoutMs: 1_000,
+          },
+        );
+        expect(result.result?.result).toMatchObject({ observed: true });
+      },
+      undefined,
+      0,
+    );
+    expect(readFileSync(logPath, 'utf8')).toContain('execute');
   });
 
   test('execute resolves a disabled external registration and fails as disabled rather than plugin-not-found', async () => {

@@ -18,6 +18,7 @@ import {
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabPolicy,
 } from '../../runtime/control-plane/launcher/chatgpt-work-continuation';
+import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource } from '../../runtime/control-plane/launcher/chatgpt-round-continuation';
 
 interface BrowserCommonOptions {
   repo?: string;
@@ -92,6 +93,45 @@ interface WorkChatgptContinueOptions extends BrowserCommonOptions {
   reasoning?: string;
   tabPolicy?: string;
   timeoutMs?: string;
+  controllerAuthorityId?: string;
+  relayScopeId?: string;
+}
+
+interface SourceRoundOpenOptions extends BrowserCommonOptions {
+  controllerHome?: string;
+  repoId: string;
+  workId: string;
+  controllerId: string;
+  principalId: string;
+  controllerInstanceId?: string;
+  continuationPrompt?: string;
+  timeoutMs?: string;
+}
+
+interface SourceRoundContinueOptions extends BrowserCommonOptions {
+  controllerHome?: string;
+  repoId: string;
+  workId: string;
+  controllerAuthorityId: string;
+  relayScopeId: string;
+  reason?: string;
+  timeoutMs?: string;
+}
+
+interface SourceRoundCloseOptions extends BrowserCommonOptions {
+  controllerHome?: string;
+  repoId: string;
+  workId: string;
+  controllerAuthorityId: string;
+  relayScopeId: string;
+  disposition: string;
+  handoffId?: string;
+  reason?: string;
+}
+
+function sourceRoundCloseDisposition(value: string): 'wait' | 'wait_for_user' | 'goal_complete' {
+  if (value === 'wait' || value === 'wait_for_user' || value === 'goal_complete') return value;
+  throw new Error(`CONTROLLER_RELAY_DISPOSITION_INVALID: ${value}`);
 }
 
 interface BrowserFollowupOptions extends BrowserCommonOptions {
@@ -409,6 +449,8 @@ export function buildChatgptCommand(): Command {
     .option('--reasoning <level>', 'Reasoning level: medium|high|xhigh', 'high')
     .option('--tab-policy <policy>', 'Browser tab policy: auto|reuse|new', 'auto')
     .option('--timeout-ms <ms>', 'Assistant timeout in milliseconds')
+    .option('--controller-authority-id <id>', 'Durable ControllerRound authority for source-mode continuation')
+    .option('--relay-scope-id <id>', 'Durable ControllerRound relay scope paired with controller authority')
     .action((rawOpts: WorkChatgptContinueOptions) => {
       void runChatgptAction(async () => {
         const result = await runWorkChatgptContinuation({
@@ -417,6 +459,8 @@ export function buildChatgptCommand(): Command {
           repoRoot: resolveRepoRoot(rawOpts.repo),
           workId: rawOpts.workId,
           prompt: rawOpts.prompt,
+          controllerAuthorityId: rawOpts.controllerAuthorityId,
+          relayScopeId: rawOpts.relayScopeId,
           title: rawOpts.title,
           browserSessionId: rawOpts.session,
           conversationUrl: rawOpts.conversationUrl,
@@ -442,6 +486,89 @@ export function buildChatgptCommand(): Command {
       });
     });
   chatgpt.addCommand(workContinue, { hidden: true });
+
+  const roundOpen = new Command('round-open')
+    .description('Internal: open and dispatch one ChatGPT ControllerRound from current source')
+    .option('--repo <path>', 'Repository root used by the ChatGPT Browser delivery host', '.')
+    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
+    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
+    .requiredOption('--work-id <work-id>', 'Forge Work id to dispatch')
+    .requiredOption('--controller-id <id>', 'Authenticated ChatGPT controller id/principal identity')
+    .requiredOption('--principal-id <id>', 'Authenticated ChatGPT principal id')
+    .option('--controller-instance-id <id>', 'Source launcher instance identity')
+    .option('--continuation-prompt <text>', 'Bounded source-mode continuation instruction')
+    .option('--timeout-ms <ms>', 'Assistant dispatch timeout in milliseconds')
+    .action((rawOpts: SourceRoundOpenOptions) => {
+      void runChatgptAction(async () => {
+        const result = await openChatgptControllerRoundFromSource({
+          controllerHome: durableControllerHome(rawOpts.controllerHome),
+          repoId: rawOpts.repoId,
+          repoRoot: resolveRepoRoot(rawOpts.repo),
+          workId: rawOpts.workId,
+          controllerId: rawOpts.controllerId,
+          principalId: rawOpts.principalId,
+          controllerInstanceId: rawOpts.controllerInstanceId,
+          continuationPrompt: rawOpts.continuationPrompt,
+          timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
+        });
+        console.log(JSON.stringify(result, null, 2));
+      });
+    });
+  chatgpt.addCommand(roundOpen, { hidden: true });
+
+  const roundContinue = new Command('round-continue')
+    .description('Internal: close one claimed ChatGPT ControllerRound and immediately dispatch its successor from current source')
+    .option('--repo <path>', 'Repository root used by the ChatGPT Browser delivery host', '.')
+    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
+    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
+    .requiredOption('--work-id <work-id>', 'Currently claimed Forge Work id')
+    .requiredOption('--controller-authority-id <id>', 'Exact durable ControllerRound authority')
+    .requiredOption('--relay-scope-id <id>', 'Exact durable ControllerRound relay scope')
+    .option('--reason <text>', 'Bounded semantic continuation reason')
+    .option('--timeout-ms <ms>', 'Assistant dispatch timeout in milliseconds')
+    .action((rawOpts: SourceRoundContinueOptions) => {
+      void runChatgptAction(async () => {
+        const result = await continueChatgptControllerRoundFromSource({
+          controllerHome: durableControllerHome(rawOpts.controllerHome),
+          repoId: rawOpts.repoId,
+          repoRoot: resolveRepoRoot(rawOpts.repo),
+          workId: rawOpts.workId,
+          controllerAuthorityId: rawOpts.controllerAuthorityId,
+          relayScopeId: rawOpts.relayScopeId,
+          reason: rawOpts.reason,
+          timeoutMs: parsePositiveInteger('timeout-ms', rawOpts.timeoutMs),
+        });
+        console.log(JSON.stringify(result, null, 2));
+      });
+    });
+  chatgpt.addCommand(roundContinue, { hidden: true });
+
+  const roundClose = new Command('round-close')
+    .description('Internal: reconcile and close one claimed ChatGPT ControllerRound from current source without dispatching a successor')
+    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
+    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
+    .requiredOption('--work-id <work-id>', 'Currently claimed Forge Work id')
+    .requiredOption('--controller-authority-id <id>', 'Exact durable ControllerRound authority')
+    .requiredOption('--relay-scope-id <id>', 'Exact durable ControllerRound relay scope')
+    .requiredOption('--disposition <value>', 'Terminal semantic disposition: wait, wait_for_user, or goal_complete')
+    .option('--handoff-id <id>', 'Required active Handoff id when disposition is wait_for_user')
+    .option('--reason <text>', 'Bounded semantic close reason')
+    .action((rawOpts: SourceRoundCloseOptions) => {
+      void runChatgptAction(() => {
+        const result = closeChatgptControllerRoundFromSource({
+          controllerHome: durableControllerHome(rawOpts.controllerHome),
+          repoId: rawOpts.repoId,
+          workId: rawOpts.workId,
+          controllerAuthorityId: rawOpts.controllerAuthorityId,
+          relayScopeId: rawOpts.relayScopeId,
+          disposition: sourceRoundCloseDisposition(rawOpts.disposition),
+          handoffId: rawOpts.handoffId,
+          reason: rawOpts.reason,
+        });
+        console.log(JSON.stringify(result, null, 2));
+      });
+    });
+  chatgpt.addCommand(roundClose, { hidden: true });
 
   chatgpt
     .command('browser-open')

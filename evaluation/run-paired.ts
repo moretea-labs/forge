@@ -39,7 +39,7 @@ async function main() {
   const environment = freezeEnvironmentIdentity({
     os: process.platform, arch: process.arch, hardware: `${cpus()[0]?.model ?? 'unknown'};logical-cpus=${cpus().length}`,
     runtime: process.version,
-    toolchain: { node: version('node'), bun: version('bun'), git: version('git'), mcpSdk: JSON.parse(readFileSync('node_modules/@modelcontextprotocol/sdk/package.json', 'utf8')).version },
+    toolchain: { node: version('node'), bun: version('bun'), git: version('git'), mcpSdk: ['client', 'node', 'server', 'server-legacy'].map((pkg) => `${pkg}@${JSON.parse(readFileSync(`node_modules/@modelcontextprotocol/${pkg}/package.json`, 'utf8')).version}`).join(',') },
   });
   assertFormalEnvironmentIdentity(environment);
   const output = resolve(args[1]!);

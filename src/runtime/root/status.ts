@@ -7,12 +7,60 @@ import { readRuntimeOwner } from './ownership';
 import type {
   RuntimeDiagnosticEvidence,
   RuntimeReadiness,
+  RuntimeStartupFailureEvidence,
   RuntimeStatusObservation,
   RuntimeStatusSnapshot,
 } from './types';
 
 export function runtimeStatusPath(controllerHome: string): string {
   return join(resolveControllerHome(controllerHome), 'runtime', 'status.json');
+}
+
+export function runtimeStartupFailurePath(controllerHome: string): string {
+  return join(resolveControllerHome(controllerHome), 'runtime', 'startup-failure.json');
+}
+
+function validStartupFailure(value: unknown): value is RuntimeStartupFailureEvidence {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const evidence = value as RuntimeStartupFailureEvidence;
+  return evidence.schemaVersion === 1
+    && typeof evidence.runtimeInstanceId === 'string'
+    && evidence.runtimeInstanceId.length > 0
+    && typeof evidence.stage === 'string'
+    && evidence.stage.length > 0
+    && typeof evidence.reasonCode === 'string'
+    && evidence.reasonCode.length > 0
+    && (evidence.message === undefined || typeof evidence.message === 'string')
+    && (evidence.releaseId === undefined || typeof evidence.releaseId === 'string')
+    && (evidence.artifactIdentity === undefined || typeof evidence.artifactIdentity === 'string')
+    && Number.isFinite(Date.parse(evidence.observedAt));
+}
+
+export function writeRuntimeStartupFailureEvidence(
+  controllerHome: string,
+  evidence: RuntimeStartupFailureEvidence,
+): void {
+  if (!validStartupFailure(evidence)) throw new Error('RUNTIME_STARTUP_FAILURE_EVIDENCE_INVALID');
+  const path = runtimeStartupFailurePath(controllerHome);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(evidence, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+export function readRuntimeStartupFailureEvidence(controllerHome: string): RuntimeStartupFailureEvidence | undefined {
+  const path = runtimeStartupFailurePath(controllerHome);
+  if (!existsSync(path)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return validStartupFailure(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function removeRuntimeStartupFailureEvidence(controllerHome: string): void {
+  try { unlinkSync(runtimeStartupFailurePath(controllerHome)); } catch { /* already absent */ }
 }
 
 function validDiagnostic(value: unknown): value is RuntimeDiagnosticEvidence {

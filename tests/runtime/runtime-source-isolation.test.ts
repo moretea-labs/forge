@@ -8,6 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
   collectRuntimeSourceIdentity,
   CONTROLLER_RUNTIME_SOURCE_ROOT_ENV,
@@ -24,10 +25,17 @@ import {
   resolveLightweightPluginActionRuntimeInvocation,
   startLightweightPluginAction,
   waitLightweightPluginAction,
+  startManagedPluginAction,
+  waitManagedPluginAction,
 } from '../../src/runtime/plugins/lightweight-action';
-import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { controllerPluginRepository, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
-import { createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
+import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
+import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
@@ -62,6 +70,23 @@ function initGitRepo(repoRoot: string, name: string): void {
 
 function pinRuntimeSource(root: string): void {
   process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV] = root;
+}
+
+function writeProjectEngineeringContract(root: string): void {
+  mkdirSync(join(root, '.forge'), { recursive: true });
+  writeFileSync(join(root, '.forge', 'project-engineering.json'), JSON.stringify({
+    schemaVersion: 1,
+    contractId: 'context-roundtrip-engineering',
+    contractVersion: '1',
+    projectId: 'context-roundtrip',
+    authority: {},
+    quality: {},
+    checks: [],
+    journeys: [],
+    platforms: [],
+    skillRefs: ['typescript-engineering@1'],
+    tooling: [],
+  }, null, 2));
 }
 
 function mcpContext(controllerHome: string, repository: ReturnType<typeof registerRepository>): MultiRepositoryMcpToolContext {
@@ -244,6 +269,78 @@ printf 'BUILD SUCCEEDED\\n'
       else process.env.FORGE_RELEASE_PATH = previousReleasePath;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+    }
+  });
+
+  test('controller-scoped plugin execution binds one durable Process before observation and reattaches by request id', async () => {
+    const controllerHome = tempRoot('forge-home-controller-plugin-managed-');
+    const releaseRoot = tempRoot('forge-release-controller-plugin-managed-');
+    ensureControllerHome(controllerHome);
+    const sidecar = join(releaseRoot, 'forge-plugin-action-sidecar');
+    writeFileSync(sidecar, `#!/bin/sh
+sleep 1
+printf '{"ok":true}\\n'
+`, { mode: 0o700 });
+
+    const previousReleasePath = process.env.FORGE_RELEASE_PATH;
+    process.env.FORGE_RELEASE_PATH = releaseRoot;
+    const repository = controllerPluginRepository(controllerHome);
+    const request = {
+      pluginId: 'controller-fixture',
+      actionId: 'slow-effect',
+      requestId: 'controller-managed-plugin-once',
+      args: { value: 1 },
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    try {
+      const first = await startManagedPluginAction({
+        controllerHome,
+        repository,
+        request,
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      });
+      expect(first.handle.completed).not.toBe(true);
+      expect(first.handle.route).toBe('managed');
+
+      const second = await startManagedPluginAction({
+        controllerHome,
+        repository,
+        request,
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      });
+      expect(second.handle.processId).toBe(first.handle.processId);
+      expect(second.handle.deduplicated).toBe(true);
+
+      await expect(startManagedPluginAction({
+        controllerHome,
+        repository,
+        request: { ...request, args: { value: 2 } },
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+
+      const completed = await waitManagedPluginAction(
+        controllerHome,
+        repository.repoId,
+        first.handle.processId,
+        10_000,
+      );
+      expect(completed.completed).toBe(true);
+      expect(completed.ok).toBe(true);
+      expect(completed.processId).toBe(first.handle.processId);
+
+      await expect(startManagedPluginAction({
+        controllerHome,
+        repository,
+        request: { ...request, args: { value: 3 } },
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+      })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+    } finally {
+      if (previousReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
+      else process.env.FORGE_RELEASE_PATH = previousReleasePath;
     }
   });
 
@@ -660,6 +757,146 @@ printf 'BUILD SUCCEEDED\\n'
     expect(detail.invalidActiveWork?.[0]).toMatchObject({ workId: malformed.workId });
   });
 
+  test('rh_context excludes pending Handoffs whose owning Work is canonically terminal', async () => {
+    const business = tempRoot('forge-context-terminal-handoff-');
+    const controllerHome = tempRoot('forge-home-context-terminal-handoff-');
+    initGitRepo(business, 'context-terminal-handoff');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Terminal Handoff' });
+    const terminalWork = createProjectionWork(controllerHome, repository, 'work-context-terminal-handoff');
+    const store = { controllerHome, repoId: repository.repoId };
+    const stale = createHandoffItem(store, {
+      id: 'handoff-terminal-work',
+      repoId: repository.repoId,
+      workId: terminalWork.workId,
+      title: 'Historical terminal Work decision',
+      severity: 'needs_review',
+      reason: 'This recent pending record must become historical attention once its Work is terminal.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Terminal Work handoff.',
+      currentState: { repoId: repository.repoId, workId: terminalWork.workId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'No current action.',
+      recommendedPrompt: 'Inspect history only.',
+      suggestedNextActions: [],
+    });
+    const current = createHandoffItem(store, {
+      id: 'handoff-current-decision',
+      repoId: repository.repoId,
+      title: 'Current repository decision',
+      severity: 'needs_review',
+      reason: 'This unresolved repository decision remains current.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Current decision.',
+      currentState: { repoId: repository.repoId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'Review current decision.',
+      recommendedPrompt: 'Review current decision.',
+      suggestedNextActions: [],
+    });
+    cancelWorkContract(store, terminalWork.workId, { summary: 'Terminalize Work for Handoff projection regression.' });
+
+    const summaryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'summary',
+    }));
+    const summary = summaryPayload.data as { activeAttention?: Array<{ id?: string }>; counts?: { currentAttention?: number } };
+    expect(summary.activeAttention?.some((item) => item.id === stale.id)).toBe(false);
+    expect(summary.activeAttention?.some((item) => item.id === current.id)).toBe(true);
+
+    const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'list', detail_level: 'detail',
+    }));
+    const detail = detailPayload.data as { activeAttention?: Array<{ id?: string }> };
+    expect(detail.activeAttention?.some((item) => item.id === stale.id)).toBe(false);
+    expect(detail.activeAttention?.some((item) => item.id === current.id)).toBe(true);
+    expect(getHandoffItem(store, stale.id)?.status).toBe('pending');
+  });
+
+  test('rh_context exact Work projects one current task and keeps unrelated repository attention out of that task', async () => {
+    const business = tempRoot('forge-context-current-task-lineage-');
+    const controllerHome = tempRoot('forge-home-context-current-task-lineage-');
+    initGitRepo(business, 'context-current-task-lineage');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Current Task Lineage' });
+    const currentWork = createProjectionWork(controllerHome, repository, 'work-context-current-task');
+    const unrelatedWork = createProjectionWork(controllerHome, repository, 'work-context-unrelated-task');
+    const store = { controllerHome, repoId: repository.repoId };
+    const currentHandoff = createHandoffItem(store, {
+      id: 'handoff-current-task-only',
+      repoId: repository.repoId,
+      workId: currentWork.workId,
+      title: 'Current task decision',
+      severity: 'needs_review',
+      reason: 'Belongs to the exact requested Work.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Current task attention.',
+      currentState: { repoId: repository.repoId, workId: currentWork.workId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'Inspect current task only.',
+      recommendedPrompt: 'Inspect current task only.',
+      suggestedNextActions: [],
+    });
+    const unrelatedHandoff = createHandoffItem(store, {
+      id: 'handoff-unrelated-task',
+      repoId: repository.repoId,
+      workId: unrelatedWork.workId,
+      title: 'Unrelated task decision',
+      severity: 'needs_review',
+      reason: 'Must remain repository inventory, not current-task context.',
+      creationReason: 'ambiguous_outcome',
+      summary: 'Unrelated task attention.',
+      currentState: { repoId: repository.repoId, workId: unrelatedWork.workId, statusSummary: 'pending' },
+      evidenceRefs: [],
+      recommendedDecision: 'Do not inject into current task.',
+      recommendedPrompt: 'Review only from the unrelated Work.',
+      suggestedNextActions: [],
+    });
+
+    const exactPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'get',
+      work_id: currentWork.workId,
+      detail_level: 'summary',
+    }));
+    const exact = exactPayload.data as {
+      currentTask?: { workId?: string; objective?: string };
+      activeAttention?: Array<{ id?: string; workId?: string }>;
+      counts?: { currentWork?: number; currentAttention?: number; repositoryAttention?: number };
+    };
+    expect(exact.currentTask).toMatchObject({ workId: currentWork.workId, objective: currentWork.objective });
+    expect(exact.activeAttention).toEqual([expect.objectContaining({ id: currentHandoff.id, workId: currentWork.workId })]);
+    expect(exact.activeAttention?.some((item) => item.id === unrelatedHandoff.id)).toBe(false);
+    expect(exact.counts).toMatchObject({ currentWork: 1, currentAttention: 1, repositoryAttention: 2 });
+
+    const repositoryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'get',
+      detail_level: 'summary',
+    }));
+    const repositoryContext = repositoryPayload.data as {
+      currentTask?: unknown;
+      activeWork?: Array<{
+        workId?: string;
+        relation?: string;
+        relevance?: string[];
+        objective?: string;
+        continuation?: unknown;
+        nextSafeAction?: unknown;
+      }>;
+      counts?: { currentWork?: number };
+    };
+    expect(repositoryContext.currentTask).toBeUndefined();
+    expect(repositoryContext.counts?.currentWork).toBe(0);
+    const currentInventory = repositoryContext.activeWork?.find((item) => item.workId === currentWork.workId);
+    expect(currentInventory).toMatchObject({
+      relation: 'repository_inventory',
+      relevance: ['ownership', 'conflict', 'release_admission'],
+    });
+    expect(currentInventory).not.toHaveProperty('objective');
+    expect(currentInventory).not.toHaveProperty('continuation');
+    expect(currentInventory).not.toHaveProperty('nextSafeAction');
+  });
+
   test('rh_context Work summary defers plugin capability and historical process hydration', async () => {
     const business = tempRoot('forge-context-summary-fast-');
     const controllerHome = tempRoot('forge-home-context-summary-fast-');
@@ -699,6 +936,79 @@ printf 'BUILD SUCCEEDED\\n'
     expect('capabilityCount' in data).toBe(false);
   });
 
+  test('rh_context knowledge-only search audits learned memory within current Project and Workspace scopes', async () => {
+    const business = tempRoot('forge-context-knowledge-audit-');
+    const controllerHome = tempRoot('forge-home-context-knowledge-audit-');
+    initGitRepo(business, 'context-knowledge-audit');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Knowledge Audit' });
+    const instance = ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-context-knowledge-audit' });
+    writeWorkspaceIdentity({ controllerHome, value: { workspaceId: 'workspace-audit', title: 'Audit Workspace' } });
+    writeProjectIdentity({ controllerHome, value: { projectId: 'project-audit', workspaceId: 'workspace-audit', displayName: 'Audit Project' } });
+    writeProjectPlacement({ controllerHome, value: {
+      projectId: 'project-audit',
+      forgeInstanceId: instance.instanceId,
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    } });
+    const auditScope = { schemaVersion: 1 as const, kind: 'project' as const, id: 'project-audit' };
+    const authority: CognitiveWriteAuthorityPort = {
+      assertMemoryWrite() {},
+      assertEdgeWrite() {},
+      evidenceAvailable() { return true; },
+    };
+    recordCognitiveMemory(cognitionMemoryStore(controllerHome), authority, {
+      id: 'mem:rh-context-audit',
+      scope: auditScope,
+      facets: ['knowledge', 'principle', 'product-design'],
+      canonicalText: 'Interaction should be self explanatory; copy explains invisible rules.',
+      concepts: ['product.interaction', 'copy.invisible-rules'],
+      provenance: {
+        sourceKind: 'controller',
+        sourceId: 'controller-learning:audit',
+        sourceWorkId: 'work-audit-source',
+        sourceRoundId: 'round-audit-source',
+        recordedAt: '2026-09-21T00:00:00.000Z',
+        evidenceRefs: ['E-AUDIT'],
+      },
+      confidence: 0.94,
+      utility: 0.88,
+      tier: 'warm',
+      validFrom: '2026-09-21T00:00:00.000Z',
+      counterEvidenceRefs: [],
+    });
+
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'search',
+      knowledge_query: 'self explanatory',
+      knowledge_concept: 'product.interaction',
+      knowledge_limit: 8,
+      detail_level: 'detail',
+    }));
+    const data = payload.data as { cognitionAudit?: {
+      readonly?: boolean;
+      advisoryOnly?: boolean;
+      authorityBoundary?: string;
+      scopes?: Array<{ kind?: string; id?: string }>;
+      items?: Array<{ memory?: { id?: string; confidence?: number; provenance?: { sourceRoundId?: string } }; activation?: { reasons?: unknown[] } }>;
+    } };
+    expect(data.cognitionAudit).toMatchObject({ readonly: true, advisoryOnly: true });
+    expect(data.cognitionAudit?.authorityBoundary).toContain('never overrides');
+    expect(data.cognitionAudit?.scopes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'project', id: 'project-audit' }),
+      expect.objectContaining({ kind: 'workspace', id: 'workspace-audit' }),
+    ]));
+    expect(data.cognitionAudit?.items).toContainEqual(expect.objectContaining({
+      memory: expect.objectContaining({
+        id: 'mem:rh-context-audit',
+        confidence: 0.94,
+        provenance: expect.objectContaining({ sourceRoundId: 'round-audit-source' }),
+      }),
+      activation: expect.objectContaining({ reasons: expect.any(Array) }),
+    }));
+  });
+
   test('rh_context search exposes multi-wave readiness and folds semantic failures into mutation readiness', async () => {
     const business = tempRoot('forge-context-readiness-facade-');
     const controllerHome = tempRoot('forge-home-context-readiness-facade-');
@@ -718,6 +1028,76 @@ printf 'BUILD SUCCEEDED\\n'
     expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(true);
     expect(data.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false, semantic: { status: 'error' } });
     expect(data.readiness?.unresolvedReasonCodes).toContain('semantic.semantic_navigation_request_invalid');
+  });
+
+  test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
+    const business = tempRoot('forge-context-roundtrip-facade-');
+    const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
+    initGitRepo(business, 'context-roundtrip-facade');
+    writeProjectEngineeringContract(business);
+    git(business, 'add', '.forge/project-engineering.json');
+    git(business, 'commit', '-m', 'add engineering contract');
+    const sourceRevision = git(business, 'rev-parse', 'HEAD');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    const contextPayload = structured(await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'search',
+      query: 'ENTRY_MARKER',
+      known_paths: ['src/index.ts'],
+      retrieval_mode: 'implementation',
+      structural_context: 'off',
+      max_files: 2,
+      max_snippets: 4,
+    }));
+    const contextData = contextPayload.data as { contextClosure?: Record<string, unknown> };
+    const closure = contextData.contextClosure;
+    expect(closure).toBeTruthy();
+    expect(JSON.stringify(closure)).not.toContain('[bounded-depth]');
+    expect((closure?.readiness as { status?: string } | undefined)?.status).toBe('ready');
+
+    const neutralDecisions = {
+      ownership: 'No ownership change.', single_writer: 'One Work writer.', transaction: 'No transaction change.', lifecycle: 'No lifecycle change.',
+      concurrency: 'No concurrency change.', persistence: 'No persistence change.', failure: 'Fail closed.', projection_cache: 'No projection change.',
+      time: 'No time change.', performance: 'No performance change.', compatibility: 'Backward compatible.',
+      semantic_scope_identity: 'Exact Work scope.', authorization_trust: 'Existing controller authority.', resource_fencing: 'Existing Work fencing.',
+      deployment_topology: 'No topology change.', schema_evolution_durability: 'No schema change.', idempotency_replay: 'Existing request identity.',
+      retention_gc: 'No retention change.', observability_evidence: 'Work receipts remain authoritative.', recovery_failure_domain: 'No recovery change.',
+      capacity_backpressure: 'No capacity change.', release_upgrade_rollback: 'No release change.', security_privacy: 'No security change.',
+      portability: 'No portability change.', migration_retirement: 'No migration change.',
+    };
+    const engineeringPreconditions = {
+      context_closure: closure,
+      product_dod: {
+        user_outcome: 'Round-trip the exact Context Closure.',
+        completion_conditions: ['Receipt is accepted.'], non_regression: ['Digest validation remains strict.'],
+        performance_expectations: ['No hot-path expansion.'], non_goals: ['No lifecycle changes.'],
+      },
+      design_decision: {
+        semantic_scope_keys: ['context-closure-roundtrip'], mutation_class: 'isolated_write', decisions: neutralDecisions,
+        complexity_budget: { added_writers: 0, added_durable_mechanisms: 0, projection_paths: 0, global_invalidations: 0, lifecycle_hooks: 0, synchronous_critical_path_work: 0, notes: [] },
+      },
+      independent_critique: { decision: 'approved', findings: [] },
+    };
+
+    const minted = mintEngineeringAdmissionEvidence({
+      repoRoot: business,
+      sourceRevision,
+      draft: engineeringPreconditions,
+      requirementContext: { objective: 'Prove runtime-issued Context Closure round-trip.', acceptanceCriteria: ['Context Closure round-trips intact.'] },
+    });
+    expect(minted.contextClosureReceiptId).toBe(closure?.receiptId as string | undefined);
+
+    expect(() => mintEngineeringAdmissionEvidence({
+      repoRoot: business,
+      sourceRevision,
+      draft: {
+        ...engineeringPreconditions,
+        context_closure: { ...closure, generatedAt: '2099-01-01T00:00:00.000Z' },
+      },
+      requirementContext: { objective: 'Reject forged Context Closure.', acceptanceCriteria: ['Mutated receipts fail closed.'] },
+    })).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
   });
 
   test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {

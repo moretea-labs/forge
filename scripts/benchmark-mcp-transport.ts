@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { performance } from 'perf_hooks';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { readMcpServiceBearerToken } from '../adapters/mcp/auth';
 import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 import {
@@ -116,7 +115,7 @@ async function probe(): Promise<McpTransportLatencySample[]> {
     const started = performance.now();
     try {
       if (includeConnect) await connection.client.connect(connection.transport);
-      const response = await connection.client.callTool({ name: tool, arguments: args }, undefined, { timeout: timeoutMs });
+      const response = await connection.client.callTool({ name: tool, arguments: args }, { timeout: timeoutMs });
       return { response, totalMs: performance.now() - started };
     } finally {
       if (includeConnect) await connection.client.close().catch(() => undefined);

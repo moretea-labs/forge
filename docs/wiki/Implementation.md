@@ -17,7 +17,7 @@ src/runtime/gateway/mcp/
 
 `toolset-names.ts` defines the bounded default connector surface. The five facade tools come from `src/runtime/control-plane/facade/types.ts`; repository, patch, check, Process, plugin-dispatch, and result tools bring the current default to 19.
 
-The HTTP transport owns authentication and MCP session lifecycle. `McpSessionRegistry` owns session capacity, active-request protection, stream leases, replacement, and close accounting. A tool-surface fingerprint mismatch returns a recoverable reinitialize response; replacement initialize owns actual supersession and transport cleanup.
+The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 is the canonical public path: `createMcpHandler` serves each modern request without `Mcp-Session-Id`. `McpSessionRegistry` is retained only for explicit 2025-era compatibility, where it owns session capacity, active-request protection, stream leases, replacement, and close accounting. Durable Work/Process/ControllerRound authority never comes from either transport form. New Work claims mint an opaque Work-bound controller capability immediately; modern sessionless follow-up calls must present it, while legacy owner records without a digest require explicit `controller_claim` upgrade instead of principal-only inference. Legacy tool-surface mismatches still return a recoverable reinitialize response; modern requests resolve the current Runtime schema per request.
 
 ## 2. Repository registry and execution identity
 

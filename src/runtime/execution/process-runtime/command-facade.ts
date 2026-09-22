@@ -165,9 +165,15 @@ function repositoryCommandRecoveryLifecycle(command: string | readonly string[])
   return wrapped ? recoveryLifecycleFromShell(wrapped) : undefined;
 }
 
-function gitCommitWordsRequireExplicitPathScope(words: readonly string[]): boolean | undefined {
+export type RepositoryGitCommitCommandScope =
+  | { kind: 'not_commit' }
+  | { kind: 'explicit_paths'; paths: string[] }
+  | { kind: 'staged_index' }
+  | { kind: 'unsafe'; reason: 'scope_widening' | 'compound_unscoped_commit' };
+
+function gitCommitWordsScope(words: readonly string[]): RepositoryGitCommitCommandScope {
   const executable = commandBasename(words[0] ?? '');
-  if (executable !== 'git') return undefined;
+  if (executable !== 'git') return { kind: 'not_commit' };
   const args = words.slice(1);
   let index = 0;
   while (index < args.length && args[index]?.startsWith('-')) {
@@ -176,29 +182,45 @@ function gitCommitWordsRequireExplicitPathScope(words: readonly string[]): boole
     else if (['--git-dir=', '--work-tree=', '--namespace='].some((prefix) => option.startsWith(prefix))) index += 1;
     else index += 1;
   }
-  if (args[index]?.toLowerCase() !== 'commit') return undefined;
+  if (args[index]?.toLowerCase() !== 'commit') return { kind: 'not_commit' };
   const commitArgs = args.slice(index + 1);
   const pathSeparator = commitArgs.indexOf('--');
   const paths = pathSeparator >= 0 ? commitArgs.slice(pathSeparator + 1).filter(Boolean) : [];
-  const widensScope = commitArgs.some((arg) => ['-a', '--all', '-i', '--include', '--interactive', '-p', '--patch'].includes(arg));
-  return paths.length === 0 || widensScope;
+  const wideningFlags = ['-a', '--all', '-i', '--include', '--interactive', '-p', '--patch', '--amend', '--pathspec-from-file'];
+  const widensScope = commitArgs.some((arg) => wideningFlags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
+  if (widensScope) return { kind: 'unsafe', reason: 'scope_widening' };
+  return paths.length > 0 ? { kind: 'explicit_paths', paths } : { kind: 'staged_index' };
 }
 
-function rawGitCommitRequiresExplicitPathScope(command: string | readonly string[]): boolean {
+function aggregateShellCommitScope(shellCommand: string): RepositoryGitCommitCommandScope {
+  const segments = shellSegments(shellCommand);
+  const commits = segments
+    .map((segment) => gitCommitWordsScope(shellWordsPreservingQuotes(segment)))
+    .filter((scope) => scope.kind !== 'not_commit');
+  if (commits.length === 0) return { kind: 'not_commit' };
+  const unsafe = commits.find((scope): scope is Extract<RepositoryGitCommitCommandScope, { kind: 'unsafe' }> => scope.kind === 'unsafe');
+  if (unsafe) return unsafe;
+  if (segments.length > 1 && commits.some((scope) => scope.kind === 'staged_index')) {
+    return { kind: 'unsafe', reason: 'compound_unscoped_commit' };
+  }
+  const staged = commits.find((scope) => scope.kind === 'staged_index');
+  if (staged) return staged;
+  const paths = commits.flatMap((scope) => scope.kind === 'explicit_paths' ? scope.paths : []);
+  return { kind: 'explicit_paths', paths: [...new Set(paths)] };
+}
+
+export function classifyRawGitCommitScope(command: string | readonly string[]): RepositoryGitCommitCommandScope {
   const normalized = normalizeRepositoryCommand(command);
   if (normalized.kind === 'argv') {
-    const direct = gitCommitWordsRequireExplicitPathScope([
+    const direct = gitCommitWordsScope([
       normalized.executable ?? '',
       ...(normalized.args ?? []),
     ]);
-    if (direct !== undefined) return direct;
+    if (direct.kind !== 'not_commit') return direct;
     const wrapped = fixedShellWrapperCommand(normalized.value as string[]);
-    if (!wrapped) return false;
-    return shellSegments(wrapped)
-      .some((segment) => gitCommitWordsRequireExplicitPathScope(shellWordsPreservingQuotes(segment)) === true);
+    return wrapped ? aggregateShellCommitScope(wrapped) : { kind: 'not_commit' };
   }
-  return shellSegments(normalized.shellCommand ?? '')
-    .some((segment) => gitCommitWordsRequireExplicitPathScope(shellWordsPreservingQuotes(segment)) === true);
+  return aggregateShellCommitScope(normalized.shellCommand ?? '');
 }
 
 function toProcessCommand(command: string | readonly string[], cwd: string): ProcessCommandSpec {
@@ -233,7 +255,8 @@ export function classifyRepositoryCommandRoute(
   if (repositoryCommandRecoveryLifecycle(command)) {
     return { route: 'reject', reason: 'standalone_recovery_lifecycle_required' };
   }
-  if (rawGitCommitRequiresExplicitPathScope(command)) {
+  const commitScope = classifyRawGitCommitScope(command);
+  if (commitScope.kind === 'unsafe') {
     return { route: 'reject', reason: 'git_commit_requires_explicit_path_scope' };
   }
   if (options.forceDurable) {
@@ -353,7 +376,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
   // immutable repository identity first, then execute through the authorized
   // non-persistent repository executor. Runtime/release durability is not a
   // command-execution tax.
-  const canonicalCommand = normalizeRepositoryCommand(input.command);
   if (decision.route === 'process_direct') {
     assertExecutionIdentity({
       controllerHome: input.controllerHome,
@@ -372,8 +394,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       allowOpaqueLocalScript: decision.reason === 'lightweight_local_shell_wrapper'
         || decision.reason === 'lightweight_local_inline_interpreter',
     };
-    const readonly = canonicalCommand.kind === 'argv'
-      && classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
+    const readonly = classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
     if (!readonly) {
       const deferLongPreparation = decision.reason === 'ephemeral_local_build_or_test';
       const interactiveWaitMs = deferLongPreparation
@@ -404,7 +425,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
           // evidence is unavailable. Finalization must keep failing closed until
           // a later authoritative repository inspection proves the new HEAD.
           if (result.evidenceError) return;
-          settleWorkHandleExpectedHeadAfterRepositoryCommand({
+          const settlement = settleWorkHandleExpectedHeadAfterRepositoryCommand({
             controllerHome: input.controllerHome,
             repository: input.repository,
             executionIdentity,
@@ -413,6 +434,12 @@ export async function executeRepositoryCommandViaProcessRuntime(
             cancelled: result.cancelled,
             timedOut: result.timedOut,
           });
+          if (!settlement.settled && settlement.reason === 'concurrent_lifecycle_write') {
+            result.evidenceError = {
+              code: 'WORK_HEAD_SETTLEMENT_UNRESOLVED',
+              message: `Work ${input.workId ?? 'unknown'} repository command succeeded, but expectedHead settlement remained contested after bounded retry (${settlement.previousHead ?? 'unknown'} -> ${settlement.currentHead ?? 'unknown'}).`,
+            };
+          }
         },
       });
       const handle = lightweight.handle;

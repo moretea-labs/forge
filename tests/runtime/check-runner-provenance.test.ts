@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import {
   controllerCheckExecutionIdentity,
   controllerCheckLiveExecutionStateFingerprint,
@@ -17,6 +17,7 @@ import {
   type ControllerCheckSnapshot,
 } from '../../src/cli/controller/check-runner';
 import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
+import { registerRepository } from '../../src/cli/repositories/registry';
 import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
@@ -77,6 +78,64 @@ function fixture(checks: Record<string, { command: string[]; effects?: unknown; 
 }
 
 describe('controller check provenance and failure classification', () => {
+  test('does not mark a stable check stale when it writes a Forge harness artifact', () => {
+    const repoRoot = fixture({
+      harness_artifact: {
+        command: [
+          process.execPath,
+          '-e',
+          "const fs=require('fs');fs.mkdirSync('.ai/harness',{recursive:true});fs.writeFileSync('.ai/harness/design-system-audit.json','{}');",
+        ],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'harness_artifact');
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(repoRoot, '.ai/harness/design-system-audit.json'))).toBe(true);
+  });
+
+  test('fails closed when a check adds repository source content', () => {
+    const repoRoot = fixture({
+      source_drift: {
+        command: [process.execPath, '-e', "require('fs').writeFileSync('source.ts','export const changed = true;\\n');"],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'source_drift');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('repository revision changed while the check was running');
+  });
+
+  test('fails closed when a check removes repository source content', () => {
+    const repoRoot = fixture({
+      source_drift: {
+        command: [process.execPath, '-e', "require('fs').unlinkSync('package.json');"],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'source_drift');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('repository revision changed while the check was running');
+  });
+
+  test('fails closed when a check modifies existing repository source content', () => {
+    const repoRoot = fixture({
+      source_drift: {
+        command: [process.execPath, '-e', "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.name='mutated';fs.writeFileSync('package.json',JSON.stringify(p));"],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'source_drift');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('repository revision changed while the check was running');
+  });
   test('inherits tracked legacy checks into isolated worktrees and keeps .forge precedence', () => {
     const container = mkdtempSync(join(tmpdir(), 'forge-check-portable-'));
     roots.push(container);
@@ -173,6 +232,77 @@ describe('controller check provenance and failure classification', () => {
       .toThrow(/CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN/);
   });
 
+  test('retires a registered legacy check directory into Controller Home before execution', () => {
+    const repoRoot = fixture({
+      legacy_retire: { command: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const seedAuthority = storageAuthority(repoRoot);
+    const registered = registerRepository({ path: repoRoot, controllerHome: seedAuthority.controllerHome });
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: seedAuthority.controllerHome,
+      repoId: registered.repoId,
+    };
+    const legacyPath = join(repoRoot, '.ai', 'harness', 'checks');
+    mkdirSync(legacyPath, { recursive: true });
+    writeFileSync(join(legacyPath, 'latest.json'), '{"legacy":true}\n');
+
+    const result = runControllerCheckRaw(repoRoot, 'legacy_retire', undefined, undefined, authority);
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+    const quarantineRoot = join(
+      authority.controllerHome,
+      'repositories',
+      registered.repoId,
+      'quarantine',
+      'legacy-checks',
+    );
+    const quarantined = readdirSync(quarantineRoot);
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(quarantineRoot, quarantined[0]!, 'latest.json'), 'utf8')).toBe('{"legacy":true}\n');
+    expect(existsSync(join(authority.controllerHome, 'repositories', registered.repoId, 'checks', 'controller', 'latest-legacy_retire.json'))).toBe(true);
+  });
+
+  test('removes a registered canonical check compatibility link without touching its target', () => {
+    const repoRoot = fixture({
+      canonical_link: { command: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const seedAuthority = storageAuthority(repoRoot);
+    const registered = registerRepository({ path: repoRoot, controllerHome: seedAuthority.controllerHome });
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: seedAuthority.controllerHome,
+      repoId: registered.repoId,
+    };
+    const physicalRoot = join(authority.controllerHome, 'repositories', registered.repoId, 'checks');
+    mkdirSync(physicalRoot, { recursive: true });
+    const legacyPath = join(repoRoot, '.ai', 'harness', 'checks');
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    symlinkSync(physicalRoot, legacyPath, 'dir');
+
+    expect(runControllerCheckRaw(repoRoot, 'canonical_link', undefined, undefined, authority).ok).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(physicalRoot)).toBe(true);
+  });
+
+  test('converges when a registered legacy check directory is retired more than once', () => {
+    const repoRoot = fixture({
+      legacy_repeat: { command: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const seedAuthority = storageAuthority(repoRoot);
+    const registered = registerRepository({ path: repoRoot, controllerHome: seedAuthority.controllerHome });
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: seedAuthority.controllerHome,
+      repoId: registered.repoId,
+    };
+    const legacyPath = join(repoRoot, '.ai', 'harness', 'checks');
+    mkdirSync(legacyPath, { recursive: true });
+    writeFileSync(join(legacyPath, 'latest.json'), '{"legacy":true}\n');
+
+    expect(runControllerCheckRaw(repoRoot, 'legacy_repeat', undefined, undefined, authority).ok).toBe(true);
+    expect(runControllerCheckRaw(repoRoot, 'legacy_repeat', undefined, undefined, authority).ok).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+  });
+
   test('normalizes declared effects and binds them into check snapshots', () => {
     const repoRoot = fixture({
       effects: {
@@ -218,18 +348,28 @@ describe('controller check provenance and failure classification', () => {
     expect(() => snapshotControllerCheck(invalidRoot, 'bad')).toThrow(/invalid service key/);
   });
 
-  test('infers read plus cache effects only for known static package checks', () => {
+  test('infers concrete effects for canonical package checks while unknown checks stay conservative', () => {
     const repoRoot = fixture({});
     writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
       name: 'check-provenance-fixture',
       scripts: {
         'check:type': 'bun x tsc --noEmit',
+        'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
+        'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
+        'check:mcp-compatibility': 'bun scripts/check-mcp-compatibility.ts',
         'test:browser-live': 'bun tests/live/browser-native-silent.e2e.ts',
         'check:custom': 'node generate.js',
       },
     }));
     const checks = listControllerChecks(repoRoot);
-    expect(checks.find((entry) => entry.id === 'package:check:type')?.effects).toEqual({ reads: ['.'], cache: 'write' });
+    expect(checks.find((entry) => entry.id === 'package:check:type')?.effects).toEqual({ reads: ['.'] });
+    expect(checks.find((entry) => entry.id === 'package:check:runtime-architecture')?.effects).toEqual({ reads: ['.'] });
+    expect(checks.find((entry) => entry.id === 'package:check:architecture-sync')?.effects).toEqual({
+      reads: ['.'],
+      temp: 'isolated',
+      git: 'read',
+    });
+    expect(checks.find((entry) => entry.id === 'package:check:mcp-compatibility')?.effects).toEqual({ reads: ['.'], cache: 'write' });
     expect(checks.find((entry) => entry.id === 'package:test:browser-live')?.effects).toEqual({
       reads: ['.'],
       temp: 'isolated',
@@ -286,6 +426,85 @@ describe('controller check provenance and failure classification', () => {
     });
     expect(trackedStatus.status).toBe(0);
     expect(trackedStatus.stdout.trim()).toBe('');
+  });
+
+  test('bootstraps snapshot dependencies before loading the candidate Check Runner module graph', () => {
+    if (process.platform === 'win32') return;
+
+    const root = mkdtempSync(join(tmpdir(), 'forge-check-snapshot-bootstrap-'));
+    roots.push(root);
+    const sourceRoot = resolve(import.meta.dir, '..', '..');
+    const repoRoot = join(root, 'candidate');
+    const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--', sourceRoot, repoRoot], { encoding: 'utf8' });
+    expect(clone.status).toBe(0);
+
+    writeFileSync(
+      join(repoRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts'),
+      readFileSync(join(sourceRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts')),
+    );
+
+    const packagePath = join(repoRoot, 'package.json');
+    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { scripts?: Record<string, string> };
+    packageJson.scripts = {
+      ...(packageJson.scripts ?? {}),
+      'check:snapshot-bootstrap': "node -e \"console.log('candidate-check-ran')\"",
+    };
+    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    rmSync(join(repoRoot, 'node_modules'), { recursive: true, force: true });
+
+    const fakeBun = join(root, 'bun');
+    const canonicalNodeModules = join(sourceRoot, 'node_modules');
+    expect(existsSync(canonicalNodeModules)).toBe(true);
+    writeFileSync(fakeBun, [
+      `#!${process.execPath}`,
+      "import { existsSync, symlinkSync, writeFileSync } from 'node:fs';",
+      "import { join } from 'node:path';",
+      `const source = ${JSON.stringify(canonicalNodeModules)};`,
+      "const target = join(process.cwd(), 'node_modules');",
+      "if (!existsSync(target)) symlinkSync(source, target, 'dir');",
+      "writeFileSync(join(process.cwd(), '.dependency-bootstrap-ran'), 'ready\\n');",
+      '',
+    ].join('\n'));
+    chmodSync(fakeBun, 0o755);
+
+    const checkId = 'package:check:snapshot-bootstrap';
+    const snapshot = snapshotControllerCheck(repoRoot, checkId);
+    const expectedCheckFingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    const controllerHome = join(root, 'controller-home');
+    const isolatedControllerHome = join(root, 'isolated-controller-home');
+    const cleanupRoot = join(root, 'cleanup-root');
+    const resultReceiptPath = join(root, 'check-result.json');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(cleanupRoot, { recursive: true });
+
+    const result = spawnSync(process.execPath, [
+      join(repoRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts'),
+      '--repo', repoRoot,
+      '--controller-home', controllerHome,
+      '--repo-id', 'repo-snapshot-bootstrap',
+      '--check-id', checkId,
+      '--expected-check-fingerprint', expectedCheckFingerprint,
+      '--check-snapshot', Buffer.from(JSON.stringify(snapshot)).toString('base64url'),
+      '--result-receipt', resultReceiptPath,
+      '--isolated-controller-home', isolatedControllerHome,
+      '--cleanup-root', cleanupRoot,
+    ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, FORGE_BUN_EXECUTABLE: fakeBun },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('Cannot find module');
+    expect(result.stdout).toContain('candidate-check-ran');
+    expect(existsSync(join(repoRoot, '.dependency-bootstrap-ran'))).toBe(true);
+    expect(realpathSync(join(repoRoot, 'node_modules'))).toBe(realpathSync(canonicalNodeModules));
+    expect(JSON.parse(readFileSync(resultReceiptPath, 'utf8'))).toMatchObject({
+      checkId,
+      ok: true,
+      timedOut: false,
+    });
   });
 
   test('exposes cache provenance, validated revision, and original execution time', async () => {

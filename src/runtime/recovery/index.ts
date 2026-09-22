@@ -9,3 +9,4 @@ export * from './maintenance-executor';
 export * from './local-jobs-repair';
 export * from './lifecycle-inventory';
 export * from './quarantine-retention';
+export * from './capability-action-application';

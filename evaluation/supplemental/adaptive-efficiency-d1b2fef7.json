@@ -1,0 +1,1598 @@
+{
+  "schemaVersion": "forge-supplemental-adaptive-result/v2",
+  "evaluatorVersion": "forge-adaptive-workflow/v2",
+  "evaluatorImplementationDigest": "sha256:04192c4792794340f7afa2d421ebb9f8148dca45f97ce82681728e4a68b25e32",
+  "workflowContractDigest": "sha256:99a70d6b26f468145f2022785de177a76983f33b4f3e50418592c1ec916492a4",
+  "repetitions": 4,
+  "pairCount": 24,
+  "trialCount": 48,
+  "candidates": [
+    {
+      "schemaVersion": "forge-candidate-identity/v1",
+      "candidateId": "forge-v1.7.2",
+      "versionLabel": "v1.7.2",
+      "artifactDigest": "sha256:1a0bb50ad97c414f4c553ef790b29c8786a76d0f6ca29e04bbd9fed3bb46d43e",
+      "sourceRevision": "c873cfeb11a223ced342e7101c016261b4a93b38",
+      "executionSurface": "public_mcp"
+    },
+    {
+      "schemaVersion": "forge-candidate-identity/v1",
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "versionLabel": "v1.8.0",
+      "artifactDigest": "sha256:4171608d5f6eba8e1919a7c95443293837bf5e1f7e695f774a9dadf06ba2f81b",
+      "sourceRevision": "d1b2fef727da1947ed05a0d74a4a032aa88dc7d3",
+      "executionSurface": "public_mcp"
+    }
+  ],
+  "overall": {
+    "workflowId": "overall",
+    "cacheMode": "all",
+    "pairCount": 24,
+    "baselineGoalSuccessRate": 1,
+    "candidateGoalSuccessRate": 1,
+    "baselineMeanToolInteractions": 1.3333333333333333,
+    "candidateMeanToolInteractions": 1.3333333333333333,
+    "baselineMeanRetries": 0,
+    "candidateMeanRetries": 0,
+    "baselineMeanRecoveryActions": 0,
+    "candidateMeanRecoveryActions": 0,
+    "baselineMeanRestarts": 0.3333333333333333,
+    "candidateMeanRestarts": 0.3333333333333333,
+    "baselineMeanCandidateActiveMs": 1495.0587187500016,
+    "candidateMeanCandidateActiveMs": 1633.1967776666618,
+    "candidateActiveDeltaMs": 138.13805891666016,
+    "candidateActiveDeltaRatio": 0.09239641037788504,
+    "candidateActiveDelta95CiMs": [
+      84.52032329789168,
+      191.7557945354284
+    ],
+    "baselineMeanHarnessSetupMs": 2394.8414062916668,
+    "candidateMeanHarnessSetupMs": 2410.542876750002
+  },
+  "comparisons": [
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "pairCount": 4,
+      "baselineGoalSuccessRate": 1,
+      "candidateGoalSuccessRate": 1,
+      "baselineMeanToolInteractions": 1,
+      "candidateMeanToolInteractions": 1,
+      "baselineMeanRetries": 0,
+      "candidateMeanRetries": 0,
+      "baselineMeanRecoveryActions": 0,
+      "candidateMeanRecoveryActions": 0,
+      "baselineMeanRestarts": 0,
+      "candidateMeanRestarts": 0,
+      "baselineMeanCandidateActiveMs": 1318.67248975,
+      "candidateMeanCandidateActiveMs": 1528.2200937499988,
+      "candidateActiveDeltaMs": 209.54760399999873,
+      "candidateActiveDeltaRatio": 0.15890799696574068,
+      "candidateActiveDelta95CiMs": [
+        7.822671636373201,
+        411.2725363636242
+      ],
+      "baselineMeanHarnessSetupMs": 2393.23055225,
+      "candidateMeanHarnessSetupMs": 2347.034520999999
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "pairCount": 4,
+      "baselineGoalSuccessRate": 1,
+      "candidateGoalSuccessRate": 1,
+      "baselineMeanToolInteractions": 1,
+      "candidateMeanToolInteractions": 1,
+      "baselineMeanRetries": 0,
+      "candidateMeanRetries": 0,
+      "baselineMeanRecoveryActions": 0,
+      "candidateMeanRecoveryActions": 0,
+      "baselineMeanRestarts": 0,
+      "candidateMeanRestarts": 0,
+      "baselineMeanCandidateActiveMs": 1071.8328332499987,
+      "candidateMeanCandidateActiveMs": 1225.7437807499991,
+      "candidateActiveDeltaMs": 153.91094750000047,
+      "candidateActiveDeltaRatio": 0.14359603729745202,
+      "candidateActiveDelta95CiMs": [
+        -13.328544122056257,
+        321.1504391220572
+      ],
+      "baselineMeanHarnessSetupMs": 2384.1446457500006,
+      "candidateMeanHarnessSetupMs": 2384.0196667499986
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "pairCount": 4,
+      "baselineGoalSuccessRate": 1,
+      "candidateGoalSuccessRate": 1,
+      "baselineMeanToolInteractions": 1,
+      "candidateMeanToolInteractions": 1,
+      "baselineMeanRetries": 0,
+      "candidateMeanRetries": 0,
+      "baselineMeanRecoveryActions": 0,
+      "candidateMeanRecoveryActions": 0,
+      "baselineMeanRestarts": 0,
+      "candidateMeanRestarts": 0,
+      "baselineMeanCandidateActiveMs": 1461.6441980000054,
+      "candidateMeanCandidateActiveMs": 1605.3434062499982,
+      "candidateActiveDeltaMs": 143.6992082499928,
+      "candidateActiveDeltaRatio": 0.0983133983267741,
+      "candidateActiveDelta95CiMs": [
+        -3.2385820515103205,
+        290.63699855149594
+      ],
+      "baselineMeanHarnessSetupMs": 2429.0649584999956,
+      "candidateMeanHarnessSetupMs": 2478.6528645000035
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "pairCount": 4,
+      "baselineGoalSuccessRate": 1,
+      "candidateGoalSuccessRate": 1,
+      "baselineMeanToolInteractions": 1,
+      "candidateMeanToolInteractions": 1,
+      "baselineMeanRetries": 0,
+      "candidateMeanRetries": 0,
+      "baselineMeanRecoveryActions": 0,
+      "candidateMeanRecoveryActions": 0,
+      "baselineMeanRestarts": 0,
+      "candidateMeanRestarts": 0,
+      "baselineMeanCandidateActiveMs": 1075.2018022499979,
+      "candidateMeanCandidateActiveMs": 1251.1867289999973,
+      "candidateActiveDeltaMs": 175.98492674999943,
+      "candidateActiveDeltaRatio": 0.16367618281677762,
+      "candidateActiveDelta95CiMs": [
+        -49.96699643116824,
+        401.9368499311671
+      ],
+      "baselineMeanHarnessSetupMs": 2354.321072999999,
+      "candidateMeanHarnessSetupMs": 2445.738937250004
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "pairCount": 4,
+      "baselineGoalSuccessRate": 1,
+      "candidateGoalSuccessRate": 1,
+      "baselineMeanToolInteractions": 2,
+      "candidateMeanToolInteractions": 2,
+      "baselineMeanRetries": 0,
+      "candidateMeanRetries": 0,
+      "baselineMeanRecoveryActions": 0,
+      "candidateMeanRecoveryActions": 0,
+      "baselineMeanRestarts": 1,
+      "candidateMeanRestarts": 1,
+      "baselineMeanCandidateActiveMs": 2189.443521000001,
+      "candidateMeanCandidateActiveMs": 2244.750687749991,
+      "candidateActiveDeltaMs": 55.30716674998985,
+      "candidateActiveDeltaRatio": 0.025260832818710475,
+      "candidateActiveDelta95CiMs": [
+        -53.1481447973203,
+        163.7624782973
+      ],
+      "baselineMeanHarnessSetupMs": 2373.9633020000038,
+      "candidateMeanHarnessSetupMs": 2411.7050522499994
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "pairCount": 4,
+      "baselineGoalSuccessRate": 1,
+      "candidateGoalSuccessRate": 1,
+      "baselineMeanToolInteractions": 2,
+      "candidateMeanToolInteractions": 2,
+      "baselineMeanRetries": 0,
+      "candidateMeanRetries": 0,
+      "baselineMeanRecoveryActions": 0,
+      "candidateMeanRecoveryActions": 0,
+      "baselineMeanRestarts": 1,
+      "candidateMeanRestarts": 1,
+      "baselineMeanCandidateActiveMs": 1853.5574682500082,
+      "candidateMeanCandidateActiveMs": 1943.9359684999872,
+      "candidateActiveDeltaMs": 90.37850024997897,
+      "candidateActiveDeltaRatio": 0.04875948105094775,
+      "candidateActiveDelta95CiMs": [
+        -235.01075191771872,
+        415.76775241767666
+      ],
+      "baselineMeanHarnessSetupMs": 2434.3239062499997,
+      "candidateMeanHarnessSetupMs": 2396.1062187500065
+    }
+  ],
+  "trials": [
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 0,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2591.099959,
+      "warmupMs": 0,
+      "initialConnectMs": 1023.9034169999995,
+      "restartConnectMs": 0,
+      "toolCallMs": 347.6792080000005,
+      "candidateActiveMs": 1371.582625,
+      "totalTrialMs": 4133.627541,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 347.6792080000005,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 0,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2338.6682089999995,
+      "warmupMs": 0,
+      "initialConnectMs": 1080.7571659999994,
+      "restartConnectMs": 0,
+      "toolCallMs": 444.3102920000001,
+      "candidateActiveMs": 1525.0674579999995,
+      "totalTrialMs": 4040.0631250000006,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 444.3102920000001,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 1,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2340.6781659999997,
+      "warmupMs": 0,
+      "initialConnectMs": 1061.0797910000001,
+      "restartConnectMs": 0,
+      "toolCallMs": 413.74220799999966,
+      "candidateActiveMs": 1474.8219989999998,
+      "totalTrialMs": 3982.4244579999995,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 413.74220799999966,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 1,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2199.2467079999988,
+      "warmupMs": 0,
+      "initialConnectMs": 842.6068330000016,
+      "restartConnectMs": 0,
+      "toolCallMs": 265.5717919999988,
+      "candidateActiveMs": 1108.1786250000005,
+      "totalTrialMs": 3468.6544999999987,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 265.5717919999988,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 2,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2396.9092920000003,
+      "warmupMs": 0,
+      "initialConnectMs": 1046.7879160000011,
+      "restartConnectMs": 0,
+      "toolCallMs": 379.69016700000066,
+      "candidateActiveMs": 1426.4780830000018,
+      "totalTrialMs": 4010.4400000000023,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 379.69016700000066,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 2,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2331.743999999999,
+      "warmupMs": 0,
+      "initialConnectMs": 1058.1356669999986,
+      "restartConnectMs": 0,
+      "toolCallMs": 439.9031250000007,
+      "candidateActiveMs": 1498.0387919999994,
+      "totalTrialMs": 4003.1835409999985,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 439.9031250000007,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 3,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2377.0477089999986,
+      "warmupMs": 0,
+      "initialConnectMs": 1195.9700419999972,
+      "restartConnectMs": 0,
+      "toolCallMs": 418.9820839999993,
+      "candidateActiveMs": 1614.9521259999965,
+      "totalTrialMs": 4168.9019160000025,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 418.9820839999993,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "cold",
+      "repetition": 3,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2385.666250000002,
+      "warmupMs": 0,
+      "initialConnectMs": 1018.3344589999979,
+      "restartConnectMs": 0,
+      "toolCallMs": 350.11616700000013,
+      "candidateActiveMs": 1368.450625999998,
+      "totalTrialMs": 3930.4904999999962,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 350.11616700000013,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 0,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2373.923624999996,
+      "warmupMs": 852.6324160000004,
+      "initialConnectMs": 814.7787499999977,
+      "restartConnectMs": 0,
+      "toolCallMs": 428.4002910000054,
+      "candidateActiveMs": 1243.179041000003,
+      "totalTrialMs": 4636.153582999999,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 428.4002910000054,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 0,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2386.383833,
+      "warmupMs": 788.0961250000037,
+      "initialConnectMs": 731.5396670000046,
+      "restartConnectMs": 0,
+      "toolCallMs": 267.2595419999998,
+      "candidateActiveMs": 998.7992090000043,
+      "totalTrialMs": 4331.111416,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 267.2595419999998,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 1,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2392.285499999998,
+      "warmupMs": 794.8127080000049,
+      "initialConnectMs": 761.3731659999976,
+      "restartConnectMs": 0,
+      "toolCallMs": 362.20962499999587,
+      "candidateActiveMs": 1123.5827909999934,
+      "totalTrialMs": 4480.863416,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 362.20962499999587,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 1,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2400.198832999995,
+      "warmupMs": 818.7307499999952,
+      "initialConnectMs": 792.7172500000015,
+      "restartConnectMs": 0,
+      "toolCallMs": 426.630333000001,
+      "candidateActiveMs": 1219.3475830000025,
+      "totalTrialMs": 4603.544083000001,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 426.630333000001,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 2,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2346.1413749999992,
+      "warmupMs": 853.0374589999992,
+      "initialConnectMs": 811.1423750000031,
+      "restartConnectMs": 0,
+      "toolCallMs": 450.419707999994,
+      "candidateActiveMs": 1261.562082999997,
+      "totalTrialMs": 4623.735833999999,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 450.419707999994,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 2,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2389.2247080000016,
+      "warmupMs": 768.9068750000006,
+      "initialConnectMs": 741.1807499999995,
+      "restartConnectMs": 0,
+      "toolCallMs": 280.01566699999967,
+      "candidateActiveMs": 1021.1964169999992,
+      "totalTrialMs": 4336.451291999998,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 280.01566699999967,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 3,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2368.6845420000027,
+      "warmupMs": 788.1280419999966,
+      "initialConnectMs": 777.7257079999981,
+      "restartConnectMs": 0,
+      "toolCallMs": 366.0272079999995,
+      "candidateActiveMs": 1143.7529159999976,
+      "totalTrialMs": 4470.653874999996,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 366.0272079999995,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "investigation_direct",
+      "cacheMode": "warm",
+      "repetition": 3,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2415.8148340000043,
+      "warmupMs": 833.9106659999961,
+      "initialConnectMs": 782.3186249999999,
+      "restartConnectMs": 0,
+      "toolCallMs": 396.56779099999403,
+      "candidateActiveMs": 1178.886415999994,
+      "totalTrialMs": 4591.867249999996,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 396.56779099999403,
+          "outcome": "success",
+          "summary": "direct_without_work"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 0,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2384.7753329999978,
+      "warmupMs": 0,
+      "initialConnectMs": 1083.1160410000011,
+      "restartConnectMs": 0,
+      "toolCallMs": 446.29904199999874,
+      "candidateActiveMs": 1529.4150829999999,
+      "totalTrialMs": 4091.277000000002,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 446.29904199999874,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 0,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2301.3577499999956,
+      "warmupMs": 0,
+      "initialConnectMs": 960.8208750000049,
+      "restartConnectMs": 0,
+      "toolCallMs": 405.40841699999874,
+      "candidateActiveMs": 1366.2292920000036,
+      "totalTrialMs": 3830.94812500001,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 405.40841699999874,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 1,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2491.0961249999964,
+      "warmupMs": 0,
+      "initialConnectMs": 1148.3919590000005,
+      "restartConnectMs": 0,
+      "toolCallMs": 442.3662500000064,
+      "candidateActiveMs": 1590.758209000007,
+      "totalTrialMs": 4282.835124999998,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 442.3662500000064,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 1,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2541.8810000000085,
+      "warmupMs": 0,
+      "initialConnectMs": 1160.676833000005,
+      "restartConnectMs": 0,
+      "toolCallMs": 482.219207999995,
+      "candidateActiveMs": 1642.896041,
+      "totalTrialMs": 4385.367958000003,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 482.219207999995,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 2,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2568.995375000013,
+      "warmupMs": 0,
+      "initialConnectMs": 1199.2882090000057,
+      "restartConnectMs": 0,
+      "toolCallMs": 500.82624999999825,
+      "candidateActiveMs": 1700.114459000004,
+      "totalTrialMs": 4476.137082999994,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 500.82624999999825,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 2,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2511.348291999995,
+      "warmupMs": 0,
+      "initialConnectMs": 1041.086374999999,
+      "restartConnectMs": 0,
+      "toolCallMs": 394.9467080000031,
+      "candidateActiveMs": 1436.033083000002,
+      "totalTrialMs": 4128.6706669999985,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 394.9467080000031,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 3,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2412.457666999995,
+      "warmupMs": 0,
+      "initialConnectMs": 1060.7897500000108,
+      "restartConnectMs": 0,
+      "toolCallMs": 392.76645799999824,
+      "candidateActiveMs": 1453.556208000009,
+      "totalTrialMs": 4044.514750000002,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 392.76645799999824,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "cold",
+      "repetition": 3,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2418.9597499999945,
+      "warmupMs": 0,
+      "initialConnectMs": 1091.9591669999936,
+      "restartConnectMs": 0,
+      "toolCallMs": 456.98887499999546,
+      "candidateActiveMs": 1548.948041999989,
+      "totalTrialMs": 4136.493208,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 456.98887499999546,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 0,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2357.342292000001,
+      "warmupMs": 827.9873330000119,
+      "initialConnectMs": 790.0522500000079,
+      "restartConnectMs": 0,
+      "toolCallMs": 417.25658299999486,
+      "candidateActiveMs": 1207.3088330000028,
+      "totalTrialMs": 4565.597332999998,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 417.25658299999486,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 0,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2560.0737910000025,
+      "warmupMs": 848.1707080000051,
+      "initialConnectMs": 792.0913330000039,
+      "restartConnectMs": 0,
+      "toolCallMs": 456.1064999999944,
+      "candidateActiveMs": 1248.1978329999984,
+      "totalTrialMs": 4827.505917000002,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 456.1064999999944,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 1,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2380.0827080000017,
+      "warmupMs": 838.5804589999898,
+      "initialConnectMs": 800.5824999999895,
+      "restartConnectMs": 0,
+      "toolCallMs": 456.34429100000125,
+      "candidateActiveMs": 1256.9267909999908,
+      "totalTrialMs": 4648.8476660000015,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 456.34429100000125,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 1,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2434.4787919999944,
+      "warmupMs": 787.4887919999892,
+      "initialConnectMs": 744.820749999999,
+      "restartConnectMs": 0,
+      "toolCallMs": 255.11154199999874,
+      "candidateActiveMs": 999.9322919999977,
+      "totalTrialMs": 4390.107625000004,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 255.11154199999874,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 2,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2351.6490420000046,
+      "warmupMs": 783.4429999999993,
+      "initialConnectMs": 770.7962499999994,
+      "restartConnectMs": 0,
+      "toolCallMs": 399.0269169999956,
+      "candidateActiveMs": 1169.823166999995,
+      "totalTrialMs": 4477.259042000005,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 399.0269169999956,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 2,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2430.197833000013,
+      "warmupMs": 842.7553750000079,
+      "initialConnectMs": 792.9763340000063,
+      "restartConnectMs": 0,
+      "toolCallMs": 449.04700000000594,
+      "candidateActiveMs": 1242.0233340000123,
+      "totalTrialMs": 4687.467875000002,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 449.04700000000594,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 3,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2412.601416999998,
+      "warmupMs": 848.6686669999908,
+      "initialConnectMs": 853.6347079999978,
+      "restartConnectMs": 0,
+      "toolCallMs": 403.96424999999,
+      "candidateActiveMs": 1257.5989579999878,
+      "totalTrialMs": 4668.528417000023,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 403.96424999999,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "dependency_durable_admission",
+      "cacheMode": "warm",
+      "repetition": 3,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 1,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 0,
+      "harnessSetupMs": 2273.8141659999965,
+      "warmupMs": 716.414832999988,
+      "initialConnectMs": 623.5611670000071,
+      "restartConnectMs": 0,
+      "toolCallMs": 300.1817499999888,
+      "candidateActiveMs": 923.7429169999959,
+      "totalTrialMs": 4084.7197500000184,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 300.1817499999888,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 0,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2433.2496249999967,
+      "warmupMs": 0,
+      "initialConnectMs": 1061.12720800002,
+      "restartConnectMs": 518.5932919999759,
+      "toolCallMs": 592.9966240000213,
+      "candidateActiveMs": 2172.717124000017,
+      "totalTrialMs": 4786.471707999997,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 383.86108299999614,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 209.1355410000251,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 0,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2372.387791999994,
+      "warmupMs": 0,
+      "initialConnectMs": 1107.3771250000282,
+      "restartConnectMs": 592.2014170000039,
+      "toolCallMs": 537.3418339999916,
+      "candidateActiveMs": 2236.9203760000237,
+      "totalTrialMs": 4792.530333000002,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 355.45154199999524,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 181.8902919999964,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 1,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2461.4607499999984,
+      "warmupMs": 0,
+      "initialConnectMs": 1080.1523750000051,
+      "restartConnectMs": 578.5963749999937,
+      "toolCallMs": 620.414334000001,
+      "candidateActiveMs": 2279.163084,
+      "totalTrialMs": 4924.719917000009,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 442.8607919999922,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 177.55354200000875,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 1,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2358.252582999994,
+      "warmupMs": 0,
+      "initialConnectMs": 1065.7825829999929,
+      "restartConnectMs": 556.7043330000015,
+      "toolCallMs": 626.8284180000192,
+      "candidateActiveMs": 2249.3153340000135,
+      "totalTrialMs": 4795.827292000002,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 393.228334000014,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 233.60008400000515,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 2,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2275.37070900001,
+      "warmupMs": 0,
+      "initialConnectMs": 1033.0409999999974,
+      "restartConnectMs": 518.1582079999789,
+      "toolCallMs": 598.5100429999875,
+      "candidateActiveMs": 2149.709250999964,
+      "totalTrialMs": 4611.252957999997,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 390.2990839999984,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 208.2109589999891,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 2,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2391.372792000009,
+      "warmupMs": 0,
+      "initialConnectMs": 1109.7261669999862,
+      "restartConnectMs": 593.5390839999891,
+      "toolCallMs": 590.8911669999943,
+      "candidateActiveMs": 2294.1564179999696,
+      "totalTrialMs": 4874.070582999993,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 404.78825000001234,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 186.10291699998197,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 3,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2421.598874999996,
+      "warmupMs": 0,
+      "initialConnectMs": 1076.3346660000097,
+      "restartConnectMs": 563.8252909999865,
+      "toolCallMs": 528.6029159999744,
+      "candidateActiveMs": 2168.7628729999706,
+      "totalTrialMs": 4776.424958000018,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 351.7415409999958,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 176.86137499997858,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "cold",
+      "repetition": 3,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2428.9802910000144,
+      "warmupMs": 0,
+      "initialConnectMs": 1048.1480000000156,
+      "restartConnectMs": 524.5344580000092,
+      "toolCallMs": 613.349916999985,
+      "candidateActiveMs": 2186.03237500001,
+      "totalTrialMs": 4801.823124999995,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 402.98983400000725,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 210.36008299997775,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 0,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2441.4187910000037,
+      "warmupMs": 824.3811250000144,
+      "initialConnectMs": 796.8325419999892,
+      "restartConnectMs": 572.3745409999974,
+      "toolCallMs": 634.0063329999684,
+      "candidateActiveMs": 2003.213415999955,
+      "totalTrialMs": 5440.745041999995,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 453.988457999978,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 180.01787499999045,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 0,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2419.083707999991,
+      "warmupMs": 940.3068750000093,
+      "initialConnectMs": 771.3031250000058,
+      "restartConnectMs": 521.8732920000039,
+      "toolCallMs": 539.5897909999767,
+      "candidateActiveMs": 1832.7662079999864,
+      "totalTrialMs": 5375.910875000001,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 321.7754999999888,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 217.81429099998786,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 1,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2453.413750000007,
+      "warmupMs": 778.1202080000076,
+      "initialConnectMs": 738.0109579999989,
+      "restartConnectMs": 521.9782919999852,
+      "toolCallMs": 607.5235409999732,
+      "candidateActiveMs": 1867.5127909999574,
+      "totalTrialMs": 5281.0680410000205,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 398.6441249999916,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 208.87941599998157,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 1,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2414.5886670000036,
+      "warmupMs": 764.3380840000173,
+      "initialConnectMs": 707.6021670000046,
+      "restartConnectMs": 466.90200000000186,
+      "toolCallMs": 497.7794999999751,
+      "candidateActiveMs": 1672.2836669999815,
+      "totalTrialMs": 4994.174207999982,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 373.5981249999895,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 124.18137499998556,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 2,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2367.18658400001,
+      "warmupMs": 848.1401249999763,
+      "initialConnectMs": 799.1751660000009,
+      "restartConnectMs": 594.2251249999972,
+      "toolCallMs": 663.7428749999963,
+      "candidateActiveMs": 2057.1431659999944,
+      "totalTrialMs": 5465.030207999982,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 459.47608299998683,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 204.26679200000945,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 2,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2393.5148340000014,
+      "warmupMs": 777.5609579999873,
+      "initialConnectMs": 727.9281250000058,
+      "restartConnectMs": 513.2992500000109,
+      "toolCallMs": 532.2751250000438,
+      "candidateActiveMs": 1773.5025000000605,
+      "totalTrialMs": 5131.232042000018,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 322.47066700001596,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 209.8044580000278,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 3,
+      "candidateIndex": 0,
+      "candidateId": "forge-v1.7.2",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2471.2833329999994,
+      "warmupMs": 792.5270000000019,
+      "initialConnectMs": 824.7615410000144,
+      "restartConnectMs": 518.1349170000176,
+      "toolCallMs": 597.5519159999967,
+      "candidateActiveMs": 1940.4483740000287,
+      "totalTrialMs": 5376.796082999994,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 390.7360409999965,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 206.81587500000023,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    },
+    {
+      "workflowId": "restart_durable_work_visible",
+      "cacheMode": "warm",
+      "repetition": 3,
+      "candidateIndex": 1,
+      "candidateId": "forge-v1.8.0-d1b2fef7",
+      "goalSuccess": true,
+      "toolInteractions": 2,
+      "retries": 0,
+      "recoveryActions": 0,
+      "restarts": 1,
+      "harnessSetupMs": 2361.2308330000087,
+      "warmupMs": 823.3373750000028,
+      "initialConnectMs": 799.6142500000133,
+      "restartConnectMs": 601.2732499999984,
+      "toolCallMs": 642.2161250000063,
+      "candidateActiveMs": 2043.103625000018,
+      "totalTrialMs": 5418.248832999991,
+      "steps": [
+        {
+          "tool": "rh_work",
+          "durationMs": 458.03329200000735,
+          "outcome": "error",
+          "summary": "durable_work_retained"
+        },
+        {
+          "tool": "rh_status",
+          "durationMs": 184.18283299999894,
+          "outcome": "error",
+          "summary": "durable_work_visible_after_restart"
+        }
+      ]
+    }
+  ]
+}

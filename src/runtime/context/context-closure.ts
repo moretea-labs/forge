@@ -28,8 +28,19 @@ type ContextPackLike = {
   coverage: { relevantTests: string[]; inspectedFiles: string[] };
 };
 
+function canonicalReceiptValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalReceiptValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, entry]) => [key, canonicalReceiptValue(entry)]),
+  );
+}
+
 function fullReceiptDigest(receipt: ContextClosureReceipt): string {
-  return createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonicalReceiptValue(receipt))).digest('hex');
 }
 
 function recordIssuedContextClosure(receipt: ContextClosureReceipt): ContextClosureReceipt {
@@ -123,16 +134,34 @@ function requiredSkillKinds(languages: string[], platforms: string[]): string[] 
 
 function resolveSkills(contract: ProjectEngineeringContract | undefined, requiredKinds: string[]) {
   if (requiredKinds.length === 0) return { status: 'not_required' as const, requiredKinds, resolved: [] as ContextClosureSkillResolution[], unresolvedKinds: [] as string[] };
-  const parsed = (contract?.skillRefs ?? []).map(parseSkillRef);
-  const resolved: ContextClosureSkillResolution[] = [];
+  const resolvedByKey = new Map<string, ContextClosureSkillResolution>();
   const covered = new Set<string>();
-  for (const skill of parsed) {
-    const lower = skill.id.toLowerCase();
-    const matchedKinds = requiredKinds.filter((kind) => lower.includes(kind.toLowerCase()));
-    if (matchedKinds.length === 0) continue;
+  const record = (skill: { id: string; version?: string }, matchedKinds: string[]) => {
+    if (matchedKinds.length === 0) return;
     matchedKinds.forEach((kind) => covered.add(kind));
-    resolved.push({ ...skill, source: 'project_contract', matchedKinds });
+    const key = `${skill.id}@${skill.version ?? ''}`;
+    const existing = resolvedByKey.get(key);
+    resolvedByKey.set(key, {
+      ...skill,
+      source: 'project_contract',
+      matchedKinds: [...new Set([...(existing?.matchedKinds ?? []), ...matchedKinds])].sort(),
+    });
+  };
+
+  for (const binding of contract?.skillBindings ?? []) {
+    const declaredKinds = new Set(binding.kinds.map((kind) => kind.toLowerCase()));
+    record(
+      { id: binding.id, ...(binding.version === undefined ? {} : { version: binding.version }) },
+      requiredKinds.filter((kind) => declaredKinds.has(kind.toLowerCase())),
+    );
   }
+
+  for (const skill of (contract?.skillRefs ?? []).map(parseSkillRef)) {
+    const lower = skill.id.toLowerCase();
+    record(skill, requiredKinds.filter((kind) => lower.includes(kind.toLowerCase())));
+  }
+
+  const resolved = [...resolvedByKey.values()];
   const unresolvedKinds = requiredKinds.filter((kind) => !covered.has(kind));
   const status = unresolvedKinds.length === 0 ? 'ready' as const : resolved.length > 0 ? 'degraded' as const : 'unavailable' as const;
   return { status, requiredKinds, resolved, unresolvedKinds };
@@ -144,7 +173,15 @@ function semanticResultProviderIds(results: unknown[]): string[] {
     if (!value || typeof value !== 'object') continue;
     const record = value as Record<string, unknown>;
     const nested = record.result && typeof record.result === 'object' ? record.result as Record<string, unknown> : undefined;
-    const id = typeof record.providerId === 'string' ? record.providerId : typeof nested?.providerId === 'string' ? nested.providerId : undefined;
+    const id = typeof record.provider === 'string'
+      ? record.provider
+      : typeof record.providerId === 'string'
+        ? record.providerId
+        : typeof nested?.provider === 'string'
+          ? nested.provider
+          : typeof nested?.providerId === 'string'
+            ? nested.providerId
+            : undefined;
     if (id) ids.push(id);
   }
   return unique(ids);

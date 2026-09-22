@@ -7,19 +7,13 @@ import {
   type ExecutionChildReference,
 } from '../../execution/jobs/child-reference';
 import type { SuggestedNextAction } from './types';
+import {
+  classifyFailureCode,
+  classifyLegacyFailureMessage,
+  type FailureClass,
+} from '../../../../packages/protocols/failure';
 
-export type UserFacingErrorClass =
-  | 'controller_unavailable'
-  | 'connector_stale'
-  | 'infrastructure_failure'
-  | 'acceptance_failure'
-  | 'invalid_check_id'
-  | 'approval_required'
-  | 'handoff_required'
-  | 'timeout'
-  | 'policy_denied'
-  | 'not_found'
-  | 'unknown_failure';
+export type UserFacingErrorClass = FailureClass;
 
 export type UserFacingPhase =
   | 'queued'
@@ -92,54 +86,24 @@ export function classifyUserFacingError(input: {
   infrastructure?: boolean;
   acceptance?: boolean;
 }): UserFacingErrorClass {
-  const code = (input.code ?? '').toLowerCase();
-  const message = (input.message ?? '').toLowerCase();
-  const blob = `${code} ${message} ${input.status ?? ''}`;
-
   if (input.infrastructure && !input.acceptance) return 'infrastructure_failure';
-  if (input.acceptance || blob.includes('acceptance') || blob.includes('valid_fail') || blob.includes('check failed') || blob.includes('] failed') || blob.includes('expected ') && blob.includes(' got ')) {
-    return 'acceptance_failure';
+  if (input.acceptance) return 'acceptance_failure';
+
+  const structured = classifyFailureCode(input.code);
+  if (structured !== 'unknown_failure') return structured;
+
+  switch ((input.status ?? '').trim().toLowerCase()) {
+    case 'waiting_for_approval': return 'approval_required';
+    case 'human_attention_required':
+    case 'needs_review': return 'handoff_required';
+    case 'timed_out': return 'timeout';
+    default: break;
   }
-  if (blob.includes('invalid_check_id') || blob.includes('check not found') || blob.includes('check_id')) {
-    if (blob.includes('invalid') || blob.includes('not found') || blob.includes('not registered')) return 'invalid_check_id';
-  }
-  if (
-    blob.includes('approval_required')
-    || blob.includes('approval required')
-    || blob.includes('requires approval')
-    || blob.includes('waiting_for_approval')
-    || blob.includes('awaiting approval')
-    || blob.includes('authorization required')
-    || blob.includes('confirm authorization')
-  ) return 'approval_required';
-  if (blob.includes('handoff') || blob.includes('needs_review') || blob.includes('human_attention')) return 'handoff_required';
-  if (blob.includes('timed_out') || blob.includes('timed out') || blob.includes('timeout')) return 'timeout';
-  if (blob.includes('stale connector') || blob.includes('tool surface') || blob.includes('fingerprint') || blob.includes('reconnect')) {
-    return 'connector_stale';
-  }
-  if (
-    blob.includes('daemon')
-    || blob.includes('controller unavailable')
-    || blob.includes('not ready')
-    || blob.includes('econnrefused')
-  ) {
-    return 'controller_unavailable';
-  }
-  if (blob.includes('denied') || blob.includes('policy') || blob.includes('forbidden') || blob.includes('not allowed')) {
-    return 'policy_denied';
-  }
-  if (
-    blob.includes('infrastructure')
-    || blob.includes('runtime_storage')
-    || blob.includes('worker')
-    || blob.includes('spawn')
-    || blob.includes('enoent')
-  ) {
-    return 'infrastructure_failure';
-  }
-  if (blob.includes('not found') || blob.includes('not_found')) return 'not_found';
-  if (!code && !message.trim()) return 'unknown_failure';
-  return 'unknown_failure';
+
+  // Compatibility-only fallback for legacy producers that still emit prose
+  // without a stable failure code. Machine retry/authorization decisions never
+  // consume this presentation classifier.
+  return classifyLegacyFailureMessage(input.message);
 }
 
 export function phaseFromJobStatus(status: ExecutionJobStatus | string): UserFacingPhase {

@@ -17,3 +17,5 @@ export * from './self-healing-loop';
 export * from './operation-digest';
 export * from './requirement-authority';
 export * from './repository-work-admission';
+
+export * from './handoff-inbox-application';

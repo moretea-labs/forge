@@ -138,16 +138,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Plan, dispatch, review, verify, retry, and accept durable Issue and Task work through existing typed handlers.',
   },
   {
-    capabilityId: 'plugin.browser',
-    domain: 'plugin',
-    group: 'browser',
-    operationClass: 'execute',
-    risk: 'unknown',
-    exposedVia: 'plugin_action_execute',
-    schemaExposure: 'stable_static',
-    summary: 'Use typed HTTP(S) browser navigation, snapshot, and interaction actions through plugin_action_execute when browser capability is configured.',
-  },
-  {
     capabilityId: 'platform.ios',
     domain: 'plugin',
     group: 'ios',
@@ -255,10 +245,8 @@ function intentBoosts(query: string, descriptor: CapabilityDescriptor): Array<{ 
   const browserLoginIntent = normalized.includes('browser')
     && /\b(login|log in|signin|sign in|auth|authentication|session)\b/.test(normalized);
   if (browserLoginIntent) {
-    if (capabilityId === 'plugin.browser') boosts.push({ label: 'browser-auth', score: 90 });
-    else if (capabilityId.startsWith('plugin.browser.')) boosts.push({ label: 'browser-auth', score: 62 });
-    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY)) boosts.push({ label: 'browser-computer-observe', score: 54 });
-    if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY)) boosts.push({ label: 'browser-computer-input', score: 50 });
+    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY)) boosts.push({ label: 'browser-computer-observe', score: 90 });
+    if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY)) boosts.push({ label: 'browser-computer-input', score: 82 });
   }
   return boosts;
 }

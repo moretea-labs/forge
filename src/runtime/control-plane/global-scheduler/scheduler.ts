@@ -1,5 +1,5 @@
 import { execFile, type ChildProcess } from 'child_process';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
@@ -30,7 +30,12 @@ import {
   runSchedulerValidationReconciliation,
 } from './maintenance';
 import { planSchedulerSourceSampling } from './source-scan';
-import { runSchedulerDurableAdmission } from './durable-admission';
+import { runSchedulerAutonomousContinuationReconciliation } from './autonomous-continuation';
+import {
+  runSchedulerDurableAdmission,
+  SCHEDULE_TICK_INTERVAL_MS,
+  schedulerDurableAdmissionRequiresPolicy,
+} from './durable-admission';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
@@ -95,7 +100,43 @@ export type { SchedulerWorkerCommand, SchedulerWorkerLaunchDescriptor } from './
 export { selectSchedulerSourceScanRepositories } from './source-scan';
 
 const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
+export const SCHEDULER_RECONCILIATION_INTERVAL_MS = 5_000;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.FORGE_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
+
+function remainingRecurringDeadlineMs(nowMs: number, lastRanAt: number, intervalMs: number): number {
+  if (lastRanAt <= 0) return intervalMs;
+  const elapsed = Math.max(0, nowMs - lastRanAt);
+  return elapsed < intervalMs ? intervalMs - elapsed : intervalMs;
+}
+
+export function schedulerIdleWaitDelayMs(input: {
+  nowMs: number;
+  lastScheduleTickAt: number;
+}): number {
+  // Idle execution is event-driven. ExecutionJob/lease/policy mutations and
+  // check Process terminal persistence wake the scheduler immediately through
+  // the existing notification revision. The 30-second schedule cadence is the
+  // bounded idle lost-event safety deadline.
+  return remainingRecurringDeadlineMs(
+    input.nowMs,
+    input.lastScheduleTickAt,
+    SCHEDULE_TICK_INTERVAL_MS,
+  );
+}
+
+export function schedulerActiveWaitDelayMs(input: {
+  nowMs: number;
+  lastReconcileAt: number;
+}): number {
+  // Active execution uses the same canonical wake notifications as idle
+  // execution. A full scheduler tick is only the lost-event safety net, bounded
+  // by the existing reconciliation cadence instead of the legacy 250ms poll.
+  return remainingRecurringDeadlineMs(
+    input.nowMs,
+    input.lastReconcileAt,
+    SCHEDULER_RECONCILIATION_INTERVAL_MS,
+  );
+}
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
   'Pages free',
   'Pages inactive',
@@ -160,6 +201,8 @@ export interface SchedulerRuntimeBinding {
   controllerPid?: number;
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
+  workerExecutable?: string;
+  periodicCleanupExecutable?: string;
   /** Canonical in-process Runtime isolates periodic cleanup from the public event loop. */
   isolatePeriodicCleanup?: boolean;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
@@ -175,6 +218,8 @@ export class GlobalScheduler {
   private readonly controllerPid: number;
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
+  private readonly workerExecutable?: string;
+  private readonly periodicCleanupExecutable?: string;
   private readonly isolatePeriodicCleanup: boolean;
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
@@ -218,6 +263,8 @@ export class GlobalScheduler {
     this.actors = new RepoActorRegistry(controllerHome, { maxConcurrentWorkers: this.config.maxWorkers });
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
+    this.workerExecutable = runtime.workerExecutable ? resolve(runtime.workerExecutable) : undefined;
+    this.periodicCleanupExecutable = runtime.periodicCleanupExecutable ? resolve(runtime.periodicCleanupExecutable) : undefined;
     this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
     const restoredState = restoreSchedulerState(readSchedulerHealthSnapshot(controllerHome));
@@ -300,12 +347,13 @@ export class GlobalScheduler {
         return resolveSchedulerWorkerCommand({
           runtimeSourceRoot: this.runtimeSourceRoot,
           workerEntrypoint: this.workerEntrypoint,
+          standaloneExecutable: this.workerExecutable,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const lifecycle = buildSchedulerWorkerSpawnFailureLifecycle({
-          executable: process.execPath,
-          cwd: this.runtimeSourceRoot ?? process.cwd(),
+          executable: this.workerExecutable ?? process.execPath,
+          cwd: this.workerExecutable ? dirname(this.workerExecutable) : (this.runtimeSourceRoot ?? process.cwd()),
           environment: selectSchedulerWorkerEnvironment(process.env),
           ownerPid: this.controllerPid,
           attempt: current.attempt,
@@ -331,7 +379,7 @@ export class GlobalScheduler {
       repoId,
       jobId,
       controllerPid: this.controllerPid,
-      runtimeSourceRoot: this.runtimeSourceRoot,
+      runtimeSourceRoot: this.workerExecutable ? undefined : this.runtimeSourceRoot,
       writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
     });
     const stderrCapture = createSchedulerWorkerStderrCapture({
@@ -465,7 +513,8 @@ export class GlobalScheduler {
       controllerPid: this.controllerPid,
       nowMs,
       cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
-      runtimeSourceRoot: this.runtimeSourceRoot,
+      runtimeSourceRoot: this.periodicCleanupExecutable ? undefined : this.runtimeSourceRoot,
+      cleanupExecutable: this.periodicCleanupExecutable,
       writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
     });
     if (!spawned.ok) {
@@ -500,6 +549,7 @@ export class GlobalScheduler {
     this.persistState();
     const repositories = this.repositoryList(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
     let periodicCleanupRan = false;
+    let reconciliationRan = false;
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick. Canonical Runtime launches the
@@ -522,7 +572,7 @@ export class GlobalScheduler {
       }
       periodicCleanupRan = true;
     }
-    if (now - this.lastReconcile >= 5_000) {
+    if (now - this.lastReconcile >= SCHEDULER_RECONCILIATION_INTERVAL_MS) {
       await reconcileExecutionJobsAsync(this.controllerHome);
       for (const repository of repositories) {
         try {
@@ -540,6 +590,7 @@ export class GlobalScheduler {
       });
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
+      reconciliationRan = true;
     }
     const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
     const activeSourceRepoIds = new Set(activeJobSnapshot.map((job) => job.repoId));
@@ -581,7 +632,12 @@ export class GlobalScheduler {
     // cleanup and projections. Convergence mode remains dispatchable because new
     // Work creation is independently fenced at the Work contract authority, so
     // existing Work continuations can keep draining the backlog.
-    if (!schedulerDispatchAllowed(this.controllerHome)) {
+    const admissionPolicyRequired = periodicCleanupRan || schedulerDurableAdmissionRequiresPolicy({
+      activeJobs: activeJobSnapshot,
+      nowMs: now,
+      lastScheduleTickAt: this.lastScheduleTick,
+    });
+    if (admissionPolicyRequired && !schedulerDispatchAllowed(this.controllerHome)) {
       refreshSchedulerRepositoryProjections({
         controllerHome: this.controllerHome,
         repositories,
@@ -592,6 +648,16 @@ export class GlobalScheduler {
       this.lastHeartbeatAt = new Date().toISOString();
       this.persistState(true);
       return { activeJobs: activeJobSnapshot.length };
+    }
+    if (reconciliationRan && schedulerDispatchAllowed(this.controllerHome)) {
+      const liveness = await runSchedulerAutonomousContinuationReconciliation({
+        controllerHome: this.controllerHome,
+        nowMs: now,
+        repositories,
+      });
+      if (liveness.failed > 0) {
+        console.error('[forge liveness] autonomous continuation reconciliation reported ' + liveness.failed + ' failure(s)');
+      }
     }
     if (periodicCleanupRan) {
       await runSchedulerControllerRoundRecovery({
@@ -605,71 +671,74 @@ export class GlobalScheduler {
       repositoryIds: repositories.map((repo) => repo.repoId),
       nowMs: now,
       lastScheduleTickAt: this.lastScheduleTick,
+      activeJobs: activeJobSnapshot,
     });
     if (durableAdmission.scheduleTicked) this.lastScheduleTick = now;
     let activeJobs = 0;
     const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
     const projectionRefreshRepos = new Set<string>();
-    const pressure = this.resourcePressure();
-    try {
-      activeJobs = withControllerLock(
-        this.controllerHome,
-        {
-          scope: 'task',
-          repoId: '__controller__',
-          taskId: 'global-scheduler-dispatch',
-        },
-        `global-scheduler:${this.controllerPid}`,
-        () => {
-          const active = listActiveExecutionJobs(this.controllerHome);
-          const capacity = createSchedulerDispatchCapacity(active, this.config, pressure.pressured);
-          if (capacity.workers <= 0) return active.length;
+    if (activeJobSnapshot.length > 0) {
+      const pressure = this.resourcePressure();
+      try {
+        activeJobs = withControllerLock(
+          this.controllerHome,
+          {
+            scope: 'task',
+            repoId: '__controller__',
+            taskId: 'global-scheduler-dispatch',
+          },
+          `global-scheduler:${this.controllerPid}`,
+          () => {
+            const active = listActiveExecutionJobs(this.controllerHome);
+            const capacity = createSchedulerDispatchCapacity(active, this.config, pressure.pressured);
+            if (capacity.workers <= 0) return active.length;
 
-          const scheduleNow = Date.now();
-          const repoIds = selectExecutionJobDispatchRepositories(active, scheduleNow, this.lastRepoDispatch);
-          const reservedRepos = new Set(capacity.reservedJobs.map((job) => job.repoId));
-          let dispatchStateChanged = false;
-          const canDispatch = (job: (typeof active)[number]): boolean => schedulerDispatchCapacityAllows(capacity, job);
-          for (const repoId of repoIds) {
-            if (capacity.workers <= 0) break;
-            if (!reservedRepos.has(repoId) && reservedRepos.size >= this.config.maxConcurrentRepositories) continue;
-            const actor = this.actors.get(repoId);
-            let dispatch: ReturnType<typeof actor.tryClaimNext>;
-            try {
-              dispatch = actor.tryClaimNext({
-                scheduleNow,
-                canDispatch,
-                refreshProjection: false,
-                lockWaitMs: 0,
-              });
-              projectionRefreshRepos.add(repoId);
-            } catch (error) {
-              if (error instanceof Error && error.message.startsWith('LOCK_HELD:')) continue;
-              throw error;
+            const scheduleNow = Date.now();
+            const repoIds = selectExecutionJobDispatchRepositories(active, scheduleNow, this.lastRepoDispatch);
+            const reservedRepos = new Set(capacity.reservedJobs.map((job) => job.repoId));
+            let dispatchStateChanged = false;
+            const canDispatch = (job: (typeof active)[number]): boolean => schedulerDispatchCapacityAllows(capacity, job);
+            for (const repoId of repoIds) {
+              if (capacity.workers <= 0) break;
+              if (!reservedRepos.has(repoId) && reservedRepos.size >= this.config.maxConcurrentRepositories) continue;
+              const actor = this.actors.get(repoId);
+              let dispatch: ReturnType<typeof actor.tryClaimNext>;
+              try {
+                dispatch = actor.tryClaimNext({
+                  scheduleNow,
+                  canDispatch,
+                  refreshProjection: false,
+                  lockWaitMs: 0,
+                });
+                projectionRefreshRepos.add(repoId);
+              } catch (error) {
+                if (error instanceof Error && error.message.startsWith('LOCK_HELD:')) continue;
+                throw error;
+              }
+              if (!dispatch) continue;
+
+              // A successful claim is the capacity reservation. Count it immediately,
+              // before the worker PID is spawned or attached, so concurrent schedulers
+              // cannot over-dispatch through the dispatched -> running window.
+              consumeSchedulerDispatchCapacity(capacity, dispatch.job);
+              reservedRepos.add(repoId);
+              const dispatchedAt = Date.now();
+              this.lastRepoDispatch.set(repoId, dispatchedAt);
+              this.lastDispatchAt = new Date(dispatchedAt).toISOString();
+              dispatchStateChanged = true;
+              pendingSpawns.push({ repoId, jobId: dispatch.job.jobId });
             }
-            if (!dispatch) continue;
-
-            // A successful claim is the capacity reservation. Count it immediately,
-            // before the worker PID is spawned or attached, so concurrent schedulers
-            // cannot over-dispatch through the dispatched -> running window.
-            consumeSchedulerDispatchCapacity(capacity, dispatch.job);
-            reservedRepos.add(repoId);
-            const dispatchedAt = Date.now();
-            this.lastRepoDispatch.set(repoId, dispatchedAt);
-            this.lastDispatchAt = new Date(dispatchedAt).toISOString();
-            dispatchStateChanged = true;
-            pendingSpawns.push({ repoId, jobId: dispatch.job.jobId });
-          }
-          if (dispatchStateChanged) this.persistState(true);
-          return active.length;
-        },
-        5_000,
-      );
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.startsWith('LOCK_HELD:')) throw error;
-      // Another scheduler owns the global dispatch reservation. Fail closed and
-      // leave all jobs queued for the next wake/tick rather than risking overrun.
-      activeJobs = listActiveExecutionJobs(this.controllerHome).length;
+            if (dispatchStateChanged) this.persistState(true);
+            return active.length;
+          },
+          5_000,
+        );
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith('LOCK_HELD:')) throw error;
+        // Another scheduler owns the global dispatch reservation. The pre-lock snapshot
+        // is sufficient for backoff accounting; the next wake/tick observes the winner's state.
+        activeJobs = activeJobSnapshot.length;
+      }
     }
     // Repo Actor mutations leave projection dirty markers. Refresh those repos
     // immediately; the independent source safety scan contributes only its bounded
@@ -712,30 +781,38 @@ export class GlobalScheduler {
       this.persistState(true);
     }, this.config.heartbeatIntervalMs);
     heartbeatTimer.unref?.();
-    let idleStreak = 0;
     let activeJobs = 0;
     try {
       while (!signal?.aborted) {
+        let tickFailed = false;
         try {
           activeJobs = (await this.tick()).activeJobs;
-          idleStreak = activeJobs === 0 ? idleStreak + 1 : 0;
         } catch (error) {
           if (this.fatalOnTickError) throw error;
-          idleStreak = 0;
+          tickFailed = true;
           this.lastHeartbeatAt = new Date().toISOString();
           this.lastTickAt = this.lastHeartbeatAt;
           this.persistState(true);
           console.error('[forge scheduler] tick failed:', error);
         }
-        const delayMs = idleStreak > 0
-          ? Math.min(
-            this.config.idleBackoffMaxMs,
-            this.config.pollIntervalMs * (2 ** Math.min(idleStreak, 6)),
-          )
-          : this.config.pollIntervalMs;
+        const now = Date.now();
+        const delayMs = tickFailed
+          ? this.config.pollIntervalMs
+          : activeJobs > 0
+            ? schedulerActiveWaitDelayMs({
+              nowMs: now,
+              lastReconcileAt: this.lastReconcile,
+            })
+            : schedulerIdleWaitDelayMs({
+              nowMs: now,
+              lastScheduleTickAt: this.lastScheduleTick,
+            });
         const wakeRevision = readSchedulerWakeSignal(this.controllerHome).revision;
         const waitResult = await waitForSchedulerWakeSignal(this.controllerHome, wakeRevision, delayMs, signal, {
-          fallbackPollMs: activeJobs > 0 ? 250 : Math.min(1_000, Math.max(500, delayMs)),
+          // fs.watch is authoritative for ordinary wakeups. Polling is only a
+          // lost-event safety net, so active execution must not regress to a
+          // 250ms JSON-read loop after removing the full-tick poll.
+          fallbackPollMs: Math.min(5_000, Math.max(1_000, delayMs)),
         });
         if (waitResult === 'aborted') break;
       }

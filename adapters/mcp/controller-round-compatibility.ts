@@ -4,6 +4,7 @@ import {
 } from '../../packages/kernel/controller/api/index';
 
 const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
+const CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY = 'controller.current_conversation.enroll';
 const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
 export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
@@ -16,6 +17,18 @@ export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_release',
 ] as const;
 export type ControllerRoundCompatibilityOperation = (typeof CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS)[number];
+export const CONTROLLER_ROUND_REVIEW_DECISIONS = ['approved', 'changes_required', 'blocked'] as const;
+export type ControllerRoundReviewDecision = (typeof CONTROLLER_ROUND_REVIEW_DECISIONS)[number];
+
+export function parseCurrentConversationEnrollmentCompatibilityCapability(
+  operation: string,
+  capabilityId: unknown,
+): { disposition: 'continue_immediately'; enrollCurrentConversation: true } | undefined {
+  if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
+  const normalized = capabilityId.trim();
+  if (normalized !== CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY) return undefined;
+  return { disposition: 'continue_immediately', enrollCurrentConversation: true };
+}
 
 export function parseControllerDispositionCompatibilityCapability(
   operation: string,
@@ -47,23 +60,37 @@ export function parseControllerDispositionCompatibilityCapability(
 export function parseControllerRoundCompatibilityCapability(
   operation: string,
   capabilityId: unknown,
-): { operation: ControllerRoundCompatibilityOperation; authorityId: string; relayScopeId: string } | undefined {
+): { operation: ControllerRoundCompatibilityOperation; authorityId: string; relayScopeId: string; reviewDecision?: ControllerRoundReviewDecision } | undefined {
   if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
   const normalized = capabilityId.trim();
   if (!normalized.startsWith(CONTROLLER_ROUND_COMPATIBILITY_PREFIX)) return undefined;
   const payload = normalized.slice(CONTROLLER_ROUND_COMPATIBILITY_PREFIX.length);
   const operationSeparator = payload.indexOf(':');
-  const authoritySeparator = operationSeparator < 0 ? -1 : payload.indexOf(':', operationSeparator + 1);
-  if (operationSeparator <= 0 || authoritySeparator <= operationSeparator + 1) {
-    throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
-  }
+  if (operationSeparator <= 0) throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
   const canonicalOperation = payload.slice(0, operationSeparator) as ControllerRoundCompatibilityOperation;
-  const authorityId = payload.slice(operationSeparator + 1, authoritySeparator).trim();
-  const relayScopeId = payload.slice(authoritySeparator + 1).trim();
-  if (!CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS.includes(canonicalOperation) || !/^cra_[0-9a-f]{32}$/i.test(authorityId) || !relayScopeId) {
+  if (!CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS.includes(canonicalOperation)) {
     throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
   }
-  return { operation: canonicalOperation, authorityId, relayScopeId };
+
+  let cursor = operationSeparator + 1;
+  let reviewDecision: ControllerRoundReviewDecision | undefined;
+  if (canonicalOperation === 'review') {
+    const decisionSeparator = payload.indexOf(':', cursor);
+    if (decisionSeparator <= cursor) throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
+    const decision = payload.slice(cursor, decisionSeparator).trim() as ControllerRoundReviewDecision;
+    if (!CONTROLLER_ROUND_REVIEW_DECISIONS.includes(decision)) throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
+    reviewDecision = decision;
+    cursor = decisionSeparator + 1;
+  }
+
+  const authoritySeparator = payload.indexOf(':', cursor);
+  if (authoritySeparator <= cursor) throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
+  const authorityId = payload.slice(cursor, authoritySeparator).trim();
+  const relayScopeId = payload.slice(authoritySeparator + 1).trim();
+  if (!/^cra_[0-9a-f]{32}$/i.test(authorityId) || !relayScopeId) {
+    throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
+  }
+  return { operation: canonicalOperation, authorityId, relayScopeId, ...(reviewDecision ? { reviewDecision } : {}) };
 }
 
 

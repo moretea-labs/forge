@@ -40,3 +40,39 @@ test('does not treat exact-known lexical hit caps as omitted evidence when the f
   expect(pack.readiness.status).toBe('ready');
   expect(pack.readiness.readyForHighConfidenceMutation).toBe(true);
 });
+
+
+test('treats lossless exact-known window materialization as sufficient despite lexical hit truncation', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-exact-window-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  const lines = [
+    ...Array.from({ length: 45 }, (_, index) => `export const PRE_${index} = ${index};`),
+    ...Array.from({ length: 80 }, (_, index) => `export const WINDOW_MARKER_${index} = 'WINDOW_MARKER';`),
+    ...Array.from({ length: 45 }, (_, index) => `export const POST_${index} = ${index};`),
+  ];
+  writeFileSync(join(root, 'src/exact-window.ts'), `${lines.join('\n')}\n`);
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+
+  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    description: 'Inspect WINDOW_MARKER in the exact known implementation file.',
+    searchTerms: ['WINDOW_MARKER'],
+    knownPaths: ['src/exact-window.ts'],
+    retrievalMode: 'implementation',
+    structuralContext: 'off',
+    maxFiles: 1,
+    maxSnippets: 2,
+    maxCharsPerSnippet: 2400,
+  });
+
+  expect(pack.search.truncated).toBe(true);
+  expect(pack.files[0]?.snippets.length).toBeGreaterThan(0);
+  expect(pack.files[0]?.snippets.every((snippet) => !snippet.truncated)).toBe(true);
+  expect(pack.readiness.unresolvedReasonCodes).not.toContain('retrieval_truncated');
+  expect(pack.readiness.status).toBe('ready');
+  expect(pack.readiness.readyForHighConfidenceMutation).toBe(true);
+});

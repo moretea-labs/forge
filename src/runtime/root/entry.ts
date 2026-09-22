@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { Command } from 'commander';
 import { CanonicalForgeRuntime } from './runtime';
+import { parseRuntimeDeploymentTopologyArgument } from './deployment-topology';
 
 interface CliOptions {
   controllerHome: string;
@@ -12,6 +13,7 @@ interface CliOptions {
   port: string;
   authTokenFile: string;
   exclusiveWorkId?: string;
+  deploymentTopology?: string;
 }
 
 function readAuthToken(path: string): string {
@@ -29,6 +31,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
     .requiredOption('--host <host>', 'MCP listener host')
     .requiredOption('--port <port>', 'MCP listener port')
     .requiredOption('--auth-token-file <path>', 'Bearer token file')
+    .option('--deployment-topology <json>', 'Normalized product-level Runtime deployment topology')
     .option('--exclusive-work-id <id>', 'Persistently admit only this P0 Work while migration is active');
   command.parse(argv);
   const options = command.opts<CliOptions>();
@@ -40,6 +43,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
     releaseManifestPath: resolve(options.releaseManifest),
     host: options.host,
     port,
+    topology: parseRuntimeDeploymentTopologyArgument(options.deploymentTopology),
     authToken: readAuthToken(options.authTokenFile),
     exclusiveWorkId: options.exclusiveWorkId,
   });

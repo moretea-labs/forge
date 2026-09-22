@@ -97,7 +97,7 @@ const MAX_DIRTY_PATHS = 200;
 export async function repositorySnapshotAsync(
   root: string,
   signal?: AbortSignal,
-  options: { pathFingerprints?: boolean; fingerprintTimeoutMs?: number } = {},
+  options: { pathFingerprints?: boolean; fingerprintTimeoutMs?: number; fingerprintPaths?: readonly string[] } = {},
 ): Promise<RepositoryCommandSnapshot> {
   const [headResult, branchResult, statusResult, refsResult] = await Promise.all([
     gitAsync(root, ['rev-parse', '--verify', 'HEAD'], signal), gitAsync(root, ['branch', '--show-current'], signal),
@@ -113,17 +113,26 @@ export async function repositorySnapshotAsync(
   if (signal?.aborted) throw new Error('CANCELLED: repository snapshot aborted');
   const lines = statusResult.stdout.split(/\r?\n/).filter((line) => line && !line.startsWith('##'));
   const includePathFingerprints = options.pathFingerprints !== false;
-  if (includePathFingerprints && lines.length > MAX_DIRTY_PATHS) throw new Error(`SNAPSHOT_TOO_DIRTY: ${lines.length} dirty paths exceeds Fast Path cap ${MAX_DIRTY_PATHS}`);
   const byPath = new Map<string, string[]>();
   for (const line of lines) { const path = statusPath(line); if (path) byPath.set(path, [...(byPath.get(path) ?? []), line]); }
   const paths = [...byPath.keys()].sort();
+  const requestedFingerprintPaths = options.fingerprintPaths
+    ? [...new Set(options.fingerprintPaths.map((path) => path.trim().replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean))]
+      .filter((path) => byPath.has(path))
+      .sort()
+    : undefined;
+  const fingerprintPaths = requestedFingerprintPaths ?? paths;
+  if (includePathFingerprints && fingerprintPaths.length > MAX_DIRTY_PATHS) {
+    throw new Error(`SNAPSHOT_TOO_DIRTY: ${fingerprintPaths.length} fingerprint paths exceeds Fast Path cap ${MAX_DIRTY_PATHS}`);
+  }
   let pathFingerprints: Record<string, string> = {};
   if (includePathFingerprints) {
     const { computePathFingerprintsAsync } = await import('../../runtime/execution/thin-harness/fingerprint-worker');
     const fingerprintTimeoutMs = typeof options.fingerprintTimeoutMs === 'number' && Number.isFinite(options.fingerprintTimeoutMs)
       ? Math.max(1, Math.trunc(options.fingerprintTimeoutMs))
       : 5_000;
-    const fingerprint = await computePathFingerprintsAsync({ root, paths, statusByPath: Object.fromEntries(byPath), maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: fingerprintTimeoutMs });
+    const fingerprintStatusByPath = Object.fromEntries(fingerprintPaths.map((path) => [path, byPath.get(path) ?? []]));
+    const fingerprint = await computePathFingerprintsAsync({ root, paths: fingerprintPaths, statusByPath: fingerprintStatusByPath, maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: fingerprintTimeoutMs });
     pathFingerprints = fingerprint.pathFingerprints;
   }
   return { mutationEvidence: 'observed', head, branch: branchResult.ok ? branchResult.stdout || null : null, status: statusResult.stdout, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints };
@@ -135,9 +144,25 @@ function assertMutationEvidenceComparable(before: RepositoryCommandSnapshot, aft
   }
 }
 
+function snapshotStatusByPath(snapshot: RepositoryCommandSnapshot): Map<string, string[]> {
+  const byPath = new Map<string, string[]>();
+  for (const line of snapshot.status.split(/\r?\n/).filter((value) => value && !value.startsWith('##'))) {
+    const path = statusPath(line);
+    if (path) byPath.set(path, [...(byPath.get(path) ?? []), line]);
+  }
+  return byPath;
+}
+
 export function changedSnapshotPaths(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): string[] {
   assertMutationEvidenceComparable(before, after);
-  return [...new Set([...before.paths, ...after.paths])].filter((path) => before.pathFingerprints[path] !== after.pathFingerprints[path]).sort();
+  const beforeStatus = snapshotStatusByPath(before);
+  const afterStatus = snapshotStatusByPath(after);
+  return [...new Set([...before.paths, ...after.paths])].filter((path) => {
+    if ((beforeStatus.get(path) ?? []).join('\n') !== (afterStatus.get(path) ?? []).join('\n')) return true;
+    const beforeFingerprint = before.pathFingerprints[path];
+    const afterFingerprint = after.pathFingerprints[path];
+    return beforeFingerprint !== undefined && afterFingerprint !== undefined && beforeFingerprint !== afterFingerprint;
+  }).sort();
 }
 export function snapshotChanged(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): boolean {
   assertMutationEvidenceComparable(before, after);

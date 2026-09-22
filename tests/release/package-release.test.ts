@@ -46,7 +46,11 @@ describe("public package release contract", () => {
     }
     expect(pkg.files).not.toContain("ARCHITECTURE_MIGRATION_REPORT.md");
     expect(pkg.files).not.toContain("OPTIMIZATION_REPORT.md");
-    expect(read("THIRD_PARTY_NOTICES.md")).toContain("@modelcontextprotocol/sdk");
+    const notices = read("THIRD_PARTY_NOTICES.md");
+    for (const packageName of ["client", "node", "server", "server-legacy"]) {
+      expect(notices).toContain(`@modelcontextprotocol/${packageName}`);
+    }
+    expect(notices).not.toContain("@modelcontextprotocol/sdk");
   });
 
   test("uses the content-addressed main gate for main and pull requests", () => {

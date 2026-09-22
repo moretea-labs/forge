@@ -1,12 +1,15 @@
 # Third-party notices
 
-This inventory covers the direct runtime and development dependencies declared by `@moretea-labs/forge@1.7.2`.
+This inventory covers the direct runtime and development dependencies declared by `@moretea-labs/forge@1.8.1`.
 
 License values come from `package-lock.json` where available. For lock entries without a license field, the declared license was verified from package metadata during release preparation. This file is informational and does not replace the license text distributed by each dependency.
 
 | Package | Version | Role | Declared license | Source |
 | --- | --- | --- | --- | --- |
-| `@modelcontextprotocol/sdk` | `1.29.0` | runtime | `MIT` | package-lock.json |
+| `@modelcontextprotocol/client` | `2.0.0` | runtime | `MIT` | package-lock.json |
+| `@modelcontextprotocol/node` | `2.0.0` | runtime | `MIT` | package-lock.json |
+| `@modelcontextprotocol/server` | `2.0.0` | runtime | `MIT` | package-lock.json |
+| `@modelcontextprotocol/server-legacy` | `2.0.0` | runtime | `MIT` | package-lock.json |
 | `commander` | `14.0.3` | runtime | `MIT` | package metadata |
 | `express` | `5.2.1` | runtime | `MIT` | package metadata |
 | `playwright` | `1.61.1` | runtime | `Apache-2.0` | package metadata |

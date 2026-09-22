@@ -501,6 +501,29 @@ describe('Work execution concurrency', () => {
     expect(acquisition.blockers).toEqual([]);
   });
 
+  test('Scheduler concurrency reconciliation remains fail-closed for malformed active Work candidates', () => {
+    const home = tempHome(), repoId = 'repo-invalid-reconcile';
+    const malformed = work({ controllerHome: home, repoId, workId: 'work-invalid-reconcile', stepId: 'invalid-reconcile' });
+    const record = readControlPlaneRecord<WorkContract>(home, 'work_contract', repoId, malformed.workId)!;
+    writeControlPlaneRecord(home, {
+      namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
+      expectedRevision: record.revision, action: 'test_invalid_reconcile_candidate',
+      value: {
+        ...record.value,
+        phase: 'delivery',
+        phaseEvidence: {
+          ...record.value.phaseEvidence,
+          implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
+          verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
+          review: { ...record.value.phaseEvidence.review, state: 'pending' },
+          delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
+        },
+      },
+    });
+    expect(() => reconcileWorkExecutionConcurrencyWaits({ controllerHome: home, repoId }))
+      .toThrow('WORK_CONCURRENCY_ACTIVE_WORK_INVALID: work-invalid-reconcile');
+  });
+
   test('keeps the Lease store authoritative while Scheduler reconciliation clears a resolved Work wait projection', () => {
     const home = tempHome(), repoId = 'repo-wake';
     const blockedWork = work({ controllerHome: home, repoId, workId: 'work-waiting', stepId: 'waiting' });

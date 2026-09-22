@@ -1,9 +1,9 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Server } from "@modelcontextprotocol/server";
+import type { Tool } from "@modelcontextprotocol/server";
+import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { mcpServerInstructions } from './instructions';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext } from './tool-mapping/tools';
+import { mcpToolDefinitionFromSdk, mcpToolDefinitionToSdk, type McpToolDefinition } from '../../packages/protocols/mcp/tool-contract';
 import { createLegacyMcpToolContext } from './legacy-context';
 import {
   buildMultiRepositoryToolDefinitions,
@@ -36,7 +36,7 @@ type ServerToolContext = McpToolContext | MultiRepositoryMcpToolContext;
 
 /** A per-session schema read directly from the Canonical Runtime's tools/list. */
 export interface CanonicalRuntimeToolSchema {
-  definitions: Tool[];
+  definitions: McpToolDefinition[];
   toolNames: string[];
   fingerprint: string;
 }
@@ -45,9 +45,11 @@ function isMultiRepositoryContext(ctx: ServerToolContext): ctx is MultiRepositor
   return 'controllerHome' in ctx;
 }
 
-function recordRequestId(args: Record<string, unknown>, rpcId: string | number | undefined): string {
+function recordRequestId(args: Record<string, unknown>, _rpcId: string | number | undefined): string {
   const explicit = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  return explicit || `mcp-rpc:${rpcId === undefined ? randomUUID() : String(rpcId)}`;
+  // Transport RPC ids are connection-local correlation only. They are not a
+  // semantic idempotency authority and may be recycled across unrelated calls.
+  return explicit || `mcp-call:${randomUUID()}`;
 }
 
 function firstTimingString(...values: unknown[]): string | undefined {
@@ -491,8 +493,20 @@ export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<
 }
 
 export function canonicalRuntimeToolCallFailureIsTransient(error: unknown): boolean {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error ?? '');
-  return /Connection closed|socket[^\n]*closed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|fetch failed|MCP_REQUEST_FAILED/i.test(message);
+  if (SdkHttpError.isInstance(error)) return error.status === 404;
+  if (SdkError.isInstance(error)) {
+    return [
+      SdkErrorCode.NotConnected,
+      SdkErrorCode.ConnectionClosed,
+      SdkErrorCode.SendFailed,
+      SdkErrorCode.RequestTimeout,
+    ].includes(error.code);
+  }
+  const record = error && typeof error === 'object' ? error as { code?: unknown; cause?: unknown } : undefined;
+  const directCode = typeof record?.code === 'string' ? record.code : undefined;
+  const cause = record?.cause && typeof record.cause === 'object' ? record.cause as { code?: unknown } : undefined;
+  const causeCode = typeof cause?.code === 'string' ? cause.code : undefined;
+  return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET'].includes(directCode ?? causeCode ?? '');
 }
 
 export async function callCanonicalRuntimeToolWithReplay<T>(input: {
@@ -533,7 +547,7 @@ export async function readCanonicalRuntimeToolSchema(
   const proxy = sharedProxy ?? createCanonicalRuntimeProxy(ctx);
   try {
     const response = await proxy.listTools();
-    const definitions = response.tools as Tool[];
+    const definitions = response.tools.map(mcpToolDefinitionFromSdk);
     const toolNames = definitions
       .map((tool) => tool.name)
       .filter((name): name is string => typeof name === 'string' && name.length > 0)
@@ -593,6 +607,7 @@ export function deriveCanonicalForwardingTiming(input: {
 
 export const DEFAULT_CANONICAL_RUNTIME_PROXY_LANES = 8;
 export const MAX_CANONICAL_RUNTIME_PROXY_LANES = 16;
+export const DEFAULT_CANONICAL_RUNTIME_PROXY_IDLE_TTL_MS = 30_000;
 
 export function canonicalRuntimeProxyLaneLimit(raw = process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES): number {
   const parsed = Number(raw);
@@ -678,22 +693,46 @@ export function createCanonicalRuntimeLaneScheduler(maxLanes = canonicalRuntimeP
   };
 }
 
-interface CanonicalRuntimeProxyLane {
-  current?: { identity: CanonicalRuntimeProxyIdentity; client: Client };
-  connecting?: Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }>;
+interface CanonicalRuntimeProxyConnection {
+  identity: CanonicalRuntimeProxyIdentity;
+  client: Client;
+  transport: StreamableHTTPClientTransport;
 }
 
-export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxy {
+interface CanonicalRuntimeProxyLane {
+  current?: CanonicalRuntimeProxyConnection;
+  connecting?: Promise<CanonicalRuntimeProxyConnection>;
+  idleCloseTimer?: ReturnType<typeof setTimeout>;
+  leased: boolean;
+  leaseGeneration: number;
+}
+
+export interface CanonicalRuntimeProxyOptions {
+  /** Keep burst-created inner MCP sessions hot briefly, then release their retained Runtime graph. */
+  idleTtlMs?: number;
+}
+
+export function createCanonicalRuntimeProxy(
+  ctx: MultiRepositoryMcpToolContext,
+  options: CanonicalRuntimeProxyOptions = {},
+): CanonicalRuntimeProxy {
   const scheduler = createCanonicalRuntimeLaneScheduler();
   const lanes = new Map<number, CanonicalRuntimeProxyLane>();
+  const idleTtlMs = Math.max(1, Math.trunc(options.idleTtlMs ?? DEFAULT_CANONICAL_RUNTIME_PROXY_IDLE_TTL_MS));
   let closed = false;
 
   const laneState = (laneId: number): CanonicalRuntimeProxyLane => {
     const existing = lanes.get(laneId);
     if (existing) return existing;
-    const created: CanonicalRuntimeProxyLane = {};
+    const created: CanonicalRuntimeProxyLane = { leased: false, leaseGeneration: 0 };
     lanes.set(laneId, created);
     return created;
+  };
+
+  const clearLaneIdleTimer = (lane: CanonicalRuntimeProxyLane): void => {
+    if (!lane.idleCloseTimer) return;
+    clearTimeout(lane.idleCloseTimer);
+    lane.idleCloseTimer = undefined;
   };
 
   const closeLane = async (laneId: number, expectedClient?: Client): Promise<void> => {
@@ -704,17 +743,45 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       lane.connecting = undefined;
     }
     if (!lane.current || (expectedClient && lane.current.client !== expectedClient)) return;
-    const closing = lane.current.client;
+    clearLaneIdleTimer(lane);
+    const closing = lane.current;
     lane.current = undefined;
-    await closing.close().catch(() => undefined);
+    // Client.close() only tears down the local SDK client. Explicitly terminate
+    // the Streamable HTTP session so the canonical Runtime drops its Server and
+    // transport graph instead of retaining an orphaned server-side session.
+    await closing.transport.terminateSession().catch(() => undefined);
+    await closing.client.close().catch(() => undefined);
+  };
+
+  const leaseLane = (laneId: number): void => {
+    const lane = laneState(laneId);
+    clearLaneIdleTimer(lane);
+    lane.leased = true;
+    lane.leaseGeneration += 1;
+  };
+
+  const releaseLane = (laneId: number): void => {
+    const lane = laneState(laneId);
+    lane.leased = false;
+    const releasedGeneration = lane.leaseGeneration;
+    scheduler.release(laneId);
+    if (closed || !lane.current) return;
+    clearLaneIdleTimer(lane);
+    lane.idleCloseTimer = setTimeout(() => {
+      const current = lanes.get(laneId);
+      if (!current || closed || current.leased || current.leaseGeneration !== releasedGeneration) return;
+      current.idleCloseTimer = undefined;
+      void closeLane(laneId);
+    }, idleTtlMs);
+    lane.idleCloseTimer.unref?.();
   };
 
   const closeAllLanes = async (): Promise<void> => {
     await Promise.all(Array.from(lanes.keys()).map(async (laneId) => await closeLane(laneId)));
   };
 
-  const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
-    const connectOnce = async (): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
+  const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<CanonicalRuntimeProxyConnection> => {
+    const connectOnce = async (): Promise<CanonicalRuntimeProxyConnection> => {
       const abort = new AbortController();
       const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
       const headers: Record<string, string> = {
@@ -726,7 +793,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
       try {
         await client.connect(transport);
-        return { identity, client };
+        return { identity, client, transport };
       } catch (error) {
         await client.close().catch(() => undefined);
         throw error;
@@ -785,10 +852,11 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
     );
     if (handoff.waited) await closeAllLanes();
     const laneId = await scheduler.acquire(laneClass);
+    leaseLane(laneId);
     try {
       return { laneId, client: await clientForCurrentRuntime(laneId, timing) };
     } catch (error) {
-      scheduler.release(laneId);
+      releaseLane(laneId);
       throw error;
     }
   };
@@ -802,7 +870,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
         await closeLane(laneId, client);
         throw error;
       } finally {
-        scheduler.release(laneId);
+        releaseLane(laneId);
       }
     },
     async callTool(callerContext, name, args, timing = {}) {
@@ -828,7 +896,6 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
           args,
           call: async () => await activeClient.callTool(
             forwardedRequest,
-            undefined,
             { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
           ),
           reconnect: async () => {
@@ -851,7 +918,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
         await closeLane(laneId, activeClient);
         throw error;
       } finally {
-        scheduler.release(laneId);
+        releaseLane(laneId);
       }
     },
     async close() {
@@ -904,26 +971,25 @@ export function createForgeMcpServerFromContext(
   server.oninitialized = () => {
     void server.sendToolListChanged().catch(() => undefined);
   };
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler('tools/list', async () => {
     if (isMultiRepositoryContext(baseContext) && !runtimeSchema && !getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(baseContext)) {
       throw new Error('MCP_TOOL_SURFACE_MISMATCH: Gateway source does not match the Canonical Runtime schema.');
     }
-    return {
-      tools: runtimeSchema?.definitions ?? (isMultiRepositoryContext(baseContext)
-        ? controllerExposureSnapshot(baseContext).definitions
-        : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true })),
-    };
+    const definitions = runtimeSchema?.definitions ?? (isMultiRepositoryContext(baseContext)
+      ? controllerExposureSnapshot(baseContext).definitions
+      : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true }));
+    return { tools: definitions.map(mcpToolDefinitionToSdk) };
   });
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  server.setRequestHandler('tools/call', async (request, handlerContext) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const forwardedBaseContext = canonicalRuntimeRequestContext(
       baseContext,
       (request.params as { _meta?: unknown })._meta,
     );
-    const ctx: ServerToolContext = { ...forwardedBaseContext, signal: extra.signal };
+    const ctx: ServerToolContext = { ...forwardedBaseContext, signal: handlerContext.mcpReq.signal };
     if (isMultiRepositoryContext(ctx)) {
-      const rpcId = (request as unknown as { id?: unknown }).id;
+      const rpcId = handlerContext.mcpReq.id;
       return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId, _traceId, phaseTimings) => {
         // The public Gateway only exposes its stable facade schema. It may
         // proxy execution, but it never discovers one Runtime schema and
@@ -949,9 +1015,9 @@ export function createForgeMcpServerFromContext(
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
-          const forwardedArgs = typeof args.request_id === 'string' && args.request_id.trim()
-            ? args
-            : { ...args, request_id: requestId };
+          // Keep trace correlation separate from Tool Contract idempotency. Only
+          // a caller-supplied request_id may authorize semantic replay/dedup.
+          const forwardedArgs = args;
           if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
           if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
         }

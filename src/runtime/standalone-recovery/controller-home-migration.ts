@@ -52,6 +52,7 @@ import {
   systemdUserUnitPath,
 } from '../../cli/controller/systemd-user';
 import {
+  RECOVERY_DAEMON_LABEL,
   RECOVERY_GATEWAY_LABEL,
   RECOVERY_WATCHDOG_LABEL,
   recoverySystemdUserUnitInput,
@@ -134,8 +135,7 @@ export interface LinuxControllerHomeMigrationReceipt {
 export interface ControllerHomeMigrationServiceObservation {
   runtimePid: number;
   connectorPid: number;
-  recoveryGatewayPid: number;
-  recoveryWatchdogPid: number;
+  recoveryPid: number;
 }
 
 export interface LinuxControllerHomeMigrationDependencies {
@@ -205,10 +205,8 @@ export function recoveryControllerHomeMigrationPreflight(
   }
   const pidFor = dependencies.systemdPid ?? systemdUserServicePid;
   const labels = [
-    forgeRuntimeServicePaths(sourceHome).label,
-    packageConnectorServicePaths(sourceHome).label,
-    RECOVERY_GATEWAY_LABEL,
-    RECOVERY_WATCHDOG_LABEL,
+    ...serviceLabels(sourceHome),
+    ...legacyRecoveryServiceLabels(),
   ];
   const liveOwners = labels
     .map((label) => ({ label, pid: pidFor(label) }))
@@ -609,13 +607,16 @@ function serviceLabels(controllerHome: string): string[] {
   return [
     forgeRuntimeServicePaths(controllerHome).label,
     packageConnectorServicePaths(controllerHome).label,
-    RECOVERY_GATEWAY_LABEL,
-    RECOVERY_WATCHDOG_LABEL,
+    RECOVERY_DAEMON_LABEL,
   ];
 }
 
+function legacyRecoveryServiceLabels(): string[] {
+  return [RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL];
+}
+
 async function defaultStopServices(controllerHome: string, request: LinuxControllerHomeMigrationRequest, env = process.env): Promise<void> {
-  for (const label of serviceLabels(controllerHome)) {
+  for (const label of [...serviceLabels(controllerHome), ...legacyRecoveryServiceLabels()]) {
     systemctl(env, ['stop', label], true);
     systemctl(env, ['disable', label], true);
     rmSync(systemdUserUnitPath(label, env), { force: true });
@@ -693,16 +694,10 @@ async function defaultInstallServices(controllerHome: string, request: LinuxCont
   if (!currentRecovery) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_RECOVERY_RELEASE_MISSING');
   const recoveryEnv = { ...env, FORGE_CONNECTOR_EXECUTABLE: request.packageExecutable };
   installSystemdUserUnit({
-    unitName: RECOVERY_GATEWAY_LABEL,
-    unit: recoverySystemdUserUnitInput(controllerHome, 'gateway', recoveryEnv),
+    unitName: RECOVERY_DAEMON_LABEL,
+    unit: recoverySystemdUserUnitInput(controllerHome, 'daemon', recoveryEnv),
     env: recoveryEnv,
-    errorPrefix: 'RECOVERY_CONTROLLER_HOME_MIGRATION_RECOVERY_GATEWAY_REBIND_FAILED',
-  });
-  installSystemdUserUnit({
-    unitName: RECOVERY_WATCHDOG_LABEL,
-    unit: recoverySystemdUserUnitInput(controllerHome, 'watchdog', recoveryEnv),
-    env: recoveryEnv,
-    errorPrefix: 'RECOVERY_CONTROLLER_HOME_MIGRATION_RECOVERY_WATCHDOG_REBIND_FAILED',
+    errorPrefix: 'RECOVERY_CONTROLLER_HOME_MIGRATION_RECOVERY_REBIND_FAILED',
   });
   const activation = await verifyRecoveryReleaseActivation({
     controllerHome,
@@ -724,16 +719,14 @@ async function defaultVerifyServices(
   const labels = {
     runtime: forgeRuntimeServicePaths(controllerHome).label,
     connector: packageConnectorServicePaths(controllerHome).label,
-    gateway: RECOVERY_GATEWAY_LABEL,
-    watchdog: RECOVERY_WATCHDOG_LABEL,
+    recovery: RECOVERY_DAEMON_LABEL,
   };
   const observation: ControllerHomeMigrationServiceObservation = {
     runtimePid: systemdUserServicePid(labels.runtime, env) ?? 0,
     connectorPid: systemdUserServicePid(labels.connector, env) ?? 0,
-    recoveryGatewayPid: systemdUserServicePid(labels.gateway, env) ?? 0,
-    recoveryWatchdogPid: systemdUserServicePid(labels.watchdog, env) ?? 0,
+    recoveryPid: systemdUserServicePid(labels.recovery, env) ?? 0,
   };
-  if (Object.values(observation).some((pid) => pid <= 0) || new Set(Object.values(observation)).size !== 4) {
+  if (Object.values(observation).some((pid) => pid <= 0) || new Set(Object.values(observation)).size !== 3) {
     throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_SERVICE_SET_INVALID: ${JSON.stringify(observation)}`);
   }
   for (const label of Object.values(labels)) {

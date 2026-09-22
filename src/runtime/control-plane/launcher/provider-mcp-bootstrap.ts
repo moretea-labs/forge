@@ -12,6 +12,23 @@ export interface ProviderMcpBootstrap {
   env: NodeJS.ProcessEnv;
 }
 
+export interface ProviderMcpReservationIdentity {
+  principalId: string;
+  sessionId: string;
+}
+
+export function providerMcpReservationIdentity(
+  provider: 'codex',
+  reservationId: string,
+): ProviderMcpReservationIdentity {
+  const suffix = reservationId.trim();
+  if (!suffix) throw new Error('LAUNCHER_RESERVATION_ID_REQUIRED');
+  return {
+    principalId: `external:${provider}:${suffix}`,
+    sessionId: `external-session:${provider}:${suffix}`,
+  };
+}
+
 function runtimeMcpUrl(controllerHome: string): string {
   const observed = observeRuntimeStatus(controllerHome);
   if (!observed.running || !observed.ready) {
@@ -33,13 +50,12 @@ export function resolveProviderMcpBootstrap(
   const config = readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(controllerHome).configPath);
   const token = readFileSync(config.authTokenFile, 'utf8').trim();
   if (!token) throw new Error('LAUNCHER_RUNTIME_MCP_TOKEN_EMPTY');
-  const suffix = reservationId.trim();
-  if (!suffix) throw new Error('LAUNCHER_RESERVATION_ID_REQUIRED');
+  const identity = providerMcpReservationIdentity(provider, reservationId);
   return {
     url: runtimeMcpUrl(controllerHome),
     bearerTokenEnvVar: FORGE_RUNTIME_MCP_TOKEN_ENV,
-    principalId: `external:${provider}:${suffix}`,
-    sessionId: `external-session:${provider}:${suffix}`,
+    principalId: identity.principalId,
+    sessionId: identity.sessionId,
     env: {
       ...process.env,
       [FORGE_RUNTIME_MCP_TOKEN_ENV]: token,
@@ -57,8 +73,11 @@ export function codexMcpConfigArgs(bootstrap: ProviderMcpBootstrap): string[] {
     .map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`)
     .join(',')}}`;
   return [
+    // Replace the entire table: Codex rejects a merged URL + persisted stdio
+    // transport even when command/args are overridden separately.
+    '-c', `mcp_servers.forge={url=${JSON.stringify(bootstrap.url)}, bearer_token_env_var=${JSON.stringify(bootstrap.bearerTokenEnvVar)}, http_headers=${headerTable}}`,
+    // Keep the explicit URL override visible for diagnostics; the complete
+    // table above has already removed the persisted stdio transport.
     '-c', `mcp_servers.forge.url=${JSON.stringify(bootstrap.url)}`,
-    '-c', `mcp_servers.forge.bearer_token_env_var=${JSON.stringify(bootstrap.bearerTokenEnvVar)}`,
-    '-c', `mcp_servers.forge.http_headers=${headerTable}`,
   ];
 }

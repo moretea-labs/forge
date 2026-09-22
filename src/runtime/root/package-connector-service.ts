@@ -1,10 +1,11 @@
-import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 import { createPlatformServiceManagerHost, platformLaunchdInstalledPath, type PlatformServiceManagerHost, type SystemdUserUnitInput } from '../platform/service-manager';
+import { forgeConnectorPersistentServiceLabel } from '../platform/service-inventory';
 
 export interface PackageConnectorServicePaths {
   label: string;
@@ -56,8 +57,7 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
 
 export function packageConnectorServicePaths(controllerHome: string, accountHome = process.env.HOME ?? homedir()): PackageConnectorServicePaths {
   const home = resolve(controllerHome);
-  const suffix = createHash('sha256').update(home).digest('hex').slice(0, 12);
-  const label = `com.moretea.forge.mcp-gateway.${suffix}`;
+  const label = forgeConnectorPersistentServiceLabel(home);
   const serviceRoot = join(home, 'runtime', 'connector-service');
   return {
     label,
@@ -111,12 +111,26 @@ export function packageConnectorEndpointStatusHealthy(status: number, authMode: 
   return status === 200 || (authMode === 'oauth' && status === 401);
 }
 
-async function defaultConnectorEndpointProbe(endpoint: string, authMode: PackageConnectorAuthMode): Promise<boolean> {
+export function packageConnectorReadinessEndpoint(endpoint: string): string {
+  const parsed = new URL(endpoint);
+  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp') {
+    throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
+  }
+  parsed.pathname = '/transport-ready';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1_500);
   try {
-    const response = await fetch(endpoint, { method: 'GET', redirect: 'manual', signal: controller.signal });
-    return packageConnectorEndpointStatusHealthy(response.status, authMode);
+    // GET /mcp is a protocol request, not a liveness request: in auth:none it
+    // correctly responds 400 without an MCP session. /transport-ready is the
+    // in-memory, transport-scoped readiness surface used by Recovery.
+    const response = await fetch(packageConnectorReadinessEndpoint(endpoint), { method: 'GET', redirect: 'manual', signal: controller.signal });
+    return response.status === 200;
   } catch {
     return false;
   } finally {
@@ -137,8 +151,7 @@ export async function waitForPackageConnectorEndpointReady(
 ): Promise<boolean> {
   const timeoutMs = Math.max(0, options.timeoutMs ?? 15_000);
   const pollIntervalMs = Math.max(10, options.pollIntervalMs ?? 100);
-  const authMode = options.authMode ?? 'oauth';
-  const probeEndpoint = options.probeEndpoint ?? ((candidateEndpoint) => defaultConnectorEndpointProbe(candidateEndpoint, authMode));
+  const probeEndpoint = options.probeEndpoint ?? defaultConnectorEndpointProbe;
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolveWait) => setTimeout(resolveWait, ms)));
   const now = options.now ?? Date.now;
   const deadline = now() + timeoutMs;
@@ -166,7 +179,11 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
   }
-  const executable = resolve(input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
+  const compiledConnector = join(resolve(input.release.releaseRoot), 'forge-mcp-gateway');
+  const hasCompiledConnector = existsSync(compiledConnector);
+  const executable = resolve(hasCompiledConnector
+    ? compiledConnector
+    : input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
   if (/^forge-recovery-(?:gateway|watchdog)$/i.test(basename(executable))) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_EXECUTABLE_INVALID');
   }
@@ -188,7 +205,7 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   ];
   return {
     executable,
-    args: isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
+    args: hasCompiledConnector ? cliArgs : isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
     environment: {
       FORGE_CONTROLLER_HOME: resolve(input.controllerHome),
       FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
@@ -282,11 +299,7 @@ function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<
 function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): number {
   // A connector is not the Canonical Runtime writer. Never let a transient
   // installer/worker write claim escape into this long-lived process.
-  const childEnv = { ...env };
-  for (const key of [
-    'FORGE_RUNTIME_INSTANCE_ID', 'FORGE_RUNTIME_OWNER_PID', 'FORGE_RELEASE_AUTHORITY_REVISION',
-    'FORGE_RELEASE_FENCING_TOKEN', 'FORGE_RELEASE_ID', 'FORGE_ARTIFACT_IDENTITY', 'FORGE_WORKER_PROTOCOL_VERSION',
-  ]) delete childEnv[key];
+  const childEnv = runtimeAuthorityFreeEnvironment(env);
   return host.startDetached({
     executable: launch.executable,
     args: launch.args,
@@ -378,7 +391,7 @@ export async function ensurePackageConnectorService(input: {
         env: input.env,
         executable: input.executable,
       })
-      && await (input.probeEndpoint ?? ((candidateEndpoint) => defaultConnectorEndpointProbe(candidateEndpoint, authMode)))(input.endpoint)
+      && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
     ) {
       return {
         endpoint: authority.endpoint,

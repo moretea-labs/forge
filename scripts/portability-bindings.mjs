@@ -38,11 +38,14 @@ export function findPortabilityBindings(path, content) {
 }
 
 export function portabilityBindingDetectorSelfCheck() {
+  const macUserPath = ["", "Users", "alice", "DevProjects", "forge"].join("/");
+  const linuxUserPath = ["", "home", "alice", "forge"].join("/");
+  const wslUserPath = ["", "mnt", "c", "Users", "alice", "forge"].join("/");
   const bad = [
-    ["/Users/alice/DevProjects/forge", "macOS personal absolute path"],
-    ["/home/alice/forge", "Linux personal absolute path"],
+    [macUserPath, "macOS personal absolute path"],
+    [linuxUserPath, "Linux personal absolute path"],
     ["C:\\Users\\alice\\forge", "Windows personal absolute path"],
-    ["/mnt/c/Users/alice/forge", "WSL personal Windows path"],
+    [wslUserPath, "WSL personal Windows path"],
     ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "fixed macOS browser executable path"],
     ["/usr/bin/google-chrome-stable", "fixed Linux browser executable path"],
     ["C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "fixed Windows browser executable path"],

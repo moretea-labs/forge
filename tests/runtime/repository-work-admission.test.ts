@@ -8,6 +8,7 @@ import {
   materializeRepositoryWorkPlacement,
 } from '../../src/runtime/control-plane/facade/repository-work-admission';
 import { decideRoute } from '../../src/runtime/control-plane/routing/route-policy';
+import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -23,6 +24,7 @@ function store(repoId: string) {
 describe('repository Work admission authority', () => {
   test('canonicalizes isolated work_prepare semantics with a direct-main fence', () => {
     const location = store('repo-prepared-isolated');
+    ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-prepared' });
     const work = admitPreparedRepositoryWorkContract(location, {
       workId: 'work-prepared-isolated',
       repoId: location.repoId,
@@ -38,10 +40,12 @@ describe('repository Work admission authority', () => {
     expect(work.mode).toBe('goal_workloop');
     expect(work.constraints).toMatchObject({ workspaceMode: 'isolated', requireWorktree: true, directMainProhibited: true });
     expect(work.worktreePolicy.required).toBe(true);
+    expect(work.executionPlacement).toMatchObject({ forgeInstanceId: 'forge-prepared', repositoryId: location.repoId });
   });
 
   test('materializes isolated placement through the canonical Work transition', () => {
     const location = store('repo-materialized-isolated');
+    ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-materialized' });
     admitPreparedRepositoryWorkContract(location, {
       workId: 'work-materialized-isolated',
       repoId: location.repoId,
@@ -65,12 +69,14 @@ describe('repository Work admission authority', () => {
       baseRevision: 'abc123',
       worktreeRef: '/tmp/forge-isolated-worktree',
       driver: { preferred: 'isolated_worktree', allowDirectEdit: false },
+      executionPlacement: { forgeInstanceId: 'forge-materialized', repositoryId: location.repoId, checkoutId: 'checkout-isolated' },
     });
   });
 
 
   test('preserves bounded Direct Edit compatibility only for a canonical direct Route Policy decision', () => {
     const location = store('repo-direct-admission');
+    ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-direct' });
     const routeDecision = decideRoute({
       intent: { objective: 'Edit one bounded file.', scopeClear: true, mutation: true, explicitMode: 'direct' },
       workspace: { knownPaths: ['src/a.ts'], placement: 'current' },
@@ -98,6 +104,7 @@ describe('repository Work admission authority', () => {
       checkoutId: 'checkout-current',
       constraints: { workspaceMode: 'current', requireWorktree: false },
       routeDecisionFingerprint: routeDecision.inputFingerprint,
+      executionPlacement: { forgeInstanceId: 'forge-direct', repositoryId: location.repoId, checkoutId: 'checkout-current' },
     });
   });
 

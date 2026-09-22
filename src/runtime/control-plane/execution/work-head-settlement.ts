@@ -42,33 +42,63 @@ export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
   if (input.ok !== true || input.cancelled === true || input.timedOut === true) {
     return { settled: false, reason: 'command_not_successful' };
   }
-  const handle = readWorkHandle(input.controllerHome, input.repository.repoId, workId);
-  if (!handle) return { settled: false, reason: 'work_handle_missing' };
-  if (
-    handle.repositoryId !== input.executionIdentity.repositoryId
-    || handle.checkoutId !== input.executionIdentity.checkoutId
-    || handle.workId !== input.executionIdentity.workId
-    || handle.branch !== input.executionIdentity.branch
-    || (input.executionIdentity.expectedHead !== undefined && handle.expectedHead !== input.executionIdentity.expectedHead)
-  ) return { settled: false, reason: 'identity_mismatch' };
-  if (handle.state === 'merged' || handle.state === 'cleaned' || handle.state === 'failed_terminal_cleanup') {
+  const originalHandle = readWorkHandle(input.controllerHome, input.repository.repoId, workId);
+  if (!originalHandle) return { settled: false, reason: 'work_handle_missing' };
+  const sameStaticExecutionIdentity = (handle: typeof originalHandle): boolean => (
+    handle.repositoryId === input.executionIdentity.repositoryId
+    && handle.checkoutId === input.executionIdentity.checkoutId
+    && handle.workId === input.executionIdentity.workId
+    && handle.branch === input.executionIdentity.branch
+  );
+  if (!sameStaticExecutionIdentity(originalHandle)) return { settled: false, reason: 'identity_mismatch' };
+  if (originalHandle.state === 'merged' || originalHandle.state === 'cleaned' || originalHandle.state === 'failed_terminal_cleanup') {
     return { settled: false, reason: 'terminal_handle' };
   }
   const status = repositoryGitStatus(input.repository);
-  if (!status.branch || status.branch !== handle.branch) {
-    return { settled: false, reason: 'branch_changed', previousHead: handle.expectedHead, currentHead: status.head ?? undefined };
+  if (!status.branch || status.branch !== originalHandle.branch) {
+    return { settled: false, reason: 'branch_changed', previousHead: originalHandle.expectedHead, currentHead: status.head ?? undefined };
   }
   const currentHead = status.head?.trim();
-  if (!currentHead) return { settled: false, reason: 'head_unavailable', previousHead: handle.expectedHead };
-  if (currentHead === handle.expectedHead) {
-    return { settled: false, reason: 'head_unchanged', previousHead: handle.expectedHead, currentHead };
+  if (!currentHead) return { settled: false, reason: 'head_unavailable', previousHead: originalHandle.expectedHead };
+  const originalAuthorityHead = input.executionIdentity.expectedHead;
+  if (originalHandle.expectedHead === currentHead) {
+    if (originalAuthorityHead !== undefined && originalAuthorityHead !== currentHead) {
+      return { settled: true, reason: 'settled', previousHead: originalAuthorityHead, currentHead };
+    }
+    return { settled: false, reason: 'head_unchanged', previousHead: originalHandle.expectedHead, currentHead };
+  }
+  if (originalAuthorityHead !== undefined && originalHandle.expectedHead !== originalAuthorityHead) {
+    return { settled: false, reason: 'identity_mismatch', previousHead: originalHandle.expectedHead, currentHead };
   }
   try {
-    transitionWorkHandle(input.controllerHome, handle, handle.state, { expectedHead: currentHead });
-    return { settled: true, reason: 'settled', previousHead: handle.expectedHead, currentHead };
+    transitionWorkHandle(input.controllerHome, originalHandle, originalHandle.state, { expectedHead: currentHead });
+    return { settled: true, reason: 'settled', previousHead: originalHandle.expectedHead, currentHead };
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('CONTROL_PLANE_REVISION_CONFLICT')) throw error;
+  }
+
+  // One concurrent lifecycle write is allowed to win the first CAS. Re-read the
+  // exact Work authority and converge only when identity/branch are unchanged.
+  const refreshedHandle = readWorkHandle(input.controllerHome, input.repository.repoId, workId);
+  if (!refreshedHandle) return { settled: false, reason: 'work_handle_missing', previousHead: originalHandle.expectedHead, currentHead };
+  if (!sameStaticExecutionIdentity(refreshedHandle)) {
+    return { settled: false, reason: 'identity_mismatch', previousHead: refreshedHandle.expectedHead, currentHead };
+  }
+  if (refreshedHandle.expectedHead !== currentHead && originalAuthorityHead !== undefined && refreshedHandle.expectedHead !== originalAuthorityHead) {
+    return { settled: false, reason: 'identity_mismatch', previousHead: refreshedHandle.expectedHead, currentHead };
+  }
+  if (refreshedHandle.state === 'merged' || refreshedHandle.state === 'cleaned' || refreshedHandle.state === 'failed_terminal_cleanup') {
+    return { settled: false, reason: 'terminal_handle', previousHead: refreshedHandle.expectedHead, currentHead };
+  }
+  if (refreshedHandle.expectedHead === currentHead) {
+    return { settled: true, reason: 'settled', previousHead: originalHandle.expectedHead, currentHead };
+  }
+  try {
+    transitionWorkHandle(input.controllerHome, refreshedHandle, refreshedHandle.state, { expectedHead: currentHead });
+    return { settled: true, reason: 'settled', previousHead: refreshedHandle.expectedHead, currentHead };
   } catch (error) {
     if (error instanceof Error && error.message.includes('CONTROL_PLANE_REVISION_CONFLICT')) {
-      return { settled: false, reason: 'concurrent_lifecycle_write', previousHead: handle.expectedHead, currentHead };
+      return { settled: false, reason: 'concurrent_lifecycle_write', previousHead: refreshedHandle.expectedHead, currentHead };
     }
     throw error;
   }

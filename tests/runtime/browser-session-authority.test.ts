@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -11,6 +11,7 @@ import {
 } from '../../src/runtime/plugins/browser-adapter';
 import {
   invalidateMacOsBrowserPageHandles,
+  reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
@@ -25,6 +26,9 @@ import {
   saveBrowserSession,
   tombstoneBrowserSession,
 } from '../../src/runtime/plugins/browser-session-authority';
+import { findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
+import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
+import { withRuntimeBrowserSessionAuthorityContext } from '../../src/runtime/root/browser-session-composition';
 import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
@@ -45,6 +49,27 @@ function fixture() {
     repoA: join(root, 'repo-a'),
     repoB: join(root, 'repo-b'),
   };
+}
+
+const SUPERVISOR_EXTENSION_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxFzo1eixjsWsZbN1pBuyzdKinJSAAuzTRavD0xFQFwrTIEQ7hxxueEBEhifpGq9nplNnmxmZvIL7PJycEAYT8mrbyXBLCPR1jQBuL4YR775phnlNVpF3dHX5OWDHLWRnHRgOO1FibQ54fM2rKylr66+x+J6/4C7a9dpiSMuxf3fOStXA6wJb0d7A4E22Q1+GGfWgs0NCyVI5k4aczK+J5Ao61ZXKBr8Qw/FCmwhCcDgQdIpURgoMHkyvQH3ryYWocucjRhMVsU8H65adIIKFHkEhPJCiVY64L6bu6kNR2fpf0yJ1GvI5ota6Hf4NAEi7Yt7PL7i3ISyv3pPQWW1nIwIDAQAB';
+const SUPERVISOR_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';
+
+function extensionFixture(repoRoot: string): string {
+  const extensionPath = join(repoRoot, 'extension-fixture');
+  mkdirSync(extensionPath, { recursive: true });
+  writeFileSync(join(extensionPath, 'manifest.json'), JSON.stringify({
+    manifest_version: 3, name: 'Forge extension fixture', version: '1.0.0',
+    key: SUPERVISOR_EXTENSION_KEY, background: { service_worker: 'background.js' },
+  }));
+  writeFileSync(join(extensionPath, 'background.js'), 'console.log("fixture");\n');
+  return extensionPath;
+}
+
+function computerBackedSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string) {
+  return withRuntimeBrowserSessionAuthorityContext(
+    { controllerHome, repoId },
+    () => findComputerBackedBrowserSession(repoRoot, sessionId),
+  );
 }
 
 function session(
@@ -83,7 +108,7 @@ function session(
   };
 }
 
-describe('browser session controller authority', () => {
+describe('browser session compatibility on Computer target authority', () => {
   test('imports repo-local legacy sessions only once', () => {
     const { controllerHome, repoA } = fixture();
     const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
@@ -114,23 +139,20 @@ describe('browser session controller authority', () => {
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
   });
 
-  test('browser tombstone retention waits for legacy cutover then reclaims only expired tombstones', () => {
+  test('Browser-owned retention is retired while Computer tombstones remain authoritative', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(repoA, { recursive: true });
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('active-keep', '2026-08-24T01:00:00.000Z'));
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('stale-drop', '2026-08-24T02:00:00.000Z'));
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBe(true);
 
-    const blocked = cleanupBrowserSessionTombstones(controllerHome, { nowMs: Date.now() + 31 * 24 * 60 * 60_000, ttlMs: 30 * 24 * 60 * 60_000 });
-    expect(blocked.removed).toBe(0);
-    expect(blocked.blockers).toContain('legacy_import_cutover_open');
-
-    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
-    expect(cutover.closed).toBe(true);
-    const cleaned = cleanupBrowserSessionTombstones(controllerHome, {
-      nowMs: Date.now() + 31 * 24 * 60 * 60_000, ttlMs: 30 * 24 * 60 * 60_000, maxTombstones: 5000, maxRemovals: 10,
+    const retiredRetention = cleanupBrowserSessionTombstones(controllerHome, {
+      nowMs: Date.now() + 31 * 24 * 60 * 60_000,
+      ttlMs: 30 * 24 * 60 * 60_000,
     });
-    expect(cleaned.removed).toBe(1);
+    expect(retiredRetention).toMatchObject({ cutoverClosed: true, removed: 0, blockers: [] });
+    const cutover = closeLegacyBrowserSessionImportCutover(controllerHome, [{ repoId: 'repo-a', repoRoot: repoA }]);
+    expect(cutover).toMatchObject({ closed: true, alreadyClosed: true, migratedRecordCount: 0 });
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'stale-drop')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'active-keep')?.sessionId).toBe('active-keep');
   });
@@ -144,7 +166,7 @@ describe('browser session controller authority', () => {
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
   });
 
-  test('legacy import cannot resurrect a tombstoned native identity from another repository', () => {
+  test('legacy import may observe but cannot resurrect a tombstoned native identity from another repository', () => {
     const { controllerHome, repoA, repoB } = fixture();
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-a', '2026-08-24T01:00:00.000Z', { native: true }));
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBe(true);
@@ -155,7 +177,7 @@ describe('browser session controller authority', () => {
       session('native-b', '2026-08-24T02:00:00.000Z', { native: true }),
     ));
 
-    expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-b', repoB)).toBe(0);
+    expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-b', repoB)).toBe(1);
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
     expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions).toEqual([]);
@@ -176,7 +198,7 @@ describe('browser session controller authority', () => {
     expect(second.sessions.map((entry) => entry.sessionId)).toEqual(['one']);
     expect(second.nextCursor).toBeUndefined();
   });
-  test('authoritative scans retain sessions beyond the bounded 5000-record diagnostic limit', () => {
+  test('legacy migration reader scans beyond the bounded 5000-record diagnostic limit without materializing Computer targets', () => {
     const { controllerHome, repoA } = fixture();
     const updatedAt = '2026-08-24T01:00:00.000Z';
     withControlPlaneTransaction(controllerHome, (database) => {
@@ -200,12 +222,59 @@ describe('browser session controller authority', () => {
       }
     });
 
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'bulk-05000')?.sessionId).toBe('bulk-05000');
-    expect(listAllBrowserSessionsForRepository(controllerHome, 'repo-a', repoA)).toHaveLength(5_001);
-    const bounded = listBrowserSessions(controllerHome, 'repo-a', repoA, { limit: 10_000 });
-    expect(bounded.sessions).toHaveLength(200);
-    expect(bounded.totalCount).toBe(5_001);
-    expect(bounded.nextCursor).toBeTruthy();
+    const legacy = readLegacyBrowserSessionMigrationEntries({ controllerHome, repoId: 'repo-a', repoRoot: repoA });
+    expect(legacy).toHaveLength(5_001);
+    expect(legacy.some((entry) => entry.session.sessionId === 'bulk-05000')).toBe(true);
+  });
+
+  test('legacy migration canonicalizes historical numeric native tab ids before Computer authority', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+    }));
+    const updatedAt = '2026-08-24T01:00:00.000Z';
+    const legacySession = session('legacy-numeric-native', updatedAt, { native: true });
+    const legacyTab = legacySession.browser?.tab as unknown as Record<string, unknown>;
+    legacyTab.windowId = 2_095_923_550;
+    legacyTab.tabId = 2_095_923_553;
+    withControlPlaneTransaction(controllerHome, (database) => {
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'browser_session', scope: 'controller', key: 'legacy-numeric-native', schemaVersion: 1,
+        expectedRevision: null, action: 'test_seed',
+        value: { schemaVersion: 1, status: 'active', session: legacySession, aliases: ['legacy-numeric-native'], repositoryIds: ['repo-a'] },
+      });
+    });
+
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser', requestId: 'legacy-numeric-list',
+      origin: { surface: 'mcp', actor: 'test' }, actionId: 'list_sessions', args: {},
+    });
+    const migrated = (listed.sessions as Array<{ sessionId: string; browser?: { tab?: { windowId?: string; tabId?: string } } }>).find((entry) => entry.sessionId === 'legacy-numeric-native');
+    expect(migrated?.browser?.tab).toMatchObject({ windowId: '2095923550', tabId: '2095923553' });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'legacy-numeric-native')?.browser?.tab)
+      .toMatchObject({ windowId: '2095923550', tabId: '2095923553' });
+  });
+
+  test('legacy migration rejects malformed nested native ids with the Browser corruption contract', () => {
+    const { controllerHome, repoA } = fixture();
+    const legacySession = session('legacy-malformed-native', '2026-08-24T01:00:00.000Z', { native: true });
+    const legacyTab = legacySession.browser?.tab as unknown as Record<string, unknown>;
+    legacyTab.windowId = { unexpected: true };
+    withControlPlaneTransaction(controllerHome, (database) => {
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'browser_session', scope: 'controller', key: 'legacy-malformed-native', schemaVersion: 1,
+        expectedRevision: null, action: 'test_seed',
+        value: { schemaVersion: 1, status: 'active', session: legacySession, aliases: ['legacy-malformed-native'], repositoryIds: ['repo-a'] },
+      });
+    });
+
+    let failure: unknown;
+    try { readLegacyBrowserSessionMigrationEntries({ controllerHome, repoId: 'repo-a', repoRoot: repoA }); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(AssistantPluginError);
+    expect((failure as AssistantPluginError).code).toBe('PLUGIN_BROWSER_SESSION_STATE_CORRUPT');
+    expect((failure as AssistantPluginError).details?.field).toBe('browser.tab.windowId');
   });
 
   test('browser adapter lists central authority with bounded pagination and authorization sees migrated sessions', async () => {
@@ -222,7 +291,7 @@ describe('browser session controller authority', () => {
     const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
     mkdirSync(legacyRoot, { recursive: true });
     for (const [id, at] of [['one', '2026-08-24T01:00:00.000Z'], ['two', '2026-08-24T02:00:00.000Z'], ['three', '2026-08-24T03:00:00.000Z']] as const) {
-      writeFileSync(join(legacyRoot, `${id}.json`), JSON.stringify(session(id, at)));
+      writeFileSync(join(legacyRoot, `${id}.json`), JSON.stringify(session(id, at, id === 'three' ? { native: true } : {})));
     }
     const baseInput = {
       controllerHome,
@@ -240,11 +309,10 @@ describe('browser session controller authority', () => {
     const second = await executeBrowserPluginAction({ ...baseInput, actionId: 'list_sessions', args: { limit: 2, cursor: first.nextCursor } });
     expect((second.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['one']);
 
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-auth', '2026-08-24T04:00:00.000Z', { native: true }));
     const auth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
       actionId: 'click',
-      args: { session_id: 'native-auth', selector: '#submit' },
+      args: { session_id: 'three', selector: '#submit' },
     });
     expect(auth?.target.kind).toBe('browser-origin');
     expect(auth?.target.id).toBe('chrome@https://example.com');
@@ -252,10 +320,18 @@ describe('browser session controller authority', () => {
     const navigateAuth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
       actionId: 'navigate',
-      args: { session_id: 'native-auth', url: 'https://chatgpt.com/' },
+      args: { session_id: 'three', url: 'https://chatgpt.com/' },
     });
     expect(navigateAuth?.target.kind).toBe('browser-origin');
     expect(navigateAuth?.target.id).toBe('chrome@https://chatgpt.com');
+
+    const createSessionAuth = await resolveBrowserPluginAuthorizationContext({
+      ...baseInput,
+      actionId: 'create_session',
+      args: { session_id: 'three', url: 'https://chatgpt.com/' },
+    });
+    expect(createSessionAuth?.target.kind).toBe('browser-origin');
+    expect(createSessionAuth?.target.id).toBe('chrome@https://example.com');
   });
 
   test('native active-tab adoption distinguishes browser-active from authoritative system foreground', async () => {
@@ -576,6 +652,7 @@ describe('browser session controller authority', () => {
     });
     const sessionId = String((opened.session as { sessionId: string }).sessionId);
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
 
     ownedExists = false;
     invalidateMacOsBrowserPageHandles();
@@ -589,6 +666,7 @@ describe('browser session controller authority', () => {
     expect(observed.text).toBe('Recovered Body');
     expect(createCalls).toBe(2);
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
   });
 
   test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
@@ -673,6 +751,7 @@ describe('browser session controller authority', () => {
     expect(observed.url).toBe(driftedUrl);
     expect(observed.text).toBe('Drifted Body');
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
 
     const closed = await executeBrowserPluginAction({
       ...baseInput,
@@ -683,6 +762,248 @@ describe('browser session controller authority', () => {
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
   });
 
+  test('successful exact native reattach publishes Browser health evidence', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const separator = String.fromCharCode(30);
+    const metadata = [
+      'false', 'https://example.com/native-health', 'Native Health', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+    ].join(separator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => metadata,
+    });
+
+    const manifestContext = { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false };
+    const before = buildBrowserPluginManifest(1, undefined, repoA, manifestContext);
+    expect(before.health.state).toBe('degraded');
+    expect(before.health.ready).toBe(false);
+    expect(before.health.warnings).toContain('Native active-browser attach has not completed a live probe in this Runtime instance.');
+
+    await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+
+    const after = buildBrowserPluginManifest(2, undefined, repoA, manifestContext);
+    expect(after.health.state).toBe('ready');
+    expect(after.health.ready).toBe(true);
+    expect(after.health.probed).toBe(true);
+    expect(after.health.details?.nativeAttachObservation).toMatchObject({
+      ready: true,
+      selectedProduct: 'chrome',
+      attempts: [{ product: 'chrome', status: 'selected' }],
+    });
+  });
+
+  test('installs unpacked extension through browser-level CDP and verifies exact id/path before success', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpEndpoint: 'http://127.0.0.1:9222',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    const methods: string[] = [];
+    let disconnected = 0;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      fetchJson: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test', Browser: 'Chrome/153' }),
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
+          connectOverCDP: async () => ({
+            contexts: () => [],
+            newBrowserCDPSession: async () => ({
+              send: async (method: string, params?: Record<string, unknown>) => {
+                methods.push(method);
+                if (method === 'Extensions.loadUnpacked') {
+                  expect(params).toEqual({ path: canonicalExtensionPath });
+                  return { id: SUPERVISOR_EXTENSION_ID };
+                }
+                if (method === 'Extensions.getExtensions') {
+                  return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                }
+                throw new Error('unexpected method ' + method);
+              },
+            }),
+            disconnect: () => { disconnected += 1; },
+          }),
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-cdp-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(methods).toEqual(['Extensions.loadUnpacked', 'Extensions.getExtensions']);
+    expect(disconnected).toBe(1);
+    expect(result).toMatchObject({ provider: 'playwright-cdp', extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }, verified: true });
+  });
+
+  test('managed extension install removes Playwright extension suppression and verifies the exact runtime target', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    const canonicalExtensionPath = realpathSync(extensionPath);
+    const nativeHostPath = join(repoA, 'forge-native-host');
+    writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
+      name: 'com.moretea.forge.fixture',
+      description: 'fixture',
+      path: nativeHostPath,
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+    }));
+    let launchOptions: Record<string, unknown> | undefined;
+    let launchedProfileDir = '';
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchedProfileDir = _dir;
+            launchOptions = options;
+            return {
+              pages: () => [],
+              newPage: async () => { throw new Error('page creation is not required'); },
+              close: async () => undefined,
+              serviceWorkers: () => [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }],
+            };
+          },
+        },
+      }),
+    });
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-managed-install', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launchOptions?.channel).toBeUndefined();
+    expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
+    expect(launchOptions?.args).toEqual([
+      '--disable-extensions-except=' + canonicalExtensionPath,
+      '--load-extension=' + canonicalExtensionPath,
+    ]);
+    const projectedHost = JSON.parse(readFileSync(join(launchedProfileDir, 'NativeMessagingHosts', 'com.moretea.forge.fixture.json'), 'utf8')) as Record<string, unknown>;
+    expect(projectedHost).toMatchObject({
+      name: 'com.moretea.forge.fixture',
+      path: realpathSync(nativeHostPath),
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+    });
+    expect(result).toMatchObject({
+      provider: 'playwright-persistent-context',
+      extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
+      verified: true,
+    });
+  });
+
+  test('rejects managed native messaging declarations whose allowed origin does not match the stable extension id', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    const nativeHostPath = join(repoA, 'forge-native-host');
+    writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
+      name: 'com.moretea.forge.fixture',
+      path: nativeHostPath,
+      type: 'stdio',
+      allowed_origins: ['chrome-extension://' + 'a'.repeat(32) + '/'],
+    }));
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    let launched = false;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({ chromium: { launchPersistentContext: async () => { launched = true; throw new Error('must not launch'); } } }),
+    });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-native-origin-mismatch', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toThrow(/exact stable extension origin/);
+    expect(launched).toBe(false);
+  });
+
+  test('ordinary managed browsing still honors configured branded channel when no extension is requested', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+    }));
+    let launchOptions: Record<string, unknown> | undefined;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
+            launchOptions = options;
+            const page = {
+              url: () => 'https://example.com/',
+              title: async () => 'Example',
+              goto: async () => undefined,
+              evaluate: async <T>() => undefined as T,
+              screenshot: async () => Buffer.from(''),
+              click: async () => undefined,
+              fill: async () => undefined,
+              press: async () => undefined,
+              waitForSelector: async () => undefined,
+              bringToFront: async () => undefined,
+              close: async () => undefined,
+            };
+            return { pages: () => [page], newPage: async () => page, close: async () => undefined };
+          },
+        },
+      }),
+    });
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-managed-channel', actionId: 'create_session',
+      args: { session_id: 'ordinary-managed-channel', url: 'https://example.com/' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(launchOptions?.channel).toBe('chrome');
+    expect(launchOptions?.ignoreDefaultArgs).toBeUndefined();
+  });
+
+  test('attach-preferred extension install without CDP fails closed before native browser mutation', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    const extensionPath = extensionFixture(repoA);
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    }));
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'extension-native-fail-closed', actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
+  });
+
   test('browser defaults fail closed and declares foreground effects per action', () => {
     const { repoA } = fixture();
     const manifest = buildBrowserPluginManifest(1, undefined, repoA);
@@ -691,6 +1012,13 @@ describe('browser session controller authority', () => {
     expect(manifest.actions.find((action) => action.actionId === 'open_page')?.foregroundEffect).toBe('possible');
     expect(manifest.actions.find((action) => action.actionId === 'activate_page')?.foregroundEffect).toBe('required');
     expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.foregroundEffect).toBe('required');
+    for (const action of manifest.actions) {
+      expect(action.resourceClaims.some((claim) => claim.resource === 'repo-state')).toBe(false);
+    }
+    expect(manifest.actions.find((action) => action.actionId === 'open_page')?.resourceClaims).toEqual([
+      { resource: 'remote', mode: 'read' },
+      { resource: 'provider-state', mode: 'write' },
+    ]);
   });
 
   test('legacy ChatGPT profile state cannot become general Browser authority, while schema-v2 explicit Browser config remains authoritative', () => {
@@ -714,7 +1042,8 @@ describe('browser session controller authority', () => {
     expect(migrated.health.details?.browserChannel).toBe('chrome');
     expect(migrated.health.details?.cdpAttachFallback).toBe('fail_closed');
     expect(migrated.health.details?.nativeBrowserCandidates).toEqual(['chrome']);
-    expect(migrated.authority.sourceOfTruth).toContain('controller-home:sqlite/browser_session');
+    expect(migrated.authority.sourceOfTruth).toContain('controller-home:sqlite/computer_interaction_target');
+    expect(migrated.authority.sourceOfTruth).not.toContain('controller-home:sqlite/browser_session');
     expect(migrated.health.details?.sessionCountSemantics).toBe('controller_authority_unavailable');
 
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });

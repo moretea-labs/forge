@@ -1825,6 +1825,9 @@ This is the root routing contract for Claude Code and Codex.
 - Keep root context concise; route durable human-authored detail into product, architecture, research, or intentional project documents.
 - Treat `_ref/` as ignored external reference material and `_ops/` as ignored local operations residue.
 - Use Controller Home for mutable workflow state instead of recreating repo-local task/workstream/session projections.
+- For architecture migrations, use one bounded Delivery Transaction: batch discovery -> architecture/root-cause decision -> freeze scope -> coherent implementation -> whole-diff review -> focused validation wave -> canonical gates -> one delivery/cleanup.
+- Do not create sibling Work, per-file commits, repeated broad validation, or release/canary cycles for same-root-cause discoveries while the current candidate is still moving.
+- Treat release as a source-complete candidate boundary. Defer workflow/lifecycle machinery improvements to a post-release Plan when they are not required to converge the current version safely.
 EOF_ROOT_CONTEXT
 }
 

@@ -1,7 +1,7 @@
 import { resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { isProcessAlive } from '../shared/process-tree';
-import { readRuntimeOwner, type RuntimeOwnerRecord } from './ownership';
+import { readRuntimeIncarnation, readRuntimeOwner, type RuntimeOwnerRecord } from './ownership';
 import {
   readRuntimeReleaseAuthority,
   type RuntimeReleaseAuthority,
@@ -29,6 +29,7 @@ export type RuntimeWriteAction = (typeof RUNTIME_WRITE_ACTIONS)[number];
 export interface RuntimeWriteClaim {
   controllerHome: string;
   runtimeInstanceId: string;
+  fencingGeneration: number;
   ownerPid: number;
   releaseAuthorityRevision: number;
   releaseFencingToken: string;
@@ -50,6 +51,7 @@ export interface RuntimeWriteFenceCheck {
 export const RUNTIME_WRITE_CLAIM_ENV = {
   controllerHome: 'FORGE_CONTROLLER_HOME',
   runtimeInstanceId: 'FORGE_RUNTIME_INSTANCE_ID',
+  fencingGeneration: 'FORGE_RUNTIME_INCARNATION_GENERATION',
   ownerPid: 'FORGE_RUNTIME_OWNER_PID',
   releaseAuthorityRevision: 'FORGE_RELEASE_AUTHORITY_REVISION',
   releaseFencingToken: 'FORGE_RELEASE_FENCING_TOKEN',
@@ -75,6 +77,7 @@ function claimFromAuthority(
   return {
     controllerHome: resolveControllerHome(controllerHome),
     runtimeInstanceId: owner.runtimeInstanceId,
+    fencingGeneration: owner.fencingGeneration ?? 0,
     ownerPid: owner.pid,
     releaseAuthorityRevision: authority.revision,
     releaseFencingToken: authority.fencingToken,
@@ -85,11 +88,22 @@ function claimFromAuthority(
   };
 }
 
+export function currentRuntimeWriteClaimEnvironment(controllerHome: string): Record<string, string> {
+  const home = resolveControllerHome(controllerHome);
+  const owner = readRuntimeOwner(home);
+  const authority = readRuntimeReleaseAuthority(home);
+  if (!owner || !authority) {
+    throw new Error('RUNTIME_WRITE_CLAIM_BIND_FAILED: Runtime owner or release authority is missing');
+  }
+  return runtimeWriteClaimEnvironment(claimFromAuthority(home, owner, authority));
+}
+
 export function runtimeWriteClaimEnvironment(claim: RuntimeWriteClaim): Record<string, string> {
   if (claim.unmanaged) return {};
   return {
     [RUNTIME_WRITE_CLAIM_ENV.controllerHome]: claim.controllerHome,
     [RUNTIME_WRITE_CLAIM_ENV.runtimeInstanceId]: claim.runtimeInstanceId,
+    [RUNTIME_WRITE_CLAIM_ENV.fencingGeneration]: String(claim.fencingGeneration),
     [RUNTIME_WRITE_CLAIM_ENV.ownerPid]: String(claim.ownerPid),
     [RUNTIME_WRITE_CLAIM_ENV.releaseAuthorityRevision]: String(claim.releaseAuthorityRevision),
     [RUNTIME_WRITE_CLAIM_ENV.releaseFencingToken]: claim.releaseFencingToken,
@@ -130,6 +144,7 @@ export const clearRuntimeWriteClaimForTests = clearRuntimeWriteClaim;
 export function bindRuntimeWriteClaim(input: {
   controllerHome: string;
   runtimeInstanceId?: string;
+  fencingGeneration?: number;
   ownerPid?: number;
   releaseAuthorityRevision?: number;
   releaseFencingToken?: string;
@@ -146,6 +161,7 @@ export function bindRuntimeWriteClaim(input: {
 
   const explicit = {
     runtimeInstanceId: input.runtimeInstanceId?.trim(),
+    fencingGeneration: input.fencingGeneration,
     ownerPid: input.ownerPid,
     releaseAuthorityRevision: input.releaseAuthorityRevision,
     releaseFencingToken: input.releaseFencingToken?.trim(),
@@ -157,6 +173,7 @@ export function bindRuntimeWriteClaim(input: {
   const hasAnyExplicit = explicitValues.some((value) => value !== undefined && value !== '');
   const hasFullExplicit = Boolean(
     explicit.runtimeInstanceId
+    && Number.isInteger(explicit.fencingGeneration) && explicit.fencingGeneration! > 0
     && Number.isInteger(explicit.ownerPid) && explicit.ownerPid! > 0
     && Number.isInteger(explicit.releaseAuthorityRevision) && explicit.releaseAuthorityRevision! > 0
     && explicit.releaseFencingToken
@@ -169,6 +186,7 @@ export function bindRuntimeWriteClaim(input: {
     return installClaim({
       controllerHome: home,
       runtimeInstanceId: explicit.runtimeInstanceId!,
+      fencingGeneration: explicit.fencingGeneration!,
       ownerPid: explicit.ownerPid!,
       releaseAuthorityRevision: explicit.releaseAuthorityRevision!,
       releaseFencingToken: explicit.releaseFencingToken!,
@@ -190,6 +208,7 @@ export function bindRuntimeWriteClaim(input: {
     return installClaim({
       controllerHome: home,
       runtimeInstanceId: `unmanaged-${process.pid}`,
+      fencingGeneration: 0,
       ownerPid: process.pid,
       releaseAuthorityRevision: 0,
       releaseFencingToken: 'unmanaged',
@@ -220,6 +239,7 @@ export function bindInheritedRuntimeWriteClaimFromEnvironment(
   return bindRuntimeWriteClaim({
     controllerHome,
     runtimeInstanceId,
+    fencingGeneration: positiveInteger(env[RUNTIME_WRITE_CLAIM_ENV.fencingGeneration]),
     ownerPid: positiveInteger(env[RUNTIME_WRITE_CLAIM_ENV.ownerPid]),
     releaseAuthorityRevision: positiveInteger(env[RUNTIME_WRITE_CLAIM_ENV.releaseAuthorityRevision]),
     releaseFencingToken: env[RUNTIME_WRITE_CLAIM_ENV.releaseFencingToken]?.trim(),
@@ -256,6 +276,7 @@ export function assertRuntimeMayWrite(
   const home = explicitHome ?? claim?.controllerHome;
   if (!home) return { allowed: true, reason: 'unbound_no_controller_home' };
   const owner = readRuntimeOwner(home);
+  const incarnation = readRuntimeIncarnation(home);
   const authority = readRuntimeReleaseAuthority(home);
   if (!claim) {
     if (!owner && !authority) return { allowed: true, reason: 'unbound_no_runtime_authority' };
@@ -276,8 +297,17 @@ export function assertRuntimeMayWrite(
   }
   if (!owner) return { allowed: false, reason: 'runtime_owner_missing', authority };
   if (!isProcessAlive(owner.pid)) return { allowed: false, reason: 'runtime_owner_dead', owner, authority };
+  if (!incarnation) return { allowed: false, reason: 'runtime_incarnation_missing', owner, authority };
+  if (
+    incarnation.runtimeInstanceId !== owner.runtimeInstanceId
+    || incarnation.pid !== owner.pid
+    || incarnation.fencingGeneration !== (owner.fencingGeneration ?? 0)
+  ) return { allowed: false, reason: 'runtime_incarnation_authority_mismatch', owner, authority };
   if (owner.runtimeInstanceId !== claim.runtimeInstanceId) {
     return { allowed: false, reason: 'runtime_instance_fenced', owner, authority };
+  }
+  if (incarnation.fencingGeneration !== claim.fencingGeneration) {
+    return { allowed: false, reason: 'runtime_incarnation_generation_fenced', owner, authority };
   }
   if (owner.pid !== claim.ownerPid) return { allowed: false, reason: 'runtime_owner_pid_fenced', owner, authority };
   if (!authority) return { allowed: false, reason: 'runtime_release_authority_missing', owner };

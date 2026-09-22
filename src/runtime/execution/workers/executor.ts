@@ -30,6 +30,7 @@ import { isAbsolute, relative, resolve, sep } from 'path';
 import { isAssistantPluginError } from '../../plugins/errors';
 import { executeWork, validateWork } from '../../control-plane/execution/work-operation-service';
 import { finalizeWork } from '../../control-plane/execution/work-finalization-service';
+import { describeFailure } from '../../../../packages/protocols/failure';
 
 
 function childReferenceFromLocalJob(
@@ -253,11 +254,6 @@ function toolResultRecord(result: CallToolResult): Record<string, unknown> {
     return result.structuredContent as Record<string, unknown>;
   }
   return { content: result.content };
-}
-
-function errorCode(message: string): string {
-  const index = message.indexOf(':');
-  return index > 0 ? message.slice(0, index) : 'WORKER_EXECUTION_FAILED';
 }
 
 function materializePluginArtifacts(
@@ -637,8 +633,15 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
         repoRoot: controllerHome,
       };
     }
-    const message = error instanceof Error ? error.message : String(error);
-    const retryable = /ECONN|EPIPE|temporar|timeout|worker|network/i.test(message);
-    return { ok: false, error: { code: errorCode(message), message, retryable }, repoRoot: controllerHome };
+    const failure = describeFailure(error, { fallbackCode: 'WORKER_EXECUTION_FAILED' });
+    return {
+      ok: false,
+      error: {
+        code: failure.code,
+        message: failure.message,
+        retryable: failure.retryDisposition === 'transient',
+      },
+      repoRoot: controllerHome,
+    };
   }
 }

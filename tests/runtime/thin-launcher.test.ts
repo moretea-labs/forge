@@ -6,6 +6,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
+  buildSuperControllerInvocation,
   launchSuperController,
   resolveLauncherExecutable,
   type ThinLauncherRequest,
@@ -81,6 +82,20 @@ describe('Thin Launcher startup observability', () => {
     const request: ThinLauncherRequest = { controllerType: 'codex', workId: 'WORK-path', cwd: root };
 
     expect(resolveLauncherExecutable(request, { HOME: home, PATH: '' })).toBe('codex');
+  });
+
+  test('isolates launched Codex from global Apps and keeps the reservation-scoped Forge MCP config', () => {
+    const fx = launcherFixture();
+    const invocation = buildSuperControllerInvocation({
+      controllerType: 'codex',
+      workId: fx.workId,
+      cwd: fx.root,
+    }, 'codex', 'claim the exact Work', codexBootstrap());
+
+    expect(invocation.args).toContain('--disable');
+    expect(invocation.args[invocation.args.indexOf('--disable') + 1]).toBe('apps');
+    expect(invocation.args.some((arg) => arg.startsWith('mcp_servers.forge.http_headers='))).toBe(true);
+    expect(invocation.args).toContain('exec');
   });
 
   test('surfaces an immediate detached-process exit and releases the launch reservation', async () => {

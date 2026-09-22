@@ -243,7 +243,7 @@ export function rollbackStoppedControllerHomeAuthorityRelocation(
 
 export function ensureControllerHome(explicit?: string): string {
   const home = ensureControllerHomeStorage(resolveControllerHome(explicit));
-  for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles']) {
+  for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles', 'workflows']) {
     mkdirSync(join(home, child), { recursive: true });
   }
   return home;
@@ -254,6 +254,17 @@ export function ensureRepoPreferredControllerHome(repoRoot?: string, explicit?: 
 }
 
 export const CONTROLLER_SCOPE_REPO_ID = '__controller__';
+
+/** Human-editable user Workflow Asset content. Machine workflow state stays in control-plane persistence. */
+export function controllerWorkflowContentRoot(controllerHome: string): string {
+  return join(resolveControllerHome(controllerHome), 'workflows');
+}
+
+export function ensureControllerWorkflowContentRoot(controllerHome: string): string {
+  const root = controllerWorkflowContentRoot(ensureControllerHome(controllerHome));
+  mkdirSync(root, { recursive: true });
+  return root;
+}
 
 export function controllerSystemRoot(controllerHome: string): string {
   return join(resolveControllerHome(controllerHome), 'system');

@@ -26,7 +26,7 @@ Forge 不依赖编码 Agent 或外部插件也能使用。先完成核心工作�
 | Tailscale / Cloudflare | 为 ChatGPT MCP 提供稳定 HTTPS 地址 | 隧道客户端及对应账号/域名。 |
 | Browser | Playwright 浏览、截图和证据 | 浏览器 binary 与允许访问的域名。 |
 | CodeGraph | 代码关系和影响范围导航 | CodeGraph CLI；Windows 原生暂不自动配置。 |
-| Google Workspace | Gmail、Calendar 助手能力 | 显式 OAuth 与插件权限。 |
+| Google Workspace | Gmail、Calendar 助手能力 | 显式 OAuth 与插件权限。OAuth Client ID 是非秘密受管配置；refresh token 与导入的 client secret 保存到平台凭据存储。Forge 在凭据存储存在 `client_secret` 时发送它，否则尝试 public-client/PKCE 路径；具体 OAuth client 是否强制要求 secret，以实时 provider 响应为准。 |
 | Schedule / Finding | 受监督的周期检查和候选发现 | Canonical Forge Runtime 持续运行，真实动作仍受策略控制。 |
 
 ## 工具暴露

@@ -775,6 +775,57 @@ describe('local_system managed Recovery upgrade', () => {
     expect(calls).toEqual([controllerHome]);
     expect(result).toMatchObject({ upgraded: true, noOp: false, verification: { ok: true }, rollback: { performed: false } });
   });
+
+  test('exposes and executes a zero-argument Recovery tunnel repair through installed configuration only', async () => {
+    const controllerHome = temp('local-system-recovery-tunnel-repair-');
+    createRecoveryConfig(controllerHome, {
+      recoveryTunnelService: {
+        platform: 'openai-secure-tunnel',
+        alias: 'forge-recovery-test',
+        tunnelId: 'tunnel_0123456789abcdef0123456789abcdef',
+        mcpServerUrl: 'http://127.0.0.1:8787/mcp',
+        runtimeApiKeyRef: 'env:FORGE_RECOVERY_TUNNEL_KEY',
+      },
+    });
+    const manifest = buildLocalSystemPluginManifest();
+    const action = manifest.actions.find((entry) => entry.actionId === 'repair_standalone_recovery_tunnel');
+    expect(action?.argumentsSchema).toEqual({ type: 'object', properties: {}, additionalProperties: false });
+    expect(action?.confirmation).toBe('authorization');
+    expect(manifest.capabilities.find((entry) => entry.capabilityId === 'local-system-recovery-tunnel-repair')?.actions)
+      .toEqual(['repair_standalone_recovery_tunnel']);
+
+    const observed: string[] = [];
+    setLocalSystemPluginHooksForTest({
+      repairPublicTunnel: async (config) => {
+        const tunnel = config.recoveryTunnelService;
+        if (tunnel?.platform === 'openai-secure-tunnel') observed.push(`${tunnel.alias}:${tunnel.tunnelId}:${tunnel.mcpServerUrl}`);
+        return {
+          ok: true,
+          attempted: true,
+          detail: 'public tunnel service restarted and external tunnel readiness verified',
+          serviceLabel: 'forge-recovery-test',
+          serviceTarget: 'tunnel-client:forge-recovery-test',
+          verify: {
+            ok: true,
+            at: new Date().toISOString(),
+            runtime: { ok: true, running: true, ready: true, stale: false, reasonCodes: [] },
+            releases: { coherent: true },
+            probes: { recovery_tunnel_runtime: { ok: true, detail: 'ready' } },
+          },
+          localVerify: {
+            ok: true,
+            at: new Date().toISOString(),
+            runtime: { ok: true, running: true, ready: true, stale: false, reasonCodes: [] },
+            releases: { coherent: true },
+            probes: {},
+          },
+        };
+      },
+    });
+    const result = await executeLocalSystemPluginAction(input(controllerHome, 'repair_standalone_recovery_tunnel', {}));
+    expect(observed).toEqual(['forge-recovery-test:tunnel_0123456789abcdef0123456789abcdef:http://127.0.0.1:8787/mcp']);
+    expect(result).toMatchObject({ repaired: true, noOp: false, verification: { ok: true }, localVerification: { ok: true } });
+  });
 });
 
 describe('local_system target adapter', () => {

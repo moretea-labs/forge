@@ -4,6 +4,13 @@ import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanu
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { runSchedulerPeriodicCleanup } from './maintenance';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../execution/process-runtime/canary';
+
+// Release staging executes the exact immutable cleanup artifact in a no-op mode.
+// Exit before parsing maintenance arguments or binding any write authority.
+if (process.argv.includes(PROCESS_RUNTIME_RELEASE_CANARY_ARG)) {
+  process.exit(0);
+}
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name);

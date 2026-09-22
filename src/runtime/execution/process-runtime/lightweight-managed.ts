@@ -93,6 +93,12 @@ interface LightweightEntry {
 
 const entries = new Map<string, LightweightEntry>();
 
+export function hasActiveLightweightProcesses(controllerHome: string): boolean {
+  return [...entries.values()].some((entry) => (
+    entry.controllerHome === controllerHome && entry.result === undefined
+  ));
+}
+
 interface LightweightRunningReceipt {
   schemaVersion: 1;
   repoId: string;

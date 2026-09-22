@@ -27,13 +27,15 @@ import {
   getSchedule,
   listActiveOccurrences,
   listOccurrences,
+  reclaimStaleCreatedOccurrences,
   recordScheduleOccurrenceHandoff,
-  resumeScheduledControllerContinuation,
   listSchedules,
   saveOccurrence,
   saveScheduleDecision,
   updateSchedule,
 } from '../../../../packages/kernel/scheduler/api/index';
+import { getControllerRoundRelay, prepareControllerRoundOccurrence, resumeControllerRoundOccurrence } from '../../../../packages/kernel/controller/api/index';
+import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 export { cronDue };
 import { ensureScheduledControllerBinding, controllerHostForScheduledBinding } from '../../root/scheduled-controller-composition';
 import { listHandoffItems } from '../../control-plane/facade/handoff-inbox-store';
@@ -369,6 +371,96 @@ async function executeExternalControllerWake(
   const relayScopeId = typeof schedule.action.arguments?.relay_scope_id === 'string'
     ? schedule.action.arguments.relay_scope_id
     : undefined;
+  const controllerRoundOccurrenceId = typeof occurrence.triggerContext?.data?.controllerRoundOccurrenceId === 'string'
+    && occurrence.triggerContext.data.controllerRoundOccurrenceId.trim()
+    ? occurrence.triggerContext.data.controllerRoundOccurrenceId.trim()
+    : occurrence.occurrenceId;
+  if (controllerType === 'chatgpt') {
+    const boundary = workflowSupervisorBoundaryForWork({ controllerHome, repoId: schedule.repoId }, workId);
+    if (boundary.status === 'outer_turn') {
+      // Each Scheduler occurrence gets its own recovery origin key.  Without
+      // this, a previous exhausted Supervisor recovery is reused forever and
+      // the schedule can report `enrolled` while no new browser effect exists.
+      const enrollment = await ensureWorkflowSupervisorEnrollmentForWork(
+        { controllerHome, repoId: schedule.repoId },
+        workId,
+        { schedulerRecoveryKey: occurrence.occurrenceId },
+      );
+      if (enrollment.status === 'lower_layer_not_ready') {
+        // A Scheduler wake is allowed to repair a lost Supervisor outer-turn
+        // enrollment, but it must prepare only the lower relay. The Supervisor
+        // remains the sole component that submits the ChatGPT message.
+        const existingRelay = getControllerRoundRelay({ controllerHome, repoId: schedule.repoId }, workId);
+        if (!existingRelay || existingRelay.status === 'waiting') {
+          const prepared = prepareControllerRoundOccurrence(
+            { controllerHome, repoId: schedule.repoId },
+            {
+              occurrenceId: controllerRoundOccurrenceId,
+              workId,
+              controllerBindingId: bindingRecord.binding.bindingId,
+              relayScopeId,
+              allowSemanticWaitRecovery: true,
+            },
+          );
+          if (prepared.outcome === 'dispatched') {
+            const reEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(
+              { controllerHome, repoId: schedule.repoId },
+              workId,
+              { schedulerRecoveryKey: occurrence.occurrenceId },
+            );
+            if (reEnrollment.status !== 'enrolled') {
+              throw new Error(`WORKFLOW_SUPERVISOR_REENROLLMENT_FAILED:${reEnrollment.status}:${reEnrollment.reason ?? boundary.taskId}`);
+            }
+            updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+              enabled: false,
+              pausedReason: 'workflow_supervisor_owns_outer_turn',
+              lastTriggeredAt: timestamp,
+              lastOccurrenceId: occurrence.occurrenceId,
+            }));
+            const repaired = decideOccurrence(
+              controllerHome,
+              schedule,
+              occurrence,
+              'execute',
+              'dispatched',
+              `Scheduler repaired ControllerRound ${prepared.relay.relayScopeId} and re-enrolled Workflow Supervisor ${boundary.taskId}; Supervisor owns the outer ChatGPT turn.`,
+              occurrenceDecisionEvidence({
+                operation: schedule.action.operation,
+                workId,
+                controllerType,
+                controllerBindingId: bindingRecord.binding.bindingId,
+                controllerRound: prepared.relay.relayScopeId,
+                workflowSupervisorTaskId: boundary.taskId,
+                workflowSupervisorEffectId: reEnrollment.effectId,
+                schedulerRecovery: true,
+              }),
+            );
+            appendWorkEvidence({ controllerHome, repoId: schedule.repoId }, workId, {
+              evidenceId: repaired.occurrenceId,
+              title: 'scheduled Workflow Supervisor enrollment repaired',
+              summary: `Schedule ${schedule.scheduleId} prepared the lower ControllerRound and re-enrolled the exact outer-turn Supervisor task.`,
+              detailLevel: 'summary',
+            });
+            return repaired;
+          }
+        }
+      }
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        ...(enrollment.status === 'enrolled' ? { enabled: false, pausedReason: 'workflow_supervisor_owns_outer_turn' } : {}),
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrence.occurrenceId,
+      }));
+      return saveOccurrence(controllerHome, decideOccurrence(
+        controllerHome,
+        schedule,
+        occurrence,
+        'nothing_to_do',
+        'skipped',
+        `Workflow Supervisor boundary ${boundary.taskId} owns the next outer ChatGPT turn (${enrollment.status}); Scheduler provider dispatch suppressed.`,
+      ));
+    }
+  }
+
   const wakeDecision = decideOccurrence(
     controllerHome,
     schedule,
@@ -391,11 +483,10 @@ async function executeExternalControllerWake(
       { controllerHome, repoId: schedule.repoId, repoRoot: repository.canonicalRoot },
       bindingRecord.binding,
     );
-    const resumed = await resumeScheduledControllerContinuation(
+    const resumed = await resumeControllerRoundOccurrence(
       workStore,
       {
-        scheduleId: schedule.scheduleId,
-        occurrenceId: occurrence.occurrenceId,
+        occurrenceId: controllerRoundOccurrenceId,
         workId,
         controllerBindingId: bindingRecord.binding.bindingId,
         relayScopeId,
@@ -403,7 +494,7 @@ async function executeExternalControllerWake(
       },
       host,
     );
-    if (resumed.dispatch.status === 'semantic_wait') {
+    if (resumed.outcome === 'semantic_wait') {
       updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
         lastTriggeredAt: timestamp,
         lastOccurrenceId: occurrence.occurrenceId,
@@ -412,26 +503,35 @@ async function executeExternalControllerWake(
         ...wakeDecision,
         status: 'skipped',
         decision: 'nothing_to_do',
-        reason: resumed.dispatch.reason ?? `Work ${workId} remains in unchanged semantic wait; provider dispatch suppressed.`,
+        reason: resumed.reason ?? `Work ${workId} remains in unchanged semantic wait; provider dispatch suppressed.`,
       });
     }
-    if (resumed.dispatch.status === 'rejected') {
-      throw new Error(resumed.dispatch.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED');
+    if (resumed.outcome === 'rejected') {
+      throw new Error(resumed.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED');
 
     }
+    const supervisorEnrollment = controllerType === 'chatgpt'
+        ? await ensureWorkflowSupervisorEnrollmentForWork(
+          { controllerHome, repoId: schedule.repoId },
+          workId,
+          { schedulerRecoveryKey: occurrence.occurrenceId },
+        )
+      : { status: 'not_eligible' as const };
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrence.occurrenceId,
       consecutiveFailures: 0,
       nextEligibleAt: undefined,
-      ...(current.enabled ? { pausedReason: undefined } : {}),
+      ...(supervisorEnrollment.status === 'enrolled'
+        ? { enabled: false, pausedReason: 'workflow_supervisor_owns_outer_turn' }
+        : current.enabled ? { pausedReason: undefined } : {}),
     }));
     const dispatchedOccurrence = saveOccurrence(controllerHome, {
       ...wakeDecision,
       status: 'dispatched',
       reason: resumed.reused
         ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed and semantic round closure is still pending.`
-        : `ControllerHost accepted durable binding ${bindingRecord.binding.bindingId} for Work ${workId}; dispatch ${resumed.dispatch.hostDispatchId ?? resumed.dispatch.relayScopeId}; semantic round closure is still pending.`,
+        : `ControllerHost accepted durable binding ${bindingRecord.binding.bindingId} for Work ${workId}; dispatch ${resumed.providerDispatchReceiptId ?? resumed.relay.relayScopeId}; semantic round closure is still pending.`,
     });
     appendWorkEvidence(workStore, workId, {
       evidenceId: dispatchedOccurrence.occurrenceId,
@@ -442,7 +542,7 @@ async function executeExternalControllerWake(
     return dispatchedOccurrence;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    if (reason.startsWith('SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN:')) {
+    if (reason.startsWith('CONTROLLER_CONTINUATION_ROUND_ALREADY_OPEN:') || reason.startsWith('CONTROLLER_CONTINUATION_ALREADY_DISPATCHING:')) {
       updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
       return decideOccurrence(controllerHome, schedule, wakeDecision, 'nothing_to_do', 'skipped', `Work ${workId} already has an open Controller round awaiting claim or disposition.`);
     }
@@ -478,10 +578,10 @@ async function executeExternalControllerWake(
         summary: 'Forge recorded the schedule trigger but could not resume the exact configured ControllerSession through ControllerHost.',
         reason,
         creationReason: 'repeated_infrastructure_failure',
-        blockingDecision: reason.startsWith('SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN:')
+        blockingDecision: reason.startsWith('CONTROLLER_CONTINUATION_OUTCOME_UNKNOWN:')
           ? 'Inspect the durable ControllerHost dispatch outcome before any retry; automatic replay is fenced.'
           : 'Repair the ControllerHost adapter/binding or update the retained ControllerSession.',
-        recommendedDecision: 'Inspect the exact Scheduler continuation dispatch, ControllerSession, and adapter binding, then retrigger only when the outcome is known.',
+        recommendedDecision: 'Inspect the exact ControllerRound provider-dispatch effect, ControllerSession, and adapter binding, then retrigger only when the outcome is known.',
         recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the exact ControllerHost continuation path before unattended continuation resumes.`,
         statusSummary: 'Scheduled ControllerHost continuation failed.',
         blockedBy: ['external_controller_wake_failed'],
@@ -574,6 +674,7 @@ export async function evaluateSchedule(
   }
 
   const recent = listOccurrences(controllerHome, schedule.repoId, schedule.scheduleId, 1000);
+  reclaimStaleCreatedOccurrences(controllerHome, schedule.repoId, schedule.scheduleId);
   const active = listActiveOccurrences(controllerHome, schedule.repoId, schedule.scheduleId)
     .filter((entry) => entry.occurrenceId !== occurrence.occurrenceId);
   const admission = evaluateScheduleOccurrenceAdmission(schedule, {

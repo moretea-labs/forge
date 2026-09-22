@@ -333,6 +333,15 @@ export function getMacOsBrowserAttachObservation(): MacOsBrowserAttachObservatio
     : undefined;
 }
 
+function recordSuccessfulMacOsBrowserAttachment(attachment: MacOsBrowserAttachment): void {
+  lastAttachObservation = {
+    checkedAt: new Date().toISOString(),
+    ready: true,
+    selectedProduct: attachment.metadata.product,
+    attempts: attachment.attempts.map((attempt) => ({ ...attempt })),
+  };
+}
+
 const BROWSERS: Record<MacOsBrowserProduct, MacOsBrowserDefinition> = {
   chrome: {
     product: 'chrome',
@@ -679,18 +688,14 @@ export async function discoverMacOsBrowserAttachment(
   }
   const selectedAttempt = attempts.find((entry) => entry.product === selected.metadata.product);
   if (selectedAttempt) selectedAttempt.status = 'selected';
-  lastAttachObservation = {
-    checkedAt: new Date().toISOString(),
-    ready: true,
-    selectedProduct: selected.metadata.product,
-    attempts: attempts.map((attempt) => ({ ...attempt })),
+  const attachment: MacOsBrowserAttachment = {
+    metadata: selected.metadata,
+    attempts,
   };
+  recordSuccessfulMacOsBrowserAttachment(attachment);
   return {
     attempts,
-    attachment: {
-      metadata: selected.metadata,
-      attempts,
-    },
+    attachment,
   };
 }
 
@@ -1402,11 +1407,24 @@ export async function readMacOsBrowserOwnedTabMetadata(
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
-  const browser = browserDefinition(product);
   const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
+  return await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
+}
+
+/**
+ * Read one exact native tab whose stable identity is already authoritative for
+ * the caller. The targeted AppleScript still fails closed when that tab id is
+ * gone, but does not perform another full browser inventory.
+ */
+export async function readResolvedMacOsBrowserOwnedTabMetadata(
+  product: MacOsBrowserProduct,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<MacOsBrowserMetadata> {
+  const browser = browserDefinition(product);
   return parseMetadata(product, await runBrowserAutomationText(
-    { action: 'metadata', product, ref: resolvedRef },
-    targetMetadataScript(browser, resolvedRef),
+    { action: 'metadata', product, ref },
+    targetMetadataScript(browser, ref),
     [],
     timeoutMs,
   ));
@@ -1530,6 +1548,7 @@ export async function reattachMacOsBrowserOwnedPage(
     : ref;
   const page = new MacOsAppleEventsPage(attachment, timeoutMs, resolvedRef);
   rememberMacOsBrowserPageHandle(product, resolvedRef, page);
+  recordSuccessfulMacOsBrowserAttachment(attachment);
   return { page, attachment };
 }
 
@@ -1538,12 +1557,28 @@ export async function closeMacOsBrowserOwnedTab(
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<void> {
-  const browser = browserDefinition(product);
   try {
     const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
+    await closeResolvedMacOsBrowserOwnedTab(product, resolvedRef, timeoutMs);
+  } finally {
+    invalidateMacOsBrowserPageHandle(product, ref);
+  }
+}
+
+/**
+ * Close one exact native tab whose stable identity was already proven by the
+ * caller's live inventory snapshot. This deliberately does not inventory again.
+ */
+export async function closeResolvedMacOsBrowserOwnedTab(
+  product: MacOsBrowserProduct,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<void> {
+  const browser = browserDefinition(product);
+  try {
     await runBrowserAutomationText(
-      { action: 'close_tab', product, ref: resolvedRef },
-      closeOwnedTabScript(browser, resolvedRef),
+      { action: 'close_tab', product, ref },
+      closeOwnedTabScript(browser, ref),
       [],
       timeoutMs,
     );

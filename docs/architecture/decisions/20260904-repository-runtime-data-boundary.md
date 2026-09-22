@@ -25,3 +25,18 @@ Repository-local `.ai/harness/*`, `.forge/*`, `_ops/`, `.repo-harness/`, and `.c
 ## Enforcement
 
 `check:repository-hygiene` is part of the governed task gate. It rejects retired live roots and known physical Runtime/cache namespaces in the source tree. Runtime storage initialization migrates Browser provider state and interaction sessions into the repository's Controller Home namespace. Controller check evidence, test checkpoints/receipts, and check locks are written directly under the repository's Controller Home `checks/` namespace. New check execution keeps `.ai/harness/checks` absent; public evidence uses a `controller-home://checks/...` locator rather than exposing an absolute machine path or creating a repository compatibility link. Controller worklog events are likewise Controller-owned runtime evidence: new writes use the repository Controller Home `controller/worklog.jsonl` namespace and never recreate `.ai/harness/controller/worklog.jsonl`; explicit human exports under `tasks/reports/` remain repository-authored deliverables. Durable EditSession writes must first bind the compatibility `.ai/harness/edit-sessions` locator to Controller Home; a durable-bound session fails before mutation when that binding is absent, and its atomic recovery backups stay inside the bound EditSession namespace.
+
+Legacy check storage has one bounded retirement path. When a registered repository still contains a physical `.ai/harness/checks` directory, the first Controller-owned check execution moves the entire directory to that repository's Controller Home `quarantine/legacy-checks/<unique-id>` namespace before creating new evidence. A canonical compatibility symlink is removed without touching its Controller Home target. Foreign symlinks, non-directory entries, and paths without a matching repository registry authority remain fail-closed. Quarantine preserves historical bytes for manual recovery but is not a check-evidence authority and is never recreated as a repository link.
+Retirement is idempotent under concurrent Runner startup: if another owner wins the
+rename, unlink, or empty-directory removal race, the losing owner observes the
+already-converged Controller Home state rather than manufacturing a second failure.
+Retired legacy-check entries share the central Runtime quarantine retention policy
+with Local Job quarantine; full maintenance uses one bounded scan/removal budget
+across both namespaces.
+
+The retired `.codegraph` cache follows the same boundary but remains a
+rebuildable cache rather than evidence. Its legacy copy/symlink migration is
+serialized by the existing Controller lock using the exact repository-cache
+identity, so concurrent initializers converge on one Controller Home target
+instead of racing `copy`/`remove` operations or creating a second cache
+authority.

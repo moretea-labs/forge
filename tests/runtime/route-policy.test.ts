@@ -9,10 +9,12 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, runGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
-import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { runGoalWorkloop as runGoalWorkloopWithAccess } from '../../src/runtime/control-plane/facade/goal-workloop-access';
+import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract, getPlanExecutionBaselineRevision } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { buildEvaluationPromotionReceipt } from '../../packages/kernel/work/api/index';
 import { getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
@@ -77,6 +79,125 @@ function sharedInput(overrides: Partial<RoutePolicyInput> = {}): RoutePolicyInpu
     ...overrides,
   };
 }
+test('trusted evaluation promotion receipt becomes exact implementation-review architecture evidence and survives finalize comparison', () => {
+  const root = temp('promotion-review-evidence-');
+  const workStore = { root: join(root, 'work') };
+  const handoffStore = { root: join(root, 'handoff') };
+  const sourceRevision = 'a'.repeat(40);
+  const workId = 'work-promotion-review-evidence';
+  createWorkContract(workStore, {
+    workId,
+    repoId: 'repo-promotion-review-evidence',
+    mode: 'goal_workloop',
+    objective: 'Review an evaluator-proven candidate without creating a second lifecycle.',
+    acceptanceCriteria: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false },
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    requestedBy: 'chatgpt',
+    status: 'running',
+    workKind: 'completed_no_change',
+  });
+  transitionWorkContractPhase(workStore, workId, {
+    status: 'running',
+    phase: 'verification',
+    state: 'satisfied',
+    summary: 'Exact no-change candidate verified.',
+  });
+  requestWorkImplementationReview(workStore, workId, 'Evaluator-proven candidate requires Controller review.');
+
+  const receipt = buildEvaluationPromotionReceipt({
+    schemaVersion: 'forge-evaluation-promotion-receipt/v1',
+    authority: 'evaluation_evidence_only',
+    baseline: {
+      schemaVersion: 'forge-candidate-identity/v1',
+      candidateId: 'baseline',
+      versionLabel: 'baseline',
+      artifactDigest: 'sha256:baseline',
+      sourceRevision: 'b'.repeat(40),
+      executionSurface: 'public_mcp',
+    },
+    candidate: {
+      schemaVersion: 'forge-candidate-identity/v1',
+      candidateId: 'candidate',
+      versionLabel: 'candidate',
+      artifactDigest: 'sha256:candidate',
+      sourceRevision,
+      executionSurface: 'public_mcp',
+    },
+    evidence: {
+      paired: {
+        protocolDigest: 'sha256:paired-protocol',
+        environmentFingerprint: 'sha256:environment',
+        pairCount: 3,
+        evidenceDigest: 'sha256:paired-evidence',
+      },
+      shadow: {
+        protocolDigest: 'sha256:shadow-protocol',
+        pairedScenarioCount: 2,
+        evidenceDigest: 'sha256:shadow-evidence',
+      },
+    },
+  });
+  const context = {
+    workStore,
+    handoffStore,
+    repoId: 'repo-promotion-review-evidence',
+    principalId: 'principal-reviewer',
+    sourceRevision,
+    workspaceFingerprint: 'workspace-verification',
+    implementationReviewWorkspaceFingerprint: 'workspace-review',
+    workspaceChangedPaths: [],
+  };
+
+  const reviewed = runGoalWorkloop(context, 'review', {
+    work_id: workId,
+    review_decision: 'approved',
+    review_rationale: 'Exact evaluator-proven candidate is approved.',
+  }, { evaluationPromotionReceipt: receipt });
+  expect(reviewed.status).toBe('ok');
+  const stored = getWorkContract(workStore, workId)!;
+  expect(stored.implementationReviews.at(-1)?.architectureEvidence).toEqual([{
+    evidenceId: receipt.receiptId,
+    digest: receipt.receiptId.slice('evaluation-promotion:'.length),
+  }]);
+
+  const finalized = finalizeGoalWorkloop(context, { workId });
+  expect(finalized.summary).not.toContain('WORK_IMPLEMENTATION_REVIEW_STALE');
+  expect(finalized.summary).not.toContain('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+
+  const staleWorkId = 'work-promotion-review-stale';
+  createWorkContract(workStore, {
+    workId: staleWorkId,
+    repoId: 'repo-promotion-review-evidence',
+    mode: 'goal_workloop',
+    objective: 'Reject promotion evidence from another candidate revision.',
+    acceptanceCriteria: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false },
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    requestedBy: 'chatgpt',
+    status: 'running',
+    workKind: 'completed_no_change',
+  });
+  transitionWorkContractPhase(workStore, staleWorkId, {
+    status: 'running',
+    phase: 'verification',
+    state: 'satisfied',
+    summary: 'Candidate verified.',
+  });
+  requestWorkImplementationReview(workStore, staleWorkId, 'Review required.');
+  const mismatched = runGoalWorkloop({ ...context, sourceRevision: 'c'.repeat(40) }, 'review', {
+    work_id: staleWorkId,
+    review_decision: 'approved',
+    review_rationale: 'Must not accept evidence for another revision.',
+  }, { evaluationPromotionReceipt: receipt });
+  expect(mismatched.status).toBe('blocked');
+  expect(mismatched.summary).toContain('EVALUATION_PROMOTION_RECEIPT_CANDIDATE_SOURCE_MISMATCH');
+});
+
 describe('single Route Policy authority', () => {
   test('advances a no-check repository Work only with source changes plus exact durable Process evidence', () => {
     const root = temp('forge-no-check-process-evidence-');
@@ -114,7 +235,7 @@ describe('single Route Policy authority', () => {
       workBoundProcessEvidenceIds: ['proc-exact-work-bound-success'],
     }, { workId: workId! });
     expect(continued.status).toBe('ok');
-    expect(continued.data).toMatchObject({ nextStep: 'review' });
+    expect(continued.data).toMatchObject({ nextStep: 'finalize' });
   });
   test('returns the identical replayable RouteDecision through the remaining adapters', () => {
     const input = sharedInput();
@@ -267,6 +388,11 @@ describe('single Route Policy authority', () => {
       expect(assessment.executionPath).toBe(contract.executionPath);
       expect(assessment.modeBehavior.mutationPhase).toBe(contract.mutationPhase);
       expect(assessment.modeBehavior.structuralContext).toBe(contract.structuralContext);
+      if (mode === 'plan') {
+        expect(assessment.routeDecision).toMatchObject({ executionMode: 'goal_workloop', requiresWork: true, requiresIsolation: false });
+        expect(assessment.modeBehavior.planRequired).toBe(true);
+        expect(assessment.modeBehavior.worktreeRequired).toBe(false);
+      }
       if (mode === 'scale') {
         expect(assessment.modeBehavior.planRequired).toBe(true);
         expect(assessment.modeBehavior.worktreeRequired).toBe(true);
@@ -275,6 +401,34 @@ describe('single Route Policy authority', () => {
       expect(assessment.routeDecision.reasons.some((reason) => reason.code === `explicit_${mode}`)).toBe(true);
     }
   });
+  test('preserves explicit Plan mode through the access facade without forcing isolation', () => {
+    const root = temp('route-plan-access-');
+    const result = runGoalWorkloopWithAccess({
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+    }, 'start', {
+      objective: 'Deliver one approved Plan step on the current checkout',
+      mode: 'plan',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 80,
+      allowed_paths: ['src/**'],
+    });
+    expect(result.status).toBe('ok');
+    expect(result.data).toMatchObject({
+      workContractCreated: true,
+      worktreeRequired: false,
+      mode: {
+        routeDecision: { executionMode: 'goal_workloop', requiresWork: true, requiresIsolation: false },
+      },
+    });
+  });
+
   test('typed isolated placement overrides an explicit Direct routing preference before admission', () => {
     const decision = decideRoute(sharedInput({
       intent: { objective: 'Apply one isolated edit', scopeClear: true, mutation: true, explicitMode: 'direct' },
@@ -927,48 +1081,30 @@ describe('single Route Policy authority', () => {
     expect(getWorkContract(context.workStore, firstWorkId!)).toBeTruthy();
   });
 
-  test('preserves the Direct fast path with unrelated active Work while retaining explicit ownership metadata', () => { const root = temp('route-direct-admission-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a', materializeIsolatedWorkspace: ({ workId }: { workId: string }) => ({ checkoutId: `isolated-${workId}`, root: join(root, workId), baseRevision: 'revision-a', managed: true as const }) }; const durable = routeWorkStart(context, { objective: 'Own the long-running repository change', modeInput: { scopeClear: true, mutation: true, expectedFiles: 5, expectedChangedLines: 250, requiresRecovery: true, risk: 'local_repo_write' }, }); const workId = (durable.data as { work?: { workId?: string } }).work?.workId; expect(workId).toBeTruthy(); const independentSmallEdit = routeWorkStart(context, { objective: 'Make one tiny independent edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(independentSmallEdit.status).toBe('ok'); expect(independentSmallEdit.summary).toContain('Direct control recommended'); expect(independentSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); const ownedSmallEdit = routeWorkStart(context, { objective: 'Make one tiny edit owned by the existing Work', relatedWorkId: workId, workRelation: 'continue', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(ownedSmallEdit.summary).toContain('Direct control recommended'); expect(ownedSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false, ownership: { workId, relation: 'continue', executionDepthPreserved: true } }); });
-  test('keeps one shared Requirement authority across 32 admissions while admitting 32 independent Requirements', () => {
-    const root = temp('route-semantic-admission-cardinality-');
+  test('preserves the Direct fast path with unrelated active Work while retaining explicit ownership metadata', () => { const root = temp('route-direct-admission-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a', availableChecks: [{ id: 'package:check:type' }], materializeIsolatedWorkspace: ({ workId }: { workId: string }) => ({ checkoutId: `isolated-${workId}`, root: join(root, workId), baseRevision: 'revision-a', managed: true as const }) }; const durable = routeWorkStart(context, { objective: 'Own the long-running repository change', modeInput: { scopeClear: true, mutation: true, expectedFiles: 5, expectedChangedLines: 250, requiresRecovery: true, risk: 'local_repo_write' }, }); const workId = (durable.data as { work?: { workId?: string } }).work?.workId; expect(workId).toBeTruthy(); const independentSmallEdit = routeWorkStart(context, { objective: 'Make one tiny independent edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(independentSmallEdit.status).toBe('ok'); expect(independentSmallEdit.summary).toContain('Direct control recommended'); expect(independentSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); const ownedSmallEdit = routeWorkStart(context, { objective: 'Make one tiny edit owned by the existing Work', relatedWorkId: workId, workRelation: 'continue', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(ownedSmallEdit.summary).toContain('Direct control recommended'); expect(ownedSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false, ownership: { workId, relation: 'continue', executionDepthPreserved: true } }); });
+  test('Requirement membership alone never aliases unrelated Work authorities', () => {
+    const root = temp('route-semantic-admission-requirement-siblings-');
     const workStore = { root: join(root, 'work') };
     const handoffStore = { root: join(root, 'handoff') };
     const modeInput = { scopeClear: true, mutation: true, expectedFiles: 4, expectedChangedLines: 200, requiresRecovery: true, risk: 'local_repo_write' as const };
-    const shared = Array.from({ length: 32 }, (_, index) => routeWorkStart({
-      workStore,
-      handoffStore,
-      repoId: 'repo-a',
-      checkoutId: `shared-${index}`,
-      sourceRevision: 'revision-a',
+    const siblings = Array.from({ length: 8 }, (_, index) => routeWorkStart({
+      workStore, handoffStore, repoId: 'repo-a', checkoutId: `shared-${index}`, sourceRevision: 'revision-a',
     }, {
-      objective: 'Own the shared semantic admission requirement',
-      requirementId: 'REQ-shared-admission',
-      modeInput,
+      objective: `Deliver independent slice ${index} under one portfolio Requirement`,
+      requirementId: 'REQ-shared-admission', modeInput,
     }));
-    const sharedCreated = shared.filter((result) => (result.data as { workContractCreated?: boolean }).workContractCreated === true);
-    expect(sharedCreated).toHaveLength(1);
-    const sharedAuthorityIds = new Set(shared.flatMap((result) => {
-      const data = result.data as { work?: { workId?: string }; recommendedWork?: { workId?: string }; candidates?: Array<{ workId?: string }> };
-      const workId = data.work?.workId ?? data.recommendedWork?.workId ?? data.candidates?.[0]?.workId;
-      return workId ? [workId] : [];
-    }));
-    expect(sharedAuthorityIds.size).toBe(1);
-    expect(shared.slice(1).every((result) => ['resolution_required', 'reuse_existing'].includes(String((result.data as { admissionDecision?: string }).admissionDecision)))).toBe(true);
+    const siblingIds = siblings.map((result) => (result.data as { work?: { workId?: string }; workContractCreated?: boolean }).work?.workId);
+    expect(siblings.every((result) => (result.data as { workContractCreated?: boolean }).workContractCreated === true)).toBe(true);
+    expect(siblingIds.every(Boolean)).toBe(true);
+    expect(new Set(siblingIds).size).toBe(8);
+    expect(siblings.every((result) => String((result.data as { admissionDecision?: string }).admissionDecision) !== 'resolution_required')).toBe(true);
 
-    const independent = Array.from({ length: 32 }, (_, index) => routeWorkStart({
-      workStore,
-      handoffStore,
-      repoId: 'repo-a',
-      checkoutId: `independent-${index}`,
-      sourceRevision: 'revision-a',
-    }, {
-      objective: `Own independent semantic admission requirement ${index}`,
-      requirementId: `REQ-independent-admission-${index}`,
-      modeInput,
-    }));
-    const independentIds = independent.map((result) => (result.data as { work?: { workId?: string }; workContractCreated?: boolean }).work?.workId);
-    expect(independent.every((result) => (result.data as { workContractCreated?: boolean }).workContractCreated === true)).toBe(true);
-    expect(independentIds.every(Boolean)).toBe(true);
-    expect(new Set(independentIds).size).toBe(32);
+    const firstWorkId = siblingIds[0]!;
+    const continued = routeWorkStart({ workStore, handoffStore, repoId: 'repo-a', checkoutId: 'shared-0', sourceRevision: 'revision-a' }, {
+      objective: 'Continue the explicitly selected first slice', requirementId: 'REQ-shared-admission',
+      relatedWorkId: firstWorkId, workRelation: 'continue', modeInput,
+    });
+    expect(continued.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId: firstWorkId } });
   });
 
   test('ignores low-level execution-child Work when resolving a new business task', () => { const root = temp('route-execution-child-admission-'); const workStore = { root: join(root, 'work') }; createWorkContract(workStore, { workId: 'WORK-child', repoId: 'repo-a', mode: 'direct_control', lifecycleRole: 'execution_child', objective: 'Accepted operation run_check', acceptanceCriteria: [], constraints: { requireHandoffOnAmbiguity: true }, allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'system', }); const result = routeWorkStart({ workStore, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', sourceRevision: 'revision-a' }, { objective: 'Make one independent tiny product edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 4, risk: 'local_repo_write' }, }); expect(result.status).toBe('ok'); expect(result.summary).toContain('Direct control recommended'); expect(result.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); });
@@ -1035,6 +1171,54 @@ describe('single Route Policy authority', () => {
     expect(resumed.summary).toContain('PLAN_STEP_REUSES_ACTIVE_WORK');
     expect(resumed.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId } });
   });
+  test('adopts the current execution baseline after a completed predecessor retains its Work link', () => {
+    const root = temp('route-plan-baseline-advance-');
+    const planStore = { root: join(root, 'plan') };
+    const workStore = { root: join(root, 'work') };
+    createPlanContract(planStore, {
+      planId: 'plan-baseline-advance', repoId: 'repo-a', scopeKey: 'baseline-advance', sourceRevision: 'revision-a', goal: 'Keep semantic Plan authority while execution baseline advances',
+      steps: [
+        { id: 'step-a', objective: 'Complete the first slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['First slice is accepted'] },
+        { id: 'step-b', objective: 'Implement on the current integrated source', dependencies: ['step-a'], authoritativeFiles: [], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Current source is frozen into the Work'] },
+      ],
+    });
+    approvePlanContract(planStore, 'plan-baseline-advance');
+
+    const first = routeWorkStart({
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a',
+    }, {
+      objective: 'Complete the first slice', planId: 'plan-baseline-advance', planStepId: 'step-a', workKind: 'completed_no_change',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId;
+    expect(firstWorkId).toBeTruthy();
+    completeNoChangePlanWork(workStore, firstWorkId!, 'revision-a');
+    completePlanStepForWork(planStore, { planId: 'plan-baseline-advance', stepId: 'step-a', work: getWorkContract(workStore, firstWorkId!)! });
+    acceptPlanStepEvidence(planStore, {
+      planId: 'plan-baseline-advance', stepId: 'step-a', reviewer: 'principal-a', rationale: 'First slice evidence satisfies the approved Plan step.', acceptedSourceRevision: 'revision-a',
+    });
+    expect(getPlanContract(planStore, 'plan-baseline-advance')?.steps[0]).toMatchObject({ status: 'completed', workId: firstWorkId });
+
+    const result = routeWorkStart({
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-b', principalId: 'principal-a', controllerInstanceId: 'controller-b',
+      sourceRevision: 'revision-b', availableChecks: [{ id: 'package:check:type' }],
+    }, {
+      objective: 'Implement on the current integrated source', planId: 'plan-baseline-advance', planStepId: 'step-b',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 2, expectedChangedLines: 80, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+
+    const workId = (result.data as { work?: { workId?: string } }).work?.workId;
+    expect(result.status).toBe('ok');
+    expect(workId).toBeTruthy();
+    expect(getPlanContract(planStore, 'plan-baseline-advance')).toMatchObject({ revision: 1, sourceRevision: 'revision-a', status: 'executing' });
+    expect(getPlanExecutionBaselineRevision(planStore, 'plan-baseline-advance')).toBe('revision-b');
+    expect(getWorkContract(workStore, workId!)).toMatchObject({
+      baseRevision: 'revision-b', planSourceRevision: 'revision-a', planId: 'plan-baseline-advance', planStepId: 'step-b',
+    });
+  });
+
   test('continues an accepted Plan goal into one explicit successor Work without inheriting transport identity', () => {
     const root = temp('route-plan-successor-work-');
     const planStore = { root: join(root, 'plan') };
@@ -1298,6 +1482,75 @@ describe('single Route Policy authority', () => {
     expect(continued.status).toBe('ok');
     expect(continued.data).toMatchObject({ nextStep: 'verify', remainingChecks: ['check:baseline'] });
     expect(getWorkContract(workStore, workId!)).toMatchObject({ status: 'running', phase: 'verification' });
+  });
+
+  test('verify advances a fully verified no-review Work directly to delivery without an extra continue', () => {
+    const root = temp('route-verify-auto-delivery-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      sourceRevision: 'revision-a',
+      workspaceFingerprint: 'workspace-a',
+      workspaceChangedPaths: [] as string[],
+      availableChecks: [{ id: 'check:baseline' }],
+    };
+    const work = createWorkContract(workStore, {
+      workId: 'work-verify-auto-delivery',
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      mode: 'goal_workloop',
+      objective: 'Reconcile already-delivered evidence without source changes.',
+      acceptanceCriteria: ['Exact verification is sufficient.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      workKind: 'reconciliation',
+      checks: ['check:baseline'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const recordedAt = '2026-09-20T00:00:00.000Z';
+    const verified = verifyGoalWorkloop(context, {
+      workId: work.workId,
+      checkId: 'check:baseline',
+      sourceRevision: 'revision-a',
+      workspaceFingerprint: 'workspace-a',
+      verificationInputFingerprint: 'verify-auto-delivery-input',
+      receipt: {
+        schemaVersion: 1,
+        receiptId: 'receipt-verify-auto-delivery',
+        resultDigest: 'digest-verify-auto-delivery',
+        repoId: 'repo-a',
+        checkoutId: 'checkout-a',
+        workId: work.workId,
+        checkId: 'check:baseline',
+        processId: 'process-verify-auto-delivery',
+        status: 'passed',
+        runtimeStatus: 'succeeded',
+        ok: true,
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+        artifactPath: '.ai/harness/checks/verify-auto-delivery.json',
+        summary: 'passed',
+        startedAt: recordedAt,
+        finishedAt: recordedAt,
+      },
+    });
+
+    expect(verified).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(getWorkContract(workStore, work.workId)).toMatchObject({
+      status: 'running',
+      phase: 'delivery',
+      evidenceState: 'valid',
+      phaseEvidence: {
+        verification: { state: 'satisfied' },
+        review: { state: 'skipped' },
+      },
+    });
   });
 
   test('keeps terminal completed Work verification idempotent without appending late failure evidence', () => {

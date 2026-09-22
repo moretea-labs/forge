@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   AssistantPluginActionExecutionInput,
@@ -22,6 +22,8 @@ import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from '../../../packages/plugin-ru
 import {
   ALL_BROWSER_PROVIDER_CAPABILITIES,
   browserActionCanReplayAfterDispatch as canReplayBrowserActionAfterDispatch,
+  browserExplicitPostActionWaitMs,
+  browserNativeForegroundVerificationWaitMs,
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from './browser-runtime';
@@ -97,7 +99,6 @@ import type {
 const BROWSER_PLUGIN_ID = 'browser';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TEXT_CHARS = 20_000;
-const DEFAULT_POST_ACTION_WAIT_MS = 750;
 const DEFAULT_CDP_DISCOVERY_TIMEOUT_MS = 1_500;
 const MAX_CDP_DISCOVERY_TIMEOUT_MS = 5_000;
 
@@ -108,7 +109,7 @@ type BrowserNativeAttachMode = 'auto' | 'disabled';
 
 const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 2 as const;
 const DEFAULT_USER_BROWSER_CHANNEL: BrowserChannel = 'chrome';
-const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome'];
+const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome', 'vivaldi'];
 
 interface BrowserPluginConfig {
   schemaVersion: 2;
@@ -174,15 +175,23 @@ interface BrowserProfileSelection {
   selectedProfilePath: string;
 }
 
+type BrowserExtensionTargetLike = { url(): string };
+type BrowserCdpSessionLike = {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  detach?(): Promise<void>;
+};
 type BrowserContextLike = {
   pages(): PageLike[];
   newPage(): Promise<PageLike>;
   close(): Promise<void>;
+  serviceWorkers?(): BrowserExtensionTargetLike[];
+  backgroundPages?(): BrowserExtensionTargetLike[];
 };
 
 type BrowserLike = {
   contexts(): BrowserContextLike[];
   newContext?(): Promise<BrowserContextLike>;
+  newBrowserCDPSession?(): Promise<BrowserCdpSessionLike>;
   close?(): Promise<void>;
   disconnect?(): Promise<void> | void;
 };
@@ -312,6 +321,7 @@ interface ManagedBrowserContextState {
 }
 
 const managedBrowserContexts = new Map<string, Promise<ManagedBrowserContextState>>();
+const managedExtensionPaths = new Map<string, Set<string>>();
 
 export function setBrowserPluginRuntimeHooksForTest(hooks: Partial<BrowserPluginRuntimeHooks>): void {
   runtimeHooks = { ...defaultRuntimeHooks, ...hooks };
@@ -322,6 +332,7 @@ export function resetBrowserPluginRuntimeHooksForTest(): void {
   runtimeHooks = { ...defaultRuntimeHooks };
   runtimeHooksCustomized = false;
   managedBrowserContexts.clear();
+  managedExtensionPaths.clear();
 }
 
 function now(): string {
@@ -489,7 +500,13 @@ async function resolveBrowserPluginAuthorizationContextInternal(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
   const action = browserActions().find((entry) => entry.actionId === input.actionId);
-  if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
+  // Browser session/profile mutations also need an exact reusable target. In
+  // particular, create_session is the bootstrap action for a scheduled
+  // Controller round and intentionally carries browser.read + browser.profile
+  // rather than browser.interact. Restricting authorization resolution to
+  // browser.interact made the first interactive session usable only for that
+  // call and left the Scheduler without a durable browser-session grant.
+  if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.profile')) return undefined;
 
   const persistedConfig = loadConfig(input.repoRoot, input);
   const sessionId = stringValue(input.args.session_id);
@@ -1544,13 +1561,19 @@ async function discoverCdpEndpoint(endpoint: string, timeoutMs: number): Promise
 }
 
 function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, profile: BrowserProfileSelection): Record<string, unknown> {
+  const extensionPaths = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].sort();
+  const args = [
+    ...(profile.profileDirectory ? [`--profile-directory=${profile.profileDirectory}`] : []),
+    ...(extensionPaths.length > 0 ? [`--disable-extensions-except=${extensionPaths.join(',')}`, `--load-extension=${extensionPaths.join(',')}`] : []),
+  ];
   return {
     headless: false,
     acceptDownloads: true,
     viewport: { width: 1280, height: 900 },
     ...(config.executablePath ? { executablePath: resolveConfiguredPath(repoRoot, config.executablePath) } : {}),
-    ...(!config.executablePath && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
-    ...(profile.profileDirectory ? { args: [`--profile-directory=${profile.profileDirectory}`] } : {}),
+    ...(!config.executablePath && extensionPaths.length === 0 && config.browserChannel && config.browserChannel !== 'chromium' ? { channel: config.browserChannel } : {}),
+    ...(extensionPaths.length > 0 ? { ignoreDefaultArgs: ['--disable-extensions'] } : {}),
+    ...(args.length > 0 ? { args } : {}),
   };
 }
 
@@ -1881,6 +1904,177 @@ async function openManagedContext(
       if (activeMode === 'isolated') await context.close().catch(() => undefined);
     },
   };
+}
+
+const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
+interface ManagedNativeMessagingHost {
+  name: string;
+  manifest: string;
+}
+interface BrowserExtensionInfo {
+  id: string;
+  name?: string;
+  version?: string;
+  path: string;
+  enabled: boolean;
+}
+
+function pathWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+function unpackedExtensionPath(input: AssistantPluginActionExecutionInput): { path: string; expectedId?: string; nativeHost?: ManagedNativeMessagingHost } {
+  const requested = requiredString(input.args.extension_path, 'extension_path');
+  if (!isAbsolute(requested)) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'extension_path must be absolute.', { retryable: false });
+  if (!existsSync(requested) || !statSync(requested).isDirectory()) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'extension_path must reference an existing directory.', { retryable: false });
+  }
+  const realPath = realpathSync(requested);
+  const trustedRoots = [realpathSync(input.repoRoot)];
+  const controllerBrowserRoot = join(resolve(input.controllerHome), 'supervisor', 'browser-adapter');
+  if (existsSync(controllerBrowserRoot)) trustedRoots.push(realpathSync(controllerBrowserRoot));
+  if (!trustedRoots.some((root) => pathWithin(root, realPath))) {
+    throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Unpacked extensions must resolve inside the repository or Controller-owned browser-adapter root.', { retryable: false });
+  }
+  const manifestPath = join(realPath, 'manifest.json');
+  if (!existsSync(manifestPath) || !statSync(manifestPath).isFile() || !pathWithin(realPath, realpathSync(manifestPath))) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unpacked extension requires a regular manifest.json inside the extension directory.', { retryable: false });
+  }
+  let manifest: { key?: unknown };
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { key?: unknown }; }
+  catch { throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unpacked extension manifest.json must contain valid JSON.', { retryable: false }); }
+  let expectedId: string | undefined;
+  if (typeof manifest.key === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(manifest.key.trim())) {
+    const bytes = Buffer.from(manifest.key.trim(), 'base64');
+    if (bytes.length > 0) expectedId = createHash('sha256').update(bytes).digest('hex').slice(0, 32)
+      .replace(/[0-9a-f]/g, (nibble) => String.fromCharCode(97 + Number.parseInt(nibble, 16)));
+  }
+  const declarationPath = join(realPath, FORGE_NATIVE_MESSAGING_DECLARATION);
+  let nativeHost: ManagedNativeMessagingHost | undefined;
+  if (existsSync(declarationPath)) {
+    if (!expectedId || !statSync(declarationPath).isFile() || !pathWithin(realPath, realpathSync(declarationPath))) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging declaration requires a regular file and stable extension manifest key.', { retryable: false });
+    }
+    let declaration: { name?: unknown; description?: unknown; path?: unknown; type?: unknown; allowed_origins?: unknown };
+    try { declaration = JSON.parse(readFileSync(declarationPath, 'utf8')) as typeof declaration; }
+    catch { throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'forge-native-messaging-host.json must contain valid JSON.', { retryable: false }); }
+    const name = typeof declaration.name === 'string' ? declaration.name.trim() : '';
+    const hostPath = typeof declaration.path === 'string' ? declaration.path.trim() : '';
+    const expectedOrigin = `chrome-extension://${expectedId}/`;
+    if (!/^[a-z0-9_]+(?:\.[a-z0-9_]+)*$/.test(name)
+      || declaration.type !== 'stdio'
+      || !isAbsolute(hostPath)
+      || !Array.isArray(declaration.allowed_origins)
+      || declaration.allowed_origins.length !== 1
+      || declaration.allowed_origins[0] !== expectedOrigin) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging declaration must bind one valid host name, stdio transport, absolute executable, and the exact stable extension origin.', { retryable: false });
+    }
+    if (!existsSync(hostPath) || !statSync(hostPath).isFile()) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging host executable must exist as a regular file.', { retryable: false });
+    }
+    const realHostPath = realpathSync(hostPath);
+    if (!trustedRoots.some((root) => pathWithin(root, realHostPath))) {
+      throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Managed native messaging host executable must resolve inside an already trusted extension, repository, or Controller browser-adapter root.', { retryable: false });
+    }
+    if (process.platform !== 'win32' && (statSync(realHostPath).mode & 0o111) === 0) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Managed native messaging host must be executable.', { retryable: false });
+    }
+    nativeHost = {
+      name,
+      manifest: `${JSON.stringify({
+        name,
+        description: typeof declaration.description === 'string' ? declaration.description.slice(0, 512) : '',
+        path: realHostPath,
+        type: 'stdio',
+        allowed_origins: [expectedOrigin],
+      }, null, 2)}\n`,
+    };
+  }
+  return { path: realPath, expectedId, nativeHost };
+}
+
+function projectManagedNativeMessagingHost(profileDir: string, host: ManagedNativeMessagingHost | undefined): boolean {
+  if (!host) return false;
+  const root = join(profileDir, 'NativeMessagingHosts');
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const target = join(root, `${host.name}.json`);
+  if (existsSync(target) && readFileSync(target, 'utf8') === host.manifest) return false;
+  const temporary = `${target}.${randomUUID().slice(0, 12)}.tmp`;
+  writeFileSync(temporary, host.manifest, { mode: 0o600 });
+  renameSync(temporary, target);
+  return true;
+}
+
+function extensionTargets(context: BrowserContextLike): string[] {
+  return [...(context.serviceWorkers?.() ?? []), ...(context.backgroundPages?.() ?? [])].map((target) => target.url());
+}
+
+async function waitForManagedExtension(context: BrowserContextLike, extensionId: string, timeoutMs: number): Promise<string> {
+  const prefix = `chrome-extension://${extensionId}/`;
+  const deadline = Date.now() + Math.min(Math.max(timeoutMs, 250), 10_000);
+  while (Date.now() <= deadline) {
+    const url = extensionTargets(context).find((candidate) => candidate.startsWith(prefix));
+    if (url) return url;
+    await delay(100);
+  }
+  throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Managed browser did not expose an exact runtime target for the requested extension id.', { retryable: true, details: { extensionId } });
+}
+
+async function browserLevelCdp(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+): Promise<{ browser: BrowserLike; session: BrowserCdpSessionLike; endpoint: string } | undefined> {
+  if (cdpEndpoints(config).length === 0 || !runtimeHooks.moduleAvailable('playwright', repoRoot)) return undefined;
+  const runtime = runtimeHooks.loadPlaywright(repoRoot);
+  const connectOverCDP = runtime.chromium.connectOverCDP;
+  if (typeof connectOverCDP !== 'function') return undefined;
+  for (const endpoint of cdpEndpoints(config)) {
+    try {
+      const discovered = await discoverCdpEndpoint(endpoint, cdpDiscoveryTimeout(config));
+      const browser = await connectOverCDP.call(runtime.chromium, discovered.discoveredEndpoint ?? endpoint);
+      if (typeof browser.newBrowserCDPSession !== 'function') {
+        if (browser.disconnect) await Promise.resolve(browser.disconnect()).catch(() => undefined);
+        else if (browser.close) await browser.close().catch(() => undefined);
+        continue;
+      }
+      const session = await browser.newBrowserCDPSession();
+      return { browser, session, endpoint: discovered.discoveredEndpoint ?? endpoint };
+    } catch { /* Pre-dispatch endpoint discovery/attach failure; try the next configured endpoint. */ }
+  }
+  return undefined;
+}
+
+async function closeBrowserLevelCdp(handle: { browser: BrowserLike; session: BrowserCdpSessionLike }): Promise<void> {
+  await handle.session.detach?.().catch(() => undefined);
+  if (handle.browser.disconnect) await Promise.resolve(handle.browser.disconnect()).catch(() => undefined);
+  else if (handle.browser.close) await handle.browser.close().catch(() => undefined);
+}
+
+async function cdpExtensionList(repoRoot: string, config: BrowserPluginConfig): Promise<{ provider: string; endpoint: string; extensions: BrowserExtensionInfo[] } | undefined> {
+  const handle = await browserLevelCdp(repoRoot, config);
+  if (!handle) return undefined;
+  try {
+    const result = await handle.session.send('Extensions.getExtensions') as { extensions?: BrowserExtensionInfo[] };
+    return { provider: 'playwright-cdp', endpoint: handle.endpoint, extensions: Array.isArray(result.extensions) ? result.extensions : [] };
+  } finally { await closeBrowserLevelCdp(handle); }
+}
+
+async function cdpInstallExtension(input: AssistantPluginActionExecutionInput, config: BrowserPluginConfig, extensionPath: string): Promise<Record<string, unknown> | undefined> {
+  const handle = await browserLevelCdp(input.repoRoot, config);
+  if (!handle) return undefined;
+  try {
+    const loaded = await handle.session.send('Extensions.loadUnpacked', {
+      path: extensionPath,
+      ...(input.args.enable_in_incognito === true ? { enableInIncognito: true } : {}),
+    }) as { id?: string };
+    const id = typeof loaded.id === 'string' && loaded.id.trim() ? loaded.id.trim() : undefined;
+    if (!id) throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Chrome did not return an extension id after loadUnpacked.', { retryable: true });
+    const listed = await handle.session.send('Extensions.getExtensions') as { extensions?: BrowserExtensionInfo[] };
+    const exact = (listed.extensions ?? []).find((entry) => entry.id === id && entry.enabled === true && realpathSync(entry.path) === extensionPath);
+    if (!exact) throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', 'Chrome did not verify the exact enabled unpacked extension id/path after loadUnpacked.', { retryable: true, details: { extensionId: id } });
+    return { provider: 'playwright-cdp', endpoint: handle.endpoint, extension: exact, verified: true };
+  } finally { await closeBrowserLevelCdp(handle); }
 }
 
 async function openAttachedContext(
@@ -2533,7 +2727,7 @@ async function withPage<T>(
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
           `Browser action ${actionId} reported a transient failure after dispatch. Forge refused automatic replay because the external mutation outcome is unknown; verify current browser state before retrying.`,
-          { retryable: false, details: { actionId, requestedRetries: retries } },
+          { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId, requestedRetries: retries } },
         );
       }
       if (attempt >= retries) throw error;
@@ -3231,11 +3425,11 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     pluginId: BROWSER_PLUGIN_ID,
     provider: 'local-browser',
     displayName: 'Controller Browser Plugin',
-    pluginVersion: '1.1.0',
+    pluginVersion: '1.2.0',
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/browser.json', 'controller-home:sqlite/browser_session', 'controller-home:repository browser artifacts'],
+      sourceOfTruth: ['controller-home:repositories/<repoId>/plugins/config/browser.json', 'controller-home:sqlite/computer_interaction_target', 'controller-home:repository browser artifacts'],
     },
     enabled: config.enabled,
     lifecycle: {
@@ -3383,6 +3577,58 @@ async function executeBrowserPluginActionInternal(
         }
         await closeManagedContextsForRepo(input.repoRoot);
         return { config, health: health(config, input.repoRoot) };
+      }
+      case 'list_unpacked_extensions': {
+        if (current.browserMode === 'attach_preferred') {
+          const cdp = await cdpExtensionList(input.repoRoot, current);
+          if (cdp) return { ...cdp, verified: true };
+          if (current.cdpAttachFallback !== 'managed_persistent') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Unpacked-extension control requires a configured browser-level CDP endpoint; refusing to restart or mutate the user-owned native browser.', { retryable: true });
+          }
+        }
+        if (current.browserMode !== 'managed_persistent' && current.cdpAttachFallback !== 'managed_persistent') {
+          throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Selected Browser mode does not provide unpacked-extension control.', { retryable: false });
+        }
+        const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
+        const pending = managedBrowserContexts.get(managedContextKey(profile));
+        if (!pending) return { provider: 'playwright-persistent-context', extensions: [], verified: true };
+        const state = await pending;
+        const urls = extensionTargets(state.context);
+        const extensions = [...(managedExtensionPaths.get(managedContextKey(profile)) ?? [])].map((path) => {
+          const { expectedId } = unpackedExtensionPath({ ...input, args: { ...input.args, extension_path: path } });
+          const enabled = Boolean(expectedId && urls.some((url) => url.startsWith(`chrome-extension://${expectedId}/`)));
+          return { id: expectedId, path, enabled };
+        });
+        return { provider: 'playwright-persistent-context', extensions, verified: true };
+      }
+      case 'install_unpacked_extension': {
+        const extension = unpackedExtensionPath(input);
+        if (current.browserMode === 'attach_preferred') {
+          const cdp = await cdpInstallExtension(input, current, extension.path);
+          if (cdp) return cdp;
+          if (current.cdpAttachFallback !== 'managed_persistent') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', 'Unpacked-extension install requires a configured browser-level CDP endpoint; refusing to restart or mutate the user-owned native browser.', { retryable: true });
+          }
+        }
+        if ((current.browserMode !== 'managed_persistent' && current.cdpAttachFallback !== 'managed_persistent') || !extension.expectedId) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE', extension.expectedId
+            ? 'Selected Browser mode does not provide managed unpacked-extension control.'
+            : 'Managed unpacked-extension verification requires a stable manifest key.', { retryable: false });
+        }
+        if (!runtimeHooks.moduleAvailable('playwright', input.repoRoot)) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed unpacked-extension install requires Playwright.', { retryable: false });
+        }
+        const profile = selectedProfile(current, input.repoRoot, 'managed_persistent');
+        const key = managedContextKey(profile);
+        const paths = managedExtensionPaths.get(key) ?? new Set<string>();
+        const changed = !paths.has(extension.path);
+        const nativeHostChanged = projectManagedNativeMessagingHost(profile.profileDir, extension.nativeHost);
+        paths.add(extension.path);
+        managedExtensionPaths.set(key, paths);
+        if (changed || nativeHostChanged) await evictManagedContext(key);
+        const state = await managedContextState(runtimeHooks.loadPlaywright(input.repoRoot), input.repoRoot, current, profile);
+        const runtimeTarget = await waitForManagedExtension(state.context, extension.expectedId, positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS));
+        return { provider: 'playwright-persistent-context', extension: { id: extension.expectedId, path: extension.path, enabled: true, runtimeTarget }, verified: true };
       }
       case 'list_sessions': {
         const inventory = await inspectSavedSessions(input.repoRoot, current);
@@ -3939,17 +4185,50 @@ async function executeBrowserPluginActionInternal(
           };
         }, { persistSession: true });
       }
+      case 'reconcile_effect': {
+        const effectRequestId = requiredString(input.args.effect_request_id, 'effect_request_id');
+        requiredString(input.args.session_id, 'session_id');
+        const observationArgs = (prefix: 'applied' | 'not_applied'): Record<string, unknown> => ({
+          session_id: input.args.session_id,
+          ...(input.args.url !== undefined ? { url: input.args.url } : {}),
+          ...(input.args.max_chars !== undefined ? { max_chars: input.args.max_chars } : {}),
+          ...(input.args.frame_url !== undefined ? { frame_url: input.args.frame_url } : {}),
+          ...(input.args.frame_name !== undefined ? { frame_name: input.args.frame_name } : {}),
+          ...(input.args.frame_index !== undefined ? { frame_index: input.args.frame_index } : {}),
+          ...(input.args[`${prefix}_url_contains_any`] !== undefined ? { url_contains_any: input.args[`${prefix}_url_contains_any`] } : {}),
+          ...(input.args[`${prefix}_url_contains_none`] !== undefined ? { url_contains_none: input.args[`${prefix}_url_contains_none`] } : {}),
+          ...(input.args[`${prefix}_text_contains_any`] !== undefined ? { text_contains_any: input.args[`${prefix}_text_contains_any`] } : {}),
+          ...(input.args[`${prefix}_text_contains_none`] !== undefined ? { text_contains_none: input.args[`${prefix}_text_contains_none`] } : {}),
+          ...(input.args[`${prefix}_selector`] !== undefined ? { selector: input.args[`${prefix}_selector`] } : {}),
+        });
+        const hasCriteria = (args: Record<string, unknown>) => Object.keys(args).some((key) => !['session_id', 'url', 'max_chars', 'frame_url', 'frame_name', 'frame_index'].includes(key));
+        const appliedArgs = observationArgs('applied');
+        if (!hasCriteria(appliedArgs)) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'reconcile_effect requires at least one applied_* observation criterion.', { retryable: false });
+        const applied = await executeBrowserPluginAction({ ...input, actionId: 'verify_state', args: appliedArgs });
+        if (applied.matched === true) return { effectRequestId, outcome: 'applied', output: applied, observation: applied };
+        const notAppliedArgs = observationArgs('not_applied');
+        if (hasCriteria(notAppliedArgs)) {
+          const notApplied = await executeBrowserPluginAction({ ...input, actionId: 'verify_state', args: notAppliedArgs });
+          if (notApplied.matched === true) return { effectRequestId, outcome: 'not_applied', observation: notApplied };
+          return { effectRequestId, outcome: 'unknown', observation: { applied, notApplied } };
+        }
+        return { effectRequestId, outcome: 'unknown', observation: { applied } };
+      }
       case 'verify_state': {
         requiredString(input.args.session_id, 'session_id');
         const target = resolveActionTarget(input.repoRoot, input.args);
         const expectedUrlRaw = stringValue(input.args.expected_url);
         const expectedUrl = expectedUrlRaw ? normalizedUrl(expectedUrlRaw) : undefined;
         const urlContains = stringValue(input.args.url_contains);
+        const urlContainsAny = stringList(input.args.url_contains_any);
+        const urlContainsNone = stringList(input.args.url_contains_none);
         const selector = stringValue(input.args.selector);
         const requireVisible = input.args.require_visible === true;
         const textContains = stringValue(input.args.text_contains);
-        if (!expectedUrl && !urlContains && !selector && !textContains) {
-          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'verify_state requires at least one of expected_url, url_contains, selector, or text_contains.', { retryable: false });
+        const textContainsAny = stringList(input.args.text_contains_any);
+        const textContainsNone = stringList(input.args.text_contains_none);
+        if (!expectedUrl && !urlContains && !urlContainsAny && !urlContainsNone && !selector && !textContains && !textContainsAny && !textContainsNone) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'verify_state requires at least one URL, selector, or text criterion.', { retryable: false });
         }
         if (requireVisible && !selector) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'require_visible requires selector.', { retryable: false });
@@ -3960,9 +4239,11 @@ async function executeBrowserPluginActionInternal(
           const checks: Array<Record<string, unknown>> = [];
           if (expectedUrl) checks.push({ criterion: 'url_exact', expected: expectedUrl, observed: observedUrl, matched: observedUrl === expectedUrl });
           if (urlContains) checks.push({ criterion: 'url_contains', expected: urlContains, observed: observedUrl, matched: observedUrl.includes(urlContains) });
+          if (urlContainsAny) checks.push({ criterion: 'url_contains_any', expected: urlContainsAny, observed: observedUrl, matched: urlContainsAny.some((value) => observedUrl.includes(value)) });
+          if (urlContainsNone) checks.push({ criterion: 'url_contains_none', expected: urlContainsNone, observed: observedUrl, matched: urlContainsNone.every((value) => !observedUrl.includes(value)) });
           let observation: { verificationVersion?: unknown; selectorExists?: unknown; visible?: unknown; textContains?: unknown; textSample?: unknown; textLength?: unknown; truncated?: unknown } | undefined;
-          if (selector || textContains) {
-            observation = await selection.scope.evaluate(verifyStateObservationScript(selector, textContains, Math.min(positiveNumber(input.args.max_chars, 2_000), 100_000)));
+          if (selector || textContains || textContainsAny || textContainsNone) {
+            observation = await selection.scope.evaluate(verifyStateObservationScript(selector, textContains, Math.min(positiveNumber(input.args.max_chars, 12_000), 100_000)));
             if (observation?.verificationVersion !== 1) {
               throw new AssistantPluginError('PLUGIN_BROWSER_VERIFY_STATE_UNAVAILABLE', 'Browser state observation returned an unsupported result.', { retryable: true });
             }
@@ -3980,6 +4261,9 @@ async function executeBrowserPluginActionInternal(
               ...(selector ? { selector } : {}),
             });
           }
+          const textSample = typeof observation?.textSample === 'string' ? observation.textSample : '';
+          if (textContainsAny) checks.push({ criterion: 'text_contains_any', expected: textContainsAny, observed: textSample, matched: textContainsAny.some((value) => textSample.includes(value)), textLength: observation?.textLength, truncated: observation?.truncated });
+          if (textContainsNone) checks.push({ criterion: 'text_contains_none', expected: textContainsNone, observed: textSample, matched: textContainsNone.every((value) => !textSample.includes(value)), textLength: observation?.textLength, truncated: observation?.truncated });
           return {
             provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
@@ -4093,15 +4377,16 @@ async function executeBrowserPluginActionInternal(
       case 'activate_page': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          const waitMs = positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS);
           if (connection.provider === 'macos-apple-events') {
-            await establishAuthoritativeNativeForeground(input, page, connection, target, waitMs);
+            await establishAuthoritativeNativeForeground(
+              input, page, connection, target, browserNativeForegroundVerificationWaitMs(input.args.post_action_wait_ms),
+            );
           } else {
             if (!page.bringToFront) {
               throw new AssistantPluginError('PLUGIN_BROWSER_ACTIVATION_UNSUPPORTED', 'The selected browser provider cannot bring the saved page to the foreground.', { retryable: false });
             }
             await page.bringToFront();
-            await delay(waitMs);
+            await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           }
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'activate_page', 'Activated the exact saved browser page in authoritative foreground state.', {});
         });
@@ -4144,7 +4429,7 @@ async function executeBrowserPluginActionInternal(
             element.click();
             return { tag: element.tagName.toLowerCase(), className: element.className || '', text: normalize(element.innerText || element.textContent || '') };
           }, { text });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'click_text', `Clicked exact visible text ${text}.`, { text, clicked });
         });
       }
@@ -4189,7 +4474,7 @@ async function executeBrowserPluginActionInternal(
               if (page.uncheck) await page.uncheck(selector, { timeout: timeoutMs });
               else await page.click(selector, { timeout: timeoutMs });
             }
-            await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+            await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
             const summary = input.actionId === 'click'
               ? `Clicked ${selector}.`
               : input.actionId === 'double_click'
@@ -4220,7 +4505,7 @@ async function executeBrowserPluginActionInternal(
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (input.actionId === 'fill' || !page.type) await page.fill(selector, text, { timeout: timeoutMs });
           else await page.type(selector, text, { timeout: timeoutMs });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, input.actionId, `${input.actionId} ${selector} with ${text.length} characters.`, {
             selector,
             textLength: text.length,
@@ -4240,7 +4525,7 @@ async function executeBrowserPluginActionInternal(
           if (!Array.isArray(selectedValues) || selectedValues.length === 0) {
             throw new AssistantPluginError('PLUGIN_BROWSER_SELECT_OPTION_FAILED', 'The browser provider did not retain any requested option selection.', { retryable: true, details: { selector, requestedCount: values.length } });
           }
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values, selectedValues });
         });
       }
@@ -4250,7 +4535,7 @@ async function executeBrowserPluginActionInternal(
         const key = requiredString(input.args.key, 'key');
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.press(selector, key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'press', `Pressed ${key} on ${selector}.`, {
             selector,
             key,
@@ -4263,7 +4548,7 @@ async function executeBrowserPluginActionInternal(
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (page.keyboard?.press) await page.keyboard.press(key);
           else await page.press('body', key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'keyboard_shortcut', `Pressed shortcut ${key}.`, { key });
         });
       }
@@ -4405,7 +4690,7 @@ async function executeBrowserPluginActionInternal(
             }
           }
           if (nativeTrustedInput) await page.trustedInput!(trustedRequest);
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'trusted_input', `Sent trusted browser input (${kind}).`, { kind, ...(guard ? { guard } : {}) });
         });
       }
@@ -4425,7 +4710,7 @@ async function executeBrowserPluginActionInternal(
             const accepted = element.dispatchEvent(domEvent);
             return { accepted, defaultPrevented: domEvent.defaultPrevented };
           }, { selector, event });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'dispatch_event', `Dispatched ${event} on ${selector}.`, {
             selector,
             event,
@@ -4495,7 +4780,7 @@ async function executeBrowserPluginActionInternal(
             throw new AssistantPluginError('PLUGIN_BROWSER_FILE_ATTACH_UNSUPPORTED', 'The selected browser provider does not support local file attachment.', { retryable: false });
           }
           await page.setInputFiles(selector, resolved.length === 1 ? resolved[0] : resolved);
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           const fileNames = resolved.map((path) => basename(path));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'attach_local_file', `Attached ${resolved.length} local file(s) to ${selector}.`, {
             selector,
@@ -4556,7 +4841,7 @@ async function executeBrowserPluginActionInternal(
           if (!existsSync(dest)) {
             throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_FAILED', 'Browser download save completed without producing an artifact; refusing false success.', { retryable: true, details: { selector } });
           }
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'await_file_transfer', `Captured download artifact for ${selector}.`, {
             selector,
             download: {

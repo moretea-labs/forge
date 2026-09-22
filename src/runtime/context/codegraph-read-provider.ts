@@ -71,6 +71,8 @@ export interface CodeGraphReadRequest {
   limit?: number;
   maxNodes?: number;
   maxDepth?: number;
+  /** Refresh only the derived CodeGraph index before a required structural read. */
+  refresh?: 'if_stale';
 }
 
 export interface CodeGraphReadProviderResponse {
@@ -292,6 +294,7 @@ export function queryCodeGraphReadProvider(
     ...(typeof request.query === 'string' ? { query: request.query.slice(0, 2_000) } : {}),
     ...(typeof request.nodeId === 'string' ? { nodeId: request.nodeId.slice(0, 1_000) } : {}),
     ...(typeof request.filePath === 'string' ? { filePath: request.filePath.slice(0, 2_000) } : {}),
+    ...(request.refresh === 'if_stale' ? { refresh: 'if_stale' as const } : {}),
     limit: boundedInteger(request.limit, 12, 1, 40),
     maxNodes: boundedInteger(request.maxNodes, 40, 1, 80),
     maxDepth: boundedInteger(request.maxDepth, 2, 1, 5),
@@ -550,6 +553,7 @@ export async function queryCodeGraphReadProviderAsync(
     ...(typeof request.query === 'string' ? { query: request.query.slice(0, 2_000) } : {}),
     ...(typeof request.nodeId === 'string' ? { nodeId: request.nodeId.slice(0, 1_000) } : {}),
     ...(typeof request.filePath === 'string' ? { filePath: request.filePath.slice(0, 2_000) } : {}),
+    ...(request.refresh === 'if_stale' ? { refresh: 'if_stale' as const } : {}),
     limit: boundedInteger(request.limit, 12, 1, 40),
     maxNodes: boundedInteger(request.maxNodes, 40, 1, 80),
     maxDepth: boundedInteger(request.maxDepth, 2, 1, 5),

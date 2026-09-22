@@ -16,6 +16,7 @@ src/cli/mcp/setup.ts
 tests/readme-dx.test.ts
 
 # Runtime proxy bypass intentionally includes Tailscale's standardized CGNAT CIDR.
+adapters/mcp/proxy-env.ts
 src/cli/mcp/proxy-env.ts
 
 # Scanner / redaction implementations intentionally embed pattern samples.
@@ -40,6 +41,17 @@ tests/runtime/browser-plugin.test.ts
 tests/runtime/capability-recovery.test.ts
 tests/runtime/low-interception-tooling.test.ts
 tests/runtime/target-architecture.test.ts
+# Cross-platform/browser fixtures intentionally contain synthetic absolute paths
+# and installation locations to prove discovery and identity fencing.
+scripts/portability-bindings.mjs
+tests/runtime/browser-product-discovery.test.ts
+tests/runtime/chatgpt-work-continuation.test.ts
+tests/runtime/frozen-tool-contract-abi.test.ts
+tests/runtime/windows-host-discovery.test.ts
+tests/runtime/standalone-recovery.test.ts
+# Secret-marker rejection tests use non-secret synthetic values by design.
+tests/runtime/assistant-learning.test.ts
+tests/runtime/context-plane.test.ts
 # Supervisor service unit tests use synthetic homeDir placeholders for PATH assembly.
 # Local monitor bridge defaults may reference a development repository id.
 scripts/run-mobile-monitor-bridge.ts

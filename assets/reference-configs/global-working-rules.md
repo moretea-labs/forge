@@ -9,6 +9,25 @@ Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` a
 - Act as an engineering collaborator: finish the concrete task, verify it, then report conclusion, actual change, reason, verification, and residual risk.
 - Prefer direct execution over repeated confirmation. Stop to ask only when continuing would likely produce output contrary to the user's intent.
 
+## Delivery Transaction Discipline
+
+### Current Task Lineage Isolation
+
+- Select the current task from explicit user intent plus the exact Work/Requirement/Plan lineage. Never treat repository-wide active Work as the current task queue.
+- Global status/inventory exists for conflict, ownership, blocker, and release-admission checks only. Unrelated active Work must not trigger discovery, edits, validation, review, release, cleanup, or progress accounting in the current controller round.
+- Switch tasks only on explicit user intent or an explicit typed lineage transition. Similar files, shared broad Requirements, urgency, or mere visibility in status are not lineage.
+- Report current-task progress from the current lineage only; label unrelated repository activity separately if it materially blocks the task.
+
+For architecture migrations, self-hosting work, and other multi-file system changes, optimize for one bounded delivery transaction instead of repeated micro-lifecycles.
+
+- Batch facts first, decide the root cause/owner once, freeze the delivery scope, implement the coherent candidate, review the whole diff, run one focused validation wave, run canonical gates once, then deliver and clean up.
+- A newly observed symptom or affected file does not justify a new Work. Extend the current candidate when the same architecture invariant/root cause still owns the change; create a sibling Work only for a genuinely independent authority, security boundary, delivery, or architecture decision.
+- Do not use Git commits as scratch savepoints. Prefer Work/edit-session/savepoint state during implementation and one coherent candidate commit at the delivery boundary.
+- Do not repeatedly run baseline checks, broad suites, Candidate builds, canaries, or Runtime activation while source-changing work for the same delivery remains active. Release begins only after the source candidate is frozen.
+- After a check failure, repair the same candidate and rerun the affected check set unless the evidence invalidates the architecture; do not restart the whole lifecycle by default.
+- Retire superseded/covered Work and Plan state promptly. Active lifecycle records must describe real remaining work, not historical debris.
+- When the workflow machinery itself has a design problem, capture a bounded follow-up Plan. If the current version can still converge safely, defer that machinery refactor until after the release instead of expanding the release scope.
+
 ## Progressive Due Diligence
 
 For non-trivial engineering work, do P1/P2/P3 before design decisions or code edits.

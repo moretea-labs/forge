@@ -4,12 +4,10 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
   getWorkContract,
-  listWorkContracts,
   readActiveWorkCandidates,
   type WorkContract,
 } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
-import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { listWorkHandles } from './work-handle-store';
 
 export interface WorkLifecycleAttention {
@@ -20,6 +18,7 @@ export interface WorkLifecycleAttention {
 
 interface LinkedWorktree {
   path: string;
+  head?: string;
   branch?: string;
 }
 
@@ -61,6 +60,8 @@ function linkedWorktrees(repositoryRoot: string): LinkedWorktree[] {
     if (line.startsWith('worktree ')) {
       if (current) worktrees.push(current);
       current = { path: line.slice('worktree '.length) };
+    } else if (current && line.startsWith('HEAD ')) {
+      current.head = line.slice('HEAD '.length).trim() || undefined;
     } else if (current && line.startsWith('branch refs/heads/')) {
       current.branch = line.slice('branch refs/heads/'.length);
     }
@@ -144,31 +145,31 @@ interface LifecycleWorkSnapshot {
 }
 
 /**
- * Keep lifecycle diagnostics available when one historical active Work row is malformed.
- * Active Work semantics come only from the Kernel row-isolated projection. When that
- * projection reports corruption, enumerate bounded durable identities and re-read each
- * remaining row through exact Kernel authority so terminal receipt/cleanup diagnostics
- * are preserved without reimplementing Work normalization here.
+ * Lifecycle attention is a projection consumer, not a historical Work scanner.
+ * Active authority comes from the row-isolated Kernel candidate projection.
+ * Terminal diagnostics are bounded to Work that still has a WorkHandle because
+ * that handle owns the physical delivery/cleanup state inspected below. Orphaned
+ * terminal Work is reconstructed by terminal-cleanup reconciliation before it
+ * becomes projection-owned cleanup state.
  */
-function readLifecycleWorkSnapshot(controllerHome: string, repoId: string): LifecycleWorkSnapshot {
+function readLifecycleWorkSnapshot(
+  controllerHome: string,
+  repoId: string,
+  handles: ReturnType<typeof listWorkHandles>,
+): LifecycleWorkSnapshot {
   const store = { controllerHome, repoId };
   const active = readActiveWorkCandidates({ ...store, limit: 100 });
-  if (active.invalid.length === 0) {
-    return { contracts: listWorkContracts({ ...store, status: 'all', limit: 100 }), invalid: [] };
-  }
-
   const contractsById = new Map(active.contracts.map((contract) => [contract.workId, contract]));
   const invalidById = new Map(active.invalid.map((entry) => [entry.workId, { workId: entry.workId, error: entry.error }]));
-  const identities = listControlPlaneRecords<WorkContract>(controllerHome, {
-    namespace: 'work_contract',
-    scope: repoId,
-    limit: 5_000,
-  })
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, 100);
 
-  for (const record of identities) {
-    const workId = record.key;
+  const handledWorkIds = [...new Set(
+    [...handles]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .map((handle) => handle.workContractId ?? handle.workId),
+  )];
+
+  for (const workId of handledWorkIds) {
+    if (contractsById.size >= 100) break;
     if (contractsById.has(workId) || invalidById.has(workId)) continue;
     try {
       const contract = getWorkContract(store, workId);
@@ -200,9 +201,9 @@ export function collectWorkLifecycleAttention(
   controllerHome: string,
   repository: RepositoryRecord,
 ): WorkLifecycleAttention[] {
-  const workSnapshot = readLifecycleWorkSnapshot(controllerHome, repository.repoId);
-  const contracts = workSnapshot.contracts;
   const handles = listWorkHandles(controllerHome, repository.repoId, 5_000);
+  const workSnapshot = readLifecycleWorkSnapshot(controllerHome, repository.repoId, handles);
+  const contracts = workSnapshot.contracts;
   const contractsByWork = new Map(contracts.map((contract) => [contract.workId, contract]));
   const handlesByWork = new Map(handles.map((handle) => [handle.workContractId ?? handle.workId, handle]));
   const findings: WorkLifecycleAttention[] = workSnapshot.invalid.map((entry) => attention(
@@ -210,7 +211,8 @@ export function collectWorkLifecycleAttention(
     entry.workId,
     `Work ${entry.workId} is unreadable by Kernel semantics and is excluded from valid lifecycle authority: ${entry.error.slice(0, 180)}`,
   ));
-  const targetBranch = repository.defaultBranch || 'main';
+  const canonicalBranch = git(repository.canonicalRoot, ['branch', '--show-current'])?.trim();
+  const targetBranch = canonicalBranch || repository.defaultBranch || 'main';
   const targetReachability = new Map<string, ReadonlySet<string> | undefined>();
   const reachableFrom = (branch: string): ReadonlySet<string> | undefined => {
     if (!targetReachability.has(branch)) {
@@ -223,11 +225,18 @@ export function collectWorkLifecycleAttention(
     const handle = handlesByWork.get(contract.workId);
     const terminal = isTerminalWorkContractStatus(contract.status);
     if (!terminal) {
-      findings.push(attention(
-        'work_active',
-        contract.workId,
-        `Work ${contract.workId} is ${contract.status} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
-      ));
+      // Repository lifecycle attention is release-facing. A source-neutral Work
+      // (for example local UI automation) may legitimately remain active while
+      // an unrelated clean source candidate is released. Only source-mutating
+      // repository Work should make its mere liveness a release blocker; real
+      // structural contradictions below remain attention regardless of kind.
+      if (contract.workKind === 'repository_change') {
+        findings.push(attention(
+          'work_active',
+          contract.workId,
+          `Work ${contract.workId} is ${contract.status} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
+        ));
+      }
       if (contract.workKind === 'repository_change' && !handle) {
         findings.push(attention(
           'active_work_handle_missing',
@@ -329,6 +338,14 @@ export function collectWorkLifecycleAttention(
     if (activeRegistryRoots.has(root)) continue;
     const isDirty = dirty(root);
     const handle = handleRoots.get(root);
+    if (isDirty === false) {
+      const integrated = worktree.branch
+        ? branchIntegrated(repository.canonicalRoot, worktree.branch, targetBranch, reachableFrom(targetBranch), worktree.head)
+        : worktree.head
+          ? exactCommitReachableFromTarget(repository.canonicalRoot, worktree.head, targetBranch, reachableFrom(targetBranch))
+          : undefined;
+      if (integrated === true) continue;
+    }
     const code = isDirty === true ? 'dirty_linked_worktree_unregistered' : 'linked_worktree_unregistered';
     findings.push(attention(
       code,

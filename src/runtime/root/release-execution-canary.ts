@@ -1,15 +1,20 @@
+import { join } from 'path';
 import { runProcess } from '../../effects/process-runner';
-import {
-  processRuntimeReleaseCanaryCommands,
-  type ProcessRuntimeReleaseCanaryCommand,
-} from '../execution/process-runtime/canary';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
+import { resolveBunExecutable } from '../shared/process-environment';
 import {
   assertRuntimeReleaseExecutionSurface,
   type RuntimeReleaseExecutionSurface,
 } from './release-manifest';
 
+export interface RuntimeReleaseExecutionCanaryCommand {
+  name: RuntimeReleaseExecutionSurface['entries'][number]['name'] | 'connector_cli';
+  executable: string;
+  args: string[];
+}
+
 export interface RuntimeReleaseExecutionCanaryDependencies {
-  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => {
+  runExecutionEntryCanary?: (input: RuntimeReleaseExecutionCanaryCommand) => {
     ok: boolean;
     stderr?: string;
     stdout?: string;
@@ -19,8 +24,10 @@ export interface RuntimeReleaseExecutionCanaryDependencies {
 
 /**
  * Release execution canaries deliberately do not inherit developer-tool PATH
- * entries. A manifest-owned executable that only works because Homebrew, Bun,
- * nvm, etc. happens to be present is not an immutable Runtime artifact.
+ * entries. Standalone-binary artifacts must execute without Homebrew, Bun, nvm,
+ * or similar PATH dependencies. Legacy script releases predate the embedded
+ * Runtime interpreter and are probed through the same explicitly resolved Bun
+ * executable that their Process Runtime uses in production.
  */
 export function runtimeReleaseCanaryEnvironment(
   env: NodeJS.ProcessEnv = process.env,
@@ -36,28 +43,61 @@ export function runtimeReleaseCanaryEnvironment(
   return { ...env, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
 }
 
-/** Execute the exact manifest-owned Process/Check Runner artifacts in bounded no-op mode. */
+/**
+ * Execute the minimum immutable Runtime execution surface plus the package
+ * Connector CLI import graph. The latter is intentionally a help-only command:
+ * it loads the exact CLI dependency closure used by the persistent Connector
+ * without opening a listener or mutating Runtime authority.
+ */
 export function assertRuntimeReleaseExecutionCanaries(
   manifestPath: string,
   controllerHome: string,
   dependencies: RuntimeReleaseExecutionCanaryDependencies = {},
 ): RuntimeReleaseExecutionSurface {
   const surface = assertRuntimeReleaseExecutionSurface(manifestPath, controllerHome);
-  const runExecutionEntryCanary = dependencies.runExecutionEntryCanary ?? ((request: ProcessRuntimeReleaseCanaryCommand) => runProcess(
+  const runExecutionEntryCanary = dependencies.runExecutionEntryCanary ?? ((request: RuntimeReleaseExecutionCanaryCommand) => runProcess(
     request.executable,
     request.args,
     {
       cwd: surface.releaseRoot,
       env: runtimeReleaseCanaryEnvironment(),
-      timeoutMs: 10_000,
+      timeoutMs: 30_000,
       maxOutputBytes: 64 * 1024,
     },
   ));
-  for (const canary of processRuntimeReleaseCanaryCommands(surface.releaseRoot)) {
+  const assertCanary = (canary: RuntimeReleaseExecutionCanaryCommand): void => {
     const result = runExecutionEntryCanary(canary);
     if (!result.ok) {
-      throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${result.stderr || result.stdout || result.error || 'unknown failure'}`.slice(0, 2_000));
+      const detail = result.stderr || result.stdout || result.error || 'unknown failure';
+      const legacyCheckRunnerUsageProbe = surface.manifest.executionMode !== 'standalone-binary'
+        && canary.name === 'check_runner'
+        && detail.trim() === 'PERSISTED_CHECK_USAGE: missing --repo';
+      if (legacyCheckRunnerUsageProbe) return;
+      throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${detail}`.slice(0, 2_000));
     }
+  };
+
+  for (const entry of surface.entries) {
+    const args = entry.canary === 'runtime_interpreter' ? ['--version'] : [PROCESS_RUNTIME_RELEASE_CANARY_ARG];
+    const legacyScript = surface.manifest.executionMode !== 'standalone-binary'
+      && /\.(?:[cm]?js|tsx?)$/i.test(entry.path);
+    assertCanary({
+      name: entry.name,
+      executable: legacyScript ? resolveBunExecutable(process.execPath, process.env) : entry.path,
+      args: legacyScript ? [entry.path, ...args] : args,
+    });
   }
+
+  // Package launcher releases execute source-backed CLI code from their own
+  // immutable snapshot. Compiled standalone releases have a different closed
+  // artifact surface and therefore do not use this source CLI probe.
+  if (surface.manifest.executionMode !== 'standalone-binary' && surface.manifest.packageRoot) {
+    assertCanary({
+      name: 'connector_cli',
+      executable: resolveBunExecutable(process.execPath, process.env),
+      args: [join(surface.releaseRoot, 'package', 'src', 'cli', 'index.ts'), 'mcp', 'serve', '--help'],
+    });
+  }
+
   return surface;
 }

@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { buildPatchHandoffArtifact } from '../../runtime/recovery/patch-handoff';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
+import { resolveRepositoryGitCommitScope } from './structured-git';
 import { withControllerLock } from './locks';
 import type { RepositoryRecord } from './types';
 
@@ -261,7 +262,10 @@ export function commitSelectedPaths(
   repository: RepositoryRecord,
   input: { paths: unknown; message: unknown; beforeCommitGuard?: SelectedPathBeforeCommitGuard },
 ): SelectedPathCommitResult {
-  const paths = normalizeSelectedPaths(repository, input.paths);
+  const selectedPaths = normalizeSelectedPaths(repository, input.paths);
+  const scope = resolveRepositoryGitCommitScope(repository, { paths: selectedPaths });
+  if (scope.source !== 'explicit_paths') throw new Error('SELECTED_PATH_COMMIT_SCOPE_INVALID: selected-path commit requires explicit path scope');
+  const paths = scope.paths;
   const message = String(input.message ?? '').trim();
   if (!message) throw new Error('COMMIT_MESSAGE_REQUIRED: message is required');
 

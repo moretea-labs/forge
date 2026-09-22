@@ -1,8 +1,10 @@
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import {
-  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
   type ComputerRuntimeProviderCapabilityId,
@@ -86,10 +88,12 @@ function declaredComputerCapabilities(
   }
   const capabilityIds = new Set(registration.capabilityIds);
   const recognized = [
-    COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
     COMPUTER_OBSERVE_CAPABILITY,
     COMPUTER_INPUT_CAPABILITY,
+    COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
     COMPUTER_CAPTURE_CAPABILITY,
+    COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
+    COMPUTER_ELEMENT_ACTION_CAPABILITY,
   ].filter((capability): capability is ComputerRuntimeProviderCapabilityId => capabilityIds.has(capability));
   const legacyRegistrationCompatible = LEGACY_REGISTRATION_CAPABILITIES.every((capability) => capabilityIds.has(capability));
   if (recognized.length === 0 && !legacyRegistrationCompatible) {
@@ -99,14 +103,14 @@ function declaredComputerCapabilities(
       {
         retryable: false,
         details: {
-          supportedComputerCapabilities: [COMPUTER_BROWSER_AUTOMATION_CAPABILITY, COMPUTER_OBSERVE_CAPABILITY, COMPUTER_INPUT_CAPABILITY, COMPUTER_CAPTURE_CAPABILITY],
+          supportedComputerCapabilities: [COMPUTER_OBSERVE_CAPABILITY, COMPUTER_INPUT_CAPABILITY, COMPUTER_CONSOLE_UNLOCK_CAPABILITY, COMPUTER_CAPTURE_CAPABILITY, COMPUTER_ELEMENT_OBSERVE_CAPABILITY, COMPUTER_ELEMENT_ACTION_CAPABILITY],
           legacyRequiredCapabilities: [...LEGACY_REGISTRATION_CAPABILITIES],
           registrationRevision: registration.revision,
         },
       },
     );
   }
-  return recognized.length > 0 ? recognized : [COMPUTER_BROWSER_AUTOMATION_CAPABILITY];
+  return recognized;
 }
 
 function registeredEndpoint(
@@ -150,7 +154,7 @@ export function resolveDesktopOperatorComputerEndpoint(
       healthTimeoutMs: 2_000,
       actionTimeoutMs: 30_000,
       maxResponseBytes: DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
-      capabilityIds: [COMPUTER_BROWSER_AUTOMATION_CAPABILITY],
+      capabilityIds: [],
     };
   }
   if (options.lookupRegistration) {
@@ -176,19 +180,19 @@ export function resolveDesktopOperatorComputerEndpoint(
     healthTimeoutMs: 2_000,
     actionTimeoutMs: 30_000,
     maxResponseBytes: DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
-    capabilityIds: [COMPUTER_BROWSER_AUTOMATION_CAPABILITY],
+    capabilityIds: [],
   };
 }
 
 export function desktopOperatorComputerProviderCapabilities(
   options: DesktopOperatorComputerProviderOptions = {},
 ): ComputerRuntimeProviderCapabilityId[] {
-  if (testSocketPath) return [COMPUTER_BROWSER_AUTOMATION_CAPABILITY];
+  if (testSocketPath) return [];
   if (options.lookupRegistration) {
     const registration = readRegisteredProvider(options.lookupRegistration);
     if (registration) return declaredComputerCapabilities(registration);
   }
-  if (options.legacyFallback === 'unregistered_v0_2') return [COMPUTER_BROWSER_AUTOMATION_CAPABILITY];
+  if (options.legacyFallback === 'unregistered_v0_2') return [];
   throw new ComputerProviderError(
     'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED',
     'Computer provider registration is required before capabilities can be declared.',

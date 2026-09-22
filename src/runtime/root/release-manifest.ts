@@ -52,11 +52,17 @@ function optionalRuntimeComponent<
 
 export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'executionMode',
+  'runtimeBundleEntrypoint', 'runtimeBundleArtifactIdentity',
+  'runtimeInterpreterEntrypoint', 'runtimeInterpreterArtifactIdentity',
   'diagnosticEntrypoint', 'diagnosticArtifactIdentity',
+  'connectorEntrypoint', 'connectorArtifactIdentity',
   'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
+  'workflowSupervisorNativeHostEntrypoint', 'workflowSupervisorNativeHostArtifactIdentity',
   'processRunnerEntrypoint', 'processRunnerArtifactIdentity',
   'checkRunnerEntrypoint', 'checkRunnerArtifactIdentity',
+  'schedulerWorkerEntrypoint', 'schedulerWorkerArtifactIdentity',
+  'periodicCleanupEntrypoint', 'periodicCleanupArtifactIdentity',
   'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
   'externalPluginProbeEntrypoint', 'externalPluginProbeArtifactIdentity',
   'codeGraphNodeEntrypoint', 'codeGraphNodeArtifactIdentity',
@@ -111,12 +117,35 @@ export function loadRuntimeReleaseManifest(
   if (executionMode !== undefined && executionMode !== 'standalone-binary') {
     throw new Error(`RELEASE_MANIFEST_INVALID: executionMode must be standalone-binary, got ${executionMode}`);
   }
+  const runtimeBundle = optionalRuntimeComponent({
+    value,
+    entryField: 'runtimeBundleEntrypoint',
+    identityField: 'runtimeBundleArtifactIdentity',
+    canonicalEntry: 'forge-runtime-bundle.js',
+  });
+  const runtimeInterpreter = optionalRuntimeComponent({
+    value,
+    entryField: 'runtimeInterpreterEntrypoint',
+    identityField: 'runtimeInterpreterArtifactIdentity',
+    canonicalEntry: (process.platform === 'win32' ? 'forge-runtime-bun.exe' : 'forge-runtime-bun') as RuntimeReleaseManifest['runtimeInterpreterEntrypoint'],
+  });
   if (value.configurationSchemaVersion !== 1) {
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
   }
-  const controllerHome = resolve(requireString(value.controllerHome, 'controllerHome'));
-  if (canonicalExistingPathIdentity(controllerHome) !== canonicalExistingPathIdentity(expectedControllerHome)) {
-    throw new Error('RELEASE_MANIFEST_CONTROLLER_HOME_MISMATCH');
+  const deploymentScope = value.deploymentScope === undefined
+    ? 'controller-home'
+    : requireString(value.deploymentScope, 'deploymentScope');
+  if (deploymentScope !== 'controller-home' && deploymentScope !== 'portable') {
+    throw new Error(`RELEASE_MANIFEST_INVALID: deploymentScope must be portable when present, got ${deploymentScope}`);
+  }
+  let controllerHome: string | undefined;
+  if (deploymentScope === 'controller-home') {
+    controllerHome = resolve(requireString(value.controllerHome, 'controllerHome'));
+    if (canonicalExistingPathIdentity(controllerHome) !== canonicalExistingPathIdentity(expectedControllerHome)) {
+      throw new Error('RELEASE_MANIFEST_CONTROLLER_HOME_MISMATCH');
+    }
+  } else if (value.controllerHome !== undefined) {
+    throw new Error('RELEASE_MANIFEST_INVALID: portable release must not embed controllerHome');
   }
   const compatibility = value.databaseSchemaCompatibility as Record<string, unknown> | undefined;
   const minimum = Number(compatibility?.minimum);
@@ -135,6 +164,12 @@ export function loadRuntimeReleaseManifest(
     identityField: 'diagnosticArtifactIdentity',
     canonicalEntry: 'forge-cli',
   });
+  const connector = optionalRuntimeComponent({
+    value,
+    entryField: 'connectorEntrypoint',
+    identityField: 'connectorArtifactIdentity',
+    canonicalEntry: 'forge-mcp-gateway',
+  });
   const browserNodeBridge = optionalRuntimeComponent({
     value,
     entryField: 'browserNodeBridgeEntrypoint',
@@ -147,6 +182,12 @@ export function loadRuntimeReleaseManifest(
     identityField: 'browserHandoffArtifactIdentity',
     canonicalEntry: 'browser-handoff-host.js',
   });
+  const workflowSupervisorNativeHost = optionalRuntimeComponent({
+    value,
+    entryField: 'workflowSupervisorNativeHostEntrypoint',
+    identityField: 'workflowSupervisorNativeHostArtifactIdentity',
+    canonicalEntry: 'forge-workflow-supervisor-native-host',
+  });
   const processRunner = optionalRuntimeComponent({
     value,
     entryField: 'processRunnerEntrypoint',
@@ -158,6 +199,30 @@ export function loadRuntimeReleaseManifest(
     entryField: 'checkRunnerEntrypoint',
     identityField: 'checkRunnerArtifactIdentity',
     canonicalEntry: 'forge-check-runner',
+  });
+  const typescriptNavigation = optionalRuntimeComponent({
+    value,
+    entryField: 'typescriptNavigationEntrypoint',
+    identityField: 'typescriptNavigationArtifactIdentity',
+    canonicalEntry: 'forge-typescript-navigation',
+  });
+  const contextPack = optionalRuntimeComponent({
+    value,
+    entryField: 'contextPackEntrypoint',
+    identityField: 'contextPackArtifactIdentity',
+    canonicalEntry: 'forge-context-pack',
+  });
+  const schedulerWorker = optionalRuntimeComponent({
+    value,
+    entryField: 'schedulerWorkerEntrypoint',
+    identityField: 'schedulerWorkerArtifactIdentity',
+    canonicalEntry: 'forge-scheduler-worker',
+  });
+  const periodicCleanup = optionalRuntimeComponent({
+    value,
+    entryField: 'periodicCleanupEntrypoint',
+    identityField: 'periodicCleanupArtifactIdentity',
+    canonicalEntry: 'forge-periodic-cleanup',
   });
   const pluginActionSidecar = optionalRuntimeComponent({
     value,
@@ -258,11 +323,19 @@ export function loadRuntimeReleaseManifest(
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
     ...(executionMode ? { executionMode: 'standalone-binary' as const } : {}),
+    ...(runtimeBundle ?? {}),
+    ...(runtimeInterpreter ?? {}),
     ...(diagnostic ?? {}),
+    ...(connector ?? {}),
     ...(browserNodeBridge ?? {}),
     ...(browserHandoff ?? {}),
+    ...(workflowSupervisorNativeHost ?? {}),
     ...(processRunner ?? {}),
     ...(checkRunner ?? {}),
+    ...(typescriptNavigation ?? {}),
+    ...(contextPack ?? {}),
+    ...(schedulerWorker ?? {}),
+    ...(periodicCleanup ?? {}),
     ...(pluginActionSidecar ?? {}),
     ...(externalPluginProbe ?? {}),
     ...(browserAutomationHelper ?? {}),
@@ -271,9 +344,10 @@ export function loadRuntimeReleaseManifest(
     ...(controllerUi ?? {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
-    controllerHome,
+    ...(deploymentScope === 'portable' ? { deploymentScope: 'portable' as const } : { controllerHome: controllerHome! }),
     databaseSchemaCompatibility: { minimum, maximum },
     workerProtocolVersion,
+    ...(typeof value.sourceRepositoryId === 'string' && value.sourceRepositoryId.trim() ? { sourceRepositoryId: value.sourceRepositoryId.trim() } : {}),
     ...(typeof value.sourceCommit === 'string' && value.sourceCommit.trim() ? { sourceCommit: value.sourceCommit.trim() } : {}),
     ...(typeof value.releaseRevision === 'string' && value.releaseRevision.trim() ? { releaseRevision: value.releaseRevision.trim() } : {}),
     ...(typeof value.cleanWorkspace === 'boolean' ? { cleanWorkspace: value.cleanWorkspace } : {}),
@@ -285,9 +359,10 @@ export interface RuntimeReleaseExecutionSurface {
   manifest: RuntimeReleaseManifest;
   releaseRoot: string;
   entries: Array<{
-    name: 'process_runner' | 'check_runner';
+    name: 'runtime_interpreter' | 'process_runner' | 'check_runner' | 'typescript_navigation' | 'context_pack' | 'scheduler_worker' | 'periodic_cleanup';
     path: string;
     artifactIdentity: string;
+    canary: 'runtime_interpreter' | 'process_runtime';
   }>;
 }
 
@@ -306,18 +381,55 @@ export function assertRuntimeReleaseExecutionSurface(
     || !manifest.checkRunnerEntrypoint || !manifest.checkRunnerArtifactIdentity) {
     throw new Error('RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE: process-runner.js and forge-check-runner are required');
   }
+  if (manifest.executionMode === 'standalone-binary'
+    && (!manifest.schedulerWorkerEntrypoint || !manifest.schedulerWorkerArtifactIdentity
+      || !manifest.periodicCleanupEntrypoint || !manifest.periodicCleanupArtifactIdentity)) {
+    throw new Error('RUNTIME_RELEASE_SCHEDULER_SURFACE_INCOMPLETE: forge-scheduler-worker and forge-periodic-cleanup are required');
+  }
   const releaseRoot = dirname(resolvedManifestPath);
   const entries: RuntimeReleaseExecutionSurface['entries'] = [
+    ...(manifest.runtimeInterpreterEntrypoint && manifest.runtimeInterpreterArtifactIdentity ? [{
+      name: 'runtime_interpreter' as const,
+      path: join(releaseRoot, manifest.runtimeInterpreterEntrypoint),
+      artifactIdentity: manifest.runtimeInterpreterArtifactIdentity,
+      canary: 'runtime_interpreter' as const,
+    }] : []),
     {
       name: 'process_runner',
       path: join(releaseRoot, manifest.processRunnerEntrypoint),
       artifactIdentity: manifest.processRunnerArtifactIdentity,
+      canary: 'process_runtime',
     },
     {
       name: 'check_runner',
       path: join(releaseRoot, manifest.checkRunnerEntrypoint),
       artifactIdentity: manifest.checkRunnerArtifactIdentity,
+      canary: 'process_runtime',
     },
+    ...(manifest.typescriptNavigationEntrypoint && manifest.typescriptNavigationArtifactIdentity ? [{
+      name: 'typescript_navigation' as const,
+      path: join(releaseRoot, manifest.typescriptNavigationEntrypoint),
+      artifactIdentity: manifest.typescriptNavigationArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
+    ...(manifest.contextPackEntrypoint && manifest.contextPackArtifactIdentity ? [{
+      name: 'context_pack' as const,
+      path: join(releaseRoot, manifest.contextPackEntrypoint),
+      artifactIdentity: manifest.contextPackArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
+    ...(manifest.schedulerWorkerEntrypoint && manifest.schedulerWorkerArtifactIdentity ? [{
+      name: 'scheduler_worker' as const,
+      path: join(releaseRoot, manifest.schedulerWorkerEntrypoint),
+      artifactIdentity: manifest.schedulerWorkerArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
+    ...(manifest.periodicCleanupEntrypoint && manifest.periodicCleanupArtifactIdentity ? [{
+      name: 'periodic_cleanup' as const,
+      path: join(releaseRoot, manifest.periodicCleanupEntrypoint),
+      artifactIdentity: manifest.periodicCleanupArtifactIdentity,
+      canary: 'process_runtime' as const,
+    }] : []),
   ];
   for (const entry of entries) {
     if (!existsSync(entry.path)) throw new Error(`RUNTIME_RELEASE_EXECUTION_ENTRY_MISSING: ${entry.name}: ${entry.path}`);

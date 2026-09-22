@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "contractId": "forge-engineering",
+  "contractVersion": "1",
+  "projectId": "forge",
+  "authority": {
+    "product": [
+      "README.md"
+    ],
+    "architecture": [
+      "docs/architecture/CURRENT.md",
+      "docs/architecture/decisions/**"
+    ],
+    "source": [
+      "packages/**",
+      "src/**",
+      "adapters/**",
+      "supervisor/**"
+    ]
+  },
+  "quality": {
+    "ux": [],
+    "performance": [
+      "Avoid adding blocking work to Controller, Gateway, scheduler, or continuation hot paths without measured justification.",
+      "Long-running verification must use the existing Process Runtime and resource-compatible check scheduling rather than synchronous polling loops."
+    ],
+    "nonRegression": [
+      "Preserve Controller-first authority: ChatGPT owns semantic decisions while Forge owns deterministic execution, evidence, and lower-layer lifecycle enforcement.",
+      "Do not introduce a second durable writer for Requirement, Plan, Work, ControllerRound, Workflow Supervisor, or repository execution state.",
+      "Do not weaken registered verification, implementation review, approval, or repository safety gates to obtain progress.",
+      "External effects with ambiguous outcome must reconcile before retry; blind replay is forbidden.",
+      "Architecture authority and implementation must remain synchronized.",
+      "Use root-cause-first batch convergence: cluster related symptoms before mutation and prefer one coherent common-cause correction over symptom-by-symptom patches; emergency containment must remain narrow and return to root-cause closure.",
+      "Cognitive learning may guide future Work only through portable semantic scope and must not silently override product/domain contracts, architecture authority, authorization, or verification gates."
+    ]
+  },
+  "checks": [
+    {
+      "id": "package:check:type",
+      "purpose": "Compile the root TypeScript graph and Workflow Supervisor TypeScript graph without emitting output."
+    },
+    {
+      "id": "package:check:runtime-architecture",
+      "purpose": "Enforce source-level runtime ownership and architecture guardrails."
+    },
+    {
+      "id": "package:check:architecture-sync",
+      "purpose": "Detect architecture and implementation drift for changed capabilities."
+    }
+  ],
+  "journeys": [],
+  "platforms": [
+    "node"
+  ],
+  "tooling": [
+    {
+      "id": "typescript-compiler",
+      "purpose": "TypeScript compile-time validation for repository changes."
+    },
+    {
+      "id": "forge-process-runtime",
+      "purpose": "Bounded execution and verification with durable process evidence when commands outlive the interaction budget."
+    }
+  ],
+  "skillRefs": [],
+  "skillBindings": [
+    {
+      "id": "typescript-engineering",
+      "version": "1",
+      "kinds": [
+        "typescript"
+      ]
+    }
+  ],
+  "exceptions": []
+}

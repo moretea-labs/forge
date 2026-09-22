@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "forge-supplemental-posthoc/v1",
+  "sourceProtocolDigest": "sha256:b383b97aacc5995ba69525d1aac5f031046c8708db3c32011e484444818d2700",
+  "sourceEvidenceDigest": "sha256:7d72f78fc06740e6736a4ae589800188435dcdcc489ed2607f376ef578409539",
+  "measurementContractDigest": "sha256:090e0424da46c5c3c5ef2aa330f14b1beadc40fba18e29fd397597aa18c31a8b",
+  "scenarioCount": 24,
+  "pairCount": 144,
+  "trialCount": 288,
+  "baselineCandidateId": "forge-v1.7.2",
+  "candidateCandidateId": "forge-v1.8.0-d1b2fef7",
+  "metrics": [
+    {
+      "metricId": "behavioral_invariant_success",
+      "applicablePairCount": 144,
+      "missingPairCount": 0,
+      "baselineMean": 1,
+      "candidateMean": 1,
+      "meanDeltaCandidateMinusBaseline": 0
+    },
+    {
+      "metricId": "change_precision",
+      "applicablePairCount": 36,
+      "missingPairCount": 0,
+      "baselineMean": 1,
+      "candidateMean": 1,
+      "meanDeltaCandidateMinusBaseline": 0
+    },
+    {
+      "metricId": "impact_coverage",
+      "applicablePairCount": 144,
+      "missingPairCount": 0,
+      "baselineMean": 1,
+      "candidateMean": 1,
+      "meanDeltaCandidateMinusBaseline": 0
+    },
+    {
+      "metricId": "regression_reintroduction_rate",
+      "applicablePairCount": 144,
+      "missingPairCount": 0,
+      "baselineMean": 0,
+      "candidateMean": 0,
+      "meanDeltaCandidateMinusBaseline": 0
+    },
+    {
+      "metricId": "task_correctness",
+      "applicablePairCount": 144,
+      "missingPairCount": 0,
+      "baselineMean": 1,
+      "candidateMean": 1,
+      "meanDeltaCandidateMinusBaseline": 0
+    }
+  ],
+  "verdict": "eligible_for_superiority_assessment"
+}

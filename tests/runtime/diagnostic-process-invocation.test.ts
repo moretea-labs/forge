@@ -12,9 +12,11 @@ import { resolveDiagnosticCliInvocation, runReadOnlyDiagnosticViaProcessRuntime 
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
+  resolveCandidatePersistedCheckRunnerTarget,
   resolvePersistedCheckCliInvocation,
   resolvePersistedCheckProcessInvocation,
   resolvePersistedCheckRuntimeExecutable,
+  shouldUseCandidatePersistedCheckRunner,
 } from '../../src/runtime/gateway/mcp/persisted-check-process';
 
 const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchdog_report'];
@@ -69,6 +71,43 @@ describe('typed CLI child invocation', () => {
       runtimeExecutable: '/opt/runtime/service/active-forge-runtime',
       entryExists: (path) => path === '/opt/releases/release-123/forge-check-runner',
     })).toEqual({ executable, args: diagnosticArgs });
+  });
+
+  test('binds self-hosting Work verification to candidate Check Runner semantics without changing ordinary or live checks', () => {
+    expect(shouldUseCandidatePersistedCheckRunner({
+      repoId: 'repo-forge', runtimeSourceRepoId: 'repo-forge', verificationSnapshot: true, liveCertification: false,
+    })).toBe(true);
+    expect(shouldUseCandidatePersistedCheckRunner({
+      repoId: 'repo-app', runtimeSourceRepoId: 'repo-forge', verificationSnapshot: true, liveCertification: false,
+    })).toBe(false);
+    expect(shouldUseCandidatePersistedCheckRunner({
+      repoId: 'repo-forge', runtimeSourceRepoId: 'repo-forge', verificationSnapshot: true, liveCertification: true,
+    })).toBe(false);
+
+    const root = mkdtempSync(join(tmpdir(), 'forge-candidate-check-runner-'));
+    try {
+      const sidecar = join(root, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts');
+      mkdirSync(join(root, 'src/runtime/execution/process-runtime'), { recursive: true });
+      writeFileSync(sidecar, '// candidate sidecar fixture\n');
+      const candidate = resolveCandidatePersistedCheckRunnerTarget(root, 'candidate-content-revision', {
+        bunExecutable: '/opt/bun/bin/bun',
+      });
+      expect(candidate.cliTarget).toMatchObject({
+        cwd: root,
+        runtimeKind: 'bun_source',
+        sourceRevision: 'candidate-content-revision',
+        immutable: false,
+      });
+      expect(candidate.executionStateFingerprint).toHaveLength(24);
+      expect(resolvePersistedCheckProcessInvocation(candidate.cliTarget, diagnosticArgs, {
+        runtimeExecutable: candidate.runtimeExecutable,
+      })).toEqual({
+        executable: '/opt/bun/bin/bun',
+        args: [sidecar, ...diagnosticArgs],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('passes source entries to Bun and Node runtimes', () => {

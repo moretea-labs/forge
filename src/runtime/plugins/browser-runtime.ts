@@ -26,13 +26,38 @@ export const ALL_BROWSER_PROVIDER_CAPABILITIES = [
   'browser.persistent_handle',
 ] as const satisfies readonly BrowserProviderCapability[];
 
+export const DEFAULT_NATIVE_FOREGROUND_VERIFICATION_WAIT_MS = 750;
+
+/**
+ * Normal Browser semantic actions already await the provider primitive and return
+ * bounded post-action evidence. A caller may request an additional compatibility
+ * settle delay explicitly, but omission never creates a hidden fixed sleep.
+ */
+export function browserExplicitPostActionWaitMs(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
+}
+
+/**
+ * Native foreground activation is different from ordinary semantic mutation: it
+ * must observe system foreground authority after an Apple Events/Computer action.
+ * Keep its provider-specific verification budget unless the caller explicitly
+ * supplies a non-negative compatibility value.
+ */
+export function browserNativeForegroundVerificationWaitMs(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : DEFAULT_NATIVE_FOREGROUND_VERIFICATION_WAIT_MS;
+}
+
 const READ_ACTIONS = new Set([
   'list_sessions', 'reconcile_sessions', 'get_handoff_status',
-  'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state',
+  'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state', 'reconcile_effect',
   'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive', 'get_console_errors', 'get_failed_requests',
   'wait_for_load_state', 'wait_for_selector', 'await_file_transfer',
 ]);
 const SCREENSHOT_ACTIONS = new Set(['screenshot']);
+const INTERNAL_RESOURCE_READ_ACTIONS = new Set(['list_unpacked_extensions']);
+const INTERNAL_RESOURCE_MUTATION_ACTIONS = new Set(['install_unpacked_extension']);
 const TRUSTED_INPUT_ACTIONS = new Set(['trusted_input', 'activate_page']);
 const DOM_INTERACTION_ACTIONS = new Set([
   'create_session', 'open_page', 'navigate', 'reload', 'go_back',
@@ -65,6 +90,12 @@ export function invalidateBrowserRuntime(runtimeKey: string, reason: string): vo
 export function browserRuntimeActionPolicy(actionId: string): BrowserRuntimeActionPolicy {
   if (SCREENSHOT_ACTIONS.has(actionId)) {
     return { requiredCapabilities: ['browser.screenshot', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
+  }
+  if (INTERNAL_RESOURCE_READ_ACTIONS.has(actionId)) {
+    return { requiredCapabilities: ['browser.internal_resources', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
+  }
+  if (INTERNAL_RESOURCE_MUTATION_ACTIONS.has(actionId)) {
+    return { requiredCapabilities: ['browser.internal_resources', 'browser.transaction'], foreground: 'none', replaySafety: 'non_idempotent' };
   }
   if (TRUSTED_INPUT_ACTIONS.has(actionId)) {
     return {
@@ -102,6 +133,9 @@ function stringArgument(args: Record<string, unknown>, key: string): string | un
 }
 
 function stableTargetFor(input: AssistantPluginActionExecutionInput, providerId: string): BrowserTargetIdentity {
+  if (INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)) {
+    return { providerId, resourceKind: 'browser_internal_resource', resourceId: 'unpacked-extensions', ownership: 'provider_owned' };
+  }
   const sessionId = stringArgument(input.args, 'session_id');
   const nativeProduct = stringArgument(input.args, 'native_browser_product');
   const nativeWindowId = stringArgument(input.args, 'native_window_id');
@@ -143,7 +177,9 @@ function transactionFor(
     foreground: policy.foreground,
     replaySafety: policy.replaySafety,
     action: {
-      kind: policy.replaySafety === 'read_only' ? 'read' : policy.foreground === 'explicit_required' ? 'trusted_input' : 'dom',
+      kind: INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)
+        ? 'internal_resource'
+        : policy.replaySafety === 'read_only' ? 'read' : policy.foreground === 'explicit_required' ? 'trusted_input' : 'dom',
       operation: input.actionId,
       arguments: input.args,
     },

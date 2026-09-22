@@ -18,6 +18,7 @@ import {
   type CodeGraphReadProviderResponse,
 } from '../../src/runtime/context/codegraph-read-provider';
 import { codegraphRepositoryCacheRoot } from '../../src/runtime/context/codegraph-cache-boundary';
+import { resolveStructuralIndexRoot } from '../../adapters/mcp/runtime-gateway/context-adapter';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -613,7 +614,9 @@ describe('CodeGraph read provider', () => {
     const root = contextRepo();
     const session = { sessionId: 'context-required-wait', repoId: 'repo-a', checkoutId: 'checkout-a' };
     const delayedMs = AUTO_STRUCTURAL_PREFETCH_BUDGET_MS + 50;
-    const queryCodeGraphAsync = async () => {
+    let observedRefresh: Parameters<typeof queryCodeGraphReadProvider>[1]['refresh'];
+    const queryCodeGraphAsync = async (_repoRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]) => {
+      observedRefresh = request.refresh;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, delayedMs));
       return structuralResponse();
     };
@@ -627,6 +630,7 @@ describe('CodeGraph read provider', () => {
       session,
     }, { queryCodeGraph, queryCodeGraphAsync });
     expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'ready', requiredSatisfied: true });
+    expect(observedRefresh).toBe('if_stale');
     expect(pack.timingsMs.structuralPrefetchDeferred).toBe(false);
     expect(pack.timingsMs.parallelPrefetch ?? 0).toBeGreaterThanOrEqual(AUTO_STRUCTURAL_PREFETCH_BUDGET_MS);
   });
@@ -636,12 +640,16 @@ describe('CodeGraph read provider', () => {
     const session = { sessionId: 'context-mode-fence', repoId: 'repo-a', checkoutId: 'checkout-a' };
     let autoCalls = 0;
     let requiredCalls = 0;
-    const queryCodeGraphAsync = async (_repoRoot: string, _request: Parameters<typeof queryCodeGraphReadProvider>[1], options: { timeoutMs?: number } = {}) => {
+    let autoRefresh: Parameters<typeof queryCodeGraphReadProvider>[1]['refresh'];
+    let requiredRefresh: Parameters<typeof queryCodeGraphReadProvider>[1]['refresh'];
+    const queryCodeGraphAsync = async (_repoRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1], options: { timeoutMs?: number } = {}) => {
       if (options.timeoutMs === AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS) {
         autoCalls += 1;
+        autoRefresh = request.refresh;
         await new Promise((resolveDelay) => setTimeout(resolveDelay, AUTO_STRUCTURAL_PREFETCH_BUDGET_MS * 3));
       } else {
         requiredCalls += 1;
+        requiredRefresh = request.refresh;
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
       }
       return structuralResponse();
@@ -660,6 +668,8 @@ describe('CodeGraph read provider', () => {
     expect(required.timingsMs.structuralPrefetchReusedInFlight).toBe(false);
     expect(autoCalls).toBe(1);
     expect(requiredCalls).toBe(1);
+    expect(autoRefresh).toBeUndefined();
+    expect(requiredRefresh).toBe('if_stale');
     await auto;
   });
 
@@ -796,6 +806,25 @@ describe('CodeGraph read provider', () => {
     expect(pack.readiness.structural).toMatchObject({ requested: 'off', status: 'disabled', requiredSatisfied: true });
   });
 
+  test('does not add an adaptive wave solely because multiple exact known paths were supplied', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/helper.ts'), 'export function helper() { return 42; }\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      knownPaths: ['src/service.ts', 'src/helper.ts'],
+      retrievalMode: 'implementation',
+      structuralContext: 'off',
+      maxFiles: 2,
+      maxSnippets: 4,
+    });
+    expect(pack.coverage.exactKnownPaths).toEqual({
+      requested: ['src/service.ts', 'src/helper.ts'],
+      materialized: ['src/helper.ts', 'src/service.ts'],
+      missing: [],
+    });
+    expect(pack.expansion).toMatchObject({ waveCount: 1, expansionPerformed: false, expansionBudgetUsed: 0 });
+    expect(pack.timingsMs.expansionBudgetMax).toBe(0);
+  });
+
   test('allows default implementation retrieval to close concrete source relationships in the same request', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/service.ts'), "import { helper } from './helper';\nexport function runService() { return helper(); }\n");
@@ -907,6 +936,34 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.scannedFiles).toBeGreaterThan(0);
     expect(pack.files[0]?.path).toBe('src/service.ts');
     expect(pack.files[0]?.reasons).toContain('search:runService');
+  });
+
+  test('selects the Controller Home CodeGraph from a non-worktree checkout for an isolated Work', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-codegraph-controller-home-'));
+    const canonicalRoot = contextRepo();
+    const worktreeRoot = mkdtempSync(join(tmpdir(), 'forge-codegraph-worktree-'));
+    roots.push(controllerHome, worktreeRoot);
+    const cacheRoot = codegraphRepositoryCacheRoot(controllerHome, canonicalRoot);
+    mkdirSync(cacheRoot, { recursive: true });
+    writeFileSync(join(cacheRoot, 'codegraph.db'), 'canonical-index');
+    const archivedRoot = mkdtempSync(join(tmpdir(), 'forge-codegraph-archived-'));
+    roots.push(archivedRoot);
+    const archivedCache = codegraphRepositoryCacheRoot(controllerHome, archivedRoot);
+    mkdirSync(archivedCache, { recursive: true });
+    writeFileSync(join(archivedCache, 'codegraph.db'), 'archived-index-must-not-win');
+    const worktreeCache = codegraphRepositoryCacheRoot(controllerHome, worktreeRoot);
+    mkdirSync(worktreeCache, { recursive: true });
+    writeFileSync(join(worktreeCache, 'codegraph.db'), 'worktree-index-must-not-win');
+    const repository = {
+      canonicalRoot: worktreeRoot,
+      activeCheckoutId: 'checkout-worktree',
+      checkouts: [
+        { checkoutId: 'checkout-archived', canonicalRoot: archivedRoot, localRoot: archivedRoot, worktree: false, lifecycle: 'archived' },
+        { checkoutId: 'checkout-main', canonicalRoot, localRoot: canonicalRoot, worktree: false },
+        { checkoutId: 'checkout-worktree', canonicalRoot: worktreeRoot, localRoot: worktreeRoot, worktree: true },
+      ],
+    } as ReturnType<typeof import('../../src/cli/repositories/registry').resolveRepositorySelection>;
+    expect(resolveStructuralIndexRoot(controllerHome, repository)).toBe(canonicalRoot);
   });
 
   test('reuses a repository CodeGraph as explicit baseline while current worktree changes stay raw/lexical', () => { const root = contextRepo(); const baselineRoot = mkdtempSync(join(tmpdir(), 'forge-codegraph-baseline-')); roots.push(baselineRoot); execFileSync('git', ['clone', '-q', root, baselineRoot]); writeFileSync(join(root, 'src/service.ts'), 'export function runService() { return 43; }\n'); const queriedRoots: string[] = []; const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', structuralContext: 'required', structuralIndexRoot: baselineRoot }, { queryCodeGraph: (queryRoot, request) => { queriedRoots.push(queryRoot); return request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: [], dependents: [] } }) : structuralResponse(); } }); expect(new Set(queriedRoots)).toEqual(new Set([baselineRoot])); expect(pack.structuralContext).toMatchObject({ indexSource: 'repository_baseline', status: 'stale', requiredSatisfied: false, baselineRevisionMatches: true }); expect(pack.structuralContext.overlayChangedFiles).toContain('src/service.ts'); expect(pack.impactContext).toMatchObject({ primaryTargets: [], structuralHints: ['src/service.ts'], mustInspect: [] }); expect(pack.impactContext.coverageGaps).toContain('structural_repository_baseline_overlay'); expect(pack.impactContext.freshness).toMatchObject({ indexSource: 'repository_baseline', overlayChangedFileCount: 1, baselineRevisionMatches: true }); expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toContain('worktree:changed-file'); expect(pack.files.find((file) => file.path === 'src/service.ts')?.snippets[0]?.content).toContain('return 43'); });

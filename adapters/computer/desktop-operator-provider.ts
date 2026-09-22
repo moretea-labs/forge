@@ -1,15 +1,17 @@
 import { randomUUID } from 'crypto';
 import {
-  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
   type ComputerBrowserAutomationRequest,
-  type ComputerExecutionRequest,
+  type ComputerRuntimeProviderExecutionRequest,
 } from '../../packages/protocols/computer/index';
 import { ComputerProviderError, type ComputerProvider } from '../../packages/plugin-runtime/computer/index';
 import {
-  callExternalUnixJsonl,
+  ExternalUnixJsonlChannel,
   ExternalUnixJsonlTransportError,
 } from '../../packages/plugin-runtime/external/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from './desktop-operator-contract';
@@ -21,6 +23,7 @@ import {
 } from './desktop-operator-discovery';
 import {
   buildDesktopOperatorComputerInvocation,
+  negotiateDesktopOperatorComputerCapability,
   negotiateDesktopOperatorComputerHandshake,
   validateDesktopOperatorComputerHandshake,
   validateDesktopOperatorComputerProviderIdentity,
@@ -36,6 +39,7 @@ export {
 function toComputerProviderError(error: ExternalUnixJsonlTransportError): ComputerProviderError {
   return new ComputerProviderError(error.code, error.detailMessage, {
     retryable: error.retryable,
+    effectOutcome: error.effectOutcome,
     details: error.details,
   });
 }
@@ -47,6 +51,7 @@ function unavailable(error: ComputerProviderError, endpoint: DesktopOperatorComp
     `Stable Forge Computer provider is unavailable at ${endpoint.socketPath}. Install or restore Forge Desktop Operator instead of granting macOS permissions to Runtime or release-specific helpers.`,
     {
       retryable: true,
+      effectOutcome: error.effectOutcome,
       details: {
         socketPath: endpoint.socketPath,
         endpointSource: endpoint.source,
@@ -61,7 +66,7 @@ function unavailable(error: ComputerProviderError, endpoint: DesktopOperatorComp
 export { validateDesktopOperatorComputerHandshake } from './desktop-operator-negotiation';
 
 export function desktopOperatorActionForComputerRequest(
-  request: Exclude<ComputerExecutionRequest, { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY }>,
+  request: ComputerRuntimeProviderExecutionRequest,
 ): { actionId: string; args: Record<string, unknown> } {
   if (request.capability === COMPUTER_OBSERVE_CAPABILITY) {
     return {
@@ -79,9 +84,23 @@ export function desktopOperatorActionForComputerRequest(
   }
   if (request.capability === COMPUTER_INPUT_CAPABILITY) {
     if (request.action === 'press') return { actionId: 'desktop_press', args: { interaction_id: request.interactionId, selector: request.selector, ...(request.semanticAction ? { semantic_action: request.semanticAction } : {}) } };
+    if (request.action === 'select_rows') return { actionId: 'desktop_select_rows', args: { interaction_id: request.interactionId, selector: request.selector, start_index: request.startIndex, ...(request.endIndex !== undefined ? { end_index: request.endIndex } : {}) } };
     if (request.action === 'type_text') return { actionId: 'desktop_type_text', args: { interaction_id: request.interactionId, selector: request.selector, text: request.text, ...(request.replace !== undefined ? { replace: request.replace } : {}) } };
     if (request.action === 'key') return { actionId: 'desktop_key', args: { interaction_id: request.interactionId, keys: request.keys } };
     return { actionId: 'desktop_open_url', args: { url: request.url } };
+  }
+  if (request.capability === COMPUTER_CONSOLE_UNLOCK_CAPABILITY) {
+    return {
+      actionId: request.action,
+      args: {
+        ...(request.action === 'unlock_console' ? { credential_handle: request.credentialHandle } : {}),
+        authorization: {
+          kind: request.authorization.kind,
+          confirmed: request.authorization.confirmed,
+          invocation_id: request.authorization.invocationId,
+        },
+      },
+    };
   }
   if (request.capability === COMPUTER_CAPTURE_CAPABILITY) {
     return {
@@ -94,22 +113,165 @@ export function desktopOperatorActionForComputerRequest(
       },
     };
   }
-  throw new ComputerProviderError('COMPUTER_REQUEST_UNSUPPORTED', `Unsupported Desktop Operator Computer capability ${(request as ComputerExecutionRequest).capability}.`, { retryable: false });
+  if (request.capability === COMPUTER_ELEMENT_OBSERVE_CAPABILITY) {
+    return {
+      actionId: 'observe_elements',
+      args: {
+        interactionId: request.interactionId,
+        ...(request.maxDepth !== undefined ? { maxDepth: request.maxDepth } : {}),
+        ...(request.maxNodes !== undefined ? { maxNodes: request.maxNodes } : {}),
+        ...(request.includeValues !== undefined ? { includeValues: request.includeValues } : {}),
+        ...(request.rootSelector ? { rootSelector: request.rootSelector } : {}),
+      },
+    };
+  }
+  if (request.capability === COMPUTER_ELEMENT_ACTION_CAPABILITY) {
+    return {
+      actionId: request.action,
+      args: {
+        target: request.target,
+        ref: request.ref,
+        action: request.action,
+        ...(request.value !== undefined ? { value: request.value } : {}),
+      },
+    };
+  }
+  throw new ComputerProviderError('COMPUTER_REQUEST_UNSUPPORTED', `Unsupported Desktop Operator Computer capability ${(request as ComputerRuntimeProviderExecutionRequest).capability}.`, { retryable: false });
 }
 
-async function verifyProvider(
-  endpoint: DesktopOperatorComputerEndpoint,
-  timeoutMs: number,
-  requestedAction?: string,
-): Promise<DesktopOperatorComputerTransportPlan> {
-  const handshake = await callExternalUnixJsonl({
-    socketPath: endpoint.socketPath,
-    requestId: `computer-provider-handshake:${randomUUID()}`,
-    method: 'handshake',
-    timeoutMs: Math.min(timeoutMs, endpoint.healthTimeoutMs),
-    maxResponseBytes: 64 * 1024,
-  });
-  return negotiateDesktopOperatorComputerHandshake(handshake, requestedAction);
+function endpointBindingKey(endpoint: DesktopOperatorComputerEndpoint): string {
+  return [
+    endpoint.source,
+    endpoint.registrationRevision ?? 'legacy',
+    endpoint.socketPath,
+    endpoint.healthTimeoutMs,
+    endpoint.actionTimeoutMs,
+    endpoint.maxResponseBytes,
+    [...endpoint.capabilityIds].sort().join(','),
+  ].join('|');
+}
+
+class DesktopOperatorComputerBinding {
+  private readonly channel: ExternalUnixJsonlChannel;
+  private handshake: { generation: number; value: Record<string, unknown> } | undefined;
+  private handshakePromise: Promise<{ generation: number; value: Record<string, unknown> }> | undefined;
+
+  constructor(readonly endpoint: DesktopOperatorComputerEndpoint) {
+    this.channel = new ExternalUnixJsonlChannel(endpoint.socketPath);
+  }
+
+  close(): void {
+    this.handshake = undefined;
+    this.handshakePromise = undefined;
+    this.channel.close();
+  }
+
+  async execute(request: ComputerRuntimeProviderExecutionRequest, timeoutMs: number): Promise<Record<string, unknown>> {
+    if (!this.endpoint.capabilityIds.includes(request.capability)) {
+      throw new ComputerProviderError(
+        'COMPUTER_PROVIDER_CAPABILITY_UNAVAILABLE',
+        `Forge Desktop Operator does not declare ${request.capability}.`,
+        { retryable: false, details: { providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, capability: request.capability, declaredCapabilities: this.endpoint.capabilityIds } },
+      );
+    }
+    try {
+      const negotiated = await this.ensureHandshake(timeoutMs);
+      const mapped = desktopOperatorActionForComputerRequest(request);
+      const plan = negotiateDesktopOperatorComputerCapability(negotiated.value, request.capability, mapped.actionId);
+      const computerArguments = request.capability === COMPUTER_OBSERVE_CAPABILITY
+        || request.capability === COMPUTER_INPUT_CAPABILITY
+        || request.capability === COMPUTER_CONSOLE_UNLOCK_CAPABILITY
+        || request.capability === COMPUTER_CAPTURE_CAPABILITY
+        ? { action: mapped.actionId, ...mapped.args }
+        : mapped.args;
+      const invocation = buildDesktopOperatorComputerInvocation(
+        plan,
+        computerArguments,
+        timeoutMs,
+      );
+      return await this.call(invocation.method, invocation.params, timeoutMs, negotiated.generation);
+    } catch (error) {
+      if (error instanceof ExternalUnixJsonlTransportError) {
+        if (error.source === 'transport') this.invalidateNegotiation();
+        throw unavailable(toComputerProviderError(error), this.endpoint);
+      }
+      if (error instanceof ComputerProviderError) throw unavailable(error, this.endpoint);
+      throw error;
+    }
+  }
+
+  async executeBrowserCompatibility(request: ComputerBrowserAutomationRequest, timeoutMs: number): Promise<Record<string, unknown>> {
+    try {
+      const negotiated = await this.ensureHandshake(timeoutMs);
+      const plan = negotiateDesktopOperatorComputerHandshake(negotiated.value, request.action);
+      const { protocolVersion: _compatProtocolVersion, ...browserRequest } = request as ComputerBrowserAutomationRequest & { protocolVersion?: number };
+      const invocation = buildDesktopOperatorComputerInvocation(
+        plan,
+        { ...browserRequest, timeoutMs },
+        timeoutMs,
+        request,
+      );
+      return await this.call(invocation.method, invocation.params, timeoutMs, negotiated.generation);
+    } catch (error) {
+      if (error instanceof ExternalUnixJsonlTransportError) {
+        if (error.source === 'transport') this.invalidateNegotiation();
+        throw unavailable(toComputerProviderError(error), this.endpoint);
+      }
+      if (error instanceof ComputerProviderError) throw unavailable(error, this.endpoint);
+      throw error;
+    }
+  }
+
+  private invalidateNegotiation(): void {
+    this.handshake = undefined;
+    this.handshakePromise = undefined;
+  }
+
+  private async ensureHandshake(timeoutMs: number): Promise<{ generation: number; value: Record<string, unknown> }> {
+    if (this.handshake && this.channel.connected && this.handshake.generation === this.channel.generation) {
+      return this.handshake;
+    }
+    if (this.handshakePromise) return await this.handshakePromise;
+    const promise = this.channel.call({
+      requestId: `computer-provider-handshake:${randomUUID()}`,
+      method: 'handshake',
+      timeoutMs: Math.min(timeoutMs, this.endpoint.healthTimeoutMs),
+      maxResponseBytes: 64 * 1024,
+    }).then((handshake) => {
+      validateDesktopOperatorComputerProviderIdentity(handshake);
+      const negotiated = { generation: this.channel.generation, value: handshake };
+      this.handshake = negotiated;
+      return negotiated;
+    });
+    this.handshakePromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (this.handshakePromise === promise) this.handshakePromise = undefined;
+    }
+  }
+
+  private async call(method: string, params: Record<string, unknown>, timeoutMs: number, negotiatedGeneration: number): Promise<Record<string, unknown>> {
+    const result = await this.channel.call({
+      requestId: `computer-provider:${randomUUID()}`,
+      method,
+      params,
+      timeoutMs: Math.min(timeoutMs, this.endpoint.actionTimeoutMs),
+      maxResponseBytes: this.endpoint.maxResponseBytes,
+      expectedGeneration: negotiatedGeneration,
+    });
+    if (!this.channel.connected || this.channel.generation !== negotiatedGeneration) this.invalidateNegotiation();
+    return result;
+  }
+}
+
+function createBinding(endpoint: DesktopOperatorComputerEndpoint): DesktopOperatorComputerBinding {
+  return new DesktopOperatorComputerBinding(endpoint);
+}
+
+export interface DesktopOperatorComputerProvider extends ComputerProvider {
+  /** Migration-only Browser bridge. It reuses the provider channel but is not a Unified Computer capability. */
+  executeBrowserCompatibility(request: ComputerBrowserAutomationRequest, timeoutMs: number): Promise<Record<string, unknown>>;
 }
 
 export async function callDesktopOperatorComputerBrowserAutomation(
@@ -117,71 +279,34 @@ export async function callDesktopOperatorComputerBrowserAutomation(
   timeoutMs: number,
   options: DesktopOperatorComputerProviderOptions = {},
 ): Promise<Record<string, unknown>> {
-  const endpoint = resolveDesktopOperatorComputerEndpoint(options);
+  const provider = createDesktopOperatorComputerProvider(options);
   try {
-    const plan = await verifyProvider(endpoint, timeoutMs, request.action);
-    const invocation = buildDesktopOperatorComputerInvocation(plan, request, timeoutMs);
-    return await callExternalUnixJsonl({
-      socketPath: endpoint.socketPath,
-      requestId: `computer-provider:${randomUUID()}`,
-      method: invocation.method,
-      params: invocation.params,
-      timeoutMs: Math.min(timeoutMs, endpoint.actionTimeoutMs),
-      maxResponseBytes: endpoint.maxResponseBytes,
-    });
-  } catch (error) {
-    if (error instanceof ComputerProviderError) throw unavailable(error, endpoint);
-    if (error instanceof ExternalUnixJsonlTransportError) throw unavailable(toComputerProviderError(error), endpoint);
-    throw error;
-  }
-}
-
-async function callDesktopOperatorComputerAction(
-  request: Exclude<ComputerExecutionRequest, { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY }>,
-  timeoutMs: number,
-  options: DesktopOperatorComputerProviderOptions,
-): Promise<Record<string, unknown>> {
-  const endpoint = resolveDesktopOperatorComputerEndpoint(options);
-  if (!endpoint.capabilityIds.includes(request.capability)) {
-    throw new ComputerProviderError(
-      'COMPUTER_PROVIDER_CAPABILITY_UNAVAILABLE',
-      `Forge Desktop Operator does not declare ${request.capability}.`,
-      { retryable: false, details: { providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, capability: request.capability, declaredCapabilities: endpoint.capabilityIds } },
-    );
-  }
-  const mapped = desktopOperatorActionForComputerRequest(request);
-  try {
-    const handshake = await callExternalUnixJsonl({
-      socketPath: endpoint.socketPath,
-      requestId: `computer-provider-handshake:${randomUUID()}`,
-      method: 'handshake',
-      timeoutMs: Math.min(timeoutMs, endpoint.healthTimeoutMs),
-      maxResponseBytes: 64 * 1024,
-    });
-    validateDesktopOperatorComputerProviderIdentity(handshake);
-    return await callExternalUnixJsonl({
-      socketPath: endpoint.socketPath,
-      requestId: `computer-provider:${randomUUID()}`,
-      method: 'execute',
-      params: { action: mapped.actionId, arguments: mapped.args },
-      timeoutMs: Math.min(timeoutMs, endpoint.actionTimeoutMs),
-      maxResponseBytes: endpoint.maxResponseBytes,
-    });
-  } catch (error) {
-    if (error instanceof ComputerProviderError) throw unavailable(error, endpoint);
-    if (error instanceof ExternalUnixJsonlTransportError) throw unavailable(toComputerProviderError(error), endpoint);
-    throw error;
+    return await provider.executeBrowserCompatibility(request, timeoutMs);
+  } finally {
+    provider.dispose?.();
   }
 }
 
 export function createDesktopOperatorComputerProvider(
   options: DesktopOperatorComputerProviderOptions = {},
-): ComputerProvider {
+): DesktopOperatorComputerProvider {
+  let active: { key: string; binding: DesktopOperatorComputerBinding } | undefined;
+  const binding = (): DesktopOperatorComputerBinding => {
+    const endpoint = resolveDesktopOperatorComputerEndpoint(options);
+    const key = endpointBindingKey(endpoint);
+    if (active?.key === key) return active.binding;
+    active?.binding.close();
+    active = { key, binding: createBinding(endpoint) };
+    return active.binding;
+  };
   return {
     providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
     capabilities: desktopOperatorComputerProviderCapabilities(options),
-    execute: async (request, timeoutMs) => request.capability === COMPUTER_BROWSER_AUTOMATION_CAPABILITY
-      ? await callDesktopOperatorComputerBrowserAutomation(request.request, timeoutMs, options)
-      : await callDesktopOperatorComputerAction(request, timeoutMs, options),
+    execute: async (request, timeoutMs) => await binding().execute(request, timeoutMs),
+    executeBrowserCompatibility: async (request, timeoutMs) => await binding().executeBrowserCompatibility(request, timeoutMs),
+    dispose: () => {
+      active?.binding.close();
+      active = undefined;
+    },
   };
 }

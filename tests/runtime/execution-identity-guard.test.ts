@@ -3,13 +3,17 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { createMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import {
   addRepositoryCheckout,
+  loadRepositoryRegistry,
   registerRepository,
+  RepositoryCheckoutSelectionError,
   resolveRepositorySelection,
+  saveRepositoryRegistry,
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
 } from '../../src/cli/repositories/registry';
@@ -25,9 +29,11 @@ import {
 import { adoptWorkHandleSuccessorCandidate, resolveWorkDeliveryTargetBranch, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { inspectManagedWorkSuccessorAdoption } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
-import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { assertManagedRepositoryMutationAuthority, ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
+import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { currentPermissionSnapshotVersion, validateWorkHandle, WorkHandleValidationError } from '../../src/runtime/control-plane/execution/validation';
 
 const roots: string[] = [];
 
@@ -102,6 +108,96 @@ function sampleHandle(input: {
 }
 
 describe('execution identity pre-spawn guard', () => {
+  test('emits typed WORK_HANDLE_HEAD_CHANGED when finalization identity drifts', () => {
+    const fx = dualRepoFixture();
+    const identity = { sessionId: 'sess-test', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
+    startExecutionSession(fx.controllerHome, {
+      ...identity,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    });
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-typed-head-drift',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    };
+
+    writeFileSync(join(fx.repoARoot, 'advance.txt'), 'advance\n');
+    spawnSync('git', ['-C', fx.repoARoot, 'add', 'advance.txt'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'advance'], { encoding: 'utf8' });
+
+    let observed: unknown;
+    try {
+      validateWorkHandle(fx.controllerHome, handle, identity, 'full', 'finalize');
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(WorkHandleValidationError);
+    expect((observed as WorkHandleValidationError).code).toBe('WORK_HANDLE_HEAD_CHANGED');
+  });
+
+  test('inspection accepts a managed Work-owned descendant HEAD without weakening execute authority', () => {
+    const fx = dualRepoFixture();
+    const identity = { sessionId: 'sess-managed-inspect', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
+    startExecutionSession(fx.controllerHome, {
+      ...identity,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    });
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-inspect-descendant',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    };
+
+    writeFileSync(join(fx.repoARoot, 'work-owned.txt'), 'work owned\n');
+    spawnSync('git', ['-C', fx.repoARoot, 'add', 'work-owned.txt'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'work-owned descendant'], { encoding: 'utf8' });
+    const descendantHead = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+
+    const inspected = validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'inspect');
+    expect(inspected.currentHead).toBe(descendantHead);
+    expect(inspected.warnings.some((warning) => warning.includes('Work-owned descendant commits'))).toBe(true);
+    expect(() => validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'execute')).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+  });
+
+  test('inspection still rejects a managed non-descendant HEAD', () => {
+    const fx = dualRepoFixture();
+    const identity = { sessionId: 'sess-managed-inspect-unrelated', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
+    startExecutionSession(fx.controllerHome, {
+      ...identity,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    });
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-inspect-unrelated',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    };
+    const tree = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', `${fx.headA}^{tree}`], { encoding: 'utf8' }).stdout.trim();
+    const unrelatedHead = spawnSync('git', ['-C', fx.repoARoot, 'commit-tree', tree, '-m', 'unrelated root'], { encoding: 'utf8' }).stdout.trim();
+    spawnSync('git', ['-C', fx.repoARoot, 'reset', '--hard', unrelatedHead], { encoding: 'utf8' });
+
+    expect(() => validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'inspect')).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+  });
+
   test('rejects explicit checkout A when cwd routes into repo B', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
@@ -262,7 +358,18 @@ describe('execution identity pre-spawn guard', () => {
       lifecycle: 'archived',
       reason: 'test fixture',
     });
-    const selected = selectRepositoryCheckout(withCheckout, addedCheckout!.checkoutId, { allowArchived: true });
+    const refreshed = loadRepositoryRegistry(fx.controllerHome).repositories.find((record) => record.repoId === fx.repoA.repoId)!;
+    let selectionError: unknown;
+    try {
+      selectRepositoryCheckout(refreshed, addedCheckout!.checkoutId);
+    } catch (error) {
+      selectionError = error;
+    }
+    expect(selectionError).toBeInstanceOf(RepositoryCheckoutSelectionError);
+    expect((selectionError as RepositoryCheckoutSelectionError).code).toBe('CHECKOUT_NOT_ACTIVE');
+    expect((selectionError as RepositoryCheckoutSelectionError).lifecycle).toBe('archived');
+
+    const selected = selectRepositoryCheckout(refreshed, addedCheckout!.checkoutId, { allowArchived: true });
     const identity = executionIdentityForRepository(selected);
     expect(() => assertExecutionIdentity({
       controllerHome: fx.controllerHome,
@@ -273,6 +380,7 @@ describe('execution identity pre-spawn guard', () => {
 
   test('explicit checkout identity wins over server default path without mutating registry focus', async () => {
     const fx = dualRepoFixture();
+    const staleRegistry = loadRepositoryRegistry(fx.controllerHome);
     const worktree = join(fx.root, 'repo-a-worktree');
     const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'explicit-checkout', worktree], { encoding: 'utf8' });
     expect(worktreeResult.status).toBe(0);
@@ -282,6 +390,11 @@ describe('execution identity pre-spawn guard', () => {
       path: worktree,
       activate: false,
     });
+    // Simulate the production interleaving from #196: another Runtime/Gateway
+    // loaded the Registry before this checkout was added, then tries to persist
+    // that stale snapshot afterwards. The stale writer must fail closed instead
+    // of erasing a checkout that other MCP surfaces already accepted.
+    expect(() => saveRepositoryRegistry(staleRegistry, fx.controllerHome)).toThrow(/REPOSITORY_REGISTRY_STALE/);
     const checkout = withCheckout.checkouts.find((candidate) => candidate.canonicalRoot !== fx.repoA.canonicalRoot);
     expect(checkout).toBeTruthy();
     writeFileSync(join(worktree, 'checkout-only.txt'), 'from explicit worktree\n');
@@ -312,6 +425,39 @@ describe('execution identity pre-spawn guard', () => {
     expect(read).toBeTruthy();
     expect(read?.isError).not.toBe(true);
     expect(JSON.stringify(read?.structuredContent)).toContain('from explicit worktree');
+
+    const patch = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repoA.repoId,
+      checkout_id: checkout!.checkoutId,
+      purpose: 'cross-surface checkout identity regression',
+      allowed_paths: ['checkout-only.txt'],
+      operations: [{
+        type: 'replace',
+        path: 'checkout-only.txt',
+        expected_sha256: createHash('sha256').update('from explicit worktree\n').digest('hex'),
+        old_text: 'from explicit worktree',
+        new_text: 'from safe patch',
+      }],
+    }, ctx);
+    expect(patch).toBeTruthy();
+    expect(patch?.isError).not.toBe(true);
+    expect(patch?.structuredContent).toEqual(expect.objectContaining({
+      repoId: fx.repoA.repoId,
+      checkoutId: checkout!.checkoutId,
+      status: 'applied',
+    }));
+
+    const command = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repoA.repoId,
+      checkout_id: checkout!.checkoutId,
+      command: ['git', 'status', '--short'],
+    }, ctx);
+    expect(command).toBeTruthy();
+    expect(command?.isError).not.toBe(true);
+    expect(command?.structuredContent).toEqual(expect.objectContaining({
+      repoId: fx.repoA.repoId,
+      checkoutId: checkout!.checkoutId,
+    }));
   });
 
 
@@ -595,6 +741,62 @@ describe('execution identity pre-spawn guard', () => {
 });
 
 
+describe('managed Work mutation authority', () => {
+  test('rejects mutation after the durable handle leaves editable state', () => {
+    const fx = dualRepoFixture();
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-committed-mutation',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+      state: 'committed' as const,
+    };
+    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle }))
+      .toThrow(/WORK_REPOSITORY_MUTATION_LIFECYCLE_INVALID/);
+  });
+
+  test('rejects managed mutation when repository history moved away from durable expectedHead', () => {
+    const fx = dualRepoFixture();
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-head-drift-mutation',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+    };
+    writeFileSync(join(fx.repoARoot, 'drift.txt'), 'drift\n');
+    spawnSync('git', ['-C', fx.repoARoot, 'add', 'drift.txt'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'drift'], { encoding: 'utf8' });
+    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle }))
+      .toThrow(/WORK_REPOSITORY_MUTATION_HEAD_CHANGED/);
+  });
+
+  test('keeps prepared managed mutation authority valid while branch and HEAD still match', () => {
+    const fx = dualRepoFixture();
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-managed-valid-mutation',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      managedWorktree: true,
+    };
+    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle })).not.toThrow();
+  });
+});
+
 describe('managed Work successor authority', () => {
   test('adopts a clean target-reconciled rewritten candidate and re-arms validation', () => {
     const fx = dualRepoFixture();
@@ -665,7 +867,7 @@ describe('managed Work successor authority', () => {
         lastError: 'WORK_HANDLE_HEAD_CHANGED',
       },
     });
-    const adopted = adoptWorkHandleSuccessorCandidate(fx.controllerHome, handle, { candidateHead: successorHead, targetHead });
+    const adopted = adoptWorkHandleSuccessorCandidate(fx.controllerHome, handle, { candidateHead: successorHead, deliveryBaseHead: targetHead });
     expect(adopted.state).toBe('validating');
     expect(adopted.expectedHead).toBe(successorHead);
     expect(adopted.deliveryBaseCommit).toBe(targetHead);

@@ -12,20 +12,27 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname } from 'path';
-import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
-import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type {
-  OAuthClientInformationFull,
-  OAuthTokenRevocationRequest,
-  OAuthTokens,
-} from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { AuthInfo, OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/server";
+import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
+import type { OAuthRegisteredClientsStore, AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/server-legacy/auth";
 
 interface TokenData {
   accessTokens?: Record<string, AuthInfo>;
   refreshTokens?: Record<string, string>;
   clients?: Record<string, OAuthClientInformationFull>;
+}
+
+export interface McpOAuthClientRetirementResult {
+  clientId: string;
+  clientRemoved: boolean;
+  accessTokensRevoked: number;
+  refreshTokensRevoked: number;
+  orphanRefreshTokensPruned: number;
+  changed: boolean;
+}
+
+export interface McpOAuthProviderClientRetirementResult extends McpOAuthClientRetirementResult {
+  authorizationCodesRevoked: number;
 }
 
 function nowSeconds(): number {
@@ -135,6 +142,50 @@ export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
     return full;
   }
 
+  retireClient(clientId: string): McpOAuthClientRetirementResult {
+    const normalizedClientId = clientId.trim();
+    if (!normalizedClientId) throw new Error('MCP_OAUTH_CLIENT_ID_REQUIRED');
+
+    const ownedAccessTokens = new Set<string>();
+    for (const [token, info] of this.accessTokens) {
+      if (info.clientId === normalizedClientId) ownedAccessTokens.add(token);
+    }
+
+    let refreshTokensRevoked = 0;
+    let orphanRefreshTokensPruned = 0;
+    for (const [refreshToken, accessToken] of this.refreshTokens) {
+      if (ownedAccessTokens.has(accessToken)) {
+        this.refreshTokens.delete(refreshToken);
+        refreshTokensRevoked += 1;
+        continue;
+      }
+      if (!this.accessTokens.has(accessToken)) {
+        this.refreshTokens.delete(refreshToken);
+        orphanRefreshTokensPruned += 1;
+      }
+    }
+
+    let accessTokensRevoked = 0;
+    for (const token of ownedAccessTokens) {
+      if (this.accessTokens.delete(token)) accessTokensRevoked += 1;
+    }
+    const clientRemoved = this.clients.delete(normalizedClientId);
+    const changed = clientRemoved
+      || accessTokensRevoked > 0
+      || refreshTokensRevoked > 0
+      || orphanRefreshTokensPruned > 0;
+    if (changed) this.flush();
+
+    return {
+      clientId: normalizedClientId,
+      clientRemoved,
+      accessTokensRevoked,
+      refreshTokensRevoked,
+      orphanRefreshTokensPruned,
+      changed,
+    };
+  }
+
   getAccessToken(token: string): AuthInfo | undefined {
     return this.accessTokens.get(token);
   }
@@ -223,6 +274,7 @@ export interface McpOAuthAuthorizationCodeDiagnostics {
 
 export interface McpOAuthProvider extends OAuthServerProvider {
   authorizationCodeDiagnostics(): McpOAuthAuthorizationCodeDiagnostics;
+  retireClient(clientId: string): McpOAuthProviderClientRetirementResult;
 }
 
 export interface McpOAuthProviderOptions {
@@ -299,6 +351,21 @@ export function createMcpOAuthProvider(
         pending: authCodes.size,
         expired: expiredAuthorizationCodes,
         evicted: evictedAuthorizationCodes,
+      };
+    },
+
+    retireClient(clientId: string): McpOAuthProviderClientRetirementResult {
+      const normalizedClientId = clientId.trim();
+      if (!normalizedClientId) throw new Error('MCP_OAUTH_CLIENT_ID_REQUIRED');
+      let authorizationCodesRevoked = 0;
+      for (const [code, pending] of authCodes) {
+        if (pending.clientId === normalizedClientId && authCodes.delete(code)) {
+          authorizationCodesRevoked += 1;
+        }
+      }
+      return {
+        ...store.retireClient(normalizedClientId),
+        authorizationCodesRevoked,
       };
     },
 

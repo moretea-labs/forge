@@ -5,6 +5,7 @@ import { URLSearchParams } from 'url';
 import { installGoogleAccessToken } from '../plugins/google-shared';
 import {
   googleCredentialStoreStatus,
+  readStoredGoogleClientSecret,
   type StoredGoogleService,
   writeStoredGoogleRefreshToken,
 } from './google-credential-store';
@@ -138,16 +139,33 @@ function base64Url(value: Buffer): string {
   return value.toString('base64url');
 }
 
-function clientId(): string | undefined {
-  return process.env.FORGE_GOOGLE_WORKSPACE_CLIENT_ID?.trim()
+function clientId(service: GoogleOAuthService): string | undefined {
+  const serviceSpecific = service === 'gmail'
+    ? process.env.FORGE_GMAIL_CLIENT_ID?.trim()
+    : service === 'calendar'
+      ? process.env.FORGE_GOOGLE_CALENDAR_CLIENT_ID?.trim()
+      : service === 'tasks'
+        ? process.env.FORGE_GOOGLE_TASKS_CLIENT_ID?.trim()
+        : undefined;
+  return serviceSpecific
+    || process.env.FORGE_GOOGLE_WORKSPACE_CLIENT_ID?.trim()
     || process.env.FORGE_GOOGLE_CLIENT_ID?.trim()
     || process.env.GOOGLE_CLIENT_ID?.trim();
 }
 
-function clientSecret(): string | undefined {
-  return process.env.FORGE_GOOGLE_WORKSPACE_CLIENT_SECRET?.trim()
+function clientSecret(service: GoogleOAuthService): string | undefined {
+  const serviceSpecific = service === 'gmail'
+    ? process.env.FORGE_GMAIL_CLIENT_SECRET?.trim()
+    : service === 'calendar'
+      ? process.env.FORGE_GOOGLE_CALENDAR_CLIENT_SECRET?.trim()
+      : service === 'tasks'
+        ? process.env.FORGE_GOOGLE_TASKS_CLIENT_SECRET?.trim()
+        : undefined;
+  return serviceSpecific
+    || process.env.FORGE_GOOGLE_WORKSPACE_CLIENT_SECRET?.trim()
     || process.env.FORGE_GOOGLE_CLIENT_SECRET?.trim()
-    || process.env.GOOGLE_CLIENT_SECRET?.trim();
+    || process.env.GOOGLE_CLIENT_SECRET?.trim()
+    || readStoredGoogleClientSecret(service)?.secret;
 }
 
 export function prepareGoogleOAuthLogin(
@@ -157,7 +175,7 @@ export function prepareGoogleOAuthLogin(
   pruneOAuthRequests(controllerHome);
   const redirectUri = validateRedirectUri(input.redirectUri);
   const scopes = validateScopes(input.service, input.scopes);
-  const configuredClientId = clientId();
+  const configuredClientId = clientId(input.service);
   if (!configuredClientId) {
     return {
       schemaVersion: 1,
@@ -236,7 +254,7 @@ export async function completeGoogleOAuthLogin(
   }
   const code = input.code?.trim();
   if (!code) throw new Error('GOOGLE_OAUTH_CODE_REQUIRED');
-  const configuredSecret = clientSecret();
+  const configuredSecret = clientSecret(selected.record.service);
   if (!configuredSecret) throw new Error('GOOGLE_OAUTH_CLIENT_SECRET_REQUIRED');
   const body = new URLSearchParams({
     grant_type: 'authorization_code',

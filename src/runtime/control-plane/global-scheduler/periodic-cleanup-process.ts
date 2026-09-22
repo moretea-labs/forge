@@ -12,6 +12,7 @@ export interface SchedulerPeriodicCleanupLaunchInput {
   nowMs: number;
   cleanupIntervalMs: number;
   runtimeSourceRoot?: string;
+  cleanupExecutable?: string;
   environment?: NodeJS.ProcessEnv;
   writeClaimEnvironment?: NodeJS.ProcessEnv;
 }
@@ -41,18 +42,23 @@ export function buildSchedulerPeriodicCleanupLaunchDescriptor(
   const command = resolveSchedulerWorkerCommand({
     runtimeSourceRoot: input.runtimeSourceRoot,
     workerEntrypoint: cleanupEntrypoint(input.runtimeSourceRoot),
+    standaloneExecutable: input.cleanupExecutable,
     isBun,
   });
-  const executable = resolveSchedulerWorkerExecutable(isBun, process.execPath, environmentSource);
+  const executable = command.directExecutable
+    ? command.entry
+    : resolveSchedulerWorkerExecutable(isBun, process.execPath, environmentSource);
   const cleanupArgs = [
     '--controller-home', input.controllerHome,
     '--controller-pid', String(input.controllerPid),
     '--now-ms', String(input.nowMs),
     '--cleanup-interval-ms', String(input.cleanupIntervalMs),
   ];
-  const args = isBun
-    ? [command.entry, ...cleanupArgs]
-    : ['--loader', command.loader, command.entry, ...cleanupArgs];
+  const args = command.directExecutable
+    ? cleanupArgs
+    : isBun
+      ? [command.entry, ...cleanupArgs]
+      : ['--loader', command.loader, command.entry, ...cleanupArgs];
   return {
     executable,
     args,

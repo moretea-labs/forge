@@ -2,6 +2,7 @@ export * from './types';
 export * from './store';
 export * from './resource-claims';
 export * from './runtime';
+export * from './check-classification';
 export * from './check-facade';
 export * from './check-receipt';
 export * from './command-facade';

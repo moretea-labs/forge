@@ -273,9 +273,58 @@ export interface PlanStepDeliveryCarry {
   recordedAt: string;
 }
 
+/** Mutable only until approval. A stable Plan may stage at most one next revision;
+ * the currently committed Plan fields remain authoritative until this draft is approved. */
+export interface PlanRevisionDraft {
+  revision: number;
+  requestedRevisionLabel?: string;
+  sourceRevision: string;
+  goal: string;
+  nonGoals: string[];
+  assumptions: string[];
+  resolvedDecisions: string[];
+  stopConditions: string[];
+  replanConditions: string[];
+  integrationStrategy?: string;
+  steps: PlanStep[];
+  obligationDispositions?: PlanObligationDisposition[];
+  deliveryCarries?: PlanStepDeliveryCarry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Immutable audit snapshot of one committed Plan revision. Historical revisions
+ * never own active scope, Work, scheduling, or admission authority. */
+export interface PlanRevisionRecord {
+  schemaVersion: 1;
+  repoId: string;
+  planId: string;
+  revision: number;
+  requirementId?: string;
+  scopeKey: string;
+  sourceRevision: string;
+  goal: string;
+  nonGoals: string[];
+  assumptions: string[];
+  resolvedDecisions: string[];
+  stopConditions: string[];
+  replanConditions: string[];
+  integrationStrategy?: string;
+  status: PlanContractStatus;
+  steps: PlanStep[];
+  evidenceRefs: EvidenceRef[];
+  obligationDispositions?: PlanObligationDisposition[];
+  recordedAt: string;
+  reason?: string;
+  /** Compatibility label supplied by older successor-Plan clients. It is not a Plan identity. */
+  requestedRevisionLabel?: string;
+}
+
 export interface PlanContract {
   schemaVersion: 1;
   planId: string;
+  /** Current committed semantic revision. Legacy rows without this field normalize to revision 1. */
+  revision?: number;
   repoId: string;
   /** Stable Requirement owner. Legacy plans may omit this until portfolio migration. */
   requirementId?: string;
@@ -300,6 +349,8 @@ export interface PlanContract {
   obligationDispositions?: PlanObligationDisposition[];
   /** Trusted, bounded delivery provenance derived only during canonical successor admission. */
   deliveryCarries?: PlanStepDeliveryCarry[];
+  /** At most one staged next revision. It is not another active Plan authority. */
+  pendingRevision?: PlanRevisionDraft;
   createdAt: string;
   updatedAt: string;
 }

@@ -27,8 +27,11 @@ duplicate trials, mixed candidate artifacts and inconsistent environment facts.
 Unobserved dimensions remain unmeasured. A partially measured metric is listed
 with its missing/total trial count, retains its raw reports, and makes the overall
 assessment `inconclusive_missing_metrics`; it is never silently averaged over
-only the successful subset or treated as a passing zero. The current shared
-corpus alone does not provide complete engineering-quality or CPU/RSS coverage.
+only the successful subset or treated as a passing zero. The public-MCP runner
+records evaluator-owned CPU/RSS for every observed server command where the host
+exposes the child process, and the formal freeze includes `cpu_ms` and
+`peak_rss_bytes`. The shared corpus still does not provide the separate
+engineering-task suite required for V2 release.
 
 `lib/candidate-runner.ts` executes both candidates through the same declared external
 public surface (`public_cli` or `public_mcp`). Candidate artifacts are content-addressed as a complete file or directory tree, verified, and required to contain the artifact entry explicitly bound to the public command. Each trial executes a private materialized copy, so transitive candidate code and candidate-side mutation cannot drift behind a stable identity; the evaluator never imports candidate `src/runtime`,
@@ -79,9 +82,13 @@ The final V2 vs 1.7.2 comparison follows three hard rules:
 future formal v1.7.2-vs-V2 comparison. `lib/calibration.ts` recomputes and
 fail-closes that manifest against the candidate-neutral evaluator implementation
 (and its MCP SDK dependency), the 24-scenario shared corpus, the formal metric
-and failure taxonomy, trial policy, exact v1.7.2 baseline artifact, A/A
-calibration evidence, and the environment policy. The calibration authority code
-itself is part of the evaluator implementation digest.
+and failure taxonomy, trial policy, the reproducible v1.7.2 reconstruction and
+output authorities, A/A calibration evidence, and the environment policy.
+`baselines/v1.7.2/reconstruction.json` binds the exact release tarball, normalized
+release lock, installer, and builder implementation; `authority.json` binds the
+independently reproduced runnable artifact and production dependency graph. The
+older pre-reconstruction artifact digest is historical evidence only. The
+calibration authority code itself is part of the evaluator implementation digest.
 
 The current v1.7.2 A/A summary in `aa-calibration.json` is evidence for arm
 symmetry and harness noise on the exact frozen shared-corpus digest only. It used the same immutable artifact on both

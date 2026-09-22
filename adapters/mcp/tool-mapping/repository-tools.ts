@@ -5,7 +5,7 @@ import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-pla
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract } from '../../../packages/kernel/work/api';
 import { assertWorkPathsWithinScope } from '../../../src/runtime/control-plane/execution/work-path-scope';
-import { ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { isTerminalWorkContractStatus } from '../../../src/runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
@@ -25,6 +25,7 @@ import {
 } from '../../../src/cli/repositories/registry';
 import { buildControllerWorkbench } from '../../../src/cli/repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../../../src/cli/repositories/safe-patch';
+import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/cli/editing/edit-operation-contract';
 import { getEditSession, getEditSessionDiff, type EditSessionBinding } from '../../../src/cli/editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../../src/runtime/control-plane/facade/operation-digest';
 import {
@@ -36,6 +37,7 @@ import {
   repositoryGitMergeBranch,
   repositoryGitStatus,
   repositoryGitSwitchBranch,
+  resolveRepositoryGitCommitScope,
 } from '../../../src/cli/repositories/structured-git';
 import {
   readRepositoryGitStatusSample,
@@ -50,6 +52,7 @@ import {
   routeExecution,
 } from '../../../src/runtime/execution/thin-harness';
 import {
+  classifyRawGitCommitScope,
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../../src/runtime/execution/process-runtime/command-facade';
@@ -219,7 +222,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_safe_patch_plan', 'Plan a deterministic chunked repository patch with fresh file fingerprints before applying.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    operations: { type: 'array', items: { type: 'object' }, description: 'Edit operations using the same shape as apply_patch.' },
+    operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions.' },
     chunk_size: { type: 'number', description: 'Maximum operations per deterministic chunk. Capped at 100.' },
   }, ['operations'], true),
   definition('repository_safe_patch_apply', 'Apply one coherent deterministic edit batch and return bounded review evidence. Checks are opt-in: pass check_ids only when the batch is stable. Long checks return managed Process handles instead of blocking the MCP call; use validation_only with the returned session/request ids to join later without replaying the patch.', {
@@ -228,7 +231,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
     session_id: { type: 'string', description: 'Existing edit session id. Required for validation_only; otherwise omit to create one.' },
     purpose: { type: 'string', description: 'Purpose for a newly created edit session.' },
-    operations: { type: 'array', items: { type: 'object' }, description: 'Edit operations using the same shape as apply_patch. Required unless validation_only=true.' },
+    operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions. Required unless validation_only=true.' },
     chunk_size: { type: 'number', description: 'Maximum operations per deterministic chunk. Capped at 100.' },
     expected_revision: { type: 'number', description: 'Expected starting edit-session revision.' },
     allowed_paths: { type: 'array', items: { type: 'string' }, description: 'Optional allowed path globs for a newly created session.' },
@@ -992,6 +995,14 @@ export async function callRepositoryTool(
           { scope: 'repository', repoId: repository.repoId },
           'mcp:repository_safe_patch_apply',
           () => {
+            if (args.validation_only !== true) {
+              assertCanonicalRepositoryMutationWorkHandleAvailable({
+                controllerHome,
+                repositoryId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                workId: binding?.workId,
+              });
+            }
             const mutationAuthority = binding?.workId
               ? ensureRepositoryMutationWorkHandle({
                   controllerHome,
@@ -1140,6 +1151,7 @@ export async function callRepositoryTool(
         const forceDurable = fromDurableWorker
           || args.mode === 'durable'
           || args.force_durable === true;
+        const rawCommitScope = classifyRawGitCommitScope(args.command as string | string[]);
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
           workId: executionIdentity.workId,
@@ -1156,12 +1168,12 @@ export async function callRepositoryTool(
           );
         }
         let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
-        if (executionIdentity.workId) {
-          const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
-          if (
-            (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
-            && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
-          ) {
+        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
+        if (
+          (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
+          && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
+        ) {
+          if (executionIdentity.workId) {
             mutationAuthority = withControllerLock(
               controllerHome,
               { scope: 'repository', repoId: repository.repoId },
@@ -1179,7 +1191,30 @@ export async function callRepositoryTool(
             // immutable execution identity after that durable CAS and before spawn.
             target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
             ({ repository, executionIdentity, historicalWorkContext } = target);
+          } else {
+            withControllerLock(
+              controllerHome,
+              { scope: 'repository', repoId: repository.repoId },
+              'mcp:repository_command_execute:unattributed-mutation-authority',
+              () => assertCanonicalRepositoryMutationWorkHandleAvailable({
+                controllerHome,
+                repositoryId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+              }),
+              60_000,
+            );
           }
+        }
+        if (executionIdentity.workId && (rawCommitScope.kind === 'staged_index' || rawCommitScope.kind === 'explicit_paths')) {
+          const work = getWorkContract({ controllerHome, repoId: repository.repoId }, executionIdentity.workId);
+          if (!work) throw new Error(`WORK_NOT_FOUND: ${executionIdentity.workId}`);
+          const commitScope = resolveRepositoryGitCommitScope(repository, {
+            paths: rawCommitScope.kind === 'explicit_paths' ? rawCommitScope.paths : undefined,
+          });
+          assertWorkPathsWithinScope(work, commitScope.paths, {
+            forbidden: 'WORK_COMMIT_STAGED_PATH_FORBIDDEN',
+            outOfScope: 'WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE',
+          });
         }
         // repository_command_execute owns its command execution architecture.
         // Do not send ordinary command text through Thin Harness semantic risk
@@ -1270,8 +1305,7 @@ export async function callRepositoryTool(
                 const processHandle = processResult.process;
                 const postStatus = repositoryGitStatus(repository);
                 const expectedHead = mutationAuthority.handle.expectedHead;
-                const mutationObserved = (processHandle !== undefined && processHandle.completed !== true)
-                  || !postStatus.clean
+                const mutationObserved = !postStatus.clean
                   || (Boolean(postStatus.head) && postStatus.head !== expectedHead);
                 if (mutationObserved) {
                   withControllerLock(

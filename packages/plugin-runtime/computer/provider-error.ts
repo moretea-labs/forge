@@ -1,11 +1,15 @@
+export type ComputerProviderEffectOutcome = 'failed' | 'outcome_unknown';
+
 export interface ComputerProviderErrorOptions {
   retryable?: boolean;
+  effectOutcome?: ComputerProviderEffectOutcome;
   details?: Record<string, unknown>;
 }
 
 export class ComputerProviderError extends Error {
   readonly code: string;
   readonly retryable: boolean;
+  readonly effectOutcome: ComputerProviderEffectOutcome;
   readonly details?: Record<string, unknown>;
   readonly detailMessage: string;
 
@@ -15,6 +19,7 @@ export class ComputerProviderError extends Error {
     this.name = 'ComputerProviderError';
     this.code = code;
     this.retryable = options.retryable === true;
+    this.effectOutcome = options.effectOutcome ?? 'failed';
     this.details = options.details;
     this.detailMessage = boundedMessage;
   }

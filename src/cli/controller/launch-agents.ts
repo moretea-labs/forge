@@ -347,6 +347,45 @@ export interface RetiredConflictingLaunchAgent {
   backupPath: string;
 }
 
+export interface ExactLaunchAgentRetirementResult {
+  label: string;
+  plistPath: string;
+  serviceWasPresent: boolean;
+  plistWasPresent: boolean;
+  absentAfter: boolean;
+}
+
+export async function retireLaunchAgentExact(
+  input: { label: string; accountHome?: string },
+  dependencies: {
+    run?: LaunchctlCommandRunner;
+    bootout?: typeof bootoutLaunchAgentWithRetryV2;
+  } = {},
+): Promise<ExactLaunchAgentRetirementResult> {
+  const label = input.label.trim();
+  if (!label) throw new Error('FORGE_LAUNCH_AGENT_RETIRE_LABEL_REQUIRED');
+  const plistPath = launchAgentPath(label, input.accountHome);
+  const plistWasPresent = existsSync(plistPath);
+  const domain = currentUserLaunchdDomain();
+  const runner = dependencies.run ?? defaultRunner;
+  const target = `${domain}/${label}`;
+  const serviceWasPresent = runner(['print', target]).ok;
+  if (serviceWasPresent) {
+    const stopped = await (dependencies.bootout ?? bootoutLaunchAgentWithRetryV2)({
+      label,
+      plistPath,
+      domain,
+    });
+    if (!stopped.ok) {
+      throw new Error(`FORGE_LAUNCH_AGENT_EXACT_RETIRE_FAILED: ${label}: ${stopped.diagnostics.join('; ')}`);
+    }
+  }
+  rmSync(plistPath, { force: true });
+  const absentAfter = !runner(['print', target]).ok && !existsSync(plistPath);
+  if (!absentAfter) throw new Error(`FORGE_LAUNCH_AGENT_EXACT_RETIRE_VERIFY_FAILED: ${label}`);
+  return { label, plistPath, serviceWasPresent, plistWasPresent, absentAfter };
+}
+
 function decodePlistString(value: string): string {
   return value
     .replaceAll('&lt;', '<')

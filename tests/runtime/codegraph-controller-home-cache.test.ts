@@ -30,6 +30,9 @@ describe('CodeGraph Controller Home cache boundary', () => {
     expect(existsSync(legacy)).toBe(false);
     expect(readFileSync(join(target, 'state.json'), 'utf8')).toContain('"ok":true');
     expect(target).toBe(codegraphRepositoryCacheRoot(controllerHome, repoRoot));
+    // A second initializer observes the converged Controller Home state and is
+    // a no-op rather than attempting to copy a retired source-tree directory.
+    expect(migrateLegacyCodegraphCache(repoRoot, controllerHome)).toBe(target);
   });
 
   test('uses a process-scoped locator and removes it on release', () => {

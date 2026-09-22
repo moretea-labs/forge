@@ -15,9 +15,10 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   reconcileControllerRoundAfterAbandonedRelease,
+  settleControllerRoundAfterTurn,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
+import { runSchedulerControllerRoundRecovery, runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
@@ -25,8 +26,10 @@ import { claimControllerSession, getControllerSession, releaseControllerSession 
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
+import { getChatgptControllerRoundSettlement } from '../../adapters/chatgpt/controller-round-settlement-store';
 import { launchSuperController } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 
 const roots: string[] = [];
 const launchedPids: number[] = [];
@@ -83,6 +86,82 @@ function mcpContext(
 }
 
 describe('autonomous continuation lifecycle', () => {
+  test('a settled Controller turn defaults a nonterminal Work to exactly one continuation obligation without user input', () => {
+    const root = temp('forge-autonomous-turn-settled-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-turn-settled' });
+    const store = { controllerHome, repoId: repository.repoId };
+
+    const openClaimed = (workId: string) => {
+      createWorkContract(store, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+        objective: `Autonomously continue ${workId} without a user continue message.`,
+        acceptanceCriteria: ['the settled Controller turn either continues automatically or stops only on explicit blocking state'],
+        allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt', status: 'running',
+      });
+      const identity = {
+        controllerId: `chatgpt-${workId}`, controllerType: 'chatgpt' as const, principalId: `chatgpt-${workId}`,
+        controllerInstanceId: 'runtime-turn-settled', sessionId: `session-${workId}`,
+      };
+      beginInitialControllerRoundDispatch(store, { workId, identity });
+      finishControllerRoundRelayDispatch(store, { workId, ok: true });
+      const owner = claimControllerSession(store, { ...identity, workId, leaseMs: 60_000 });
+      const claimed = acknowledgeControllerRoundClaim(store, { workId, session: owner });
+      expect(claimed?.status).toBe('claimed');
+      return { owner, claimed: claimed! };
+    };
+
+    const automaticWorkId = 'WORK-AUTONOMOUS-TURN-SETTLED';
+    const automatic = openClaimed(automaticWorkId);
+    const settled = settleControllerRoundAfterTurn(store, { workId: automaticWorkId, completionEvidenceId: 'assistant-turn:1:settled' });
+    expect(settled).toMatchObject({
+      status: 'pending_release', disposition: 'continue_immediately', lifecycleStage: 'semantic_round_closed',
+      roundCount: automatic.claimed.roundCount + 1, controllerTurnCompletionEvidenceId: 'assistant-turn:1:settled',
+    });
+    const replay = settleControllerRoundAfterTurn(store, { workId: automaticWorkId, completionEvidenceId: 'assistant-turn:1:settled' });
+    expect(replay).toMatchObject({ status: 'pending_release', roundCount: settled!.roundCount });
+    releaseControllerSession(store, automaticWorkId, automatic.owner.controllerId);
+    expect(beginControllerRoundRelayAfterRelease(store, { workId: automaticWorkId, releasedSession: automatic.owner })).toMatchObject({
+      status: 'dispatching', controllerTurnCompletionEvidenceId: undefined, controllerTurnSettledAt: undefined,
+    });
+
+    const explicitWaitWorkId = 'WORK-AUTONOMOUS-TURN-EXPLICIT-WAIT';
+    const explicitWait = openClaimed(explicitWaitWorkId);
+    const waited = submitControllerRoundDisposition(store, {
+      workId: explicitWaitWorkId,
+      identity: {
+        controllerId: explicitWait.owner.controllerId, controllerType: 'chatgpt',
+        principalId: explicitWait.owner.principalId!, controllerInstanceId: explicitWait.owner.controllerInstanceId!,
+        sessionId: explicitWait.owner.sessionId,
+      },
+      disposition: 'wait', relayScopeId: explicitWait.claimed.relayScopeId,
+    });
+    expect(waited.status).toBe('waiting');
+    expect(settleControllerRoundAfterTurn(store, { workId: explicitWaitWorkId, completionEvidenceId: 'assistant-turn:wait:settled' }))
+      .toMatchObject({ status: 'waiting', disposition: 'wait', roundCount: waited.roundCount });
+
+    const blockedWorkId = 'WORK-AUTONOMOUS-TURN-BLOCKED';
+    openClaimed(blockedWorkId);
+    createHandoffItem(store, {
+      id: 'handoff-autonomous-user-action', repoId: repository.repoId, workId: blockedWorkId,
+      title: 'User decision required', severity: 'blocked', reason: 'A user-owned approval decision is required.',
+      creationReason: 'policy_approval_required', summary: 'Do not autonomously continue through the approval boundary.',
+      currentState: { repoId: repository.repoId, workId: blockedWorkId, statusSummary: 'approval required' },
+      evidenceRefs: [], blockingDecision: 'Approve or reject the requested action.',
+      recommendedDecision: 'Wait for the user decision.', recommendedPrompt: 'Review the pending approval.',
+      suggestedNextActions: [],
+    });
+    expect(settleControllerRoundAfterTurn(store, { workId: blockedWorkId, completionEvidenceId: 'assistant-turn:block:settled' })).toMatchObject({
+      status: 'waiting_for_user', disposition: 'wait_for_user', handoffId: 'handoff-autonomous-user-action',
+      controllerTurnCompletionEvidenceId: 'assistant-turn:block:settled',
+    });
+  });
+
   test('a dispatched ChatGPT relay reclaims a stale prior controller without weakening ordinary ownership fencing', async () => {
     const root = temp('forge-autonomous-stale-owner-recovery-');
     const controllerHome = join(root, 'controller');
@@ -121,11 +200,12 @@ describe('autonomous continuation lifecycle', () => {
     });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
+      occurrenceId: 'occurrence-test',
       identity: {
-        controllerId: 'schedule:test', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler',
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt',
+        principalId: 'chatgpt-principal',
         controllerInstanceId: 'runtime-test',
-        sessionId: 'occurrence-test',
+        sessionId: 'chatgpt-session',
       },
     });
     const staleOwnerBinding = bindChatgptWorkConversation(store, {
@@ -204,11 +284,12 @@ describe('autonomous continuation lifecycle', () => {
 
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
+      occurrenceId: 'occurrence-test',
       identity: {
-        controllerId: 'schedule:test', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler',
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt',
+        principalId: 'chatgpt-principal',
         controllerInstanceId: 'runtime-test',
-        sessionId: 'occurrence-test',
+        sessionId: 'mcp-before-finalize',
       },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -305,10 +386,11 @@ describe('autonomous continuation lifecycle', () => {
       status: 'goal_complete',
       controllerId: 'chatgpt-principal',
       principalId: 'chatgpt-principal',
-      sessionId: 'mcp-after-finalize',
+      sessionId: 'mcp-before-finalize',
     });
-    // The relay records the current replaceable transport, while terminal semantic
-    // closure must not rewrite or reclaim the physical Work lease or its durable authority.
+    // The rotated MCP transport authenticates this terminal closure but does not
+    // become durable ControllerRound authority. Preserve the original claimed relay
+    // epoch and do not rewrite or reclaim the physical Work lease.
     expect(completed.data.relay.authorityId).toBe(opened.authorityId);
     expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
 
@@ -368,12 +450,13 @@ describe('autonomous continuation lifecycle', () => {
 
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
+      occurrenceId: 'occurrence-abandoned',
       maxRepeatedState: 3,
       identity: {
-        controllerId: 'schedule:test', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler',
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt',
+        principalId: 'chatgpt-principal',
         controllerInstanceId: 'runtime-test',
-        sessionId: 'occurrence-abandoned',
+        sessionId: 'mcp-undisposed',
       },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -409,6 +492,7 @@ describe('autonomous continuation lifecycle', () => {
       relayScopeId: opened.relayScopeId,
       disposition: 'continue_immediately',
       status: 'failed',
+      failureClass: 'abandoned_release',
       lastError: 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION',
       roundCount: 1,
       repeatedStateCount: 0,
@@ -562,6 +646,173 @@ describe('autonomous continuation lifecycle', () => {
     expect(launched.prompt).not.toContain('First call rh_work continue');
   });
 
+  test('exact terminal authority closes provider waiting_for_user after physical Work completion without reclaiming it', async () => {
+    const root = temp('forge-terminal-provider-wait-goal-complete-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    const targetRevision = initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'terminal-provider-wait-goal-complete' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const requirementId = 'REQ-TERMINAL-PROVIDER-WAIT-GOAL-COMPLETE';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Terminal provider wait goal closure',
+      outcomeStatement: 'A completed Work can close provider authorization wait with exact Controller authority.',
+    });
+    updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'test_activate_requirement',
+      mutate: (current) => ({ ...current, state: 'active' }),
+    });
+    const workId = 'WORK-TERMINAL-PROVIDER-WAIT-GOAL-COMPLETE';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Complete physical Work while the provider relay waits for user authorization.',
+      acceptanceCriteria: ['Exact terminal authority closes provider wait without reclaiming Work.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+      requirementId,
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      occurrenceId: 'occ-terminal-provider-wait',
+      identity: {
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt', principalId: 'chatgpt-principal',
+        controllerInstanceId: 'runtime-before-wait', sessionId: 'mcp-before-wait',
+      },
+    });
+    const handoffId = 'hnd-terminal-provider-wait';
+    createHandoffItem(store, {
+      id: handoffId,
+      repoId: repository.repoId,
+      workId,
+      title: 'provider authorization required',
+      severity: 'needs_review',
+      reason: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+      creationReason: 'missing_authorization',
+      summary: 'provider authorization required before dispatch',
+      currentState: { repoId: repository.repoId, workId, statusSummary: 'waiting for provider authorization' },
+      evidenceRefs: [],
+      recommendedDecision: 'resume after authorization',
+      recommendedPrompt: 'resume the existing controller round',
+      suggestedNextActions: [],
+    });
+    expect(finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      waitForUser: true,
+      handoffId,
+      error: 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+    })).toMatchObject({
+      status: 'waiting_for_user',
+      blockedReason: 'provider_user_action_required',
+      authorityId: opened.authorityId,
+      claimGeneration: 0,
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const recordedAt = '2026-09-21T11:00:00.000Z';
+    transitionWorkContractPhase(store, workId, {
+      status: 'running', phase: 'verification', state: 'satisfied',
+      summary: 'Exact no-change candidate verified while provider authorization wait remains advisory to semantic completion.',
+    });
+    requestWorkImplementationReview(store, workId, 'Terminal provider-wait candidate requires explicit Controller review.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-terminal-provider-wait',
+      workId,
+      reviewerPrincipalId: 'chatgpt-principal',
+      reviewerControllerSessionId: 'mcp-before-wait',
+      decision: 'approved',
+      rationale: 'Physical Work is complete and the only relay blocker is provider authorization unrelated to semantic completion.',
+      findings: [],
+      sourceRevision: targetRevision,
+      workspaceFingerprint: 'terminal-provider-wait-content',
+      verificationWorkspaceFingerprint: 'terminal-provider-wait-verification',
+      changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Exact terminal authority may close provider wait without reclaiming terminal Work.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt,
+    });
+    recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'receipt-terminal-provider-wait',
+      source: 'controller_work',
+      issueId: 'terminal-provider-wait',
+      taskId: workId,
+      workId,
+      targetBranch: 'main',
+      targetRevision,
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    expect(getWorkContract(store, workId)?.status).toBe('completed');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const wrong = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'mcp-after-finalize-wrong-authority',
+        controllerInstanceId: 'runtime-after-finalize',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'repair',
+        capability_id: `controller.disposition:goal_complete:cra_00000000000000000000000000000000:${opened.relayScopeId}`,
+        work_id: workId,
+        requirement_id: requirementId,
+        reason: 'Wrong authority must not close the provider wait.',
+      },
+    ));
+    expect(wrong.status).toBe('blocked');
+
+    const completed = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'mcp-after-finalize',
+        controllerInstanceId: 'runtime-after-finalize',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'repair',
+        capability_id: `controller.disposition:goal_complete:${opened.authorityId}:${opened.relayScopeId}`,
+        work_id: workId,
+        requirement_id: requirementId,
+        reason: 'Physical completion is proven; provider authorization wait does not block semantic Requirement acceptance.',
+      },
+    ));
+    expect(completed.status).toBe('ok');
+    expect(completed.data.requirementAcceptance).toMatchObject({
+      accepted: true,
+      requirement: { requirementId, state: 'done' },
+    });
+    expect(completed.data.relay).toMatchObject({
+      status: 'goal_complete',
+      disposition: 'goal_complete',
+      authorityId: opened.authorityId,
+      claimGeneration: 0,
+      controllerId: 'chatgpt-principal',
+      principalId: 'chatgpt-principal',
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+  });
+
   test('three semantic rounds survive provider conversation and session turnover before goal_complete', () => {
     const root = temp('forge-stage3b-three-round-turnover-');
     const controllerHome = join(root, 'controller');
@@ -595,11 +846,12 @@ describe('autonomous continuation lifecycle', () => {
     const round1 = beginInitialControllerRoundDispatch(store, {
       workId,
       bindingId: binding1.bindingId,
+      occurrenceId: 'occ-stage3b-round-1',
       maxRounds: 4,
       maxRepeatedState: 4,
       identity: {
-        controllerId: 'schedule:stage3b-round-1', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-stage3b-round-1',
+        controllerId: 'chatgpt-stage3b', controllerType: 'chatgpt',
+        principalId: 'chatgpt-stage3b', controllerInstanceId: 'provider-runtime-1', sessionId: 'provider-session-1',
       },
     });
     finishControllerRoundRelayDispatch(store, {
@@ -627,6 +879,7 @@ describe('autonomous continuation lifecycle', () => {
     const round2 = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner1 })!;
     expect(round2).toMatchObject({ status: 'dispatching', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 2 });
     expect(round2.authorityId).not.toBe(round1.authorityId);
+    expect(round2.observationWindow).toHaveLength(1);
     const binding2 = rebindChatgptWorkConversation(store, {
       workId, previousConversationId: binding1.conversationId,
       conversationUrl: 'https://chatgpt.com/c/stage3b-round-2', latestBrowserSessionId: 'browser-stage3b-round-2',
@@ -658,6 +911,7 @@ describe('autonomous continuation lifecycle', () => {
     const round3 = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner2 })!;
     expect(round3).toMatchObject({ status: 'dispatching', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 3 });
     expect(round3.authorityId).not.toBe(round2.authorityId);
+    expect(round3.observationWindow).toHaveLength(2);
     const binding3 = rebindChatgptWorkConversation(store, {
       workId, previousConversationId: binding2.conversationId,
       conversationUrl: 'https://chatgpt.com/c/stage3b-round-3', latestBrowserSessionId: 'browser-stage3b-round-3',
@@ -688,6 +942,7 @@ describe('autonomous continuation lifecycle', () => {
       relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 3,
       providerDispatchReceiptId: 'provider-receipt-stage3b-3',
     });
+    expect(terminal.observationWindow).toHaveLength(3);
     expect(getChatgptWorkConversationBinding(store, workId)).toMatchObject({
       bindingId: binding1.bindingId, conversationId: 'stage3b-round-3', latestBrowserSessionId: 'browser-stage3b-round-3',
     });
@@ -715,7 +970,8 @@ describe('autonomous continuation lifecycle', () => {
     });
     const initial = beginInitialControllerRoundDispatch(store, {
       workId: predecessorWorkId, requirementId,
-      identity: { controllerId: 'schedule:terminal-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-successor' },
+      occurrenceId: 'occ-terminal-successor',
+      identity: { controllerId: 'chatgpt-terminal-successor', controllerType: 'chatgpt', principalId: 'chatgpt-terminal-successor', controllerInstanceId: 'provider-runtime-terminal-successor', sessionId: 'provider-session-terminal-successor' },
     });
     finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
     const owner = claimControllerSession(store, {
@@ -787,6 +1043,99 @@ describe('autonomous continuation lifecycle', () => {
     expect(acknowledgeControllerRoundClaim(store, { workId: successorWorkId, session: successorOwner })).toMatchObject({
       status: 'claimed', originWorkId: successorWorkId, predecessorWorkId,
     });
+  });
+
+  test('periodic restart reconciliation settles leaked Forge tabs exactly once and preserves user-owned tabs exactly once', async () => {
+    const root = temp('forge-autonomous-tab-restart-reconcile-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'tab-restart-reconcile' });
+    const store = { controllerHome, repoId: repository.repoId };
+
+    const createWaitingRound = (workId: string, browserSessionId: string) => {
+      createWorkContract(store, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: 'goal_workloop',
+        objective: 'Keep semantic round durable while ephemeral browser resource is reconciled.',
+        acceptanceCriteria: ['restart cleanup is exactly-once and ownership-safe'],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        status: 'running',
+      });
+      const binding = bindChatgptWorkConversation(store, {
+        workId,
+        conversationUrl: `https://chatgpt.com/c/${workId.toLowerCase()}`,
+        latestBrowserSessionId: browserSessionId,
+      });
+      const identity = {
+        controllerId: `controller-${workId}`,
+        controllerType: 'chatgpt' as const,
+        principalId: `controller-${workId}`,
+        controllerInstanceId: 'runtime-before-restart',
+        sessionId: `session-${workId}`,
+      };
+      const opened = beginInitialControllerRoundDispatch(store, {
+        workId,
+        identity,
+        bindingId: binding.bindingId,
+      });
+      finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: binding.bindingId });
+      const owner = claimControllerSession(store, { workId, ...identity, leaseMs: 60_000 });
+      acknowledgeControllerRoundClaim(store, { workId, session: owner });
+      const waiting = submitControllerRoundDisposition(store, {
+        workId,
+        relayScopeId: opened.relayScopeId,
+        identity,
+        disposition: 'wait',
+        reason: 'Simulate an inactive durable round observed after Runtime restart.',
+      });
+      expect(waiting.status).toBe('waiting');
+      releaseControllerSession(store, workId, owner.controllerId);
+      return waiting;
+    };
+
+    const forgeRelay = createWaitingRound('WORK-TAB-RESTART-FORGE', 'forge-owned-browser-session');
+    const userRelay = createWaitingRound('WORK-TAB-RESTART-USER', 'user-owned-browser-session');
+    const calls: string[] = [];
+    const settleBrowserTab = async (input: { browserSessionId: string }) => {
+      calls.push(input.browserSessionId);
+      return input.browserSessionId === 'user-owned-browser-session'
+        ? { status: 'preserved_user_owned' as const }
+        : { status: 'closed' as const };
+    };
+    const cleanupInput = {
+      controllerHome,
+      controllerPid: process.pid,
+      nowMs: 0,
+      cleanupIntervalMs: 60_000,
+      repositories: [repository],
+      runtimeCleanup: (() => ({ ok: true })) as any,
+      terminalWorkCleanup: (async () => ({ inspected: 0, cleaned: 0, blocked: [] })) as any,
+      processGc: (() => ({ ok: true })) as any,
+      settleBrowserTab: settleBrowserTab as any,
+    };
+
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    expect(calls.sort()).toEqual(['forge-owned-browser-session', 'user-owned-browser-session'].sort());
+    expect(getChatgptControllerRoundSettlement(store, {
+      workId: forgeRelay.originWorkId,
+      relayScopeId: forgeRelay.relayScopeId,
+    })?.status).toBe('closed');
+    expect(getChatgptControllerRoundSettlement(store, {
+      workId: userRelay.originWorkId,
+      relayScopeId: userRelay.relayScopeId,
+    })?.status).toBe('preserved_user_owned');
+
+    calls.length = 0;
+    await runSchedulerPeriodicCleanup(cleanupInput);
+    expect(calls).toEqual([]);
   });
 
   test('stalled ChatGPT Work recovery uses the exact Work continuation with durable bounded backoff', async () => {

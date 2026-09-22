@@ -2,12 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundProviderDispatch,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   claimStalledControllerRoundRelays,
@@ -15,9 +16,14 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
+import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
+import { chatgptAutomationDeliveryFailure, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
+import { controllerPluginRepository } from '../../src/runtime/plugins/store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { ensureForgeInstanceIdentity, executionPlacement } from '../../packages/kernel/identity/api/index';
 import { bootstrapWslWindowsBridgeBrowser, chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, observeWslWindowsBridgeBrowser, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
@@ -36,9 +42,11 @@ import {
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
+  chatgptBrowserActionResult,
   isChatgptConversationUrl,
   reconciledNewChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
+  runStandaloneChatgptPrompt,
   runWorkChatgptContinuation,
   stableChatgptWorkBridgeSessionId,
   stableChatgptWorkBrowserSessionId,
@@ -46,6 +54,9 @@ import {
   settleWorkChatgptAutomationTab,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
+import { ensureScheduledControllerBinding } from '../../src/runtime/root/scheduled-controller-composition';
+import { getChatgptControllerBindingPayload } from '../../adapters/chatgpt/controller-binding-store';
+import { chatgptAutomationModelFamilyMenuTrigger } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
 import {
   createWorkContinuationSchedule,
@@ -59,12 +70,198 @@ import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/ty
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
+describe('ChatGPT Browser controller authority', () => {
+  test('does not reconfigure an already-enabled controller-scoped Browser', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-controller-browser-enabled-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repository = controllerPluginRepository(controllerHome);
+    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+    mkdirSync(dirname(configPath), { recursive: true });
+    const persisted = `${JSON.stringify({ schemaVersion: 2, enabled: true }, null, 2)}\n`;
+    writeFileSync(configPath, persisted, 'utf8');
+
+    await expect(ensureControllerChatgptBrowser(controllerHome, 'WORK-BROWSER-ENABLED')).resolves.toBeUndefined();
+    expect(readFileSync(configPath, 'utf8')).toBe(persisted);
+  });
+
+  test('keeps disabled Browser enablement behind canonical configure authorization', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-controller-browser-disabled-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repository = controllerPluginRepository(controllerHome);
+    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+    mkdirSync(dirname(configPath), { recursive: true });
+    const persisted = `${JSON.stringify({ schemaVersion: 2, enabled: false }, null, 2)}\n`;
+    writeFileSync(configPath, persisted, 'utf8');
+
+    await expect(ensureControllerChatgptBrowser(controllerHome, 'WORK-BROWSER-DISABLED')).rejects.toThrow('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
+    expect(readFileSync(configPath, 'utf8')).toBe(persisted);
+  });
+});
+
+describe('ChatGPT Browser action result contract', () => {
+  test('unwraps the typed plugin envelope exactly once and rejects malformed envelopes', () => {
+    const raw = { session: { sessionId: 'browser-session-1', url: 'https://chatgpt.com/' }, matched: true };
+    expect(chatgptBrowserActionResult({ schemaVersion: 1, plugin: {}, action: {}, result: raw }, 'open_page')).toBe(raw);
+    expect(() => chatgptBrowserActionResult({ schemaVersion: 1, plugin: {}, action: {} }, 'open_page')).toThrow('CHATGPT_BROWSER_ACTION_RESULT_INVALID:open_page');
+    expect(() => chatgptBrowserActionResult({ result: [] }, 'list_sessions')).toThrow('CHATGPT_BROWSER_ACTION_RESULT_INVALID:list_sessions');
+  });
+});
+
 describe('ChatGPT provider delivery classification', () => {
+  test('preserves typed observed conversation identity across ambiguous browser submission confirmation', async () => {
+    const host = createChatgptBrowserDeliveryHost({
+      ensureBrowser: async () => undefined,
+      navigate: async (_controllerHome, _workId, _browserSessionId, targetUrl) => ({
+        submissionTargetUrl: targetUrl,
+        recoveredFromStaleBinding: true,
+        browserSessionId: 'browser-replacement-session',
+      }),
+      ensureExecutionPreference: async () => true,
+      submitPrompt: async () => {
+        throw new ChatgptProviderDeliveryError(
+          'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED',
+          'submission confirmation is ambiguous',
+          { conversationUrl: 'https://chatgpt.com/c/typed-observed-conversation' },
+        );
+      },
+    });
+    const ambiguous = await host.dispatch({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-test',
+      repoRoot: '/tmp/repo',
+      workId: 'WORK-TYPED-CONVERSATION',
+      prompt: 'continue',
+      browserSessionId: 'browser-typed-conversation',
+      targetUrl: 'https://chatgpt.com/',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+    });
+    expect(ambiguous).toMatchObject({
+      status: 'outcome_unknown',
+      browserSessionId: 'browser-replacement-session',
+      conversationUrl: 'https://chatgpt.com/c/typed-observed-conversation',
+      error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED' },
+    });
+
+    const failedHost = createChatgptBrowserDeliveryHost({
+      ensureBrowser: async () => undefined,
+      navigate: async (_controllerHome, _workId, browserSessionId, targetUrl) => ({
+        submissionTargetUrl: targetUrl,
+        recoveredFromStaleBinding: false,
+        browserSessionId,
+      }),
+      ensureExecutionPreference: async () => true,
+      submitPrompt: async () => { throw new Error('CHATGPT_BRIDGE_DISPATCH_FAILED:known failure'); },
+    });
+    const failed = await failedHost.dispatch({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-test',
+      repoRoot: '/tmp/repo',
+      workId: 'WORK-KNOWN-FAILURE',
+      prompt: 'continue',
+      browserSessionId: 'browser-known-failure',
+      targetUrl: 'https://chatgpt.com/',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+    });
+    expect(failed).toMatchObject({ status: 'failed', conversationUrl: 'https://chatgpt.com/' });
+
+    const preNavigationFailedHost = createChatgptBrowserDeliveryHost({
+      ensureBrowser: async () => undefined,
+      navigate: async () => { throw new Error('CHATGPT_CONTROLLER_BROWSER_FAILED:navigation failed'); },
+      ensureExecutionPreference: async () => true,
+      submitPrompt: async () => 'https://chatgpt.com/c/never-reached',
+    });
+    const preNavigationFailed = await preNavigationFailedHost.dispatch({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-test',
+      repoRoot: '/tmp/repo',
+      workId: 'WORK-PRE-NAVIGATION-FAILURE',
+      prompt: 'continue',
+      browserSessionId: 'browser-original-session',
+      targetUrl: 'https://chatgpt.com/',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+    });
+    expect(preNavigationFailed).toMatchObject({ status: 'failed', browserSessionId: 'browser-original-session' });
+  });
+
   test('separates ambiguous mutation, user blockers, and ordinary provider failure', () => {
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN')).toBe('outcome_unknown');
+    expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED')).toBe('failed');
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_PERMISSION_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_BRIDGE_DISPATCH_FAILED')).toBe('failed');
+  });
+});
+
+describe('ChatGPT standalone provider routing', () => {
+  test('uses the same WSL bridge provider abstraction as Work continuation and preserves typed delivery status', async () => {
+    const calls: Array<{ provider: string; workId: string; prompt: string }> = [];
+    const browserHost: ChatgptProviderDeliveryHost = {
+      async dispatch() {
+        throw new Error('browser host must not be selected for a WSL runtime');
+      },
+    };
+    const wslHost: ChatgptProviderDeliveryHost = {
+      async dispatch(input) {
+        calls.push({ provider: 'chatgpt-bridge', workId: input.workId, prompt: input.prompt });
+        return {
+          status: 'dispatch_confirmed',
+          provider: 'chatgpt-bridge',
+          browserSessionId: input.browserSessionId,
+          conversationUrl: 'https://chatgpt.com/c/provider-recovery-probe',
+          executionPreferenceVerified: false,
+        };
+      },
+    };
+    const result = await runStandaloneChatgptPrompt({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-provider-recovery',
+      repoRoot: '/tmp/repo',
+      scopeId: 'provider-recovery',
+      prompt: 'provider health probe only',
+      tabPolicy: 'new',
+    }, { bridgeRuntime: true, browserHost, wslHost });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ provider: 'chatgpt-bridge', workId: 'standalone:provider-recovery', prompt: 'provider health probe only' });
+    expect(result).toMatchObject({
+      status: 'dispatched',
+      provider: 'chatgpt-bridge',
+      providerDeliveryStatus: 'dispatch_confirmed',
+      conversationUrl: 'https://chatgpt.com/c/provider-recovery-probe',
+    });
+  });
+
+  test('keeps non-confirmed provider dispositions typed instead of upgrading them to recovery success', async () => {
+    const wslHost: ChatgptProviderDeliveryHost = {
+      async dispatch(input) {
+        return {
+          status: 'wait_for_user',
+          provider: 'chatgpt-bridge',
+          browserSessionId: input.browserSessionId,
+          conversationUrl: input.targetUrl,
+          executionPreferenceVerified: false,
+          error: { code: 'CHATGPT_AUTH_REQUIRED', message: 'login required' },
+        };
+      },
+    };
+    const result = await runStandaloneChatgptPrompt({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-provider-recovery',
+      scopeId: 'provider-recovery-auth',
+      prompt: 'provider health probe only',
+    }, { bridgeRuntime: true, wslHost });
+    expect(result).toMatchObject({
+      status: 'failed',
+      provider: 'chatgpt-bridge',
+      providerDeliveryStatus: 'wait_for_user',
+      error: { code: 'CHATGPT_AUTH_REQUIRED' },
+    });
   });
 });
 
@@ -77,12 +274,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('不得仅为了满足该 host wording 而 delegate');
   });
 
-  test('pins ChatGPT automation Browser actions to native Chrome attach without global transport mutation', () => {
-    expect(chatgptBrowserActionArgs('open_page', { session_id: 'session-a', url: 'https://chatgpt.com/' })).toMatchObject({
-      session_id: 'session-a', browser_mode: 'attach_preferred', cdp_attach_fallback: 'fail_closed',
-      native_attach_mode: 'auto', native_browser_candidates: ['chrome'],
+  test('keeps ChatGPT automation Browser action envelopes compatible with persisted transport policy', () => {
+    expect(chatgptBrowserActionArgs('open_page', { session_id: 'session-a', url: 'https://chatgpt.com/' })).toEqual({
+      session_id: 'session-a', url: 'https://chatgpt.com/',
     });
-    expect(chatgptBrowserActionArgs('get_text', { session_id: 'session-a' })).toMatchObject({ browser_mode: 'attach_preferred' });
+    expect(chatgptBrowserActionArgs('get_text', { session_id: 'session-a' })).toEqual({ session_id: 'session-a' });
     expect(chatgptBrowserActionArgs('configure', { enabled: true })).toEqual({ enabled: true });
   });
 
@@ -123,10 +319,14 @@ describe('ChatGPT Work conversation binding', () => {
       workId: 'WORK-1',
       conversationUrl: 'https://chatgpt.com/c/conversation-1',
       latestBrowserSessionId: 'chgpt_20260812_120000_first',
+      authorizationGrantRefs: ['plugin-grant-browser-session', 'plugin-grant-browser-interaction', 'plugin-grant-browser-session'],
       localAlias: 'Forge · YaoZhunShi · Medication V2',
     });
     expect(first.conversationId).toBe('conversation-1');
-    expect(getChatgptWorkConversationBinding(options, 'WORK-1')?.latestBrowserSessionId).toBe('chgpt_20260812_120000_first');
+    expect(getChatgptWorkConversationBinding(options, 'WORK-1')).toMatchObject({
+      latestBrowserSessionId: 'chgpt_20260812_120000_first',
+      authorizationGrantRefs: ['plugin-grant-browser-session', 'plugin-grant-browser-interaction'],
+    });
     const continued = bindChatgptWorkConversation(options, {
       workId: 'WORK-1',
       conversationUrl: 'https://www.chatgpt.com/c/conversation-1?model=current',
@@ -134,6 +334,7 @@ describe('ChatGPT Work conversation binding', () => {
     });
     expect(continued.conversationId).toBe('conversation-1');
     expect(continued.latestBrowserSessionId).toBe('chgpt_20260812_130000_followup');
+    expect(continued.authorizationGrantRefs).toEqual(['plugin-grant-browser-session', 'plugin-grant-browser-interaction']);
     expect(() => bindChatgptWorkConversation(options, {
       workId: 'WORK-1',
       conversationUrl: 'https://chatgpt.com/c/other-conversation',
@@ -451,6 +652,15 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationReasoningLevelFromLabel('High contrast')).toBeUndefined();
   });
 
+  test('recognizes version-agnostic ChatGPT model-family menu triggers without accepting unrelated GPT UI', () => {
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT-6 Astra\n轻度', 'menu')).toBe(true);
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT-5.6 Sol\nHigh', 'menu')).toBe(true);
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT-6 Astra\n轻度', undefined)).toBe(false);
+    expect(chatgptAutomationModelFamilyMenuTrigger('Try GPT-6', 'menu')).toBe(false);
+    expect(chatgptAutomationModelFamilyMenuTrigger('GPT Store', 'menu')).toBe(false);
+    expect(chatgptAutomationModelFamilyMenuTrigger('Project', 'menu')).toBe(false);
+  });
+
   test('keeps ChatGPT control readiness probes repeatable within a bounded hydration window', () => {
     expect(chatgptAutomationControlQueryLimit('main button, main [role="button"]')).toBe(160);
     expect(chatgptAutomationControlQueryLimit('button, [role="button"]')).toBe(320);
@@ -467,6 +677,36 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationPageFailure('ChatGPT', true)).toBeUndefined();
   });
 
+  test('requires provider acceptance beyond a local outbound ChatGPT echo and recognizes delivery timeout UI', () => {
+    expect(chatgptSubmissionSettlementWaitBudget()).toBe(30_000);
+    expect(chatgptSubmissionSettlementWaitBudget(8_000)).toBe(8_000);
+    expect(chatgptSubmissionSettlementWaitBudget(60_000)).toBe(30_000);
+    expect(chatgptSubmissionAcceptanceObserved({
+      outboundConfirmed: true,
+      hasConversationIdentity: true,
+      assistantResponseObserved: false,
+      generationInProgress: false,
+    })).toBe(false);
+    expect(chatgptSubmissionAcceptanceObserved({
+      outboundConfirmed: true,
+      hasConversationIdentity: true,
+      assistantResponseObserved: true,
+      generationInProgress: false,
+    })).toBe(true);
+    expect(chatgptSubmissionAcceptanceObserved({
+      outboundConfirmed: true,
+      hasConversationIdentity: true,
+      assistantResponseObserved: false,
+      generationInProgress: true,
+    })).toBe(true);
+    expect(chatgptAutomationDeliveryFailure('Message delivery timed out. Please try again.')).toBe(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT);
+    expect(chatgptAutomationDeliveryFailure('Resume stream unavailable')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+    expect(chatgptAutomationDeliveryFailure('  RESUME\nstream   unavailable  ')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+    expect(chatgptAutomationDeliveryFailure('ChatGPT')).toBeUndefined();
+    expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT)).toBe('outcome_unknown');
+    expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE)).toBe('outcome_unknown');
+  });
+
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/target-id?model=current')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/other-id')).toBe(false);
@@ -477,9 +717,19 @@ describe('ChatGPT Work conversation binding', () => {
     const prompt = '@forge Continue exact Work work-native-send and preserve the same conversation. '.repeat(6).trim();
     expect(chatgptOutboundMessageMatchesPrompt(prompt, prompt)).toBe(true);
     expect(chatgptOutboundMessageMatchesPrompt(prompt.replace(/\s+/g, '   '), prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\n收起`, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\nCollapse`, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\nShow less`, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\nnot a known UI suffix`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`prefix ${prompt}`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`${prompt.slice(0, 160)} but wrong tail`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt('', prompt)).toBe(false);
+    const largePrompt = `@forge ${'durable-controller-contract '.repeat(8_000)}`;
+    const boundedPrefix = largePrompt.slice(0, 100_000);
+    expect(chatgptOutboundMessageMatchesPrompt(boundedPrefix, largePrompt, { truncated: true })).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${boundedPrefix.slice(0, -1)}X`, largePrompt, { truncated: true })).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(largePrompt.slice(0, 200), largePrompt, { truncated: true })).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(boundedPrefix, largePrompt)).toBe(false);
   });
 
   test('scheduled WSL continuation uses semantic outbound dispatch confirmation instead of Browser replay', () => {
@@ -493,7 +743,7 @@ describe('ChatGPT Work conversation binding', () => {
     const generated = writeChatgptBridgeExtension(generatedRoot, 'http://127.0.0.1:17651', 'test-token');
     const generatedScript = readFileSync(generated.contentScriptPath, 'utf8');
     expect(() => new Function(generatedScript)).not.toThrow();
-    expect(launcher).toContain('const bridgeRuntime = isWslWindowsRuntime()');
+    expect(launcher).toContain('const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime()'); expect(launcher).toContain('CHATGPT_EXECUTION_PLACEMENT_MISMATCH'); expect(launcher).toContain('dependencies.wslHost ?? createChatgptWslBridgeDeliveryHost()'); expect(launcher).toContain('dependencies.browserHost ?? createChatgptBrowserDeliveryHost({');
     expect(launcher).toContain('createChatgptWslBridgeDeliveryHost()');
     expect(wslHost).toContain('dispatchOnly: true');
     expect(wslHost).toContain("provider: 'chatgpt-bridge'");
@@ -516,6 +766,103 @@ describe('ChatGPT Work conversation binding', () => {
 
 
 
+  test('uses maximum reasoning for Work continuation without changing standalone defaults or explicit overrides', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-controller-reasoning-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'reasoning@example.test'], ['config', 'user.name', 'Reasoning Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'reasoning fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-controller-reasoning' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const, status: 'running' as const,
+    };
+    createWorkContract(store, { ...workInput, workId: 'WORK-REASONING-DEFAULT', objective: 'Use maximum controller reasoning.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-REASONING-OVERRIDE', objective: 'Honor explicit controller reasoning.' });
+
+    const observed: Array<{ workId: string; reasoning: string }> = [];
+    const browserHost: ChatgptProviderDeliveryHost = {
+      dispatch: async (input) => {
+        observed.push({ workId: input.workId, reasoning: input.reasoning });
+        return {
+          status: 'dispatch_confirmed' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: input.browserSessionId,
+          conversationUrl: `https://chatgpt.com/c/reasoning-${observed.length}`,
+          executionPreferenceVerified: true,
+        };
+      },
+    };
+
+    const controllerDefault = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-REASONING-DEFAULT', prompt: 'continue',
+      controllerAuthorityId: 'cra_11111111111111111111111111111111', relayScopeId: 'goal:WORK-REASONING-DEFAULT',
+    }, { bridgeRuntime: false, browserHost });
+    const standaloneDefault = await runStandaloneChatgptPrompt({
+      controllerHome, repoId: repository.repoId, repoRoot, scopeId: 'reasoning-standalone', prompt: 'probe',
+    }, { bridgeRuntime: false, browserHost });
+    const controllerOverride = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-REASONING-OVERRIDE', prompt: 'continue', reasoning: 'medium',
+      controllerAuthorityId: 'cra_22222222222222222222222222222222', relayScopeId: 'goal:WORK-REASONING-OVERRIDE',
+    }, { bridgeRuntime: false, browserHost });
+
+    expect(controllerDefault.reasoning).toBe('xhigh');
+    expect(standaloneDefault.reasoning).toBe('high');
+    expect(controllerOverride.reasoning).toBe('medium');
+    expect(observed.map(({ reasoning }) => reasoning)).toEqual(['xhigh', 'high', 'medium']);
+  });
+
+  test('uses medium for scheduler-owned mechanical ChatGPT bindings while preserving explicit high and xhigh', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-scheduled-reasoning-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'scheduled-reasoning@example.test'], ['config', 'user.name', 'Scheduled Reasoning Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'scheduled reasoning fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-scheduled-reasoning' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const, status: 'running' as const,
+    };
+    const bind = (workId: string, reasoning?: 'medium' | 'high' | 'xhigh') => {
+      createWorkContract(store, { ...workInput, workId, objective: `Scheduled reasoning ${workId}.` });
+      const session = claimControllerSession(store, {
+        workId,
+        controllerId: `controller-${workId}`,
+        controllerType: 'chatgpt',
+        sessionId: `session-${workId}`,
+        principalId: 'test-controller',
+        controllerInstanceId: 'test-runtime',
+        leaseMs: 60_000,
+      });
+      const binding = ensureScheduledControllerBinding(store, { workId, session, args: reasoning ? { reasoning } : {} });
+      return getChatgptControllerBindingPayload(store, binding.adapterRef)?.reasoning;
+    };
+
+    expect(bind('WORK-SCHEDULED-DEFAULT')).toBe('medium');
+    expect(bind('WORK-SCHEDULED-HIGH', 'high')).toBe('high');
+    expect(bind('WORK-SCHEDULED-XHIGH', 'xhigh')).toBe('xhigh');
+  });
+
   test('fails closed when the explicit controller home does not contain the requested WorkContract', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-authority-'));
     roots.push(root);
@@ -531,6 +878,32 @@ describe('ChatGPT Work conversation binding', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: repo-chatgpt-work:WORK-missing');
+  });
+
+  test('rejects a Work targeted at a different Forge instance before provider dispatch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-placement-mismatch-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-mac' });
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'placement@example.test'], ['config', 'user.name', 'Placement Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'placement fixture\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-placement-mismatch' });
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId: 'WORK-PLACEMENT-MISMATCH', repoId: repository.repoId,
+      executionPlacement: executionPlacement({ forgeInstanceId: 'forge-wsl', repositoryId: repository.repoId }),
+      mode: 'goal_workloop', objective: 'Stay on the WSL Forge instance.', acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    let dispatches = 0;
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-PLACEMENT-MISMATCH', prompt: 'continue',
+      controllerAuthorityId: 'cra_44444444444444444444444444444444', relayScopeId: 'goal:WORK-PLACEMENT-MISMATCH',
+    }, { bridgeRuntime: false, browserHost: { dispatch: async () => { dispatches += 1; throw new Error('must not dispatch'); } } });
+    expect(dispatches).toBe(0);
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'CHATGPT_EXECUTION_PLACEMENT_MISMATCH' } });
+    expect(result.error?.message).toContain('target=forge-wsl current=forge-mac');
   });
 
   test('fails closed before browser mutation when relay authority inputs are incomplete', async () => {
@@ -562,6 +935,238 @@ describe('ChatGPT Work conversation binding', () => {
     expect(missingAuthority.error?.code).toBe('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE');
   });
 
+  test('persists observed conversation identity when provider delivery is outcome_unknown without upgrading dispatch success', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-outcome-unknown-binding-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'binding@example.test'], ['config', 'user.name', 'Binding Test']] as string[][]) {
+      execFileSync('git', args, { cwd: repoRoot });
+    }
+    writeFileSync(join(repoRoot, 'README.md'), 'binding fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-outcome-unknown-binding' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: ['Keep provider outcome separate from conversation resource identity.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const,
+      status: 'running' as const,
+    };
+    createWorkContract(store, { ...workInput, workId: 'WORK-OUTCOME-UNKNOWN-BINDING', objective: 'Persist observed ChatGPT conversation identity.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-FAILED-NO-BINDING', objective: 'Do not invent a ChatGPT conversation identity.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-FAILED-VALID-CONVERSATION', objective: 'Do not persist a valid conversation URL from a known provider failure.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-THROWN-AFTER-SESSION', objective: 'Settle an exact Forge-owned Browser session after a thrown dispatch error.' });
+
+    const outcomeUnknown = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-OUTCOME-UNKNOWN-BINDING',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_11111111111111111111111111111111',
+      relayScopeId: 'goal:WORK-OUTCOME-UNKNOWN-BINDING',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => ({
+          status: 'outcome_unknown' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-outcome-unknown',
+          conversationUrl: 'https://chatgpt.com/c/outcome-unknown-binding',
+          executionPreferenceVerified: true,
+          error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED', message: 'submission confirmation is ambiguous' },
+        }),
+      },
+    });
+    expect(outcomeUnknown).toMatchObject({
+      status: 'failed',
+      providerDeliveryStatus: 'outcome_unknown',
+      conversationId: 'outcome-unknown-binding',
+      conversationUrl: 'https://chatgpt.com/c/outcome-unknown-binding',
+    });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-OUTCOME-UNKNOWN-BINDING')).toMatchObject({
+      conversationId: 'outcome-unknown-binding',
+      conversationUrl: 'https://chatgpt.com/c/outcome-unknown-binding',
+      latestBrowserSessionId: 'browser-outcome-unknown',
+    });
+
+    const ordinaryFailure = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-FAILED-NO-BINDING',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_22222222222222222222222222222222',
+      relayScopeId: 'goal:WORK-FAILED-NO-BINDING',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => ({
+          status: 'failed' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-failed',
+          conversationUrl: 'https://chatgpt.com/',
+          executionPreferenceVerified: false,
+          error: { code: 'CHATGPT_BRIDGE_DISPATCH_FAILED', message: 'known provider failure' },
+        }),
+      },
+      settleBrowserTab: async () => ({ status: 'closed' as const }),
+    });
+    expect(ordinaryFailure).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed', tabCleanupStatus: 'closed' });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-NO-BINDING')).toBeUndefined();
+
+    const knownFailureWithConversation = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-FAILED-VALID-CONVERSATION',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_33333333333333333333333333333333',
+      relayScopeId: 'goal:WORK-FAILED-VALID-CONVERSATION',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => ({
+          status: 'failed' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-failed-valid-conversation',
+          conversationUrl: 'https://chatgpt.com/c/known-failure-conversation',
+          executionPreferenceVerified: false,
+          error: { code: 'CHATGPT_BRIDGE_DISPATCH_FAILED', message: 'known provider failure with an observed page' },
+        }),
+      },
+      settleBrowserTab: async () => ({ status: 'closed' as const }),
+    });
+    expect(knownFailureWithConversation).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed', tabCleanupStatus: 'closed' });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-VALID-CONVERSATION')).toBeUndefined();
+
+    let settledThrownSession = '';
+    const thrownAfterSession = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-THROWN-AFTER-SESSION',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_44444444444444444444444444444444',
+      relayScopeId: 'goal:WORK-THROWN-AFTER-SESSION',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => { throw new Error('CHATGPT_CONTROLLER_BROWSER_FAILED:post-session failure'); },
+      },
+      settleBrowserTab: async ({ browserSessionId }) => {
+        settledThrownSession = browserSessionId;
+        return { status: 'closed' as const };
+      },
+    });
+    expect(thrownAfterSession).toMatchObject({ status: 'failed', tabCleanupStatus: 'closed' });
+    expect(settledThrownSession).toBe(thrownAfterSession.browserSessionId);
+  });
+
+  test('hands an existing bound conversation to Workflow Supervisor without invoking legacy Browser delivery', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bound-supervisor-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'bound@example.test'], ['config', 'user.name', 'Bound Supervisor Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'bound supervisor fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-bound-supervisor' });
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId: 'WORK-BOUND-SUPERVISOR', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Continue the exact bound conversation through Workflow Supervisor.', acceptanceCriteria: ['Do not re-enter Browser delivery.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    bindChatgptWorkConversation(store, {
+      workId: 'WORK-BOUND-SUPERVISOR', conversationUrl: 'https://chatgpt.com/c/exact-bound-conversation', latestBrowserSessionId: 'browser-existing-bound', localAlias: 'Forge bound continuation',
+    });
+    let dispatches = 0;
+    let enrollments = 0;
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-BOUND-SUPERVISOR', prompt: 'continue',
+      controllerAuthorityId: 'cra_55555555555555555555555555555555', relayScopeId: 'goal:WORK-BOUND-SUPERVISOR',
+    }, {
+      bridgeRuntime: false,
+      browserHost: { dispatch: async () => { dispatches += 1; throw new Error('legacy browser delivery must not run'); } },
+      enrollWorkflowSupervisor: async (_options, workId) => {
+        enrollments += 1;
+        expect(workId).toBe('WORK-BOUND-SUPERVISOR');
+        return { status: 'enrolled' as const, taskId: 'task-bound', effectId: 'effect-bound' };
+      },
+    });
+    expect(dispatches).toBe(0);
+    expect(enrollments).toBe(1);
+    expect(result).toMatchObject({
+      status: 'dispatched', resumedFromBinding: true, browserSessionId: 'browser-existing-bound',
+      conversationId: 'exact-bound-conversation', conversationUrl: 'https://chatgpt.com/c/exact-bound-conversation',
+    });
+  });
+
+  test('fresh transport starts from ChatGPT root and CAS-rebinds the durable Work to the newly observed conversation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-fresh-transport-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'fresh@example.test'], ['config', 'user.name', 'Fresh Transport Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'fresh transport fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-fresh-transport' });
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId: 'WORK-FRESH-TRANSPORT', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Isolate ControllerRound transport conversations.', acceptanceCriteria: ['Use a fresh transport conversation without changing Work authority.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    bindChatgptWorkConversation(store, {
+      workId: 'WORK-FRESH-TRANSPORT', conversationUrl: 'https://chatgpt.com/c/old-transport', latestBrowserSessionId: 'browser-old-transport', localAlias: 'Forge fresh transport',
+    });
+    let targetUrl = '';
+    let dispatchedSessionId = '';
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-FRESH-TRANSPORT', prompt: 'continue in a fresh transport',
+      controllerAuthorityId: 'cra_44444444444444444444444444444444', relayScopeId: 'goal:WORK-FRESH-TRANSPORT',
+      browserSessionId: 'browser-old-transport', conversationUrl: 'https://chatgpt.com/c/old-transport', tabPolicy: 'reuse', transportConversation: 'fresh',
+    }, {
+      bridgeRuntime: false,
+      browserHost: { dispatch: async (input) => {
+        targetUrl = input.targetUrl; dispatchedSessionId = input.browserSessionId;
+        return {
+          status: 'outcome_unknown' as const, provider: 'controller-browser' as const, browserSessionId: input.browserSessionId,
+          conversationUrl: 'https://chatgpt.com/c/new-transport', executionPreferenceVerified: true,
+          error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED', message: 'fresh transport submission confirmation is ambiguous' },
+        };
+      } },
+    });
+    expect(targetUrl).toBe('https://chatgpt.com/');
+    expect(dispatchedSessionId).not.toBe('browser-old-transport');
+    expect(result).toMatchObject({
+      status: 'failed', providerDeliveryStatus: 'outcome_unknown', conversationId: 'new-transport',
+      conversationUrl: 'https://chatgpt.com/c/new-transport', tabPolicy: 'new',
+    });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-FRESH-TRANSPORT')).toMatchObject({
+      conversationId: 'new-transport', conversationUrl: 'https://chatgpt.com/c/new-transport', latestBrowserSessionId: dispatchedSessionId, localAlias: 'Forge fresh transport',
+    });
+  });
+
   test('keeps automation in Chat mode, prefixes @forge, and submits from the stable prompt editor', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     const browserRuntime = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
@@ -570,6 +1175,26 @@ describe('ChatGPT Work conversation binding', () => {
     expect(providerDelivery).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(providerDelivery).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(browserRuntime).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
+    expect(browserRuntime).toContain('new AsyncLocalStorage<ChatgptBrowserActionContext>()');
+    expect(browserRuntime).toContain("surface: 'schedule', actor: 'chatgpt-work-continuation'");
+    expect(browserRuntime).toContain("origin.surface === 'chatgpt-action' && CHATGPT_BROWSER_AUTHORIZATION_ACTIONS.has(actionId)");
+    expect(browserRuntime).toContain(".filter((action) => !action.readOnly && action.confirmation === 'authorization')");
+    expect(browserRuntime).toContain('submitAssistantPluginAction(');
+    expect(browserRuntime).toContain('controllerPluginRepository(controllerHome)');
+    expect(browserRuntime).toContain('authorizationGrantRefs: [...(context?.authorizationGrantRefs ?? [])]');
+    const pluginStore = readFileSync(join(process.cwd(), 'src/runtime/plugins/store.ts'), 'utf8');
+    const lateCreateSessionAuthorizationTarget = pluginStore.indexOf("if (action.actionId === 'create_session'");
+    const reusableGrantPersistence = pluginStore.indexOf('const grant = recordPluginCapabilityAuthorization', lateCreateSessionAuthorizationTarget);
+    expect(lateCreateSessionAuthorizationTarget).toBeGreaterThan(-1);
+    expect(reusableGrantPersistence).toBeGreaterThan(lateCreateSessionAuthorizationTarget);
+    expect(source).toContain("originSurface?: 'chatgpt-action' | 'schedule'");
+    expect(source).toContain('authorizationGrantRefs?: readonly string[]');
+    expect(source).toContain("surface: input.originSurface ?? 'chatgpt-action'");
+    const controllerHost = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');
+    const workBinding = readFileSync(join(process.cwd(), 'adapters/chatgpt/work-conversation-binding-store.ts'), 'utf8');
+    expect(controllerHost).toContain("originSurface: 'schedule'");
+    expect(workBinding).toContain('authorizationGrantRefs?: string[]');
+    expect(workBinding).toContain('input.authorizationGrantRefs ?? existing?.value.authorizationGrantRefs ?? []');
     expect(source).toContain('从成功的 controller_claim 响应中取得 data.controllerAuthorityId');
     expect(source).toContain('本次启动的 controller round 已具备 durable controller authority：controller_authority_id=');
     expect(source).toContain('第一次 controller_claim 必须使用这组完全相同的 authority');
@@ -580,21 +1205,28 @@ describe('ChatGPT Work conversation binding', () => {
     expect(browserRuntime).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(browserRuntime).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(browserRuntime).not.toContain(':has-text(');
-    expect(browserRuntime).toContain('waitForChatgptIntelligenceControl'); expect(browserRuntime).toContain('reasoningLabelMatches'); expect(browserRuntime).toContain("'main button, main [role=\"button\"]'"); expect(browserRuntime).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(browserRuntime).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(browserRuntime).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeScheduledControllerContinuation'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
+    expect(browserRuntime).toContain('waitForChatgptIntelligenceControl'); expect(browserRuntime).toContain('reasoningLabelMatches'); expect(browserRuntime).toContain("'main button, main [role=\"button\"]'"); expect(browserRuntime).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(browserRuntime).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(browserRuntime).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeControllerRoundOccurrence'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
     expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
     expect(browserRuntime).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute 和 repository_safe_patch_apply');
-    expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt)');
+    expect(source).toContain("relayScopeId?.startsWith('requirement:') === true");
+    expect(source).toContain('实际被本轮语义选择且已成功 claim 的 repository-change Work 的 work_id');
+    expect(source).toContain('不得把只读/编排 Supervisor Work 的 work_id 用来归属 child Work 的源码修改');
+    expect(source).toContain('本轮每一次 repository_command_execute 和 repository_safe_patch_apply 都必须显式传 work_id=${workId}');
+    const maintenance = readFileSync(join(process.cwd(), 'src/runtime/control-plane/global-scheduler/maintenance.ts'), 'utf8');
+    expect(maintenance).toContain('exactOriginWork: !dispatchingRecord.requirementId');
+    expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated })');
     expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
+    expect(browserRuntime).toContain("withChatgptBrowserActionOrigin(");
+    expect(browserRuntime).toContain("new Set(authorizationGrantRefs)");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
     expect(browserRuntime).toContain('settleWorkChatgptAutomationTab');
     const workContinuation = source.slice(source.indexOf('export async function runWorkChatgptContinuation'));
     expect(workContinuation).not.toContain('closeChatgptAutomationTabAfterDispatch(');
-    expect(workContinuation).not.toContain('tabCleanupStatus: tabCleanup.status');
+    expect(workContinuation).toContain("delivery.provider === 'controller-browser' && delivery.status === 'failed'");
+    expect(workContinuation).toContain('dependencies.settleBrowserTab ?? settleWorkChatgptAutomationTab');
+    expect(workContinuation).toContain('tabCleanupStatus: tabCleanup.status');
     expect(browserRuntime).toContain("'PLUGIN_BROWSER_SESSION_STATE_LOST'");
     expect(browserRuntime).toContain("'PLUGIN_SESSION_NOT_FOUND'");
-    expect(browserRuntime).toContain('buildBrowserPluginManifest(0, undefined, repoRoot).enabled');
-    expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })");
-    expect(browserRuntime.indexOf('buildBrowserPluginManifest(0, undefined, repoRoot).enabled')).toBeLessThan(browserRuntime.indexOf("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })"));
     expect(source).toContain('runStandaloneChatgptPrompt');
     const standaloneStart = source.indexOf('export async function runStandaloneChatgptPrompt');
     const workStart = source.indexOf('export async function runWorkChatgptContinuation');
@@ -602,31 +1234,38 @@ describe('ChatGPT Work conversation binding', () => {
     expect(standaloneSource).not.toContain('getWorkContract(');
     expect(standaloneSource).not.toContain('bindChatgptWorkConversation(');
     expect(engine).toContain('runStandaloneChatgptPrompt');
-    expect(engine).toContain('resumeScheduledControllerContinuation(');
+    expect(engine).toContain('resumeControllerRoundOccurrence(');
     expect(engine).not.toContain('controllerAuthorityId: relay.authorityId');
     expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
     const runtimeTools = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
-    const launcherStart = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'launcher_start')"), runtimeTools.indexOf('const checks = listControllerChecks', runtimeTools.indexOf("if (operation === 'launcher_start')")));
+    const controllerOperations = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-controller-operations.ts'), 'utf8');
+    const launcherStartIndex = controllerOperations.indexOf("if (operation === 'launcher_start')");
+    const launcherStart = controllerOperations.slice(launcherStartIndex);
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
     expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
     expect(launcherStart).toContain('relayScopeId: relay.relayScopeId');
+    expect(launcherStart).not.toContain("error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')");
+    expect(launcherStart).not.toContain("['pending_release', 'dispatching'].includes(existing.status)");
+    expect(launcherStart).toContain('const relay = beginInitialControllerRoundDispatch(');
     expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched;");
     expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
-    const controllerRelease = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'controller_release')"), runtimeTools.indexOf("if (operation === 'launcher_start')"));
+    const controllerReleaseStart = controllerOperations.indexOf("if (operation === 'controller_release')");
+    const controllerRelease = controllerOperations.slice(controllerReleaseStart, launcherStartIndex);
     expect(controllerRelease).toContain('await runWorkChatgptContinuation({');
     expect(controllerRelease).toContain('controllerAuthorityId: relay.authorityId');
     expect(controllerRelease).toContain('relayScopeId: relay.relayScopeId');
     expect(controllerRelease).not.toContain('await runStandaloneChatgptPrompt({');
     expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
+    expect(controllerRelease).toContain('authorizationGrantRefs: binding?.authorizationGrantRefs');
     expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
     expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
   });
 
-  test('resolving a Handoff triggers only the exact Work repository-event continuation schedule', async () => {
+  test('resolving a provider Handoff rearms the same round and triggers only the exact Work repository-event continuation schedule', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-handoff-event-continuation-'));
     roots.push(root);
     const controllerHome = join(root, 'controller');
@@ -656,7 +1295,7 @@ describe('ChatGPT Work conversation binding', () => {
       requestedBy: 'chatgpt',
       status: 'running',
     });
-    claimControllerSession(store, {
+    const owner = claimControllerSession(store, {
       workId,
       controllerId: 'test-controller',
       controllerType: 'chatgpt',
@@ -665,7 +1304,23 @@ describe('ChatGPT Work conversation binding', () => {
       controllerInstanceId: 'test-runtime',
       leaseMs: 60_000,
     });
-    releaseControllerSession(store, workId, 'test-controller');
+    const originalOccurrenceId = 'occ-provider-handoff-event';
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      occurrenceId: originalOccurrenceId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    const startedRelay = beginControllerRoundProviderDispatch(store, {
+      workId,
+      authorityId: relay.authorityId!,
+      expectedUpdatedAt: relay.updatedAt,
+    });
     const handoffId = 'HND-HANDOFF-EVENT';
     const eventName = handoffResolvedContinuationEventName(handoffId);
     const schedule = createWorkContinuationSchedule(controllerHome, repository.repoId, {
@@ -687,8 +1342,8 @@ describe('ChatGPT Work conversation binding', () => {
       workId,
       title: 'Bounded continuation blocker',
       severity: 'needs_review',
-      creationReason: 'ambiguous_outcome',
-      reason: 'A bounded decision blocks continuation.',
+      creationReason: 'missing_authorization',
+      reason: 'Provider authorization is required before the exact same round can dispatch.',
       summary: 'Resume the exact Work after this Handoff resolves.',
       currentState: { repoId: repository.repoId, workId, statusSummary: 'waiting for bounded resolution' },
       attemptedActions: [],
@@ -697,6 +1352,22 @@ describe('ChatGPT Work conversation binding', () => {
       recommendedPrompt: 'Resolve the bounded blocker and resume the exact Work.',
       suggestedNextActions: [],
     });
+    finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      waitForUser: true,
+      handoffId,
+      providerDispatchEffectId: startedRelay.providerDispatchEffectId,
+      error: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
+    });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'waiting_for_user',
+      blockedReason: 'provider_user_action_required',
+      handoffId,
+      occurrenceId: originalOccurrenceId,
+      authorityId: relay.authorityId,
+    });
+    releaseControllerSession(store, workId, 'test-controller');
 
     const resolved = await resolveHandoffAndTriggerContinuation(controllerHome, repository.repoId, handoffId, {
       decision: 'resolved for regression coverage',
@@ -704,6 +1375,15 @@ describe('ChatGPT Work conversation binding', () => {
     });
 
     expect(resolved.item.status).toBe('resolved');
+    const rearmedRelay = getControllerRoundRelay(store, workId)!;
+    expect(rearmedRelay).toMatchObject({
+      status: 'dispatching',
+      occurrenceId: originalOccurrenceId,
+      authorityId: relay.authorityId,
+    });
+    expect(rearmedRelay.blockedReason).toBeUndefined();
+    expect(rearmedRelay.providerDispatchEffectId).toBeUndefined();
+    expect(rearmedRelay.providerDispatchStartedAt).toBeUndefined();
     expect(resolved.continuationOccurrences).toHaveLength(1);
     const scheduleId = resolved.continuationOccurrences[0]?.scheduleId;
     expect(scheduleId).toBe(schedule.scheduleId);
@@ -715,7 +1395,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(exactSchedules[0]?.scheduleId).toBe(scheduleId);
     const occurrences = listOccurrences(controllerHome, repository.repoId, scheduleId!);
     expect(occurrences).toHaveLength(1);
-    expect(occurrences[0]?.triggerContext).toMatchObject({ source: 'repository-event', eventName });
+    expect(occurrences[0]?.triggerContext).toMatchObject({
+      source: 'repository-event',
+      eventName,
+      data: { handoffId, status: 'resolved', controllerRoundOccurrenceId: originalOccurrenceId },
+    });
     expect(listOccurrences(controllerHome, repository.repoId, decoy.scheduleId)).toHaveLength(0);
   });
 
@@ -728,8 +1412,12 @@ describe('ChatGPT Work conversation binding', () => {
     const migrated = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-1' } } });
     expect(migrated.changed).toBe(true);
     expect(migrated.schedule.enabled).toBe(true);
-    expect(migrated.schedule.action.arguments).toMatchObject({ work_id: 'WORK-1', controller_type: 'chatgpt', model: 'gpt-5.6', reasoning: 'high', tab_policy: 'auto', execution_profile: 'chatgpt_browser_v1' });
+    expect(migrated.schedule.action.arguments).toMatchObject({ work_id: 'WORK-1', controller_type: 'chatgpt', model: 'gpt-5.6', reasoning: 'medium', tab_policy: 'auto', execution_profile: 'chatgpt_browser_v1' });
     expect(migrateChatgptAutomationSchedule(migrated.schedule).changed).toBe(false);
+    const explicitHigh = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-HIGH', reasoning: 'high' } } });
+    expect(explicitHigh.schedule.action.arguments?.reasoning).toBe('high');
+    const explicitXhigh = migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-XHIGH', reasoning: 'xhigh' } } });
+    expect(explicitXhigh.schedule.action.arguments?.reasoning).toBe('xhigh');
     expect(migrateChatgptAutomationSchedule({ ...base, action: { operation: 'external_controller_wake', arguments: { controller_type: 'codex' } } }).changed).toBe(false);
   });
 });
@@ -768,17 +1456,17 @@ describe('ChatGPT scheduled open_page reconciliation', () => {
     ] }, 'https://chatgpt.com/')).toBeUndefined();
   });
 
-  test('lets Browser create replacement identity and reconciles unknown mutation by inventory delta only', () => {
+  test('creates replacement with the exact Browser session identity and verifies unknown mutation without sessionless selection', () => {
     const source = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
     const replacementStart = source.indexOf('const openReplacement = async');
     const replacementEnd = source.indexOf('\n  try {\n    // Prove the exact saved Browser resource is still attachable before dispatching', replacementStart);
     const replacementSource = source.slice(replacementStart, replacementEnd);
-    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
-    expect(replacementSource).not.toContain('session_id:');
-    expect(replacementSource.match(/'list_sessions'/g)?.length).toBe(2);
-    expect(replacementSource.match(/limit: 200/g)?.length).toBe(2);
-    expect(replacementSource).toContain("browserMutationOutcomeUnknown(error, 'open_page')");
-    expect(replacementSource).toContain('reconciledNewChatgptOpenPageSessionId(beforeInventory, afterInventory, url)');
+    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'create_session'");
+    expect(replacementSource).toContain('session_id: sessionId');
+    expect(replacementSource).not.toContain("'list_sessions'");
+    expect(replacementSource).toContain("browserMutationOutcomeUnknown(error, 'create_session')");
+    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'verify_state'");
+    expect(replacementSource).toContain('stringField(verified.sessionId) === sessionId');
   });
 });
 
@@ -788,7 +1476,7 @@ describe('ChatGPT native background-tab recovery', () => {
     const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(browserRuntime).toContain('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
     expect(browserRuntime).toContain('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN');
-    expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
+    expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'create_session'");
     expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'verify_state'");
     expect(browserRuntime).toContain('discovering staleness only after mutation creates an avoidable outcome-unknown window');
     expect(launcher).toContain('delivery.browserSessionId');
@@ -895,7 +1583,7 @@ describe('controller relay repeated-state rearm', () => {
       blockedReason: 'repeated_state:2>=2',
     });
 
-    updateWorkContract(store, childWorkId, { evidenceState: 'partial' });
+    recordWorkEvidenceState(store, childWorkId, 'partial');
     const rearmed = acknowledgeControllerRoundClaim(store, { workId, session: secondSession });
     expect(rearmed).toMatchObject({ status: 'claimed', repeatedStateCount: 0, roundCount: blocked.roundCount });
     expect(rearmed?.stateFingerprint).not.toBe(blocked.stateFingerprint);
@@ -1002,16 +1690,17 @@ describe('provider dispatch outcome-unknown fence', () => {
     expect(retry).not.toHaveProperty('blockedReason');
   });
 
-  test('keeps native prompt mutation ambiguity distinct from ordinary submission-not-confirmed failure', () => {
+  test('keeps native prompt mutation ambiguity explicit while submission-not-confirmed remains separately observable', () => {
     const browserRuntime = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
     const providerDelivery = readFileSync(join(process.cwd(), 'adapters/chatgpt/provider-delivery.ts'), 'utf8');
     const host = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');
-    const scheduler = readFileSync(join(process.cwd(), 'packages/kernel/scheduler/application/continuation-service.ts'), 'utf8');
+    const continuation = readFileSync(join(process.cwd(), 'packages/kernel/controller/application/continuation-service.ts'), 'utf8');
     expect(providerDelivery).toContain("CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN");
     expect(browserRuntime).toContain('submitOutcomeUnknown = true');
+    expect(browserRuntime).toContain('submitOutcomeUnknown || hasConversationIdentity');
     expect(browserRuntime).toContain("'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'");
     expect(host).toContain('CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
-    expect(scheduler).toContain('providerDispatchOutcomeUnknown');
-    expect(scheduler).toContain('outcomeUnknown: providerDispatchOutcomeUnknown');
+    expect(continuation).toContain('const outcomeUnknown =');
+    expect(continuation).toContain('outcomeUnknown });');
   });
 });

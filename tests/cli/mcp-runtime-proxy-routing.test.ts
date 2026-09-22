@@ -3,12 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { InMemoryTransport, Server } from "@modelcontextprotocol/server";
+import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
+import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
 import {
   CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
   CANONICAL_RUNTIME_HANDOFF_WAIT_MS,
@@ -123,7 +121,20 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', args)).toBe(true);
     expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', { ...args, request_id: '' })).toBe(false);
     expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
-    expect(canonicalRuntimeToolCallFailureIsTransient(new Error('Connection closed'))).toBe(true);
+    expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock_prepare', { confirm_authorization: true })).toBe(false);
+    expect(canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock', { credential_handle: '11111111-1111-4111-8111-111111111111', confirm_authorization: true })).toBe(false);
+    expect(canonicalRuntimeToolCallFailureIsTransient(new SdkError(SdkErrorCode.ConnectionClosed, 'connection closed'))).toBe(true);
+    expect(canonicalRuntimeToolCallFailureIsTransient(Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }))).toBe(true);
+    expect(canonicalRuntimeToolCallFailureIsTransient(new SdkHttpError(
+      SdkErrorCode.ConnectionClosed,
+      'expired inner Runtime session',
+      { status: 404, statusText: 'Not Found' },
+    ))).toBe(true);
+    expect(canonicalRuntimeToolCallFailureIsTransient(new SdkHttpError(
+      SdkErrorCode.ConnectionClosed,
+      'semantic HTTP failure',
+      { status: 409, statusText: 'Conflict' },
+    ))).toBe(false);
     expect(canonicalRuntimeToolCallFailureIsTransient(new Error('WORK_CONTROLLER_CLAIM_REQUIRED'))).toBe(false);
 
     let calls = 0;
@@ -133,7 +144,7 @@ describe('MCP canonical Runtime proxy routing', () => {
       args,
       call: async () => {
         calls += 1;
-        if (calls === 1) throw new Error('Connection closed');
+        if (calls === 1) throw new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed');
         return 'original-process';
       },
       reconnect: async () => { reconnects += 1; },
@@ -172,7 +183,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     await expect(callCanonicalRuntimeToolWithReplay({
       name: 'repository_command_execute',
       args,
-      call: async () => { repeatedCalls += 1; throw new Error('Connection closed'); },
+      call: async () => { repeatedCalls += 1; throw new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed'); },
       reconnect: async () => { repeatedReconnects += 1; },
     })).rejects.toThrow('Connection closed');
     expect(repeatedCalls).toBe(2);
@@ -187,11 +198,13 @@ describe('MCP canonical Runtime proxy routing', () => {
       fingerprint: 'fixture-runtime-schema',
     };
     const observedSessions: string[] = [];
+    const observedRequestIds: Array<unknown> = [];
     let closeCalls = 0;
     const sharedProxy: CanonicalRuntimeProxy = {
-      listTools: async () => ({ tools: runtimeSchema.definitions }),
-      callTool: async (ctx) => {
+      listTools: async () => ({ tools: runtimeSchema.definitions.map(mcpToolDefinitionToSdk) }),
+      callTool: async (ctx, _name, args) => {
         observedSessions.push(ctx.sessionId ?? 'missing');
+        observedRequestIds.push(args.request_id);
         return {
           content: [{ type: 'text', text: '{"ok":true}' }],
           structuredContent: { ok: true },
@@ -199,7 +212,7 @@ describe('MCP canonical Runtime proxy routing', () => {
       },
       close: async () => { closeCalls += 1; },
     };
-    const invoke = async (sessionId: string): Promise<void> => {
+    const invoke = async (sessionId: string, requestId?: string): Promise<void> => {
       const context = {
         ...createMcpToolContext({ controllerHome, profile: 'controller' }),
         principalId: 'oauth-client:fixture',
@@ -212,16 +225,18 @@ describe('MCP canonical Runtime proxy routing', () => {
       const client = new Client({ name: `proxy-client-${sessionId}`, version: '1.0.0' }, { capabilities: {} });
       await client.connect(clientTransport);
       try {
-        await client.callTool({ name: 'rh_status', arguments: { request_id: `req-${sessionId}` } });
+        await client.callTool({ name: 'rh_status', arguments: requestId ? { request_id: requestId } : {} });
       } finally {
         await client.close();
         await server.close();
       }
     };
     try {
-      await invoke('outer-session-a');
+      await invoke('outer-session-a', 'explicit-request-a');
       await invoke('outer-session-b');
-      expect(observedSessions).toEqual(['outer-session-a', 'outer-session-b']);
+      await invoke('outer-session-c');
+      expect(observedSessions).toEqual(['outer-session-a', 'outer-session-b', 'outer-session-c']);
+      expect(observedRequestIds).toEqual(['explicit-request-a', undefined, undefined]);
       expect(closeCalls).toBe(0);
     } finally {
       await sharedProxy.close();
@@ -260,8 +275,8 @@ describe('MCP canonical Runtime proxy routing', () => {
           { name: 'fixture-runtime', version: '1.0.0' },
           { capabilities: { tools: { listChanged: false } } },
         );
-        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: runtimeSchema.definitions }));
-        server.setRequestHandler(CallToolRequestSchema, async () => ({
+        server.setRequestHandler('tools/list', async () => ({ tools: runtimeSchema.definitions.map(mcpToolDefinitionToSdk) }));
+        server.setRequestHandler('tools/call', async () => ({
           content: [{ type: 'text', text: '{"ok":true}' }],
           structuredContent: { ok: true },
         }));
@@ -328,6 +343,83 @@ describe('MCP canonical Runtime proxy routing', () => {
     }
   });
 
+  test('reclaims idle shared proxy lanes and reconnects on demand', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-proxy-idle-reclaim-'));
+    const runtimeToken = 'runtime-proxy-idle-token';
+    let initializedRuntimeSessions = 0;
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      readiness: () => ({
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        initializedRuntimeSessions += 1;
+        const server = new Server(
+          { name: 'fixture-runtime-idle-reclaim', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        server.setRequestHandler('tools/list', async () => ({ tools: [] }));
+        return server;
+      },
+    });
+    const observedAt = new Date().toISOString();
+    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), runtimeToken, 'utf8');
+    writeRuntimeStatusSnapshot(controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'runtime-proxy-idle-reclaim-fixture',
+      pid: process.pid,
+      releaseId: 'release-proxy-idle-reclaim-fixture',
+      artifactIdentity: 'artifact-proxy-idle-reclaim-fixture',
+      endpoint: runtimeTransport.endpoint,
+      readiness: {
+        ready: true,
+        reasonCodes: [],
+        observedAt,
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      },
+      startedAt: observedAt,
+      updatedAt: observedAt,
+    });
+    const proxy = createCanonicalRuntimeProxy(
+      createMcpToolContext({ controllerHome, profile: 'controller' }),
+      { idleTtlMs: 5 },
+    );
+    try {
+      await proxy.listTools();
+      expect(initializedRuntimeSessions).toBe(1);
+      expect(runtimeTransport.sessionSnapshot!().active).toBe(1);
+
+      for (let attempt = 0; attempt < 20 && runtimeTransport.sessionSnapshot!().active !== 0; attempt += 1) {
+        await Bun.sleep(5);
+      }
+      expect(runtimeTransport.sessionSnapshot!().active).toBe(0);
+
+      await proxy.listTools();
+      expect(initializedRuntimeSessions).toBe(2);
+      expect(runtimeTransport.sessionSnapshot!().active).toBe(1);
+    } finally {
+      await proxy.close();
+      await runtimeTransport.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('bounds orphanable root Runtime sessions and evicts the least-recent idle session', async () => {
     const runtimeToken = 'runtime-session-capacity-fixture';
     const runtimeTransport = await startRuntimeMcpTransport({
@@ -351,7 +443,7 @@ describe('MCP canonical Runtime proxy routing', () => {
           { name: 'fixture-runtime-capacity', version: '1.0.0' },
           { capabilities: { tools: { listChanged: false } } },
         );
-        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
+        server.setRequestHandler('tools/list', async () => ({ tools: [] }));
         return server;
       },
     });
@@ -422,7 +514,7 @@ describe('MCP canonical Runtime proxy routing', () => {
           { name: 'fixture-runtime-protected', version: '1.0.0' },
           { capabilities: { tools: { listChanged: false } } },
         );
-        server.setRequestHandler(CallToolRequestSchema, async () => {
+        server.setRequestHandler('tools/call', async () => {
           markCallStarted();
           await callReleased;
           return { content: [{ type: 'text', text: 'ok' }] };

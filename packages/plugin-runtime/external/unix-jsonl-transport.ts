@@ -52,13 +52,27 @@ interface RpcFailure {
 
 type RpcResponse = RpcSuccess | RpcFailure;
 
+export type ExternalUnixJsonlEffectOutcome = 'failed' | 'outcome_unknown';
+export type ExternalUnixJsonlErrorSource = 'transport' | 'provider';
+
 export class ExternalUnixJsonlTransportError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly details?: Record<string, unknown>;
   readonly detailMessage: string;
+  readonly effectOutcome: ExternalUnixJsonlEffectOutcome;
+  readonly source: ExternalUnixJsonlErrorSource;
 
-  constructor(code: string, message: string, options: { retryable?: boolean; details?: Record<string, unknown> } = {}) {
+  constructor(
+    code: string,
+    message: string,
+    options: {
+      retryable?: boolean;
+      details?: Record<string, unknown>;
+      effectOutcome?: ExternalUnixJsonlEffectOutcome;
+      source?: ExternalUnixJsonlErrorSource;
+    } = {},
+  ) {
     const boundedMessage = message.slice(0, 1_000);
     super(`${code}: ${boundedMessage}`);
     this.name = 'ExternalUnixJsonlTransportError';
@@ -66,11 +80,38 @@ export class ExternalUnixJsonlTransportError extends Error {
     this.retryable = options.retryable ?? true;
     this.details = options.details;
     this.detailMessage = boundedMessage;
+    this.effectOutcome = options.effectOutcome ?? 'failed';
+    this.source = options.source ?? 'transport';
   }
 }
 
-function transportError(code: string, message: string, options: { retryable?: boolean; details?: Record<string, unknown> } = {}): ExternalUnixJsonlTransportError {
+function transportError(
+  code: string,
+  message: string,
+  options: {
+    retryable?: boolean;
+    details?: Record<string, unknown>;
+    effectOutcome?: ExternalUnixJsonlEffectOutcome;
+    source?: ExternalUnixJsonlErrorSource;
+  } = {},
+): ExternalUnixJsonlTransportError {
   return new ExternalUnixJsonlTransportError(code, message, options);
+}
+
+function normalizeTransportError(error: unknown): ExternalUnixJsonlTransportError {
+  return error instanceof ExternalUnixJsonlTransportError
+    ? error
+    : transportError('EXTERNAL_PLUGIN_TRANSPORT_FAILED', error instanceof Error ? error.message : String(error));
+}
+
+function markOutcomeUnknown(error: ExternalUnixJsonlTransportError): ExternalUnixJsonlTransportError {
+  if (error.source === 'provider' || error.effectOutcome === 'outcome_unknown') return error;
+  return new ExternalUnixJsonlTransportError(error.code, error.detailMessage, {
+    retryable: error.retryable,
+    details: error.details,
+    effectOutcome: 'outcome_unknown',
+    source: error.source,
+  });
 }
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -81,7 +122,7 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
 function validateSocketPath(socketPath: string): string {
   const normalized = socketPath.trim();
   if (!normalized || !isAbsolute(normalized)) {
-    throw transportError('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID', 'External provider socket path must be absolute.', { retryable: false });
+    throw transportError('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID', 'External provider local socket or Windows named-pipe path must be absolute.', { retryable: false });
   }
   return normalized;
 }
@@ -140,6 +181,8 @@ export function decodeExternalUnixJsonlResponse(raw: string, requestId: string):
   }
   throw transportError(failure.error.code, failure.error.message, {
     retryable: failure.error.retryable === true,
+    effectOutcome: 'failed',
+    source: 'provider',
     details: {
       ...(typeof failure.error.domain === 'string' ? { domain: failure.error.domain } : {}),
       ...(failure.error.details && typeof failure.error.details === 'object' && !Array.isArray(failure.error.details)
@@ -147,6 +190,194 @@ export function decodeExternalUnixJsonlResponse(raw: string, requestId: string):
         : {}),
     },
   });
+}
+
+
+export class ExternalUnixJsonlChannel {
+  private socket: Socket | undefined;
+  private buffer = Buffer.alloc(0);
+  private connecting: Promise<void> | undefined;
+  private queue: Promise<void> = Promise.resolve();
+  private generationValue = 0;
+  private disposed = false;
+
+  constructor(readonly socketPath: string) {
+    validateSocketPath(socketPath);
+  }
+
+  get generation(): number {
+    return this.generationValue;
+  }
+
+  get connected(): boolean {
+    return !!this.socket && !this.socket.destroyed && this.socket.readyState === 'open';
+  }
+
+  async call(options: Omit<ExternalUnixJsonlCallOptions, 'socketPath'> & { expectedGeneration?: number }): Promise<Record<string, unknown>> {
+    if (this.disposed) {
+      throw transportError('EXTERNAL_PLUGIN_CHANNEL_CLOSED', 'External provider channel has been closed.', { retryable: false });
+    }
+    let resolveQueue!: () => void;
+    const previous = this.queue;
+    this.queue = new Promise<void>((resolve) => { resolveQueue = resolve; });
+    await previous;
+    if (this.disposed) {
+      resolveQueue();
+      throw transportError('EXTERNAL_PLUGIN_CHANNEL_CLOSED', 'External provider channel has been closed.', { retryable: false });
+    }
+    const { expectedGeneration, ...callOptions } = options;
+    try {
+      return await this.callSerial({ ...callOptions, socketPath: this.socketPath }, expectedGeneration);
+    } finally {
+      resolveQueue();
+    }
+  }
+
+  close(): void {
+    this.disposed = true;
+    this.resetSocket();
+  }
+
+  private resetSocket(socket = this.socket): void {
+    if (socket && !socket.destroyed) socket.destroy();
+    if (!socket || this.socket === socket) this.socket = undefined;
+    this.connecting = undefined;
+    this.buffer = Buffer.alloc(0);
+  }
+
+  private async ensureConnected(): Promise<void> {
+    if (this.connected) return;
+    if (this.connecting) return await this.connecting;
+    this.resetSocket();
+    this.connecting = new Promise<void>((resolve, reject) => {
+      let socket: Socket;
+      try {
+        socket = createConnection({ path: this.socketPath });
+      } catch (error) {
+        reject(error instanceof ExternalUnixJsonlTransportError
+          ? error
+          : transportError('EXTERNAL_PLUGIN_TRANSPORT_FAILED', error instanceof Error ? error.message : String(error)));
+        return;
+      }
+      this.socket = socket;
+      const onErrorBeforeConnect = (error: Error): void => {
+        socket.removeListener('connect', onConnect);
+        if (this.socket === socket) this.resetSocket(socket);
+        reject(transportError('EXTERNAL_PLUGIN_SOCKET_UNAVAILABLE', error.message));
+      };
+      const onConnect = (): void => {
+        socket.removeListener('error', onErrorBeforeConnect);
+        this.generationValue += 1;
+        this.connecting = undefined;
+        resolve();
+      };
+      socket.once('error', onErrorBeforeConnect);
+      socket.once('connect', onConnect);
+      socket.once('close', () => {
+        if (this.socket === socket) {
+          this.socket = undefined;
+          this.connecting = undefined;
+          this.buffer = Buffer.alloc(0);
+        }
+      });
+    });
+    return await this.connecting;
+  }
+
+  private async callSerial(options: ExternalUnixJsonlCallOptions, expectedGeneration?: number): Promise<Record<string, unknown>> {
+    const normalized = normalizeExternalUnixJsonlCall(
+      options,
+      options.method === 'health' || options.method === 'handshake' || options.method === 'manifest',
+    );
+    if (options.signal?.aborted) {
+      throw transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled before connection.');
+    }
+
+    const mayHaveEffects = !['health', 'handshake', 'manifest'].includes(normalized.method);
+    return await new Promise<Record<string, unknown>>(async (resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      let dispatched = false;
+      let socket: Socket | undefined;
+      const finish = (callback: () => void, reset = false): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+        socket?.removeListener('data', onData);
+        socket?.removeListener('error', onError);
+        socket?.removeListener('end', onEnd);
+        if (reset) this.resetSocket(socket);
+        callback();
+      };
+      const fail = (error: unknown, reset = true): void => {
+        const normalizedError = normalizeTransportError(error);
+        const classified = dispatched && mayHaveEffects ? markOutcomeUnknown(normalizedError) : normalizedError;
+        finish(() => reject(classified), reset);
+      };
+      const onAbort = (): void => fail(transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled.'));
+      const onError = (error: Error): void => fail(transportError('EXTERNAL_PLUGIN_SOCKET_UNAVAILABLE', error.message));
+      const onEnd = (): void => fail(transportError('EXTERNAL_PLUGIN_PROTOCOL_ERROR', 'External provider closed the socket before returning a complete response.'));
+      const onData = (chunk: Buffer): void => {
+        if (settled) return;
+        if (this.buffer.length + chunk.length > normalized.maxResponseBytes) {
+          fail(transportError('EXTERNAL_PLUGIN_RESPONSE_TOO_LARGE', 'External provider response exceeded the bounded output limit.', { retryable: false }));
+          return;
+        }
+        this.buffer = Buffer.concat([this.buffer, chunk]);
+        const newline = this.buffer.indexOf(0x0A);
+        if (newline < 0) return;
+        const raw = this.buffer.subarray(0, newline).toString('utf8');
+        this.buffer = this.buffer.subarray(newline + 1);
+        if (this.buffer.length > 0) {
+          fail(transportError('EXTERNAL_PLUGIN_PROTOCOL_ERROR', 'External provider returned unsolicited extra response data.'));
+          return;
+        }
+        try {
+          const decoded = decodeExternalUnixJsonlResponse(raw, normalized.requestId);
+          finish(() => resolve(decoded));
+        } catch (error) {
+          if (error instanceof ExternalUnixJsonlTransportError && error.source === 'provider') {
+            fail(error, false);
+          } else {
+            fail(error);
+          }
+        }
+      };
+
+      timer = setTimeout(() => fail(transportError('EXTERNAL_PLUGIN_TIMEOUT', `External provider request timed out after ${normalized.timeoutMs}ms.`)), normalized.timeoutMs);
+      timer.unref?.();
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+
+      try {
+        await this.ensureConnected();
+      } catch (error) {
+        fail(error);
+        return;
+      }
+      if (settled) return;
+      if (expectedGeneration !== undefined && this.generation !== expectedGeneration) {
+        fail(transportError(
+          'EXTERNAL_PLUGIN_CHANNEL_GENERATION_CHANGED',
+          `External provider connection changed from generation ${expectedGeneration} to ${this.generation}; renegotiate before executing the action.`,
+          { retryable: true },
+        ), false);
+        return;
+      }
+      socket = this.socket;
+      if (!socket || socket.destroyed) {
+        fail(transportError('EXTERNAL_PLUGIN_SOCKET_UNAVAILABLE', 'External provider socket closed before the request could be written.'));
+        return;
+      }
+      socket.on('data', onData);
+      socket.once('error', onError);
+      socket.once('end', onEnd);
+      dispatched = true;
+      socket.write(normalized.envelope, (error) => {
+        if (error) fail(transportError('EXTERNAL_PLUGIN_TRANSPORT_FAILED', error.message));
+      });
+    });
+  }
 }
 
 export async function callExternalUnixJsonl(
@@ -160,10 +391,12 @@ export async function callExternalUnixJsonl(
     throw transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled before connection.');
   }
 
+  const mayHaveEffects = !['health', 'handshake', 'manifest'].includes(normalized.method);
   return await new Promise<Record<string, unknown>>((resolve, reject) => {
     let socket: Socket | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
+    let dispatched = false;
     let buffer = Buffer.alloc(0);
 
     const cleanup = (): void => {
@@ -177,9 +410,11 @@ export async function callExternalUnixJsonl(
       cleanup();
       callback();
     };
-    const fail = (error: unknown): void => finish(() => reject(error instanceof ExternalUnixJsonlTransportError
-      ? error
-      : transportError('EXTERNAL_PLUGIN_TRANSPORT_FAILED', error instanceof Error ? error.message : String(error))));
+    const fail = (error: unknown): void => {
+      const normalizedError = normalizeTransportError(error);
+      const classified = dispatched && mayHaveEffects ? markOutcomeUnknown(normalizedError) : normalizedError;
+      finish(() => reject(classified));
+    };
     const succeed = (raw: string): void => finish(() => {
       try {
         resolve(decodeExternalUnixJsonlResponse(raw, normalized.requestId));
@@ -199,7 +434,10 @@ export async function callExternalUnixJsonl(
       fail(error);
       return;
     }
-    socket.once('connect', () => socket?.write(normalized.envelope));
+    socket.once('connect', () => {
+      dispatched = true;
+      socket?.write(normalized.envelope);
+    });
     socket.on('data', (chunk: Buffer) => {
       if (settled) return;
       if (buffer.length + chunk.length > normalized.maxResponseBytes) {

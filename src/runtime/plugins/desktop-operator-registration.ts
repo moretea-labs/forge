@@ -1,13 +1,15 @@
 import {
-  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
+  COMPUTER_ELEMENT_ACTION_CAPABILITY,
+  COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
   COMPUTER_INPUT_CAPABILITY,
   COMPUTER_OBSERVE_CAPABILITY,
 } from '../../../packages/protocols/computer/index';
 import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
-const CONTROLLER_WRITE = [{ resource: 'repo-state' as const, mode: 'write' as const }];
+const CONTROLLER_WRITE = [{ resource: 'provider-state' as const, mode: 'write' as const }];
 const SELECTOR_SCHEMA = {
   type: 'object',
   properties: {
@@ -150,6 +152,30 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'desktop_select_rows',
+      title: 'Select desktop rows',
+      description: 'Select one bounded contiguous row range in a semantic Accessibility list or table. Selection stays inside the bound desktop session and does not activate the application or use coordinates.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.interact'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          interaction_id: { type: 'string' },
+          selector: SELECTOR_SCHEMA,
+          start_index: { type: 'integer', minimum: 0 },
+          end_index: { type: 'integer', minimum: 0 },
+        },
+        required: ['interaction_id', 'selector', 'start_index'],
+        additionalProperties: false,
+      },
+    },
+    {
       actionId: 'desktop_pointer_click',
       title: 'Click observed desktop element',
       description: 'Click one previously observed Accessibility element by ref inside an exact observed window. Forge re-resolves the ref, fences it to the source window, rebinds it after verified application activation, derives fresh bounded geometry and visual revision internally, and fails closed on stale refs/windows; raw coordinates are never accepted.',
@@ -175,6 +201,41 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           label: { type: 'string' },
         },
         required: ['interaction_id', 'selector', 'window_id'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'desktop_pointer_drag',
+      title: 'Drag observed desktop element',
+      description: 'Drag one previously observed Accessibility element to another by ref inside the same exact observed window. Forge re-resolves both refs, rebinds both after verified activation only when both have stable selectors, derives fresh bounded centers and visual revision internally, and never accepts raw coordinates.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['desktop.interact', 'desktop.capture'],
+      resourceClaims: CONTROLLER_WRITE,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          interaction_id: { type: 'string' },
+          source_selector: {
+            type: 'object',
+            properties: { ref: { type: 'string' } },
+            required: ['ref'],
+            additionalProperties: false,
+          },
+          target_selector: {
+            type: 'object',
+            properties: { ref: { type: 'string' } },
+            required: ['ref'],
+            additionalProperties: false,
+          },
+          window_id: { type: 'integer', minimum: 1 },
+          label: { type: 'string' },
+        },
+        required: ['interaction_id', 'source_selector', 'target_selector', 'window_id'],
         additionalProperties: false,
       },
     },
@@ -375,7 +436,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_session_close',
       title: 'Close desktop session',
-      description: 'Close one Desktop Operator interaction session without terminating the target application.',
+      description: 'Close one Desktop Operator interaction session. Application termination is disabled by default and requires an exact Controller-owned process id.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'none',
@@ -386,7 +447,15 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
-        properties: { interaction_id: { type: 'string' } },
+        properties: {
+          interaction_id: { type: 'string' },
+          terminate_owned_pid: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 2_147_483_647,
+            description: 'Exact provider-launched process id that the durable Computer target authority has decided is no longer used by another active target.',
+          },
+        },
         required: ['interaction_id'],
         additionalProperties: false,
       },
@@ -446,14 +515,16 @@ export function createDesktopOperatorRegistrationInput(
       { capabilityId: 'desktop.permissions', title: 'Desktop permissions', description: 'Request the official macOS permissions required by Desktop Operator capabilities.', scopes: ['desktop.permissions'], actions: ['desktop_permissions_request'] },
       { capabilityId: 'desktop.session', title: 'Desktop sessions', description: 'Create and close application interaction sessions.', scopes: ['desktop.session'], actions: ['desktop_session_open', 'desktop_session_close'] },
       { capabilityId: 'desktop.observe', title: 'Desktop observation', description: 'Read bounded Accessibility and window state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
-      { capabilityId: 'desktop.interact', title: 'Desktop interaction', description: 'Press controls, click previously observed controls, type text, send keys, and open URLs.', scopes: ['desktop.interact', 'desktop.capture'], actions: ['desktop_press', 'desktop_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+      { capabilityId: 'desktop.interact', title: 'Desktop interaction', description: 'Press controls, click previously observed controls, type text, send keys, and open URLs.', scopes: ['desktop.interact', 'desktop.capture'], actions: ['desktop_press', 'desktop_select_rows', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
       { capabilityId: 'desktop.capture', title: 'Desktop capture', description: 'Capture authorized screenshots.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
       { capabilityId: 'desktop.clipboard', title: 'Desktop clipboard', description: 'Read or replace plain-text clipboard content and issue explicit copy/paste in a bound session.', scopes: ['desktop.clipboard'], actions: ['desktop_clipboard_read', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste'] },
       { capabilityId: 'desktop.batch', title: 'Desktop batch', description: 'Run bounded desktop action batches.', scopes: ['desktop.batch'], actions: ['desktop_batch'] },
       { capabilityId: COMPUTER_OBSERVE_CAPABILITY, title: 'Computer observation', description: 'Provider-neutral bounded computer observation implemented by Desktop Operator.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
-      { capabilityId: COMPUTER_INPUT_CAPABILITY, title: 'Computer input', description: 'Provider-neutral bounded computer input implemented by Desktop Operator.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key'] },
+      { capabilityId: COMPUTER_INPUT_CAPABILITY, title: 'Computer input', description: 'Provider-neutral bounded computer input implemented by Desktop Operator.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_select_rows', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
+      { capabilityId: COMPUTER_CONSOLE_UNLOCK_CAPABILITY, title: 'Protected console unlock', description: 'Provider-neutral protected console unlock. Invocation is intentionally absent from the generic Assistant Plugin action registry so credentials cannot enter durable plugin receipts.', scopes: [], actions: [] },
       { capabilityId: COMPUTER_CAPTURE_CAPABILITY, title: 'Computer capture', description: 'Provider-neutral authorized computer capture implemented by Desktop Operator.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
-      { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, title: 'Computer browser automation', description: 'Internal provider capability used by Forge Browser through the Computer runtime boundary.', scopes: ['desktop.observe', 'desktop.interact', 'desktop.capture'], actions: [] },
+      { capabilityId: COMPUTER_ELEMENT_OBSERVE_CAPABILITY, title: 'Computer element observation', description: 'Provider-neutral element snapshot observation with exact observation-epoch target identity. Provider semantic actions are negotiated through the Computer handshake, not the Assistant Plugin action registry.', scopes: ['desktop.observe'], actions: [] },
+      { capabilityId: COMPUTER_ELEMENT_ACTION_CAPABILITY, title: 'Computer semantic element actions', description: 'Provider-neutral semantic actions against exact observed element targets. The provider handshake is the action-set authority.', scopes: ['desktop.interact'], actions: [] },
     ],
     actions,
     legacyIdentities: ['Repo Harness Desktop Operator'],

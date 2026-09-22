@@ -22,9 +22,10 @@ import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-ac
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../src/runtime/control-plane/execution/work-head-settlement';
 import { pushExactWorkRemoteDelivery } from '../../src/runtime/control-plane/execution/work-remote-delivery';
-import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
@@ -202,14 +203,12 @@ describe('repository command execution lifecycle', () => {
         timeoutMs: 10_000,
         executionIdentity: executionIdentityForRepository(repository),
       });
-      expect(shellForm.process).toBeDefined();
-      expect(shellForm.process?.processId).toStartWith('lightweight:');
-      expect(shellForm.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
-      const shellTerminal = shellForm.process!.completed
-        ? shellForm.process!
-        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, shellForm.process!.processId, { timeoutMs: 10_000 });
-      expect(shellTerminal).toMatchObject({ completed: true, ok: true });
-      expect(shellTerminal.stderr).not.toContain('runtime-authority@runtime-fence');
+      expect(shellForm.route).toBe('process_direct');
+      expect(shellForm.reason).toBe('readonly_fast_path');
+      expect(shellForm.ok).toBe(true);
+      expect(shellForm.process).toBeUndefined();
+      expect(shellForm.executionMetrics).toMatchObject({ lane: 'ephemeral_direct', durableWrites: 0, leaseOperations: 0 });
+      expect(shellForm.stderr).not.toContain('runtime-authority@runtime-fence');
       expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
     } finally {
       owner.release();
@@ -240,6 +239,29 @@ describe('repository command execution lifecycle', () => {
     expect(terminal?.ok ?? execution.ok).toBe(true);
     const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
     expect(currentHead).not.toBe(previousHead);
+    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
+  });
+
+  test('treats a concurrent lifecycle writer that already settled the exact HEAD as converged', () => {
+    const controllerHome = tempRoot('forge-cmd-work-head-converged-home-');
+    const repoRoot = tempRoot('forge-cmd-work-head-converged-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const handle = seedWorkHandle(controllerHome, repository, 'work-head-converged');
+    const executionIdentity = executionIdentityForWork(repository, handle);
+    writeFileSync(join(repoRoot, 'README.md'), 'settled by concurrent writer\n');
+    git(repoRoot, ['commit', '--only', '-m', 'concurrent settlement', '--', 'README.md']);
+    const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    transitionWorkHandle(controllerHome, handle, handle.state, { expectedHead: currentHead });
+
+    expect(settleWorkHandleExpectedHeadAfterRepositoryCommand({
+      controllerHome,
+      repository,
+      executionIdentity,
+      workId: handle.workId,
+      ok: true,
+      cancelled: false,
+      timedOut: false,
+    })).toMatchObject({ settled: true, reason: 'settled', previousHead: handle.expectedHead, currentHead });
     expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
   });
 
@@ -313,10 +335,12 @@ describe('repository command execution lifecycle', () => {
     expect(readWorkHandle(controllerHome, repository.repoId, drift.workId)?.expectedHead).toBe(drift.expectedHead);
   });
 
-  test('raw git commits require explicit path scope and selected-path commits keep unrelated staged work isolated', () => {
+  test('raw git commits derive staged-index scope while widening forms stay blocked and selected-path commits isolate unrelated staged work', async () => {
     const route = (command: string[] | string) => classifyRepositoryCommandRoute(command);
-    expect(route(['git', 'commit', '-m', 'unsafe'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
-    expect(route('git commit -m unsafe')).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route(['git', 'commit', '-m', 'staged index'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route("git commit -m 'staged index shell'")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route(['bash', '-lc', "git commit -m 'wrapped staged index'"])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
+    expect(route("git add . && git commit -m 'compound unsafe'")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
     expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
     expect(route(['git', 'commit', '-m', 'safe argv pathspec', '--', 'README.md', 'docs/forge-plugin-management.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
     expect(route("git commit -m 'safe shell pathspec' -- README.md docs/forge-plugin-management.md")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
@@ -329,6 +353,26 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-selected-commit-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+
+    writeFileSync(join(repoRoot, 'staged-only.txt'), 'staged\n');
+    writeFileSync(join(repoRoot, 'unstaged-only.txt'), 'unstaged\n');
+    git(repoRoot, ['add', 'staged-only.txt']);
+    const stagedCommit = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'commit', '-m', 'commit staged index only'],
+      timeoutMs: 10_000,
+      executionIdentity: executionIdentityForRepository(repository),
+    });
+    const stagedCommitTerminal = stagedCommit.process?.completed
+      ? stagedCommit.process
+      : stagedCommit.process
+        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, stagedCommit.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(stagedCommitTerminal?.ok ?? stagedCommit.ok).toBe(true);
+    expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD']).split(/\r?\n/).filter(Boolean)).toEqual(['staged-only.txt']);
+    expect(gitOutput(repoRoot, ['status', '--short'])).toContain('?? unstaged-only.txt');
+
     writeFileSync(join(repoRoot, 'README.md'), 'selected change\n');
     writeFileSync(join(repoRoot, 'other.txt'), 'other staged change\n');
     git(repoRoot, ['add', 'other.txt']);
@@ -388,6 +432,30 @@ describe('repository command execution lifecycle', () => {
     expect(result.after).toBe(result.before);
     expect(result.repositoryChanged).toBe(false);
     expect(result.changedPaths).toEqual([]);
+  });
+
+  test('path-bounded git add does not fingerprint unrelated dirty files before spawn', async () => {
+    const controllerHome = tempRoot('forge-cmd-bounded-snapshot-home-');
+    const repoRoot = tempRoot('forge-cmd-bounded-snapshot-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    for (const name of ['target.txt', 'unrelated-a.txt', 'unrelated-b.txt']) writeFileSync(join(repoRoot, name), 'base\n');
+    git(repoRoot, ['add', 'target.txt', 'unrelated-a.txt', 'unrelated-b.txt']);
+    git(repoRoot, ['commit', '-m', 'add bounded snapshot fixture']);
+    for (const name of ['target.txt', 'unrelated-a.txt', 'unrelated-b.txt']) writeFileSync(join(repoRoot, name), `changed:${name}\n`);
+
+    const result = await executeRepositoryCommandAsync(controllerHome, repository, {
+      command: ['git', 'add', '--', 'target.txt'],
+      timeoutMs: 10_000,
+      snapshotFingerprintTimeoutMs: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.evidenceError).toBeUndefined();
+    expect(result.repositoryChanged).toBe(true);
+    expect(result.changedPaths).toEqual(['target.txt']);
+    expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('target.txt');
+    expect(gitOutput(repoRoot, ['diff', '--name-only']).split(/\r?\n/).filter(Boolean).sort()).toEqual(['unrelated-a.txt', 'unrelated-b.txt']);
   });
 
   test('post-execution fingerprint timeout preserves child success while marking repository evidence unknown', async () => {
@@ -669,7 +737,7 @@ describe('repository command execution lifecycle', () => {
       requestedBy: 'chatgpt',
       status: 'running',
     });
-    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+    cancelWorkContract({ controllerHome, repoId: repository.repoId }, workId, { summary: 'Explicitly terminalize the Work before proving remote delivery is fenced.' });
 
     await expect(pushExactWorkRemoteDelivery({
       controllerHome,

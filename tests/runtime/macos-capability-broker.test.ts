@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
-import { createServer, type Server } from 'net';
+import { createServer, type Server, type Socket } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -21,6 +21,7 @@ import { getExternalPluginRegistration, installExternalPluginRegistration } from
 
 const roots: string[] = [];
 const servers: Server[] = [];
+const providerSockets = new Set<Socket>();
 function registrationLookup(controllerHome: string) {
   return (providerPluginId: string) => {
     const registration = getExternalPluginRegistration(controllerHome, providerPluginId);
@@ -29,6 +30,8 @@ function registrationLookup(controllerHome: string) {
 }
 afterEach(async () => {
   resetMacOsCapabilityBrokerSocketPathForTest();
+  for (const socket of providerSockets) socket.destroy();
+  providerSockets.clear();
   for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -43,16 +46,23 @@ type ProviderFixtureMode = 'legacy' | 'generic' | 'generic_missing_browser' | 'g
 
 async function startProvider(
   socketPath: string,
-  input: { actions: string[]; calls: string[]; mode?: ProviderFixtureMode },
+  input: { actions: string[]; calls: string[]; mode?: ProviderFixtureMode; connections?: { count: number }; closeAfterFirstHandshake?: { done: boolean } },
 ): Promise<void> {
   const server = createServer((socket) => {
+    providerSockets.add(socket);
+    input.connections && (input.connections.count += 1);
+    socket.once('close', () => providerSockets.delete(socket));
     let buffer = '';
     socket.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
-      const newline = buffer.indexOf('\n');
-      if (newline < 0) return;
-      const request = JSON.parse(buffer.slice(0, newline)) as { id: string; method: string; params?: Record<string, unknown> };
-      input.calls.push(request.method);
+      while (true) {
+        const newline = buffer.indexOf('\n');
+        if (newline < 0) return;
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+        const request = JSON.parse(line) as { id: string; method: string; params?: Record<string, unknown> };
+        input.calls.push(request.method);
       const mode = input.mode ?? 'legacy';
       let result: Record<string, unknown>;
       if (request.method === 'handshake') {
@@ -99,7 +109,14 @@ async function startProvider(
           legacyProtocolVersionLeaked: genericArguments ? Object.hasOwn(genericArguments, 'protocolVersion') : false,
         };
       }
-      socket.end(`${JSON.stringify({ id: request.id, ok: true, result })}\n`);
+        const response = `${JSON.stringify({ id: request.id, ok: true, result })}\n`;
+        if (request.method === 'handshake' && input.closeAfterFirstHandshake && !input.closeAfterFirstHandshake.done) {
+          input.closeAfterFirstHandshake.done = true;
+          socket.end(response);
+        } else {
+          socket.write(response);
+        }
+      }
     });
   });
   servers.push(server);
@@ -120,7 +137,7 @@ describe('macOS capability broker handshake', () => {
   });
 
 
-  test('prefers provider-neutral computer_execute when the provider advertises the generic Computer capability', async () => {
+  test('uses explicit Browser compatibility even when an obsolete generic Browser capability is advertised', async () => {
     if (process.platform === 'win32') return;
     const socketPath = fixture();
     const calls: string[] = [];
@@ -129,10 +146,10 @@ describe('macOS capability broker handshake', () => {
 
     const result = await callMacOsCapabilityBroker({ action: 'list_tabs', product: 'chrome', protocolVersion: 1 }, 2_000);
     expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok', legacyProtocolVersionLeaked: false });
-    expect(calls).toEqual(['handshake', 'computer_execute']);
+    expect(calls).toEqual(['handshake', 'macos_browser_automation']);
   });
 
-  test('falls back to legacy only when the generic browser capability is absent', async () => {
+  test('uses explicit Browser compatibility when the obsolete generic Browser capability is absent', async () => {
     if (process.platform === 'win32') return;
     const socketPath = fixture();
     const calls: string[] = [];
@@ -143,28 +160,28 @@ describe('macOS capability broker handshake', () => {
     expect(calls).toEqual(['handshake', 'macos_browser_automation']);
   });
 
-  test('fails closed on a malformed generic Computer advertisement instead of downgrading to legacy', async () => {
+  test('ignores malformed obsolete generic Browser advertisement and uses explicit compatibility authority', async () => {
     if (process.platform === 'win32') return;
     const socketPath = fixture();
     const calls: string[] = [];
     await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic_malformed' });
     setMacOsCapabilityBrokerSocketPathForTest(socketPath);
 
-    await expect(callMacOsCapabilityBroker({ action: 'list_tabs', product: 'chrome', protocolVersion: 1 }, 2_000))
-      .rejects.toThrow('PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED');
-    expect(calls).toEqual(['handshake']);
+    const result = await callMacOsCapabilityBroker({ action: 'list_tabs', product: 'chrome', protocolVersion: 1 }, 2_000);
+    expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
+    expect(calls).toEqual(['handshake', 'macos_browser_automation']);
   });
 
-  test('fails closed on an explicitly unsupported generic Computer protocol instead of downgrading to legacy', async () => {
+  test('ignores unsupported obsolete generic Browser protocol and uses explicit compatibility authority', async () => {
     if (process.platform === 'win32') return;
     const socketPath = fixture();
     const calls: string[] = [];
     await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic_unsupported' });
     setMacOsCapabilityBrokerSocketPathForTest(socketPath);
 
-    await expect(callMacOsCapabilityBroker({ action: 'list_tabs', product: 'chrome', protocolVersion: 1 }, 2_000))
-      .rejects.toThrow('PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED');
-    expect(calls).toEqual(['handshake']);
+    const result = await callMacOsCapabilityBroker({ action: 'list_tabs', product: 'chrome', protocolVersion: 1 }, 2_000);
+    expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
+    expect(calls).toEqual(['handshake', 'macos_browser_automation']);
   });
 
   test('rejects an installed provider missing list_tabs before attempting browser automation', async () => {
@@ -206,9 +223,83 @@ describe('macOS capability broker handshake', () => {
     }));
 
     const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
-    const result = await provider.execute({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request: { action: 'list_tabs', product: 'chrome' } }, 2_000);
+    const result = await provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000);
     expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
     expect(calls).toEqual(['handshake', 'macos_browser_automation']);
+  });
+
+  test('reuses one negotiated live provider binding across warm Browser compatibility actions', async () => {
+    if (process.platform === 'win32') return;
+    const socketPath = fixture();
+    const calls: string[] = [];
+    const connections = { count: 0 };
+    await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic', connections });
+    setMacOsCapabilityBrokerSocketPathForTest(socketPath);
+
+    const provider = createDesktopOperatorComputerProvider({ legacyFallback: 'unregistered_v0_2' });
+    try {
+      await provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000);
+      await provider.executeBrowserCompatibility({ action: 'metadata', product: 'chrome' }, 2_000);
+      expect(calls).toEqual(['handshake', 'macos_browser_automation', 'macos_browser_automation']);
+      expect(connections.count).toBe(1);
+    } finally {
+      provider.dispose?.();
+    }
+  });
+
+  test('does not dispatch an action after the provider connection changes until identity is renegotiated', async () => {
+    if (process.platform === 'win32') return;
+    const socketPath = fixture();
+    const calls: string[] = [];
+    const connections = { count: 0 };
+    const closeAfterFirstHandshake = { done: false };
+    await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic', connections, closeAfterFirstHandshake });
+    setMacOsCapabilityBrokerSocketPathForTest(socketPath);
+
+    const provider = createDesktopOperatorComputerProvider({ legacyFallback: 'unregistered_v0_2' });
+    try {
+      await expect(provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000))
+        .rejects.toThrow('renegotiate before executing the action');
+      expect(calls).toEqual(['handshake']);
+      expect(connections.count).toBe(2);
+
+      const result = await provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000);
+      expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
+      expect(calls).toEqual(['handshake', 'handshake', 'macos_browser_automation']);
+      expect(connections.count).toBe(2);
+    } finally {
+      provider.dispose?.();
+    }
+  });
+
+  test('invalidates the negotiated provider binding when registration revision changes', async () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-revision-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const socketPath = join(root, 'registered-desktop-operator.sock');
+    const calls: string[] = [];
+    const connections = { count: 0 };
+    await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic', connections });
+    installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
+      socketPath,
+      pluginVersion: '0.3.0',
+      protocolVersion: '1.0',
+    }));
+    const installed = getExternalPluginRegistration(controllerHome, 'desktop_operator');
+    if (!installed) throw new Error('fixture registration missing');
+    const initial = computerProviderRegistrationSnapshot(installed);
+    let current = initial;
+    const provider = createDesktopOperatorComputerProvider({ lookupRegistration: () => current });
+    try {
+      await provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000);
+      current = { ...initial, revision: initial.revision + 1 };
+      await provider.executeBrowserCompatibility({ action: 'metadata', product: 'chrome' }, 2_000);
+      expect(calls).toEqual(['handshake', 'macos_browser_automation', 'handshake', 'macos_browser_automation']);
+      expect(connections.count).toBe(2);
+    } finally {
+      provider.dispose?.();
+    }
   });
 
   test('fails closed when the trusted Computer provider registration is disabled', async () => {
@@ -224,7 +315,7 @@ describe('macOS capability broker handshake', () => {
     }));
 
     const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
-    await expect(provider.execute({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request: { action: 'list_tabs', product: 'chrome' } }, 2_000))
+    await expect(provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000))
       .rejects.toThrow('PLUGIN_COMPUTER_PROVIDER_DISABLED');
   });
 

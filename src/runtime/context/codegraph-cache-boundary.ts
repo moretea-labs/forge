@@ -11,6 +11,7 @@ import {
   utimesSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
+import { withControllerLock } from '../../cli/repositories/locks';
 
 export const CODEGRAPH_LEGACY_CACHE_DIR = '.codegraph';
 export const CODEGRAPH_LOCATOR_PREFIX = '.codegraph-forge-';
@@ -67,32 +68,39 @@ export function migrateLegacyCodegraphCache(repoRoot: string, controllerHome: st
   const canonicalRepo = resolve(repoRoot);
   const targetRoot = codegraphRepositoryCacheRoot(controllerHome, canonicalRepo);
   const legacyRoot = join(canonicalRepo, CODEGRAPH_LEGACY_CACHE_DIR);
-  mkdirSync(targetRoot, { recursive: true });
-  if (!existsSync(legacyRoot)) return targetRoot;
+  return withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: `codegraph-migration:${codegraphCacheIdentity(canonicalRepo)}` },
+    `codegraph-migration:${codegraphCacheIdentity(canonicalRepo)}`,
+    () => {
+      mkdirSync(targetRoot, { recursive: true });
+      if (!existsSync(legacyRoot)) return targetRoot;
 
-  const stat = lstatSync(legacyRoot);
-  if (stat.isSymbolicLink()) {
-    if (!samePath(absoluteLinkTarget(legacyRoot), targetRoot)) {
-      throw new Error(`CODEGRAPH_CACHE_LINK_MISMATCH: ${legacyRoot} -> ${readlinkSync(legacyRoot)}`);
-    }
-    rmSync(legacyRoot, { force: true });
-    touchCacheRoot(targetRoot);
-    return targetRoot;
-  }
-  if (!stat.isDirectory()) throw new Error(`CODEGRAPH_CACHE_PATH_INVALID: ${legacyRoot}`);
-  if (readdirSync(targetRoot).length > 0) {
-    throw new Error(`CODEGRAPH_CACHE_MIGRATION_CONFLICT: both ${legacyRoot} and ${targetRoot} contain cache state`);
-  }
-  cpSync(legacyRoot, targetRoot, {
-    recursive: true,
-    dereference: false,
-    preserveTimestamps: true,
-    force: false,
-    errorOnExist: true,
-  });
-  rmSync(legacyRoot, { recursive: true, force: true });
-  touchCacheRoot(targetRoot);
-  return targetRoot;
+      const stat = lstatSync(legacyRoot);
+      if (stat.isSymbolicLink()) {
+        if (!samePath(absoluteLinkTarget(legacyRoot), targetRoot)) {
+          throw new Error(`CODEGRAPH_CACHE_LINK_MISMATCH: ${legacyRoot} -> ${readlinkSync(legacyRoot)}`);
+        }
+        rmSync(legacyRoot, { force: true });
+        touchCacheRoot(targetRoot);
+        return targetRoot;
+      }
+      if (!stat.isDirectory()) throw new Error(`CODEGRAPH_CACHE_PATH_INVALID: ${legacyRoot}`);
+      if (readdirSync(targetRoot).length > 0) {
+        throw new Error(`CODEGRAPH_CACHE_MIGRATION_CONFLICT: both ${legacyRoot} and ${targetRoot} contain cache state`);
+      }
+      cpSync(legacyRoot, targetRoot, {
+        recursive: true,
+        dereference: false,
+        preserveTimestamps: true,
+        force: false,
+        errorOnExist: true,
+      });
+      rmSync(legacyRoot, { recursive: true, force: true });
+      touchCacheRoot(targetRoot);
+      return targetRoot;
+    },
+  );
 }
 
 export interface CodegraphLocatorCleanupReport {

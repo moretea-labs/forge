@@ -2,16 +2,65 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { controllerSessionPrincipalId, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
-import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
 
 export interface RepositoryWorkHandleControllerIdentity {
   sessionId: string;
   principalId: string;
+}
+
+const DURABLE_CANONICAL_MUTATION_OWNER_STATES = new Set<WorkHandleState['state']>([
+  'editing',
+  'validating',
+  'failed_terminal_cleanup',
+  'failed',
+]);
+
+/**
+ * Fences repository mutations across Process/Lease lifetimes using the existing
+ * durable WorkHandle authority. Process leases prevent overlapping execution;
+ * this check prevents a later mutation call from taking over a canonical
+ * checkout whose mutable lifecycle still belongs to another Work.
+ */
+export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
+  controllerHome: string;
+  repositoryId: string;
+  checkoutId: string;
+  workId?: string;
+}): void {
+  const owners = listWorkHandles(input.controllerHome, input.repositoryId, 5_000)
+    .filter((handle) => {
+      if (handle.workId === input.workId
+        || handle.checkoutId !== input.checkoutId
+        || handle.managedWorktree === true
+        || !DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)) {
+        return false;
+      }
+      const contract = getWorkContract(
+        { controllerHome: input.controllerHome, repoId: input.repositoryId },
+        handle.workId,
+      );
+      // A stale physical handle cannot outlive canonical Work lifecycle authority.
+      // Missing WorkContract evidence remains fail-closed for legacy/unreconciled
+      // handles; only an explicit terminal status or completion receipt releases
+      // durable canonical writer ownership.
+      return !contract || (!isTerminalWorkContractStatus(contract.status) && !contract.completionReceipt);
+    })
+    .sort((left, right) => left.workId.localeCompare(right.workId));
+  if (owners.length === 0) return;
+  if (owners.length > 1) {
+    throw new Error(
+      `WORK_CANONICAL_MUTATION_OWNERSHIP_AMBIGUOUS: checkout=${input.checkoutId}; owners=${owners.map((owner) => owner.workId).join(',')}; requested=${input.workId ?? 'unattributed'}`,
+    );
+  }
+  throw new Error(
+    `WORK_CANONICAL_MUTATION_OWNED: checkout=${input.checkoutId}; owner=${owners[0]!.workId}; state=${owners[0]!.state}; requested=${input.workId ?? 'unattributed'}`,
+  );
 }
 
 function resolveRepositoryWorkHandlePlacement(input: {
@@ -56,6 +105,7 @@ export function ensureRepositoryWorkHandle(input: {
   );
   const supportedKind = contract?.workKind === 'repository_change'
     || contract?.workKind === 'completed_no_change'
+    || contract?.workKind === 'reconciliation'
     || (input.allowEffectWork === true && (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect'));
   if (!contract || !supportedKind || contract.mode !== 'goal_workloop' || !contract.checkoutId) {
     return undefined;
@@ -125,6 +175,26 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   return writeWorkHandle(input.controllerHome, { ...existing, sourceCheckoutId: placement.registeredRepository.activeCheckoutId, managedWorktree: true });
 }
 
+export function assertManagedRepositoryMutationAuthority(input: {
+  repository: RepositoryRecord;
+  handle: WorkHandleState;
+}): void {
+  if (!input.handle.managedWorktree) return;
+  if (input.handle.state !== 'prepared' && input.handle.state !== 'editing') {
+    throw new Error(`WORK_REPOSITORY_MUTATION_LIFECYCLE_INVALID: ${input.handle.workId}:${input.handle.state}`);
+  }
+  if (input.repository.activeCheckoutId !== input.handle.checkoutId) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_MISMATCH: expected ${input.handle.checkoutId}, found ${input.repository.activeCheckoutId}`);
+  }
+  const status = repositoryGitStatus(input.repository);
+  if (status.branch !== input.handle.branch) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_BRANCH_CHANGED: expected ${input.handle.branch}, found ${status.branch ?? 'detached'}`);
+  }
+  if (!input.handle.expectedHead || status.head !== input.handle.expectedHead) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_HEAD_CHANGED: expected ${input.handle.expectedHead ?? 'missing'}, found ${status.head ?? 'missing'}`);
+  }
+}
+
 function alignRepositoryMutationBase(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -188,7 +258,7 @@ export function markRepositoryMutationStarted(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
   if (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect') {
-    updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+    promoteWorkToRepositoryChange(store, input.workId);
   }
   const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
@@ -230,18 +300,26 @@ export function ensureRepositoryMutationWorkHandle(input: {
     throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${input.workId}`);
   }
 
-  if (!contract.checkoutId) {
+  let mutationCheckoutId = contract.checkoutId;
+  if (!mutationCheckoutId) {
     if (contract.worktreeRef?.trim()) {
       throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_REQUIRED: ${input.workId}`);
     }
-    contract = updateWorkContract(store, input.workId, { checkoutId: input.repository.activeCheckoutId });
+    mutationCheckoutId = input.repository.activeCheckoutId;
+    contract = updateWorkContract(store, input.workId, { checkoutId: mutationCheckoutId });
   }
+  assertCanonicalRepositoryMutationWorkHandleAvailable({
+    controllerHome: input.controllerHome,
+    repositoryId: input.repository.repoId,
+    checkoutId: mutationCheckoutId,
+    workId: input.workId,
+  });
 
   let promotedFrom: 'local_effect' | 'remote_effect' | undefined;
   if (contract.workKind === 'local_effect' || contract.workKind === 'remote_effect') {
     promotedFrom = contract.workKind;
     if (input.deferEffectPromotion !== true) {
-      contract = updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+      contract = promoteWorkToRepositoryChange(store, input.workId);
     }
   }
   if (contract.workKind !== 'repository_change' && input.deferEffectPromotion !== true) {
@@ -265,6 +343,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
     handle,
     freshlyMaterialized: !existingHandle,
   });
+  assertManagedRepositoryMutationAuthority({ repository: input.repository, handle });
   return { handle, ...(promotedFrom ? { promotedFrom } : {}) };
 }
 

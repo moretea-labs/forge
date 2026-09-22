@@ -86,7 +86,15 @@ describe('runtime command surface', () => {
     const lifecycleAuthority = readFileSync(join(ROOT, 'src/cli/controller/lifecycle-authority.ts'), 'utf8');
     const mcpAuth = readFileSync(join(ROOT, 'src/cli/mcp/auth.ts'), 'utf8');
     const httpTransport = readFileSync(join(ROOT, 'adapters/mcp/transports/http.ts'), 'utf8');
+    const httpObservation = readFileSync(join(ROOT, 'adapters/mcp/transports/http-observation.ts'), 'utf8');
     const runtimeTools = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
+    const runtimeObservation = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts'), 'utf8');
+    const runtimeReadinessObservation = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/runtime-readiness-observation.ts'), 'utf8');
+    const recoveryAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/recovery-adapter.ts'), 'utf8');
+    const statusInboxAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/status-inbox-adapter.ts'), 'utf8');
+    const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
+    const controllerAuthorityAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'), 'utf8');
+    const runtimeGatewaySurface = [runtimeTools, runtimeObservation, runtimeReadinessObservation, recoveryAdapter, statusInboxAdapter, controllerAuthorityAdapter, workAdapter].join('\n');
     const toolsetNames = readFileSync(join(ROOT, 'src/cli/mcp/toolset-names.ts'), 'utf8');
     const processGc = readFileSync(join(ROOT, 'src/runtime/execution/process-runtime/gc.ts'), 'utf8');
     const workerOwnership = readFileSync(join(ROOT, 'src/runtime/execution/workers/ownership.ts'), 'utf8');
@@ -140,28 +148,28 @@ describe('runtime command surface', () => {
       'scripts/restart-forge.sh',
     ]) expect(existsSync(join(ROOT, legacyAuthorityPath))).toBe(false);
     expect(httpTransport).not.toContain('ensureControllerDaemon');
-    expect(httpTransport).toContain('readForgeRuntimeStatus');
+    expect(httpTransport).not.toContain('readForgeRuntimeStatus');
+    expect(httpObservation).toContain('readForgeRuntimeStatus');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
-    const readinessStart = runtimeTools.indexOf('const readinessWithToolSurface = {');
-    const readinessEnd = runtimeTools.indexOf('const detailLevel', readinessStart);
-    const readinessBlock = runtimeTools.slice(readinessStart, readinessEnd);
+    const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
+    const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
+    const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);
     expect(readinessStart).toBeGreaterThanOrEqual(0);
     expect(readinessEnd).toBeGreaterThan(readinessStart);
-    expect(readinessBlock).toContain('ready: effectiveReady');
-    expect(readinessBlock).toContain('reasonCodes:');
-    expect(readinessBlock).toContain('diagnostics:');
+    expect(readinessBlock).toContain('const ready = readiness.ready && mcpReady;');
+    expect(readinessBlock).toContain('reasonCodes: [...reasonCodes]');
+    expect(readinessBlock).toContain('diagnostics: {');
     expect(readinessBlock).not.toContain('state:');
-    expect(readinessBlock).not.toContain('...readiness');
-    const recoveryProbeStart = runtimeTools.indexOf("case 'capability_recovery_probe':");
-    const recoveryProbeEnd = runtimeTools.indexOf("case 'capability_recovery_plan':", recoveryProbeStart);
-    const recoveryProbeBlock = runtimeTools.slice(recoveryProbeStart, recoveryProbeEnd);
+    const recoveryProbeStart = recoveryAdapter.indexOf("case 'capability_recovery_probe':");
+    const recoveryProbeEnd = recoveryAdapter.indexOf("case 'capability_recovery_plan':", recoveryProbeStart);
+    const recoveryProbeBlock = recoveryAdapter.slice(recoveryProbeStart, recoveryProbeEnd);
     expect(recoveryProbeBlock).toContain('ownsRuntimeLifecycle: false');
     expect(recoveryProbeBlock).not.toContain('recovery: snapshot');
     expect(recoveryProbeBlock).not.toContain('recommendedActions');
-    const recoveryApplyStart = runtimeTools.indexOf("case 'capability_recovery_apply':");
-    const recoveryApplyEnd = runtimeTools.indexOf("case 'runtime_storage_repair_preview':", recoveryApplyStart);
-    const recoveryApplyBlock = runtimeTools.slice(recoveryApplyStart, recoveryApplyEnd);
+    const recoveryApplyStart = recoveryAdapter.indexOf("case 'capability_recovery_apply':");
+    const recoveryApplyEnd = recoveryAdapter.indexOf("case 'runtime_storage_repair_preview':", recoveryApplyStart);
+    const recoveryApplyBlock = recoveryAdapter.slice(recoveryApplyStart, recoveryApplyEnd);
     expect(recoveryApplyStart).toBeGreaterThanOrEqual(0);
     expect(recoveryApplyEnd).toBeGreaterThan(recoveryApplyStart);
     expect(recoveryApplyBlock).not.toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
@@ -169,28 +177,28 @@ describe('runtime command surface', () => {
     expect(recoveryApplyBlock).not.toContain('recovery.restart_local_bridge');
     expect(recoveryApplyBlock).not.toContain('stableSupervisorFacadeMutation');
     expect(recoveryApplyBlock).not.toContain('scheduleControllerServiceRestart');
-    expect(runtimeTools).not.toContain("case 'self_healing_loop_plan':");
-    expect(runtimeTools).not.toContain("case 'self_healing_monitor_tick':");
-    expect(runtimeTools).not.toContain('AUTONOMOUS_RUNTIME_RECOVERY_RETIRED');
-    const contextSummaryStart = runtimeTools.indexOf('function compactControllerContextSummaryPayload');
-    const contextSummaryEnd = runtimeTools.indexOf('function authenticatedFacadeControllerIdentity', contextSummaryStart);
-    const contextSummaryBlock = runtimeTools.slice(contextSummaryStart, contextSummaryEnd);
+    expect(runtimeGatewaySurface).not.toContain("case 'self_healing_loop_plan':");
+    expect(runtimeGatewaySurface).not.toContain("case 'self_healing_monitor_tick':");
+    expect(runtimeGatewaySurface).not.toContain('AUTONOMOUS_RUNTIME_RECOVERY_RETIRED');
+    const contextSummaryStart = runtimeObservation.indexOf('function compactControllerContextSummaryPayload');
+    const contextSummaryEnd = runtimeObservation.indexOf('export async function controllerReadiness(', contextSummaryStart);
+    const contextSummaryBlock = runtimeObservation.slice(contextSummaryStart, contextSummaryEnd);
     expect(contextSummaryBlock).toContain('ready: ready.ready === true');
     expect(contextSummaryBlock).toContain('reasonCodes:');
     expect(contextSummaryBlock).not.toContain('state: ready.state');
     expect(contextSummaryBlock).not.toContain('operationalView:');
-    const contextHandlerStart = runtimeTools.indexOf("case 'controller_context':");
-    const contextHandlerEnd = runtimeTools.indexOf("case 'get_job':", contextHandlerStart);
-    const contextHandlerBlock = runtimeTools.slice(contextHandlerStart, contextHandlerEnd);
+    const contextHandlerStart = runtimeObservation.indexOf("case 'controller_context':");
+    const contextHandlerEnd = runtimeObservation.indexOf("case 'controller_ready':", contextHandlerStart);
+    const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
     expect(contextHandlerBlock).toContain('await controllerReadiness(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
     expect(contextHandlerBlock).toContain('fallbackToLive: false');
     expect(contextHandlerBlock).toContain("markPhase('build.plugins', pluginsStartedAt)");
     expect(contextHandlerBlock).not.toContain("fallbackToLive: variant === 'detail'");
-    const statusHandlerStart = runtimeTools.indexOf("case 'rh_status':");
-    const statusHandlerEnd = runtimeTools.indexOf("case 'rh_inbox':", statusHandlerStart);
-    const statusHandlerBlock = runtimeTools.slice(statusHandlerStart, statusHandlerEnd);
+    const statusHandlerStart = statusInboxAdapter.indexOf("if (name === 'rh_status')");
+    const statusHandlerEnd = statusInboxAdapter.indexOf("if (name === 'rh_inbox')", statusHandlerStart);
+    const statusHandlerBlock = statusInboxAdapter.slice(statusHandlerStart, statusHandlerEnd);
     expect(statusHandlerBlock).toContain("markSummaryPhase('runtime')");
     expect(statusHandlerBlock).toContain('phaseTimingsMs: summaryPhaseTimingsMs');
     expect(statusHandlerBlock).toContain('fallbackToLive: false');
@@ -199,9 +207,9 @@ describe('runtime command surface', () => {
     expect(statusHandlerBlock).toContain('new Date(repositoryIdentity.sampledAt).toISOString()');
     expect(statusHandlerBlock).toContain("observationPolicy: 'bounded_sample_with_mutation_invalidation'");
     expect(contextHandlerBlock).toContain('sourceObservation: gitIdentityObservation');
-    const runtimeIdentityStart = runtimeTools.indexOf('export function runtimeIdentitySnapshot');
-    const runtimeIdentityEnd = runtimeTools.indexOf('function controllerContextAssessment', runtimeIdentityStart);
-    const runtimeIdentityBlock = runtimeTools.slice(runtimeIdentityStart, runtimeIdentityEnd);
+    const runtimeIdentityStart = controllerAuthorityAdapter.indexOf('export function runtimeIdentitySnapshot');
+    const runtimeIdentityEnd = controllerAuthorityAdapter.indexOf('export function authenticatedFacadeControllerIdentity', runtimeIdentityStart);
+    const runtimeIdentityBlock = controllerAuthorityAdapter.slice(runtimeIdentityStart, runtimeIdentityEnd);
     expect(runtimeIdentityBlock).toContain('observeRuntimeStatus(ctx.controllerHome)');
     expect(runtimeIdentityBlock).toContain('runtimeInstanceId: snapshot?.runtimeInstanceId');
     expect(runtimeIdentityBlock).not.toContain('readSupervisorState');
@@ -209,18 +217,18 @@ describe('runtime command surface', () => {
     expect(runtimeIdentityBlock).not.toContain('readActiveSlotAuthority');
     expect(runtimeIdentityBlock).not.toContain('previousSlot');
     expect(runtimeIdentityBlock).not.toContain('activeSlot:');
-    const localBridgeStart = runtimeTools.indexOf("case 'local_bridge_status':");
-    const localBridgeEnd = runtimeTools.indexOf("case 'get_local_job':", localBridgeStart);
-    const localBridgeBlock = runtimeTools.slice(localBridgeStart, localBridgeEnd);
+    const localBridgeStart = runtimeObservation.indexOf("case 'local_bridge_status':");
+    const localBridgeEnd = runtimeObservation.indexOf("case 'controller_context':", localBridgeStart);
+    const localBridgeBlock = runtimeObservation.slice(localBridgeStart, localBridgeEnd);
     expect(localBridgeBlock).toContain('ready: health.components.localBridge.ready');
     expect(localBridgeBlock).not.toContain('readActiveSlotAuthority');
     expect(localBridgeBlock).not.toContain('activeSlot');
     expect(localBridgeBlock).not.toContain('generationMatches');
     expect(localBridgeBlock).not.toContain('health: health.components.localBridge.state');
     expect(localBridgeBlock).not.toContain('state: health.state');
-    const readinessEvidenceStart = runtimeTools.indexOf('export async function controllerReadinessEvidence');
-    const readinessEvidenceEnd = runtimeTools.indexOf('export async function controllerReadiness(', readinessEvidenceStart);
-    const readinessEvidenceBlock = runtimeTools.slice(readinessEvidenceStart, readinessEvidenceEnd);
+    const readinessEvidenceStart = runtimeReadinessObservation.indexOf('export async function controllerReadinessEvidence');
+    const readinessEvidenceEnd = runtimeReadinessObservation.indexOf('export function runtimeSourceSnapshotStatus', readinessEvidenceStart);
+    const readinessEvidenceBlock = runtimeReadinessObservation.slice(readinessEvidenceStart, readinessEvidenceEnd);
     expect(readinessEvidenceBlock).toContain('expectedSurface: localBridgeExpectedSurface');
     expect(readinessEvidenceBlock).toContain('generation: localBridgeSurface?.generation');
     expect(readinessEvidenceBlock).not.toContain('repoRoot: repository?.canonicalRoot');
@@ -229,15 +237,15 @@ describe('runtime command surface', () => {
     expect(readinessEvidenceBlock).not.toContain('observedSlot');
     expect(readinessEvidenceBlock).not.toContain('activeSlot:');
     expect(readinessEvidenceBlock).not.toContain('generationMatches');
-    expect(runtimeTools).not.toContain("from '../../../cli/controller/runtime-slots'");
-    expect(runtimeTools).not.toContain("from '../../supervisor/");
-    expect(runtimeTools).not.toContain('buildControllerReadyRevisionView');
-    expect(runtimeTools).not.toContain('stableSupervisorRevision');
-    expect(runtimeTools).not.toContain('activeRuntimeRevision');
-    expect(runtimeTools).not.toContain('stableIngress: fullPayload.stableIngress');
-    expect(runtimeTools).not.toContain('activeSlot: identity.activeSlot');
-    expect(runtimeTools).not.toContain('generation: identity.generation');
-    expect(runtimeTools).not.toContain("from '../../../cli/controller/stable-state/stable-home'");
+    expect(runtimeGatewaySurface).not.toContain("from '../../../cli/controller/runtime-slots'");
+    expect(runtimeGatewaySurface).not.toContain("from '../../supervisor/");
+    expect(runtimeGatewaySurface).not.toContain('buildControllerReadyRevisionView');
+    expect(runtimeGatewaySurface).not.toContain('stableSupervisorRevision');
+    expect(runtimeGatewaySurface).not.toContain('activeRuntimeRevision');
+    expect(runtimeGatewaySurface).not.toContain('stableIngress: fullPayload.stableIngress');
+    expect(runtimeGatewaySurface).not.toContain('activeSlot: identity.activeSlot');
+    expect(runtimeGatewaySurface).not.toContain('generation: identity.generation');
+    expect(runtimeGatewaySurface).not.toContain("from '../../../cli/controller/stable-state/stable-home'");
     expect(existsSync(join(ROOT, 'src/runtime/supervisor'))).toBe(false);
     for (const legacyPath of [
       'src/runtime/supervisor/entry.ts',
@@ -377,12 +385,12 @@ describe('runtime command surface', () => {
     expect(existsSync(join(ROOT, 'scripts/controller-runtime.sh'))).toBe(false);
     expect(existsSync(join(ROOT, 'scripts/activate-source-baseline.command'))).toBe(false);
     expect(existsSync(join(ROOT, 'scripts/restart-forge.sh'))).toBe(false);
-    expect(runtimeTools).not.toContain('activeSlotRevision');
-    expect(runtimeTools).not.toContain('generationCoherent');
-    expect(runtimeTools).not.toContain('slotCoherent');
+    expect(runtimeGatewaySurface).not.toContain('activeSlotRevision');
+    expect(runtimeGatewaySurface).not.toContain('generationCoherent');
+    expect(runtimeGatewaySurface).not.toContain('slotCoherent');
     expect(existsSync(join(ROOT, 'tests/runtime/stable-supervisor-hardening.test.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'tests/runtime/stable-supervisor-integration.test.ts'))).toBe(false);
-    expect(runtimeTools).toContain('readForgeRuntimeStatus');
+    expect(runtimeGatewaySurface).toContain('readForgeRuntimeStatus');
     for (const legacy of [
       'controller_restart_verify',
       'controller_feature_verify',
@@ -397,7 +405,7 @@ describe('runtime command surface', () => {
       'runtime_unlock_and_recover',
       'scheduleControllerServiceRestart',
     ]) {
-      expect(runtimeTools).not.toContain(legacy);
+      expect(runtimeGatewaySurface).not.toContain(legacy);
       expect(facadeActions).not.toContain(legacy);
       expect(toolsetNames).not.toContain(`'${legacy}'`);
     }

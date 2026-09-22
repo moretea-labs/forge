@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { readRuntimeReleaseAuthority } from './release-store';
 import { readForgeRuntimeServiceConfig } from './service';
+import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 
 export interface ForgeRuntimeServiceCommand {
   executable: string;
@@ -34,7 +35,7 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
       ...(config.exclusiveWorkId ? ['--exclusive-work-id', config.exclusiveWorkId] : []),
     ],
     env: {
-      ...process.env,
+      ...runtimeAuthorityFreeEnvironment(process.env),
       FORGE_CONTROLLER_HOME: home,
       FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: releaseRoot,
       FORGE_RELEASE_PATH: releaseRoot,

@@ -68,8 +68,8 @@ A release change is performed only as an explicitly authorized whole-Runtime ope
 1. validate one immutable release manifest, configuration, database compatibility range, and Worker protocol;
 2. quiesce admission and stop the complete Runtime;
 3. atomically select the candidate as the one active whole release;
-4. atomically mirror the selected release's signed `forge-runtime` entrypoint to the fixed physical service path `runtime/service/active-forge-runtime`, then let the single Forge Runtime service start that stable path with the selected release manifest/environment;
-5. require binary whole-Runtime readiness;
+4. atomically mirror the selected release's signed `forge-runtime` supervisor launcher to the fixed physical service path `runtime/service/active-forge-runtime`; the launcher validates the selected release's hashed `forge-runtime-bundle.js` and release-owned Bun interpreter, then starts exactly one interpreter child with the selected manifest/environment and forwards lifecycle/diagnostic signals to it;
+5. require whole-Runtime readiness from the child-owned Runtime owner/status and release canaries; the launcher itself is never a second Runtime authority;
 6. on failure, stop the service, restore the previous release and its bound local SQLite backup, then start and verify the complete previous Runtime.
 
 There is no blue-green pair, fixed alternate port, slot adoption, mixed-generation traffic, or component rollback. Release safety comes from pre-activation canaries, immutable artifacts, one atomic active/previous authority, whole-Runtime readiness, and previous-release recovery.

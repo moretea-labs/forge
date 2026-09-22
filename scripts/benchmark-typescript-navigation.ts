@@ -27,19 +27,19 @@ const cases: BenchmarkCase[] = [
   },
   {
     label: 'MCP repository dispatch',
-    path: 'src/cli/mcp/repository-tools.ts',
+    path: 'adapters/mcp/tool-mapping/repository-tools.ts',
     symbol: 'callRepositoryTool',
     marker: 'export async function callRepositoryTool(',
   },
   {
     label: 'canonical Runtime proxy',
-    path: 'src/cli/mcp/server.ts',
+    path: 'adapters/mcp/server.ts',
     symbol: 'createCanonicalRuntimeProxy',
     marker: 'export function createCanonicalRuntimeProxy(',
   },
   {
     label: 'Runtime MCP dispatch',
-    path: 'src/runtime/gateway/mcp/runtime-tools.ts',
+    path: 'adapters/mcp/runtime-gateway/runtime-tools.ts',
     symbol: 'callRuntimeTool',
     marker: 'export async function callRuntimeTool(',
   },

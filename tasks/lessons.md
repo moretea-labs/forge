@@ -54,6 +54,13 @@
 - Prevention rule: Persist recovery accounting against the immutable Runtime release identity; preserve it across Watchdog restart; reset it only on a genuinely new release or a configured continuous-health window. Exhaustion must hand off or perform the single attested recovery path, never loop back to a new first attempt.
 - Where to apply next time: `src/runtime/standalone-recovery/**`, release activation, watchdog state migrations, and failure-injection/live-recovery acceptance.
 
+## Runtime restart must reclaim a proven-stale Workflow Supervisor socket
+- Date: 2026-09-18
+- Triggered by correction: The Canonical Runtime repeatedly exited with `WORKFLOW_SUPERVISOR_WRITER_ALREADY_PRESENT`, while `supervisor/supervisor.sock` accepted no connection and had no open file holder. Recovery retries could not restore the ChatGPT MCP endpoint until that stale Unix socket was removed.
+- Mistake pattern: The Supervisor server correctly refuses to unlink an existing socket speculatively, but the bounded Runtime restart/recovery path had no evidence-based stale-socket reclamation step after the prior writer was proven absent.
+- Prevention rule: Under the Recovery mutation fence, stop the Canonical Runtime, probe the exact Supervisor socket, confirm refusal/no holder, remove only that stale socket, then start and whole-Runtime verify. Preserve the fail-closed rule for a live or indeterminate socket owner.
+- Where to apply next time: `src/runtime/standalone-recovery/**`, the Runtime restart transaction, and failure-injection coverage around `supervisor/server.ts`.
+
 ## Persistent service entrypoints must not depend on an interactive shell PATH
 - Date: 2026-08-22
 - Triggered by correction: A packaged Runtime launcher used `#!/usr/bin/env node`; launchd exposed only `/usr/bin:/bin:/usr/sbin:/sbin`, so the canonical Runtime exited 127 and the public Gateway returned 502 until Recovery activated a source-built release.

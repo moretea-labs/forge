@@ -7,6 +7,7 @@ import {
   formatComputerStatus,
   readComputerStatus,
   runComputerDoctor,
+  runComputerSetup,
   runComputerUninstall,
 } from '../../src/cli/commands/computer';
 import { withOfficialPluginLifecycleLock } from '../../src/cli/commands/plugin';
@@ -31,16 +32,34 @@ function registerProvider(home: string, options: { version?: string; enabled?: b
     socketPath: join(home, 'missing-desktop-operator.sock'),
     launchAgentLabel: 'com.moretea.forge.desktop-operator',
     expectedProgramContains: 'Forge Desktop Operator.app',
-    pluginVersion: options.version ?? '0.3.2',
+    pluginVersion: options.version ?? '0.4.4',
     protocolVersion: '1.0',
     enabled: options.enabled,
   }));
 }
 
 describe('Computer product facade', () => {
-  test('projects an uninstalled provider as Computer without inventing provider state', () => {
+  test('exposes exact-pid cleanup on the typed Desktop Operator close contract', () => {
+    const registration = createDesktopOperatorRegistrationInput({
+      socketPath: '/tmp/forge-desktop-operator.sock',
+      pluginVersion: '0.4.4',
+      protocolVersion: '1.0',
+    });
+    const close = registration.actions.find((action) => action.actionId === 'desktop_session_close');
+    expect(close?.argumentsSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        interaction_id: { type: 'string' },
+        terminate_owned_pid: { type: 'integer', minimum: 1, maximum: 2_147_483_647 },
+      },
+      required: ['interaction_id'],
+      additionalProperties: false,
+    });
+  });
+
+  test('reports Windows as unavailable without inventing a Computer capability from host browser discovery', () => {
     const home = controllerHome();
-    const status = readComputerStatus({ controllerHome: home });
+    const status = readComputerStatus({ controllerHome: home, platform: 'win32' });
     expect(status).toMatchObject({
       schemaVersion: 1,
       product: 'computer',
@@ -49,28 +68,32 @@ describe('Computer product facade', () => {
       provider: {
         implementation: 'Forge Desktop Operator',
         pluginId: 'desktop_operator',
-        catalogVersion: '0.3.2',
+        catalogVersion: '0.4.4',
         enabled: false,
         releaseIndependent: true,
         health: { state: 'not_installed', ready: false, probed: false },
       },
     });
-    expect(status.supported).toBe(['darwin', 'linux', 'win32'].includes(process.platform));
+    expect(status.supported).toBe(false);
+    expect(status.partial).toBe(false);
     expect(status.ready).toBe(false);
-    expect(status.capabilities).toHaveLength(4);
-  });
-
-  test('reports Linux/WSL as partial Computer support instead of falsely ready or wholly unsupported', () => {
-    const home = controllerHome();
-    const status = readComputerStatus({ controllerHome: home, platform: 'linux', env: {}, fileExists: () => false });
-    expect(status).toMatchObject({ supported: true, partial: true, ready: false });
     expect(status.capabilities).toEqual(expect.arrayContaining([
-      expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', supported: true, ready: false }),
+      expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.observe.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.input.v1', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.console.unlock.v1', supported: false, state: 'unsupported' }),
       expect.objectContaining({ capabilityId: 'computer.capture.v1', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.element.observe.v2', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.element.action.v2', supported: false, state: 'unsupported' }),
     ]));
-    expect(formatComputerStatus(status)).toContain('Computer: partial');
+  });
+
+  test('reports platforms without a native provider as unsupported instead of partial Browser support', () => {
+    const home = controllerHome();
+    const status = readComputerStatus({ controllerHome: home, platform: 'linux' });
+    expect(status).toMatchObject({ supported: false, partial: false, ready: false });
+    expect(status.capabilities.every((capability) => capability.state === 'unsupported')).toBe(true);
+    expect(formatComputerStatus(status)).toContain('Computer: not ready');
   });
 
   test('projects trusted registration and pinned-release drift without making provider identity the product', () => {
@@ -83,7 +106,7 @@ describe('Computer product facade', () => {
       implementation: 'Forge Desktop Operator',
       pluginId: 'desktop_operator',
       installedVersion: '0.2.3',
-      catalogVersion: '0.3.2',
+      catalogVersion: '0.4.4',
       protocolVersion: '1.0',
       enabled: false,
       updateAvailable: true,
@@ -93,9 +116,24 @@ describe('Computer product facade', () => {
     expect(formatComputerStatus(status)).not.toContain('desktop_operator');
   });
 
-  test('doctor refreshes only the Computer provider and does not probe unrelated external providers', () => {
+  test('treats 0.4 element capabilities as native Computer surface without requiring Desktop to advertise Browser authority', () => {
     const home = controllerHome();
-    registerProvider(home);
+    registerProvider(home, { version: '0.4.0', enabled: true });
+    const status = readComputerStatus({ controllerHome: home, platform: 'darwin' });
+    expect(status.provider.installedVersion).toBe('0.4.0');
+    expect(status.provider.catalogVersion).toBe('0.4.4');
+    expect(status.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', provider: 'browser', supported: true }),
+      expect.objectContaining({ capabilityId: 'computer.console.unlock.v1', provider: 'desktop_operator', supported: true }),
+      expect.objectContaining({ capabilityId: 'computer.element.observe.v2', provider: 'desktop_operator', supported: true }),
+      expect.objectContaining({ capabilityId: 'computer.element.action.v2', provider: 'desktop_operator', supported: true }),
+    ]));
+    expect(status.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')?.reason).not.toContain('does not declare');
+  });
+
+  test('doctor refreshes only a compatible Computer provider and does not probe unrelated external providers', () => {
+    const home = controllerHome();
+    registerProvider(home, { enabled: false });
     installExternalPluginRegistration(home, {
       pluginId: 'unrelated_provider',
       displayName: 'Unrelated Provider',
@@ -111,9 +149,27 @@ describe('Computer product facade', () => {
     const repository = controllerPluginRepository(home);
     expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeUndefined();
     expect(readStoredAssistantPluginManifest(home, repository, 'unrelated_provider')).toBeUndefined();
-    runComputerDoctor({ controllerHome: home });
+    runComputerDoctor({ controllerHome: home, platform: 'darwin' });
     expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeDefined();
     expect(readStoredAssistantPluginManifest(home, repository, 'unrelated_provider')).toBeUndefined();
+  });
+
+  test('doctor skips a stale foreign provider instead of blocking on its transport', () => {
+    const home = controllerHome();
+    registerProvider(home);
+    const repository = controllerPluginRepository(home);
+
+    const report = runComputerDoctor({ controllerHome: home, platform: 'win32' });
+
+    expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeUndefined();
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider-platform', state: 'warn' }),
+    ]));
+  });
+
+  test('setup fails before any installation attempt when no provider supports the platform', () => {
+    expect(() => runComputerSetup({ controllerHome: controllerHome(), platform: 'win32' }))
+      .toThrow('COMPUTER_PROVIDER_UNAVAILABLE_ON_PLATFORM');
   });
 
   test('serializes Computer uninstall against the shared official-provider lifecycle lock', () => {

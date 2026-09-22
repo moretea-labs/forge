@@ -24,6 +24,8 @@ export interface ProgressionPlanSnapshot {
   planId: string;
   requirementId?: string;
   sourceRevision: string;
+  /** Explicit execution baseline after a Controller-authorized delivery advance. */
+  executionBaselineRevision?: string;
   status: PlanContractStatus;
   steps: readonly ProgressionPlanStepSnapshot[];
 }

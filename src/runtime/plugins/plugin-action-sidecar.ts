@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { createHash } from 'crypto';
-import { readFileSync, rmSync } from 'fs';
+import { readFileSync, rmSync, writeFileSync } from 'fs';
 import { getRepository } from '../../cli/repositories/registry';
+import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import type { AssistantPluginActionRequest } from './types';
-import { submitAssistantPluginAction } from './store';
+import { controllerPluginRepository, submitAssistantPluginAction } from './store';
 
 interface Envelope {
   schemaVersion: 1;
@@ -30,13 +31,15 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
     }
     const envelope = JSON.parse(bytes) as Envelope;
     if (envelope.schemaVersion !== 1) throw new Error('PLUGIN_ACTION_REQUEST_VERSION_UNSUPPORTED');
-    const repository = getRepository(envelope.repoId, envelope.controllerHome);
+    const repository = envelope.repoId === CONTROLLER_SCOPE_REPO_ID
+      ? controllerPluginRepository(envelope.controllerHome)
+      : getRepository(envelope.repoId, envelope.controllerHome);
     const submitted = await submitAssistantPluginAction(
       envelope.controllerHome,
       repository,
       envelope.request,
     );
-    process.stdout.write(`${JSON.stringify({
+    writeFileSync(1, `${JSON.stringify({
       ok: true,
       requestId: submitted.receipt.requestId,
       receiptId: submitted.receipt.receiptId,
@@ -51,9 +54,9 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
 const direct = typeof process.argv[1] === 'string' && process.argv[1].includes('plugin-action-sidecar');
 if (direct) {
   void runPluginActionSidecar()
-    .then((code) => { process.exitCode = code; })
+    .then((code) => { process.exit(code); })
     .catch((error) => {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
+      writeFileSync(2, `${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
     });
 }

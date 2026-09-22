@@ -1,245 +1,91 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
 import {
   buildXiaohongshuPluginManifest,
   buildXiaohongshuPublishRecipe,
-  classifyXiaohongshuPublishState,
   executeXiaohongshuPluginAction,
-  resetXiaohongshuPluginHooksForTest,
-  setXiaohongshuPluginHooksForTest,
 } from '../../src/runtime/plugins/xiaohongshu-publish';
 import { listFirstPartyPluginAdapters } from '../../src/runtime/plugins/first-party-registry';
+import {
+  materializedXiaohongshuWorkflow,
+  translateXiaohongshuPublishToWorkflow,
+  XIAOHONGSHU_WORKFLOW_IDS,
+} from '../../src/runtime/workflows/first-party/xiaohongshu';
 
 const profileUrl = 'https://www.xiaohongshu.com/user/profile/5fb3e0fd0000000001008089';
 const baseArgs = {
-  session_id: 'browser_test_session',
-  profile_url: profileUrl,
-  title: '一个可以直接收藏的工具帖',
-  body: '正文内容',
+  session_id: 'browser_test_session', profile_url: profileUrl,
+  title: '一个可以直接收藏的工具帖', body: '正文内容',
 };
 
-afterEach(() => resetXiaohongshuPluginHooksForTest());
-
-describe('xiaohongshu publish recipe', () => {
-  test('manifest exposes one bounded recipe and one authorized publish action', () => {
+describe('xiaohongshu Workflow compatibility', () => {
+  test('manifest exposes only read-only translation; remote effects are not plugin-owned', () => {
     const manifest = buildXiaohongshuPluginManifest();
     expect(manifest.pluginId).toBe('xiaohongshu');
-    expect(listFirstPartyPluginAdapters().map((adapter) => adapter.pluginId)).toContain('xiaohongshu');
+    expect(listFirstPartyPluginAdapters().map(adapter => adapter.pluginId)).toContain('xiaohongshu');
     expect(manifest.health.ready).toBe(true);
-    const actions = Object.fromEntries(manifest.actions.map((action) => [action.actionId, action]));
-    expect(Object.keys(actions)).toEqual(['get_publish_recipe', 'check_live_contract', 'classify_publish_state', 'publish_note']);
-    expect(actions.get_publish_recipe.readOnly).toBe(true);
-    expect(actions.check_live_contract.readOnly).toBe(true);
-    expect(actions.check_live_contract.risk).toBe('readonly');
-    expect(actions.publish_note.risk).toBe('remote_write');
-    expect(actions.publish_note.confirmation).toBe('authorization');
+    expect(manifest.authority.sourceOfTruth).toContain('source:assets/workflows/xiaohongshu/*.draft.json');
+    expect(manifest.actions.map(action => action.actionId)).toEqual(['get_publish_recipe', 'publish_note']);
+    for (const action of manifest.actions) {
+      expect(action.readOnly).toBe(true);
+      expect(action.risk).toBe('readonly');
+      expect(action.confirmation).toBe('none');
+      expect(action.idempotent).toBe(true);
+    }
   });
 
-  test('image and generated-image modes share one executable image-note route', () => {
-    const image = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'image_note', image_paths: ['cover.png', 'detail.png'] });
-    expect(image.normalizedMode).toBe('image_note');
-    const imageSteps = image.steps as Array<Record<string, any>>;
-    expect(imageSteps[1]).toMatchObject({ id: 'image.select_mode', actionId: 'click_text', args: { text: '上传图文' } });
-    expect(imageSteps[2]).toMatchObject({ id: 'image.wait_file_input', actionId: 'wait_for_selector', args: { selector: 'input[type=file]', state: 'attached' } });
-    expect(imageSteps.find((step) => step.id === 'image.attach_files')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
-    expect(imageSteps.find((step) => step.id === 'publish.semantic_submit')).toMatchObject({
-      actionId: 'dispatch_event',
-      args: { selector: 'xhs-publish-btn', event: 'publish' },
+  test('legacy image/generated/long-text inputs translate to exact versioned Workflow identities', () => {
+    const image = translateXiaohongshuPublishToWorkflow({ ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] });
+    expect(image).toMatchObject({ workflowId: XIAOHONGSHU_WORKFLOW_IDS.imageNote, generationRequired: false, normalizedMode: 'image_note' });
+    expect(image.inputs.image_paths).toEqual(['cover.png']);
+    const generated = translateXiaohongshuPublishToWorkflow({ ...baseArgs, mode: 'generated_image_note' });
+    expect(generated).toMatchObject({ workflowId: XIAOHONGSHU_WORKFLOW_IDS.imageNote, generationRequired: true, normalizedMode: 'image_note' });
+    const longText = translateXiaohongshuPublishToWorkflow({ ...baseArgs, mode: 'long_text', summary: '摘要' });
+    expect(longText).toMatchObject({ workflowId: XIAOHONGSHU_WORKFLOW_IDS.longText, generationRequired: false, normalizedMode: 'long_text' });
+    expect(longText.inputs.summary).toBe('摘要');
+  });
+
+  test('auth/selectors/platform sequencing live in assets and uncertain publish has an explicit reconciliation binding', () => {
+    const image = materializedXiaohongshuWorkflow(XIAOHONGSHU_WORKFLOW_IDS.imageNote);
+    expect(image.resources?.creatorBaseUrl).toContain('creator.xiaohongshu.com');
+    expect(image.selectors?.publish).toBe('xhs-publish-btn');
+    expect(image.requiredCapabilities).toContain('browser.reconcile_effect');
+    const effect = image.steps.find(step => step.stepId === 'publish.semantic_submit');
+    expect(effect).toMatchObject({
+      capabilityId: 'browser.dispatch_event', idempotency: 'non_idempotent', reconcileWithCapabilityId: 'browser.reconcile_effect',
     });
-    expect(image.verification).toEqual(['creator_publish_success_receipt', 'creator_note_manager_contains_exact_title']);
-
-    const generatedPending = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'generated_image_note' });
-    expect(generatedPending.normalizedMode).toBe('image_note');
-    expect(generatedPending.generationRequired).toBe(true);
-    expect(generatedPending.steps).toEqual([]);
-    expect(generatedPending.verification).toEqual([]);
-    expect(generatedPending.generationHandoff).toMatchObject({ requiredInput: 'image_paths', resumeAction: 'publish_note', minImages: 1, maxImages: 18 });
-
-    const generatedReady = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'generated_image_note', image_paths: ['generated.png'] });
-    expect(generatedReady.normalizedMode).toBe('image_note');
-    expect(generatedReady.generationRequired).toBe(false);
+    expect(image.publication).toMatchObject({ channel: 'xiaohongshu', effectStepId: 'publish.semantic_submit' });
+    const source = readFileSync(new URL('../../src/runtime/plugins/xiaohongshu-publish.ts', import.meta.url), 'utf8');
+    expect(source).not.toContain('creator.xiaohongshu.com/publish');
+    expect(source).not.toContain('xhs-publish-btn');
+    expect(source).not.toContain('executeBrowserPluginAction');
   });
 
-  test('long text route uses the verified article editor path without images', () => {
-    const recipe = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'long_text', template_text: '清晰明朗', summary: '发布摘要' });
-    const steps = recipe.steps as Array<Record<string, any>>;
-    expect(recipe.normalizedMode).toBe('long_text');
-    expect(steps[0].args.url).toContain('target=article');
-    expect(steps.map((step) => step.id)).toEqual(expect.arrayContaining([
-      'article.new', 'article.fill_title', 'article.fill_body', 'article.layout', 'article.select_template', 'article.next', 'article.fill_summary',
-    ]));
-    expect(steps.find((step) => step.id === 'article.new')?.args.text).toBe('新的创作');
-    expect(steps.find((step) => step.id === 'article.layout')?.args.text).toBe('一键排版');
-  });
-
-  test('auth classification fences login before edit and verification requires both receipts', () => {
-    expect(classifyXiaohongshuPublishState({ phase: 'preflight', url: 'https://creator.xiaohongshu.com/login', text: '扫码登录' })).toBe('AUTH_REQUIRED');
-    expect(classifyXiaohongshuPublishState({ phase: 'preflight', url: 'https://creator.xiaohongshu.com/publish', text: '创作服务平台 发布笔记' })).toBe('READY');
-    expect(classifyXiaohongshuPublishState({ phase: 'creator_receipt', url: 'https://creator.xiaohongshu.com/publish?published=true', text: '' })).toBe('PUBLISHED_RECEIPT');
-    expect(classifyXiaohongshuPublishState({ phase: 'creator_receipt', url: 'https://creator.xiaohongshu.com/publish/success?source=official', text: '' })).toBe('PUBLISHED_RECEIPT');
-    expect(classifyXiaohongshuPublishState({ phase: 'profile_verify', url: profileUrl, text: '一个可以直接收藏的工具帖', expectedTitle: '一个可以直接收藏的工具帖' })).toBe('PROFILE_VERIFIED');
-    expect(classifyXiaohongshuPublishState({ phase: 'profile_verify', url: profileUrl, text: '还没刷新出来', expectedTitle: '一个可以直接收藏的工具帖' })).toBe('VERIFY_PENDING');
-  });
-
-
-  test('live contract smoke reports hidden versus slow-attaching anchors without upload or publish', async () => {
-    const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
-    let fileProbeCount = 0;
-    let tick = 0;
-    setXiaohongshuPluginHooksForTest({
-      nowMs: () => (tick += 5),
-      executeBrowserAction: async (input) => {
-        calls.push({ actionId: input.actionId, args: input.args as Record<string, any> });
-        if (input.actionId === 'navigate') return { url: 'https://creator.xiaohongshu.com/publish/publish?source=official' };
-        if (input.actionId === 'query_all') return { matches: [{ text: '创作服务平台' }] };
-        if (input.actionId === 'click_text') return { url: 'https://creator.xiaohongshu.com/publish/publish?source=official' };
-        if (input.actionId === 'wait_for_selector') return { selector: input.args.selector, state: 'attached' };
-        if (input.actionId === 'verify_state') {
-          const selector = String(input.args.selector);
-          let exists = true;
-          let visible = true;
-          if (selector === 'input[type=file]') {
-            fileProbeCount += 1;
-            exists = fileProbeCount > 1;
-            visible = false;
-          }
-          if (selector === 'xhs-publish-btn') visible = false;
-          return {
-            checks: [
-              { criterion: 'selector_exists', observed: exists },
-              { criterion: 'selector_visible', observed: visible },
-            ],
-          };
-        }
-        return {};
-      },
-    });
-
+  test('compatibility publish_note never reports a remote publish as completed', async () => {
     const result = await executeXiaohongshuPluginAction({
-      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'check_live_contract', requestId: 'xhs-contract',
-      args: { session_id: baseArgs.session_id, mode: 'image_note' }, origin: { surface: 'local-ui', actor: 'test' },
-    });
-
-    expect(result.status).toBe('compatible');
-    expect(result.sideEffects).toEqual({ uploaded: false, submitted: false, published: false });
-    expect(result.receiptPatterns).toEqual(['published=true', '/publish/success', '/publish/editsuccess']);
-    const anchors = result.anchors as Array<Record<string, any>>;
-    expect(anchors.find((anchor) => anchor.id === 'image.file_input')).toMatchObject({ compatible: true, status: 'slow_attached_hidden', exists: true, visible: false });
-    expect(anchors.find((anchor) => anchor.id === 'publish.host')).toMatchObject({ compatible: true, status: 'hidden', exists: true, visible: false });
-    expect(anchors.every((anchor) => typeof anchor.durationMs === 'number' && anchor.durationMs >= 0)).toBe(true);
-    expect(calls.some((call) => call.actionId === 'attach_local_file')).toBe(false);
-    expect(calls.some((call) => call.actionId === 'dispatch_event')).toBe(false);
-    expect(calls.some((call) => call.actionId === 'fill')).toBe(false);
-  });
-
-  test('publish preflight aggregates incompatible anchors and fails before upload or semantic submit', async () => {
-    const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
-    setXiaohongshuPluginHooksForTest({
-      executeBrowserAction: async (input) => {
-        calls.push({ actionId: input.actionId, args: input.args as Record<string, any> });
-        if (input.actionId === 'navigate') return { url: 'https://creator.xiaohongshu.com/publish/publish?source=official' };
-        if (input.actionId === 'query_all') return { matches: [{ text: '创作服务平台' }] };
-        if (input.actionId === 'click_text') return {};
-        if (input.actionId === 'verify_state') {
-          const selector = String(input.args.selector);
-          const exists = selector === '[contenteditable="true"][role="textbox"]';
-          return { checks: [
-            { criterion: 'selector_exists', observed: exists },
-            { criterion: 'selector_visible', observed: exists },
-          ] };
-        }
-        if (input.actionId === 'wait_for_selector') throw new Error('Timeout waiting for selector');
-        return {};
-      },
-    });
-
-    const result = await executeXiaohongshuPluginAction({
-      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-preflight-drift',
+      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-compat',
       args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] }, origin: { surface: 'local-ui', actor: 'test' },
     });
-
-    expect(result.status).toBe('page_schema_changed');
-    expect(result.checkpoint).toBe('preflight.live_contract');
-    const contract = result.contractSmoke as Record<string, any>;
-    expect(contract.incompatibleAnchors).toEqual(expect.arrayContaining(['image.file_input', 'image.title', 'publish.host']));
-    expect(contract.incompatibleAnchors).not.toContain('image.body');
-    expect(calls.some((call) => call.actionId === 'attach_local_file')).toBe(false);
-    expect(calls.some((call) => call.actionId === 'dispatch_event')).toBe(false);
+    expect(result.status).toBe('workflow_required');
+    expect(result.execution).toMatchObject({ tool: 'rh_work', operation: 'workflow_execute', workflow_id: XIAOHONGSHU_WORKFLOW_IDS.imageNote });
+    expect(result).not.toHaveProperty('publishedAt');
+    expect(result).not.toHaveProperty('receipts');
   });
 
-  test('publish_note executes the fixed image recipe and succeeds after Creator receipt plus note-manager title verification', async () => {
-    const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
-    let currentUrl = '';
-    let textRead = 0;
-    setXiaohongshuPluginHooksForTest({
-      now: () => '2026-08-17T04:00:00.000Z',
-      nowMs: (() => { let tick = 0; return () => (tick += 3); })(),
-      executeBrowserAction: async (input) => {
-        calls.push({ actionId: input.actionId, args: input.args as Record<string, any> });
-        if (input.actionId === 'navigate') {
-          currentUrl = String(input.args.url);
-          return { url: currentUrl };
-        }
-        if (input.actionId === 'query_all') return { url: currentUrl, matches: [{ text: '创作服务平台' }] };
-        if (input.actionId === 'verify_state') {
-          const selector = String(input.args.selector);
-          const visible = selector !== 'input[type=file]' && selector !== 'xhs-publish-btn';
-          return { url: currentUrl, checks: [
-            { criterion: 'selector_exists', observed: true },
-            { criterion: 'selector_visible', observed: visible },
-          ] };
-        }
-        if (input.actionId === 'wait_for_selector') return { url: currentUrl, selector: input.args.selector, state: input.args.state };
-        if (input.actionId === 'dispatch_event') {
-          currentUrl = 'https://creator.xiaohongshu.com/publish/success?source=official';
-          return { url: currentUrl };
-        }
-        if (input.actionId === 'get_text') {
-          textRead += 1;
-          if (textRead === 1) return { url: currentUrl, text: '发布笔记' };
-          return { url: currentUrl, text: `懒洋洋睡前故事\n${baseArgs.title}` };
-        }
-        return { url: currentUrl };
-      },
-    });
-
+  test('generated image request remains a pure generation handoff until image paths exist', async () => {
     const result = await executeXiaohongshuPluginAction({
-      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-publish-success',
-      args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png', 'detail.png'] },
-      origin: { surface: 'local-ui', actor: 'test' },
-    });
-
-    expect(result.status).toBe('published');
-    expect(result.creatorVerification).toEqual({ url: 'https://creator.xiaohongshu.com/new/note-manager', titleFound: true });
-    expect(calls.find((call) => call.actionId === 'navigate' && call.args.url.includes('/new/note-manager'))).toBeTruthy();
-    expect(calls.find((call) => call.actionId === 'attach_local_file')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
-    expect(calls.find((call) => call.actionId === 'dispatch_event')?.args).toMatchObject({ selector: 'xhs-publish-btn', event: 'publish' });
-    expect(calls.at(-1)?.actionId).toBe('get_text');
-    expect((result.receipts as Array<Record<string, any>>).every((receipt) => typeof receipt.durationMs === 'number' && receipt.durationMs > 0)).toBe(true);
-  });
-
-  test('publish_note stops at auth-required and generated-image handoff without publishing', async () => {
-    const authCalls: string[] = [];
-    setXiaohongshuPluginHooksForTest({
-      executeBrowserAction: async (input) => {
-        authCalls.push(input.actionId);
-        if (input.actionId === 'navigate') return { url: 'https://creator.xiaohongshu.com/login?redirectReason=401' };
-        return {};
-      },
-    });
-    const auth = await executeXiaohongshuPluginAction({
-      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-auth',
-      args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] }, origin: { surface: 'local-ui', actor: 'test' },
-    });
-    expect(auth.status).toBe('auth_required');
-    expect(auth.checkpoint).toBe('preflight.live_contract');
-    expect(authCalls).toEqual(['navigate']);
-
-    authCalls.length = 0;
-    const generation = await executeXiaohongshuPluginAction({
       controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-generation',
       args: { ...baseArgs, mode: 'generated_image_note' }, origin: { surface: 'local-ui', actor: 'test' },
     });
-    expect(generation.status).toBe('generation_required');
-    expect(authCalls).toEqual([]);
+    expect(result.status).toBe('generation_required');
+    expect(result.generationHandoff).toMatchObject({ requiredInput: 'image_paths', minImages: 1, maxImages: 18 });
+  });
+
+  test('recipe projection exposes exact immutable asset identity instead of copied platform steps', () => {
+    const recipe = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'long_text' });
+    const asset = materializedXiaohongshuWorkflow(XIAOHONGSHU_WORKFLOW_IDS.longText);
+    expect(recipe).toMatchObject({ workflowId: asset.workflowId, workflowVersion: asset.version, workflowContentDigest: asset.contentDigest });
+    expect(recipe).not.toHaveProperty('steps');
+    expect(recipe).not.toHaveProperty('selectors');
   });
 });

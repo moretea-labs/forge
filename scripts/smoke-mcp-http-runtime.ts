@@ -148,6 +148,11 @@ try {
     throw new Error(`GATEWAY_START_FAILED: ${error instanceof Error ? error.message : String(error)} ${stderr}`);
   }
   if (health.status !== 200 || health.body.status !== 'ok') throw new Error(`HEALTH_FAILED: ${JSON.stringify(health)} ${stderr}`);
+  const initialTransportEvidence = health.body.transportEvidence as Record<string, unknown> | undefined;
+  if (initialTransportEvidence?.current !== 'healthy') throw new Error(`TRANSPORT_CURRENT_HEALTH_MISSING: ${JSON.stringify(initialTransportEvidence)}`);
+  if (!['stable', 'recovering', 'recovered'].includes(String(initialTransportEvidence?.recentStatus))) {
+    throw new Error(`TRANSPORT_RECENT_STATUS_INVALID: ${JSON.stringify(initialTransportEvidence)}`);
+  }
   const expectedPolicy = runtimePolicy(repoRoot, {
     repo: repoRoot,
     controllerHome,

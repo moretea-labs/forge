@@ -2,12 +2,8 @@
 import { createHash } from 'crypto';
 import { rmSync } from 'fs';
 import { resolve } from 'path';
-import {
-  controllerCheckExecutionIdentity,
-  runControllerCheckAsync,
-  snapshotControllerCheck,
-} from '../../../cli/controller/check-runner';
-import { writePersistedCheckResultReceipt } from './check-result';
+import type { ControllerCheckSnapshot } from '../../../cli/controller/check-runner';
+import { materializeManagedWorkspaceDependencies } from '../managed-workspace';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from './canary';
 
 interface ParsedArgs {
@@ -17,6 +13,7 @@ interface ParsedArgs {
   checkId: string;
   timeoutMs?: number;
   expectedCheckFingerprint: string;
+  checkSnapshot?: ControllerCheckSnapshot;
   resultReceiptPath?: string;
   cleanupRoot?: string;
   isolatedControllerHome?: string;
@@ -29,6 +26,19 @@ function requiredValue(argv: string[], flag: string): string {
   const value = index >= 0 ? argv[index + 1]?.trim() : undefined;
   if (!value) throw new Error(`PERSISTED_CHECK_USAGE: missing ${flag}`);
   return value;
+}
+
+function decodeCheckSnapshot(value: string): ControllerCheckSnapshot {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('PERSISTED_CHECK_USAGE: invalid --check-snapshot');
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    throw new Error('PERSISTED_CHECK_USAGE: invalid --check-snapshot');
+  }
+  return decoded as ControllerCheckSnapshot;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -44,6 +54,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     checkId: requiredValue(argv, '--check-id'),
     timeoutMs,
     expectedCheckFingerprint: requiredValue(argv, '--expected-check-fingerprint'),
+    checkSnapshot: argv.includes('--check-snapshot') ? decodeCheckSnapshot(requiredValue(argv, '--check-snapshot')) : undefined,
     resultReceiptPath: argv.includes('--result-receipt') ? requiredValue(argv, '--result-receipt') : undefined,
     cleanupRoot: argv.includes('--cleanup-root') ? requiredValue(argv, '--cleanup-root') : undefined,
     isolatedControllerHome: argv.includes('--isolated-controller-home') ? requiredValue(argv, '--isolated-controller-home') : undefined,
@@ -60,7 +71,25 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
   const args = parseArgs(argv);
   const root = resolve(args.repo);
   try {
-    const snapshot = snapshotControllerCheck(root, args.checkId);
+    // A Work verification snapshot is disposable execution state. When exact
+    // canonical dependency reuse was unavailable during snapshot construction,
+    // establish the candidate's frozen dependency closure inside this Check
+    // Process before loading the candidate Check Runner module graph.
+    if (args.cleanupRoot && (!args.checkSnapshot || args.checkSnapshot.source === 'package-script')) {
+      materializeManagedWorkspaceDependencies(root);
+    }
+
+    const [
+      { controllerCheckExecutionIdentity, runControllerCheckAsync, snapshotControllerCheck },
+      { writePersistedCheckResultReceipt },
+    ] = await Promise.all([
+      import('../../../cli/controller/check-runner'),
+      import('./check-result'),
+    ]);
+
+    // New callers carry the exact definition resolved from canonical repository
+    // authority. The fallback keeps older package releases compatible.
+    const snapshot = args.checkSnapshot ?? snapshotControllerCheck(root, args.checkId);
     const actualFingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     if (actualFingerprint !== args.expectedCheckFingerprint) {
       throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
@@ -85,6 +114,7 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
         status: result.status,
         timedOut: result.timedOut,
         failureClass: result.failureClass,
+        failureEvidence: result.failureEvidence,
         validatedRevision: result.validatedRevision,
         executedAt: result.executedAt,
         originalExecutedAt: result.originalExecutedAt,
