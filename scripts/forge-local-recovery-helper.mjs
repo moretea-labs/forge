@@ -132,6 +132,10 @@ export async function callRecoveryTool(controllerHome, toolName, args = {}, inje
     if (called.payload?.error) throw providerError('LOCAL_RECOVERY_TOOL_FAILED', String(called.payload.error?.message ?? 'Recovery tool failed.'), false);
     const content = called.payload?.result?.content;
     const text = Array.isArray(content) ? content.find((entry) => entry?.type === 'text' && typeof entry.text === 'string')?.text : undefined;
+    if (called.payload?.result?.isError === true) {
+      const message = typeof text === 'string' && text.trim() ? text.trim().slice(0, 4000) : 'Recovery tool failed.';
+      throw providerError('LOCAL_RECOVERY_TOOL_FAILED', message, false);
+    }
     if (text) return parseJson(text, 'LOCAL_RECOVERY_TOOL_RESULT_INVALID');
     return called.payload?.result ?? {};
   } finally {

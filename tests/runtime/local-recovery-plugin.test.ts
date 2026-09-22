@@ -133,6 +133,28 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
 });
 
 
+test('Local Recovery MCP client preserves Recovery tool errors instead of parsing them as success JSON', async () => {
+  // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
+  const { callRecoveryTool } = await import('../../scripts/forge-local-recovery-helper.mjs');
+  const headers = (extra: Record<string, string> = {}) => new Headers(extra);
+  const responses = [
+    new Response('data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream', 'mcp-session-id': 'session-local-recovery-error' }) }),
+    new Response('', { status: 202 }),
+    new Response('data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED\"}]}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+    new Response('', { status: 204 }),
+  ];
+  const fakeFetch = async () => {
+    const next = responses.shift();
+    if (!next) throw new Error('unexpected fetch');
+    return next;
+  };
+  await expect(callRecoveryTool('/tmp/controller', 'stage_and_activate_runtime_release', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
+    loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' } }),
+    gatewayToken: () => 'x'.repeat(32),
+    fetch: fakeFetch,
+  })).rejects.toThrow('RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED');
+});
+
 test('ReleaseSession actions expose only the exact session id and provider-owned mutation identity', async () => {
   const calls: Array<{ controllerHome: string; name: string; args: Record<string, unknown> }> = [];
   const callRecoveryTool = async (controllerHome: string, name: string, args: Record<string, unknown>) => {
