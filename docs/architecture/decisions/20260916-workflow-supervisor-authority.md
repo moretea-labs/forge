@@ -128,17 +128,16 @@ The exact `<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>` marker is required before the
 
 Every newly rendered Supervisor enrollment or continuation message also carries a machine-readable marker containing its daemon-minted `submission_effect_id` and instructs the assistant to echo exact `conversation_id`, stable `task_id`, `supervisor_state`, and `active_scope` together with `source_effect_id`. `supervisor_state` is redundant by design (`CONTINUE -> running`, `DONE -> done`, `NEEDS_USER -> needs_user`) so each response is independently classifiable. `active_scope` identifies the current durable lower-layer relay authority, normally `requirement:<id>` or `goal:<id>`; it never replaces that authority. The assistant may only echo these immutable/observed identities; it does not mint, rewrite or interpret them as executable prompt authority. A completion is commit-eligible only when `source_effect_id` matches the exact applied outbound effect for the exact task and conversation and the echoed identities match the registered task/scope. Already-reserved pre-upgrade effects remain parse-compatible so a Runtime upgrade does not strand an unknown remote effect.
 
-The Supervisor never executes arbitrary model-provided `next_prompt`. Enrollment, normal continuation, recovery correction and stagnation correction use Supervisor-owned fixed templates. The normal continuation semantics are:
+The Supervisor never executes arbitrary model-provided `next_prompt`. Enrollment, normal continuation, recovery correction and stagnation correction use Supervisor-owned fixed templates. The normal same-conversation continuation is intentionally context-light. It does not repeat the original objective, checkpoint payload, Requirement/Plan/AGENTS text, or lower-layer authority context already present in the conversation. Its semantic instruction is bounded to one coherent safe work wave:
 
 ```text
-Continue the current original task.
-Continue directly from the previous checkpoint without repeating completed work.
-Preserve the original Goal, Requirement, Plan, applicable AGENTS, architecture invariants and verification requirements.
-If the previous round failed, re-check root cause and invariants before changing strategy; do not patch only the failing assertion.
-End this turn with the FORGE_WORKFLOW_SUPERVISOR_V1 control block.
+Continue using the context already present in this same conversation.
+Complete one coherent safe work wave and persist/checkpoint durable progress.
+Use CONTINUE while autonomous work remains; use DONE only after the completion contract is satisfied; use NEEDS_USER only for a genuine user-only blocker.
+Echo the immutable effect/task/conversation/scope identities and end with the FORGE_WORKFLOW_SUPERVISOR_V1 control block.
 ```
 
-Implementations may localize the wording, but not delegate prompt-chain control back to the assistant.
+Enrollment, recovery and correction prompts may include bounded original-objective, checkpoint, validation-result or lower-layer recovery context because those turns are specifically reconstructing durable state. Implementations may localize the wording, but not delegate prompt-chain control back to the assistant.
 
 ## DONE and NEEDS_USER validation
 

@@ -37,6 +37,39 @@ function fixture() {
 }
 
 describe('Workflow Supervisor canonical lifecycle projection', () => {
+  test('keeps normal same-conversation continuation minimal while recovery retains bounded restore context', () => {
+    const task = {
+      taskId: 'task-minimal-continuation',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'A deliberately distinctive original objective that must not be repeated during normal continuation.',
+      completionContract: { requirement_id: 'REQ-minimal-continuation' },
+      continuationPolicy: {},
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const lowerLayerContext = 'controller_authority_id=opaque-previous-turn-token';
+    const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
+    expect(continuation).toContain('Continue using the context already present in this same conversation.');
+    expect(continuation).toContain('Complete one coherent safe work wave');
+    expect(continuation).toContain('source_effect_id="fx_minimal01"');
+    expect(continuation).toContain('conversation_id="11111111-2222-3333-4444-555555555555"');
+    expect(continuation).toContain('task_id="task-minimal-continuation"');
+    expect(continuation).toContain('active_scope="requirement:REQ-minimal-continuation"');
+    expect(continuation).not.toContain('Original objective:');
+    expect(continuation).not.toContain(task.objective);
+    expect(continuation).not.toContain('large checkpoint payload');
+    expect(continuation).not.toContain('Forge lower-layer continuation contract');
+    expect(continuation).not.toContain(lowerLayerContext);
+    expect(continuation).not.toContain('Preserve the original Requirement, Plan');
+
+    const recovery = renderSupervisorPrompt(task, 'fx_recover01', 'recovery', 'restore checkpoint', 'recover durable state', lowerLayerContext);
+    expect(recovery).toContain(`Original objective: ${JSON.stringify(task.objective)}`);
+    expect(recovery).toContain('restore checkpoint');
+    expect(recovery).toContain('recover durable state');
+    expect(recovery).toContain(lowerLayerContext);
+  });
+
   test('pins the exact assistant action enum so lower-layer wait is not emitted as an invalid outer action', () => {
     const prompt = renderSupervisorPrompt({
       taskId: 'task-supervisor-action-contract',
@@ -61,6 +94,35 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       checkpoint: 'protocol-ready', reason: 'continue', evidence: ['identity-bound'],
     })}\n${SUPERVISOR_BLOCK_END}`);
     expect(parsed.proposal).toMatchObject({ conversationId: 'abababab-cdcd-efef-1212-343434343434', taskId: 'task-supervisor-action-contract', supervisorState: 'running', activeScope: 'requirement:REQ-protocol' });
+  });
+
+  test('keeps normal continuation minimal while recovery retains bounded restoration context', () => {
+    const task = {
+      taskId: 'task-minimal-continuation',
+      conversationId: '12121212-3434-5656-7878-909090909090',
+      conversationUrl: 'https://chatgpt.com/c/12121212-3434-5656-7878-909090909090',
+      objective: 'OBJECTIVE_SENTINEL that must not repeat on normal continuation.',
+      completionContract: { requirement_id: 'REQ-minimal-prompt' },
+      continuationPolicy: {},
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
+    expect(continuation).toContain('Complete one coherent safe work wave');
+    expect(continuation).not.toContain('checkpoint-sentinel');
+    expect(continuation).toContain('source_effect_id="fx_continue_1234"');
+    expect(continuation).toContain('active_scope="requirement:REQ-minimal-prompt"');
+    expect(continuation).not.toContain('Original objective:');
+    expect(continuation).not.toContain('OBJECTIVE_SENTINEL');
+    expect(continuation).not.toContain('LOWER_LAYER_SENTINEL');
+    expect(continuation).not.toContain('Preserve the original Requirement');
+
+    const recovery = renderSupervisorPrompt(task, 'fx_recovery_1234', 'recovery', 'checkpoint-sentinel', 'recover causally', 'LOWER_LAYER_SENTINEL');
+    expect(recovery).toContain('Original objective:');
+    expect(recovery).toContain('OBJECTIVE_SENTINEL');
+    expect(recovery).toContain('checkpoint-sentinel');
+    expect(recovery).toContain('LOWER_LAYER_SENTINEL');
+    expect(recovery).toContain('Preserve the original Requirement');
   });
 
   test('inherits a Supervisor conversation only across explicit predecessor lineage, never across Requirement siblings', () => {

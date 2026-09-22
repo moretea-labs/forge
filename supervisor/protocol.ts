@@ -82,6 +82,9 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
   const lowerLayerLine = lowerLayerContext?.trim()
     ? `Forge lower-layer continuation contract (machine-generated):\n${lowerLayerContext.trim().slice(0, 16_000)}`
     : '';
+  const continuationLine = kind === 'continuation'
+    ? 'Continue using the context already present in this same conversation. Complete one coherent safe work wave, persist/checkpoint durable progress, then use CONTINUE unless the completion contract is satisfied or a genuine user decision is required.'
+    : '';
   const actionContractLine = 'The action field is an exact enum: "CONTINUE", "DONE", or "NEEDS_USER". "WAIT", "RETRY", and every other value are invalid. Use CONTINUE for any non-terminal state that still has autonomous work or an internal wait/retry path; use NEEDS_USER only when the configured user-blocker policy requires a genuine user decision; use DONE only when the completion contract is satisfied.';
   const explicitScope = typeof task.completionContract.requirement_id === 'string' && task.completionContract.requirement_id.trim()
     ? `requirement:${task.completionContract.requirement_id.trim()}`
@@ -93,8 +96,11 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
   const scopeContractLine = explicitScope
     ? `The block must echo active_scope=${JSON.stringify(explicitScope)}.`
     : 'The block must include active_scope using the exact durable Forge relay scope recovered in this turn, for example requirement:<id> or goal:<id>. Never guess a scope.';
-  return [marker, mode, `Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
-    'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.',
+  return [marker, mode,
+    ...(kind === 'continuation'
+      ? [continuationLine]
+      : [`Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
+        'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.']),
     actionContractLine,
     stateContractLine,
     visibleStatusContractLine,
