@@ -396,7 +396,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       };
       try {
         const page = await this.deps.reattach(ref);
-        if (await this.deps.readOwner(page) === marker) matches.push({ page, ref });
+        const owner = await this.deps.readOwner(page);
+        if (owner === marker) {
+          matches.push({ page, ref });
+        } else if (!owner?.trim()) {
+          // A user can close and reopen the exact durable conversation. Its
+          // browser attachment is ephemeral, so an unowned exact tab may be
+          // adopted for this task and marked locally; never substitute a
+          // different conversation or steal another Supervisor-owned tab.
+          await this.deps.writeOwner(page, marker);
+          if (await this.deps.readOwner(page) === marker) matches.push({ page, ref });
+        }
       } catch { exactCandidateInspectionFailed = true; }
     }
     if (matches.length > 0) {
