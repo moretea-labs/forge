@@ -50,3 +50,9 @@ jobs:
         run: bun test tests/cli/install.test.ts tests/runtime/process-environment.test.ts tests/windows-paths.test.ts
       - name: Node portable smoke
         run: bun run test:node-smoke
+      - name: Validate Recovery sessionless cutover patch
+        shell: bash
+        run: |
+          bun test tests/runtime/standalone-recovery.test.ts --test-name-pattern "Recovery modern sessionless requests survive gateway replacement without reinitialize|Recovery MCP reinitializes a stale session after gateway restart"
+          bun run check:mcp-compatibility
+          bun run check:type
