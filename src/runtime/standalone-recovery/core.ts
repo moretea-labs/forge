@@ -5166,6 +5166,62 @@ export async function rollbackConfiguredRuntimeReleaseSession(
       };
     }
 
+    const candidateRelease = session.candidateRelease;
+    const transactionBeforeRollback = session.transaction;
+    const authorityBeforeRollback = readRuntimeReleaseAuthority(config.controllerHome);
+    const rollbackAlreadyCommitted = Boolean(
+      candidateRelease
+      && transactionBeforeRollback
+      && authorityBeforeRollback?.operationId?.startsWith(`release-session-rollback:${session.sessionId}:`)
+      && authorityBeforeRollback.active.releaseId === session.stableRelease.releaseId
+      && authorityBeforeRollback.active.artifactIdentity === session.stableRelease.artifactIdentity
+      && authorityBeforeRollback.active.manifestSha256 === session.stableRelease.manifestSha256
+      && authorityBeforeRollback.previous?.releaseId === candidateRelease.releaseId
+      && authorityBeforeRollback.previous?.artifactIdentity === candidateRelease.artifactIdentity
+      && transactionBeforeRollback.candidateReleaseId === candidateRelease.releaseId
+      && transactionBeforeRollback.rollbackRelease.releaseId === session.stableRelease.releaseId
+      && transactionBeforeRollback.rollbackRelease.artifactIdentity === session.stableRelease.artifactIdentity
+    );
+    if (rollbackAlreadyCommitted) {
+      const live = observeRuntimeStatus(config.controllerHome);
+      const stableIsLive = live.running && live.ready && !live.stale
+        && live.snapshot?.releaseId === session.stableRelease.releaseId
+        && live.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity;
+      if (!stableIsLive) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_ROLLBACK_COMMITTED_RUNTIME_NOT_YET_OBSERVED',
+          releaseSession: session,
+        };
+      }
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'rolled_back',
+        receipts: [{
+          id: 'rollback',
+          kind: 'rollback',
+          summary: `reconciled already-committed rollback ${authorityBeforeRollback!.operationId}; exact Stable A ${session.stableRelease.releaseId} is live and no rollback effect was replayed`,
+        }],
+      });
+      audit(config, 'release_session_rollback_reconciled_committed', {
+        sessionId,
+        rollbackOperationId: authorityBeforeRollback!.operationId,
+        restoredStableReleaseId: session.stableRelease.releaseId,
+        candidateReleaseId: candidateRelease!.releaseId,
+      });
+      return {
+        ok: true as const,
+        attempted: false,
+        noOp: true,
+        detail: 'ReleaseSession reconciled the already-committed Stable A rollback from durable authority without replaying the rollback effect',
+        releaseSession: session,
+      };
+    }
+
     let transaction: NonNullable<ReleaseSession['transaction']>;
     try {
       transaction = releaseSessionRollbackTransaction(config, session);

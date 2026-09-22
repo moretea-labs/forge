@@ -121,7 +121,11 @@ fresh Stable A verification leaves the same ReleaseSession `cutover_eligible` so
 the exact candidate can be retried after observation recovers; proven Stable A
 identity drift is a real precondition failure. `cutover_attempting` permits
 exactly one fenced production cutover; verified return to exact A terminalizes
-`rolled_back` and is never retried.
+`rolled_back` and is never retried. If observation is interrupted after the
+rollback authority commit but before the ReleaseSession phase write,
+reconciliation requires the exact `release-session-rollback:<sessionId>:`
+authority operation plus matching Stable A, candidate and transaction identities;
+it then records `rolled_back` without replaying the rollback effect.
 Automatic source reconciliation is also revision-bounded: once an immutable
 source revision has any terminal ReleaseSession, the daemon will not create a
 second automatic ReleaseSession for that same revision. Explicit human release
