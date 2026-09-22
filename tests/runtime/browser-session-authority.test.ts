@@ -1012,6 +1012,13 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(manifest.actions.find((action) => action.actionId === 'open_page')?.foregroundEffect).toBe('possible');
     expect(manifest.actions.find((action) => action.actionId === 'activate_page')?.foregroundEffect).toBe('required');
     expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.foregroundEffect).toBe('required');
+    for (const action of manifest.actions) {
+      expect(action.resourceClaims.some((claim) => claim.resource === 'repo-state')).toBe(false);
+    }
+    expect(manifest.actions.find((action) => action.actionId === 'open_page')?.resourceClaims).toEqual([
+      { resource: 'remote', mode: 'read' },
+      { resource: 'provider-state', mode: 'write' },
+    ]);
   });
 
   test('legacy ChatGPT profile state cannot become general Browser authority, while schema-v2 explicit Browser config remains authoritative', () => {

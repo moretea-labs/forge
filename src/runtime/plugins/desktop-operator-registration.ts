@@ -9,7 +9,7 @@ import {
 import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
-const CONTROLLER_WRITE = [{ resource: 'repo-state' as const, mode: 'write' as const }];
+const CONTROLLER_WRITE = [{ resource: 'provider-state' as const, mode: 'write' as const }];
 const SELECTOR_SCHEMA = {
   type: 'object',
   properties: {

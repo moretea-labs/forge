@@ -7,6 +7,7 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError } from './errors';
+import { importStoredGoogleClientSecretFromClipboard } from '../safe-tooling/google-credential-store';
 import {
   type GmailPluginConfig,
   encodeBase64Url,
@@ -124,6 +125,24 @@ function gmailActions(): AssistantPluginActionDescriptor[] {
           clear_default_query: { type: 'boolean' },
           default_timeout_ms: { type: 'number' },
         },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'import_oauth_client_secret_from_clipboard',
+      title: 'Import Gmail OAuth client secret',
+      description: 'Consume the current macOS clipboard once, store the OAuth client secret in Keychain, clear the clipboard, and never return credential material.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 10_000,
+      cancellable: false,
+      idempotent: false,
+      scopes: ['gmail.readonly'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {},
         additionalProperties: false,
       },
     },
@@ -668,7 +687,7 @@ function gmailProvider(config: GmailPluginConfig, repoRoot?: string): GmailProvi
 export function buildGmailPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
   const root = repoRoot ?? process.cwd();
   const config = loadGmailPluginConfig(root, context);
-  const auth = resolveGoogleAuth('gmail', config, { repoRoot: root });
+  const auth = resolveGoogleAuth('gmail', config, { repoRoot: root, controllerHome: context?.controllerHome });
   const state = pluginStateFromGoogleAuth(config, auth);
   return {
     schemaVersion: 1,
@@ -714,9 +733,11 @@ export async function executeGmailPluginAction(input: AssistantPluginActionExecu
       });
       return {
         config,
-        auth: resolveGoogleAuth('gmail', config, { repoRoot: input.repoRoot }),
+        auth: resolveGoogleAuth('gmail', config, { repoRoot: input.repoRoot, controllerHome: input.controllerHome }),
       };
     }
+    case 'import_oauth_client_secret_from_clipboard':
+      return importStoredGoogleClientSecretFromClipboard('gmail');
     case 'list_messages':
       return gmailProvider(current, input.repoRoot).listMessages(input.args, current);
     case 'get_message':

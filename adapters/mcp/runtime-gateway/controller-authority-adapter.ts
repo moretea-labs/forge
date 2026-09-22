@@ -54,7 +54,7 @@ export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): Run
 export function authenticatedFacadeControllerIdentity(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
-  _options: { allowTransportSessionRollover?: boolean } = {},
+  options: { allowTransportSessionRollover?: boolean } = {},
 ): { controllerId: string; principalId: string; sessionId: string; transportSessionId?: string; controllerAuthorityId?: string; authorityViaSessionCompatibility?: boolean; controllerInstanceId: string; controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human' } {
   const principalId = ctx.principalId?.trim();
   const transportSessionId = ctx.sessionId?.trim();
@@ -76,8 +76,16 @@ export function authenticatedFacadeControllerIdentity(
   // the caller does not provide an explicit compatibility carrier. Durable Work
   // authority is never derived from this request binding.
   const sessionId = transportSessionId || requestedSessionId || `mcp_request_${randomUUID().replace(/-/g, '')}`;
+  const transportRolloverRequested = Boolean(
+    transportSessionId
+    && requestedSessionId
+    && requestedSessionId !== transportSessionId,
+  );
+  if (transportRolloverRequested && options.allowTransportSessionRollover !== true) {
+    throw new Error('CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED: this operation must use the current authenticated transport session or an explicit controller_authority_id');
+  }
   const compatibilityAuthorityId = (!transportSessionId && requestedSessionId ? requestedSessionId : '')
-    || (transportSessionId && requestedSessionId !== transportSessionId ? requestedSessionId : '');
+    || (transportRolloverRequested ? requestedSessionId : '');
   const controllerAuthorityId = requestedAuthorityId || compatibilityAuthorityId;
   const authorityViaSessionCompatibility = !requestedAuthorityId && Boolean(compatibilityAuthorityId);
   if (requestedControllerId && requestedControllerId !== principalId) {

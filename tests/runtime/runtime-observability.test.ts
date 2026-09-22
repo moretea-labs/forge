@@ -21,6 +21,7 @@ import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger'
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -190,6 +191,38 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
+
+  test('transport-session rollover is an explicit recovery capability rather than implicit authority', () => {
+    const ctx = {
+      principalId: 'principal-a',
+      sessionId: 'mcp-new-transport',
+      controllerInstanceId: 'runtime-a',
+      controllerType: 'chatgpt' as const,
+    } as any;
+
+    expect(() => authenticatedFacadeControllerIdentity(ctx, {
+      session_id: 'mcp-old-transport',
+    })).toThrow('CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED');
+
+    const recovered = authenticatedFacadeControllerIdentity(ctx, {
+      session_id: 'mcp-old-transport',
+    }, { allowTransportSessionRollover: true });
+    expect(recovered).toMatchObject({
+      principalId: 'principal-a',
+      sessionId: 'mcp-new-transport',
+      transportSessionId: 'mcp-new-transport',
+      controllerAuthorityId: 'mcp-old-transport',
+      authorityViaSessionCompatibility: true,
+    });
+
+    const explicitCapability = authenticatedFacadeControllerIdentity(ctx, {
+      controller_authority_id: 'ctrl-durable-authority',
+    });
+    expect(explicitCapability).toMatchObject({
+      sessionId: 'mcp-new-transport',
+      controllerAuthorityId: 'ctrl-durable-authority',
+    });
+  });
   test('requires exact durable Work authority when modern MCP has no transport session', () => {
     const authorityId = 'ctrl_exact_sessionless_authority';
     const owner = {

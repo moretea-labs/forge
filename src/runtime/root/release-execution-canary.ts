@@ -24,8 +24,10 @@ export interface RuntimeReleaseExecutionCanaryDependencies {
 
 /**
  * Release execution canaries deliberately do not inherit developer-tool PATH
- * entries. A manifest-owned executable that only works because Homebrew, Bun,
- * nvm, etc. happens to be present is not an immutable Runtime artifact.
+ * entries. Standalone-binary artifacts must execute without Homebrew, Bun, nvm,
+ * or similar PATH dependencies. Legacy script releases predate the embedded
+ * Runtime interpreter and are probed through the same explicitly resolved Bun
+ * executable that their Process Runtime uses in production.
  */
 export function runtimeReleaseCanaryEnvironment(
   env: NodeJS.ProcessEnv = process.env,
@@ -66,15 +68,23 @@ export function assertRuntimeReleaseExecutionCanaries(
   const assertCanary = (canary: RuntimeReleaseExecutionCanaryCommand): void => {
     const result = runExecutionEntryCanary(canary);
     if (!result.ok) {
-      throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${result.stderr || result.stdout || result.error || 'unknown failure'}`.slice(0, 2_000));
+      const detail = result.stderr || result.stdout || result.error || 'unknown failure';
+      const legacyCheckRunnerUsageProbe = surface.manifest.executionMode !== 'standalone-binary'
+        && canary.name === 'check_runner'
+        && detail.trim() === 'PERSISTED_CHECK_USAGE: missing --repo';
+      if (legacyCheckRunnerUsageProbe) return;
+      throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${detail}`.slice(0, 2_000));
     }
   };
 
   for (const entry of surface.entries) {
+    const args = entry.canary === 'runtime_interpreter' ? ['--version'] : [PROCESS_RUNTIME_RELEASE_CANARY_ARG];
+    const legacyScript = surface.manifest.executionMode !== 'standalone-binary'
+      && /\.(?:[cm]?js|tsx?)$/i.test(entry.path);
     assertCanary({
       name: entry.name,
-      executable: entry.path,
-      args: entry.canary === 'runtime_interpreter' ? ['--version'] : [PROCESS_RUNTIME_RELEASE_CANARY_ARG],
+      executable: legacyScript ? resolveBunExecutable(process.execPath, process.env) : entry.path,
+      args: legacyScript ? [entry.path, ...args] : args,
     });
   }
 

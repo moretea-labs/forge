@@ -786,19 +786,27 @@ describe('protected Computer stable plugin transport', () => {
       const manifest = computerPluginAdapter.buildManifest(0, undefined, root);
       const prepare = manifest.actions.find((action) => action.actionId === 'console_unlock_prepare');
       const unlock = manifest.actions.find((action) => action.actionId === 'console_unlock');
+      const status = manifest.actions.find((action) => action.actionId === 'console_unlock_status');
+      const recover = manifest.actions.find((action) => action.actionId === 'console_unlock_recover');
       expect(prepare).toBeDefined();
       expect(unlock).toBeDefined();
-      if (!prepare || !unlock) throw new Error('protected console actions must be present');
+      expect(status).toBeDefined();
+      expect(recover).toBeDefined();
+      if (!prepare || !unlock || !status || !recover) throw new Error('protected console actions must be present');
 
-      for (const action of [prepare, unlock]) {
+      for (const action of [prepare, unlock, status, recover]) {
         expect(isDirectNonPersistentPluginAction(action)).toBe(true);
         expect(action.executionMode).toBe('direct_non_persistent');
-        expect(action.readOnly).toBe(false);
-        expect(action.risk).toBe('workspace_write');
-        expect(action.confirmation).toBe('authorization');
-        expect(action.idempotent).toBe(false);
         expect(action.resourceClaims).toEqual([]);
       }
+      expect(prepare).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
+      expect(unlock).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
+      expect(status).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true });
+      expect(recover).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'none', idempotent: false });
+
+      expect(isDirectNonPersistentPluginAction({ ...status, confirmation: 'authorization' })).toBe(false);
+      expect(isDirectNonPersistentPluginAction({ ...recover, risk: 'remote_write' })).toBe(false);
+      expect(isDirectNonPersistentPluginAction({ ...recover, risk: 'destructive', confirmation: 'strong_confirmation' })).toBe(false);
 
       expect(prepare.argumentsSchema).toMatchObject({
         type: 'object',

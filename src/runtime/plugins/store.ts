@@ -831,13 +831,26 @@ export function isDirectPluginReadAction(action: AssistantPluginActionDescriptor
 }
 
 export function isDirectNonPersistentPluginAction(action: AssistantPluginActionDescriptor): boolean {
-  return action.executionMode === 'direct_non_persistent'
-    && action.readOnly === false
-    && action.risk === 'workspace_write'
-    && action.confirmation === 'authorization'
-    && action.idempotent === false
-    && action.remoteEffectWorkCompletion === undefined
-    && action.resourceClaims.length === 0;
+  if (
+    action.executionMode !== 'direct_non_persistent'
+    || action.remoteEffectWorkCompletion !== undefined
+    || action.resourceClaims.length !== 0
+  ) {
+    return false;
+  }
+
+  // Direct non-persistent actions are provider-local operations that must never
+  // enter the durable effect/receipt path. They are intentionally limited to
+  // either a pure provider read or a provider-local workspace effect. Remote
+  // writes/destructive effects still require the normal durable application
+  // path and its reconciliation authority.
+  if (action.readOnly) {
+    return action.risk === 'readonly'
+      && action.confirmation === 'none'
+      && action.idempotent === true;
+  }
+  return action.risk === 'workspace_write'
+    && (action.confirmation === 'authorization' || action.confirmation === 'none');
 }
 
 export async function executeAssistantPluginDirectNonPersistent(
@@ -865,7 +878,7 @@ export async function executeAssistantPluginDirectNonPersistent(
   if (request.workId || request.workRepoId) {
     throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_WORK_ATTRIBUTION_FORBIDDEN: ${request.pluginId}/${request.actionId}`);
   }
-  if (request.confirmAuthorization !== true) {
+  if (action.confirmation === 'authorization' && request.confirmAuthorization !== true) {
     throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_AUTHORIZATION_REQUIRED: ${request.pluginId}/${request.actionId} requires confirm_authorization=true for this invocation`);
   }
   const normalizedArgs = validateActionArguments(action, request.args ?? {});

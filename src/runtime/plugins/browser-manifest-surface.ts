@@ -126,11 +126,11 @@ function interactSchema(extra: Record<string, unknown>, required: string[]): Rec
 export function browserActions(): AssistantPluginActionDescriptor[] {
   const readRemote = [
     { resource: 'remote' as const, mode: 'read' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
+    { resource: 'provider-state' as const, mode: 'write' as const },
   ];
   const writeRemote = [
     { resource: 'remote' as const, mode: 'exclusive' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
+    { resource: 'provider-state' as const, mode: 'write' as const },
   ];
   const descriptors: AssistantPluginActionDescriptor[] = [
     {
@@ -144,7 +144,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: true,
       scopes: ['browser.profile'],
-      resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -196,7 +196,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Create browser session',
       description: 'Open an HTTP(S) URL or explicitly adopt the matching frontmost native tab, then persist a reusable session id.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }, ...readRemote],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: readRemote,
       argumentsSchema: sessionTargetSchema({
         extract_text: { type: 'boolean' },
         max_chars: { type: 'number' },
@@ -211,7 +211,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'List browser sessions',
       description: 'List saved browser session metadata without secrets or cookies.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -226,7 +226,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Reconcile browser sessions',
       description: 'Prune only saved managed-session metadata whose exact Runtime-bound page is positively proven gone. Never removes profiles, cookies, or unverified native sessions.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -234,7 +234,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Close browser session',
       description: 'Remove one saved session metadata record.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
     },
     {
@@ -242,7 +242,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Clear all browser sessions',
       description: 'Remove all saved session metadata while keeping the profile.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -262,7 +262,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Get browser handoff status',
       description: 'Read durable browser handoff status and reconcile a stale or crashed host.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
       argumentsSchema: { type: 'object', properties: { interaction_id: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
@@ -270,7 +270,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Resolve browser handoff',
       description: 'Resume or cancel a foreground browser handoff.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -638,7 +638,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Close session',
       description: 'Remove saved session metadata while keeping the persistent profile.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
     },
   ];

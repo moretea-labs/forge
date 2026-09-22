@@ -9,6 +9,9 @@ import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../sr
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
+import { createMcpHttpSessionRegistry } from '../../adapters/mcp/transports/http';
+import { recentMcpTransportEvidence } from '../../adapters/mcp/transports/http-observation';
+import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -103,6 +106,91 @@ function isolatedMcpProcessEnv(
 }
 
 describe('mcp http transport', () => {
+  test('transport session retirement does not invalidate durable execution session authority', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-mcp-transport-durable-session-'));
+    try {
+      const controllerHome = join(root, 'controller');
+      const execution = startExecutionSession(controllerHome, {
+        sessionId: 'durable-execution-session',
+        principalId: 'transport-test-principal',
+        controllerInstanceId: 'runtime-before-transport-close',
+      });
+      let transportClosed = 0;
+      const registry = createMcpHttpSessionRegistry<{ close(): void }, { sessionId: string; controllerHome: string }>();
+      registry.register({
+        sessionId: 'mcp-transport-session',
+        transport: { close: () => { transportClosed += 1; } },
+        toolContext: { sessionId: execution.sessionId, controllerHome },
+        route: '/mcp',
+        principalId: 'transport-test-principal',
+        connectionId: 'transport-connection',
+        clientIdentity: 'transport-client',
+      });
+
+      await registry.close('mcp-transport-session', 'transport_close');
+
+      expect(transportClosed).toBe(1);
+      expect(registry.get('mcp-transport-session')).toBeUndefined();
+      expect(readExecutionSession(controllerHome, {
+        sessionId: execution.sessionId,
+        principalId: execution.principalId,
+        controllerInstanceId: 'runtime-after-transport-close',
+      })).toMatchObject({
+        sessionId: execution.sessionId,
+        principalId: execution.principalId,
+        controllerInstanceId: 'runtime-after-transport-close',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+
+  test('health keeps current transport health separate from recent interruption and recovery evidence', () => {
+    const startedAt = '2026-09-22T09:50:00.000Z';
+    const now = Date.parse('2026-09-22T10:10:00.000Z');
+    const interrupted = recentMcpTransportEvidence([{
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:00.000Z',
+      kind: 'interruption',
+      sessionId: 'session-a',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+      reason: 'transport_close',
+    }], startedAt, now);
+    expect(interrupted).toMatchObject({
+      current: 'healthy',
+      recentStatus: 'recovering',
+      gatewayStartedAt: startedAt,
+      lastInterruption: { sessionId: 'session-a' },
+    });
+
+    const recovered = recentMcpTransportEvidence([{
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:05.000Z',
+      kind: 'session_initialized',
+      sessionId: 'session-b',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+    }, {
+      schemaVersion: 1,
+      at: '2026-09-22T10:00:00.000Z',
+      kind: 'interruption',
+      sessionId: 'session-a',
+      connectionId: 'connection-a',
+      route: '/mcp',
+      principalId: 'controller-http-client',
+      reason: 'transport_close',
+    }], startedAt, now);
+    expect(recovered).toMatchObject({
+      current: 'healthy',
+      recentStatus: 'recovered',
+      lastRecoveryAt: '2026-09-22T10:00:05.000Z',
+    });
+  });
+
   test('starts a controller Gateway without selecting or registering its launch directory as a repository', async () => {
     const workingDirectory = mkdtempSync(join(tmpdir(), 'forge-mcp-controller-no-repo-'));
     const port = await freePort();

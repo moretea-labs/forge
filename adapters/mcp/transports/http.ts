@@ -27,15 +27,15 @@ import {
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
 import { resolveMcpRepoRoot } from '../repo';
 import { resolveControllerHome } from '../../../src/cli/repositories/controller-home';
-import { invalidateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
+import { recordMcpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../src/runtime/root/status';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
 } from '../../../src/cli/controller/runtime-config';
-import { McpSessionRegistry, type McpSessionRoute } from './session-registry';
+import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
@@ -326,6 +326,27 @@ const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
 
+
+/**
+ * Public HTTP transport registry. It owns transport admission/leases and
+ * transport-local observability only; closing a transport session must never
+ * invalidate durable execution, Work, or ControllerRound authority.
+ */
+export function createMcpHttpSessionRegistry<
+  TTransport extends ClosableMcpTransport = NodeStreamableHTTPServerTransport,
+  TContext = McpToolContext,
+>(options: McpSessionRegistryOptions<TTransport, TContext> = {}): McpSessionRegistry<TTransport, TContext> {
+  return new McpSessionRegistry<TTransport, TContext>({
+    maximumSessions: MAX_MCP_SESSIONS,
+    maximumSessionsPerPrincipal: MAX_MCP_SESSIONS_PER_PRINCIPAL,
+    idleTtlMs: MCP_SESSION_IDLE_TTL_MS,
+    streamLeaseMs: MCP_STREAM_LEASE_MS,
+    absoluteLifetimeMs: MCP_SESSION_ABSOLUTE_LIFETIME_MS,
+    activePostStallMs: MCP_ACTIVE_POST_STALL_MS,
+    ...options,
+  });
+}
+
 function principalIdFromModernRequestContext(context: McpRequestContext): string {
   const clientId = context.authInfo?.clientId?.trim();
   if (clientId) return `oauth-client:${clientId}`;
@@ -480,6 +501,19 @@ async function handleMcpPost(
       server = createForgeMcpServerFromContext(sessionContext, runtimeSchema, sharedRuntimeProxy);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
+      if (
+        initializedSessionId
+        && 'controllerHome' in sessionContext
+        && typeof sessionContext.controllerHome === 'string'
+      ) {
+        recordMcpTransportEvent(sessionContext.controllerHome, {
+          kind: 'session_initialized',
+          sessionId: initializedSessionId,
+          connectionId: connection.connectionId,
+          route,
+          principalId,
+        });
+      }
     } finally {
       if (initializedSessionId) registry.endPost(initializedSessionId);
       if (reservationId) registry.releaseInitialize(reservationId);
@@ -633,23 +667,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   tokenStore?.load();
   const oauthProvider = tokenStore ? createMcpOAuthProvider(tokenStore) : null;
   const configuredPublicOrigin = getConfiguredPublicOrigin(serviceConfig);
-  const sessionRegistry = new McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>({
-    maximumSessions: MAX_MCP_SESSIONS,
-    maximumSessionsPerPrincipal: MAX_MCP_SESSIONS_PER_PRINCIPAL,
-    idleTtlMs: MCP_SESSION_IDLE_TTL_MS,
-    streamLeaseMs: MCP_STREAM_LEASE_MS,
-    absoluteLifetimeMs: MCP_SESSION_ABSOLUTE_LIFETIME_MS,
-    activePostStallMs: MCP_ACTIVE_POST_STALL_MS,
+  const sessionRegistry = createMcpHttpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>({
     onSessionClosed: (session, reason) => {
-      const context = session.toolContext;
-      if (!('controllerHome' in context) || typeof context.controllerHome !== 'string') return;
-      const executionSessionId = typeof context.sessionId === 'string' ? context.sessionId.trim() : '';
-      if (!executionSessionId) return;
-      invalidateExecutionSession(
-        context.controllerHome,
-        executionSessionId,
-        `mcp_transport_${reason}`,
-      );
+      if (reason !== 'transport_close') return;
+      recordMcpTransportEvent(controllerHome, {
+        kind: 'interruption',
+        sessionId: session.sessionId,
+        connectionId: session.connectionId,
+        route: session.route,
+        principalId: session.principalId,
+        reason,
+      });
     },
   });
   const runtimeStats: McpRuntimeStats = { initializing: 0, activePosts: 0, rejectedOverload: 0 };

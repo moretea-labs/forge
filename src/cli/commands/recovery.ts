@@ -1115,7 +1115,10 @@ export function buildRecoveryCommand(): Command {
         controllerHome: home,
         repoRoot: primaryRuntimeSourceRoot,
         ...(primaryRuntimeSourceRepository ? { primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId } : {}),
-        sourceRoot: packageRoot,
+        // The package root is only the CLI's location. A package installation
+        // is not a Git checkout, while the explicitly registered primary
+        // Runtime source is the immutable Recovery release's provenance.
+        sourceRoot: primaryRuntimeSourceRoot,
         port,
         profile,
         stageOnly: opts.stageOnly === true,

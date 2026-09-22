@@ -8,6 +8,7 @@ import { runtimeIdentitySnapshot } from '../runtime-gateway/runtime-tools';
 import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
+import { readRecentMcpTransportEvents, type McpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { getRepository, listRepositories } from '../../../src/cli/repositories/registry';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
@@ -90,6 +91,43 @@ async function jsonHealth(url: string): Promise<Record<string, unknown> | null> 
   }
 }
 
+
+const RECENT_TRANSPORT_EVIDENCE_WINDOW_MS = 30 * 60_000;
+
+export interface McpRecentTransportEvidence {
+  current: 'healthy';
+  recentStatus: 'stable' | 'recovering' | 'recovered';
+  gatewayStartedAt: string;
+  gatewayPid: number;
+  lastInterruption?: McpTransportEvent;
+  lastRecoveryAt?: string;
+}
+
+export function recentMcpTransportEvidence(
+  events: readonly McpTransportEvent[],
+  startedAt: string,
+  nowMs = Date.now(),
+): McpRecentTransportEvidence {
+  const recent = events.filter((event) => {
+    const at = Date.parse(event.at);
+    return Number.isFinite(at) && at >= nowMs - RECENT_TRANSPORT_EVIDENCE_WINDOW_MS && at <= nowMs + 60_000;
+  });
+  const lastInterruption = recent.find((event) => event.kind === 'interruption');
+  if (!lastInterruption) {
+    return { current: 'healthy', recentStatus: 'stable', gatewayStartedAt: startedAt, gatewayPid: process.pid };
+  }
+  const interruptionAt = Date.parse(lastInterruption.at);
+  const recovery = recent.find((event) => event.kind === 'session_initialized' && Date.parse(event.at) > interruptionAt);
+  return {
+    current: 'healthy',
+    recentStatus: recovery ? 'recovered' : 'recovering',
+    gatewayStartedAt: startedAt,
+    gatewayPid: process.pid,
+    lastInterruption,
+    ...(recovery ? { lastRecoveryAt: recovery.at } : {}),
+  };
+}
+
 export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteOptions): void {
   const {
     app,
@@ -152,6 +190,9 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     if (health?.runtimeToolSurfaceFingerprint) res.setHeader('x-forge-runtime-tool-surface-fingerprint', health.runtimeToolSurfaceFingerprint);
     if (health?.toolSurfaceFingerprint) res.setHeader('x-forge-tool-surface-fingerprint', health.toolSurfaceFingerprint);
     const sessionSnapshot = sessionRegistry.snapshot();
+    const transportEvidence = runtimeControllerHome
+      ? recentMcpTransportEvidence(readRecentMcpTransportEvents(runtimeControllerHome), startedAt)
+      : { current: 'healthy' as const, recentStatus: 'stable' as const, gatewayStartedAt: startedAt, gatewayPid: process.pid };
     res.json({
       status: 'ok',
       server: 'forge-mcp',
@@ -192,6 +233,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
       mcpEndpoint: `${advertisedOrigin}/mcp`,
       grokEndpoint: `${advertisedOrigin}/mcp`,
       bearerEndpoint: `${advertisedOrigin}/mcp-bearer`,
+      transportEvidence,
       sessions: {
         ...sessionSnapshot,
         initializing: runtimeStats.initializing,
