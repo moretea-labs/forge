@@ -26,7 +26,7 @@ import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, Wo
 export type WorkflowSupervisorBoundary =
   | { status: 'not_eligible' }
   | { status: 'conversation_pending'; reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' }
-  | { status: 'outer_turn'; taskId: string; requirementId: string; conversationId: string; conversationUrl: string };
+  | { status: 'outer_turn'; taskId: string; workId?: string; requirementId?: string; conversationId: string; conversationUrl: string };
 
 export type WorkflowSupervisorEnrollmentStatus =
   | 'not_eligible'
@@ -66,13 +66,14 @@ export function workflowSupervisorBoundaryForWork(
   workId: string,
 ): WorkflowSupervisorBoundary {
   const work = getWorkContract(options, workId);
-  if (!work?.requirementId) return { status: 'not_eligible' };
+  if (!work || isTerminalWorkContractStatus(work.status)) return { status: 'not_eligible' };
   const binding = getChatgptWorkConversationBinding(options, workId);
   if (!binding) return { status: 'conversation_pending', reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' };
   return {
     status: 'outer_turn',
     taskId: taskIdForConversation(options.repoId, binding.conversationId),
-    requirementId: work.requirementId,
+    workId: work.workId,
+    ...(work.requirementId ? { requirementId: work.requirementId } : {}),
     conversationId: binding.conversationId,
     conversationUrl: binding.conversationUrl,
   };
@@ -342,7 +343,7 @@ export async function bindCurrentWorkflowSupervisorConversationForWork(
   | { status: 'not_eligible' | 'current_conversation_unbound' | 'daemon_unavailable'; reason?: string }
 > {
   const work = getWorkContract(options, workId);
-  if (!work?.requirementId) return { status: 'not_eligible' };
+  if (!work || isTerminalWorkContractStatus(work.status)) return { status: 'not_eligible' };
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', reason: 'WORKFLOW_SUPERVISOR_DAEMON_UNAVAILABLE' };
   const current = await getWorkflowSupervisorCurrentConversation(forgeHome);
@@ -372,18 +373,19 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', taskId: boundary.taskId };
   const lowerLayer = workflowSupervisorLowerLayerReadyForWork(options, workId);
   if (!lowerLayer.ready) return { status: 'lower_layer_not_ready', reason: lowerLayer.reason };
-  const requirement = readRequirement({ controllerHome: options.controllerHome }, boundary.requirementId)?.value;
-  if (!requirement) return { status: 'not_eligible' };
+  const requirement = boundary.requirementId
+    ? readRequirement({ controllerHome: options.controllerHome }, boundary.requirementId)?.value
+    : undefined;
   const registeredTask = await registerWorkflowSupervisorTask(forgeHome, {
     taskId: boundary.taskId,
     conversationId: boundary.conversationId,
     conversationUrl: boundary.conversationUrl,
-    objective: requirement.outcomeStatement,
+    objective: requirement?.outcomeStatement ?? getWorkContract(options, boundary.workId ?? workId)?.objective ?? (boundary.workId ?? workId),
     completionContract: {
-      kind: 'forge_requirement_done',
+      kind: requirement ? 'forge_requirement_done' : 'forge_work_done',
       controller_home: options.controllerHome,
       repo_id: options.repoId,
-      requirement_id: requirement.requirementId,
+      ...(requirement ? { requirement_id: requirement.requirementId } : { work_id: boundary.workId ?? workId }),
     },
     continuationPolicy: {
       kind: 'forge_goal_outer_turn',
@@ -393,10 +395,10 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
       outer_turn_owner: 'workflow_supervisor',
     },
     userBlockerPolicy: {
-      kind: 'forge_requirement_waiting_for_user',
+      kind: requirement ? 'forge_requirement_waiting_for_user' : 'forge_work_waiting_for_user',
       controller_home: options.controllerHome,
       repo_id: options.repoId,
-      requirement_id: requirement.requirementId,
+      ...(requirement ? { requirement_id: requirement.requirementId } : { work_id: boundary.workId ?? workId }),
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId);
