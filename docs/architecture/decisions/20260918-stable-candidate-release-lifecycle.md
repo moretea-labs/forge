@@ -129,9 +129,7 @@ operations remain available, and a changed source revision becomes eligible for
 a new automatic attempt. This rule is derived from ReleaseSession history; it
 introduces no retry ledger or second release authority.
 
-Successful cutover enters `soaking`; only the existing full verification +
-performance observation + recoverable release/SQLite/service bundle attestation
-may terminalize `known_good`. A definitive runaway-CPU rejection is an acceptance
+Successful cutover enters `soaking` as soon as the canonical live Runtime observation proves the expected release/artifact identity is running, ready and non-stale. Cutover reconciliation does not rerun the expensive full verification suite after activation. Only the existing full verification + performance observation + recoverable release/SQLite/service bundle attestation may terminalize `known_good`. A definitive runaway-CPU rejection is an acceptance
 failure, so Recovery executes the existing exact Stable A rollback transaction
 instead of leaving Candidate B in `soaking` for repeated performance sampling.
 Transient/unknown observations remain non-terminal and may be reconciled against

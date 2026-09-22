@@ -72,7 +72,7 @@ export function recoveryOperationLockOwnerAlive(lock: RecoveryOperationLockRecor
   if (!isProcessAlive(lock.pid)) return false;
   if (!lock.processStartTime) return true;
   const observed = processStartTime(lock.pid);
-  return observed === undefined || observed === lock.processStartTime;
+  return observed === lock.processStartTime;
 }
 
 export function acquireRecoveryOperationLock(input: {

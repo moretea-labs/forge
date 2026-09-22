@@ -869,7 +869,7 @@ function recoveryLockOwnerAlive(lock: RecoveryLock): boolean {
   if (!pidAlive(lock.pid)) return false;
   if (!lock.processStartTime) return true;
   const observed = processStartTime(lock.pid);
-  return observed === undefined || observed === lock.processStartTime;
+  return observed === lock.processStartTime;
 }
 
 function recoveryLockOwnerAttributable(owner: RecoveryLock): boolean {
@@ -4758,16 +4758,17 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         };
       }
 
-      const stableNow = await verifyLocalRuntime(config);
+      const stableNow = observeRuntimeStatus(config.controllerHome);
+      const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale;
       const candidateIsStable = Boolean(
-        stableNow.ok
-        && stableNow.releases.active?.revision === candidateRelease.releaseId
-        && stableNow.releases.active?.artifactIdentity === candidateRelease.artifactIdentity,
+        liveRuntimeIdentityVerified
+        && stableNow.snapshot?.releaseId === candidateRelease.releaseId
+        && stableNow.snapshot?.artifactIdentity === candidateRelease.artifactIdentity,
       );
       const originalStableRestored = Boolean(
-        stableNow.ok
-        && stableNow.releases.active?.revision === session.stableRelease.releaseId
-        && stableNow.releases.active?.artifactIdentity === session.stableRelease.artifactIdentity,
+        liveRuntimeIdentityVerified
+        && stableNow.snapshot?.releaseId === session.stableRelease.releaseId
+        && stableNow.snapshot?.artifactIdentity === session.stableRelease.artifactIdentity,
       );
 
       if (candidateIsStable) {
@@ -4856,7 +4857,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         candidateReleaseId: candidateRelease.releaseId,
         candidateRetired: true,
         reason,
-        observedActiveReleaseId: stableNow.releases.active?.revision,
+        observedActiveReleaseId: stableNow.snapshot?.releaseId,
       });
       return {
         ok: false as const,
