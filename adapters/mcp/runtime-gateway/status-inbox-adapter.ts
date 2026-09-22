@@ -20,7 +20,7 @@ import { observeRuntimeStatus } from "../../../src/runtime/root/status";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { handoffResolvedContinuationEventName, triggerWorkContinuationRepositoryEvent } from '../../../src/runtime/workflow/schedules/work-continuation';
+import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
@@ -603,13 +603,7 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
     resolver: typeof args.resolver === 'string' ? args.resolver : undefined,
     controllerIdentity: { principalId: ctx.principalId, sessionId: ctx.sessionId },
   }, {
-    triggerResolvedContinuation: (item) => triggerWorkContinuationRepositoryEvent(
-      ctx.controllerHome,
-      repository.repoId,
-      handoffResolvedContinuationEventName(item.id),
-      `handoff:${item.id}:${item.updatedAt}`,
-      { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
-    ),
+    triggerResolvedContinuation: (item) => triggerResolvedHandoffContinuation(ctx.controllerHome, repository.repoId, item),
   });
   if (operation === 'get') {
     const item = 'item' in app ? app.item : undefined;

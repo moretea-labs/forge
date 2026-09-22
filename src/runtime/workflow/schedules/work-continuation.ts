@@ -461,6 +461,20 @@ export async function resolveHandoffAndTriggerContinuation(
   input: { decision: string; resolver: string },
 ): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
   const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
+  const continuationOccurrences = await triggerResolvedHandoffContinuation(controllerHome, repoId, item);
+  return { item, continuationOccurrences };
+}
+
+/**
+ * The Inbox application resolves persistence before it calls its continuation
+ * port. Keep the post-resolution transition here so every transport re-arms
+ * the exact ControllerRound before it can wake its Work schedule.
+ */
+export async function triggerResolvedHandoffContinuation(
+  controllerHome: string,
+  repoId: string,
+  item: HandoffItem,
+): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
   const relay = item.workId ? getControllerRoundRelay({ controllerHome, repoId }, item.workId) : undefined;
   const rearmedRelay = item.workId && relay?.status === 'waiting_for_user' && relay.blockedReason === 'provider_user_action_required' && relay.handoffId === item.id
     ? rearmControllerRoundAfterProviderUserAction({ controllerHome, repoId }, { workId: item.workId, handoffId: item.id })
@@ -482,5 +496,5 @@ export async function resolveHandoffAndTriggerContinuation(
         },
       )
     : [];
-  return { item, continuationOccurrences };
+  return continuationOccurrences;
 }
