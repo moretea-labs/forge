@@ -18,9 +18,11 @@ describe('local_recovery managed transport provider', () => {
     await expect(executeAction('runtime_status', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool, requestId: 'request-read-1' }))
       .resolves.toEqual({ ok: true, name: 'runtime_status' });
     await executeAction('list_releases', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool, requestId: 'request-read-2' });
+    await executeAction('verify_stable_runtime', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool, requestId: 'request-read-3' });
     expect(calls).toEqual([
       { controllerHome: '/tmp/controller', name: 'runtime_status', args: {} },
       { controllerHome: '/tmp/controller', name: 'list_releases', args: {} },
+      { controllerHome: '/tmp/controller', name: 'verify_stable_runtime', args: {} },
     ]);
   });
 

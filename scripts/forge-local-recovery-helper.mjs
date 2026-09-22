@@ -14,6 +14,7 @@ export const CAPABILITIES = ['forge.local_recovery.transport.v1'];
 export const ACTIONS = [
   'runtime_status',
   'list_releases',
+  'verify_stable_runtime',
   'stage_and_activate_runtime_release',
   'release_session_status',
   'advance_runtime_release_session',
