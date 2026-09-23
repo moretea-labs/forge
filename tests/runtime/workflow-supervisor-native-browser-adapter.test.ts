@@ -22,7 +22,15 @@ class FakePage implements WorkflowSupervisorNativePage {
 function inventory(page: FakePage): MacOsBrowserTabInventoryEntry {
   return { windowId: page.ref.windowId, tabId: page.ref.tabId, url: page.url, title: page.title, active: false };
 }
-function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfirmed = false, preSubmitFailureReason = '', dispatchedUserSuffix = '', pageTextOnly = false) {
+function harness(
+  initial: FakePage[] = [],
+  lowerLayerContext = '',
+  providerConfirmed = false,
+  preSubmitFailureReason = '',
+  dispatchedUserSuffix = '',
+  pageTextOnly = false,
+  overrides: Partial<WorkflowSupervisorNativeBrowserDependencies> = {},
+) {
   const settlements: string[] = [];
   const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(home()), {
     completionContract: async () => ({ valid: true, reason: 'ok' }),
@@ -34,10 +42,14 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     },
   });
   const discovery = new WorkflowSupervisorEphemeralDiscovery();
-  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let snapshotCount = 0; let nowMs = 1_000_000; const errors: string[] = []; const dispatchedPrompts: string[] = [];
+  const pages = [...initial]; let created = 0; let dispatchAttempts = 0; let snapshotCount = 0; let nowMs = 1_000_000; let inventoryReads = 0; let inventoryUnavailable = false; const errors: string[] = []; const dispatchedPrompts: string[] = [];
   const dependencies: Partial<WorkflowSupervisorNativeBrowserDependencies> = {
     platform: 'darwin',
-    listTabs: async () => pages.filter((page) => !page.closed).map(inventory),
+    listTabs: async () => {
+      inventoryReads += 1;
+      if (inventoryUnavailable) return { entries: [], unavailableProducts: ['vivaldi', 'chrome'] };
+      return { entries: pages.filter((page) => !page.closed).map(inventory), unavailableProducts: [] };
+    },
     reattach: async (ref) => pages.find((page) => !page.closed && page.ref.tabId === ref.tabId)!,
     create: async (url) => {
       const page = new FakePage({ windowId: 'forge-window', tabId: `forge-tab-${++created}` }, url);
@@ -69,8 +81,23 @@ function harness(initial: FakePage[] = [], lowerLayerContext = '', providerConfi
     providerIdleGraceMs: 1_000,
     sleep: async () => undefined,
     onError: (error) => { errors.push(error instanceof Error ? error.message : String(error)); },
+    ...overrides,
   };
-  return { control, discovery, pages, errors, settlements, dispatchedPrompts, adapter: new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies), created: () => created, dispatchAttempts: () => dispatchAttempts, snapshots: () => snapshotCount, advance: (ms: number) => { nowMs += ms; } };
+  return {
+    control,
+    discovery,
+    pages,
+    errors,
+    settlements,
+    dispatchedPrompts,
+    adapter: new WorkflowSupervisorNativeBrowserAdapter(control, discovery, dependencies),
+    created: () => created,
+    dispatchAttempts: () => dispatchAttempts,
+    snapshots: () => snapshotCount,
+    inventoryReads: () => inventoryReads,
+    setInventoryUnavailable: (value: boolean) => { inventoryUnavailable = value; },
+    advance: (ms: number) => { nowMs += ms; },
+  };
 }
 function register(control: WorkflowSupervisorControlPlane, conversationId: string) {
   const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
@@ -167,17 +194,20 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(snapshot.latestAssistantResponse).toBe('latest assistant response');
   });
 
-  test('never adopts an unmarked user tab and sends enrollment only through a new Forge-owned exact tab', async () => {
+  // Policy since 8a96b43db: a user can close and reopen the exact durable
+  // conversation, so its unowned exact tab is adopted and marked instead of
+  // opening a duplicate tab. Adoption is a fallback: when this Supervisor still
+  // owns an exact tab, that owned attachment always wins (see the recovery test
+  // below), so a live owned tab is never displaced by a user tab.
+  test('adopts an unowned exact conversation tab instead of opening a duplicate browser tab', async () => {
     const conversationId = '11111111-2222-3333-4444-555555555555';
     const url = `https://chatgpt.com/c/${conversationId}`;
     const userTab = new FakePage({ windowId: 'user-window', tabId: 'user-tab' }, url);
     const h = harness([userTab]); const { effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
-    expect(h.created()).toBe(1);
-    const owned = h.pages.find((page) => page.ref.tabId === 'forge-tab-1')!;
-    expect(userTab.latestUserText).toBe('');
-    expect(owned.owner).toBe(`forge-workflow-supervisor:${conversationId}`);
-    expect(owned.latestUserText).toBe(effect.prompt);
+    expect(h.created()).toBe(0);
+    expect(userTab.owner).toBe(`forge-workflow-supervisor:${conversationId}`);
+    expect(userTab.latestUserText).toBe(effect.prompt);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.discovery.get().conversations).toEqual([{ conversationId, canonicalUrl: url, title: 'ChatGPT' }]);
     expect(h.errors).toEqual([]);
@@ -273,6 +303,66 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
     expect(h.errors).toEqual([]);
+  });
+
+  test('reads one bounded native inventory per tick instead of one per task', async () => {
+    const h = harness();
+    register(h.control, 'aaaa1111-2222-3333-4444-555566667777');
+    register(h.control, 'bbbb1111-2222-3333-4444-555566667777');
+    register(h.control, 'cccc1111-2222-3333-4444-555566667777');
+
+    await h.adapter.runOnce();
+
+    expect(h.inventoryReads()).toBe(1);
+    expect(h.created()).toBe(3);
+  });
+
+  test('never fabricates a browser tab when the native inventory is unreadable', async () => {
+    const conversationId = 'dddddddd-eeee-ffff-1111-222233334444';
+    const h = harness();
+    const { effect } = register(h.control, conversationId);
+    h.setInventoryUnavailable(true);
+
+    await h.adapter.runOnce();
+    await h.adapter.runOnce();
+
+    // The enrollment send is still pending: absence of the exact tab is unproven,
+    // not permission to open another browser resource.
+    expect(h.created()).toBe(0);
+    expect(h.dispatchAttempts()).toBe(0);
+    expect(h.control.store.effectApplied(effect.effectId)).toBe(false);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }).command).toMatchObject({ mode: 'send' });
+    expect(h.inventoryReads()).toBe(2);
+    expect(h.errors).toEqual([]);
+  });
+
+  test('backs off instead of re-attempting an unreadable native transport on every tick', async () => {
+    const ticks: Array<() => void> = [];
+    const h = harness([], '', false, '', '', false, {
+      setInterval: (handler) => { ticks.push(handler); return 0 as unknown as ReturnType<typeof setInterval>; },
+      clearInterval: () => undefined,
+    });
+    register(h.control, 'eeeeeeee-1111-2222-3333-444444444444');
+    h.setInventoryUnavailable(true);
+    const settle = async () => { await new Promise((resolve) => setTimeout(resolve, 5)); };
+
+    h.adapter.start(1_000);
+    await settle();
+    expect(h.inventoryReads()).toBe(1);
+
+    // Ten simulated seconds at the configured one-second cadence.
+    for (let second = 0; second < 10; second += 1) {
+      h.advance(1_000);
+      for (const tick of ticks) tick();
+      await settle();
+    }
+
+    // Without bounded backoff this would be 11 attempts against a transport that
+    // cannot answer; each one used to re-enter the same unprovable attach.
+    expect(h.inventoryReads()).toBeGreaterThanOrEqual(2);
+    expect(h.inventoryReads()).toBeLessThanOrEqual(5);
+    expect(h.created()).toBe(0);
+    await h.adapter.close();
   });
 
   test('turns proven exact transport loss after an applied effect into a distinct recovery effect without replay', async () => {

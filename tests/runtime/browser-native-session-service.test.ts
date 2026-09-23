@@ -39,6 +39,9 @@ describe('native browser session cleanup', () => {
     let inventoryCalls = 0;
     let closeCalls = 0;
     setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async (script) => {
         if (script.includes('set outputText to "false"')) {
           inventoryCalls += 1;
@@ -61,6 +64,9 @@ describe('native browser session cleanup', () => {
   test('bounds native inventory budget for close and list inspection', async () => {
     const observedTimeouts: number[] = [];
     setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async (script, _args, timeoutMs) => {
         if (script.includes('set outputText to "false"')) {
           observedTimeouts.push(timeoutMs);

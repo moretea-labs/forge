@@ -23,6 +23,7 @@ import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plug
 import {
   invalidateMacOsBrowserPageHandle,
   invalidateMacOsBrowserPageHandles,
+  listMacOsBrowserTabs,
   nativeDomLoadStateSatisfied,
   parseMacOsBrowserCreateTabBrokerResult,
   reattachMacOsBrowserOwnedPage,
@@ -611,5 +612,34 @@ describe('Browser Runtime V3 routing', () => {
     await executeBrowserRuntimeAction({ runtimeKey, input: input('get_text', 'tx-warm-3'), providers: [warmProvider] });
     expect(revalidations).toBe(1);
     expect(executions).toBe(3);
+  });
+
+  test('never compiles an Apple Events browser script for a browser that is not already running', async () => {
+    const scripts: string[] = [];
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => false,
+      runAppleScript: async (script) => { scripts.push(script); return ''; },
+    });
+
+    // `tell application` starts an application that is not running while the
+    // script is compiled, so an inventory attempt must fail before any script
+    // reaches the browser.
+    await expect(listMacOsBrowserTabs('chrome', 1_000)).rejects.toThrow('PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING');
+    expect(scripts).toEqual([]);
+  });
+
+  test('fails closed when the browser application is not installed instead of substituting a product', async () => {
+    const scripts: string[] = [];
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => false,
+      processRunning: async () => true,
+      runAppleScript: async (script) => { scripts.push(script); return ''; },
+    });
+
+    await expect(listMacOsBrowserTabs('vivaldi', 1_000)).rejects.toThrow('PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED');
+    expect(scripts).toEqual([]);
   });
 });

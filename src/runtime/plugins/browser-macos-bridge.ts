@@ -227,6 +227,12 @@ async function runBrowserAutomationText(
   testArgs: string[],
   timeoutMs: number,
 ): Promise<string> {
+  // AppleScript `tell application` starts an application that is not already
+  // running while it compiles the script. Every browser entry point therefore
+  // fails closed unless the exact browser process is already live, so routine
+  // inventory/reconcile work can never launch the user's browser or hand Forge
+  // an unauthenticated profile.
+  if ('product' in request) await assertMacOsBrowserApplicationRunning(request.product, timeoutMs);
   if (runtimeHooks.runAppleScript) return await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
   const result = await callBrowserAutomationBroker(request, timeoutMs);
   if (typeof result.value !== 'string') {
@@ -237,6 +243,40 @@ async function runBrowserAutomationText(
     );
   }
   return result.value;
+}
+
+/**
+ * Non-launching precondition for every Apple Events browser operation.
+ * Path existence is checked without scripting the application, and process
+ * liveness comes from the process table, so neither probe can start a browser.
+ */
+export async function assertMacOsBrowserApplicationRunning(
+  product: MacOsBrowserProduct,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<void> {
+  const browser = browserDefinition(product);
+  const details = { browserProduct: product, bundleId: browser.bundleId, appName: browser.appName };
+  if (runtimeHooks.platform !== 'darwin') {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_APP_UNSUPPORTED_PLATFORM',
+      `Native ${browser.appName} Apple Events are unavailable on ${runtimeHooks.platform}.`,
+      { retryable: false, details },
+    );
+  }
+  if (!browser.appPaths.some((path) => runtimeHooks.appExists(path))) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED',
+      `${browser.appName} is not installed; Forge never installs or substitutes a browser application.`,
+      { retryable: false, details },
+    );
+  }
+  if (!(await runtimeHooks.processRunning(browser.processName, timeoutMs))) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING',
+      `${browser.appName} is not running; Forge never launches a browser application implicitly.`,
+      { retryable: true, details },
+    );
+  }
 }
 
 async function captureBrowserAutomation(

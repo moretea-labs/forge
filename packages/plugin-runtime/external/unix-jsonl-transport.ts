@@ -6,6 +6,13 @@ const DEFAULT_HEALTH_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_TIMEOUT_MS = 120_000;
+/**
+ * How long an already-dispatched request keeps its connection open after the
+ * caller stopped waiting. Destroying that socket makes the provider's own write
+ * fail (SIGPIPE / EPIPE) and can terminate a long-running provider service that
+ * is still completing bounded work. Draining absorbs the late response instead.
+ */
+const UNANSWERED_DRAIN_TIMEOUT_MS = 15_000;
 export const EXTERNAL_RPC_METHOD_PATTERN = /^[a-z][a-z0-9_]{0,127}$/;
 
 export type ExternalUnixJsonlMethod = string;
@@ -96,6 +103,61 @@ function transportError(
   } = {},
 ): ExternalUnixJsonlTransportError {
   return new ExternalUnixJsonlTransportError(code, message, options);
+}
+
+/**
+ * Absorb a response that nobody is waiting for any more.
+ *
+ * A client that abandons a dispatched request must not tear the connection down
+ * underneath the provider: an in-flight provider write to a closed peer raises
+ * SIGPIPE and kills single-threaded provider services, which then restart into
+ * the same request forever. Keeping the connection open until the provider's
+ * own response arrives preserves the provider lifecycle while discarding the
+ * now-meaningless payload.
+ */
+function drainUnansweredResponse(options: {
+  socket: Socket;
+  maxResponseBytes: number;
+  onFinished: (socket: Socket) => void;
+}): void {
+  const { socket, maxResponseBytes, onFinished } = options;
+  if (socket.destroyed) {
+    onFinished(socket);
+    return;
+  }
+  let buffer = Buffer.alloc(0);
+  let settled = false;
+  const settle = (destroy: boolean): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    socket.removeListener('data', onData);
+    socket.removeListener('end', onEnd);
+    socket.removeListener('error', onEnd);
+    socket.removeListener('close', onEnd);
+    if (!socket.destroyed) {
+      // The provider finished writing its late response: a graceful half-close
+      // is enough, and it never turns into a provider-side write failure.
+      if (destroy) socket.destroy();
+      else socket.end();
+    }
+    onFinished(socket);
+  };
+  const onData = (chunk: Buffer): void => {
+    if (buffer.length + chunk.length > maxResponseBytes) {
+      settle(true);
+      return;
+    }
+    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.indexOf(0x0A) >= 0) settle(false);
+  };
+  const onEnd = (): void => settle(true);
+  const timer = setTimeout(() => settle(true), UNANSWERED_DRAIN_TIMEOUT_MS);
+  timer.unref?.();
+  socket.on('data', onData);
+  socket.once('end', onEnd);
+  socket.once('error', onEnd);
+  socket.once('close', onEnd);
 }
 
 function normalizeTransportError(error: unknown): ExternalUnixJsonlTransportError {
@@ -200,6 +262,9 @@ export class ExternalUnixJsonlChannel {
   private queue: Promise<void> = Promise.resolve();
   private generationValue = 0;
   private disposed = false;
+  private outstandingDispatched = 0;
+  private outstandingMaxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES;
+  private readonly draining = new Set<Socket>();
 
   constructor(readonly socketPath: string) {
     validateSocketPath(socketPath);
@@ -235,6 +300,10 @@ export class ExternalUnixJsonlChannel {
 
   close(): void {
     this.disposed = true;
+    if (this.outstandingDispatched > 0 && this.socket) {
+      this.retireForDrain(this.socket, this.outstandingMaxResponseBytes);
+      return;
+    }
     this.resetSocket();
   }
 
@@ -243,6 +312,24 @@ export class ExternalUnixJsonlChannel {
     if (!socket || this.socket === socket) this.socket = undefined;
     this.connecting = undefined;
     this.buffer = Buffer.alloc(0);
+  }
+
+  /**
+   * Retire a connection whose request was abandoned by the caller. The socket
+   * leaves service immediately, but stays open until the provider's own
+   * response is absorbed so the provider is never killed by its late write.
+   */
+  private retireForDrain(socket: Socket, maxResponseBytes: number): void {
+    if (this.socket === socket) this.socket = undefined;
+    this.connecting = undefined;
+    this.buffer = Buffer.alloc(0);
+    if (socket.destroyed) return;
+    this.draining.add(socket);
+    drainUnansweredResponse({
+      socket,
+      maxResponseBytes,
+      onFinished: (finished) => { this.draining.delete(finished); },
+    });
   }
 
   private async ensureConnected(): Promise<void> {
@@ -299,7 +386,7 @@ export class ExternalUnixJsonlChannel {
       let settled = false;
       let dispatched = false;
       let socket: Socket | undefined;
-      const finish = (callback: () => void, reset = false): void => {
+      const finish = (callback: () => void, disposition: 'keep' | 'reset' | 'drain' = 'keep'): void => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
@@ -307,15 +394,20 @@ export class ExternalUnixJsonlChannel {
         socket?.removeListener('data', onData);
         socket?.removeListener('error', onError);
         socket?.removeListener('end', onEnd);
-        if (reset) this.resetSocket(socket);
+        if (dispatched) this.outstandingDispatched = Math.max(0, this.outstandingDispatched - 1);
+        if (disposition === 'reset') this.resetSocket(socket);
+        else if (disposition === 'drain' && socket) this.retireForDrain(socket, normalized.maxResponseBytes);
         callback();
       };
-      const fail = (error: unknown, reset = true): void => {
+      const fail = (error: unknown, disposition: 'keep' | 'reset' | 'drain' = 'reset'): void => {
         const normalizedError = normalizeTransportError(error);
         const classified = dispatched && mayHaveEffects ? markOutcomeUnknown(normalizedError) : normalizedError;
-        finish(() => reject(classified), reset);
+        finish(() => reject(classified), disposition);
       };
-      const onAbort = (): void => fail(transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled.'));
+      const onAbort = (): void => fail(
+        transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled.'),
+        dispatched ? 'drain' : 'reset',
+      );
       const onError = (error: Error): void => fail(transportError('EXTERNAL_PLUGIN_SOCKET_UNAVAILABLE', error.message));
       const onEnd = (): void => fail(transportError('EXTERNAL_PLUGIN_PROTOCOL_ERROR', 'External provider closed the socket before returning a complete response.'));
       const onData = (chunk: Buffer): void => {
@@ -338,14 +430,22 @@ export class ExternalUnixJsonlChannel {
           finish(() => resolve(decoded));
         } catch (error) {
           if (error instanceof ExternalUnixJsonlTransportError && error.source === 'provider') {
-            fail(error, false);
+            fail(error, 'keep');
           } else {
             fail(error);
           }
         }
       };
 
-      timer = setTimeout(() => fail(transportError('EXTERNAL_PLUGIN_TIMEOUT', `External provider request timed out after ${normalized.timeoutMs}ms.`)), normalized.timeoutMs);
+      // A request the caller stopped waiting for is not a reason to kill the
+      // provider: retire the connection into a bounded drain instead.
+      timer = setTimeout(
+        () => fail(
+          transportError('EXTERNAL_PLUGIN_TIMEOUT', `External provider request timed out after ${normalized.timeoutMs}ms.`),
+          dispatched ? 'drain' : 'reset',
+        ),
+        normalized.timeoutMs,
+      );
       timer.unref?.();
       options.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -361,7 +461,7 @@ export class ExternalUnixJsonlChannel {
           'EXTERNAL_PLUGIN_CHANNEL_GENERATION_CHANGED',
           `External provider connection changed from generation ${expectedGeneration} to ${this.generation}; renegotiate before executing the action.`,
           { retryable: true },
-        ), false);
+        ), 'keep');
         return;
       }
       socket = this.socket;
@@ -373,6 +473,8 @@ export class ExternalUnixJsonlChannel {
       socket.once('error', onError);
       socket.once('end', onEnd);
       dispatched = true;
+      this.outstandingDispatched += 1;
+      this.outstandingMaxResponseBytes = normalized.maxResponseBytes;
       socket.write(normalized.envelope, (error) => {
         if (error) fail(transportError('EXTERNAL_PLUGIN_TRANSPORT_FAILED', error.message));
       });
@@ -399,21 +501,32 @@ export async function callExternalUnixJsonl(
     let dispatched = false;
     let buffer = Buffer.alloc(0);
 
-    const cleanup = (): void => {
+    const cleanup = (disposition: 'destroy' | 'drain'): void => {
       if (timer) clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
-      if (socket && !socket.destroyed) socket.destroy();
+      if (!socket || socket.destroyed) return;
+      if (disposition === 'drain') {
+        // The socket is dead to this one-shot caller, so only the drain reader
+        // may keep observing it.
+        socket.removeAllListeners('data');
+        socket.removeAllListeners('error');
+        socket.removeAllListeners('end');
+        socket.removeAllListeners('close');
+        drainUnansweredResponse({ socket, maxResponseBytes: normalized.maxResponseBytes, onFinished: () => undefined });
+        return;
+      }
+      socket.destroy();
     };
-    const finish = (callback: () => void): void => {
+    const finish = (callback: () => void, disposition: 'destroy' | 'drain' = 'destroy'): void => {
       if (settled) return;
       settled = true;
-      cleanup();
+      cleanup(disposition);
       callback();
     };
-    const fail = (error: unknown): void => {
+    const fail = (error: unknown, disposition: 'destroy' | 'drain' = 'destroy'): void => {
       const normalizedError = normalizeTransportError(error);
       const classified = dispatched && mayHaveEffects ? markOutcomeUnknown(normalizedError) : normalizedError;
-      finish(() => reject(classified));
+      finish(() => reject(classified), disposition);
     };
     const succeed = (raw: string): void => finish(() => {
       try {
@@ -422,9 +535,20 @@ export async function callExternalUnixJsonl(
         reject(error);
       }
     });
-    const onAbort = (): void => fail(transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled.'));
+    const onAbort = (): void => fail(
+      transportError('EXTERNAL_PLUGIN_ABORTED', 'External provider request was cancelled.'),
+      dispatched ? 'drain' : 'destroy',
+    );
 
-    timer = setTimeout(() => fail(transportError('EXTERNAL_PLUGIN_TIMEOUT', `External provider request timed out after ${normalized.timeoutMs}ms.`)), normalized.timeoutMs);
+    // Preserve the provider lifecycle: an abandoned request is drained instead
+    // of being answered with a closed connection.
+    timer = setTimeout(
+      () => fail(
+        transportError('EXTERNAL_PLUGIN_TIMEOUT', `External provider request timed out after ${normalized.timeoutMs}ms.`),
+        dispatched ? 'drain' : 'destroy',
+      ),
+      normalized.timeoutMs,
+    );
     timer.unref?.();
     options.signal?.addEventListener('abort', onAbort, { once: true });
 

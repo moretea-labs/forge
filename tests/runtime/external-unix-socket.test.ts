@@ -12,6 +12,7 @@ import {
   resolveExternalPluginProbeSidecarPath,
 } from '../../src/runtime/plugins/external-unix-socket';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { ExternalUnixJsonlChannel } from '../../packages/plugin-runtime/external/unix-jsonl-transport';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -217,5 +218,104 @@ describe('external local socket / named-pipe provider transport', () => {
   test('rejects relative socket paths before any connection attempt', async () => {
     await expect(callExternalUnixSocket({ socketPath: 'relative.sock', requestId: 'bad-1', method: 'health' })).rejects.toThrow('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID');
     expect(() => probeExternalUnixSocketSync({ socketPath: 'relative.sock', requestId: 'bad-2', method: 'health' })).toThrow('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID');
+  });
+});
+
+/**
+ * A client that stops waiting must never tear the connection down under a
+ * provider that is still computing the response. Doing so makes the provider's
+ * own write fail (the macOS Desktop Operator dies on SIGPIPE) and a supervised
+ * KeepAlive service then restarts into the same abandoned request forever.
+ */
+describe('abandoned in-flight provider requests keep the provider alive', () => {
+  function slowServer(options: { socketPath: string; waitFor: Promise<void>; writes: Array<{ id: string; error?: Error }> }): Promise<Server> {
+    const server = createServer((socket) => {
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          const raw = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf('\n');
+          const request = JSON.parse(raw) as { id: string };
+          void options.waitFor.then(() => {
+            socket.write(`${JSON.stringify({ id: request.id, ok: true, result: { late: true } })}\n`, (error) => {
+              options.writes.push({ id: request.id, ...(error ? { error } : {}) });
+            });
+          });
+        }
+      });
+      socket.on('error', () => undefined);
+    });
+    servers.push(server);
+    return new Promise<Server>((resolve, reject) => server.once('error', reject).listen(options.socketPath, () => resolve(server)));
+  }
+
+  function gate(): { waitFor: Promise<void>; open: () => void } {
+    let open!: () => void;
+    const waitFor = new Promise<void>((resolve) => { open = resolve; });
+    return { waitFor, open };
+  }
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
+  test('one-shot lane drains the late response instead of closing the socket', async () => {
+    const { socketPath } = socketFixture();
+    const { waitFor, open } = gate();
+    const writes: Array<{ id: string; error?: Error }> = [];
+    await slowServer({ socketPath, waitFor, writes });
+
+    const call = callExternalUnixSocket({ socketPath, requestId: 'abandoned-one-shot', method: 'execute', params: { action: 'slow' }, timeoutMs: 150 });
+    await expect(call).rejects.toMatchObject({ code: 'EXTERNAL_PLUGIN_TIMEOUT' });
+
+    // The provider is still working when its caller already gave up.
+    expect(writes).toEqual([]);
+    open();
+    await settle();
+
+    expect(writes).toEqual([{ id: 'abandoned-one-shot' }]);
+  });
+
+  test('persistent channel drains the late response and still serves the next request', async () => {
+    const { socketPath } = socketFixture();
+    const { waitFor, open } = gate();
+    const writes: Array<{ id: string; error?: Error }> = [];
+    await slowServer({ socketPath, waitFor, writes });
+
+    const channel = new ExternalUnixJsonlChannel(socketPath);
+    try {
+      const abandoned = channel.call({ requestId: 'abandoned-channel', method: 'execute', params: { action: 'slow' }, timeoutMs: 150 });
+      await expect(abandoned).rejects.toMatchObject({ code: 'EXTERNAL_PLUGIN_TIMEOUT' });
+
+      open();
+      await settle();
+      expect(writes).toEqual([{ id: 'abandoned-channel' }]);
+
+      // The abandoned connection left service without ever killing the provider.
+      const next = await channel.call({ requestId: 'after-abandon', method: 'execute', params: { action: 'slow' }, timeoutMs: 2_000 });
+      expect(next).toEqual({ late: true });
+    } finally {
+      channel.close();
+    }
+  });
+
+  test('channel disposal during an in-flight request neither kills the provider nor strands the caller', async () => {
+    const { socketPath } = socketFixture();
+    const { waitFor, open } = gate();
+    const writes: Array<{ id: string; error?: Error }> = [];
+    await slowServer({ socketPath, waitFor, writes });
+
+    const channel = new ExternalUnixJsonlChannel(socketPath);
+    const abandoned = channel.call({ requestId: 'abandoned-disposal', method: 'execute', params: { action: 'slow' }, timeoutMs: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    channel.close();
+
+    open();
+    await settle();
+    expect(writes).toEqual([{ id: 'abandoned-disposal' }]);
+    await expect(abandoned).resolves.toEqual({ late: true });
   });
 });

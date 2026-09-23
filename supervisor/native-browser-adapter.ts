@@ -22,6 +22,8 @@ const OWNER_PREFIX = 'forge-workflow-supervisor:';
 const DEFAULT_INTERVAL_MS = 1_000;
 const IDLE_INTERVAL_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_TRANSPORT_BACKOFF_MS = 60_000;
+const MAX_TRANSPORT_BACKOFF_STEPS = 6;
 const MAX_PROVIDER_FAILURE_SCAN_CHARS = 250_000;
 const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
 const MAX_TRUSTED_TEXT_INPUT_CHARS = 10_000;
@@ -53,7 +55,7 @@ export interface WorkflowSupervisorNativeSnapshotOptions {
 }
 export interface WorkflowSupervisorNativeBrowserDependencies {
   platform: NodeJS.Platform;
-  listTabs(): Promise<TaggedBrowserTabInventoryEntry[]>;
+  listTabs(): Promise<WorkflowSupervisorNativeBrowserInventory>;
   reattach(ref: MacOsBrowserTabRef): Promise<WorkflowSupervisorNativePage>;
   create(url: string): Promise<WorkflowSupervisorNativePage>;
   close(ref: MacOsBrowserTabRef): Promise<void>;
@@ -67,6 +69,16 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   setInterval(handler: () => void, ms: number): ReturnType<typeof setInterval>;
   clearInterval(timer: ReturnType<typeof setInterval>): void;
   onError(error: unknown): void;
+}
+/**
+ * One bounded inventory result. `unavailableProducts` carries the products
+ * whose native inventory could not be read at all, which is the difference
+ * between "this conversation has no tab" (safe to create) and "Forge cannot
+ * see whether this conversation has a tab" (never an authority to create).
+ */
+export interface WorkflowSupervisorNativeBrowserInventory {
+  entries: TaggedBrowserTabInventoryEntry[];
+  unavailableProducts: MacOsBrowserProduct[];
 }
 export interface WorkflowSupervisorNativeBrowserHandle {
   readonly adapter: WorkflowSupervisorNativeBrowserAdapter;
@@ -201,11 +213,23 @@ export async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, 
 
 const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   platform: process.platform,
-  listTabs: async () => (await Promise.all(NATIVE_BROWSER_PRODUCTS.map(async (product) => {
-    try {
-      return (await listMacOsBrowserTabs(product, DEFAULT_TIMEOUT_MS)).tabs.map((tab): TaggedBrowserTabInventoryEntry => ({ ...tab, browserProduct: product }));
-    } catch { return []; }
-  }))).flat(),
+  listTabs: async () => {
+    const inspected = await Promise.all(NATIVE_BROWSER_PRODUCTS.map(async (product) => {
+      try {
+        return {
+          entries: (await listMacOsBrowserTabs(product, DEFAULT_TIMEOUT_MS)).tabs.map((tab): TaggedBrowserTabInventoryEntry => ({ ...tab, browserProduct: product })),
+        };
+      } catch {
+        // A failed native inventory is unknown transport state, not evidence
+        // that the exact conversation tab is absent.
+        return { entries: [] as TaggedBrowserTabInventoryEntry[], unavailableProduct: product };
+      }
+    }));
+    return {
+      entries: inspected.flatMap((entry) => entry.entries),
+      unavailableProducts: inspected.flatMap((entry) => (entry.unavailableProduct ? [entry.unavailableProduct] : [])),
+    };
+  },
   reattach: async (ref) => {
     const product = productForRef(ref as TaggedBrowserTabRef);
     return taggedPage((await reattachMacOsBrowserOwnedPage(product, ref, DEFAULT_TIMEOUT_MS)).page, product);
@@ -238,6 +262,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private closed = false;
   private nextRunAtMs = 0;
   private lastRunHadTasks = false;
+  private inventory?: Promise<WorkflowSupervisorNativeBrowserInventory>;
+  private lastRunTransportUnavailable = false;
+  private transportFailureStreak = 0;
   constructor(
     private readonly control: WorkflowSupervisorControlPlane,
     private readonly discovery: WorkflowSupervisorEphemeralDiscovery,
@@ -251,7 +278,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const tick = () => {
       if (this.inflight || this.closed || this.deps.nowMs() < this.nextRunAtMs) return;
       this.inflight = this.runOnce().catch(this.deps.onError).finally(() => {
-        this.nextRunAtMs = this.deps.nowMs() + (this.lastRunHadTasks ? activeIntervalMs : idleIntervalMs);
+        const baseIntervalMs = this.lastRunHadTasks ? activeIntervalMs : idleIntervalMs;
+        // A transport that cannot answer does not get polled at tick rate: each
+        // failed attempt used to re-enter the same unprovable attach and create
+        // another browser tab.
+        const backoffMs = this.lastRunTransportUnavailable
+          ? Math.min(baseIntervalMs * 2 ** Math.min(this.transportFailureStreak, MAX_TRANSPORT_BACKOFF_STEPS), MAX_TRANSPORT_BACKOFF_MS)
+          : baseIntervalMs;
+        this.nextRunAtMs = this.deps.nowMs() + backoffMs;
         this.inflight = undefined;
       });
     };
@@ -271,6 +305,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   async runOnce(): Promise<void> {
     if (this.deps.platform !== 'darwin' || this.closed) return;
+    this.inventory = undefined;
+    this.lastRunTransportUnavailable = false;
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
     await this.cleanupInactive(tasks);
@@ -355,6 +391,28 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     }
     this.discovery.update(conversations, 'native-browser');
     this.control.recordBrowserDiscovery('native-browser', this.discovery.sourceConversations('native-browser'));
+    this.transportFailureStreak = this.lastRunTransportUnavailable
+      ? Math.min(this.transportFailureStreak + 1, MAX_TRANSPORT_BACKOFF_STEPS)
+      : 0;
+  }
+
+  /**
+   * Every task in one tick shares a single bounded inventory snapshot. Reading
+   * the native inventory per task multiplied the Apple Events cost by the task
+   * count and kept the native transport saturated.
+   */
+  private listInventory(): Promise<WorkflowSupervisorNativeBrowserInventory> {
+    this.inventory ??= this.deps.listTabs();
+    return this.inventory;
+  }
+
+  /**
+   * A close mutates the native inventory, so a snapshot taken before it must
+   * not be reused. Creation only adds the newly owned tab, which is never the
+   * absence proof for a different conversation.
+   */
+  private invalidateInventory(): void {
+    this.inventory = undefined;
   }
 
   private async cleanupInactive(tasks: WorkflowSupervisorBrowserTask[]): Promise<void> {
@@ -365,6 +423,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       try {
         if (ref && await this.deps.readOwner(page) === ownerMarker(conversationId)) await this.deps.close(ref);
       } catch { /* Transport cleanup is best-effort; never reinterpret lifecycle state. */ }
+      this.invalidateInventory();
       this.pages.delete(conversationId);
       this.observedAssistant.delete(conversationId);
     }
@@ -385,10 +444,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       } catch { /* Reconstruct from browser evidence below. */ }
       this.pages.delete(task.conversationId);
     }
-    const inventory = await this.deps.listTabs();
+    const inventory = await this.listInventory();
     const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
+    const adoptable: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     let exactCandidateInspectionFailed = false;
-    for (const candidate of inventory.filter((entry) => exactConversation(entry.url, task))) {
+    for (const candidate of inventory.entries.filter((entry) => exactConversation(entry.url, task))) {
       const ref: TaggedBrowserTabRef = {
         windowId: candidate.windowId,
         tabId: candidate.tabId,
@@ -402,18 +462,35 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         } else if (!owner?.trim()) {
           // A user can close and reopen the exact durable conversation. Its
           // browser attachment is ephemeral, so an unowned exact tab may be
-          // adopted for this task and marked locally; never substitute a
-          // different conversation or steal another Supervisor-owned tab.
-          await this.deps.writeOwner(page, marker);
-          if (await this.deps.readOwner(page) === marker) matches.push({ page, ref });
+          // adopted for this task, but only when this Supervisor has no owned
+          // attachment of its own left to recover. Adoption is decided after the
+          // whole inventory is inspected so a live owned tab is never displaced
+          // (and closed) in favour of a tab the user is working in.
+          adoptable.push({ page, ref });
         }
       } catch { exactCandidateInspectionFailed = true; }
+    }
+    if (matches.length === 0 && adoptable.length > 0) {
+      for (const candidate of adoptable) {
+        try {
+          await this.deps.writeOwner(candidate.page, marker);
+          if (await this.deps.readOwner(candidate.page) === marker) matches.push(candidate);
+        } catch { exactCandidateInspectionFailed = true; }
+      }
     }
     if (matches.length > 0) {
       const [selected, ...duplicates] = matches;
       for (const duplicate of duplicates) await this.deps.close(duplicate.ref).catch(() => undefined);
+      if (duplicates.length > 0) this.invalidateInventory();
       this.pages.set(task.conversationId, selected!.page);
       return { state: 'ready', page: selected!.page };
+    }
+    // An unreadable product inventory can still hold the exact owned tab. Only a
+    // complete inventory may assert that the conversation has no tab, and only
+    // that assertion authorizes creating one.
+    if (inventory.unavailableProducts.length > 0) {
+      this.lastRunTransportUnavailable = true;
+      return { state: 'unproven' };
     }
     if (!allowCreate) return { state: exactCandidateInspectionFailed ? 'unproven' : 'missing' };
     const created = await this.createOwnedPage(task);
@@ -451,6 +528,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     try {
       if (ref && await this.deps.readOwner(page) === ownerMarker(task.conversationId)) await this.deps.close(ref);
     } finally {
+      this.invalidateInventory();
       this.pages.delete(task.conversationId);
       this.observedAssistant.delete(task.conversationId);
     }
