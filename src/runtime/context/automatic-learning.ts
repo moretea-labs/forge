@@ -246,13 +246,12 @@ function consolidationAuthority(input: {
 }
 
 function associationAuthority(input: {
-  controllerHome: string;
-  repoId: string;
-  work: WorkContract;
   scope: ScopeRef;
-  sourceRoundId: string;
   sourceMemories: readonly MemoryUnit[];
   relatedMemories: readonly MemoryUnit[];
+  sourceWorkId?: string;
+  sourceRoundId?: string;
+  sourceAuthorityValid?: () => boolean;
 }): CognitiveWriteAuthorityPort {
   const sourceIds = new Set(input.sourceMemories.map(memory => memory.id));
   const relatedIds = new Set(input.relatedMemories.map(memory => memory.id));
@@ -267,17 +266,12 @@ function associationAuthority(input: {
     },
     assertEdgeWrite(edge) {
       if (!sameScope(edge.scope, input.scope)
-        || edge.sourceWorkId !== input.work.workId
+        || edge.sourceWorkId !== input.sourceWorkId
         || edge.sourceRoundId !== input.sourceRoundId
         || !sourceIds.has(edge.fromId)
         || !relatedIds.has(edge.toId)
         || !allowedRelations.has(edge.relation)
-        || !sourceRoundObserved({
-          controllerHome: input.controllerHome,
-          repoId: input.repoId,
-          workId: input.work.workId,
-          sourceRoundId: input.sourceRoundId,
-        })) {
+        || (input.sourceAuthorityValid && !input.sourceAuthorityValid())) {
         throw new Error('COGNITION_AUTOMATIC_ASSOCIATION_AUTHORITY_INVALID');
       }
     },
@@ -299,14 +293,14 @@ function associationCandidates(controllerHome: string, memory: MemoryUnit, now: 
     .slice(0, 64);
 }
 
-function associateStoredMemories(input: {
+export function associateStoredMemories(input: {
   controllerHome: string;
-  repoId: string;
-  work: WorkContract;
-  sourceRoundId: string;
   memories: readonly MemoryUnit[];
   now: string;
-}): void {
+  sourceWorkId?: string;
+  sourceRoundId?: string;
+  sourceAuthorityValid?: () => boolean;
+}): number {
   const store = cognitionMemoryStore(input.controllerHome);
   const currentIds = new Set(input.memories.map(memory => memory.id));
   const seenPairs = new Set<string>();
@@ -361,13 +355,12 @@ function associateStoredMemories(input: {
     const sourceMemories = [...new Map(group.map(item => [item.from.id, item.from])).values()];
     const relatedMemories = [...new Map(group.map(item => [item.to.id, item.to])).values()];
     const authority = associationAuthority({
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-      work: input.work,
       scope,
-      sourceRoundId: input.sourceRoundId,
       sourceMemories,
       relatedMemories,
+      ...(input.sourceWorkId ? { sourceWorkId: input.sourceWorkId } : {}),
+      ...(input.sourceRoundId ? { sourceRoundId: input.sourceRoundId } : {}),
+      ...(input.sourceAuthorityValid ? { sourceAuthorityValid: input.sourceAuthorityValid } : {}),
     });
     for (const draft of group) {
       const key = createHash('sha256')
@@ -382,15 +375,16 @@ function associateStoredMemories(input: {
         relation: draft.relation,
         weight: draft.weight,
         evidenceRefs: draft.evidenceRefs,
-        sourceWorkId: input.work.workId,
-        sourceRoundId: input.sourceRoundId,
+        ...(input.sourceWorkId ? { sourceWorkId: input.sourceWorkId } : {}),
+        ...(input.sourceRoundId ? { sourceRoundId: input.sourceRoundId } : {}),
         recordedAt: input.now,
       });
     }
   }
+  return drafts.length;
 }
 
-interface ConsolidatedLearning {
+export interface ConsolidatedLearning {
   memory: MemoryUnit;
   supportingMemories: MemoryUnit[];
 }
@@ -880,7 +874,7 @@ function adjustmentLearningDraft(input: {
   return memoryDraftFromLearningSignal(learning);
 }
 
-function consolidateAffectedMemories(
+export function consolidateAffectedMemories(
   controllerHome: string,
   scope: ScopeRef,
   triggers: readonly MemoryUnit[],
@@ -897,7 +891,10 @@ function consolidateAffectedMemories(
     for (const memory of port.lexical([scope], terms, 64, now)) sources.set(memory.id, memory);
   }
   const sourceMemories = [...sources.values()]
-    .filter(memory => memory.id.startsWith('learning:auto:'))
+    .filter(memory => memory.facets.includes('learning'))
+    .filter(memory => !memory.id.startsWith('consolidated:')
+      && !memory.id.startsWith('promoted:')
+      && !memory.id.startsWith('candidate:'))
     .slice(0, 128);
   if (sourceMemories.length < 2) return [];
   const result = consolidateMemories(scope, sourceMemories, now);
@@ -1064,9 +1061,14 @@ export function persistAutomaticControllerRoundLearning(input: {
 
   associateStoredMemories({
     controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    work,
+    sourceWorkId: work.workId,
     sourceRoundId: input.sourceRoundId,
+    sourceAuthorityValid: () => sourceRoundObserved({
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+      workId: work.workId,
+      sourceRoundId: input.sourceRoundId,
+    }),
     memories: stored,
     now: observedAt,
   });

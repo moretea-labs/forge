@@ -138,8 +138,13 @@ export function consolidateMemories(scope: ScopeRef, memories: readonly MemoryUn
     const sharedFacets = intersection(sources.map(memory => new Set(memory.facets)));
     const averageUtility = sources.reduce((sum, memory) => sum + memory.utility, 0) / sources.length;
     const averageConfidence = sources.reduce((sum, memory) => sum + memory.confidence, 0) / sources.length;
-    const sourceRounds = new Set(sources.map(memory => memory.provenance.sourceRoundId).filter(Boolean));
-    const corroborationBoost = Math.min(0.15, Math.max(0, sourceRounds.size - 1) * 0.05);
+    const sourceObservations = new Set(sources.map(memory => {
+      const provenance = memory.provenance;
+      if (provenance.sourceRoundId) return `round:${provenance.sourceRoundId}`;
+      if (provenance.sourceId) return `${provenance.sourceKind}:${provenance.sourceId}`;
+      return `evidence:${[...provenance.evidenceRefs].sort().join('|')}`;
+    }));
+    const corroborationBoost = Math.min(0.15, Math.max(0, sourceObservations.size - 1) * 0.05);
     const confidence = Math.min(0.99, averageConfidence + corroborationBoost);
     const clusterKey = sources.map(memory => memory.id).sort().join('|');
     const key = digest(`${scope.kind}:${scope.id}:${clusterKey}`).slice(0, 24);

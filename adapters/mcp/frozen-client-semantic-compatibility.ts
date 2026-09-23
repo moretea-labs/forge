@@ -94,6 +94,15 @@ export interface FrozenLearningRecordCompatibilityEnvelope {
   args: FrozenControllerDispositionLearningCompatibilityArgs;
 }
 
+export interface FrozenLearningFeedbackCompatibilityArgs {
+  learning_feedback: Record<string, unknown>[];
+}
+
+export interface FrozenLearningFeedbackCompatibilityEnvelope {
+  operation: 'learning_feedback';
+  args: FrozenLearningFeedbackCompatibilityArgs;
+}
+
 export type FrozenSemanticCompatibilityEnvelope =
   | FrozenRequirementCreateCompatibilityEnvelope
   | FrozenPlanCreateCompatibilityEnvelope
@@ -101,7 +110,8 @@ export type FrozenSemanticCompatibilityEnvelope =
   | FrozenWorkContinueCompatibilityEnvelope
   | FrozenWorkReviewCompatibilityEnvelope
   | FrozenControllerDispositionLearningCompatibilityEnvelope
-  | FrozenLearningRecordCompatibilityEnvelope;
+  | FrozenLearningRecordCompatibilityEnvelope
+  | FrozenLearningFeedbackCompatibilityEnvelope;
 
 const REQUIREMENT_CREATE_KEYS = new Set([
   'requirement_title',
@@ -264,6 +274,22 @@ function normalizeLearningSignalArgs(value: unknown, label: 'controller_disposit
   };
 }
 
+function normalizeLearningFeedbackArgs(value: unknown): FrozenLearningFeedbackCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('learning_feedback args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, new Set(['learning_feedback']), 'learning_feedback args');
+  if (!Array.isArray(args.learning_feedback) || args.learning_feedback.length === 0 || args.learning_feedback.length > 32) {
+    fail('learning_feedback must be a bounded non-empty array');
+  }
+  return {
+    learning_feedback: args.learning_feedback.map((entry, index) => {
+      const normalized = boundedObject(entry, 'learning_feedback[' + index + ']');
+      if (!normalized) fail('learning_feedback[' + index + '] must be an object');
+      return normalized;
+    }),
+  };
+}
+
 function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): FrozenSemanticCompatibilityEnvelope['args'] {
   if (input.operation === 'requirement_create') return normalizeRequirementCreateArgs(input.args);
   if (input.operation === 'plan_create') return normalizePlanCreateArgs(input.args);
@@ -272,6 +298,7 @@ function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): Froz
   if (input.operation === 'work_review') return normalizeWorkReviewArgs(input.args);
   if (input.operation === 'controller_disposition') return normalizeLearningSignalArgs(input.args, 'controller_disposition');
   if (input.operation === 'learning_record') return normalizeLearningSignalArgs(input.args, 'learning_record');
+  if (input.operation === 'learning_feedback') return normalizeLearningFeedbackArgs(input.args);
   return fail('operation is not allowlisted');
 }
 
@@ -359,6 +386,12 @@ export function parseFrozenSemanticCompatibilityCapability(
     return {
       operation: 'learning_record',
       args: normalizeLearningSignalArgs(payload.a, 'learning_record'),
+    };
+  }
+  if (payload.op === 'learning_feedback') {
+    return {
+      operation: 'learning_feedback',
+      args: normalizeLearningFeedbackArgs(payload.a),
     };
   }
   return fail('operation is not allowlisted');

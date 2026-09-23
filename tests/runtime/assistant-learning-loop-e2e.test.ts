@@ -172,6 +172,7 @@ function contextUsage(bundle: NonNullable<ReturnType<typeof prepareControllerAss
     itemId: item.itemId,
     decision: item.itemId === usedItemId ? 'used' as const : 'rejected' as const,
     reason: item.itemId === usedItemId ? 'This evidence changed the current decision.' : 'Not needed for this round.',
+    ...(item.itemId === usedItemId ? {} : { rejectionKind: 'irrelevant' as const }),
   }));
 }
 
@@ -613,7 +614,8 @@ describe('connected assistant learning loops', () => {
       kind: item.kind,
       itemId: item.itemId,
       decision: 'rejected' as const,
-      reason: item.itemId === learnedItemId ? '[stale] New evidence supersedes this guidance.' : 'Not relevant to this round.',
+      reason: item.itemId === learnedItemId ? 'New evidence supersedes this guidance.' : 'Not relevant to this round.',
+      rejectionKind: item.itemId === learnedItemId ? 'stale' as const : 'irrelevant' as const,
     }));
     const staleDisposition = submitControllerRoundDisposition(fx.store, {
       workId: fx.workId,
@@ -1200,6 +1202,114 @@ describe('direct model-authored learning without Work lifecycle', () => {
         text: expect.stringContaining('Local System'),
       }),
     ]));
+    const recalledItem = recalledPayload.data.learningRecall.items.find((item: any) =>
+      String(item.memoryId).includes(memoryId));
+    expect(recalledItem).toBeTruthy();
+
+    const feedback = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_feedback',
+      learning_feedback: [{
+        memory_address: recalledItem.memoryId,
+        decision: 'used',
+        reason: 'This routing memory directly selected the successful Local System capability.',
+      }],
+    });
+    expect(feedback?.isError).not.toBe(true);
+    const feedbackPayload = feedback?.structuredContent as Record<string, any>;
+    expect(feedbackPayload.data.observationIds).toHaveLength(1);
+
+    const audit = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'search',
+      knowledge_memory_id: memoryId,
+      knowledge_limit: 4,
+    });
+    expect(audit?.isError).not.toBe(true);
+    const auditPayload = audit?.structuredContent as Record<string, any>;
+    expect(auditPayload.data.cognitionAudit.items[0].recentUsage.usedCount).toBe(1);
+
+    const duplicateFeedback = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_feedback',
+      learning_feedback: [{
+        memory_address: recalledItem.memoryId,
+        decision: 'used',
+        reason: 'This routing memory directly selected the successful Local System capability.',
+      }],
+    });
+    expect(duplicateFeedback?.isError).not.toBe(true);
+    const duplicateAudit = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'search',
+      knowledge_memory_id: memoryId,
+      knowledge_limit: 4,
+    });
+    const duplicateAuditPayload = duplicateAudit?.structuredContent as Record<string, any>;
+    expect(duplicateAuditPayload.data.cognitionAudit.items[0].recentUsage.usedCount).toBe(1);
+  });
+
+  test('associates and consolidates related direct learning without inventing a ControllerRound', async () => {
+    const fx = fixture('direct-learning-association', { knowledge: false });
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: fx.repoRoot,
+      explicitRepository: fx.repository,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'chatgpt-direct-learning',
+      sessionId: 'session-direct-learning-association',
+      controllerInstanceId: 'instance-direct-learning',
+      controllerType: 'chatgpt' as const,
+      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      toolset: 'core',
+      toolsetLocked: true,
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const learning = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_record',
+      learning_signals: [
+        {
+          scope_kind: 'project',
+          kind: 'principle',
+          valence: 'positive',
+          summary: 'Generic model learning should use Cognitive memory without requiring Work lifecycle authority.',
+          concepts: ['cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
+          facets: ['architecture', 'learning'],
+          admission_source: 'explicit_human',
+          portability: 'local',
+          salience: 0.9,
+          confidence: 0.9,
+          utility: 0.9,
+        },
+        {
+          scope_kind: 'project',
+          kind: 'principle',
+          valence: 'positive',
+          summary: 'Advisory memory provenance should remain independent from ControllerRound unless the learning actually came from a Work round.',
+          concepts: ['cognition.learning', 'thin-forge', 'lifecycle-decoupling'],
+          facets: ['architecture', 'learning'],
+          admission_source: 'explicit_human',
+          portability: 'local',
+          salience: 0.9,
+          confidence: 0.9,
+          utility: 0.9,
+        },
+      ],
+    });
+    expect(learning?.isError).not.toBe(true);
+    const payload = learning?.structuredContent as Record<string, any>;
+    expect(payload.data.storedMemoryIds).toHaveLength(2);
+    expect(payload.data.associatedEdgeCount).toBeGreaterThan(0);
+    expect(payload.data.consolidatedMemoryIds.length).toBeGreaterThan(0);
+
+    const stored = cognitionReadPort(fx.controllerHome).readByIds(
+      [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
+      payload.data.storedMemoryIds,
+    );
+    expect(stored).toHaveLength(2);
+    expect(stored.every(memory => !memory.provenance.sourceWorkId && !memory.provenance.sourceRoundId)).toBe(true);
   });
 
   test('rejects unavailable direct-learning evidence before writing any memory', async () => {

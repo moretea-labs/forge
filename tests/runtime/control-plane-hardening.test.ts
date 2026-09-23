@@ -1456,7 +1456,7 @@ describe('scheduled external Controller wake', () => {
     };
     const completeUsage = [
       { kind: 'experience' as const, itemId: '["work","work-a","shared-id"]', decision: 'used' as const, reason: 'Applied the Work-scoped memory.' },
-      { kind: 'experience' as const, itemId: '["requirement","req-a","shared-id"]', decision: 'rejected' as const, reason: 'Requirement-scoped memory was not applicable to this exact round.' },
+      { kind: 'experience' as const, itemId: '["requirement","req-a","shared-id"]', decision: 'rejected' as const, reason: 'Requirement-scoped memory was not applicable to this exact round.', rejectionKind: 'irrelevant' as const },
     ];
     expect(() => submitControllerRoundDisposition(store, {
       workId, identity, disposition: 'wait', assistantContextDigest: 'sha256:stale', assistantContextUsage: completeUsage,

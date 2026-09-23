@@ -8,7 +8,7 @@ import {
   type ControllerOutcomeObservationDraft,
 } from '../../../src/runtime/context/assistant-work-context';
 import { parseControllerLearningSignalDrafts } from '../../../src/runtime/context/automatic-learning';
-import { persistDirectControllerLearning } from '../../../src/runtime/context/direct-controller-learning';
+import { persistDirectControllerLearning, recordDirectControllerLearningFeedback, type DirectControllerLearningFeedbackDraft } from '../../../src/runtime/context/direct-controller-learning';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { assertFacadeControllerRoundAuthority } from './controller-authority-adapter';
@@ -18,7 +18,7 @@ type RepositoryIdentity = { repoId: string; activeCheckoutId: string };
 
 /**
  * rh_work learning dispatch has two deliberately different authority shapes:
- * - learning_record is generic model-authored advisory learning and never requires Work.
+ * - learning_record / learning_feedback are generic Cognitive mutations and never require Work.
  * - outcome_record / experience_record are Work-specific verified records and retain exact
  *   ControllerRound lineage.
  */
@@ -28,9 +28,51 @@ export function callRhWorkLearningOperation(
   operation: string,
   args: Record<string, unknown>,
 ): CallToolResult | undefined {
-  if (!['learning_record', 'outcome_record', 'experience_record'].includes(operation)) return undefined;
+  if (!['learning_record', 'learning_feedback', 'outcome_record', 'experience_record'].includes(operation)) return undefined;
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   try {
+    if (operation === 'learning_feedback') {
+      if (!Array.isArray(args.learning_feedback) || args.learning_feedback.length === 0 || args.learning_feedback.length > 32) {
+        throw new Error('COGNITION_DIRECT_FEEDBACK_ITEMS_REQUIRED');
+      }
+      const feedback = args.learning_feedback.map((entry, index) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`COGNITION_DIRECT_FEEDBACK_ITEM_INVALID: ${index}`);
+        const item = entry as Record<string, unknown>;
+        const decision = String(item.decision ?? '').trim();
+        const memoryAddress = String(item.memory_address ?? '').trim();
+        const reason = String(item.reason ?? '').trim();
+        const rejectionKind = typeof item.rejection_kind === 'string' ? item.rejection_kind.trim() : undefined;
+        if (!memoryAddress || !['used', 'rejected'].includes(decision)) throw new Error(`COGNITION_DIRECT_FEEDBACK_ITEM_INVALID: ${index}`);
+        if (decision === 'rejected' && !['irrelevant', 'stale', 'contradicted'].includes(rejectionKind ?? '')) {
+          throw new Error(`COGNITION_DIRECT_FEEDBACK_REJECTION_KIND_REQUIRED: ${index}`);
+        }
+        if (decision === 'used' && rejectionKind) throw new Error(`COGNITION_DIRECT_FEEDBACK_REJECTION_KIND_UNEXPECTED: ${index}`);
+        return {
+          memoryAddress,
+          decision,
+          reason,
+          ...(rejectionKind ? { rejectionKind } : {}),
+        } as DirectControllerLearningFeedbackDraft;
+      });
+      const recorded = recordDirectControllerLearningFeedback({
+        controllerHome: ctx.controllerHome,
+        repository,
+        feedback,
+        principalId: ctx.principalId,
+        sessionId: ctx.sessionId,
+        controllerInstanceId: ctx.controllerInstanceId,
+      });
+      return result(buildFacadeResult({
+        summary: `Recorded ${recorded.observationIds.length} lifecycle-free Cognitive usage feedback observation(s).`,
+        data: {
+          recorded: true,
+          observationIds: recorded.observationIds,
+          scopes: recorded.scopes,
+          authorityBoundary: 'Usage feedback adjusts advisory retrieval utility only; it grants no execution, lifecycle, or semantic authority.',
+        },
+      }) as unknown as Record<string, unknown>);
+    }
+
     if (operation === 'learning_record') {
       const signals = parseControllerLearningSignalDrafts(args.learning_signals);
       if (signals.length === 0) throw new Error('COGNITION_DIRECT_LEARNING_SIGNALS_REQUIRED');
@@ -48,6 +90,8 @@ export function callRhWorkLearningOperation(
         data: {
           recorded: true,
           storedMemoryIds: learning.storedMemoryIds,
+          associatedEdgeCount: learning.associatedEdgeCount,
+          consolidatedMemoryIds: learning.consolidatedMemoryIds,
           scopes: learning.scopes,
           authorityBoundary: 'Cognitive advisory memory only; it never grants execution or lifecycle authority.',
         },

@@ -85,6 +85,8 @@ export interface AssistantContextUsage {
   itemId: string;
   decision: 'used' | 'rejected';
   reason: string;
+  /** Model-authored retrieval rejection semantics. Optional only for frozen-client compatibility. */
+  rejectionKind?: 'irrelevant' | 'stale' | 'contradicted';
 }
 
 export interface ClosedRoundObservation {

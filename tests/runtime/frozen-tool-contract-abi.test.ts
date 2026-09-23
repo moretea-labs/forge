@@ -233,6 +233,24 @@ describe('Tool Contract ABI authority', () => {
     });
   });
 
+  test('semantic.v1 carries lifecycle-free learning feedback for frozen clients', () => {
+    const learningFeedback = [{
+      memory_address: '["project","forge","direct:abc"]',
+      decision: 'rejected',
+      reason: 'The recalled route is stale for this capability.',
+      rejection_kind: 'stale',
+    }];
+    const capability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'learning_feedback',
+      args: { learning_feedback: learningFeedback },
+    });
+    expect(capability).toStartWith('semantic.v1:');
+    expect(parseFrozenSemanticCompatibilityCapability('repair', capability)).toEqual({
+      operation: 'learning_feedback',
+      args: { learning_feedback: learningFeedback },
+    });
+  });
+
   test('semantic.v1 carries frozen work review without inventing another capability prefix', () => {
     const capability = buildFrozenSemanticCompatibilityCapability({
       operation: 'work_review',

@@ -13,6 +13,7 @@ import {
   type ActivationPack,
   type CognitiveMemoryStorePort,
   type CognitiveReadPort,
+  type CognitiveUsageFeedback,
   type MemoryAddress,
   type MemoryEdge,
   type MemoryPayloadRef,
@@ -150,6 +151,23 @@ function ensureSchema(database: SqliteDatabase): void {
       ON cognition_memory_edges (scope_kind, scope_id, from_memory_id);
     CREATE INDEX IF NOT EXISTS cognition_memory_edges_to
       ON cognition_memory_edges (scope_kind, scope_id, to_memory_id);
+
+    CREATE TABLE IF NOT EXISTS cognition_memory_usage (
+      scope_kind TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
+      memory_id TEXT NOT NULL,
+      observation_id TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      rejection_kind TEXT,
+      reason TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      PRIMARY KEY (scope_kind, scope_id, memory_id, observation_id),
+      FOREIGN KEY (scope_kind, scope_id, memory_id)
+        REFERENCES cognition_memory_units(scope_kind, scope_id, memory_id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS cognition_memory_usage_rank
+      ON cognition_memory_usage (scope_kind, scope_id, memory_id, observed_at DESC);
 
     CREATE TABLE IF NOT EXISTS cognition_concept_index (
       scope_kind TEXT NOT NULL,
@@ -355,6 +373,108 @@ function writeCognitiveMemoryEdgeWithinTransaction(database: SqliteDatabase, edg
 }
 
 /** Trusted persistence port. Callers still require a CognitiveWriteAuthorityPort. */
+export type CognitiveUsageDecision = 'used' | 'rejected';
+export type CognitiveUsageRejectionKind = 'irrelevant' | 'stale' | 'contradicted';
+
+export interface CognitiveUsageObservation {
+  observationId: string;
+  address: MemoryAddress;
+  actorId: string;
+  decision: CognitiveUsageDecision;
+  reason: string;
+  rejectionKind?: CognitiveUsageRejectionKind;
+  observedAt: string;
+}
+
+export function recordCognitiveUsageObservation(
+  controllerHome: string,
+  input: CognitiveUsageObservation,
+): CognitiveUsageObservation {
+  const observationId = input.observationId.trim();
+  const actorId = input.actorId.trim();
+  const reason = input.reason.trim();
+  if (!observationId || observationId.length > 512) throw new Error('COGNITION_USAGE_OBSERVATION_ID_INVALID');
+  if (!actorId || actorId.length > 512) throw new Error('COGNITION_USAGE_ACTOR_INVALID');
+  if (!reason || reason.length > 1_000) throw new Error('COGNITION_USAGE_REASON_INVALID');
+  if (!['used', 'rejected'].includes(input.decision)) throw new Error('COGNITION_USAGE_DECISION_INVALID');
+  if (input.decision === 'rejected' && !['irrelevant', 'stale', 'contradicted'].includes(input.rejectionKind ?? '')) {
+    throw new Error('COGNITION_USAGE_REJECTION_KIND_REQUIRED');
+  }
+  if (input.decision === 'used' && input.rejectionKind !== undefined) throw new Error('COGNITION_USAGE_REJECTION_KIND_UNEXPECTED');
+  if (!Number.isFinite(Date.parse(input.observedAt))) throw new Error('COGNITION_USAGE_TIME_INVALID');
+  memoryAddressKey(input.address);
+
+  return withControlPlaneTransaction(controllerHome, database => {
+    ensureSchema(database);
+    if (!readMemory(database, input.address.scope, input.address.id)) throw new Error('COGNITION_USAGE_MEMORY_NOT_FOUND');
+    const [kind, id] = scopeKey(input.address.scope);
+    statement(database, `
+      INSERT OR IGNORE INTO cognition_memory_usage (
+        scope_kind, scope_id, memory_id, observation_id, actor_id, decision,
+        rejection_kind, reason, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    prepared => prepared.run(
+      kind,
+      id,
+      input.address.id,
+      observationId,
+      actorId,
+      input.decision,
+      input.rejectionKind ?? null,
+      reason,
+      input.observedAt,
+    ));
+    return {
+      ...input,
+      observationId,
+      actorId,
+      reason,
+    };
+  });
+}
+
+export function readCognitiveUsageFeedback(
+  controllerHome: string,
+  scopes: readonly ScopeRef[],
+): CognitiveUsageFeedback[] {
+  const uniqueScopes = [...new Map(scopes.map(scope => [`${scope.kind}:${scope.id}`, scope])).values()].slice(0, 32);
+  if (!uniqueScopes.length) return [];
+  return withControlPlaneReadDatabase(controllerHome, database => {
+    if (!tablesAvailable(database, ['cognition_memory_usage'])) return [];
+    const predicate = scopePredicate(uniqueScopes);
+    const rows = statement(database, `
+      SELECT scope_kind, scope_id, memory_id,
+        SUM(CASE WHEN decision = 'used' THEN 1 ELSE 0 END) AS used_count,
+        SUM(CASE WHEN decision = 'rejected' THEN 1 ELSE 0 END) AS rejected_count,
+        SUM(CASE WHEN rejection_kind = 'contradicted' THEN 1 ELSE 0 END) AS conflict_count,
+        SUM(CASE WHEN rejection_kind = 'stale' THEN 1 ELSE 0 END) AS stale_count
+      FROM cognition_memory_usage
+      WHERE ${predicate.sql}
+      GROUP BY scope_kind, scope_id, memory_id
+      ORDER BY scope_kind ASC, scope_id ASC, memory_id ASC
+      LIMIT 512`,
+    prepared => prepared.all(...predicate.params) as Array<{
+      scope_kind: ScopeRef['kind'];
+      scope_id: string;
+      memory_id: string;
+      used_count: number;
+      rejected_count: number;
+      conflict_count: number;
+      stale_count: number;
+    }>);
+    return rows.map(row => ({
+      address: {
+        scope: { schemaVersion: 1, kind: row.scope_kind, id: row.scope_id },
+        id: row.memory_id,
+      },
+      usedCount: Number(row.used_count),
+      rejectedCount: Number(row.rejected_count),
+      conflictCount: Number(row.conflict_count),
+      staleCount: Number(row.stale_count),
+    }));
+  });
+}
+
 export function cognitionMemoryStore(controllerHome: string): CognitiveMemoryStorePort {
   let transaction: SqliteDatabase | undefined;
   return {

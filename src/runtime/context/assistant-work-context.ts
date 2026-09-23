@@ -6,23 +6,12 @@ import { getControllerRoundRelay, getControllerSession, listCurrentControllerRou
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
 import { memoryAddressKey, memoryUnitFromExperience, parseMemoryAddressKey, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveUsageFeedback, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
 import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, cognitiveScopesForWork, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
-import { activateCognitiveMemory, cognitionMemoryStore } from '../control-plane/persistence/cognition-store';
+import { activateCognitiveMemory, cognitionMemoryStore, readCognitiveUsageFeedback } from '../control-plane/persistence/cognition-store';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import { WORKFLOW_RUN_NAMESPACE, type WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import { loadProjectEngineeringContract } from './project-engineering-contract';
 import { fileKnowledgeSourcePort, renderAssistantContext, resolveAssistantContext, type AssistantContextResolution } from './assistant-context';
 import { applyCognitiveSkillCanary } from './cognitive-skill-canary';
-
-function rejectionFeedbackClass(reason: string): 'irrelevant' | 'stale' | 'contradicted' {
-  const normalized = reason.trim().toLocaleLowerCase('en-US');
-  if (/^\[?(stale|superseded)\]?\b/.test(normalized)
-    || /\b(stale|outdated|superseded|obsolete)\b/.test(normalized)
-    || /(过时|失效|已被替代|已取代)/.test(reason)) return 'stale';
-  if (/^\[?(contradicted|conflict)\]?\b/.test(normalized)
-    || /\b(contradict|contradicted|conflict|conflicting)\b/.test(normalized)
-    || /(矛盾|冲突|反证)/.test(reason)) return 'contradicted';
-  return 'irrelevant';
-}
 
 /**
  * Canonical truth remains ControllerRound observationWindow. This is a bounded,
@@ -55,13 +44,27 @@ export function cognitiveUsageFeedbackForContext(input: {
         if (usage.decision === 'used') current.usedCount += 1;
         else {
           current.rejectedCount += 1;
-          const classification = rejectionFeedbackClass(usage.reason);
-          if (classification === 'stale') current.staleCount += 1;
-          else if (classification === 'contradicted') current.conflictCount += 1;
+          if (usage.rejectionKind === 'stale') current.staleCount += 1;
+          else if (usage.rejectionKind === 'contradicted') current.conflictCount += 1;
         }
         feedback.set(key, current);
       }
     }
+  }
+  for (const direct of readCognitiveUsageFeedback(input.controllerHome, input.scopes)) {
+    const key = memoryAddressKey(direct.address);
+    const current = feedback.get(key) ?? {
+      address: direct.address,
+      usedCount: 0,
+      rejectedCount: 0,
+      conflictCount: 0,
+      staleCount: 0,
+    };
+    current.usedCount += direct.usedCount;
+    current.rejectedCount += direct.rejectedCount;
+    current.conflictCount += direct.conflictCount;
+    current.staleCount += direct.staleCount;
+    feedback.set(key, current);
   }
   return [...feedback.values()]
     .sort((left, right) => memoryAddressKey(left.address).localeCompare(memoryAddressKey(right.address)))

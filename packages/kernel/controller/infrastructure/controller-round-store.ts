@@ -667,13 +667,21 @@ function validatedAssistantContextUsage(
   for (const item of usage) {
     const key = `${item.kind}:${item.itemId}`;
     if (!expected.has(key) || seen.has(key) || !['used', 'rejected'].includes(item.decision)
-      || typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 1_000) {
+      || typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 1_000
+      || (item.rejectionKind !== undefined && !['irrelevant', 'stale', 'contradicted'].includes(item.rejectionKind))
+      || (item.decision === 'used' && item.rejectionKind !== undefined)) {
       throw new Error('CONTROLLER_ASSISTANT_CONTEXT_USAGE_INVALID');
     }
     seen.add(key);
   }
   if (seen.size !== expected.size) throw new Error('CONTROLLER_ASSISTANT_CONTEXT_USAGE_INCOMPLETE');
-  return usage.map((item) => ({ ...item, reason: item.reason.trim() }));
+  return usage.map((item) => ({
+    ...item,
+    reason: item.reason.trim(),
+    // Missing rejectionKind is accepted only for frozen clients and means ordinary
+    // irrelevance. Forge never derives stale/contradicted semantics from prose.
+    ...(item.decision === 'rejected' ? { rejectionKind: item.rejectionKind ?? 'irrelevant' as const } : {}),
+  }));
 }
 
 function persistClaimedAssistantContextSnapshot(
