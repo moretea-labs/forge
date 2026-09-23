@@ -1936,17 +1936,23 @@ async function verifyLocalRuntime(
 }
 
 /**
- * Five-second Watchdog cadence owns health observation, not release
- * verification. Keep this path deliberately bounded to already-published
- * Runtime authority/status plus local HTTP transport checks needed for prompt
- * targeted repair. Expensive execution canaries, known-good bundle inspection,
- * tunnel commands, external transport probes and MCP initialize/list/call stay
- * in verifyStableRuntime/verifyLocalRuntime and run only on the periodic
- * verification deadline or after this health tier degrades.
+ * Bounded observation owns health, not release verification. Keep this path
+ * deliberately bounded to already-published Runtime authority/status plus local
+ * HTTP transport checks needed for prompt targeted repair. Expensive execution
+ * canaries, known-good bundle inspection, external transport probes and MCP
+ * initialize/list/call stay in verifyStableRuntime/verifyLocalRuntime and run
+ * only on the periodic verification deadline or an explicit strict boundary.
  */
-async function observeWatchdogHealthTier(
+async function observeBoundedRuntimeHealth(
   config: RecoveryConfig,
-  transport = createRecoveryHttpTransport(config.controllerHome),
+  transport: RecoveryHttpTransport,
+  options: {
+    /**
+     * Primary Connector probing is excluded from repair surfaces that must keep
+     * working while the primary transport is the broken thing.
+     */
+    includePrimaryConnectorLocal?: boolean;
+  } = {},
 ): Promise<VerifyResult> {
   const observation = observeRuntimeStatus(config.controllerHome);
   const authority = releaseAuthority(config);
@@ -1972,8 +1978,10 @@ async function observeWatchdogHealthTier(
   probes.active_gateway = endpoint
     ? await probe(transport, runtimeHealthEndpoint(endpoint))
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
-  const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
-  if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
+  if (options.includePrimaryConnectorLocal !== false) {
+    const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
+    if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
+  }
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
   probes.recovery_watchdog = {
@@ -2016,6 +2024,13 @@ async function observeWatchdogHealthTier(
     },
     probes,
   };
+}
+
+async function observeWatchdogHealthTier(
+  config: RecoveryConfig,
+  transport = createRecoveryHttpTransport(config.controllerHome),
+): Promise<VerifyResult> {
+  return observeBoundedRuntimeHealth(config, transport, { includePrimaryConnectorLocal: true });
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
@@ -5575,19 +5590,23 @@ function tunnelRepairAllowed(config: RecoveryConfig, now: number): boolean {
 async function verifyRecoveryTunnelRepairSurface(config: RecoveryConfig): Promise<VerifyResult> {
   // Recovery tunnel repair is a bootstrap control-plane operation. It must not
   // depend on the primary public MCP/Connector transport that Recovery exists
-  // to repair around. Keep canonical Runtime/Recovery authority checks and the
-  // dedicated Recovery external probe, but exclude primary transport probes.
-  return verifyStableRuntime({
-    ...config,
-    publicMcpUrl: undefined,
-    primaryPublicTunnelService: undefined,
-    primaryConnectorService: undefined,
-  }, createRecoveryHttpTransport(config.controllerHome), { probeMcpProtocol: false });
+  // to repair around, and it must stay bounded: the repair runs inside the same
+  // process that serves the Recovery gateway, so strict whole-Runtime or
+  // known-good bundle verification here starves that gateway, delays the tunnel's
+  // own OAuth discovery, and turns a repair into a multi-minute Recovery outage.
+  // Observe canonical Runtime authority/status plus the local Recovery gateway
+  // and the dedicated Recovery transport only.
+  return observeBoundedRuntimeHealth(config, createRecoveryHttpTransport(config.controllerHome), {
+    includePrimaryConnectorLocal: false,
+  });
 }
 
 export async function repairPublicTunnel(config: RecoveryConfig, dependencies: PublicTunnelRepairDependencies = {}): Promise<PublicTunnelRepairResult> {
   const verify = dependencies.verify ?? verifyRecoveryTunnelRepairSurface;
-  const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  // The repair runs in-process with the Recovery gateway it protects, so the
+  // local precondition uses the same bounded surface instead of strict
+  // whole-Runtime verification.
+  const verifyLocal = dependencies.verifyLocal ?? verifyRecoveryTunnelRepairSurface;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const runCommand = dependencies.runCommand ?? command;

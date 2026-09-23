@@ -1272,6 +1272,59 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
   expect(commands.some((entry) => entry.includes('forge') && !entry.includes('forge-recovery'))).toBe(false);
 });
 
+test('standalone Recovery repairs its public tunnel from a bounded surface instead of strict whole-Runtime verification', async () => {
+  const home = controllerHome();
+  const activeManifest = manifest(home, 'release-repair-surface', 'artifact-repair-surface');
+  ensureActiveRuntimeRelease(home, activeManifest);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  const endpoint = 'http://127.0.0.1:8787/recovery/mcp';
+  const profilePath = join(home, 'forge-recovery-surface.yaml');
+  const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
+  writeFileSync(profilePath, `target: ${endpoint}\n`);
+  const config = createRecoveryConfig(home, {
+    gateway: { host: '127.0.0.1', port: runtime.port, bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json') },
+    recoveryTunnelService: {
+      platform: 'openai-secure-tunnel',
+      alias: 'forge-recovery-surface',
+      tunnelId,
+      mcpServerUrl: endpoint,
+      runtimeApiKeyRef: 'file:/tmp/forge-recovery-runtime-key',
+      profile: 'forge-recovery',
+      profileDir: home,
+      postRestartVerifyTimeoutMs: 0,
+      cooldownMs: 0,
+    },
+  });
+  startObservedRuntime(
+    home,
+    runtime.endpoint,
+    'release-repair-surface',
+    'artifact-repair-surface',
+    new Date(Date.now() - 10_000).toISOString(),
+  );
+  const commands: string[][] = [];
+  const result = await repairPublicTunnel(config, {
+    platform: 'linux',
+    now: () => Date.now(),
+    sleep: async () => {},
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (args[0] === 'runtimes' && args[1] === 'status') return { ok: false, status: 1, stdout: '', stderr: 'runtime alias not connected' };
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  // The repair runs inside the process that serves the Recovery gateway. Strict
+  // whole-Runtime verification here starves that gateway and delays the tunnel's
+  // own OAuth discovery, so the repair surface stays bounded.
+  expect(result.verify.probes.recovery_tunnel_runtime).toBeDefined();
+  expect(result.verify.probes.runtime_execution_surface).toBeUndefined();
+  expect(result.verify.probes.recovery_known_good_recoverability).toBeUndefined();
+  expect(result.verify.probes.mcp_initialize).toBeUndefined();
+  expect(commands.some((entry) => entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(true);
+});
+
 test('standalone Recovery repairs its dedicated Linux systemd-user public tunnel by exact unit identity', async () => {
   const home = controllerHome();
   const unitName = 'com.moretea.forge-recovery-cloudflare.service';
