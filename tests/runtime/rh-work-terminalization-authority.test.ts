@@ -17,7 +17,7 @@ import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease,
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
-import { implementationReviewCommittedBaseRevision, inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
+import { implementationReviewCommittedBaseRevision, inspectCleanupOnlyMergedHead, inspectManagedWorkPostCommitEditingRebind } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
@@ -216,6 +216,51 @@ function exactVerification(input: {
     },
   };
 }
+
+describe('managed post-commit editing identity rebind', () => {
+  test('accepts only a scope-owned dirty delta on an exact Work-verified committed HEAD', () => {
+    const { repoRoot } = fixture();
+    execFileSync('git', ['checkout', '-b', 'work/rebind'], { cwd: repoRoot });
+    const previousHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const ready = 2;\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'verified successor'], { cwd: repoRoot });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const ready = 3;\n');
+    const status = repositoryGitStatus({ canonicalRoot: repoRoot } as never);
+    const receipt = { ok: true, status: 'passed', runtimeStatus: 'succeeded' } as VerificationRecord['receipt'];
+    const inspection = inspectManagedWorkPostCommitEditingRebind({
+      root: repoRoot, worktreePath: repoRoot, managedWorktree: true, workBranch: 'work/rebind', expectedRevision: previousHead,
+      status, scope: { allowedPaths: ['src/**'], forbiddenPaths: [] }, checkIds: ['check:a', 'check:b'],
+      checkRefs: [
+        { checkId: 'check:a', outcome: 'valid_pass', sourceRevision: candidateHead, receipt } as VerificationRecord,
+        { checkId: 'check:b', outcome: 'valid_pass', sourceRevision: candidateHead, receipt } as VerificationRecord,
+      ],
+    });
+    expect(inspection).toMatchObject({ rebindable: true, reason: 'rebindable', candidateHead, dirtyPaths: ['src/index.ts'], verifiedCheckIds: ['check:a', 'check:b'] });
+  });
+
+  test('rejects an unrelated dirty path even when the committed HEAD has Work verification', () => {
+    const { repoRoot } = fixture();
+    execFileSync('git', ['checkout', '-b', 'work/rebind-scope'], { cwd: repoRoot });
+    const previousHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const ready = 2;\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'verified successor'], { cwd: repoRoot });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(repoRoot, 'outside.txt'), 'unowned\n');
+    const status = repositoryGitStatus({ canonicalRoot: repoRoot } as never);
+    const receipt = { ok: true, status: 'passed', runtimeStatus: 'succeeded' } as VerificationRecord['receipt'];
+    const inspection = inspectManagedWorkPostCommitEditingRebind({
+      root: repoRoot, worktreePath: repoRoot, managedWorktree: true, workBranch: 'work/rebind-scope', expectedRevision: previousHead,
+      status, scope: { allowedPaths: ['src/**'], forbiddenPaths: [] }, checkIds: ['check:a'],
+      checkRefs: [{ checkId: 'check:a', outcome: 'valid_pass', sourceRevision: candidateHead, receipt } as VerificationRecord],
+    });
+    expect(inspection.rebindable).toBe(false);
+    expect(inspection.reason).toBe('scope_violation');
+    expect(inspection.dirtyPaths).toContain('outside.txt');
+  });
+});
 
 describe('rh_work terminalization authority', () => {
   test('an exact current valid pass survives a later identityless infrastructure observation while standalone infrastructure failure remains actionable', async () => {

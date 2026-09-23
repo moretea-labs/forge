@@ -928,6 +928,67 @@ export function reconcileDirectCanonicalTargetAdvanceCommand(input: {
   return { reconciled: true, handle, inspection };
 }
 
+export interface ManagedWorkPostCommitEditingRebindInspection {
+  rebindable: boolean;
+  reason: 'not_managed_worktree' | 'path_mismatch' | 'branch_mismatch' | 'clean_workspace' | 'revision_unavailable' | 'no_head_change' | 'scope_violation' | 'verification_missing' | 'rebindable';
+  candidateHead?: string;
+  dirtyPaths: string[];
+  verifiedCheckIds: string[];
+  detail?: string;
+}
+
+/**
+ * Re-bind only editing identity after a Work-owned post-commit delta appears on
+ * an exact managed checkout whose committed HEAD was already fully verified for
+ * this Work. This does not grant delivery authority: callers must invalidate
+ * validation, re-arm commit/merge, and verify the dirty workspace again.
+ */
+export function inspectManagedWorkPostCommitEditingRebind(input: {
+  root: string;
+  worktreePath: string;
+  managedWorktree: boolean;
+  workBranch: string;
+  expectedRevision?: string;
+  status: ReturnType<typeof repositoryGitStatus>;
+  scope?: { allowedPaths: string[]; forbiddenPaths: string[] };
+  checkIds: string[];
+  checkRefs: VerificationRecord[];
+}): ManagedWorkPostCommitEditingRebindInspection {
+  const empty = (reason: ManagedWorkPostCommitEditingRebindInspection['reason'], detail?: string): ManagedWorkPostCommitEditingRebindInspection => ({
+    rebindable: false, reason, dirtyPaths: [], verifiedCheckIds: [], ...(detail ? { detail } : {}),
+  });
+  if (!input.managedWorktree) return empty('not_managed_worktree');
+  try {
+    if (realpathSync(input.root) !== realpathSync(input.worktreePath)) return empty('path_mismatch');
+  } catch { return empty('path_mismatch'); }
+  const branch = spawnSync('git', ['-C', input.root, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (branch.status !== 0 || String(branch.stdout ?? '').trim() !== input.workBranch) return empty('branch_mismatch');
+  if (input.status.clean) return empty('clean_workspace');
+  const candidateHead = input.status.head ? gitRevision(input.root, input.status.head) : undefined;
+  const previousHead = input.expectedRevision ? gitRevision(input.root, input.expectedRevision) : undefined;
+  if (!candidateHead || !previousHead) return empty('revision_unavailable');
+  if (candidateHead === previousHead) return { ...empty('no_head_change'), candidateHead };
+  const { dirtyPaths, ownedPaths } = workOwnedDirtyPaths(input.scope, input.status);
+  if (ownedPaths.length !== dirtyPaths.length) {
+    const outside = dirtyPaths.find((path) => !ownedPaths.includes(path));
+    return { ...empty('scope_violation', outside), candidateHead, dirtyPaths };
+  }
+  const requiredCheckIds = [...new Set(input.checkIds)].sort((a, b) => a.localeCompare(b));
+  const verifiedCheckIds = requiredCheckIds.filter((checkId) => input.checkRefs.some((record) =>
+    record.checkId === checkId
+    && record.outcome === 'valid_pass'
+    && record.sourceRevision === candidateHead
+    && record.receipt?.ok === true
+    && record.receipt.status === 'passed'
+    && record.receipt.runtimeStatus === 'succeeded'));
+  if (requiredCheckIds.length === 0 || verifiedCheckIds.length !== requiredCheckIds.length) {
+    return { ...empty('verification_missing'), candidateHead, dirtyPaths, verifiedCheckIds };
+  }
+  return { rebindable: true, reason: 'rebindable', candidateHead, dirtyPaths, verifiedCheckIds };
+}
+
 export interface ManagedWorkSuccessorAdoptionInspection {
   adoptable: boolean;
   reason:
@@ -1856,6 +1917,74 @@ async function finalizeWorkInternal(
       command: 'work_finalize',
     });
   if (gitAuthorization.decision !== 'allow') return { authorization: gitAuthorization, work: compactHandle(current), stages: current.finalization };
+
+  // A Work may have produced a new committed HEAD and then acquired another
+  // Work-owned dirty delta before final delivery. A stale expectedHead must not
+  // trap it in validating forever, but the newer HEAD is adopted only as editing
+  // identity, never as delivery authority. Exact dirty workspace verification
+  // and a new commit are required before merge can resume.
+  if (
+    wants.commit
+    && wants.merge
+    && current.managedWorktree
+    && current.expectedHead
+    && current.finalization.failureCode === 'WORK_HANDLE_HEAD_CHANGED'
+    && current.finalization.validation === 'pending'
+    && current.finalization.commit === 'done'
+    && current.finalization.merge === 'pending'
+  ) {
+    const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+    const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
+    const contract = contractFor(ctx, current);
+    const inspection = inspectManagedWorkPostCommitEditingRebind({
+      root: worktree.canonicalRoot,
+      worktreePath: current.worktreePath,
+      managedWorktree: current.managedWorktree,
+      workBranch: current.branch,
+      expectedRevision: current.expectedHead,
+      status: repositoryGitStatus(worktree),
+      scope: contract ? { allowedPaths: contract.allowedPaths, forbiddenPaths: contract.forbiddenPaths } : undefined,
+      checkIds: contract?.checks ?? [],
+      checkRefs: contract?.checkRefs ?? [],
+    });
+    if (inspection.rebindable && inspection.candidateHead && contract) {
+      const previousHead = current.expectedHead;
+      current = transact('managed-post-commit-editing-rebound', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'editing', {
+        expectedHead: inspection.candidateHead,
+        failureReason: undefined,
+        validationRun: undefined,
+        validatedInputFingerprint: undefined,
+        finalization: {
+          ...fresh.finalization,
+          validation: 'pending',
+          commit: 'pending',
+          merge: 'pending',
+          branchCleanup: 'pending',
+          worktreeCleanup: 'pending',
+          failureCode: undefined,
+          lastError: undefined,
+        },
+      }));
+      transitionWorkContractPhase(
+        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+        contract.workId,
+        {
+          phase: 'verification', status: 'running', state: 'active',
+          summary: `Re-bound stale managed Work editing identity ${previousHead} -> ${inspection.candidateHead}; ${inspection.dirtyPaths.length} scope-owned dirty path(s) require exact verification and recommit before delivery.`,
+        },
+      );
+      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, contract.workId, {
+        title: 'managed Work post-commit editing identity re-bound',
+        summary: `WorkHandle editing identity moved ${previousHead} -> ${inspection.candidateHead} only after exact checkout/branch ownership, Work path-scope proof for [${inspection.dirtyPaths.join(', ')}], and complete prior Work verification [${inspection.verifiedCheckIds.join(', ')}] at that committed HEAD. Validation/commit/merge were re-armed; no delivery authority was inherited.`,
+        detailLevel: 'summary',
+      });
+      markWorkValidationPending(ctx.controllerHome, current);
+      return {
+        work: compactHandle(current), stages: current.finalization, completed: false, editingIdentityRebound: true,
+        continuation: `WORK_DIRTY_SUCCESSOR_REVALIDATION_REQUIRED: committed Work HEAD ${inspection.candidateHead} is now the editing identity; verify the exact dirty workspace, then recommit before delivery`,
+      };
+    }
+  }
 
   // A conflict-repaired managed candidate rewrites commit identity, so the
   // normal descendant-HEAD fence cannot authorize it. Re-adopt only an exact,
