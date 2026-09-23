@@ -340,18 +340,33 @@ function relevantWork(
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+function recoveryFenceWork(
+  options: ControllerRoundRelayStoreOptions,
+  record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
+  allWorkContracts: readonly WorkContract[] = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts,
+): WorkContract[] {
+  const explicit = relevantWork(options, record, allWorkContracts);
+  const requirementId = record.requirementId?.trim();
+  if (!requirementId || record.relayScopeId !== `requirement:${requirementId}`) return explicit;
+  const byId = new Map(explicit.map((work) => [work.workId, work] as const));
+  for (const work of allWorkContracts) {
+    if (work.requirementId?.trim() === requirementId) byId.set(work.workId, work);
+  }
+  return [...byId.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
 function relayMayHaveActiveWork(
   options: ControllerRoundRelayStoreOptions,
   record: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'requirementId'>,
   activeWorkSnapshot: ReturnType<typeof readActiveWorkCandidates>,
 ): boolean {
   const all = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
-  const linkedWorkIds = currentTaskLineageWorkIds([record.originWorkId], all);
-  // Malformed repository siblings are not current-task authority. Stay
-  // conservative only when the malformed row is itself already in the exact
-  // explicit lineage; unrelated invalid inventory remains conflict metadata.
-  if (activeWorkSnapshot.invalid.some((work) => linkedWorkIds.has(work.workId))) return true;
-  return activeWorkSnapshot.contracts.some((work) => linkedWorkIds.has(work.workId));
+  const recoveryFenceIds = new Set(recoveryFenceWork(options, record, all).map((work) => work.workId));
+  // Recovery is a destructive liveness decision. For Requirement-scoped relay
+  // authority it must conservatively fence every active Work in that Requirement,
+  // while normal semantic context continues to use exact current-task lineage.
+  if (activeWorkSnapshot.invalid.some((work) => recoveryFenceIds.has(work.workId))) return true;
+  return activeWorkSnapshot.contracts.some((work) => recoveryFenceIds.has(work.workId));
 }
 
 function relevantHandoffs(
@@ -981,6 +996,7 @@ export function beginInitialControllerRoundDispatch(
     throw new Error(`CONTROLLER_RELAY_REQUIREMENT_TERMINAL: ${requirement.state}`);
   }
   const relayScopeId = resolveRelayScope(work, requirementId, input.relayScopeId);
+  const occurrenceId = bounded(input.occurrenceId, 500);
 
   return relayLock(options, relayScopeId, `controller-relay-launch:${input.identity.controllerId}`, () => {
     const existing = readRelayRecord(options, work.workId);
@@ -999,13 +1015,13 @@ export function beginInitialControllerRoundDispatch(
         && !existing.value.providerDispatchEffectId
         && !existing.value.providerDispatchStartedAt
         && !existing.value.providerDispatchReceiptId
-        && (existing.value.providerDispatchAttempt ?? 0) === 0;
+        && (existing.value.providerDispatchAttempt ?? 0) === 0
+        && (existing.value.occurrenceId ?? '') === occurrenceId;
       if (reusableUnsubmittedRelay) return existing.value;
     }
     const previous = relayHistory(options, relayScopeId)[0];
     const abandonedReleasedRound = previous?.status === 'failed' && previous.failureClass === 'abandoned_release';
     const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
-    const occurrenceId = bounded(input.occurrenceId, 500);
     return applyControllerRoundTransition(options, existing, {
       type: 'occurrence_requested', at: nowIso(options), repoId: options.repoId, relayScopeId, originWorkId: work.workId,
       ...(requirementId ? { requirementId } : {}), identity: input.identity, stateFingerprint, proposedAuthorityId: newControllerRoundAuthorityId(),
@@ -1439,7 +1455,7 @@ export function recoverControllerRoundRelayAuthority(
     if (isTerminalWorkContractStatus(currentWork.status)) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${currentWork.status}`);
     }
-    const activeWorks = relevantWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
+    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
     if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) {
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
     }
@@ -1602,7 +1618,7 @@ export function rearmControllerRoundAfterProviderRecovery(
     if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
     const requirement = requirementForRelay(options, current.value.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_REQUIREMENT_TERMINAL: ${requirement.state}`);
-    const activeWorks = relevantWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
+    const activeWorks = recoveryFenceWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
     if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
     if (activeWorks.some((entry) => Boolean(getControllerSession(options, entry.workId)))) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_ACTIVE_CLAIM: ${workId}`);
     const evidenceId = bounded(input.evidenceId, 500);
@@ -1689,7 +1705,7 @@ export function claimStalledControllerRoundRelays(
     const requirement = requirementForRelay(options, candidate.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) continue;
     if (!relayMayHaveActiveWork(options, candidate, activeWorkSnapshotForScan())) continue;
-    const candidateWorks = relevantWork(options, candidate, workSnapshotForScan());
+    const candidateWorks = recoveryFenceWork(options, candidate, workSnapshotForScan());
     const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
     if (activeCandidateWorks.length === 0) continue;
     if (activeCandidateWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
@@ -1717,7 +1733,7 @@ export function claimStalledControllerRoundRelays(
       const latestRequirement = requirementForRelay(options, latest.requirementId);
       if (latestRequirement && !['planned', 'active'].includes(latestRequirement.state)) return undefined;
       const lockedWorkContracts = readWorkContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts;
-      const works = relevantWork(options, latest, lockedWorkContracts);
+      const works = recoveryFenceWork(options, latest, lockedWorkContracts);
       const activeWorks = works.filter((work) => !isTerminalWorkContractStatus(work.status));
       if (activeWorks.length === 0) return undefined;
       if (activeWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
