@@ -409,6 +409,27 @@ async function executeExternalControllerWake(
               { schedulerRecoveryKey: occurrence.occurrenceId },
             );
             if (reEnrollment.status !== 'enrolled') {
+              const currentWork = getWorkContract(workStore, workId);
+              if (reEnrollment.status === 'not_eligible' && (!currentWork || isTerminalWorkContractStatus(currentWork.status))) {
+                updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+                  enabled: false,
+                  pausedReason: currentWork
+                    ? `Work ${workId} is terminal (${currentWork.status}).`
+                    : `Work ${workId} no longer exists.`,
+                  lastTriggeredAt: timestamp,
+                  lastOccurrenceId: occurrence.occurrenceId,
+                }));
+                return saveOccurrence(controllerHome, decideOccurrence(
+                  controllerHome,
+                  schedule,
+                  occurrence,
+                  'nothing_to_do',
+                  'skipped',
+                  currentWork
+                    ? `Work ${workId} became terminal (${currentWork.status}) while Supervisor enrollment was being repaired; automatic continuation stopped without creating a blocker.`
+                    : `Work ${workId} disappeared while Supervisor enrollment was being repaired; automatic continuation stopped without creating a blocker.`,
+                ));
+              }
               throw new Error(`WORKFLOW_SUPERVISOR_REENROLLMENT_FAILED:${reEnrollment.status}:${reEnrollment.reason ?? boundary.taskId}`);
             }
             updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
