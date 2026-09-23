@@ -151,3 +151,36 @@ describe('Workflow Supervisor browser adapter installer', () => {
     expect(source).not.toContain('readdirSync');
   });
 });
+
+describe('workflow supervisor Chrome extension conversation identity', () => {
+  function core(): {
+    parseConversation(value: string): { conversationId: string; canonicalUrl: string } | null;
+    sameIdentity(a: unknown, b: unknown): boolean;
+    sameConversation(a: unknown, b: unknown): boolean;
+  } {
+    const source = readFileSync(join(process.cwd(), 'supervisor', 'chrome-extension', 'core.js'), 'utf8');
+    const sandbox: Record<string, unknown> = {};
+    new Function('globalThis', 'URL', source)(sandbox, URL);
+    return sandbox.ForgeWorkflowSupervisorChromeCore as ReturnType<typeof core>;
+  }
+
+  test('treats a project-routed and a canonical route to one conversation as the same tab', () => {
+    const api = core();
+    const projectRoute = api.parseConversation('https://chatgpt.com/g/g-p-abc123/c/6ab2124d-a2e4-83ee-a091-43ad398678fa')!;
+    const canonicalRoute = api.parseConversation('https://chatgpt.com/c/6ab2124d-a2e4-83ee-a091-43ad398678fa')!;
+
+    expect(projectRoute.canonicalUrl).toBe('https://chatgpt.com/g/g-p-abc123/c/6ab2124d-a2e4-83ee-a091-43ad398678fa');
+    // Reuse follows the durable conversation id, so a redirect that drops the
+    // project prefix no longer opens a duplicate tab on every refresh pass.
+    expect(api.sameConversation(projectRoute, canonicalRoute)).toBe(true);
+    // Page-scoped message handling stays strict about the exact route it serves.
+    expect(api.sameIdentity(projectRoute, canonicalRoute)).toBe(false);
+  });
+
+  test('rejects non-ChatGPT or non-conversation routes instead of opening a tab for them', () => {
+    const api = core();
+    expect(api.parseConversation('https://example.com/c/abc')).toBeNull();
+    expect(api.parseConversation('https://chatgpt.com/g/g-p-abc123')).toBeNull();
+    expect(api.parseConversation('https://chatgpt.com/c')).toBeNull();
+  });
+});

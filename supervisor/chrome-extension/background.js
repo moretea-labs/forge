@@ -2,8 +2,27 @@ importScripts('core.js');
 const core = globalThis.ForgeWorkflowSupervisorChromeCore;
 const NATIVE_HOST = 'com.moretea.forge.workflow_supervisor';
 const ALARM = 'forge-workflow-supervisor-scan';
+const REFRESH_MIN_INTERVAL_MS = 2_000;
+const CREATED_TAB_COOLDOWN_MS = 5 * 60 * 1000;
 const observedAssistant = new Map();
+const recentCreatedTabs = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+async function ensureConversationTab(tabs, target) {
+  const existing = tabs.find((candidate) => core.sameConversation(core.parseConversation(candidate.url ?? ''), target));
+  if (existing) return existing;
+  // A tab created here fires tabs.onUpdated and can be missing from the snapshot
+  // this pass already holds, so re-read live tabs before opening anything.
+  const fresh = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  const live = fresh.find((candidate) => core.sameConversation(core.parseConversation(candidate.url ?? ''), target));
+  if (live) { tabs.push(live); return live; }
+  const key = `conversation:${target.conversationId}`;
+  if (Date.now() - (recentCreatedTabs.get(key) ?? 0) < CREATED_TAB_COOLDOWN_MS) return undefined;
+  const created = await chrome.tabs.create({ url: target.canonicalUrl, active: false });
+  recentCreatedTabs.set(key, Date.now());
+  if (created) tabs.push(created);
+  return undefined;
+}
 
 function nativeRpc(method, params = {}) {
   return new Promise((resolve, reject) => chrome.runtime.sendNativeMessage(NATIVE_HOST, { id: randomId(), method, params }, (response) => {
@@ -89,7 +108,11 @@ async function refreshAuthorizedTabs() {
     if (!project) continue;
     let projectTab = tabs.find((tab) => String(tab.url ?? '') === project.url);
     if (!projectTab) {
+      const key = `project:${project.url}`;
+      if (Date.now() - (recentCreatedTabs.get(key) ?? 0) < CREATED_TAB_COOLDOWN_MS) continue;
       projectTab = await chrome.tabs.create({ url: project.url, active: false });
+      recentCreatedTabs.set(key, Date.now());
+      if (projectTab) tabs.push(projectTab);
       continue;
     }
     if (!projectTab.id) continue;
@@ -113,8 +136,8 @@ async function refreshAuthorizedTabs() {
   for (const task of tasks) {
     const target = core.parseConversation(task.conversationUrl);
     if (!target || target.conversationId !== task.conversationId) continue;
-    const tab = tabs.find((candidate) => core.sameIdentity(core.parseConversation(candidate.url ?? ''), target));
-    if (!tab) { await chrome.tabs.create({ url: target.canonicalUrl, active: false }); continue; }
+    const tab = await ensureConversationTab(tabs, target);
+    if (!tab) continue;
     if (tab.discarded && tab.id) { await chrome.tabs.reload(tab.id); continue; }
     if (tab.id) await tabMessage(tab.id, { type: 'forge-workflow-supervisor-scan' }).catch(() => undefined);
   }
@@ -129,19 +152,27 @@ chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { perio
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void refreshAuthorizedTabs().catch(() => undefined); });
 let refreshInFlight;
 let refreshQueued = false;
-function scheduleRefresh() {
-  refreshQueued = true;
+let refreshTimer;
+let lastRefreshAtMs = 0;
+async function runRefreshLoop() {
   if (refreshInFlight) return;
-  const drain = async () => {
-    while (refreshQueued) {
-      refreshQueued = false;
-      await refreshAuthorizedTabs().catch(() => undefined);
-    }
-  };
-  refreshInFlight = drain().finally(() => {
+  refreshQueued = false;
+  refreshInFlight = refreshAuthorizedTabs().catch(() => undefined).finally(() => {
+    lastRefreshAtMs = Date.now();
     refreshInFlight = undefined;
     if (refreshQueued) scheduleRefresh();
   });
+  await refreshInFlight;
+}
+// Tab load/activate/close events fire constantly while ChatGPT tabs churn. Each
+// full pass ends in a task reconciliation that can reopen conversation tabs, so
+// the triggers are coalesced behind a minimum interval instead of running a new
+// pass per browser event.
+function scheduleRefresh() {
+  refreshQueued = true;
+  if (refreshInFlight || refreshTimer !== undefined) return;
+  const waitMs = Math.max(0, REFRESH_MIN_INTERVAL_MS - (Date.now() - lastRefreshAtMs));
+  refreshTimer = setTimeout(() => { refreshTimer = undefined; void runRefreshLoop(); }, waitMs);
 }
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) scheduleRefresh(); });
 chrome.tabs.onActivated.addListener(() => scheduleRefresh());

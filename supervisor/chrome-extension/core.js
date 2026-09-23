@@ -28,5 +28,10 @@
     return `${value.length}:${(hash >>> 0).toString(16)}`;
   }
   function sameIdentity(a, b) { return Boolean(a && b && a.conversationId === b.conversationId && a.canonicalUrl === b.canonicalUrl); }
-  globalThis.ForgeWorkflowSupervisorChromeCore = Object.freeze({ normalizeText, parseConversation, effectMarker, promptHasEffect, isCommittedAssistantResponse, textFingerprint, sameIdentity });
+  // Tab reuse is keyed on the durable conversation id. A conversation reached
+  // through a project route redirects to its canonical `/c/<id>` route, so
+  // requiring the exact route to match made the extension open another tab for
+  // the same conversation on every refresh pass.
+  function sameConversation(a, b) { return Boolean(a && b && a.conversationId === b.conversationId); }
+  globalThis.ForgeWorkflowSupervisorChromeCore = Object.freeze({ normalizeText, parseConversation, effectMarker, promptHasEffect, isCommittedAssistantResponse, textFingerprint, sameIdentity, sameConversation });
 })();
