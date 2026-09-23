@@ -94,7 +94,7 @@ import {
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
-import { installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
@@ -5064,4 +5064,54 @@ describe('Recovery explicit performance acceptance', () => {
     })).rejects.toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
+});
+
+test('recovery release install waits for an in-flight Recovery mutation instead of failing immediately', async () => {
+  const home = controllerHome();
+  const owner = {
+    schemaVersion: 1 as const,
+    pid: 4242,
+    instanceId: 'in-flight-mutation',
+    processStartTime: 'Wed Sep 23 22:00:00 2026',
+    acquiredAt: '2026-09-23T14:00:00.000Z',
+    action: 'repair_public_tunnel',
+    requestId: 'internal:repair_public_tunnel:in-flight-mutation',
+  };
+  let attempts = 0;
+  const waits: number[] = [];
+  const reported: string[] = [];
+  const lock = await acquireRecoveryReleaseLock(home, {
+    acquire: (input) => {
+      attempts += 1;
+      if (attempts < 3) return { acquired: false as const, owner };
+      return acquireRecoveryOperationLock(input);
+    },
+    sleep: async (ms) => { waits.push(ms); },
+    report: (detail) => { reported.push(detail); },
+  });
+  expect(attempts).toBe(3);
+  expect(waits).toEqual([2_000, 2_000]);
+  expect(reported.join('')).toContain('repair_public_tunnel');
+  lock.close();
+});
+
+test('recovery release install still fails closed when the Recovery mutation never finishes', async () => {
+  const home = controllerHome();
+  const owner = {
+    schemaVersion: 1 as const,
+    pid: 4242,
+    instanceId: 'stuck-mutation',
+    processStartTime: 'Wed Sep 23 22:00:00 2026',
+    acquiredAt: '2026-09-23T14:00:00.000Z',
+    action: 'attest_known_good',
+    requestId: 'internal:attest_known_good:stuck-mutation',
+  };
+  let clock = 0;
+  await expect(acquireRecoveryReleaseLock(home, {
+    acquire: () => ({ acquired: false as const, owner }),
+    sleep: async (ms) => { clock += ms; },
+    now: () => clock,
+    waitMs: 5_000,
+    report: () => {},
+  })).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
 });

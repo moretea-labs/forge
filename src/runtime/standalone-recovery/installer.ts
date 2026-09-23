@@ -542,18 +542,56 @@ export async function verifyRecoveryReleaseActivation(input: {
   return last;
 }
 
-function acquireRecoveryReleaseLock(controllerHome: string): { path: string; instanceId: string; close: () => void } {
-  const attempt = acquireRecoveryOperationLock({
-    controllerHome,
-    action: 'install_recovery_release',
-    instanceIdPrefix: 'recovery-release-',
-  });
-  if (!attempt.acquired) throw new Error('RECOVERY_OPERATION_LOCK_BUSY');
-  return {
-    path: attempt.handle.path,
-    instanceId: attempt.handle.record.instanceId,
-    close: attempt.handle.close,
-  };
+export const RECOVERY_RELEASE_LOCK_WAIT_MS = 10 * 60_000;
+export const RECOVERY_RELEASE_LOCK_POLL_MS = 2_000;
+
+/**
+ * An explicit operator release install must not fail merely because the Recovery
+ * daemon is inside its own bounded autonomous mutation (release step, tunnel
+ * repair, watchdog escalation). Wait for the single writer to finish, then take
+ * the same mutation lock; the lock still guarantees exactly one writer, and the
+ * bounded wait still fails closed if the holder never releases.
+ */
+export async function acquireRecoveryReleaseLock(
+  controllerHome: string,
+  dependencies: {
+    acquire?: typeof acquireRecoveryOperationLock;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    waitMs?: number;
+    report?: (detail: string) => void;
+  } = {},
+): Promise<{ path: string; instanceId: string; close: () => void }> {
+  const acquire = dependencies.acquire ?? acquireRecoveryOperationLock;
+  const sleep = dependencies.sleep ?? ((ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)));
+  const now = dependencies.now ?? Date.now;
+  const report = dependencies.report ?? ((detail: string) => process.stderr.write(detail));
+  const deadline = now() + (dependencies.waitMs ?? RECOVERY_RELEASE_LOCK_WAIT_MS);
+  let reported = false;
+  for (;;) {
+    const attempt = acquire({
+      controllerHome,
+      action: 'install_recovery_release',
+      instanceIdPrefix: 'recovery-release-',
+    });
+    if (attempt.acquired) {
+      return {
+        path: attempt.handle.path,
+        instanceId: attempt.handle.record.instanceId,
+        close: attempt.handle.close,
+      };
+    }
+    if (now() >= deadline) {
+      throw new Error(`RECOVERY_OPERATION_LOCK_BUSY: ${attempt.owner.action} pid=${attempt.owner.pid} acquiredAt=${attempt.owner.acquiredAt}`);
+    }
+    if (!reported) {
+      report(
+        `recovery release install waiting for in-flight Recovery mutation: action=${attempt.owner.action} pid=${attempt.owner.pid} acquiredAt=${attempt.owner.acquiredAt}\n`,
+      );
+      reported = true;
+    }
+    await sleep(RECOVERY_RELEASE_LOCK_POLL_MS);
+  }
 }
 
 function recoveryRoleLabel(role: RecoveryRuntimeRole): string {
@@ -724,7 +762,7 @@ export async function activateRecoveryRelease(input: {
   const controllerHome = resolve(input.controllerHome);
   const config = input.config ?? loadRecoveryConfig(controllerHome);
   const profile = normalizeRecoveryInstallProfile(config.installProfile, 'self-healing');
-  const lock = acquireRecoveryReleaseLock(controllerHome);
+  const lock = await acquireRecoveryReleaseLock(controllerHome);
   const current = readCurrentRecoveryRelease(controllerHome);
   try {
     if (current && sameRecoveryReleasePayload(current, input.candidate)) {
