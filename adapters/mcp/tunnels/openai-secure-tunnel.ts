@@ -115,13 +115,17 @@ export function parseOpenAiSecureTunnelRuntimeStatus(
   const ready = value.ready === true;
   const tunnelMatches = value.tunnel_id === expected.tunnelId;
   const endpointMatches = tunnelRuntimeProfileTargetsEndpoint(value.profile_path, expected.mcpServerUrl);
-  const ok = running && healthy && ready && tunnelMatches && endpointMatches;
+  // `process_running` only describes runtimes that tunnel-client supervises
+  // itself. An externally owned service manager (launchd/systemd) reports the
+  // runtime as not running while the tunnel is healthy, reachable, and bound to
+  // the expected identity. Health, readiness, tunnel id, and endpoint binding are
+  // the transport facts; process registry state is diagnostic only.
+  const ok = healthy && ready && tunnelMatches && endpointMatches;
   const mismatches: string[] = [];
   if (!tunnelMatches && value.tunnel_id) mismatches.push(`tunnel id mismatch (${value.tunnel_id})`);
   if (!endpointMatches && value.profile_path) mismatches.push('runtime profile targets a different MCP endpoint');
-  if (!running) mismatches.push(`runtime is ${value.runtime_state ?? 'not running'}`);
-  if (running && !healthy) mismatches.push('runtime is not healthy');
-  if (running && !ready) mismatches.push('runtime is not ready');
+  if (!healthy) mismatches.push(`runtime is ${value.runtime_state ?? 'not running'}`);
+  if (healthy && !ready) mismatches.push('runtime is not ready');
   if (value.error) mismatches.push(value.error);
   return {
     ok,

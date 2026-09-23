@@ -7,6 +7,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
+import { parseOpenAiSecureTunnelRuntimeStatus } from '../../adapters/mcp/tunnels/openai-secure-tunnel';
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
@@ -1107,6 +1108,31 @@ test('standalone Recovery uses its client-owned loopback health only when a prim
   });
   expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
   expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
+});
+
+test('standalone Recovery classifies an externally managed OpenAI tunnel runtime as healthy transport', () => {
+  const home = controllerHome();
+  const profilePath = join(home, 'forge-current.yaml');
+  const tunnelId = 'tunnel_6a87fd97832081919de7953008ead152';
+  const endpoint = 'http://127.0.0.1:8767/mcp';
+  writeFileSync(profilePath, `target: ${endpoint}\n`);
+
+  // A launchd/systemd owned tunnel is healthy and ready while tunnel-client's own
+  // process registry still reports it as not running. That must not be read as a
+  // failed transport, or whole-Runtime verification and Recovery soak can never
+  // converge for an externally managed tunnel.
+  const observed = parseOpenAiSecureTunnelRuntimeStatus(JSON.stringify({
+    process_running: false,
+    healthy: true,
+    ready: true,
+    tunnel_id: tunnelId,
+    profile_path: profilePath,
+    runtime_state: 'healthy',
+  }), { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint });
+
+  expect(observed.ok).toBe(true);
+  expect(observed.running).toBe(false);
+  expect(observed.detail).toContain('is ready for');
 });
 
 test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
