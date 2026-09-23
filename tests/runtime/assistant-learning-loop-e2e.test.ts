@@ -1179,6 +1179,27 @@ describe('direct model-authored learning without Work lifecycle', () => {
     expect(learningPayload.data.storedMemoryIds).toHaveLength(1);
 
     const memoryId = String(learningPayload.data.storedMemoryIds[0]);
+    const workspaceLearning = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_record',
+      learning_signals: [{
+        scope_kind: 'workspace',
+        kind: 'principle',
+        valence: 'positive',
+        summary: 'Portable generic filesystem routing guidance may be useful when a Project has no local routing memory.',
+        concepts: ['local-system', 'filesystem-routing', 'portable-fallback'],
+        facets: ['capability-routing', 'portable-guidance'],
+        admission_source: 'explicit_human',
+        portability: 'portable',
+        salience: 0.9,
+        confidence: 0.9,
+        utility: 0.9,
+      }],
+    });
+    expect(workspaceLearning?.isError).not.toBe(true);
+    const workspaceLearningPayload = workspaceLearning?.structuredContent as Record<string, any>;
+    const workspaceMemoryId = String(workspaceLearningPayload.data.storedMemoryIds[0]);
+
     const learned = cognitionReadPort(fx.controllerHome).readByIds(
       [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
       [memoryId],
@@ -1196,12 +1217,17 @@ describe('direct model-authored learning without Work lifecycle', () => {
     });
     expect(recalled?.isError).not.toBe(true);
     const recalledPayload = recalled?.structuredContent as Record<string, any>;
+    expect(recalledPayload.data.learningRecall).toMatchObject({
+      scopePolicy: 'narrow_scopes_then_workspace_fallback',
+    });
     expect(recalledPayload.data.learningRecall.items).toEqual(expect.arrayContaining([
       expect.objectContaining({
         memoryId: expect.stringContaining(memoryId),
         text: expect.stringContaining('Local System'),
       }),
     ]));
+    expect(recalledPayload.data.learningRecall.items.some((item: any) =>
+      String(item.memoryId).includes(workspaceMemoryId))).toBe(false);
     const recalledItem = recalledPayload.data.learningRecall.items.find((item: any) =>
       String(item.memoryId).includes(memoryId));
     expect(recalledItem).toBeTruthy();

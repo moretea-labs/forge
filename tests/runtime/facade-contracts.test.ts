@@ -37,6 +37,14 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });
 
+  test('keeps cognition cadence model-owned without adding another lifecycle', () => {
+    const rhContext = runtimeToolDefinitions.find((definition) => definition.name === 'rh_context');
+    const properties = rhContext?.inputSchema.properties as Record<string, any> | undefined;
+    expect(properties?.include_learning_recall?.type).toBe('boolean');
+    expect(properties?.include_learning_recall?.description).toContain('model-owned attention/cadence choice');
+    expect(FACADE_TOOLS).toHaveLength(5);
+  });
+
   test('keeps controller learning drafts bounded and provenance server-owned', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;

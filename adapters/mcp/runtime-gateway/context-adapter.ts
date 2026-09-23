@@ -189,19 +189,32 @@ function rhContextLearningRecall(
     scopes: resolved.scopes,
     ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
   });
-  const activation = activateCognitiveMemory(
+  const recallOptions = {
+    maxItems: Math.min(8, Math.max(1, limit)),
+    maxCandidates: 48,
+    maxGraphDepth: 1,
+    maxBytes: 12 * 1024,
+    minCueScore: RH_CONTEXT_AUTOMATIC_RECALL_MIN_CUE_SCORE,
+    usageFeedback: usage,
+  };
+  const narrowScopes = resolved.scopes.filter(scope => scope.kind !== 'workspace');
+  const workspaceScopes = resolved.scopes.filter(scope => scope.kind === 'workspace');
+  const localActivation = activateCognitiveMemory(
     ctx.controllerHome,
-    resolved.scopes,
+    narrowScopes.length ? narrowScopes : workspaceScopes,
     query.slice(0, 4_000),
-    {
-      maxItems: Math.min(8, Math.max(1, limit)),
-      minCueScore: RH_CONTEXT_AUTOMATIC_RECALL_MIN_CUE_SCORE,
-      usageFeedback: usage,
-    },
+    recallOptions,
   );
+  // Ordinary recall behaves like attention: prefer exact task/project experience.
+  // Portable Workspace memory is a fallback when the narrower semantic context
+  // has no qualifying cue, not an extra stream of background advice.
+  const activation = localActivation.items.length > 0 || workspaceScopes.length === 0
+    ? localActivation
+    : activateCognitiveMemory(ctx.controllerHome, workspaceScopes, query.slice(0, 4_000), recallOptions);
   return {
     advisoryOnly: true,
     authorityBoundary: 'Learned context may guide model decisions but never grants execution, lifecycle, or acceptance authority.',
+    scopePolicy: 'narrow_scopes_then_workspace_fallback',
     scopes: resolved.scopes,
     items: activation.items.map(entry => ({
       memoryId: memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id }),
