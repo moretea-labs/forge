@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
@@ -141,6 +141,11 @@ export function withRuntimeReleaseSourceSnapshot<T>(input: {
     throw new Error(`RUNTIME_RELEASE_SOURCE_SNAPSHOT_FAILED: ${materialized.stderr || materialized.stdout || materialized.error}`.slice(0, 2_000));
   }
   try {
+    const sourceDependencies = join(sourceRoot, 'node_modules');
+    if (existsSync(sourceDependencies)) {
+      const snapshotDependencies = join(snapshotRoot, 'node_modules');
+      symlinkSync(realpathSync(sourceDependencies), snapshotDependencies, process.platform === 'win32' ? 'junction' : 'dir');
+    }
     if (gitText(snapshotRoot, ['rev-parse', '--verify', 'HEAD']) !== requestedRevision) {
       throw new Error('RUNTIME_RELEASE_SOURCE_SNAPSHOT_REVISION_MISMATCH');
     }

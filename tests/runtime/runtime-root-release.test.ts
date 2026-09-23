@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { delimiter, dirname, join, relative } from 'path';
 import { spawnSync } from 'child_process';
@@ -294,6 +294,10 @@ describe('persistent Gateway release retention', () => {
 describe('runtime release materialization', () => {
   test('keeps a frozen source revision outside the source checkout while the configured checkout advances', () => {
     const { root } = sourceFixture();
+    const dependenciesRoot = join(root, 'node_modules');
+    writeFileSync(join(root, '.git', 'info', 'exclude'), 'node_modules/\n', { flag: 'a' });
+    mkdirSync(dependenciesRoot, { recursive: true });
+    writeFileSync(join(dependenciesRoot, '.forge-dependency-provider'), 'fixture dependency tree\n');
     const frozenRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
     let snapshotPath = '';
     let snapshotContainer = '';
@@ -303,6 +307,8 @@ describe('runtime release materialization', () => {
       expect(snapshotRoot).not.toBe(root);
       expect(relative(root, snapshotRoot).startsWith('..')).toBe(true);
       expect(existsSync(join(root, '.forge', 'runtime-release-source-snapshots'))).toBe(false);
+      expect(realpathSync(join(snapshotRoot, 'node_modules'))).toBe(realpathSync(dependenciesRoot));
+      expect(readFileSync(join(snapshotRoot, 'node_modules', '.forge-dependency-provider'), 'utf8')).toBe('fixture dependency tree\n');
       expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
       expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
       writeFileSync(join(root, 'README.md'), 'fixture advanced while candidate is staging\n');
