@@ -34,7 +34,6 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getControllerSession,
-  readControllerRoundContextSnapshot,
   getRetainedControllerSession,
   mintControllerSessionAuthority,
   reconcileControllerRoundAfterAbandonedRelease,
@@ -342,9 +341,6 @@ export async function callRhWorkControllerOperation(
       )
         ? currentLearningRoundRef
         : undefined;
-      const automaticLearningSignals = currentRelay?.status === 'claimed'
-        ? readControllerRoundContextSnapshot(store, currentRelay).executionQualitySignals ?? []
-        : [];
       const terminalGoalComplete = work.status === 'completed' && disposition === 'goal_complete';
       const terminalSuccessorContinuation = work.status === 'completed'
         && disposition === 'continue_immediately'
@@ -432,26 +428,20 @@ export async function callRhWorkControllerOperation(
       let automaticLearning;
       let automaticLearningWarning: string | undefined;
       if (automaticLearningRoundId) {
-        const adjustmentFingerprints = Array.isArray(args.execution_quality_adjustment_results)
-          ? args.execution_quality_adjustment_results
-            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
-            .map(item => typeof item.fingerprint === 'string' ? item.fingerprint.trim() : '')
-            .filter(Boolean)
-          : [];
         try {
           const controllerSignals = parseControllerLearningSignalDrafts(args.learning_signals);
-          automaticLearning = persistAutomaticControllerRoundLearning({
-            controllerHome: ctx.controllerHome,
-            repoId: repository.repoId,
-            workId,
-            sourceRoundId: automaticLearningRoundId,
-            signals: automaticLearningSignals,
-            controllerSignals,
-            adjustmentFingerprints,
-          });
+          if (controllerSignals.length > 0) {
+            automaticLearning = persistAutomaticControllerRoundLearning({
+              controllerHome: ctx.controllerHome,
+              repoId: repository.repoId,
+              workId,
+              sourceRoundId: automaticLearningRoundId,
+              controllerSignals,
+            });
+          }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
-          automaticLearningWarning = `Automatic learning failed after the Controller disposition was durably recorded: ${reason}`;
+          automaticLearningWarning = `Model-authored learning persistence failed after the Controller disposition was durably recorded: ${reason}`;
           automaticLearning = {
             storedMemoryIds: [],
             consolidatedMemoryIds: [],

@@ -461,8 +461,8 @@ describe('connected assistant learning loops', () => {
       kind: 'experience', itemId: experienceItemId, decision: 'used',
     }));
   });
-  test('closed execution-quality evidence automatically becomes durable cognitive memory and is recalled next round', () => {
-    const fx = fixture('automatic-cognition', { knowledge: false });
+  test('keeps execution-quality evidence observable until the model authors a semantic learning signal', () => {
+    const fx = fixture('model-owned-cognition', { knowledge: false });
     fx.setNow(time(10));
     const first = claimInitialRound(fx, 1);
     appendVerificationRecord(fx.store, fx.workId, verificationRecord(fx, 'receipt-auto-1', time(11), 'stable'));
@@ -482,7 +482,7 @@ describe('connected assistant learning loops', () => {
     const fourth = claimReleasedRound(fx, third.owner, 4);
     const qualityContext = readControllerRoundContextSnapshot(fx.store, fourth.relay);
     const signal = qualityContext.executionQualitySignals?.find((item) => item.code === 'repeated_verification');
-    expect(signal).toBeDefined();
+    expect(signal?.evidenceRefs).toEqual(expect.arrayContaining(['receipt-auto-1', 'receipt-auto-2', 'receipt-auto-3']));
     const sourceRoundId = `${fourth.relay.relayScopeId}:${fourth.relay.roundCount}`;
     closeContinue(fx, fourth);
 
@@ -491,23 +491,23 @@ describe('connected assistant learning loops', () => {
       repoId: fx.repository.repoId,
       workId: fx.workId,
       sourceRoundId,
-      signals: [signal!],
+      controllerSignals: [],
       now: time(41),
     });
-    expect(learning.storedMemoryIds).toHaveLength(1);
-    expect(learning.skipped).toEqual([]);
-
-    fx.setNow(time(50));
-    const fifth = claimReleasedRound(fx, fourth.owner, 5);
-    const memoryItemId = memoryAddressKey({
-      scope: { schemaVersion: 1, kind: 'project', id: 'project-learning-loop' },
-      id: learning.storedMemoryIds[0]!,
+    expect(learning).toEqual({
+      storedMemoryIds: [],
+      consolidatedMemoryIds: [],
+      promotedMemoryIds: [],
+      requirementCandidateIds: [],
+      skipped: [],
     });
-    expect(fifth.bundle?.snapshot.items).toContainEqual(expect.objectContaining({
-      kind: 'knowledge',
-      itemId: memoryItemId,
-      revision: 1,
-    }));
+    const machineDerivedMemory = cognitionReadPort(fx.controllerHome).exactByConcept(
+      [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
+      ['forge.execution-quality.repeated_verification'],
+      8,
+      time(41),
+    );
+    expect(machineDerivedMemory).toEqual([]);
   });
 
   test('persists Controller-extracted semantic learning after disposition and recalls it on the next round', async () => {
@@ -568,7 +568,6 @@ describe('connected assistant learning loops', () => {
       repoId: fx.repository.repoId,
       workId: fx.workId,
       sourceRoundId,
-      signals: [],
       controllerSignals: [{
         scopeKind: 'project',
         kind: 'principle',
@@ -833,7 +832,6 @@ describe('connected assistant learning loops', () => {
       repoId: fx.repository.repoId,
       workId: fx.workId,
       sourceRoundId: firstRoundId,
-      signals: [],
       controllerSignals: [{
         scopeKind: 'project', kind: 'principle', valence: 'positive',
         summary: '交互本身应该说明如何使用，说明文案只解释用户看不见的规则。',
@@ -855,7 +853,6 @@ describe('connected assistant learning loops', () => {
       repoId: fx.repository.repoId,
       workId: fx.workId,
       sourceRoundId: secondRoundId,
-      signals: [],
       controllerSignals: [{
         scopeKind: 'project', kind: 'principle', valence: 'positive',
         summary: '移动端应通过控件、状态和流程让操作自解释，不要用教程文字补偿模糊交互。',
@@ -876,7 +873,7 @@ describe('connected assistant learning loops', () => {
     expect(['supports', 'analogous_to']).toContain(relation!);
   });
 
-  test('surfaces automatic learning failure after durable disposition without rolling back or disguising it as skipped', async () => {
+  test('surfaces model-authored learning persistence failure after durable disposition without rolling back it', async () => {
     const fx = fixture('transport-learning-warning', { knowledge: false });
     const workId = 'work-transport-learning-warning-unbound';
     createWorkContract(fx.store, {
@@ -932,6 +929,19 @@ describe('connected assistant learning loops', () => {
       disposition: 'wait',
       controller_authority_id: round.relay.authorityId,
       relay_scope_id: round.relay.relayScopeId,
+      learning_signals: [{
+        scope_kind: 'project',
+        kind: 'principle',
+        valence: 'neutral',
+        summary: 'A model-authored lesson should fail diagnostically if its semantic Project scope becomes ambiguous after disposition.',
+        concepts: ['cognition.model-authored', 'project-placement'],
+        facets: ['architecture'],
+        admission_source: 'controller_observation',
+        portability: 'local',
+        salience: 0.7,
+        confidence: 0.65,
+        utility: 0.6,
+      }],
       ...(round.bundle ? {
         assistant_context_digest: round.bundle.snapshot.digest,
         assistant_context_usage: contextUsage(round.bundle),
@@ -941,7 +951,7 @@ describe('connected assistant learning loops', () => {
     const payload = result!.structuredContent as Record<string, any>;
     expect(payload.status).toBe('ok');
     expect(payload.warnings).toEqual([
-      expect.stringContaining('Automatic learning failed after the Controller disposition was durably recorded: PROJECT_PLACEMENT_AMBIGUOUS'),
+      expect.stringContaining('Model-authored learning persistence failed after the Controller disposition was durably recorded: PROJECT_PLACEMENT_AMBIGUOUS'),
     ]);
     expect(payload.data.automaticLearning).toEqual({
       storedMemoryIds: [],
@@ -962,11 +972,10 @@ describe('connected assistant learning loops', () => {
     });
   });
 
-  test('promotes corroborated engineering learning to Workspace and recalls it in a sibling Project', () => {
-    const fx = fixture('workspace-learning', { knowledge: false });
+  test('consolidates repeated model-authored engineering learning without inventing Workspace or Requirement promotion', () => {
+    const fx = fixture('project-learning-trust', { knowledge: false });
     let previousOwner: ControllerSession | undefined;
-    let promotedMemoryId: string | undefined;
-    let requirementCandidateId: string | undefined;
+    let finalLearning: ReturnType<typeof persistAutomaticControllerRoundLearning> | undefined;
 
     for (let index = 1; index <= 3; index += 1) {
       fx.setNow(time(index * 10));
@@ -977,107 +986,50 @@ describe('connected assistant learning loops', () => {
       appendVerificationRecord(fx.store, fx.workId, verificationRecord(fx, receiptId, time(index * 10 + 1), `root-cause-${index}`));
       const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
       closeContinue(fx, round);
-      const learning = persistAutomaticControllerRoundLearning({
+      finalLearning = persistAutomaticControllerRoundLearning({
         controllerHome: fx.controllerHome,
         repoId: fx.repository.repoId,
         workId: fx.workId,
         sourceRoundId,
-        signals: [{
-          code: 'repeated_root_cause',
-          fingerprint: `root-cause-pattern-${index}`,
+        controllerSignals: [{
+          scopeKind: 'project',
+          kind: 'principle',
+          valence: 'neutral',
+          summary: index === 1
+            ? 'Related symptoms may share one architecture root cause; batch the correction instead of patching each symptom.'
+            : 'When related symptoms share an architecture root cause, prefer one batched root correction over symptom patches.',
+          concepts: ['architecture.root-cause', 'delivery.batch-correction', 'engineering.systemic-fix'],
+          facets: ['engineering-principle'],
+          admissionSource: 'controller_observation',
+          portability: 'local',
+          salience: 0.86,
+          confidence: 0.78,
+          utility: 0.82,
           evidenceRefs: [receiptId],
-          observation: 'Related symptoms share one architecture root cause; batch the correction instead of patching each symptom.',
+          counterEvidenceRefs: [],
         }],
         now: time(index * 10 + 2),
       });
-      if (index < 3) {
-        expect(learning.promotedMemoryIds).toEqual([]);
-        expect(learning.requirementCandidateIds).toEqual([]);
-      } else {
-        expect(learning.consolidatedMemoryIds.length).toBeGreaterThan(0);
-        expect(learning.promotedMemoryIds).toHaveLength(1);
-        expect(learning.requirementCandidateIds).toHaveLength(1);
-        promotedMemoryId = learning.promotedMemoryIds[0];
-        requirementCandidateId = learning.requirementCandidateIds[0];
-      }
+      expect(finalLearning.promotedMemoryIds).toEqual([]);
+      expect(finalLearning.requirementCandidateIds).toEqual([]);
       previousOwner = round.owner;
     }
 
-    const consumerRoot = mkdtempSync(join(tmpdir(), 'forge-learning-loop-consumer-'));
-    roots.push(consumerRoot);
-    mkdirSync(join(consumerRoot, '.forge'), { recursive: true });
-    writeFileSync(join(consumerRoot, 'README.md'), 'consumer project\n');
-    writeFileSync(join(consumerRoot, '.forge', 'project-engineering.json'), JSON.stringify({
-      schemaVersion: 1,
-      contractId: 'learning-consumer',
-      contractVersion: '1',
-      projectId: 'project-learning-consumer',
-      authority: { product: ['README.md'], architecture: [], source: ['src/**'] },
-      quality: { ux: [], performance: [], nonRegression: [] },
-      checks: [], journeys: [], platforms: [], tooling: [], skillRefs: [], exceptions: [],
-    }, null, 2));
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: consumerRoot });
-    execFileSync('git', ['config', 'user.email', 'learning-loop@example.test'], { cwd: consumerRoot });
-    execFileSync('git', ['config', 'user.name', 'Learning Loop Test'], { cwd: consumerRoot });
-    execFileSync('git', ['add', '.'], { cwd: consumerRoot });
-    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: consumerRoot });
-    const consumerRepository = registerRepository({ path: consumerRoot, controllerHome: fx.controllerHome, displayName: 'learning consumer' });
-    writeProjectIdentity({ controllerHome: fx.controllerHome, value: {
-      projectId: 'project-learning-consumer',
-      workspaceId: fx.workspaceId,
-      displayName: 'Learning Consumer Project',
-    } });
-    writeProjectPlacement({ controllerHome: fx.controllerHome, value: {
-      projectId: 'project-learning-consumer',
-      forgeInstanceId: fx.forgeInstanceId,
-      repositoryId: consumerRepository.repoId,
-      checkoutId: consumerRepository.activeCheckoutId,
-    } });
-    const consumerWorkId = 'work-learning-consumer';
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: consumerRepository.repoId }, {
-      workId: consumerWorkId,
-      repoId: consumerRepository.repoId,
-      checkoutId: consumerRepository.activeCheckoutId,
-      scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-learning-consumer' },
-      mode: 'goal_workloop',
-      objective: 'Apply forge.execution-quality.repeated_root_cause guidance to avoid symptom-by-symptom patches.',
-      acceptanceCriteria: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false },
-      allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'chatgpt', status: 'running',
-    });
-
-    const consumerContext = prepareControllerAssistantContextBundle({
-      controllerHome: fx.controllerHome,
-      repoId: consumerRepository.repoId,
-    }, consumerWorkId);
-    const promotedItemId = memoryAddressKey({
-      scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
-      id: promotedMemoryId!,
-    });
-    const requirementCandidateItemId = memoryAddressKey({
-      scope: { schemaVersion: 1, kind: 'workspace', id: fx.workspaceId },
-      id: requirementCandidateId!,
-    });
-    expect(consumerContext?.snapshot.items).toContainEqual(expect.objectContaining({
-      kind: 'knowledge',
-      itemId: promotedItemId,
-    }));
-    expect(consumerContext?.snapshot.items).toContainEqual(expect.objectContaining({
-      kind: 'knowledge',
-      itemId: requirementCandidateItemId,
-    }));
-    const resolvedConsumerContext = prepareAssistantWorkContext({
-      controllerHome: fx.controllerHome,
-      repoId: consumerRepository.repoId,
-      workId: consumerWorkId,
-      query: 'forge.requirement-candidate repeated root cause',
-      now: time(32),
-    });
-    expect(resolvedConsumerContext?.items).toContainEqual(expect.objectContaining({
-      kind: 'knowledge',
-      id: requirementCandidateItemId,
-      text: expect.stringContaining('[memory:candidate-finding,requirement-candidate,advisory'),
-    }));
+    expect(finalLearning?.consolidatedMemoryIds.length).toBeGreaterThan(0);
+    const projectMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
+      [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
+      ['architecture.root-cause'],
+      16,
+      time(32),
+    );
+    expect(projectMemories.length).toBeGreaterThanOrEqual(3);
+    const workspaceMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
+      [{ schemaVersion: 1, kind: 'workspace', id: fx.workspaceId }],
+      ['architecture.root-cause'],
+      16,
+      time(32),
+    );
+    expect(workspaceMemories).toEqual([]);
   });
 
   test('ControllerRound context excludes unbound handoff noise but retains Work-bound and explicit user handoffs', () => {
