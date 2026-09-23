@@ -122,8 +122,7 @@ export async function callRecoveryTool(controllerHome, toolName, args = {}, inje
       protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'forge-local-recovery-provider', version: PLUGIN_VERSION },
     },
   });
-  const sessionId = initialized.response.headers.get('mcp-session-id');
-  if (!sessionId) throw providerError('LOCAL_RECOVERY_MCP_SESSION_MISSING', 'Recovery MCP initialize did not return a session id.');
+  const sessionId = initialized.response.headers.get('mcp-session-id') || undefined;
   try {
     await postRpc(fetchImpl, endpoint, token, { jsonrpc: '2.0', method: 'notifications/initialized' }, sessionId);
     const called = await postRpc(fetchImpl, endpoint, token, {
@@ -139,12 +138,14 @@ export async function callRecoveryTool(controllerHome, toolName, args = {}, inje
     if (text) return parseJson(text, 'LOCAL_RECOVERY_TOOL_RESULT_INVALID');
     return called.payload?.result ?? {};
   } finally {
-    try {
-      await fetchImpl(endpoint, {
-        method: 'DELETE',
-        headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId },
-      });
-    } catch { /* Session cleanup is best effort; ReleaseSession durability is independent from this transport session. */ }
+    if (sessionId) {
+      try {
+        await fetchImpl(endpoint, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId },
+        });
+      } catch { /* Session cleanup is best effort; ReleaseSession durability is independent from this transport session. */ }
+    }
   }
 }
 

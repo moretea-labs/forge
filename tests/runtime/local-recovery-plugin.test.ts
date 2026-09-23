@@ -133,6 +133,33 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
 });
 
 
+test('Local Recovery MCP client supports stateless Recovery transport without requiring a session id', async () => {
+  // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
+  const { callRecoveryTool } = await import('../../scripts/forge-local-recovery-helper.mjs');
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const headers = (extra: Record<string, string> = {}) => new Headers(extra);
+  const responses = [
+    new Response('data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+    new Response('', { status: 202 }),
+    new Response('data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\\"ok\\":true,\\"stateless\\":true}"}]}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+  ];
+  const fakeFetch = async (url: string | URL | Request, init: RequestInit = {}) => {
+    requests.push({ url: String(url), init });
+    const next = responses.shift();
+    if (!next) throw new Error('unexpected fetch');
+    return next;
+  };
+  const result = await callRecoveryTool('/tmp/controller', 'runtime_status', {}, {
+    loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' } }),
+    gatewayToken: () => 'x'.repeat(32),
+    fetch: fakeFetch,
+  });
+  expect(result).toEqual({ ok: true, stateless: true });
+  expect(requests.map((entry) => entry.init.method)).toEqual(['POST', 'POST', 'POST']);
+  expect((requests[1]!.init.headers as Record<string, string>)['mcp-session-id']).toBeUndefined();
+  expect((requests[2]!.init.headers as Record<string, string>)['mcp-session-id']).toBeUndefined();
+});
+
 test('Local Recovery MCP client preserves Recovery tool errors instead of parsing them as success JSON', async () => {
   // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
   const { callRecoveryTool } = await import('../../scripts/forge-local-recovery-helper.mjs');
