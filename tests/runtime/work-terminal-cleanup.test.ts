@@ -718,6 +718,30 @@ describe('terminal Work cleanup', () => {
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
   });
 
+  test('cleans a detached managed worktree only when its clean HEAD is already contained in the durable target branch', async () => {
+    const fx = fixture('detached-contained');
+    git(fx.workspace.root!, ['checkout', '--detach', 'main']);
+
+    const result = await cleanup(fx);
+    expect(result.handle.state).toBe('cleaned');
+    expect(result.receipt.blockers).toEqual([]);
+    expect(result.receipt.worktree.status).toBe('removed');
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+  });
+
+  test('keeps a dirty detached managed worktree blocked even when HEAD is contained in the durable target branch', async () => {
+    const fx = fixture('detached-dirty');
+    git(fx.workspace.root!, ['checkout', '--detach', 'main']);
+    writeFileSync(join(fx.workspace.root!, 'dirty.txt'), 'must survive cleanup\n');
+
+    const result = await cleanup(fx);
+    expect(result.handle.state).toBe('failed_terminal_cleanup');
+    expect(result.receipt.blockers).toContain('WORKTREE_IDENTITY_INVALID');
+    expect(existsSync(fx.workspace.root!)).toBe(true);
+    expect(readFileSync(join(fx.workspace.root!, 'dirty.txt'), 'utf8')).toBe('must survive cleanup\n');
+  });
+
   test('removes a clean failed worktree, preserves failure, and is idempotent', async () => {
     const fx = fixture('clean');
     const first = await cleanup(fx);

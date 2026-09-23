@@ -987,7 +987,19 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       current = persist(input.controllerHome, current, receipt);
       return { handle: current, receipt };
     }
-    if (!root.ok || resolve(root.stdout) !== resolve(current.worktreePath) || !branch.ok || branch.stdout !== current.branch) {
+    const rootIdentityValid = root.ok && resolve(root.stdout) === resolve(current.worktreePath);
+    const branchIdentityValid = branch.ok && branch.stdout === current.branch;
+    let detachedContainedIdentity = false;
+    if (rootIdentityValid && branch.ok && !branch.stdout) {
+      const status = git(current.worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
+      const head = git(current.worktreePath, ['rev-parse', 'HEAD']);
+      detachedContainedIdentity = status.ok
+        && !status.stdout
+        && head.ok
+        && Boolean(head.stdout)
+        && git(target.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]).ok;
+    }
+    if (!rootIdentityValid || (!branchIdentityValid && !detachedContainedIdentity)) {
       addBlocker(receipt, 'WORKTREE_IDENTITY_INVALID');
       current = persist(input.controllerHome, current, receipt);
       return { handle: current, receipt };
