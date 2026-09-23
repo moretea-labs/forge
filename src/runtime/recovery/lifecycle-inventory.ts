@@ -313,12 +313,12 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
   }),
   lifecycle({
     id: 'runtime_temp', owner: 'Runtime diagnostics/process scratch lifecycle', scope: 'process', dataClass: 'temporary',
-    storage: 'OS temporary roots / Controller-observed Runtime temp entries',
-    terminalCondition: 'Owning live Process is gone and entry exceeds the runtime temp retention threshold.',
-    activeProtection: 'collectRuntimeProcesses protects scratch still owned by a live Runtime process.',
-    retentionCapacity: 'RUNTIME_TEMP_RETENTION_MINUTES age threshold and bounded maintenance candidate scan.',
-    cleanupAuthority: 'Central Runtime maintenance removeRuntimeTempEntry.',
-    recoverySemantics: 'Temp cleanup is disposable and never participates in semantic completion or effect replay.',
+    storage: 'OS temporary roots / Controller-observed Runtime temp entries, including forge-runtime-release-source-* detached release snapshot containers.',
+    terminalCondition: 'Normal release snapshot scope removes its worktree/container immediately; orphaned Runtime temp is terminal after the owning live Process is gone and the retention threshold is exceeded.',
+    activeProtection: 'Release snapshot callbacks own their temp container until finally cleanup; collectRuntimeProcesses protects longer-lived scratch still attributable to a live Runtime process.',
+    retentionCapacity: 'Immediate release-snapshot finally cleanup plus RUNTIME_TEMP_RETENTION_MINUTES age threshold and bounded maintenance candidate scan for crash leftovers.',
+    cleanupAuthority: 'Release materialization owns immediate snapshot cleanup; Central Runtime maintenance removeRuntimeTempEntry owns stale crash-leftover cleanup.',
+    recoverySemantics: 'Release snapshot/temp cleanup is disposable, lives outside repository workspace authority, prunes stale Git worktree metadata after failed materialization/removal, and never participates in semantic completion or effect replay.',
     closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/diagnostics/performance.ts','src/runtime/recovery/maintenance-executor.ts'],
   }),
 ]);

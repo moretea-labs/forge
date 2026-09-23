@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
@@ -124,14 +125,19 @@ export function withRuntimeReleaseSourceSnapshot<T>(input: {
   if (!/^[a-f0-9]{40}$/i.test(requestedRevision)) throw new Error('RUNTIME_RELEASE_SOURCE_REVISION_INVALID');
   const resolvedRevision = gitText(sourceRoot, ['rev-parse', '--verify', `${requestedRevision}^{commit}`]);
   if (resolvedRevision !== requestedRevision) throw new Error('RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH');
-  const snapshotsRoot = join(sourceRoot, '.forge', 'runtime-release-source-snapshots');
-  mkdirSync(snapshotsRoot, { recursive: true, mode: 0o700 });
-  const snapshotRoot = join(snapshotsRoot, `${requestedRevision}-${process.pid}-${randomUUID().slice(0, 8)}`);
+  // Release materialization is Runtime-owned temporary state, not repository
+  // workspace state. Keeping the detached worktree outside sourceRoot prevents
+  // Forge's own immutable-source snapshot from perturbing repository status or
+  // workspace fingerprints while release validation is running.
+  const snapshotContainer = mkdtempSync(join(tmpdir(), `forge-runtime-release-source-${process.pid}-`));
+  const snapshotRoot = join(snapshotContainer, `${requestedRevision}-${randomUUID().slice(0, 8)}`);
   const materialized = runProcess('git', ['-C', sourceRoot, 'worktree', 'add', '--detach', '--force', snapshotRoot, requestedRevision], {
     timeoutMs: 60_000,
     maxOutputBytes: 128 * 1024,
   });
   if (!materialized.ok) {
+    rmSync(snapshotContainer, { recursive: true, force: true });
+    runProcess('git', ['-C', sourceRoot, 'worktree', 'prune'], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
     throw new Error(`RUNTIME_RELEASE_SOURCE_SNAPSHOT_FAILED: ${materialized.stderr || materialized.stdout || materialized.error}`.slice(0, 2_000));
   }
   try {
@@ -149,8 +155,9 @@ export function withRuntimeReleaseSourceSnapshot<T>(input: {
     });
     if (!removed.ok) {
       rmSync(snapshotRoot, { recursive: true, force: true });
-      runProcess('git', ['-C', sourceRoot, 'worktree', 'prune'], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
     }
+    runProcess('git', ['-C', sourceRoot, 'worktree', 'prune'], { timeoutMs: 30_000, maxOutputBytes: 64 * 1024 });
+    rmSync(snapshotContainer, { recursive: true, force: true });
   }
 }
 

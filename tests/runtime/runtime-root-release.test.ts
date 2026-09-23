@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { delimiter, join } from 'path';
+import { delimiter, dirname, join, relative } from 'path';
 import { spawnSync } from 'child_process';
 import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseExecutionCanaries, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, withRuntimeReleaseSourceSnapshot, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { runtimeReleaseCanaryEnvironment } from '../../src/runtime/root/release-execution-canary';
@@ -292,11 +292,18 @@ describe('persistent Gateway release retention', () => {
 });
 
 describe('runtime release materialization', () => {
-  test('keeps a frozen source revision stable while the configured checkout advances', () => {
+  test('keeps a frozen source revision outside the source checkout while the configured checkout advances', () => {
     const { root } = sourceFixture();
     const frozenRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    let snapshotPath = '';
+    let snapshotContainer = '';
     const observed = withRuntimeReleaseSourceSnapshot({ sourceRoot: root, sourceRevision: frozenRevision }, snapshotRoot => {
+      snapshotPath = snapshotRoot;
+      snapshotContainer = dirname(snapshotRoot);
       expect(snapshotRoot).not.toBe(root);
+      expect(relative(root, snapshotRoot).startsWith('..')).toBe(true);
+      expect(existsSync(join(root, '.forge', 'runtime-release-source-snapshots'))).toBe(false);
+      expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
       expect(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: snapshotRoot, encoding: 'utf8' }).stdout.trim()).toBe(frozenRevision);
       writeFileSync(join(root, 'README.md'), 'fixture advanced while candidate is staging\n');
       spawnSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
@@ -307,6 +314,24 @@ describe('runtime release materialization', () => {
       return advancedRevision;
     });
     expect(observed).not.toBe(frozenRevision);
+    expect(existsSync(snapshotPath)).toBe(false);
+    expect(existsSync(snapshotContainer)).toBe(false);
+  });
+
+  test('removes the external source snapshot container when the staging callback fails', () => {
+    const { root } = sourceFixture();
+    const frozenRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    let snapshotPath = '';
+    let snapshotContainer = '';
+    expect(() => withRuntimeReleaseSourceSnapshot({ sourceRoot: root, sourceRevision: frozenRevision }, snapshotRoot => {
+      snapshotPath = snapshotRoot;
+      snapshotContainer = dirname(snapshotRoot);
+      throw new Error('candidate staging failed');
+    })).toThrow('candidate staging failed');
+    expect(existsSync(snapshotPath)).toBe(false);
+    expect(existsSync(snapshotContainer)).toBe(false);
+    expect(existsSync(join(root, '.forge', 'runtime-release-source-snapshots'))).toBe(false);
+    expect(spawnSync('git', ['status', '--porcelain=v1'], { cwd: root, encoding: 'utf8' }).stdout.trim()).toBe('');
   });
 
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
