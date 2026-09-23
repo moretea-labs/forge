@@ -18,6 +18,7 @@ import {
   initializeStandaloneRecovery,
   loadRecoveryConfig,
   observeOpenAiTunnelLocalHealthFallback,
+  recoveryCommandEnvironment,
   recoveryMachineIdentity,
   recoveryConfigPath,
   recoveryCommandPath,
@@ -1109,6 +1110,21 @@ test('standalone Recovery uses its client-owned loopback health only when a prim
   });
   expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
   expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
+});
+
+test('Recovery-owned commands keep an account HOME without inheriting Runtime authority', () => {
+  // A persistent launchd/systemd service inherits no interactive HOME, and
+  // tunnel-client resolves its own alias registry from HOME. Losing it makes a
+  // healthy dedicated tunnel read as stopped and hides the tunnel Recovery just
+  // reconnected.
+  const serviceLike = recoveryCommandEnvironment({ PATH: '/usr/bin:/bin', FORGE_RUNTIME_ID: 'x', FORGE_CONTROLLER_HOME: '/tmp/controller' }, '/Users/example');
+  expect(serviceLike.HOME).toBe('/Users/example');
+  expect(serviceLike.PATH).toContain('/Users/example/.local/bin');
+  expect(serviceLike.FORGE_RUNTIME_ID).toBeUndefined();
+  expect(serviceLike.FORGE_CONTROLLER_HOME).toBeUndefined();
+
+  const interactive = recoveryCommandEnvironment({ PATH: '/usr/bin', HOME: '/Users/other' }, '/Users/example');
+  expect(interactive.HOME).toBe('/Users/other');
 });
 
 test('automatic release reconciliation backs off a non-converging step instead of forking it every interval', () => {

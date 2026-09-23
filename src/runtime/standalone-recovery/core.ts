@@ -2266,7 +2266,7 @@ export async function listReleases(config: RecoveryConfig): Promise<Record<strin
 }
 
 interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
-interface CommandOptions { cwd?: string; maxOutputBytes?: number; }
+interface CommandOptions { cwd?: string; home?: string; maxOutputBytes?: number; }
 type CommandRunner = (commandName: string, args: string[], timeoutMs?: number, options?: CommandOptions) => Promise<CommandResult>;
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
 
@@ -2287,6 +2287,28 @@ export function recoveryCommandPath(
   return entries.includes(userBin) ? inheritedPath : [userBin, ...entries].join(delimiter);
 }
 
+/**
+ * Child environment for Recovery-owned commands.
+ *
+ * Keep the hosting Runtime's private FORGE_* authority out, but preserve the
+ * account context: user-installed tools resolve their own per-account state from
+ * HOME, and a persistent launchd/systemd service starts without an interactive
+ * HOME to inherit. Without it, `tunnel-client` cannot see its own alias registry,
+ * so Recovery both misreads a healthy dedicated tunnel as stopped and cannot
+ * confirm the tunnel it just reconnected.
+ */
+export function recoveryCommandEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+  accountHome = homedir(),
+): NodeJS.ProcessEnv {
+  const home = env.HOME?.trim() || accountHome;
+  return {
+    ...runtimeAuthorityFreeEnvironment(env),
+    PATH: recoveryCommandPath(env.PATH ?? '', process.platform, home),
+    HOME: home,
+  };
+}
+
 export interface PublicTunnelRepairDependencies {
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
@@ -2304,7 +2326,7 @@ function command(commandName: string, args: string[], timeoutMs = 10_000, option
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       cwd: options.cwd,
-      env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
+      env: recoveryCommandEnvironment(process.env, options.home),
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
