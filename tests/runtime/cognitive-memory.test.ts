@@ -147,6 +147,40 @@ describe('generic cognitive memory', () => {
     expect(opportunistic.items.map(item => item.memory.id)).not.toContain(weak.id);
   });
 
+  test('does not let graph propagation alone admit unrelated opportunistic recall', () => {
+    const fx = fixture();
+    const seed = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft('mem:direct-cue', 'Use local process inspection for an exact runtime pid.', ['runtime.process.inspect'], 'E-1'),
+      confidence: 0.9,
+      utility: 0.9,
+    });
+    const neighbor = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft('mem:graph-only', 'Prefer native SwiftUI controls and accessibility semantics for mobile interfaces.', ['ios.swiftui'], 'E-2'),
+      confidence: 0.95,
+      utility: 0.95,
+    });
+    recordCognitiveMemoryEdge(fx.store, fx.authority, {
+      id: 'edge:test-cross-topic',
+      scope,
+      fromId: seed.id,
+      toId: neighbor.id,
+      relation: 'analogous_to',
+      weight: 0.9,
+      evidenceRefs: ['E-1', 'E-2'],
+      recordedAt: at,
+    });
+    const query = 'inspect local runtime process pid';
+    const broad = activateCognitiveMemory(fx.controllerHome, [scope], query, { now: at, maxItems: 8 });
+    expect(broad.items.map(item => item.memory.id)).toContain(neighbor.id);
+    const opportunistic = activateCognitiveMemory(fx.controllerHome, [scope], query, {
+      now: at,
+      maxItems: 8,
+      minCueScore: 0.12,
+    });
+    expect(opportunistic.items.map(item => item.memory.id)).toContain(seed.id);
+    expect(opportunistic.items.map(item => item.memory.id)).not.toContain(neighbor.id);
+  });
+
   test('applies used and rejected feedback to retrieval utility without mutating factual confidence', () => {
     const fx = fixture();
     const used = recordCognitiveMemory(fx.store, fx.authority, draft('mem:feedback-used', 'Reusable interaction guidance.', ['feedback.topic'], 'E-1'));

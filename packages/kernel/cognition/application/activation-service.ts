@@ -69,13 +69,28 @@ function boundedUnitScore(value: number | undefined, label: string): number {
   return value;
 }
 
-function retrievalCueScore(item: ActivationItem): number {
-  let score = 0;
+function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>): number {
+  if (!terms.size) return 0;
+  const haystack = cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`);
+  if (!haystack.size) return 0;
+  let matches = 0;
+  for (const term of terms) if (haystack.has(term)) matches += 1;
+  // Automatic recall needs evidence in both directions: how much of the
+  // current cue matched, and how specifically that cue identifies this
+  // memory. A single generic word in a long memory must not count as recall.
+  return matches / Math.sqrt(terms.size * haystack.size);
+}
+
+function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>): number {
+  let score = associativeLexicalCueScore(item.memory, queryTerms);
   for (const reason of item.reasons) {
-    if (reason.signal === 'exact' || reason.signal === 'lexical' || reason.signal === 'semantic' || reason.signal === 'graph') {
+    if (reason.signal === 'exact' || reason.signal === 'semantic') {
       score = Math.max(score, reason.score);
     }
   }
+  // Graph propagation may rank or explain an already-cued memory, but it
+  // cannot by itself make a memory enter opportunistic awareness. Deliberate
+  // memory audit leaves minCueScore at zero and still sees graph expansion.
   return score;
 }
 
@@ -274,7 +289,7 @@ export function activateMemory(
     // list of globally high-confidence memories. Confidence/utility rank a
     // relevant memory after it is cued; they must not make a weakly related
     // memory "come to mind" by themselves.
-    if (retrievalCueScore(item) < minCueScore) continue;
+    if (retrievalCueScore(item, queryTerms) < minCueScore) continue;
     const size = Buffer.byteLength(JSON.stringify({
       address: memoryAddressLabel(memoryAddressOf(item.memory)),
       facets: item.memory.facets,
