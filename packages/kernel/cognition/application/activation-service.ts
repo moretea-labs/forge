@@ -42,6 +42,8 @@ export interface ActivationOptions {
   maxCandidates?: number;
   maxGraphDepth?: number;
   maxBytes?: number;
+  /** Optional associative-cue floor for opportunistic recall. Explicit audits may leave it unset. */
+  minCueScore?: number;
   now?: string;
   semantic?: CognitiveSemanticIndex;
   seedMemoryIds?: string[];
@@ -59,6 +61,22 @@ const DEFAULT_BYTES = 24 * 1024;
 function bounded(value: number | undefined, fallback: number, maximum: number): number {
   if (value !== undefined && (!Number.isFinite(value) || value < 1)) throw new Error('COGNITION_ACTIVATION_BUDGET_INVALID');
   return Math.min(Math.floor(value ?? fallback), maximum);
+}
+
+function boundedUnitScore(value: number | undefined, label: string): number {
+  if (value === undefined) return 0;
+  if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`COGNITION_${label}_INVALID`);
+  return value;
+}
+
+function retrievalCueScore(item: ActivationItem): number {
+  let score = 0;
+  for (const reason of item.reasons) {
+    if (reason.signal === 'exact' || reason.signal === 'lexical' || reason.signal === 'semantic' || reason.signal === 'graph') {
+      score = Math.max(score, reason.score);
+    }
+  }
+  return score;
 }
 
 function active(memory: MemoryUnit, now: number): boolean {
@@ -114,6 +132,7 @@ export function activateMemory(
   const maxCandidates = bounded(options.maxCandidates, DEFAULT_CANDIDATES, 512);
   const maxGraphDepth = bounded(options.maxGraphDepth, DEFAULT_GRAPH_DEPTH, 4);
   const maxBytes = bounded(options.maxBytes, DEFAULT_BYTES, 64 * 1024);
+  const minCueScore = boundedUnitScore(options.minCueScore, 'ACTIVATION_MIN_CUE_SCORE');
   const nowText = options.now ?? new Date().toISOString();
   const now = Date.parse(nowText);
   if (!Number.isFinite(now)) throw new Error('COGNITION_ACTIVATION_TIME_INVALID');
@@ -251,6 +270,11 @@ export function activateMemory(
   const items: ActivationItem[] = [];
   let estimatedBytes = 0;
   for (const item of ranked) {
+    // Opportunistic recall should behave like an associative cue, not like a
+    // list of globally high-confidence memories. Confidence/utility rank a
+    // relevant memory after it is cued; they must not make a weakly related
+    // memory "come to mind" by themselves.
+    if (retrievalCueScore(item) < minCueScore) continue;
     const size = Buffer.byteLength(JSON.stringify({
       address: memoryAddressLabel(memoryAddressOf(item.memory)),
       facets: item.memory.facets,

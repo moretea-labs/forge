@@ -1206,6 +1206,18 @@ describe('direct model-authored learning without Work lifecycle', () => {
       String(item.memoryId).includes(memoryId));
     expect(recalledItem).toBeTruthy();
 
+    const routineFollowup = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'search',
+      query: 'continue inspecting the already chosen Local System route',
+      include_learning_recall: false,
+      max_files: 2,
+      max_snippets: 2,
+    });
+    expect(routineFollowup?.isError).not.toBe(true);
+    const routineFollowupPayload = routineFollowup?.structuredContent as Record<string, any>;
+    expect(routineFollowupPayload.data.learningRecall).toBeUndefined();
+
     const feedback = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',

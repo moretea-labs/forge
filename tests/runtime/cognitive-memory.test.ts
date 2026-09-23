@@ -129,6 +129,24 @@ describe('generic cognitive memory', () => {
     expect(oldToNew).toBeGreaterThan(newToOld);
   });
 
+  test('lets opportunistic recall require an associative cue without changing broad explicit retrieval', () => {
+    const fx = fixture();
+    const weak = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft('mem:weak-cue', 'High quality reusable work guidance for an unrelated mobile design topic.', ['mobile.design'], 'E-1'),
+      confidence: 0.99,
+      utility: 0.99,
+    });
+    const query = 'work cognition recall cadence model attention semantic checkpoint strategy outcome evidence';
+    const broad = activateCognitiveMemory(fx.controllerHome, [scope], query, { now: at, maxItems: 8 });
+    expect(broad.items.map(item => item.memory.id)).toContain(weak.id);
+    const opportunistic = activateCognitiveMemory(fx.controllerHome, [scope], query, {
+      now: at,
+      maxItems: 8,
+      minCueScore: 0.12,
+    });
+    expect(opportunistic.items.map(item => item.memory.id)).not.toContain(weak.id);
+  });
+
   test('applies used and rejected feedback to retrieval utility without mutating factual confidence', () => {
     const fx = fixture();
     const used = recordCognitiveMemory(fx.store, fx.authority, draft('mem:feedback-used', 'Reusable interaction guidance.', ['feedback.topic'], 'E-1'));

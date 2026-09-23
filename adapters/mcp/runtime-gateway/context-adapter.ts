@@ -30,6 +30,8 @@ import { invalidFacadeOperation, repositoryExecutionReadiness, summarizeInvalidA
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 
 const RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const RH_CONTEXT_AUTOMATIC_RECALL_MIN_CUE_SCORE = 0.12;
+const RH_CONTEXT_AUTOMATIC_RECALL_LIMIT = 4;
 
 function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean {
   if (!value) return false;
@@ -175,7 +177,7 @@ function rhContextLearningRecall(
   repository: ReturnType<typeof selected>,
   query: string,
   workId?: string,
-  limit = 8,
+  limit = RH_CONTEXT_AUTOMATIC_RECALL_LIMIT,
 ): Record<string, unknown> {
   const resolved = rhContextKnowledgeScopes(ctx, repository, workId);
   if (!query.trim() || resolved.scopes.length === 0) {
@@ -191,7 +193,11 @@ function rhContextLearningRecall(
     ctx.controllerHome,
     resolved.scopes,
     query.slice(0, 4_000),
-    { maxItems: Math.min(12, Math.max(1, limit)), usageFeedback: usage },
+    {
+      maxItems: Math.min(8, Math.max(1, limit)),
+      minCueScore: RH_CONTEXT_AUTOMATIC_RECALL_MIN_CUE_SCORE,
+      usageFeedback: usage,
+    },
   );
   return {
     advisoryOnly: true,
@@ -490,7 +496,8 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         return result(facade as unknown as Record<string, unknown>, true);
       }
       const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
-      const learningRecall = query && !knowledgeAuditRequested
+      const includeLearningRecall = args.include_learning_recall !== false;
+      const learningRecall = query && !knowledgeAuditRequested && includeLearningRecall
         ? rhContextLearningRecall(ctx, repository, query, typeof args.work_id === 'string' ? args.work_id.trim() || undefined : undefined)
         : undefined;
       if (!query && cognitionAudit) {
@@ -742,7 +749,9 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       ? args.query.trim()
       : '';
     if (capabilityIntentQuery) {
-      const learningRecall = rhContextLearningRecall(ctx, repository, capabilityIntentQuery, undefined, 6);
+      const learningRecall = args.include_learning_recall === false
+        ? undefined
+        : rhContextLearningRecall(ctx, repository, capabilityIntentQuery);
       const manifestOptions = { preferStored: true };
       const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
       const controllerRepository = controllerPluginRepository(ctx.controllerHome);
@@ -771,7 +780,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
             readOnlyDiscovery: true,
             executeWith: 'plugin_action_execute',
           },
-          learningRecall,
+          ...(learningRecall ? { learningRecall } : {}),
           toolArchitecture: {
             facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
             domainSchemaLoading: 'intent_ranked_capability_search',
