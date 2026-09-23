@@ -18,7 +18,7 @@ import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentit
 import { recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
 import { executeWorkVerification, executeWorkVerificationBatch, reconcileTerminalWorkVerifications } from "../../../src/runtime/control-plane/execution/work-verification-service";
 import { implementationReviewContentFingerprint } from "../../../src/runtime/control-plane/execution/implementation-review-content";
-import { implementationReviewCommittedBaseRevision, prepareWorkImplementationReviewCandidate, reconcileDirectCanonicalTargetAdvanceCommand } from "../../../src/runtime/control-plane/execution/work-finalization-service";
+import { implementationReviewCommittedBaseRevision, managedReviewRequiresCandidatePreparation, prepareWorkImplementationReviewCandidate, reconcileDirectCanonicalTargetAdvanceCommand } from "../../../src/runtime/control-plane/execution/work-finalization-service";
 import { acceptReviewedDirectEditWorkReconciliation } from "../../../src/runtime/control-plane/execution/direct-edit-work-completion";
 import { readForgeRuntimeStatus } from "../../../src/runtime/control-plane/runtime-status-client";
 import { ensureControllerDispositionContinuation, repositoryCleanContinuationEventName, triggerWorkContinuationRepositoryEvent } from "../../../src/runtime/workflow/schedules/work-continuation";
@@ -718,10 +718,23 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               // commit and atomically transfers its verification/review
               // authority. Check-free Work still materializes a candidate here
               // so physical delivery identity is established before review.
+              const reviewTargetBranch = reviewHandle
+                ? resolveWorkDeliveryTargetBranch(reviewHandle, repository.defaultBranch)
+                : repository.defaultBranch;
+              const reviewStatus = repositoryGitStatus(repository);
+              const targetPreparationRequired = Boolean(
+                reviewHandle?.managedWorktree
+                && reviewWorkspaceDirty
+                && managedReviewRequiresCandidatePreparation(
+                  repository.canonicalRoot,
+                  reviewStatus.head ?? undefined,
+                  reviewTargetBranch,
+                ),
+              );
               const prepareDirtyReviewCandidate = reviewContract?.workKind === 'repository_change'
                 && reviewHandle?.managedWorktree
                 && reviewWorkspaceDirty
-                && reviewContract.checks.length === 0;
+                && (reviewContract.checks.length === 0 || targetPreparationRequired);
               if (prepareDirtyReviewCandidate) {
                 if (!reviewHandle) throw new Error(`WORK_HANDLE_NOT_FOUND: ${workId}`);
                 const reviewSession = bindFacadeExecutionSession(ctx, repository, reviewHandle, args);

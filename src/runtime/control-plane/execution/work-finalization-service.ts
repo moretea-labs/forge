@@ -472,6 +472,37 @@ function currentWorkReviewChangedPaths(
   return observed;
 }
 
+export function implementationReviewPreparationChangedPaths(
+  repository: RepositoryRecord,
+  contract: { allowedPaths: string[]; forbiddenPaths: string[] },
+): string[] {
+  const status = repositoryGitStatus(repository);
+  const { dirtyPaths, ownedPaths } = workOwnedDirtyPaths(contract, status);
+  if (dirtyPaths.length !== ownedPaths.length) {
+    const unowned = dirtyPaths.filter((path) => !ownedPaths.includes(path));
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_UNOWNED_DIRTY_PATH: ${unowned.join(', ')}`);
+  }
+  const changedPaths = normalizeImplementationReviewChangedPaths(ownedPaths);
+  if (changedPaths.length === 0) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_PREPARATION_DIRTY_PATH_REQUIRED');
+  }
+  const scopeViolation = findWorkPathScopeViolation(contract, changedPaths);
+  if (scopeViolation) {
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_SCOPE_VIOLATION: ${scopeViolation.kind}:${scopeViolation.path}`);
+  }
+  return changedPaths;
+}
+
+export function managedReviewRequiresCandidatePreparation(
+  root: string,
+  candidateRevision: string | undefined,
+  targetRevision: string | undefined,
+): boolean {
+  if (!candidateRevision?.trim() || !targetRevision?.trim()) return false;
+  const advance = inspectWorkTargetAdvance(root, candidateRevision, targetRevision);
+  return advance.relation !== 'candidate_contains_target';
+}
+
 function physicalImplementationReviewCandidate(input: {
   ctx: McpExecutionContext;
   repository: RepositoryRecord;
@@ -480,11 +511,15 @@ function physicalImplementationReviewCandidate(input: {
   /** Use the exact strict verification identity observed before repository staging. */
   verificationWorkspaceFingerprint?: string;
   targetBranch?: string;
+  /** Candidate preparation freezes only the current Work-owned dirty delta. */
+  preparationDirtyOnly?: boolean;
 }): ImplementationReviewCandidateIdentity {
   const status = repositoryGitStatus(input.repository);
   const sourceRevision = status.head?.trim();
   if (!sourceRevision) throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
-  const changedPaths = currentWorkReviewChangedPaths(input.repository, input.handle, input.contract, input.targetBranch);
+  const changedPaths = input.preparationDirtyOnly
+    ? implementationReviewPreparationChangedPaths(input.repository, input.contract)
+    : currentWorkReviewChangedPaths(input.repository, input.handle, input.contract, input.targetBranch);
   const verificationWorkspaceFingerprint = input.verificationWorkspaceFingerprint?.trim()
     || workspaceValidationFingerprint(input.repository.canonicalRoot, status);
   const workspaceFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, changedPaths);
@@ -2382,6 +2417,7 @@ async function finalizeWorkInternal(
       contract,
       verificationWorkspaceFingerprint: exactValidationInput?.workspaceFingerprint,
       targetBranch: resolveWorkDeliveryTargetBranch(current, validated.worktreeRepository.defaultBranch, explicitTargetBranch),
+      preparationDirtyOnly: prepareReviewCandidate,
     });
     const reviewRequiredForCandidate = workRequiresImplementationReview(
       contract.workKind,

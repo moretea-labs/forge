@@ -17,7 +17,7 @@ import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease,
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
-import { implementationReviewCommittedBaseRevision, inspectCleanupOnlyMergedHead, inspectManagedWorkPostCommitEditingRebind } from '../../src/runtime/control-plane/execution/work-finalization-service';
+import { implementationReviewCommittedBaseRevision, implementationReviewPreparationChangedPaths, inspectCleanupOnlyMergedHead, inspectManagedWorkPostCommitEditingRebind, managedReviewRequiresCandidatePreparation } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
@@ -5534,6 +5534,55 @@ describe('rh_work terminalization authority', () => {
     execFileSync('git', ['add', 'target-later.txt'], { cwd: fx.repoRoot });
     execFileSync('git', ['commit', '-m', 'target advance not in candidate'], { cwd: fx.repoRoot });
     expect(implementationReviewCommittedBaseRevision(selectedWorktree, handle, baseRevision, candidateHead, 'main')).toBe(baseRevision);
+  }, 15_000);
+
+  test('review candidate preparation isolates the current Work-owned dirty delta from shared committed ancestry', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(fx.repoRoot, 'shared-history.txt'), 'shared canonical history\n');
+    execFileSync('git', ['add', 'shared-history.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'shared history after work base'], { cwd: fx.repoRoot });
+    const sharedRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'review-preparation-dirty-only',
+      title: 'Review Preparation Dirty Only',
+      branchName: 'work/review-preparation-dirty-only',
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    expect(workspace.baseRevision).toBe(sharedRevision);
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "dirty-only";\n');
+
+    expect(implementationReviewPreparationChangedPaths(selectedWorktree, {
+      allowedPaths: ['src/**'], forbiddenPaths: [],
+    })).toEqual(['src/index.ts']);
+    expect(baseRevision).not.toBe(sharedRevision);
+
+    writeFileSync(join(workspace.root!, 'outside.txt'), 'not owned\n');
+    expect(() => implementationReviewPreparationChangedPaths(selectedWorktree, {
+      allowedPaths: ['src/**'], forbiddenPaths: [],
+    })).toThrow('WORK_IMPLEMENTATION_REVIEW_UNOWNED_DIRTY_PATH: outside.txt');
+  }, 15_000);
+
+  test('checked dirty managed review requires candidate preparation when target no longer sits behind the candidate', () => {
+    const fx = fixture();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'checked-review-target-preparation',
+      title: 'Checked Review Target Preparation',
+      branchName: 'work/checked-review-target-preparation',
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "candidate";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'candidate change'], { cwd: workspace.root! });
+    const candidateHead = repositoryGitStatus(selectedWorktree).head!;
+    expect(managedReviewRequiresCandidatePreparation(workspace.root!, candidateHead, 'main')).toBe(false);
+
+    writeFileSync(join(fx.repoRoot, 'target-only.txt'), 'target advance\n');
+    execFileSync('git', ['add', 'target-only.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance'], { cwd: fx.repoRoot });
+    expect(managedReviewRequiresCandidatePreparation(workspace.root!, candidateHead, 'main')).toBe(true);
   }, 15_000);
 
   test('managed review prepares the exact target-reconciled candidate and finalize never rewrites it after a later target advance', async () => {
