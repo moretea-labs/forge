@@ -3,25 +3,17 @@ const core = globalThis.ForgeWorkflowSupervisorChromeCore;
 const NATIVE_HOST = 'com.moretea.forge.workflow_supervisor';
 const ALARM = 'forge-workflow-supervisor-scan';
 const REFRESH_MIN_INTERVAL_MS = 2_000;
-const CREATED_TAB_COOLDOWN_MS = 5 * 60 * 1000;
 const observedAssistant = new Map();
-const recentCreatedTabs = new Map();
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-async function ensureConversationTab(tabs, target) {
-  const existing = tabs.find((candidate) => core.sameConversation(core.parseConversation(candidate.url ?? ''), target));
-  if (existing) return existing;
-  // A tab created here fires tabs.onUpdated and can be missing from the snapshot
-  // this pass already holds, so re-read live tabs before opening anything.
-  const fresh = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
-  const live = fresh.find((candidate) => core.sameConversation(core.parseConversation(candidate.url ?? ''), target));
-  if (live) { tabs.push(live); return live; }
-  const key = `conversation:${target.conversationId}`;
-  if (Date.now() - (recentCreatedTabs.get(key) ?? 0) < CREATED_TAB_COOLDOWN_MS) return undefined;
-  const created = await chrome.tabs.create({ url: target.canonicalUrl, active: false });
-  recentCreatedTabs.set(key, Date.now());
-  if (created) tabs.push(created);
-  return undefined;
+// This extension is a discovery and observation adapter: it never creates a
+// browser resource. Opening a conversation tab belongs to the native transport,
+// which only does so for an explicit send obligation; a tab the owner closed is
+// transport loss, not authority for an adapter to reopen it. Creating tabs here
+// made the extension the authority for browser resources and grew conversation
+// tabs without bound in every browser that had it installed.
+function findConversationTab(tabs, target) {
+  return tabs.find((candidate) => core.sameConversation(core.parseConversation(candidate.url ?? ''), target));
 }
 
 function nativeRpc(method, params = {}) {
@@ -107,14 +99,9 @@ async function refreshAuthorizedTabs() {
     const project = projectLinks.get(scope.title.trim().toLocaleLowerCase());
     if (!project) continue;
     let projectTab = tabs.find((tab) => String(tab.url ?? '') === project.url);
-    if (!projectTab) {
-      const key = `project:${project.url}`;
-      if (Date.now() - (recentCreatedTabs.get(key) ?? 0) < CREATED_TAB_COOLDOWN_MS) continue;
-      projectTab = await chrome.tabs.create({ url: project.url, active: false });
-      recentCreatedTabs.set(key, Date.now());
-      if (projectTab) tabs.push(projectTab);
-      continue;
-    }
+    // Project discovery reads the project page only when the owner already has
+    // it open; opening it here would be a second, silent browser resource.
+    if (!projectTab) continue;
     if (!projectTab.id) continue;
     const scan = await discoveryScan(projectTab.id, projectTitles);
     for (const conversation of Array.isArray(scan?.conversations) ? scan.conversations : []) {
@@ -136,7 +123,7 @@ async function refreshAuthorizedTabs() {
   for (const task of tasks) {
     const target = core.parseConversation(task.conversationUrl);
     if (!target || target.conversationId !== task.conversationId) continue;
-    const tab = await ensureConversationTab(tabs, target);
+    const tab = findConversationTab(tabs, target);
     if (!tab) continue;
     if (tab.discarded && tab.id) { await chrome.tabs.reload(tab.id); continue; }
     if (tab.id) await tabMessage(tab.id, { type: 'forge-workflow-supervisor-scan' }).catch(() => undefined);

@@ -184,3 +184,91 @@ describe('workflow supervisor Chrome extension conversation identity', () => {
     expect(api.parseConversation('https://chatgpt.com/c')).toBeNull();
   });
 });
+
+describe('workflow supervisor Chrome extension browser-resource authority', () => {
+  interface FakeTab { id: number; url: string; title?: string; discarded?: boolean }
+
+  function loadBackground(fixture: { tabs: FakeTab[]; tasks: Array<{ conversationId: string; conversationUrl: string }> }) {
+    const createCalls: unknown[] = [];
+    const reloadCalls: number[] = [];
+    const rpcMethods: string[] = [];
+    const tabMessages: Array<{ tabId: number; type: string }> = [];
+    const onUpdated: Array<(tabId: number, changeInfo: { status?: string }, tab: FakeTab) => void> = [];
+    const extensionRoot = join(process.cwd(), 'supervisor', 'chrome-extension');
+    const chrome = {
+      runtime: {
+        lastError: undefined as { message: string } | undefined,
+        sendNativeMessage(_host: string, message: { method: string }, callback: (response: unknown) => void) {
+          rpcMethods.push(message.method);
+          callback({ ok: true, result: message.method === 'browser_tasks' ? { tasks: fixture.tasks } : {} });
+        },
+        onMessage: { addListener: () => undefined },
+        onInstalled: { addListener: () => undefined },
+        onStartup: { addListener: () => undefined },
+      },
+      tabs: {
+        query: async () => fixture.tabs,
+        sendMessage: (tabId: number, message: { type: string }, callback: (response: unknown) => void) => {
+          tabMessages.push({ tabId, type: message.type });
+          callback({});
+        },
+        create: async (properties: unknown) => {
+          createCalls.push(properties);
+          return { id: 9_999, url: (properties as { url?: string }).url };
+        },
+        reload: async (tabId: number) => { reloadCalls.push(tabId); },
+        onUpdated: { addListener: (handler: (tabId: number, changeInfo: { status?: string }, tab: FakeTab) => void) => { onUpdated.push(handler); } },
+        onActivated: { addListener: () => undefined },
+        onRemoved: { addListener: () => undefined },
+      },
+      windows: { onFocusChanged: { addListener: () => undefined } },
+      alarms: { create: () => undefined, onAlarm: { addListener: () => undefined } },
+    };
+    const sandbox: Record<string, unknown> = {};
+    const importScripts = (name: string): void => {
+      new Function('globalThis', 'URL', readFileSync(join(extensionRoot, name), 'utf8'))(sandbox, URL);
+    };
+    new Function(
+      'chrome', 'importScripts', 'globalThis', 'URL', 'crypto', 'console', 'setTimeout', 'clearTimeout',
+      readFileSync(join(extensionRoot, 'background.js'), 'utf8'),
+    )(chrome, importScripts, sandbox, URL, globalThis.crypto, console, setTimeout, clearTimeout);
+    return { createCalls, reloadCalls, rpcMethods, tabMessages, onUpdated };
+  }
+
+  const settle = async (): Promise<void> => {
+    for (let index = 0; index < 8; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  test('never opens a conversation tab for a task whose tab is not already open', async () => {
+    const conversationId = '6ab216dc-ef5c-83e8-8137-5ef5f1b27e08';
+    const conversationUrl = `https://chatgpt.com/g/g-p-6a922010db348191a84d1a5306c083e8-forge/c/${conversationId}`;
+    const extension = loadBackground({
+      // A different chatgpt.com tab is open; the task's own conversation is not.
+      tabs: [{ id: 1, url: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555', title: 'other' }],
+      tasks: [{ conversationId, conversationUrl }],
+    });
+
+    await settle();
+    for (const handler of extension.onUpdated) handler(1, { status: 'complete' }, { id: 1, url: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555' });
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 2_200));
+    await settle();
+
+    expect(extension.rpcMethods).toContain('browser_tasks');
+    expect(extension.rpcMethods).toContain('browser_discovery_update');
+    expect(extension.createCalls).toEqual([]);
+  });
+
+  test('observes an existing conversation tab and refreshes a discarded one without creating anything', async () => {
+    const conversationId = '6ab216dc-ef5c-83e8-8137-5ef5f1b27e08';
+    const extension = loadBackground({
+      tabs: [{ id: 7, url: `https://chatgpt.com/c/${conversationId}`, title: 'chatgpt', discarded: true }],
+      tasks: [{ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` }],
+    });
+
+    await settle();
+
+    expect(extension.reloadCalls).toEqual([7]);
+    expect(extension.createCalls).toEqual([]);
+  });
+});
