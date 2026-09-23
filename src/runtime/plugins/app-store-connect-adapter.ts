@@ -199,9 +199,9 @@ async function readPrivateKeyFile(path: string, source: string): Promise<{ key?:
       }
       if (code === 'EDEADLK') {
         throw new AssistantPluginError(
-          'PLUGIN_PROVIDER_UNAVAILABLE',
-          'App Store Connect private key is temporarily unavailable because the filesystem is busy.',
-          { retryable: true, details: { credentialSource: source, code } },
+          'PLUGIN_AUTH_REQUIRED',
+          'Configured App Store Connect private key is not locally available. Keep File Provider/iCloud credentials downloaded or configure a stable local private_key_path.',
+          { retryable: false, details: { credentialSource: source, code, localCredentialUnavailable: true } },
         );
       }
       throw new AssistantPluginError(
@@ -211,7 +211,11 @@ async function readPrivateKeyFile(path: string, source: string): Promise<{ key?:
       );
     }
   }
-  throw new AssistantPluginError('PLUGIN_PROVIDER_UNAVAILABLE', 'App Store Connect private key is temporarily unavailable.', { retryable: true });
+  throw new AssistantPluginError(
+    'PLUGIN_AUTH_REQUIRED',
+    'Configured App Store Connect private key is not locally available.',
+    { retryable: false, details: { credentialSource: source, localCredentialUnavailable: true } },
+  );
 }
 
 async function privateKeyMaterial(config: AppStoreConnectPluginConfig): Promise<{ key?: string; source?: string; warning?: string }> {
@@ -221,6 +225,23 @@ async function privateKeyMaterial(config: AppStoreConnectPluginConfig): Promise<
   if (envKeyPath) return readPrivateKeyFile(envKeyPath, 'env:FORGE_ASC_PRIVATE_KEY_PATH');
   if (config.privateKeyPath) return readPrivateKeyFile(config.privateKeyPath, 'config:privateKeyPath');
   return {};
+}
+
+async function resolveLiveAuthStatus(config: AppStoreConnectPluginConfig): Promise<AppStoreConnectAuthState> {
+  const auth = resolveAuth(config);
+  if (config.provider !== 'app-store-connect-api' || !config.enabled || !auth.ready) return auth;
+  try {
+    const material = await privateKeyMaterial(config);
+    if (material.key) return auth;
+    const detail = material.warning ?? 'Configured App Store Connect private key is not locally readable.';
+    return { ...auth, ready: false, authenticated: false, errors: [...auth.errors, detail] };
+  } catch (error) {
+    if (error instanceof AssistantPluginError && error.code === 'PLUGIN_AUTH_REQUIRED') {
+      const detail = error.message.replace(/^PLUGIN_AUTH_REQUIRED:\s*/, '');
+      return { ...auth, ready: false, authenticated: false, errors: [...auth.errors, detail] };
+    }
+    throw error;
+  }
 }
 
 function resolveAuth(config: AppStoreConnectPluginConfig): AppStoreConnectAuthState {
@@ -860,15 +881,16 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
   if (config.provider === 'mock') return mockResponse(input.actionId, input.args, config);
   const auth = resolveAuth(config);
   if (input.actionId === 'auth_status') {
+    const liveAuth = await resolveLiveAuthStatus(config);
     return {
-      ready: config.enabled && auth.ready,
-      provider: auth.provider,
-      issuerId: auth.issuerId ? 'configured' : undefined,
-      keyId: auth.keyId ? 'configured' : undefined,
-      credentialSource: auth.credentialSource,
-      errors: auth.errors,
-      warnings: auth.warnings,
-      userFacingStatus: userFacingAscStatus(config, auth),
+      ready: config.enabled && liveAuth.ready,
+      provider: liveAuth.provider,
+      issuerId: liveAuth.issuerId ? 'configured' : undefined,
+      keyId: liveAuth.keyId ? 'configured' : undefined,
+      credentialSource: liveAuth.credentialSource,
+      errors: liveAuth.errors,
+      warnings: liveAuth.warnings,
+      userFacingStatus: userFacingAscStatus(config, liveAuth),
     };
   }
   if (!config.enabled || !auth.ready) throw new AssistantPluginError('PLUGIN_NOT_READY', 'App Store Connect plugin is not ready.', { retryable: false, details: { enabled: config.enabled, errors: auth.errors } });

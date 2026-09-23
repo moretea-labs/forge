@@ -146,7 +146,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     expect(auth.warnings.join(' ')).toContain('private key path is not a regular file');
   });
 
-  test('retries transient EDEADLK while reading a file-backed key for a real remote request after auth-status succeeds', async () => {
+  test('auth-status proves file-backed key material is locally readable and tolerates one transient EDEADLK', async () => {
     const repoRoot = root();
     const privateKeyPath = join(repoRoot, 'AuthKey_REMOTE.p8');
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -191,16 +191,64 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     try {
       const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {})) as { ready: boolean; provider: string };
       expect(auth).toMatchObject({ ready: true, provider: 'app-store-connect-api' });
-      expect(keyReadAttempts).toBe(0);
+      expect(keyReadAttempts).toBe(2);
 
       const result = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_xcode_cloud_products', { app_id: '6775778505' }));
       expect(result).toEqual({ data: [] });
-      expect(keyReadAttempts).toBe(2);
+      expect(keyReadAttempts).toBe(3);
       expect(requestedUrl).toContain('/v1/ciProducts');
       expect(requestedUrl).toContain('6775778505');
     } finally {
       Object.defineProperty(fsPromises, 'readFile', { configurable: true, writable: true, value: originalReadFile });
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('persistent EDEADLK is reported as local credential unavailability instead of provider outage', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_DATALESS.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true,
+      provider: 'app-store-connect-api',
+      issuer_id: 'issuer-dataless',
+      key_id: 'key-dataless',
+      private_key_path: privateKeyPath,
+    }));
+
+    const originalReadFile = fsPromises.readFile;
+    let keyReadAttempts = 0;
+    Object.defineProperty(fsPromises, 'readFile', {
+      configurable: true,
+      writable: true,
+      value: async (...args: unknown[]) => {
+        if (String(args[0]) === privateKeyPath) {
+          keyReadAttempts += 1;
+          const error = new Error('simulated dataless File Provider contention') as NodeJS.ErrnoException;
+          error.code = 'EDEADLK';
+          throw error;
+        }
+        return (originalReadFile as unknown as (...values: unknown[]) => Promise<unknown>)(...args);
+      },
+    });
+
+    try {
+      const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {})) as { ready: boolean; errors: string[] };
+      expect(auth.ready).toBe(false);
+      expect(auth.errors.join(' ')).toContain('not locally available');
+      expect(keyReadAttempts).toBeGreaterThan(1);
+
+      let failure: unknown;
+      try {
+        await executeAppStoreConnectPluginAction(input(repoRoot, 'list_apps', {}));
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code: 'PLUGIN_AUTH_REQUIRED', retryable: false });
+      expect(String((failure as Error).message)).toContain('stable local private_key_path');
+    } finally {
+      Object.defineProperty(fsPromises, 'readFile', { configurable: true, writable: true, value: originalReadFile });
     }
   });
 
