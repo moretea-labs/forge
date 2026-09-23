@@ -2277,6 +2277,38 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
 
+  test('Watchdog liveness observes the configured Recovery transport instead of reporting a silent healthy system', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-watchdog-recovery-transport', 'artifact-watchdog-recovery-transport');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: runtime.endpoint,
+      recoveryTunnelService: {
+        platform: 'openai-secure-tunnel',
+        alias: 'forge-recovery-unmanaged-test-alias',
+        tunnelId: 'tunnel_00000000000000000000000000000000',
+        mcpServerUrl: 'http://127.0.0.1:8787/recovery/mcp',
+      },
+    });
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-watchdog-recovery-transport',
+      'artifact-watchdog-recovery-transport',
+      new Date(Date.now() - watchdogRuntimeStartupGraceMs(config) - 1_000).toISOString(),
+    );
+
+    const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false });
+    // A dead dedicated Recovery tunnel is the channel that cannot be probed
+    // through the primary transport, so it must surface on the cheap tick.
+    expect(tick.verify.probes.recovery_tunnel_runtime).toBeDefined();
+    expect(tick.verify.probes.recovery_tunnel_runtime?.ok).toBe(false);
+    expect(tick.decision.action).not.toBe('healthy');
+    expect(tick.state.publicTunnelFailures).toBe(1);
+  });
+
   test('Watchdog cheap healthy ticks use attestation identity without inspecting known-good bundle contents', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-watchdog-attested-cheap', 'artifact-watchdog-attested-cheap');

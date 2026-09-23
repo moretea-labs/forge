@@ -1972,6 +1972,12 @@ async function observeWatchdogHealthTier(
       watchdogPid: watchdogHealth.runtimeIdentity?.pid,
     },
   };
+  // The dedicated Recovery transport is the only channel that can repair a
+  // broken primary transport. It must be observed on every liveness tick, or a
+  // dead Recovery tunnel stays invisible while the watchdog keeps reporting a
+  // healthy system and never reaches the bounded tunnel-repair path.
+  const recoveryTransport = await probeOpenAiRecoveryTunnel(config);
+  if (recoveryTransport) probes.recovery_tunnel_runtime = recoveryTransport;
   const localChecks = Object.entries(probes)
     .filter(([name]) => !name.startsWith('recovery_'))
     .every(([, entry]) => entry.ok);
@@ -5929,8 +5935,15 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       verify: verified,
     };
   }
+  // Recovery is only usable when the transport the Recovery connector actually
+  // reaches is itself verified. Treat the configured Recovery transport as part
+  // of the recovery-health gate so a dead tunnel degrades the watchdog and
+  // reaches the bounded `repair_public_tunnel` path instead of reporting healthy.
+  const recoveryTransportHealthy = configuredRecoveryTunnel(config)?.platform === 'openai-secure-tunnel'
+    ? verified.probes.recovery_tunnel_runtime?.ok === true
+    : verified.probes.recovery_external_http?.ok !== false;
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
-    && verified.probes.recovery_external_http?.ok !== false;
+    && recoveryTransportHealthy;
   const primaryRuntimeHealthy = canonicalRuntimeSafeForTargetedConnectorRecovery(localVerify);
   const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
   const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
