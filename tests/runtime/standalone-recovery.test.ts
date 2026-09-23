@@ -56,6 +56,7 @@ import {
   RECOVERY_VERIFIER_OAUTH_CLIENT_NAME,
   RECOVERY_VERIFIER_OAUTH_REDIRECT_URI,
   resetWatchdogStateForRecoveryRelease,
+  nextReleaseReconcileBackoff,
 } from '../../src/runtime/standalone-recovery/entry';
 import { RecoveryMcpServer } from '../../src/runtime/standalone-recovery/mcp-server';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
@@ -1108,6 +1109,31 @@ test('standalone Recovery uses its client-owned loopback health only when a prim
   });
   expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
   expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
+});
+
+test('automatic release reconciliation backs off a non-converging step instead of forking it every interval', () => {
+  const step = 'cutover:release-1:soaking:11';
+
+  // First failure retries on the base cadence.
+  const first = nextReleaseReconcileBackoff({ consecutiveFailures: 0 }, true, step);
+  expect(first).toMatchObject({ fingerprint: step, consecutiveFailures: 1, delayMs: 15_000 });
+
+  // The same non-progressing step doubles until the bounded cap is reached.
+  let prior = first;
+  const delays: number[] = [first.delayMs];
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    prior = nextReleaseReconcileBackoff(prior, true, step);
+    delays.push(prior.delayMs);
+  }
+  expect(delays).toEqual([15_000, 30_000, 60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000]);
+  expect(prior.consecutiveFailures).toBe(9);
+
+  // Progress onto a different session/phase/revision restarts the schedule.
+  const progressed = nextReleaseReconcileBackoff(prior, true, 'cutover:release-1:known_good:12');
+  expect(progressed).toMatchObject({ fingerprint: 'cutover:release-1:known_good:12', consecutiveFailures: 1, delayMs: 15_000 });
+
+  // A successful step restores the base cadence and clears the failure identity.
+  expect(nextReleaseReconcileBackoff(progressed, false, undefined)).toEqual({ fingerprint: undefined, consecutiveFailures: 0, delayMs: 15_000 });
 });
 
 test('standalone Recovery classifies an externally managed OpenAI tunnel runtime as healthy transport', () => {

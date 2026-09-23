@@ -81,6 +81,11 @@ const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> 
 
 const RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND = '__reconcile-runtime-release-step';
 const RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS = 15_000;
+/**
+ * Upper bound for retrying one non-converging release step. A stuck release must
+ * still be retried, but never at a cadence that can starve the daemon that owns it.
+ */
+const RECOVERY_AUTOMATIC_RELEASE_FAILURE_BACKOFF_MAX_MS = 15 * 60_000;
 const RECOVERY_AUTOMATIC_RELEASE_STEP_TIMEOUT_MS = 15 * 60_000;
 
 function option(name: string): string | undefined {
@@ -887,7 +892,49 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
   }
 }
 
-async function runAutomaticReleaseReconciliationStep(config: RecoveryConfig): Promise<void> {
+/**
+ * Stable identity of the release step the daemon is currently driving. A step
+ * that keeps failing without progressing (same session, phase, and revision)
+ * must not fork a full Recovery executable every interval forever.
+ */
+function releaseReconciliationFingerprint(decision: { action?: unknown; session?: { sessionId?: unknown; phase?: unknown; revision?: unknown } }): string {
+  return [
+    typeof decision.action === 'string' ? decision.action : 'none',
+    typeof decision.session?.sessionId === 'string' ? decision.session.sessionId : 'none',
+    typeof decision.session?.phase === 'string' ? decision.session.phase : 'none',
+    typeof decision.session?.revision === 'number' ? String(decision.session.revision) : 'none',
+  ].join(':');
+}
+
+/**
+ * Retry schedule for the automatic release driver. A step that fails without
+ * progressing (same fingerprint) backs off exponentially up to a bounded cap so a
+ * non-converging release degrades into a slow retry instead of a
+ * full-executable fork storm that starves this daemon, the Recovery gateway it
+ * serves, and every tunnel behind it. Progress, or a new session/step, resets the
+ * schedule; a successful step restores the base interval.
+ */
+export function nextReleaseReconcileBackoff(
+  prior: { fingerprint?: string; consecutiveFailures: number },
+  failed: boolean,
+  fingerprint: string | undefined,
+): { fingerprint?: string; consecutiveFailures: number; delayMs: number } {
+  if (!failed) {
+    return { fingerprint: undefined, consecutiveFailures: 0, delayMs: RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS };
+  }
+  const nextFingerprint = fingerprint ?? 'unknown';
+  const consecutiveFailures = nextFingerprint === prior.fingerprint ? Math.max(1, prior.consecutiveFailures) + 1 : 1;
+  return {
+    fingerprint: nextFingerprint,
+    consecutiveFailures,
+    delayMs: Math.min(RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS * 2 ** (consecutiveFailures - 1), RECOVERY_AUTOMATIC_RELEASE_FAILURE_BACKOFF_MAX_MS),
+  };
+}
+
+async function runAutomaticReleaseReconciliationStep(
+  config: RecoveryConfig,
+  observed: { fingerprint?: string } = {},
+): Promise<void> {
   // Most daemon ticks are no-ops. Decide that in the resident process first so
   // a healthy/current source does not fork a complete Recovery executable every
   // fifteen seconds merely to rediscover the same result. The short-lived child
@@ -896,6 +943,7 @@ async function runAutomaticReleaseReconciliationStep(config: RecoveryConfig): Pr
     config.controllerHome,
     () => configuredRuntimeReleaseSourceState(config),
   );
+  observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
   if (!decision.required) return;
 
   const release = readCurrentRecoveryRelease(config.controllerHome);
@@ -946,13 +994,30 @@ async function runAutomaticReleaseReconciliationStep(config: RecoveryConfig): Pr
 }
 
 async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Promise<never> {
+  let lastFailedFingerprint: string | undefined;
+  let consecutiveFailures = 0;
   for (;;) {
+    const observed: { fingerprint?: string } = {};
+    let failure: string | undefined;
     try {
-      await runAutomaticReleaseReconciliationStep(config);
+      await runAutomaticReleaseReconciliationStep(config, observed);
     } catch (error) {
-      process.stderr.write(`automatic release reconciliation failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      failure = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`automatic release reconciliation failed: ${failure}\n`);
     }
-    await new Promise((resolveSleep) => setTimeout(resolveSleep, RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS));
+    const backoff = nextReleaseReconcileBackoff(
+      { fingerprint: lastFailedFingerprint, consecutiveFailures },
+      Boolean(failure),
+      observed.fingerprint,
+    );
+    lastFailedFingerprint = backoff.fingerprint;
+    consecutiveFailures = backoff.consecutiveFailures;
+    if (failure && backoff.delayMs > RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS) {
+      process.stderr.write(
+        `automatic release reconciliation backing off ${Math.round(backoff.delayMs / 1000)}s after ${backoff.consecutiveFailures} consecutive failures of ${backoff.fingerprint}\n`,
+      );
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, backoff.delayMs));
   }
 }
 
