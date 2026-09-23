@@ -1194,6 +1194,7 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
   let connected = false;
   let clock = 0;
   const commands: string[][] = [];
+  const workingDirectories: Array<string | undefined> = [];
   const verification = (): VerifyResult => ({
     ...healthyVerify(),
     probes: {
@@ -1208,8 +1209,9 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
     verifyLocal: async () => verification(),
     now: () => clock,
     sleep: async (ms) => { clock += ms; },
-    runCommand: async (name, args) => {
+    runCommand: async (name, args, _timeoutMs, options) => {
       commands.push([name, ...args]);
+      workingDirectories.push(options?.cwd);
       if (args[0] === 'runtimes' && args[1] === 'connect') {
         connected = true;
         return { ok: true, status: 0, stdout: '', stderr: '' };
@@ -1227,12 +1229,20 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
     },
   });
   expect(result).toMatchObject({ ok: true, attempted: true, serviceLabel: 'forge-recovery', serviceTarget: 'tunnel-client:forge-recovery' });
-  const connect = commands.find((entry) => entry[1] === 'runtimes' && entry[2] === 'connect');
-  expect(connect).toEqual([
+  const connectIndex = commands.findIndex((entry) => entry[1] === 'runtimes' && entry[2] === 'connect');
+  expect(connectIndex).toBeGreaterThanOrEqual(0);
+  expect(commands[connectIndex]).toEqual([
     'tunnel-client', 'runtimes', 'connect', '--alias', 'forge-recovery', '--tunnel-id', tunnelId,
     '--runtime-api-key', 'file:/tmp/forge-recovery-runtime-key', '--mcp-server-url', endpoint,
     '--profile', 'forge-recovery', '--profile-dir', home,
   ]);
+  // tunnel-client creates its state directory relative to the working directory.
+  // A persistent Forge service has a read-only working directory, so the
+  // reconnect must be dispatched from a writable Forge-owned directory.
+  const connectWorkingDirectory = workingDirectories[connectIndex];
+  expect(connectWorkingDirectory).toBeString();
+  expect(connectWorkingDirectory!.startsWith(join(home, 'tmp'))).toBe(true);
+  expect(existsSync(connectWorkingDirectory!)).toBe(true);
   expect(commands.some((entry) => entry.includes('forge') && !entry.includes('forge-recovery'))).toBe(false);
 });
 

@@ -1232,6 +1232,20 @@ function runtimeHealthEndpoint(endpoint: string): string {
   return url.toString();
 }
 
+/**
+ * tunnel-client materialises its own state directory relative to the process
+ * working directory. Persistent Forge services run under launchd/systemd with a
+ * read-only working directory, so a Forge-owned tunnel reconnect must run from a
+ * writable Forge-managed directory. Otherwise the reconnect fails with
+ * `mkdir .tunnel-client: read-only file system`, the dedicated Recovery
+ * transport can never be repaired, and the Recovery connector stays dark.
+ */
+function tunnelClientWorkingDirectory(controllerHome: string): string {
+  const directory = join(resolve(controllerHome), 'tmp', 'tunnel-client');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  return directory;
+}
+
 async function observeOpenAiTunnelRuntime(
   configured: OpenAiSecureTunnelServiceConfig,
   runCommand: CommandRunner = command,
@@ -1333,6 +1347,7 @@ async function observeOpenAiRecoveryTunnel(
 async function ensureOpenAiTunnelRuntimeStarted(
   configured: OpenAiSecureTunnelServiceConfig,
   runCommand: CommandRunner = command,
+  workingDirectory?: string,
 ): Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string; serviceLabel: string; serviceTarget: string }> {
   const serviceLabel = configured.alias;
   const serviceTarget = `tunnel-client:${configured.alias}`;
@@ -1358,7 +1373,7 @@ async function ensureOpenAiTunnelRuntimeStarted(
   } catch (error) {
     return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid', serviceLabel, serviceTarget };
   }
-  const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000));
+  const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000), workingDirectory ? { cwd: workingDirectory } : {});
   return connected.ok
     ? { ok: true, attempted: true, detail: `OpenAI Secure MCP Tunnel runtime ${configured.alias} connect dispatched`, serviceLabel, serviceTarget }
     : { ok: false, attempted: true, detail: `OpenAI Secure MCP Tunnel runtime connect failed: ${connected.stderr || connected.stdout || connected.status}`, serviceLabel, serviceTarget };
@@ -2236,7 +2251,8 @@ export async function listReleases(config: RecoveryConfig): Promise<Record<strin
 }
 
 interface CommandResult { ok: boolean; status: number | null; stdout: string; stderr: string; }
-type CommandRunner = (commandName: string, args: string[], timeoutMs?: number) => Promise<CommandResult>;
+interface CommandOptions { cwd?: string; maxOutputBytes?: number; }
+type CommandRunner = (commandName: string, args: string[], timeoutMs?: number, options?: CommandOptions) => Promise<CommandResult>;
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
 
 /**
@@ -2266,7 +2282,7 @@ export interface PublicTunnelRepairDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
-function command(commandName: string, args: string[], timeoutMs = 10_000, options: { cwd?: string; maxOutputBytes?: number } = {}): Promise<CommandResult> {
+function command(commandName: string, args: string[], timeoutMs = 10_000, options: CommandOptions = {}): Promise<CommandResult> {
   return new Promise((resolveCommand) => {
     const child = spawn(commandName, args, {
       shell: false,
@@ -2774,7 +2790,7 @@ export async function restartPrimaryConnector(
           tunnelRestarted = { ok: result.ok, attempted: true, detail: result.detail, serviceTarget: tunnel.target };
         }
       } else {
-        tunnelRestarted = await ensureOpenAiTunnelRuntimeStarted(primaryTunnel, runCommand);
+        tunnelRestarted = await ensureOpenAiTunnelRuntimeStarted(primaryTunnel, runCommand, tunnelClientWorkingDirectory(config.controllerHome));
       }
       if (!tunnelRestarted?.ok) {
         const detail = tunnelRestarted?.detail ?? 'primary public tunnel service configuration is invalid or unavailable';
@@ -5680,7 +5696,9 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
         audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
         return { ok: false, attempted: false, noOp: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
       }
-      const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000));
+      const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000), {
+        cwd: tunnelClientWorkingDirectory(config.controllerHome),
+      });
       if (!connected.ok) {
         const detail = `OpenAI Secure MCP Tunnel runtime connect failed: ${connected.stderr || connected.stdout || connected.status}`;
         audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
