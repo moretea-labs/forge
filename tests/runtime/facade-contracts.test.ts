@@ -51,6 +51,7 @@ describe('handoff and facade contracts', () => {
     expect(learning?.items?.properties).not.toHaveProperty('observed_at');
     expect(learning?.items?.properties).not.toHaveProperty('source_kind');
     expect(learning?.items?.properties).not.toHaveProperty('id');
+    expect(properties?.operation?.enum).toContain('learning_record');
   });
 
   test('derives stable rh_work schema and suggested-action admission from one operation ABI', () => {
@@ -58,6 +59,7 @@ describe('handoff and facade contracts', () => {
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toEqual([...allowedFacadeOperations('rh_work')]);
     expect(properties?.operation?.enum).toContain('review');
+    expect(properties?.operation?.enum).toContain('learning_record');
     expect(properties?.operation?.enum).toContain('outcome_record');
     expect(properties?.operation?.enum).toContain('experience_record');
 

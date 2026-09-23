@@ -209,6 +209,30 @@ describe('Tool Contract ABI authority', () => {
     })).toThrow('controller_disposition args contains unsupported field work_id');
   });
 
+  test('semantic.v1 carries direct learning for frozen clients without inventing Work authority', () => {
+    const learningSignals = [{
+      scope_kind: 'project',
+      kind: 'correction',
+      valence: 'positive',
+      summary: 'Prefer the verified Local System route for authorized local filesystem discovery.',
+      concepts: ['local-system', 'filesystem-routing'],
+      admission_source: 'explicit_human',
+      portability: 'local',
+      salience: 0.9,
+      confidence: 0.95,
+      utility: 0.9,
+    }];
+    const capability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'learning_record',
+      args: { learning_signals: learningSignals },
+    });
+    expect(capability).toStartWith('semantic.v1:');
+    expect(parseFrozenSemanticCompatibilityCapability('repair', capability)).toEqual({
+      operation: 'learning_record',
+      args: { learning_signals: learningSignals },
+    });
+  });
+
   test('semantic.v1 carries frozen work review without inventing another capability prefix', () => {
     const capability = buildFrozenSemanticCompatibilityCapability({
       operation: 'work_review',

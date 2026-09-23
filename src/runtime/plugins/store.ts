@@ -917,7 +917,7 @@ export async function executeAssistantPluginReadDirect(
   controllerHome: string,
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
-): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown> }> {
+): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown>; receipt: PluginActionReceipt }> {
   const manifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
@@ -938,7 +938,33 @@ export async function executeAssistantPluginReadDirect(
     args: normalizedArgs,
     origin: request.origin,
   });
-  return { manifest, action, result };
+  const createdAt = new Date().toISOString();
+  const resultDigest = createHash('sha256').update(JSON.stringify(result)).digest('hex');
+  const observationSemanticKey = semanticKey(repository, request.pluginId, request.actionId, normalizedArgs);
+  const observationActor = request.origin?.actor?.trim() ?? '';
+  // Observation evidence is content-addressed so repeated identical reads do not create
+  // an unbounded receipt trail. This remains provenance only, never replay/effect state.
+  const receiptId = `PLG-OBS-${createHash('sha256')
+    .update(`${observationSemanticKey}:${resultDigest}:${observationActor}`)
+    .digest('hex').slice(0, 24)}`;
+  const receipt: PluginActionReceipt = {
+    schemaVersion: 1,
+    receiptId,
+    requestId: request.requestId,
+    repoId: repository.repoId,
+    pluginId: request.pluginId,
+    actionId: request.actionId,
+    semanticKey: observationSemanticKey,
+    status: 'succeeded',
+    createdAt,
+    ...(request.origin ? { origin: request.origin } : {}),
+    observationOnly: true,
+    resultDigest,
+  };
+  // Direct reads stay on the inline fast path. Persist only a compact observation
+  // receipt, never provider result content and never request replay state.
+  writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
+  return { manifest, action, result, receipt };
 }
 
 export interface PluginActionReceipt {
@@ -960,6 +986,10 @@ export interface PluginActionReceipt {
   authorization?: PluginActionAuthorizationEvidence;
   result?: Record<string, unknown>;
   error?: { code: string; message: string };
+  /** True for a compact direct-read observation; it is evidence, never an effect-completion authority. */
+  observationOnly?: boolean;
+  /** SHA-256 of the direct-read result. Result content is intentionally not persisted for observation-only receipts. */
+  resultDigest?: string;
 }
 
 interface PluginActionRequestIndex {
@@ -999,6 +1029,10 @@ export function findPluginActionReceipt(
   receiptId: string,
 ): PluginActionReceipt | undefined {
   const home = ensureControllerHome(controllerHome);
+  // Controller-scoped plugins (for example Local System) live under system/, not
+  // repositories/. They are first-class evidence producers and must be searched too.
+  const controllerReceipt = readPluginActionReceipt(home, CONTROLLER_SCOPE_REPO_ID, receiptId);
+  if (controllerReceipt) return controllerReceipt;
   const repositoriesRoot = join(home, 'repositories');
   try {
     for (const repoId of readdirSync(repositoriesRoot)) {

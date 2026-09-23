@@ -38,6 +38,7 @@ export const RH_WORK_OPERATIONS = [
   'schedule_trigger',
   'workflow_execute',
   'workflow_reconcile',
+  'learning_record',
   'outcome_record',
   'experience_record',
 ] as const;

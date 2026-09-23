@@ -89,13 +89,19 @@ export interface FrozenControllerDispositionLearningCompatibilityEnvelope {
   args: FrozenControllerDispositionLearningCompatibilityArgs;
 }
 
+export interface FrozenLearningRecordCompatibilityEnvelope {
+  operation: 'learning_record';
+  args: FrozenControllerDispositionLearningCompatibilityArgs;
+}
+
 export type FrozenSemanticCompatibilityEnvelope =
   | FrozenRequirementCreateCompatibilityEnvelope
   | FrozenPlanCreateCompatibilityEnvelope
   | FrozenWorkStartCompatibilityEnvelope
   | FrozenWorkContinueCompatibilityEnvelope
   | FrozenWorkReviewCompatibilityEnvelope
-  | FrozenControllerDispositionLearningCompatibilityEnvelope;
+  | FrozenControllerDispositionLearningCompatibilityEnvelope
+  | FrozenLearningRecordCompatibilityEnvelope;
 
 const REQUIREMENT_CREATE_KEYS = new Set([
   'requirement_title',
@@ -242,10 +248,10 @@ function normalizeWorkReviewArgs(value: unknown): FrozenWorkReviewCompatibilityA
   return { decision: decision as FrozenWorkReviewCompatibilityArgs['decision'] };
 }
 
-function normalizeControllerDispositionLearningArgs(value: unknown): FrozenControllerDispositionLearningCompatibilityArgs {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('controller_disposition args must be an object');
+function normalizeLearningSignalArgs(value: unknown, label: 'controller_disposition' | 'learning_record'): FrozenControllerDispositionLearningCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} args must be an object`);
   const args = value as Record<string, unknown>;
-  assertExactKeys(args, new Set(['learning_signals']), 'controller_disposition args');
+  assertExactKeys(args, new Set(['learning_signals']), `${label} args`);
   if (!Array.isArray(args.learning_signals) || args.learning_signals.length > 8) {
     fail('learning_signals must be a bounded array');
   }
@@ -264,7 +270,8 @@ function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): Froz
   if (input.operation === 'start') return normalizeWorkStartArgs(input.args);
   if (input.operation === 'continue') return normalizeWorkContinueArgs(input.args);
   if (input.operation === 'work_review') return normalizeWorkReviewArgs(input.args);
-  if (input.operation === 'controller_disposition') return normalizeControllerDispositionLearningArgs(input.args);
+  if (input.operation === 'controller_disposition') return normalizeLearningSignalArgs(input.args, 'controller_disposition');
+  if (input.operation === 'learning_record') return normalizeLearningSignalArgs(input.args, 'learning_record');
   return fail('operation is not allowlisted');
 }
 
@@ -345,7 +352,13 @@ export function parseFrozenSemanticCompatibilityCapability(
   if (payload.op === 'controller_disposition') {
     return {
       operation: 'controller_disposition',
-      args: normalizeControllerDispositionLearningArgs(payload.a),
+      args: normalizeLearningSignalArgs(payload.a, 'controller_disposition'),
+    };
+  }
+  if (payload.op === 'learning_record') {
+    return {
+      operation: 'learning_record',
+      args: normalizeLearningSignalArgs(payload.a, 'learning_record'),
     };
   }
   return fail('operation is not allowlisted');

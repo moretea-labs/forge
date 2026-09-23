@@ -1121,3 +1121,123 @@ describe('connected assistant learning loops', () => {
   });
 
 });
+
+
+describe('direct model-authored learning without Work lifecycle', () => {
+  test('records explicit correction with direct-read evidence and recalls it through ordinary capability context', async () => {
+    const fx = fixture('direct-learning', { knowledge: false });
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: fx.repoRoot,
+      explicitRepository: fx.repository,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'chatgpt-direct-learning',
+      sessionId: 'session-direct-learning',
+      controllerInstanceId: 'instance-direct-learning',
+      controllerType: 'chatgpt' as const,
+      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      toolset: 'core',
+      toolsetLocked: true,
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const observation = await callRuntimeTool(ctx, 'plugin_action_execute', {
+      plugin_id: 'local_system',
+      action_id: 'list_targets',
+      request_id: 'direct-learning-observation',
+      arguments: {},
+    });
+    expect(observation?.isError).not.toBe(true);
+    const observationPayload = observation?.structuredContent as Record<string, any>;
+    expect(observationPayload.direct).toBe(true);
+    expect(observationPayload.durable).toBe(false);
+    expect(observationPayload.observationReceiptId).toMatch(/^PLG-OBS-/);
+
+    const learning = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_record',
+      learning_signals: [{
+        scope_kind: 'project',
+        kind: 'correction',
+        valence: 'positive',
+        summary: 'For local filesystem discovery, prefer the Local System capability over Personal Knowledge when the target is an authorized local file.',
+        concepts: ['local-system', 'personal-knowledge', 'filesystem-routing'],
+        facets: ['capability-routing', 'user-correction'],
+        admission_source: 'explicit_human',
+        portability: 'local',
+        salience: 0.95,
+        confidence: 0.96,
+        utility: 0.93,
+        evidence_refs: [observationPayload.observationReceiptId],
+      }],
+    });
+    expect(learning?.isError).not.toBe(true);
+    const learningPayload = learning?.structuredContent as Record<string, any>;
+    expect(learningPayload.status).toBe('ok');
+    expect(learningPayload.data.storedMemoryIds).toHaveLength(1);
+
+    const memoryId = String(learningPayload.data.storedMemoryIds[0]);
+    const learned = cognitionReadPort(fx.controllerHome).readByIds(
+      [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],
+      [memoryId],
+    )[0];
+    expect(learned?.provenance.sourceKind).toBe('controller');
+    expect(learned?.provenance.sourceWorkId).toBeUndefined();
+    expect(learned?.provenance.sourceRoundId).toBeUndefined();
+    expect(learned?.provenance.evidenceRefs).toEqual([observationPayload.observationReceiptId]);
+
+    const recalled = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'list',
+      query: 'find an authorized local filesystem file with Local System rather than Personal Knowledge',
+      detail_level: 'summary',
+    });
+    expect(recalled?.isError).not.toBe(true);
+    const recalledPayload = recalled?.structuredContent as Record<string, any>;
+    expect(recalledPayload.data.learningRecall.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        memoryId: expect.stringContaining(memoryId),
+        text: expect.stringContaining('Local System'),
+      }),
+    ]));
+  });
+
+  test('rejects unavailable direct-learning evidence before writing any memory', async () => {
+    const fx = fixture('direct-learning-evidence', { knowledge: false });
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: fx.repoRoot,
+      explicitRepository: fx.repository,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'chatgpt-direct-learning',
+      sessionId: 'session-direct-learning',
+      controllerInstanceId: 'instance-direct-learning',
+      controllerType: 'chatgpt' as const,
+      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      toolset: 'core',
+      toolsetLocked: true,
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const learning = await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'learning_record',
+      learning_signals: [{
+        scope_kind: 'project',
+        kind: 'procedure',
+        valence: 'neutral',
+        summary: 'This candidate must not persist because its claimed evidence does not exist.',
+        concepts: ['missing-evidence'],
+        admission_source: 'controller_observation',
+        portability: 'local',
+        salience: 0.5,
+        confidence: 0.5,
+        utility: 0.5,
+        evidence_refs: ['PLG-OBS-missing'],
+      }],
+    });
+    expect(learning?.isError).toBe(true);
+    const payload = learning?.structuredContent as Record<string, any>;
+    expect(payload.summary).toContain('COGNITION_DIRECT_LEARNING_EVIDENCE_UNAVAILABLE');
+  });
+});

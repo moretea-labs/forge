@@ -7,17 +7,20 @@ import {
   type ControllerExperienceDraft,
   type ControllerOutcomeObservationDraft,
 } from '../../../src/runtime/context/assistant-work-context';
+import { parseControllerLearningSignalDrafts } from '../../../src/runtime/context/automatic-learning';
+import { persistDirectControllerLearning } from '../../../src/runtime/context/direct-controller-learning';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { assertFacadeControllerRoundAuthority } from './controller-authority-adapter';
 import { result } from './result-adapter';
 
-type RepositoryIdentity = { repoId: string };
+type RepositoryIdentity = { repoId: string; activeCheckoutId: string };
 
 /**
- * Dedicated rh_work learning-loop dispatch. It records Outcome/Experience data
- * only after exact Work/Controller authority is proven; Work lifecycle mutation
- * remains owned by the canonical lifecycle adapters.
+ * rh_work learning dispatch has two deliberately different authority shapes:
+ * - learning_record is generic model-authored advisory learning and never requires Work.
+ * - outcome_record / experience_record are Work-specific verified records and retain exact
+ *   ControllerRound lineage.
  */
 export function callRhWorkLearningOperation(
   ctx: MultiRepositoryMcpToolContext,
@@ -25,9 +28,32 @@ export function callRhWorkLearningOperation(
   operation: string,
   args: Record<string, unknown>,
 ): CallToolResult | undefined {
-  if (operation !== 'outcome_record' && operation !== 'experience_record') return undefined;
+  if (!['learning_record', 'outcome_record', 'experience_record'].includes(operation)) return undefined;
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   try {
+    if (operation === 'learning_record') {
+      const signals = parseControllerLearningSignalDrafts(args.learning_signals);
+      if (signals.length === 0) throw new Error('COGNITION_DIRECT_LEARNING_SIGNALS_REQUIRED');
+      const learning = persistDirectControllerLearning({
+        controllerHome: ctx.controllerHome,
+        repository,
+        signals,
+        principalId: ctx.principalId,
+        sessionId: ctx.sessionId,
+        controllerInstanceId: ctx.controllerInstanceId,
+        controllerType: ctx.controllerType,
+      });
+      return result(buildFacadeResult({
+        summary: `Recorded ${learning.storedMemoryIds.length} model-authored advisory learning item(s) without creating Work lifecycle.`,
+        data: {
+          recorded: true,
+          storedMemoryIds: learning.storedMemoryIds,
+          scopes: learning.scopes,
+          authorityBoundary: 'Cognitive advisory memory only; it never grants execution or lifecycle authority.',
+        },
+      }) as unknown as Record<string, unknown>);
+    }
+
     const workId = String(args.work_id ?? '').trim();
     if (!workId) throw new Error('LEARNING_LOOP_WORK_ID_REQUIRED');
     const work = getWorkContract(store, workId);
@@ -70,13 +96,13 @@ export function callRhWorkLearningOperation(
         : undefined,
     });
     return result(buildFacadeResult({
-      summary: `Experience ${experience.id} recorded from canonical evidence for reuse by the next ControllerRound.`,
+      summary: `Experience ${experience.id} recorded from canonical Work evidence for reuse by later Controller rounds.`,
       data: { experience },
     }) as unknown as Record<string, unknown>);
   } catch (error) {
     return result(buildFacadeResult({
       status: 'blocked',
-      summary: error instanceof Error ? error.message : 'Learning-loop record failed.',
+      summary: error instanceof Error ? error.message : 'Learning record failed.',
       data: { recorded: false },
     }) as unknown as Record<string, unknown>, true);
   }

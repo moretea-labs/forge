@@ -170,6 +170,47 @@ function rhContextKnowledgeAudit(
   };
 }
 
+function rhContextLearningRecall(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  query: string,
+  workId?: string,
+  limit = 8,
+): Record<string, unknown> {
+  const resolved = rhContextKnowledgeScopes(ctx, repository, workId);
+  if (!query.trim() || resolved.scopes.length === 0) {
+    return { advisoryOnly: true, scopes: resolved.scopes, items: [], gaps: resolved.gaps };
+  }
+  const usage = cognitiveUsageFeedbackForContext({
+    controllerHome: ctx.controllerHome,
+    repoId: repository.repoId,
+    scopes: resolved.scopes,
+    ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
+  });
+  const activation = activateCognitiveMemory(
+    ctx.controllerHome,
+    resolved.scopes,
+    query.slice(0, 4_000),
+    { maxItems: Math.min(12, Math.max(1, limit)), usageFeedback: usage },
+  );
+  return {
+    advisoryOnly: true,
+    authorityBoundary: 'Learned context may guide model decisions but never grants execution, lifecycle, or acceptance authority.',
+    scopes: resolved.scopes,
+    items: activation.items.map(entry => ({
+      memoryId: memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id }),
+      text: entry.memory.canonicalText,
+      score: entry.score,
+      reasons: entry.reasons,
+      activationPath: entry.activationPath,
+      facets: entry.memory.facets,
+      concepts: entry.memory.concepts,
+      provenance: entry.memory.provenance,
+    })),
+    gaps: [...resolved.gaps, ...activation.gaps],
+  };
+}
+
 const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
 
 const RH_CONTEXT_SEMANTIC_LOCATION_LIMIT = 200;
@@ -449,6 +490,9 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         return result(facade as unknown as Record<string, unknown>, true);
       }
       const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
+      const learningRecall = query && !knowledgeAuditRequested
+        ? rhContextLearningRecall(ctx, repository, query, typeof args.work_id === 'string' ? args.work_id.trim() || undefined : undefined)
+        : undefined;
       if (!query && cognitionAudit) {
         const items = Array.isArray(cognitionAudit.items) ? cognitionAudit.items : [];
         const facade = buildFacadeResult({
@@ -606,6 +650,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           limits: pack.limits,
           contextContract: pack.contextContract,
           ...(cognitionAudit ? { cognitionAudit } : {}),
+          ...(learningRecall ? { learningRecall } : {}),
           ...(executionReadiness ? {
             executionReadiness,
             registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
@@ -697,6 +742,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       ? args.query.trim()
       : '';
     if (capabilityIntentQuery) {
+      const learningRecall = rhContextLearningRecall(ctx, repository, capabilityIntentQuery, undefined, 6);
       const manifestOptions = { preferStored: true };
       const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
       const controllerRepository = controllerPluginRepository(ctx.controllerHome);
@@ -725,6 +771,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
             readOnlyDiscovery: true,
             executeWith: 'plugin_action_execute',
           },
+          learningRecall,
           toolArchitecture: {
             facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
             domainSchemaLoading: 'intent_ranked_capability_search',

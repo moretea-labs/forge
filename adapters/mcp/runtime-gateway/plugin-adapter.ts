@@ -167,6 +167,10 @@ export async function callPluginAdapter(
             confirmation: application.action.confirmation,
           },
           scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
+          requestId: application.receipt.requestId,
+          observationReceiptId: application.receipt.receiptId,
+          evidenceRef: application.receipt.receiptId,
+          resultDigest: application.receipt.resultDigest,
           result: application.result,
           detail: {
             tool: 'rh_context',
@@ -176,7 +180,7 @@ export async function callPluginAdapter(
               detail_level: 'detail',
             },
           },
-          next: 'Continue with the returned bounded result; use rh_context capability detail only when the typed action schema/policy is needed.',
+          next: 'Continue with the returned bounded result. The compact observationReceiptId/evidenceRef may support model-selected learning without creating Work or effect replay state; use rh_context capability detail only when the typed action schema/policy is needed.',
         };
         return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, application.result);
       }

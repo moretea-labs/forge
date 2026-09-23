@@ -21,6 +21,7 @@ export type AssistantPluginActionApplicationResult =
       manifest: AssistantPluginManifest;
       action: AssistantPluginActionDescriptor;
       result: Record<string, unknown>;
+      receipt: Awaited<ReturnType<typeof executeAssistantPluginReadDirect>>['receipt'];
     }
   | {
       kind: 'direct_non_persistent';
@@ -72,6 +73,7 @@ export async function executeAssistantPluginActionApplication(input: {
       manifest: direct.manifest,
       action: direct.action,
       result: direct.result,
+      receipt: direct.receipt,
     };
   }
 

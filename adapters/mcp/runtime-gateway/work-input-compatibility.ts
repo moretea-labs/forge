@@ -74,7 +74,8 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     if (frozenSemanticOperation) {
       const requirementScoped = frozenSemanticOperation.operation !== 'work_review'
         && frozenSemanticOperation.operation !== 'continue'
-        && frozenSemanticOperation.operation !== 'controller_disposition';
+        && frozenSemanticOperation.operation !== 'controller_disposition'
+        && frozenSemanticOperation.operation !== 'learning_record';
       if (requirementScoped) {
         const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
         if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
@@ -140,7 +141,8 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     args.review_decision = frozenSemanticOperation.args.decision;
     args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
   }
-  if (frozenSemanticOperation?.operation === 'controller_disposition') {
+  if (frozenSemanticOperation?.operation === 'controller_disposition'
+    || frozenSemanticOperation?.operation === 'learning_record') {
     args.learning_signals = frozenSemanticOperation.args.learning_signals;
   }
   if (frozenImplementationReview) {

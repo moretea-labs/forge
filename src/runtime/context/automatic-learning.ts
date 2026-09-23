@@ -44,8 +44,10 @@ export type ControllerLearningScopeKind = 'work' | 'requirement' | 'project' | '
 export type ControllerLearningAdmissionSource = 'explicit_human' | 'controller_observation' | 'system_inference';
 
 /**
- * Model-authored semantic draft only. Identity, time, source Work/Round and source kind
- * are intentionally absent and are derived from the exact ControllerRound by Forge.
+ * Model-authored semantic draft only. Identity, time and source provenance are
+ * intentionally absent. Forge derives them at the persistence boundary: exact
+ * Work/ControllerRound lineage for round-close learning, or non-lifecycle controller
+ * provenance for direct project/workspace advisory learning.
  */
 export interface ControllerLearningSignalDraft {
   scopeKind: ControllerLearningScopeKind;
