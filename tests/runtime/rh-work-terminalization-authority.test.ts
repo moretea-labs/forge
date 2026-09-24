@@ -14,7 +14,7 @@ import { implementationReviewChangedPathDigest, workRequiresImplementationReview
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, rearmControllerRoundAfterProviderRecovery, rearmControllerRoundAfterProviderUserAction, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRepositoryMutationWorkHandle, ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { implementationReviewCommittedBaseRevision, implementationReviewPreparationChangedPaths, inspectCleanupOnlyMergedHead, inspectManagedWorkPostCommitEditingRebind, managedReviewRequiresCandidatePreparation } from '../../src/runtime/control-plane/execution/work-finalization-service';
@@ -6864,6 +6864,51 @@ describe('rh_work terminalization authority', () => {
       { principalId: 'principal-checkout-mismatch', sessionId: 'transport-checkout-mismatch', controllerInstanceId: 'runtime-checkout-mismatch' },
       workId,
     )).toThrow(`resolved_checkout=${fx.repository.activeCheckoutId}; expected_work_checkout=${expectedCheckoutId}; retry with checkout_id=${expectedCheckoutId}`);
+  });
+
+  test('explicit Work attribution and repository mutation do not require ControllerSession ownership', () => {
+    const fx = fixture();
+    const workId = 'work-repository-mutation-without-controller-owner';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      workKind: 'repository_change',
+      objective: 'Use explicit Work attribution while concrete repository fences own mutation safety.',
+      acceptanceCriteria: ['Repository mutation does not depend on a general ControllerSession mutex.'],
+      allowedPaths: ['**'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+    const attributed = resolveExplicitClaimedRepositoryWork(
+      fx.controllerHome,
+      { repoId: fx.repository.repoId, activeCheckoutId: fx.repository.activeCheckoutId },
+      { principalId: 'principal-sessionless-mutation', sessionId: 'transport-sessionless-mutation', controllerInstanceId: 'runtime-sessionless-mutation' },
+      workId,
+    );
+    expect(attributed?.workId).toBe(workId);
+
+    const authority = ensureRepositoryMutationWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      principalId: 'principal-sessionless-mutation',
+      sessionId: 'transport-sessionless-mutation',
+    });
+    expect(authority.handle).toMatchObject({
+      workId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'principal-sessionless-mutation',
+      sessionId: 'transport-sessionless-mutation',
+    });
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
   });
 
   test('plan.step.retry restores a cleaned zero-delta cancelled Plan step through rh_work without reviving the terminal Work', async () => {

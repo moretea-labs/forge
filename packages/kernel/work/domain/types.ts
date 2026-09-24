@@ -69,6 +69,24 @@ export const WORK_CONTRACT_STATUSES = [
 ] as const;
 export type WorkContractStatus = (typeof WORK_CONTRACT_STATUSES)[number];
 
+/** Thin semantic Work state. Execution/runtime conditions never add states here. */
+export type SemanticWorkState = 'open' | 'completed' | 'cancelled';
+
+export interface WorkSemanticView {
+  workId: string;
+  revision: number;
+  semanticScope: ScopeRef;
+  objective: string;
+  state: SemanticWorkState;
+  requirementId?: string;
+  requirementRevision?: number;
+  planId?: string;
+  planRevision?: number;
+  resultRefs: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * Work execution phases are intentionally small and technical. User-facing
  * Requirement lifecycle belongs to Requirement, not this projection.
@@ -391,6 +409,17 @@ export interface WorkContract {
   routeDecision?: WorkRouteDecisionSnapshot;
   mode: ExecutionMode;
   objective: string;
+  /** Independent authored-context revision. Mechanical Work writes never use the SQLite row revision as semantic CAS. */
+  semanticRevision?: number;
+  /** Timestamp of the authored semantic content; mechanical Work writes must not change it. */
+  semanticUpdatedAt?: string;
+  /** Explicit thin semantic state once authored through the semantic API. Legacy rows derive it from terminal compatibility state. */
+  semanticState?: SemanticWorkState;
+  /** Optional provenance links to the Requirement/Plan semantic revisions used when this Work was authored. */
+  requirementRevision?: number;
+  planRevision?: number;
+  /** Model/user-selected semantic result references, separate from mechanical evidence and delivery receipts. */
+  semanticResultRefs?: string[];
   acceptanceCriteria: string[];
   constraints: WorkContractConstraints;
   /** Risk is immutable contract input and is projected to legacy Task reads. */

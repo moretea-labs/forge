@@ -14,6 +14,8 @@ export const RH_WORK_OPERATIONS = [
   'repair',
   'finalize',
   'stop',
+  'work_get',
+  'work_revise',
   'delegate',
   'controller_claim',
   'controller_release',
@@ -21,14 +23,13 @@ export const RH_WORK_OPERATIONS = [
   'controller_get_owner',
   'launcher_start',
   'requirement_create',
+  'requirement_get',
+  'requirement_revise',
   'requirement_promote_candidate',
-  'requirement_continue',
   'plan_create',
   'plan_get',
+  'plan_revise',
   'plan_list',
-  'plan_approve',
-  'plan_accept_step',
-  'plan_supersede',
   'schedule_create',
   'schedule_list',
   'schedule_get',
@@ -44,8 +45,22 @@ export const RH_WORK_OPERATIONS = [
   'experience_record',
 ] as const;
 
+export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [
+  'requirement_continue',
+  'plan_approve',
+  'plan_accept_step',
+  'plan_supersede',
+] as const;
+
+export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
+
 export type RhWorkOperation = (typeof RH_WORK_OPERATIONS)[number];
 
 export function isRhWorkOperation(operation: string): operation is RhWorkOperation {
   return (RH_WORK_OPERATIONS as readonly string[]).includes(operation);
+}
+
+export function isRhWorkAcceptedOperation(operation: string): boolean {
+  return isRhWorkOperation(operation)
+    || (RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS as readonly string[]).includes(operation);
 }

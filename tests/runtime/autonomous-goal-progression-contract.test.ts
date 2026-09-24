@@ -97,8 +97,11 @@ describe('Autonomous Goal Progression projector', () => {
     expect(result.reasonCode).toBe('PLAN_STEP_READINESS_NOT_PROJECTED');
   });
 
-  test('requests replan on source drift and reconciles a failed Work before replanning', () => {
-    expect(projectAutonomousGoalProgression(snapshot({ currentSourceRevision: 'rev-2' })).kind).toBe('request_replan');
+  test('treats Plan source basis as provenance while still reconciling failed Work and explicit replanning', () => {
+    expect(projectAutonomousGoalProgression(snapshot({ currentSourceRevision: 'rev-2' }))).toMatchObject({
+      kind: 'continue_current_work',
+      reasonCode: 'WORK_READY_TO_CONTINUE',
+    });
     expect(projectAutonomousGoalProgression(snapshot({
       works: [{ workId: 'WORK-A', requirementId: 'REQ-1', planId: 'PLAN-1', planStepId: 'A', status: 'failed' }],
     }))).toMatchObject({

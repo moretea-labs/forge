@@ -645,6 +645,24 @@ export function listControlPlaneRecords<T>(
     listControlPlaneRecordsWithinTransaction<T>(database, input));
 }
 
+/** Exact stable-key lookup across scopes. This is a read of the existing Control Plane authority, not a second id registry. */
+export function findControlPlaneRecordsByKey<T>(
+  controllerHome: string,
+  input: { namespace: string; key: string; limit?: number },
+): ControlPlaneRecord<T>[] {
+  const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 2), 100));
+  return withDatabaseForRead(controllerHome, (database) => {
+    const rows = withSqliteStatement(database, `
+      SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+      FROM control_plane_records
+      WHERE namespace = ? AND record_key = ?
+      ORDER BY scope ASC
+      LIMIT ?
+    `, (statement) => statement.all(input.namespace, input.key, limit));
+    return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
+  });
+}
+
 /**
  * Candidate-only read optimization for top-level JSON text fields. This never
  * establishes domain authority: missing/null/non-text values remain candidates,

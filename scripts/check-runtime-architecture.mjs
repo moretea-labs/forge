@@ -986,7 +986,12 @@ requireText('packages/kernel/progression/domain/types.ts', "from '../../schedule
 forbid('packages/kernel/progression/domain/types.ts', /export type Progression(?:RequirementState|PlanStatus|PlanStepStatus)\s*=/, 'Goal progression must consume canonical Goal lifecycle types instead of copying status unions');
 requireText('packages/kernel/progression/domain/types.ts', 'completionTargetRevision?: string');
 requireText('packages/kernel/progression/application/projector.ts', 'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE');
-requireText('packages/kernel/progression/application/projector.ts', 'completionTargetRevision === snapshot.currentSourceRevision');
+requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'reviseRequirementSemantic');
+requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'revisePlanSemanticContext');
+requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'only three cross-domain model-authored semantic records');
+requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'semantic revision must be applied to the latest persisted aggregate inside the same storage transaction');
+requireText('packages/kernel/progression/application/projector.ts', 'provenance/staleness context only');
+forbid('packages/kernel/progression/application/projector.ts', /return decision\(snapshot,\s*'request_replan',\s*'PLAN_SOURCE_DRIFT'/, 'Plan source basis is provenance/staleness context and must not directly gate autonomous progression');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'acceptRequirementOutcome');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');

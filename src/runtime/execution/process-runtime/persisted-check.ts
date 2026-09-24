@@ -269,7 +269,7 @@ export async function runPersistedCheckViaProcessRuntime(
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'Claim the related WorkContract and run this check through an external Controller.',
+        suggestedOperation: 'Run this check through a Work-bound durable verification workflow.',
       },
       durableSideEffects: emptyEffects,
     };
@@ -312,7 +312,7 @@ export async function runPersistedCheckViaProcessRuntime(
   const liveCertification = check.executionAuthority === 'live_controller_home';
   if (liveCertification && input.allowDurableCheckExecution !== true) {
     cleanupVerificationSnapshot();
-    throw new Error('LIVE_CHECK_CONTROLLER_OWNERSHIP_REQUIRED');
+    throw new Error('LIVE_CHECK_DURABLE_AUTHORITY_REQUIRED');
   }
   const liveExecutionStateFingerprint = liveCertification
     ? controllerCheckLiveExecutionStateFingerprint(input.controllerHome)

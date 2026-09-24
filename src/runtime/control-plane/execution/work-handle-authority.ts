@@ -3,7 +3,6 @@ import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, updateWorkContract } from '../../../../packages/kernel/work/api/index';
-import { controllerSessionPrincipalId, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
@@ -275,15 +274,16 @@ export function markRepositoryMutationStarted(input: {
 
 /**
  * Upgrades an effect-only Work before the first governed repository mutation
- * and materializes the existing repository delivery authority. The durable
- * ControllerSession is the ownership source; the MCP transport session is not
- * allowed to become a second mutation authority.
+ * and materializes the existing repository delivery authority. Work is not a
+ * controller mutex: authenticated caller identity is recorded only as provenance,
+ * while checkout/head/CAS/resource fences own mutation safety.
  */
 export function ensureRepositoryMutationWorkHandle(input: {
   controllerHome: string;
   repository: RepositoryRecord;
   workId: string;
   principalId: string;
+  sessionId?: string;
   deferEffectPromotion?: boolean;
 }): { handle: WorkHandleState; promotedFrom?: 'local_effect' | 'remote_effect' } {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
@@ -293,12 +293,8 @@ export function ensureRepositoryMutationWorkHandle(input: {
     throw new Error(`WORK_REPOSITORY_MUTATION_TERMINAL: ${input.workId}`);
   }
   const principalId = input.principalId.trim();
-  if (!principalId) throw new Error(`WORK_CONTROLLER_AUTHENTICATED_PRINCIPAL_REQUIRED: ${input.workId}`);
-  const owner = getControllerSession(store, input.workId);
-  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${input.workId}`);
-  if (controllerSessionPrincipalId(owner) !== principalId) {
-    throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${input.workId}`);
-  }
+  if (!principalId) throw new Error(`WORK_AUTHENTICATED_PRINCIPAL_REQUIRED: ${input.workId}`);
+  const provenanceSessionId = input.sessionId?.trim() || `sessionless:${principalId}`;
 
   let mutationCheckoutId = contract.checkoutId;
   if (!mutationCheckoutId) {
@@ -331,7 +327,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
     controllerHome: input.controllerHome,
     repository: input.repository,
     workId: input.workId,
-    identity: { sessionId: owner.sessionId, principalId },
+    identity: { sessionId: provenanceSessionId, principalId },
     allowEffectWork: input.deferEffectPromotion === true,
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
@@ -348,9 +344,9 @@ export function ensureRepositoryMutationWorkHandle(input: {
 }
 
 /**
- * Rebinds the durable WorkHandle to the Controller session that has already
- * been admitted by the ControllerSession authority. The compare-and-swap
- * revision on the read handle preserves fail-closed concurrent ownership.
+ * Refreshes legacy WorkHandle principal/session fields as provenance only.
+ * These fields do not grant or deny repository mutation authority; WorkHandle
+ * CAS plus concrete checkout/resource fences preserve fail-closed concurrency.
  */
 export function rebindRepositoryWorkHandleControllerIdentity(input: {
   controllerHome: string;

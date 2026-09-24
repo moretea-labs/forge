@@ -45,6 +45,8 @@ import {
   type SubmittedWorkOperation,
   type WorkContract,
   type WorkContractStatus,
+  type WorkSemanticView,
+  type SemanticWorkState,
   type WorkRisk,
   type WorkKind,
   type WorkPhase,
@@ -113,6 +115,25 @@ export interface ActiveWorkCandidateSnapshot {
   invalid: InvalidActiveWorkCandidate[];
 }
 
+export interface WorkSemanticRevisionRecord extends WorkSemanticView {
+  schemaVersion: 1;
+  recordedAt: string;
+}
+
+export interface ReviseWorkSemanticInput {
+  expectedRevision: number;
+  objective?: string;
+  state?: SemanticWorkState;
+  requirementRevision?: number;
+  planRevision?: number;
+  resultRefs?: string[];
+}
+
+interface WorkSemanticRevisionStore {
+  schemaVersion: 1;
+  records: WorkSemanticRevisionRecord[];
+}
+
 export interface WorkContractSummary {
   workId: string;
   repoId: string;
@@ -155,6 +176,51 @@ export function workContractStorePath(location: WorkContractStoreLocation): stri
 
 export function emptyWorkContractStore(updatedAt: string): WorkContractStore {
   return { schemaVersion: 3, updatedAt, contracts: [] };
+}
+
+function currentWorkSemanticRevision(work: WorkContract): number {
+  const revision = Number(work.semanticRevision);
+  return Number.isInteger(revision) && revision > 0 ? revision : 1;
+}
+
+export function semanticWorkState(work: Pick<WorkContract, 'semanticRevision' | 'semanticState' | 'status'>): SemanticWorkState {
+  if (work.semanticState === 'open' || work.semanticState === 'completed' || work.semanticState === 'cancelled') return work.semanticState;
+  const semanticRevision = Number(work.semanticRevision);
+  if (!Number.isInteger(semanticRevision) || semanticRevision < 1) {
+    if (work.status === 'completed') return 'completed';
+    if (work.status === 'cancelled') return 'cancelled';
+  }
+  return 'open';
+}
+
+export function workSemanticView(work: WorkContract): WorkSemanticView {
+  const resultRefs = [...new Set((work.semanticResultRefs ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 100);
+  return {
+    workId: work.workId,
+    revision: currentWorkSemanticRevision(work),
+    semanticScope: semanticScopeRefForWork(work),
+    objective: work.objective,
+    state: semanticWorkState(work),
+    ...(work.requirementId?.trim() ? { requirementId: work.requirementId.trim() } : {}),
+    ...(Number.isInteger(work.requirementRevision) && Number(work.requirementRevision) > 0 ? { requirementRevision: Number(work.requirementRevision) } : {}),
+    ...(work.planId?.trim() ? { planId: work.planId.trim() } : {}),
+    ...(Number.isInteger(work.planRevision) && Number(work.planRevision) > 0 ? { planRevision: Number(work.planRevision) } : {}),
+    resultRefs,
+    createdAt: work.createdAt,
+    updatedAt: work.semanticUpdatedAt ?? work.createdAt,
+  };
+}
+
+function workSemanticRevisionKey(workId: string, revision: number): string {
+  return `${sanitizeFileComponent(workId)}-r${revision}`;
+}
+
+function workSemanticRevisionStorePath(options: WorkContractStoreOptions): string {
+  return join(workContractRoot(options), 'semantic-revisions.json');
+}
+
+function readWorkSemanticRevisionStore(options: WorkContractStoreOptions): WorkSemanticRevisionStore {
+  return readJsonFile<WorkSemanticRevisionStore>(workSemanticRevisionStorePath(options), { schemaVersion: 1, records: [] });
 }
 
 function initialLifecycleForNewWork(status: WorkContractStatus): Pick<WorkContract, 'phase' | 'dispatchState' | 'evidenceState'> {
@@ -543,6 +609,9 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       routeDecision: input.routeDecision,
       mode: input.mode,
       objective: input.objective.slice(0, 2_000),
+      semanticRevision: 1,
+      semanticUpdatedAt: input.updatedAt ?? at,
+      semanticState: input.status === 'cancelled' ? 'cancelled' : 'open',
       acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
       constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
       risk: input.risk ?? 'medium',
@@ -571,7 +640,9 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       issueId: input.issueId,
       taskId: input.taskId,
       requirementId: input.requirementId,
+      requirementRevision: input.requirementRevision,
       planId: input.planId,
+      planRevision: input.planRevision,
       planStepId: input.planStepId,
       planSourceRevision: input.planSourceRevision,
       scopeSummary: input.scopeSummary?.slice(0, 1_000),
@@ -751,7 +822,7 @@ export function acceptSubmittedWorkContract(
 }
 
 export function isCurrentWorkContract(contract: WorkContract): boolean {
-  return !isTerminalWorkContractStatus(contract.status)
+  return semanticWorkState(contract) === 'open'
     && !contract.supersededBy?.trim()
     && contract.workKind !== 'superseded'
     && contract.completionOutcome !== 'superseded';
@@ -801,7 +872,7 @@ function workExecutionIsolation(contract: WorkContract): 'shared' | 'isolated' {
 }
 
 function rawWorkMayBeCurrent(contract: WorkContract): boolean {
-  return !isTerminalWorkContractStatus(contract.status)
+  return semanticWorkState(contract) === 'open'
     && !contract.supersededBy?.trim()
     && contract.workKind !== 'superseded'
     && contract.completionOutcome !== 'superseded';
@@ -876,6 +947,111 @@ export function readActiveWorkCandidates(
   contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   invalid.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   return { contracts: contracts.slice(0, limit), invalid };
+}
+
+export function listWorkSemanticRevisionRecords(
+  options: WorkContractStoreOptions,
+  workId?: string,
+  limit = 200,
+): WorkSemanticRevisionRecord[] {
+  const normalizedId = workId ? sanitizeFileComponent(workId) : undefined;
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
+  const records = sqliteBacked(options)
+    ? listControlPlaneRecords<WorkSemanticRevisionRecord>(options.controllerHome, {
+        namespace: 'work_semantic_revision', scope: options.repoId, limit: 5_000,
+      }).map((record) => record.value)
+    : readWorkSemanticRevisionStore(options).records;
+  return records
+    .filter((record) => !normalizedId || record.workId === normalizedId)
+    .map((record) => ({
+      ...record,
+      semanticScope: record.semanticScope ?? semanticScopeRefForWork({
+        workId: record.workId,
+        requirementId: record.requirementId,
+        planId: record.planId,
+        planStepId: undefined,
+      }),
+    }))
+    .sort((left, right) => right.revision - left.revision)
+    .slice(0, boundedLimit);
+}
+
+export function reviseWorkSemanticContext(
+  options: WorkContractStoreOptions,
+  workIdInput: string,
+  input: ReviseWorkSemanticInput,
+): WorkContract {
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('WORK_EXPECTED_REVISION_INVALID');
+  return withWorkContractStoreWrite(options, () => {
+    const workId = sanitizeFileComponent(workIdInput);
+    const applyRevision = (current: WorkContract, at: string): WorkContract => {
+      const semanticRevision = currentWorkSemanticRevision(current);
+      if (semanticRevision !== input.expectedRevision) {
+        throw new Error(`WORK_REVISION_CONFLICT:${workId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
+      }
+      const currentSemanticState = semanticWorkState(current);
+      if (currentSemanticState !== 'open' && input.state === 'open') {
+        throw new Error(`WORK_SEMANTIC_REOPEN_FORBIDDEN:${workId}:${currentSemanticState}`);
+      }
+      const objective = input.objective === undefined ? current.objective : String(input.objective).trim().slice(0, 2_000);
+      if (!objective) throw new Error('WORK_OBJECTIVE_REQUIRED');
+      const positiveRevision = (value: number | undefined, code: string): number | undefined => {
+        if (value === undefined) return undefined;
+        if (!Number.isInteger(value) || value < 1) throw new Error(code);
+        return value;
+      };
+      return validateWorkSemantics({
+        ...current,
+        objective,
+        semanticRevision: semanticRevision + 1,
+        semanticUpdatedAt: at,
+        semanticState: input.state ?? currentSemanticState,
+        ...(input.requirementRevision !== undefined ? { requirementRevision: positiveRevision(input.requirementRevision, 'WORK_REQUIREMENT_REVISION_INVALID') } : {}),
+        ...(input.planRevision !== undefined ? { planRevision: positiveRevision(input.planRevision, 'WORK_PLAN_REVISION_INVALID') } : {}),
+        ...(input.resultRefs !== undefined ? { semanticResultRefs: [...new Set(input.resultRefs.map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100) } : {}),
+        updatedAt: at,
+      });
+    };
+
+    if (sqliteBacked(options)) {
+      return withControlPlaneTransaction(options.controllerHome, (database) => {
+        const currentRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, workId);
+        if (!currentRecord) throw new Error(`work contract not found: ${workId}`);
+        const current = canonicalizeStoredWorkContract(currentRecord.value);
+        const at = nowIso(options);
+        const next = applyRevision(current, at);
+        const semanticRevision = currentWorkSemanticRevision(current);
+        const revisionKey = workSemanticRevisionKey(workId, semanticRevision);
+        if (!readControlPlaneRecordWithinTransaction<WorkSemanticRevisionRecord>(database, 'work_semantic_revision', options.repoId, revisionKey)) {
+          writeControlPlaneRecordWithinTransaction(database, {
+            namespace: 'work_semantic_revision', scope: options.repoId, key: revisionKey, schemaVersion: 1,
+            value: { schemaVersion: 1, ...workSemanticView(current), recordedAt: at },
+            action: 'work_semantic_revision_archived', expectedRevision: null,
+          });
+        }
+        return writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract', scope: options.repoId, key: workId, schemaVersion: 3,
+          value: next, action: 'work_semantic_revised', expectedRevision: currentRecord.revision,
+        }).value;
+      });
+    }
+
+    const store = readWorkContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.workId === workId);
+    if (index < 0) throw new Error(`work contract not found: ${workId}`);
+    const current = store.contracts[index]!;
+    const at = nowIso(options);
+    const next = applyRevision(current, at);
+    const archived = { schemaVersion: 1 as const, ...workSemanticView(current), recordedAt: at };
+    const history = readWorkSemanticRevisionStore(options);
+    if (!history.records.some((record) => record.workId === workId && record.revision === archived.revision)) {
+      writeJsonAtomic(workSemanticRevisionStorePath(options), { schemaVersion: 1, records: [...history.records, archived].slice(-5_000) });
+    }
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });
+    return next;
+  });
 }
 
 export function getWorkContract(options: WorkContractStoreOptions, workId: string): WorkContract | undefined {

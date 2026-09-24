@@ -29,12 +29,14 @@ import { finalizeRemoteEffectWorkFromActionReceipt } from "../../../src/runtime/
 import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workflow-watchdog";
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { callRhWorkControllerOperation } from './work-controller-operations';
-import { callRhWorkRequirementOperation } from './work-requirement-operations';
+import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
+import { callRhWorkSemanticOperation } from './work-semantic-operations';
 import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
+import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
+import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
@@ -46,6 +48,7 @@ import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-p
 import { callExecutionTool } from "./execution-tools";
 import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
 import { normalizeRhWorkInputCompatibility } from './work-input-compatibility';
+import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';
 import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
 import { callRhWorkControllerRecoveryOperation } from './work-controller-recovery-operations';
@@ -516,21 +519,6 @@ export async function runFacadeVerify(
           skipped: args.skipped === true,
         }
       : undefined,
-    allowDurableCheckExecution: workId ? ({ work }: { work: WorkContract }) => {
-      try {
-        const identity = authenticatedFacadeControllerIdentity(ctx, args);
-        const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, work.workId);
-        if (!sessionlessFacadeControllerAuthorityMatches(owner, identity)) return false;
-        return Boolean(
-          owner
-          && owner.controllerId === identity.controllerId
-          && controllerSessionPrincipalId(owner) === identity.principalId
-          && owner.controllerInstanceId === identity.controllerInstanceId,
-        );
-      } catch {
-        return false;
-      }
-    } : undefined,
   };
   const verification = hasBatchInput
     ? await executeWorkVerificationBatch({
@@ -544,8 +532,6 @@ export async function runFacadeVerify(
 /** MCP rh_work transport adapter. Canonical lifecycle semantics remain in Kernel/application services; this layer normalizes ABI input and orchestrates those services. */
 export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<CallToolResult> {
   {
-          let repository = selected(ctx, args);
-          const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
           const compatibility = normalizeRhWorkInputCompatibility(args);
           if (!compatibility.ok) {
             return result(buildFacadeResult({
@@ -557,9 +543,76 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           args = compatibility.args;
           const operation = compatibility.operation;
           const frozenScheduleDeleteId = compatibility.scheduleIdOverride ?? '';
-          if (!allowedFacadeOperations('rh_work').includes(operation)) {
+          if (!isRhWorkAcceptedOperation(operation)) {
             return invalidFacadeOperation('rh_work', operation);
           }
+
+          const requirementOperationArgs = compatibility.requirementOperationArgs ?? args;
+          if (isRhWorkRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
+            const requirementOperationResult = await callRhWorkRequirementOperation(ctx, undefined, operation, requirementOperationArgs);
+            if (requirementOperationResult) return requirementOperationResult;
+          }
+
+          const stableSemanticSpec = operation === 'work_get' || operation === 'work_revise'
+            ? { namespace: 'work_contract', id: String(args.work_id ?? '').trim(), kind: 'work' as const }
+            : operation === 'plan_get' || operation === 'plan_revise'
+              ? { namespace: 'plan_contract', id: String(args.plan_id ?? '').trim(), kind: 'plan' as const }
+              : undefined;
+          if (stableSemanticSpec) {
+            if (!stableSemanticSpec.id) {
+              return result(buildFacadeResult({
+                status: 'not_found',
+                summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} stable id is required.`,
+                data: {},
+              }) as unknown as Record<string, unknown>, true);
+            }
+            const explicitRepoId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
+            let targetScope: string;
+            if (explicitRepoId) {
+              const exact = readControlPlaneRecord<unknown>(ctx.controllerHome, stableSemanticSpec.namespace, explicitRepoId, stableSemanticSpec.id);
+              if (!exact) {
+                return result(buildFacadeResult({
+                  status: 'not_found',
+                  summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} ${stableSemanticSpec.id} not found in repository ${explicitRepoId}.`,
+                  data: stableSemanticSpec.kind === 'work'
+                    ? { workId: stableSemanticSpec.id, repoId: explicitRepoId }
+                    : { planId: stableSemanticSpec.id, repoId: explicitRepoId },
+                }) as unknown as Record<string, unknown>, true);
+              }
+              targetScope = explicitRepoId;
+            } else {
+              const matches = findControlPlaneRecordsByKey<unknown>(ctx.controllerHome, {
+                namespace: stableSemanticSpec.namespace,
+                key: stableSemanticSpec.id,
+                limit: 2,
+              });
+              if (matches.length === 0) {
+                return result(buildFacadeResult({
+                  status: 'not_found',
+                  summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} ${stableSemanticSpec.id} not found.`,
+                  data: stableSemanticSpec.kind === 'work'
+                    ? { workId: stableSemanticSpec.id }
+                    : { planId: stableSemanticSpec.id },
+                }) as unknown as Record<string, unknown>, true);
+              }
+              if (matches.length > 1) {
+                return result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: `SEMANTIC_ID_SCOPE_AMBIGUOUS: ${stableSemanticSpec.id} resolves to ${matches.length} scopes.`,
+                  data: { id: stableSemanticSpec.id, scopes: matches.map((record) => record.scope).sort() },
+                }) as unknown as Record<string, unknown>, true);
+              }
+              targetScope = matches[0]!.scope;
+            }
+            const semanticStore = { controllerHome: ctx.controllerHome, repoId: targetScope };
+            const semanticResult = stableSemanticSpec.kind === 'work'
+              ? await callRhWorkSemanticOperation(semanticStore, operation, args)
+              : await callRhWorkPlanOperation(semanticStore, operation, args);
+            if (semanticResult) return semanticResult;
+          }
+
+          let repository = selected(ctx, args);
+          const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
           if (isRhWorkScheduleOperation(operation)) {
             return await callRhWorkScheduleAdapter(ctx, repository, operation, args, {
               scheduleIdOverride: frozenScheduleDeleteId || undefined,
@@ -579,11 +632,12 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
   
           const controllerOperationResult = await callRhWorkControllerOperation(ctx, repository, operation, args);
           if (controllerOperationResult) return controllerOperationResult;
-          const requirementOperationArgs = compatibility.requirementOperationArgs ?? args;
           const requirementOperationResult = await callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs);
           if (requirementOperationResult) return requirementOperationResult;
           const planOperationResult = await callRhWorkPlanOperation(store, operation, args);
           if (planOperationResult) return planOperationResult;
+          const workSemanticOperationResult = await callRhWorkSemanticOperation(store, operation, args);
+          if (workSemanticOperationResult) return workSemanticOperationResult;
   
           const checks = listControllerChecks(repository.canonicalRoot);
           const workloopSource = freshGitIdentity(repository.canonicalRoot);
@@ -638,24 +692,10 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           }
   
           if (operation === 'verify') {
-            const workId = String(args.work_id ?? '').trim();
-            try {
-              if (workId) {
-                const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-                const identity = authenticatedFacadeControllerIdentity(ctx, args);
-                bindFacadeControllerOwnership(ctx, store, workId, identity, {
-                  allowClaimIfMissing: Boolean(relay?.authorityId),
-                  relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
-                });
-              }
-            } catch (error) {
-              const blocked = buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
-                data: { workId, verificationStarted: false },
-              });
-              return result(blocked as unknown as Record<string, unknown>, true);
-            }
+            // Verification is Work-bound evidence, not ControllerSession ownership.
+            // Concrete check/resource claims and immutable execution identity fence the
+            // resources being observed; a Work-wide controller claim must not act as
+            // a generic mutex.
             return await runFacadeVerify(ctx, repository, args);
           }
   

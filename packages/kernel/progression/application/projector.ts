@@ -9,7 +9,7 @@ import type {
   ProgressionWorkSnapshot,
 } from '../domain/types';
 
-const EXECUTABLE_PLAN_STATUSES = new Set(['approved', 'executing', 'verifying', 'ready_to_finalize']);
+const EXECUTABLE_PLAN_STATUSES = new Set(['approved', 'executing', 'verifying', 'ready_to_finalize', 'invalidated_by_drift']);
 const ACTIVE_WORK_STATUSES = new Set(['open', 'running', 'ready']);
 const IN_FLIGHT_ROUND_STATUSES = new Set(['pending_release', 'dispatching', 'dispatched', 'claimed', 'waiting']);
 
@@ -110,22 +110,12 @@ export function projectAutonomousGoalProgression(
     return decision(snapshot, 'blocked_invalid_state', 'PLAN_REQUIREMENT_MISMATCH');
   }
 
-  // A terminal Work may legitimately advance repository source A -> B before
-  // Controller semantic acceptance advances Plan.sourceRevision to B. Only that
-  // exact Work completion target may cross the drift boundary. Any later C is
-  // unrelated drift and still requires explicit re-evaluation.
-  const validatingDelivery = plan.steps
-    .filter((step) => step.status === 'executing' || step.status === 'validating')
-    .map((step) => ({ step, work: boundWork(snapshot, step) }))
-    .find(({ work }) => work?.status === 'completed'
-      && work.baseRevision === plan.sourceRevision
-      && work.completionTargetRevision === snapshot.currentSourceRevision);
-  const expectedDeliveryAdvance = Boolean(validatingDelivery && plan.sourceRevision !== snapshot.currentSourceRevision);
-  const acceptedExecutionAdvance = plan.executionBaselineRevision?.trim() === snapshot.currentSourceRevision;
-  if (plan.sourceRevision !== snapshot.currentSourceRevision && !expectedDeliveryAdvance && !acceptedExecutionAdvance) {
-    return decision(snapshot, 'request_replan', 'PLAN_SOURCE_DRIFT');
-  }
-  if (plan.status === 'replanning' || plan.status === 'invalidated_by_drift') return decision(snapshot, 'request_replan', 'PLAN_REPLAN_REQUIRED');
+  // Plan.sourceRevision is provenance/staleness context only. Current source is
+  // observed independently at each mutation boundary, so source movement cannot
+  // make model-authored Plan working memory an execution gate. A legacy
+  // invalidated_by_drift row therefore remains executable during authority
+  // cutover; only an explicit staged replan asks the model to revise the Plan.
+  if (plan.status === 'replanning') return decision(snapshot, 'request_replan', 'PLAN_REPLAN_REQUIRED');
   if (plan.status === 'finalized') {
     if (!plan.steps.every((step) => step.status === 'completed')) {
       return decision(snapshot, 'blocked_invalid_state', 'PLAN_COMPLETION_STATE_CONTRADICTION');

@@ -226,6 +226,26 @@ export type {
   ControllerLease,
   ControllerRoundContext,
 } from '../../../../packages/kernel/controller/domain/types';
+export interface PlanSemanticItem {
+  id: string;
+  objective: string;
+  dependencies: string[];
+}
+
+export interface PlanSemanticContext {
+  /** Requirement semantic revision used as planning provenance; never an execution gate. */
+  requirementBasisRevision?: number;
+  sourceBasisRevision: string;
+  goal: string;
+  nonGoals: string[];
+  assumptions: string[];
+  resolvedDecisions: string[];
+  stopConditions: string[];
+  replanConditions: string[];
+  integrationStrategy?: string;
+  items: PlanSemanticItem[];
+}
+
 export interface PlanStep {
   id: string;
   objective: string;
@@ -323,8 +343,14 @@ export interface PlanRevisionRecord {
 export interface PlanContract {
   schemaVersion: 1;
   planId: string;
-  /** Current committed semantic revision. Legacy rows without this field normalize to revision 1. */
+  /** Legacy PlanContract lifecycle revision retained during authority migration. */
   revision?: number;
+  /** Thin model-authored Plan revision, independent from lifecycle/step execution updates. */
+  semanticRevision?: number;
+  /** Timestamp of the model-authored Plan content; lifecycle/step updates must not change it. */
+  semanticUpdatedAt?: string;
+  /** Thin model-authored working memory. Once present, legacy steps/status cannot rewrite semantic Plan content. */
+  semanticContext?: PlanSemanticContext;
   repoId: string;
   /** Stable Requirement owner. Legacy plans may omit this until portfolio migration. */
   requirementId?: string;

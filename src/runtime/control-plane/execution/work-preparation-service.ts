@@ -378,9 +378,6 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     const createdWorkId = request.workId;
     const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, createdWorkId);
     if (existingHandle) {
-      if (existingHandle.principalId !== session.principalId || existingHandle.sessionId !== session.sessionId) {
-        throw new Error(`WORK_PREPARE_REQUEST_INDEX_CORRUPT: ${requestId}`);
-      }
       const existingContract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId);
       if (!existingContract) throw new Error(`WORK_PREPARE_RESULT_LOST: ${requestId} has a Work handle without its WorkContract`);
       const terminal = isTerminalWorkContractStatus(existingContract.status)
@@ -399,7 +396,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         activateWorkContract(
           { controllerHome: ctx.controllerHome, repoId: repository.repoId },
           createdWorkId,
-          { phase: 'implementation', summary: 'Prepared Work ownership resumed on the existing WorkHandle.', worktreeRef: existingHandle.worktreePath },
+          { phase: 'implementation', summary: 'Prepared Work resumed on the existing WorkHandle.', worktreeRef: existingHandle.worktreePath },
         );
       }
       const delegation = createGoalDelegation({

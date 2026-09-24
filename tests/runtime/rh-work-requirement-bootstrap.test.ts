@@ -215,7 +215,9 @@ describe('rh_work Requirement bootstrap', () => {
     expect(promoted.data.requirementCreated).toBe(true);
     expect(promoted.data.admissionDecision).toBe('created');
     expect(promoted.data.requirementCandidatePromoted).toBe(true);
-    expect(promoted.data.requirement.auditRefs).toContain(promoted.data.candidateAuditRef);
+    expect(promoted.data.requirement).not.toHaveProperty('auditRefs');
+    expect(readRequirement({ controllerHome }, 'REQ-COGNITIVE-CANDIDATE')?.value.auditRefs)
+      .toContain(promoted.data.candidateAuditRef);
 
     const duplicate = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
@@ -676,6 +678,86 @@ describe('rh_work Requirement bootstrap', () => {
     expect(planned.data.planContractCreated).toBe(true);
   }, 15_000);
 
+  test('current plan_create writes thin semantic Plan items without PlanStep authority or approval', async () => {
+    const repoRoot = tempRoot('forge-thin-plan-create-repo-');
+    const controllerHome = tempRoot('forge-thin-plan-create-home-');
+    const sourceRevision = initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Thin Plan create fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_create',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      requirement_title: 'Thin Plan creation',
+      requirement_outcome: 'Plan remains model-authored working memory.',
+    })).status).toBe('ok');
+
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      scope_key: 'thin-plan-create',
+      source_revision: sourceRevision,
+      objective: 'Record strategy without creating execution ownership.',
+      plan_items: [
+        { id: 'item-a', objective: 'Describe one useful slice.', dependencies: [] },
+        { id: 'item-b', objective: 'Describe a dependent slice.', dependencies: ['item-a'] },
+      ],
+    }));
+    expect(created.status).toBe('ok');
+    expect(created.summary).toContain('no approval, PlanStep, path/check, scheduling, Work, or acceptance authority');
+    expect(created.data.plan).toMatchObject({
+      planId: 'PLAN-THIN-CREATE',
+      revision: 1,
+      items: [
+        { id: 'item-a', objective: 'Describe one useful slice.', dependencies: [] },
+        { id: 'item-b', objective: 'Describe a dependent slice.', dependencies: ['item-a'] },
+      ],
+    });
+    const stored = getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE');
+    expect(stored?.steps).toEqual([]);
+    expect(stored?.semanticRevision).toBe(1);
+
+    const sameLabel = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE-PARALLEL',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      scope_key: 'thin-plan-create',
+      source_revision: sourceRevision,
+      objective: 'A second semantic Plan may share the same descriptive scope label.',
+      plan_items: [{ id: 'item-c', objective: 'Remain independent working memory.', dependencies: [] }],
+    }));
+    expect(sameLabel.status).toBe('ok');
+    expect(sameLabel.data.plan).toMatchObject({ planId: 'PLAN-THIN-CREATE-PARALLEL', revision: 1 });
+
+    const revised = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'plan_revise',
+      plan_id: 'PLAN-THIN-CREATE',
+      expected_revision: 1,
+      objective: 'Revise the same stable semantic Plan without repository selection.',
+      plan_items: [{ id: 'item-r2', objective: 'Replace working-memory content in place.', dependencies: [] }],
+    }));
+    expect(revised.status).toBe('ok');
+    expect(revised.data.plan).toMatchObject({
+      planId: 'PLAN-THIN-CREATE',
+      revision: 2,
+      goal: 'Revise the same stable semantic Plan without repository selection.',
+    });
+
+    const stale = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'plan_revise',
+      plan_id: 'PLAN-THIN-CREATE',
+      expected_revision: 1,
+      objective: 'A stale writer must not overwrite revision 2.',
+    }));
+    expect(stale.status).toBe('blocked');
+    expect(stale.data.currentPlan).toMatchObject({ planId: 'PLAN-THIN-CREATE', revision: 2 });
+  }, 15_000);
+
   test('explicit requirement_continue resumes waiting_for_user idempotently and never reopens terminal Requirement', async () => {
     const repoRoot = tempRoot('forge-requirement-continue-repo-');
     const controllerHome = tempRoot('forge-requirement-continue-home-');
@@ -707,8 +789,10 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(resumed.status).toBe('ok');
     expect(resumed.data.requirementResumed).toBe(true);
-    expect(resumed.data.requirement).toMatchObject({ state: 'active', needsAttention: false });
-    expect(resumed.data.requirement.attentionSummary).toBeUndefined();
+    expect(resumed.data.requirement).toMatchObject({ requirementId, state: 'open', revision: 1 });
+    expect(resumed.data.requirement).not.toHaveProperty('needsAttention');
+    expect(resumed.data.requirement).not.toHaveProperty('attentionSummary');
+    expect(readRequirement({ controllerHome }, requirementId)?.value).toMatchObject({ state: 'active', needsAttention: false });
 
     const repeated = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,

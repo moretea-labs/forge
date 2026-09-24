@@ -32,6 +32,8 @@ import { controllerPluginRepository, submitAssistantPluginAction } from '../../s
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -149,6 +151,243 @@ function corruptProjectionWork(controllerHome: string, repoId: string, workId: s
 }
 
 describe('runtime source isolation', () => {
+  test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
+    const controllerHome = tempRoot('forge-home-stable-semantic-id-');
+    const primaryRoot = tempRoot('forge-stable-semantic-primary-');
+    const siblingRoot = tempRoot('forge-stable-semantic-sibling-');
+    initGitRepo(primaryRoot, 'stable-semantic-primary');
+    initGitRepo(siblingRoot, 'stable-semantic-sibling');
+    ensureControllerHome(controllerHome);
+    const primary = registerRepository({ path: primaryRoot, controllerHome, displayName: 'Stable semantic primary' });
+    registerRepository({ path: siblingRoot, controllerHome, displayName: 'Stable semantic sibling' });
+
+    const requirementId = 'REQ-stable-semantic-id';
+    const planId = 'PLAN-stable-semantic-id';
+    const workId = 'work-stable-semantic-id';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Stable semantic id lookup',
+      outcomeStatement: 'Model-facing semantic reads resolve from stable identity without selecting repository ownership first.',
+    });
+    createPlanContract({ controllerHome, repoId: primary.repoId }, {
+      planId,
+      repoId: primary.repoId,
+      requirementId,
+      scopeKey: 'stable-semantic-id',
+      sourceRevision: git(primaryRoot, 'rev-parse', 'HEAD'),
+      goal: 'Read the semantic Plan directly by stable id.',
+      steps: [],
+    });
+    createProjectionWork(controllerHome, primary, workId);
+
+    const unscoped = {
+      ...mcpContext(controllerHome, primary),
+      explicitRepository: undefined,
+    } as MultiRepositoryMcpToolContext;
+
+    const requirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_get',
+      requirement_id: requirementId,
+    }));
+    const plan = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'plan_get',
+      plan_id: planId,
+    }));
+    const work = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'work_get',
+      work_id: workId,
+    }));
+
+    expect((requirement.data as { requirement?: { requirementId?: string } })?.requirement?.requirementId).toBe(requirementId);
+    expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
+    expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
+
+    const revisedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_revise',
+      requirement_id: requirementId,
+      expected_revision: 1,
+      requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+    }));
+    const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'plan_revise',
+      plan_id: planId,
+      expected_revision: 1,
+      objective: 'Revise Plan directly by stable id without repository selection.',
+    }));
+    const revisedWork = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'work_revise',
+      work_id: workId,
+      expected_revision: 1,
+      objective: 'Revise Work directly by stable id without repository selection.',
+    }));
+
+    const revisedRequirementData = (revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }).data;
+    const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
+    const revisedWorkData = (revisedWork as unknown as { data?: { work?: Record<string, unknown> } }).data;
+    expect(revisedRequirementData?.requirement).toMatchObject({ requirementId, revision: 2 });
+    expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
+    expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
+
+    const staleWork = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'work_revise',
+      work_id: workId,
+      expected_revision: 1,
+      objective: 'A stale semantic writer must not overwrite revision 2.',
+    }));
+    expect(staleWork.status).toBe('blocked');
+    const staleWorkData = (staleWork as unknown as { data?: { currentWork?: Record<string, unknown> } }).data;
+    expect(staleWorkData?.currentWork).toMatchObject({ workId, revision: 2 });
+  });
+
+  test('stable semantic Plan and Work id routing disambiguates across repository scopes', async () => {
+    const controllerHome = tempRoot('forge-home-semantic-routing-');
+    const repoARoot = tempRoot('forge-semantic-routing-a-');
+    const repoBRoot = tempRoot('forge-semantic-routing-b-');
+    initGitRepo(repoARoot, 'routing-a');
+    initGitRepo(repoBRoot, 'routing-b');
+    ensureControllerHome(controllerHome);
+    const repoA = registerRepository({ path: repoARoot, controllerHome, displayName: 'Repo A' });
+    const repoB = registerRepository({ path: repoBRoot, controllerHome, displayName: 'Repo B' });
+
+    const sharedPlanId = 'PLAN-shared-disambiguation';
+    const sharedWorkId = 'work-shared-disambiguation';
+
+    createPlanContract({ controllerHome, repoId: repoA.repoId }, {
+      planId: sharedPlanId,
+      repoId: repoA.repoId,
+      scopeKey: 'shared-scope-a',
+      sourceRevision: git(repoARoot, 'rev-parse', 'HEAD'),
+      goal: 'Goal in Repo A',
+      steps: [],
+    });
+    createPlanContract({ controllerHome, repoId: repoB.repoId }, {
+      planId: sharedPlanId,
+      repoId: repoB.repoId,
+      scopeKey: 'shared-scope-b',
+      sourceRevision: git(repoBRoot, 'rev-parse', 'HEAD'),
+      goal: 'Goal in Repo B',
+      steps: [],
+    });
+
+    createProjectionWork(controllerHome, repoA, sharedWorkId);
+    createProjectionWork(controllerHome, repoB, sharedWorkId);
+
+    const unscopedCtx = {
+      ...mcpContext(controllerHome, repoA),
+      explicitRepository: undefined,
+    } as MultiRepositoryMcpToolContext;
+
+    // Unscoped get when present in >1 scope => SEMANTIC_ID_SCOPE_AMBIGUOUS
+    const ambiguousPlanGet = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'plan_get',
+      plan_id: sharedPlanId,
+    }));
+    expect(ambiguousPlanGet.status).toBe('blocked');
+    expect(ambiguousPlanGet.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
+    expect((ambiguousPlanGet.data as { scopes?: string[] })?.scopes).toEqual([repoA.repoId, repoB.repoId].sort());
+
+    const ambiguousWorkGet = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'work_get',
+      work_id: sharedWorkId,
+    }));
+    expect(ambiguousWorkGet.status).toBe('blocked');
+    expect(ambiguousWorkGet.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
+    expect((ambiguousWorkGet.data as { scopes?: string[] })?.scopes).toEqual([repoA.repoId, repoB.repoId].sort());
+
+    // Explicit repo_id => disambiguates exact record
+    const planA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'plan_get',
+      plan_id: sharedPlanId,
+      repo_id: repoA.repoId,
+    }));
+    expect(planA.status).toBe('ok');
+    expect((planA.data as { plan?: { goal?: string } })?.plan?.goal).toBe('Goal in Repo A');
+
+    const planB = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'plan_get',
+      plan_id: sharedPlanId,
+      repo_id: repoB.repoId,
+    }));
+    expect(planB.status).toBe('ok');
+    expect((planB.data as { plan?: { goal?: string } })?.plan?.goal).toBe('Goal in Repo B');
+
+    const workA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'work_get',
+      work_id: sharedWorkId,
+      repo_id: repoA.repoId,
+    }));
+    expect(workA.status).toBe('ok');
+    expect((workA.data as { work?: { workId?: string } })?.work?.workId).toBe(sharedWorkId);
+
+    // Explicit repo_id where id does not exist => not_found for that scope, does NOT pick from another scope
+    const nonExistentRepoRoot = tempRoot('forge-semantic-routing-c-');
+    initGitRepo(nonExistentRepoRoot, 'routing-c');
+    const repoC = registerRepository({ path: nonExistentRepoRoot, controllerHome, displayName: 'Repo C' });
+    const missingInC = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'plan_get',
+      plan_id: sharedPlanId,
+      repo_id: repoC.repoId,
+    }));
+    expect(missingInC.status).toBe('not_found');
+    expect(missingInC.summary).toContain(repoC.repoId);
+
+    const missingWorkInC = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'work_get',
+      work_id: sharedWorkId,
+      repo_id: repoC.repoId,
+    }));
+    expect(missingWorkInC.status).toBe('not_found');
+    expect(missingWorkInC.summary).toContain(repoC.repoId);
+
+    // Unscoped revise when ambiguous => SEMANTIC_ID_SCOPE_AMBIGUOUS
+    const ambiguousRevisePlan = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'plan_revise',
+      plan_id: sharedPlanId,
+      expected_revision: 1,
+      objective: 'Cannot revise ambiguously',
+    }));
+    expect(ambiguousRevisePlan.status).toBe('blocked');
+    expect(ambiguousRevisePlan.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
+
+    const ambiguousReviseWork = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'work_revise',
+      work_id: sharedWorkId,
+      expected_revision: 1,
+      objective: 'Cannot revise ambiguously',
+    }));
+    expect(ambiguousReviseWork.status).toBe('blocked');
+    expect(ambiguousReviseWork.summary).toContain('SEMANTIC_ID_SCOPE_AMBIGUOUS');
+
+    // Explicit scoped revise => succeeds for the exact scope
+    const revisedPlanB = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'plan_revise',
+      plan_id: sharedPlanId,
+      repo_id: repoB.repoId,
+      expected_revision: 1,
+      objective: 'Revised Goal in Repo B',
+    }));
+    expect(revisedPlanB.status).toBe('ok');
+    expect((revisedPlanB.data as { plan?: { revision?: number } })?.plan?.revision).toBe(2);
+
+    const revisedWorkA = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'work_revise',
+      work_id: sharedWorkId,
+      repo_id: repoA.repoId,
+      expected_revision: 1,
+      objective: 'Revised Objective in Repo A',
+    }));
+    expect(revisedWorkA.status).toBe('ok');
+    expect((revisedWorkA.data as { work?: { revision?: number } })?.work?.revision).toBe(2);
+
+    // Assert Repo B work is still revision 1
+    const workBAfter = structured(await callRuntimeTool(unscopedCtx, 'rh_work', {
+      operation: 'work_get',
+      work_id: sharedWorkId,
+      repo_id: repoB.repoId,
+    }));
+    expect((workBAfter.data as { work?: { revision?: number } })?.work?.revision).toBe(1);
+  });
+
   test('resolver prefers package root over ambient execution cwd', () => {
     const business = tempRoot('forge-business-cwd-');
     initGitRepo(business, 'business-app');
@@ -828,7 +1067,7 @@ printf '{"ok":true}\\n'
       title: 'Current task decision',
       severity: 'needs_review',
       reason: 'Belongs to the exact requested Work.',
-      creationReason: 'ambiguous_outcome',
+      creationReason: 'missing_authorization',
       summary: 'Current task attention.',
       currentState: { repoId: repository.repoId, workId: currentWork.workId, statusSummary: 'pending' },
       evidenceRefs: [],
@@ -860,10 +1099,24 @@ printf '{"ok":true}\\n'
     }));
     const exact = exactPayload.data as {
       currentTask?: { workId?: string; objective?: string };
+      resumeContext?: {
+        derived?: boolean;
+        semantic?: { work?: { workId?: string; revision?: number; state?: string; objective?: string } };
+        source?: { head?: string | null; dirty?: boolean; checkoutId?: string };
+        staleness?: { advisoryOnly?: boolean };
+        unresolvedHumanRequests?: Array<{ id?: string; creationReason?: string }>;
+      };
       activeAttention?: Array<{ id?: string; workId?: string }>;
       counts?: { currentWork?: number; currentAttention?: number; repositoryAttention?: number };
     };
     expect(exact.currentTask).toMatchObject({ workId: currentWork.workId, objective: currentWork.objective });
+    expect(exact.resumeContext).toMatchObject({
+      derived: true,
+      semantic: { work: { workId: currentWork.workId, revision: 1, state: 'open', objective: currentWork.objective } },
+      source: { dirty: false },
+      staleness: { advisoryOnly: true },
+      unresolvedHumanRequests: [{ id: currentHandoff.id, creationReason: 'missing_authorization' }],
+    });
     expect(exact.activeAttention).toEqual([expect.objectContaining({ id: currentHandoff.id, workId: currentWork.workId })]);
     expect(exact.activeAttention?.some((item) => item.id === unrelatedHandoff.id)).toBe(false);
     expect(exact.counts).toMatchObject({ currentWork: 1, currentAttention: 1, repositoryAttention: 2 });
@@ -875,6 +1128,7 @@ printf '{"ok":true}\\n'
     }));
     const repositoryContext = repositoryPayload.data as {
       currentTask?: unknown;
+      resumeContext?: unknown;
       activeWork?: Array<{
         workId?: string;
         relation?: string;
@@ -886,6 +1140,7 @@ printf '{"ok":true}\\n'
       counts?: { currentWork?: number };
     };
     expect(repositoryContext.currentTask).toBeUndefined();
+    expect(repositoryContext.resumeContext).toBeUndefined();
     expect(repositoryContext.counts?.currentWork).toBe(0);
     const currentInventory = repositoryContext.activeWork?.find((item) => item.workId === currentWork.workId);
     expect(currentInventory).toMatchObject({

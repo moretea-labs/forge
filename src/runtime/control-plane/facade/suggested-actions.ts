@@ -29,13 +29,12 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
     case 'schedule_get':
       return 'readonly';
     case 'plan_create':
+    case 'plan_revise':
+    case 'plan_supersede':
+      return 'workspace_write';
     case 'plan_get':
     case 'plan_list':
       return 'readonly';
-    case 'plan_approve':
-    case 'plan_accept_step':
-    case 'plan_supersede':
-      return 'workspace_write';
     case 'finalize':
       return 'local_repo_write';
     default:

@@ -21,6 +21,7 @@ import {
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
 import { readRequirement } from '../persistence/requirement-store';
+import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 import {
   getWorkContract,
   canonicalizeWorkContractForAuthority,
@@ -109,6 +110,18 @@ function bounded(values: readonly string[] | undefined, limit: number, maxLength
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
 }
 
+function normalizePlanSemanticItems(items: readonly { id: string; objective: string; dependencies?: string[] }[] | undefined) {
+  const normalized = (items ?? []).slice(0, 100).map((item) => ({
+    id: String(item.id).trim().slice(0, 200),
+    objective: String(item.objective).trim().slice(0, 2_000),
+    dependencies: [...new Set((item.dependencies ?? []).map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100),
+  }));
+  if (normalized.some((item) => !item.id || !item.objective) || new Set(normalized.map((item) => item.id)).size !== normalized.length) {
+    throw new Error('PLAN_SEMANTIC_ITEMS_INVALID');
+  }
+  return normalized;
+}
+
 function normalizeScopeKey(value: string): string {
   return normalizePlanScopeKey(value) || 'unknown';
 }
@@ -118,10 +131,116 @@ export function currentPlanRevision(plan: PlanContract): number {
   return Number.isInteger(revision) && revision > 0 ? revision : 1;
 }
 
+export function currentPlanSemanticRevision(plan: PlanContract): number {
+  const revision = Number(plan.semanticRevision);
+  return Number.isInteger(revision) && revision > 0 ? revision : 1;
+}
+
+export interface PlanSemanticView {
+  planId: string;
+  revision: number;
+  semanticScope: ScopeRef;
+  requirementId?: string;
+  requirementBasisRevision?: number;
+  sourceBasisRevision: string;
+  goal: string;
+  nonGoals: string[];
+  assumptions: string[];
+  resolvedDecisions: string[];
+  stopConditions: string[];
+  replanConditions: string[];
+  integrationStrategy?: string;
+  items: Array<{ id: string; objective: string; dependencies: string[] }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanSemanticRevisionRecord extends PlanSemanticView {
+  schemaVersion: 1;
+  recordedAt: string;
+}
+
+export interface RevisePlanSemanticInput {
+  expectedRevision: number;
+  requirementBasisRevision?: number;
+  sourceBasisRevision?: string;
+  goal?: string;
+  nonGoals?: string[];
+  assumptions?: string[];
+  resolvedDecisions?: string[];
+  stopConditions?: string[];
+  replanConditions?: string[];
+  integrationStrategy?: string | null;
+  items?: Array<{ id: string; objective: string; dependencies?: string[] }>;
+}
+
+export interface CreatePlanSemanticInput {
+  planId: string;
+  repoId: string;
+  requirementId?: string;
+  requirementBasisRevision?: number;
+  scopeKey?: string;
+  sourceBasisRevision?: string;
+  goal: string;
+  nonGoals?: string[];
+  assumptions?: string[];
+  resolvedDecisions?: string[];
+  stopConditions?: string[];
+  replanConditions?: string[];
+  integrationStrategy?: string;
+  items?: Array<{ id: string; objective: string; dependencies?: string[] }>;
+}
+
+function legacyPlanSemanticContext(plan: PlanContract) {
+  return {
+    requirementBasisRevision: undefined,
+    sourceBasisRevision: plan.sourceRevision,
+    goal: plan.goal,
+    nonGoals: [...plan.nonGoals],
+    assumptions: [...plan.assumptions],
+    resolvedDecisions: [...plan.resolvedDecisions],
+    stopConditions: [...plan.stopConditions],
+    replanConditions: [...plan.replanConditions],
+    integrationStrategy: plan.integrationStrategy,
+    items: plan.steps.map((step) => ({ id: step.id, objective: step.objective, dependencies: [...step.dependencies] })),
+  };
+}
+
+export function planSemanticView(plan: PlanContract): PlanSemanticView {
+  const semantic = plan.semanticContext ?? legacyPlanSemanticContext(plan);
+  const semanticScope: ScopeRef = plan.requirementId?.trim()
+    ? { schemaVersion: 1, kind: 'requirement', id: plan.requirementId.trim() }
+    : { schemaVersion: 1, kind: 'plan', id: plan.planId };
+  return {
+    planId: plan.planId,
+    revision: currentPlanSemanticRevision(plan),
+    semanticScope,
+    requirementId: plan.requirementId,
+    requirementBasisRevision: semantic.requirementBasisRevision,
+    sourceBasisRevision: semantic.sourceBasisRevision,
+    goal: semantic.goal,
+    nonGoals: [...semantic.nonGoals],
+    assumptions: [...semantic.assumptions],
+    resolvedDecisions: [...semantic.resolvedDecisions],
+    stopConditions: [...semantic.stopConditions],
+    replanConditions: [...semantic.replanConditions],
+    integrationStrategy: semantic.integrationStrategy,
+    items: semantic.items.map((item) => ({ id: item.id, objective: item.objective, dependencies: [...item.dependencies] })),
+    createdAt: plan.createdAt,
+    updatedAt: plan.semanticUpdatedAt ?? plan.createdAt,
+  };
+}
+
 interface PlanRevisionRecordStore {
   schemaVersion: 1;
   updatedAt: string;
   revisions: PlanRevisionRecord[];
+}
+
+interface PlanSemanticRevisionStore {
+  schemaVersion: 1;
+  updatedAt: string;
+  revisions: PlanSemanticRevisionRecord[];
 }
 
 interface PlanExecutionBaselineRecord {
@@ -444,6 +563,10 @@ export function planRevisionStorePath(location: PlanContractStoreLocation): stri
   return join(planContractRoot(location), 'revisions.json');
 }
 
+function planSemanticRevisionStorePath(location: PlanContractStoreLocation): string {
+  return join(planContractRoot(location), 'semantic-revisions.json');
+}
+
 export function listPlanRevisionRecords(
   options: PlanContractStoreOptions,
   planId?: string,
@@ -471,6 +594,38 @@ function appendJsonPlanRevisionRecord(options: PlanContractStoreOptions, record:
   writeJsonAtomic(path, { schemaVersion: 1, updatedAt: record.recordedAt, revisions: [record, ...store.revisions] });
 }
 
+export function listPlanSemanticRevisionRecords(options: PlanContractStoreOptions, planId?: string): PlanSemanticRevisionRecord[] {
+  const normalizedPlanId = planId ? sanitizeFileComponent(planId) : undefined;
+  if (!sqliteBacked(options)) {
+    const store = readJsonFile<PlanSemanticRevisionStore>(planSemanticRevisionStorePath(options), { schemaVersion: 1, updatedAt: nowIso(options), revisions: [] });
+    return store.revisions.filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
+      .map((record) => ({
+        ...record,
+        semanticScope: record.semanticScope ?? (record.requirementId
+          ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+          : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+      } as PlanSemanticRevisionRecord))
+      .sort((left, right) => right.revision - left.revision);
+  }
+  return listControlPlaneRecords<PlanSemanticRevisionRecord>(options.controllerHome, {
+    namespace: 'plan_semantic_revision', scope: options.repoId, limit: 5_000,
+  }).map((record) => record.value)
+    .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
+    .map((record) => ({
+      ...record,
+      semanticScope: record.semanticScope ?? (record.requirementId
+        ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+        : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+    } as PlanSemanticRevisionRecord))
+    .sort((left, right) => right.revision - left.revision);
+}
+
+function appendJsonPlanSemanticRevisionRecord(options: PlanContractStoreOptions, record: PlanSemanticRevisionRecord): void {
+  const path = planSemanticRevisionStorePath(options);
+  const store = readJsonFile<PlanSemanticRevisionStore>(path, { schemaVersion: 1, updatedAt: record.recordedAt, revisions: [] });
+  if (store.revisions.some((existing) => existing.planId === record.planId && existing.revision === record.revision)) return;
+  writeJsonAtomic(path, { schemaVersion: 1, updatedAt: record.recordedAt, revisions: [record, ...store.revisions].slice(0, 5_000) });
+}
 function planRevisionRecord(plan: PlanContract, input: { recordedAt: string; reason: string; requestedRevisionLabel?: string }): PlanRevisionRecord {
   return {
     schemaVersion: 1, repoId: plan.repoId, planId: plan.planId, revision: currentPlanRevision(plan),
@@ -1121,6 +1276,75 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
   });
 }
 
+export function createPlanSemanticContext(options: PlanContractStoreOptions, input: CreatePlanSemanticInput): PlanContract {
+  return withPlanAdmissionLock(options, () => {
+    assertRequirementReference(options, input.requirementId);
+    const store = readPlanContractStore(options);
+    const planId = sanitizeFileComponent(input.planId);
+    if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
+    if (store.contracts.some((existing) => existing.planId === planId)) throw new Error(`plan contract already exists: ${planId}`);
+
+    // Thin Plan scope is descriptive discovery/lineage metadata only. It is not
+    // execution ownership and therefore must never reject another semantic Plan.
+    // Defaulting the compatibility field to planId keeps legacy storage readable
+    // without creating a synthetic mutex.
+    const scopeKey = normalizeScopeKey(input.scopeKey?.trim() || planId);
+
+    const goal = String(input.goal ?? '').trim().slice(0, 2_000);
+    if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
+    const requirementBasisRevision = input.requirementBasisRevision === undefined
+      ? undefined
+      : (() => {
+          if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) {
+            throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
+          }
+          return Number(input.requirementBasisRevision);
+        })();
+    const sourceBasisRevision = String(input.sourceBasisRevision ?? '').trim().slice(0, 200);
+    const items = normalizePlanSemanticItems(input.items);
+    const at = nowIso(options);
+    const semanticContext = {
+      requirementBasisRevision,
+      sourceBasisRevision,
+      goal,
+      nonGoals: bounded(input.nonGoals, 20),
+      assumptions: bounded(input.assumptions, 30),
+      resolvedDecisions: bounded(input.resolvedDecisions, 30),
+      stopConditions: bounded(input.stopConditions, 20),
+      replanConditions: bounded(input.replanConditions, 20),
+      integrationStrategy: input.integrationStrategy?.trim().slice(0, 1_000) || undefined,
+      items,
+    };
+    const plan: PlanContract = {
+      schemaVersion: 1,
+      planId,
+      revision: 1,
+      semanticRevision: 1,
+      semanticUpdatedAt: at,
+      semanticContext,
+      repoId: input.repoId,
+      requirementId: input.requirementId?.trim().slice(0, 160) || undefined,
+      scopeKey,
+      sourceRevision: sourceBasisRevision,
+      goal,
+      nonGoals: [...semanticContext.nonGoals],
+      assumptions: [...semanticContext.assumptions],
+      resolvedDecisions: [...semanticContext.resolvedDecisions],
+      stopConditions: [...semanticContext.stopConditions],
+      replanConditions: [...semanticContext.replanConditions],
+      integrationStrategy: semanticContext.integrationStrategy,
+      // Legacy lifecycle projection only. Thin Plan items never become PlanSteps.
+      status: 'approved',
+      steps: [],
+      evidenceRefs: [],
+      createdAt: at,
+      updatedAt: at,
+    };
+    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [plan, ...store.contracts] });
+    return plan;
+  });
+}
+
 function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
   assertRequirementReference(options, input.requirementId);
   const plans = listPlanContracts({ ...options, status: 'all', limit: 100 });
@@ -1148,6 +1372,80 @@ export async function admitPlanContractAsync(options: PlanContractStoreOptions, 
 
 export function getPlanContract(options: PlanContractStoreOptions, planId: string): PlanContract | undefined {
   return readPlanContractStore(options).contracts.find((contract) => contract.planId === sanitizeFileComponent(planId));
+}
+
+export function revisePlanSemanticContext(
+  options: PlanContractStoreOptions,
+  planIdInput: string,
+  input: RevisePlanSemanticInput,
+): PlanContract {
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('PLAN_EXPECTED_REVISION_INVALID');
+  return withPlanAdmissionLock(options, () => {
+    const planId = sanitizeFileComponent(planIdInput);
+    const applyRevision = (current: PlanContract, at: string): { previous: PlanSemanticView; next: PlanContract } => {
+      const revision = currentPlanSemanticRevision(current);
+      if (revision !== input.expectedRevision) throw new Error(`PLAN_REVISION_CONFLICT:${planId}:expected=${input.expectedRevision}:actual=${revision}`);
+      const previous = planSemanticView(current);
+      const goal = input.goal === undefined ? previous.goal : String(input.goal).trim().slice(0, 2_000);
+      if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
+      const requirementBasisRevision = input.requirementBasisRevision === undefined
+        ? previous.requirementBasisRevision
+        : (() => {
+            if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
+            return Number(input.requirementBasisRevision);
+          })();
+      const sourceBasisRevision = input.sourceBasisRevision === undefined ? previous.sourceBasisRevision : String(input.sourceBasisRevision).trim().slice(0, 200);
+      const items = input.items === undefined ? previous.items : normalizePlanSemanticItems(input.items);
+      const semanticContext = {
+        requirementBasisRevision,
+        sourceBasisRevision,
+        goal,
+        nonGoals: input.nonGoals === undefined ? previous.nonGoals : bounded(input.nonGoals, 20),
+        assumptions: input.assumptions === undefined ? previous.assumptions : bounded(input.assumptions, 30),
+        resolvedDecisions: input.resolvedDecisions === undefined ? previous.resolvedDecisions : bounded(input.resolvedDecisions, 30),
+        stopConditions: input.stopConditions === undefined ? previous.stopConditions : bounded(input.stopConditions, 20),
+        replanConditions: input.replanConditions === undefined ? previous.replanConditions : bounded(input.replanConditions, 20),
+        integrationStrategy: input.integrationStrategy === undefined ? previous.integrationStrategy : input.integrationStrategy === null ? undefined : String(input.integrationStrategy).trim().slice(0, 1_000) || undefined,
+        items,
+      };
+      return {
+        previous,
+        next: { ...current, semanticRevision: revision + 1, semanticUpdatedAt: at, semanticContext, updatedAt: at },
+      };
+    };
+
+    if (sqliteBacked(options)) {
+      return withControlPlaneTransaction(options.controllerHome, (database) => {
+        const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, planId);
+        if (!currentRecord) throw new Error(`plan contract not found: ${planId}`);
+        const at = nowIso(options);
+        const { previous, next } = applyRevision(currentRecord.value, at);
+        const semanticRevisionKey = `${planId}:r${previous.revision}`;
+        if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', options.repoId, semanticRevisionKey)) {
+          writeControlPlaneRecordWithinTransaction(database, {
+            namespace: 'plan_semantic_revision', scope: options.repoId, key: semanticRevisionKey, schemaVersion: 1,
+            value: { schemaVersion: 1, ...previous, recordedAt: at },
+            action: 'plan_semantic_revision_archived', expectedRevision: null,
+          });
+        }
+        return writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'plan_contract', scope: options.repoId, key: planId, schemaVersion: 1,
+          value: next, action: 'plan_semantic_revised', expectedRevision: currentRecord.revision,
+        }).value;
+      });
+    }
+
+    const store = readPlanContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.planId === planId);
+    if (index < 0) throw new Error(`plan contract not found: ${planId}`);
+    const at = nowIso(options);
+    const { previous, next } = applyRevision(store.contracts[index]!, at);
+    appendJsonPlanSemanticRevisionRecord(options, { schemaVersion: 1, ...previous, recordedAt: at });
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+    return next;
+  });
 }
 
 export function isCurrentPlanContract(contract: PlanContract): boolean {
