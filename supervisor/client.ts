@@ -5,7 +5,18 @@ import type { WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
-async function rpc<T>(forgeHome: string, method: string, params: Record<string, unknown>, timeoutMs = 2_000): Promise<T> {
+// The Supervisor daemon is single-threaded and shares its event loop with the
+// canonical Runtime's own scheduler/maintenance passes. A short read budget is
+// enough for cheap lookups, but a mutating call must not be reported as failed
+// merely because the Runtime was busy for a moment: `task_register` and the
+// reservation calls are idempotent upserts, and treating ordinary contention as
+// failure stranded ControllerRounds in `dispatching`
+// (live evidence: `WORKFLOW_SUPERVISOR_RPC_TIMEOUT:task_register` in the Runtime
+// stderr while the daemon was healthy). Keep both budgets bounded.
+const SUPERVISOR_RPC_READ_TIMEOUT_MS = 2_000;
+const SUPERVISOR_RPC_MUTATION_TIMEOUT_MS = 15_000;
+
+async function rpc<T>(forgeHome: string, method: string, params: Record<string, unknown>, timeoutMs = SUPERVISOR_RPC_READ_TIMEOUT_MS): Promise<T> {
   const socketPath = workflowSupervisorSocketPath(forgeHome);
   return await new Promise<T>((resolve, reject) => {
     const socket = createConnection(socketPath);
@@ -50,16 +61,16 @@ export async function registerWorkflowSupervisorTask(forgeHome: string, input: W
     completion_contract: input.completionContract,
     continuation_policy: input.continuationPolicy,
     user_blocker_policy: input.userBlockerPolicy,
-  });
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
 export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, taskId: string): Promise<WorkflowSupervisorEffect> {
-  return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', { task_id: taskId });
+  return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', { task_id: taskId }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
 export async function reserveWorkflowSupervisorSchedulerRecovery(forgeHome: string, taskId: string, recoveryKey?: string): Promise<WorkflowSupervisorEffect | undefined> {
   return await rpc<WorkflowSupervisorEffect | undefined>(forgeHome, 'reserve_scheduler_recovery', {
     task_id: taskId,
     ...(recoveryKey?.trim() ? { recovery_key: recoveryKey.trim() } : {}),
-  });
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
