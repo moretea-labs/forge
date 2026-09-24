@@ -16,7 +16,7 @@ ResumeContext is a derived read bundle assembled on demand from the latest relev
 
 ## Concurrency and migration boundary
 
-Semantic CAS protects authored context. Git/worktree, Process/resource leases, authorization grants, effect identities, and other concrete fences protect the resources they actually own. A semantic revision must be applied to the latest persisted aggregate inside the same storage transaction so a concurrent mechanical update cannot be overwritten merely because the semantic revision did not change.
+Semantic CAS protects authored context. Git/worktree, Process/resource leases, authorization grants, effect identities, and other concrete fences protect the resources they actually own. Verification is Work-bound evidence and is never gated by a Work-wide ControllerSession claim; durable checks are admitted by the Work's declared check set and then fenced by immutable execution identity plus Process Runtime resource claims. A semantic revision must be applied to the latest persisted aggregate inside the same storage transaction so a concurrent mechanical update cannot be overwritten merely because the semantic revision did not change.
 
 The current runtime still contains legacy Requirement waiting/continue, Plan approval/PlanStep/supersession execution, and Work/Controller claim machinery for frozen-client compatibility and delivery continuity. Those mechanisms are not current model-facing semantic operations, are not semantic revision authorities, and must not be consulted as semantic-write gates. Their retirement is a separate migration step required before the thin-model target can be considered fully converged; this decision does not create a fallback path or a duplicate lifecycle authority.
 

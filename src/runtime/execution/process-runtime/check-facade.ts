@@ -153,7 +153,7 @@ export async function runCheckViaProcessRuntime(
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'Claim the related WorkContract and run this check through an external Controller.',
+        suggestedOperation: 'Run this check through a Work-bound durable verification workflow.',
       },
       durableSideEffects: emptyEffects,
     };

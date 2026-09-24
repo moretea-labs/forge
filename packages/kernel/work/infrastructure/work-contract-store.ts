@@ -1018,11 +1018,9 @@ export function reviseWorkSemanticContext(
         const currentRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, workId);
         if (!currentRecord) throw new Error(`work contract not found: ${workId}`);
         const current = canonicalizeStoredWorkContract(currentRecord.value);
-        const semanticRevision = currentWorkSemanticRevision(current);
-        if (semanticRevision !== input.expectedRevision) {
-          throw new Error(`WORK_REVISION_CONFLICT:${workId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
-        }
         const at = nowIso(options);
+        const next = applyRevision(current, at);
+        const semanticRevision = currentWorkSemanticRevision(current);
         const revisionKey = workSemanticRevisionKey(workId, semanticRevision);
         if (!readControlPlaneRecordWithinTransaction<WorkSemanticRevisionRecord>(database, 'work_semantic_revision', options.repoId, revisionKey)) {
           writeControlPlaneRecordWithinTransaction(database, {
@@ -1031,7 +1029,6 @@ export function reviseWorkSemanticContext(
             action: 'work_semantic_revision_archived', expectedRevision: null,
           });
         }
-        const next = applyRevision(current, at);
         return writeControlPlaneRecordWithinTransaction(database, {
           namespace: 'work_contract', scope: options.repoId, key: workId, schemaVersion: 3,
           value: next, action: 'work_semantic_revised', expectedRevision: currentRecord.revision,
@@ -1044,12 +1041,12 @@ export function reviseWorkSemanticContext(
     if (index < 0) throw new Error(`work contract not found: ${workId}`);
     const current = store.contracts[index]!;
     const at = nowIso(options);
+    const next = applyRevision(current, at);
     const archived = { schemaVersion: 1 as const, ...workSemanticView(current), recordedAt: at };
     const history = readWorkSemanticRevisionStore(options);
     if (!history.records.some((record) => record.workId === workId && record.revision === archived.revision)) {
       writeJsonAtomic(workSemanticRevisionStorePath(options), { schemaVersion: 1, records: [...history.records, archived].slice(-5_000) });
     }
-    const next = applyRevision(current, at);
     const contracts = [...store.contracts];
     contracts[index] = next;
     writeWorkContractStore(options, { schemaVersion: 3, updatedAt: at, contracts });

@@ -50,8 +50,6 @@ export interface ExecuteWorkVerificationInput {
     checkFailed?: boolean;
     skipped?: boolean;
   };
-  /** Caller-supplied exact ownership proof for durable-class checks. */
-  allowDurableCheckExecution?: (input: { work: WorkContract; checkId: string }) => boolean;
 }
 
 export interface ExecuteWorkVerificationResult {
@@ -827,8 +825,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       && workContract
       && workContract.checks.includes(normalizedCheckId)
       && !workContract.completionReceipt
-      && workContract.status === 'running'
-      && input.allowDurableCheckExecution?.({ work: workContract, checkId: normalizedCheckId }),
+      && workContract.status === 'running',
     );
 
     const executed = await runPersistedCheckViaProcessRuntime({

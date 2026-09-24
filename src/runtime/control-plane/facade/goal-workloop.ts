@@ -888,13 +888,17 @@ export function startGoalWorkloop(
   }
   const plan = resolvedPlanId && ctx.planStore ? getPlanContract(ctx.planStore, resolvedPlanId) : undefined;
   if (resolvedPlanId && !plan) {
-    return buildFacadeResult({ status: 'blocked', summary: `PLAN_NOT_FOUND: ${resolvedPlanId}. Recover or create the semantic Plan before using it as Work provenance.`, data: { executionStarted: false, workContractCreated: false, planId: resolvedPlanId } });
-  }
-  if (terminalContinuationSource?.planId && !plan) {
     return buildFacadeResult({
       status: 'blocked',
-      summary: `WORK_SUCCESSOR_PLAN_NOT_FOUND: ${terminalContinuationSource.planId}. Recover the durable Plan authority before creating a successor Work.`,
-      data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: terminalContinuationSource.planId },
+      summary: terminalContinuationSource?.planId
+        ? `WORK_SUCCESSOR_PLAN_NOT_FOUND: ${terminalContinuationSource.planId}. Recover the durable Plan authority before creating a successor Work.`
+        : `PLAN_NOT_FOUND: ${resolvedPlanId}. Recover or create the semantic Plan before using it as Work provenance.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        planId: resolvedPlanId,
+        ...(terminalContinuationSource?.planId ? { predecessorWorkId: terminalContinuationSource.workId } : {}),
+      },
     });
   }
   if (terminalContinuationSource?.planStepId && plan && !resolvedPlanStepId) {

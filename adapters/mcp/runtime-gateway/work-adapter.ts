@@ -48,7 +48,7 @@ import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-p
 import { callExecutionTool } from "./execution-tools";
 import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
 import { normalizeRhWorkInputCompatibility } from './work-input-compatibility';
-import { findControlPlaneRecordsByKey } from '../../../src/runtime/control-plane/persistence/sqlite-store';
+import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';
 import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
 import { callRhWorkControllerRecoveryOperation } from './work-controller-recovery-operations';
@@ -519,21 +519,6 @@ export async function runFacadeVerify(
           skipped: args.skipped === true,
         }
       : undefined,
-    allowDurableCheckExecution: workId ? ({ work }: { work: WorkContract }) => {
-      try {
-        const identity = authenticatedFacadeControllerIdentity(ctx, args);
-        const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, work.workId);
-        if (!sessionlessFacadeControllerAuthorityMatches(owner, identity)) return false;
-        return Boolean(
-          owner
-          && owner.controllerId === identity.controllerId
-          && controllerSessionPrincipalId(owner) === identity.principalId
-          && owner.controllerInstanceId === identity.controllerInstanceId,
-        );
-      } catch {
-        return false;
-      }
-    } : undefined,
   };
   const verification = hasBatchInput
     ? await executeWorkVerificationBatch({
@@ -581,28 +566,45 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 data: {},
               }) as unknown as Record<string, unknown>, true);
             }
-            const matches = findControlPlaneRecordsByKey<unknown>(ctx.controllerHome, {
-              namespace: stableSemanticSpec.namespace,
-              key: stableSemanticSpec.id,
-              limit: 2,
-            });
-            if (matches.length === 0) {
-              return result(buildFacadeResult({
-                status: 'not_found',
-                summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} ${stableSemanticSpec.id} not found.`,
-                data: stableSemanticSpec.kind === 'work'
-                  ? { workId: stableSemanticSpec.id }
-                  : { planId: stableSemanticSpec.id },
-              }) as unknown as Record<string, unknown>, true);
+            const explicitRepoId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
+            let targetScope: string;
+            if (explicitRepoId) {
+              const exact = readControlPlaneRecord<unknown>(ctx.controllerHome, stableSemanticSpec.namespace, explicitRepoId, stableSemanticSpec.id);
+              if (!exact) {
+                return result(buildFacadeResult({
+                  status: 'not_found',
+                  summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} ${stableSemanticSpec.id} not found in repository ${explicitRepoId}.`,
+                  data: stableSemanticSpec.kind === 'work'
+                    ? { workId: stableSemanticSpec.id, repoId: explicitRepoId }
+                    : { planId: stableSemanticSpec.id, repoId: explicitRepoId },
+                }) as unknown as Record<string, unknown>, true);
+              }
+              targetScope = explicitRepoId;
+            } else {
+              const matches = findControlPlaneRecordsByKey<unknown>(ctx.controllerHome, {
+                namespace: stableSemanticSpec.namespace,
+                key: stableSemanticSpec.id,
+                limit: 2,
+              });
+              if (matches.length === 0) {
+                return result(buildFacadeResult({
+                  status: 'not_found',
+                  summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} ${stableSemanticSpec.id} not found.`,
+                  data: stableSemanticSpec.kind === 'work'
+                    ? { workId: stableSemanticSpec.id }
+                    : { planId: stableSemanticSpec.id },
+                }) as unknown as Record<string, unknown>, true);
+              }
+              if (matches.length > 1) {
+                return result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: `SEMANTIC_ID_SCOPE_AMBIGUOUS: ${stableSemanticSpec.id} resolves to ${matches.length} scopes.`,
+                  data: { id: stableSemanticSpec.id, scopes: matches.map((record) => record.scope).sort() },
+                }) as unknown as Record<string, unknown>, true);
+              }
+              targetScope = matches[0]!.scope;
             }
-            if (matches.length > 1) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: `SEMANTIC_ID_SCOPE_AMBIGUOUS: ${stableSemanticSpec.id} resolves to ${matches.length} scopes.`,
-                data: { id: stableSemanticSpec.id, scopes: matches.map((record) => record.scope).sort() },
-              }) as unknown as Record<string, unknown>, true);
-            }
-            const semanticStore = { controllerHome: ctx.controllerHome, repoId: matches[0]!.scope };
+            const semanticStore = { controllerHome: ctx.controllerHome, repoId: targetScope };
             const semanticResult = stableSemanticSpec.kind === 'work'
               ? await callRhWorkSemanticOperation(semanticStore, operation, args)
               : await callRhWorkPlanOperation(semanticStore, operation, args);
@@ -690,24 +692,10 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           }
   
           if (operation === 'verify') {
-            const workId = String(args.work_id ?? '').trim();
-            try {
-              if (workId) {
-                const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-                const identity = authenticatedFacadeControllerIdentity(ctx, args);
-                bindFacadeControllerOwnership(ctx, store, workId, identity, {
-                  allowClaimIfMissing: Boolean(relay?.authorityId),
-                  relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
-                });
-              }
-            } catch (error) {
-              const blocked = buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
-                data: { workId, verificationStarted: false },
-              });
-              return result(blocked as unknown as Record<string, unknown>, true);
-            }
+            // Verification is Work-bound evidence, not ControllerSession ownership.
+            // Concrete check/resource claims and immutable execution identity fence the
+            // resources being observed; a Work-wide controller claim must not act as
+            // a generic mutex.
             return await runFacadeVerify(ctx, repository, args);
           }
   

@@ -82,6 +82,88 @@ describe('Work v3 lifecycle authority', () => {
     expect(isCurrentWorkContract(semanticallyCompleted)).toBe(false);
   });
 
+  test('file-backed reviseWorkSemanticContext guarantees zero write on stale or invalid revision', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-work-zero-write-'));
+    roots.push(root);
+    const store = { root };
+    const workId = 'work-zero-write-test';
+
+    createWorkContract(store, {
+      workId,
+      repoId: 'repo-zero-write',
+      mode: 'direct_control',
+      objective: 'Initial objective.',
+      acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const storePath = workContractStorePath(store);
+    const initialContractStoreBytes = readFileSync(storePath, 'utf8');
+    const initialHistory = listWorkSemanticRevisionRecords(store, workId);
+    expect(initialHistory).toEqual([]);
+
+    // 1) Stale expected_revision throws and performs zero writes (no history, no contract store update)
+    expect(() => reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 99,
+      objective: 'Stale expected revision write attempt',
+    })).toThrow('WORK_REVISION_CONFLICT');
+
+    expect(readFileSync(storePath, 'utf8')).toBe(initialContractStoreBytes);
+    expect(listWorkSemanticRevisionRecords(store, workId)).toEqual([]);
+
+    // 2) Invalid objective (empty) throws and performs zero writes
+    expect(() => reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 1,
+      objective: '   ',
+    })).toThrow('WORK_OBJECTIVE_REQUIRED');
+
+    expect(readFileSync(storePath, 'utf8')).toBe(initialContractStoreBytes);
+    expect(listWorkSemanticRevisionRecords(store, workId)).toEqual([]);
+
+    // 3) Invalid plan revision throws and performs zero writes
+    expect(() => reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 1,
+      planRevision: 0,
+    })).toThrow('WORK_PLAN_REVISION_INVALID');
+
+    expect(readFileSync(storePath, 'utf8')).toBe(initialContractStoreBytes);
+    expect(listWorkSemanticRevisionRecords(store, workId)).toEqual([]);
+
+    // 4) Valid revision succeeds and writes both history and next revision
+    const valid = reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 1,
+      objective: 'Updated objective.',
+    });
+    expect(workSemanticView(valid).revision).toBe(2);
+    expect(listWorkSemanticRevisionRecords(store, workId)).toHaveLength(1);
+    expect(listWorkSemanticRevisionRecords(store, workId)[0]?.revision).toBe(1);
+
+    const revision2StoreBytes = readFileSync(storePath, 'utf8');
+    const historyAfterRev2 = listWorkSemanticRevisionRecords(store, workId);
+
+    // 5) Forbidden reopen on completed work performs zero writes
+    const completed = reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 2,
+      state: 'completed',
+    });
+    expect(workSemanticView(completed).state).toBe('completed');
+
+    const completedStoreBytes = readFileSync(storePath, 'utf8');
+    const completedHistory = listWorkSemanticRevisionRecords(store, workId);
+    expect(completedHistory).toHaveLength(2);
+
+    expect(() => reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 3,
+      state: 'open',
+    })).toThrow('WORK_SEMANTIC_REOPEN_FORBIDDEN');
+
+    expect(readFileSync(storePath, 'utf8')).toBe(completedStoreBytes);
+    expect(listWorkSemanticRevisionRecords(store, workId)).toEqual(completedHistory);
+  });
+
   test('legacy inference is a one-way migration boundary and current lifecycle writes require canonical APIs', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-v3-authority-'));
     roots.push(root);
