@@ -989,6 +989,11 @@
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
+    },
+    "tests/runtime/thin-capability-substrate.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated",
+      "smoke": false
     }
   }
 }
