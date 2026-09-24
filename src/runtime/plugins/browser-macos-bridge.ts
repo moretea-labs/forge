@@ -547,12 +547,31 @@ return (frontmost as text) & separator & (URL of targetTab as text) & separator 
 function activateTargetTabScript(browser: MacOsBrowserDefinition, ref: MacOsBrowserTabRef): string {
   return browserTellScript(browser, `
 ${targetTabPreamble(ref)}
-set targetTabIndex to 1
-repeat with candidateTab in tabs of targetWindow
-  if ((id of candidateTab) as text) is ((id of targetTab) as text) then exit repeat
-  set targetTabIndex to targetTabIndex + 1
+-- Activating by position is only safe inside the same enumeration that produced
+-- the index. A tab created or closed by the provider between those two steps
+-- makes the positional write fail with -1719 ("Can't get item N of every tab"),
+-- so each attempt re-reads the tab list, bounds the index and verifies the exact
+-- tab became active before it is reported as done.
+set targetTabIdText to ((id of targetTab) as text)
+set activationConfirmed to false
+repeat 3 times
+  set targetTabIndex to 0
+  set candidateIndex to 0
+  repeat with candidateTab in tabs of targetWindow
+    set candidateIndex to candidateIndex + 1
+    if ((id of candidateTab) as text) is targetTabIdText then set targetTabIndex to candidateIndex
+  end repeat
+  if targetTabIndex is greater than 0 then
+    try
+      if targetTabIndex is less than or equal to (count of tabs of targetWindow) then
+        set active tab index of targetWindow to targetTabIndex
+        if ((id of active tab of targetWindow) as text) is targetTabIdText then set activationConfirmed to true
+      end if
+    end try
+  end if
+  if activationConfirmed then exit repeat
+  delay 0.05
 end repeat
-set active tab index of targetWindow to targetTabIndex
 set index of targetWindow to 1
 activate
 `);
@@ -568,9 +587,25 @@ if (count of windows) is 0 then
   set URL of targetTab to targetUrl
 else
   set targetWindow to front window
-  set originalActiveIndex to active tab index of targetWindow
+  set originalActiveTabId to ((id of active tab of targetWindow) as text)
   set targetTab to make new tab at end of tabs of targetWindow with properties {URL:targetUrl}
-  set active tab index of targetWindow to originalActiveIndex
+  -- Restore the previously active tab by identity, never by a stale position:
+  -- the new tab can shift Chrome's tab order and make a pre-create index invalid.
+  repeat 3 times
+    if ((id of active tab of targetWindow) as text) is originalActiveTabId then exit repeat
+    set restoreIndex to 0
+    set candidateIndex to 0
+    repeat with candidateTab in tabs of targetWindow
+      set candidateIndex to candidateIndex + 1
+      if ((id of candidateTab) as text) is originalActiveTabId then set restoreIndex to candidateIndex
+    end repeat
+    if restoreIndex is 0 then exit repeat
+    try
+      if restoreIndex is less than or equal to (count of tabs of targetWindow) then set active tab index of targetWindow to restoreIndex
+    end try
+    if ((id of active tab of targetWindow) as text) is originalActiveTabId then exit repeat
+    delay 0.05
+  end repeat
 end if
 set targetTabId to id of targetTab
 set separator to ASCII character 30
