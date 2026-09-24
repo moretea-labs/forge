@@ -173,6 +173,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     launch_args: { type: 'array', items: { type: 'string' }, description: 'Provider-specific arguments for launcher_start.' },
     browser_session_id: { type: 'string', description: 'Saved Forge ChatGPT browser session to continue when controller_type=chatgpt.' },
     conversation_url: { type: 'string', description: 'Explicit https://chatgpt.com conversation URL used when no saved Forge browser session exists.' },
+    transport_conversation: { type: 'string', enum: ['bound', 'fresh'], description: 'ChatGPT launcher transport only. bound preserves the current exact Work conversation; fresh starts a new ChatGPT conversation and CAS-rebinds the same durable Work after provider delivery is confirmed. It never creates a replacement Work or ControllerRound.' },
     continuation_prompt: { type: 'string', description: 'Bounded Work continuation instruction.' },
     schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/delete/trigger.' },
     schedule_name: { type: 'string', description: 'Human-readable schedule name.' },

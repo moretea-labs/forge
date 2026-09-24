@@ -1246,6 +1246,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
     expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
     expect(launcherStart).toContain('relayScopeId: relay.relayScopeId');
+    expect(launcherStart).toContain("const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';");
+    expect(launcherStart).toContain("supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh'");
+    expect(launcherStart).toContain('transportConversation,');
     expect(launcherStart).not.toContain("error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')");
     expect(launcherStart).not.toContain("['pending_release', 'dispatching'].includes(existing.status)");
     expect(launcherStart).toContain('const relay = beginInitialControllerRoundDispatch(');

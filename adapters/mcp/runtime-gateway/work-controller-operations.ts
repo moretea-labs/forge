@@ -706,8 +706,9 @@ export async function callRhWorkControllerOperation(
       if (controllerType === 'chatgpt') {
         const work = getWorkContract(store, workId);
         if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+        const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';
         const supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
-        if (supervisorBoundary.status === 'outer_turn') {
+        if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh') {
           throw new Error(`WORKFLOW_SUPERVISOR_OUTER_TURN_OWNED:${workId}:${supervisorBoundary.conversationId}`);
         }
         const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
@@ -768,6 +769,7 @@ export async function callRhWorkControllerOperation(
             model: valueForFlag('--model') ?? 'gpt-5.6',
             reasoning: reasoning as 'medium' | 'high' | 'xhigh',
             tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
+            transportConversation,
             timeoutMs,
           });
           if (dispatched.status === 'failed') throw new Error(`${dispatched.error?.code ?? 'CHATGPT_WORK_CONTINUATION_FAILED'}:${dispatched.error?.message ?? 'ChatGPT Work continuation failed'}`);
