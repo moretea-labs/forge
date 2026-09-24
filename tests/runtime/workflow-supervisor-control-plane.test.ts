@@ -209,6 +209,38 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(discovery.currentConversation('chrome-extension')).toBeUndefined();
   });
 
+  test('refuses to reserve enrollment for a terminal Supervisor task instead of reporting delivery that cannot happen', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-terminal-task-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(join(root, 'supervisor'));
+    try {
+      const control = new WorkflowSupervisorControlPlane(store);
+      const conversationId = '99999999-2222-3333-4444-555555555555';
+      const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+      const task = control.registerTask({
+        taskId: 'forge:repo:conversation:terminal-task',
+        conversationId,
+        conversationUrl,
+        objective: 'Terminal Supervisor task',
+        completionContract: { kind: 'forge_work_done', repo_id: 'repo_terminal', work_id: 'work-terminal' },
+        continuationPolicy: { kind: 'forge_goal_outer_turn', exact_conversation_id: conversationId, exact_conversation_url: conversationUrl },
+        userBlockerPolicy: { kind: 'forge_work_waiting_for_user', repo_id: 'repo_terminal', work_id: 'work-terminal' },
+      });
+      expect(control.reserveEnrollment(task.taskId).kind).toBe('enrollment');
+      store.resolveTerminal({
+        completionFingerprint: 'terminal-fingerprint-1',
+        taskId: task.taskId,
+        action: 'NEEDS_USER',
+        accepted: true,
+        reason: 'operator cancelled this conversation',
+      });
+      expect(() => control.reserveEnrollment(task.taskId)).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:NEEDS_USER');
+      expect(() => control.reserveSchedulerRecovery(task.taskId, 'scheduler-recovery-key')).toThrow('WORKFLOW_SUPERVISOR_TASK_TERMINAL:NEEDS_USER');
+    } finally {
+      store.close();
+    }
+  });
+
   test('persists project conversation discovery across Supervisor store reopen without turning discovery into lifecycle authority', () => {
     const fx = fixture();
     const supervisorHome = join(fx.root, 'durable-supervisor-discovery');

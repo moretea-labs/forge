@@ -16,11 +16,19 @@ export class WorkflowSupervisorControlPlane {
   }
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask { return this.store.registerTask(input); }
   reserveEnrollment(taskId: string): WorkflowSupervisorEffect {
-    const task = this.requireTask(taskId); const id = effectId();
+    const task = this.requireTask(taskId);
+    // A task that already reached a terminal supervisor action is not deliverable.
+    // Reserving another enrollment effect for it produced an "enrolled" result that
+    // could never be delivered, so the ControllerRound waited forever instead of
+    // surfacing the operator/provider decision that terminal state represents.
+    requireNonTerminalTask(this.store, task.taskId);
+    const id = effectId();
     return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey: `enrollment:${taskId}`, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
   }
   reserveSchedulerRecovery(taskId: string, recoveryKey?: string): WorkflowSupervisorEffect | undefined {
-    const task = this.requireTask(taskId); const id = effectId();
+    const task = this.requireTask(taskId);
+    requireNonTerminalTask(this.store, task.taskId);
+    const id = effectId();
     return this.store.reserveSchedulerRecovery({
       taskId,
       effectId: id,
@@ -237,6 +245,15 @@ export class WorkflowSupervisorControlPlane {
 }
 
 function boundedBrowserText(value: unknown, max: number): string | undefined { return typeof value === 'string' && Buffer.byteLength(value, 'utf8') <= max ? value : undefined; }
+/**
+ * A task that already reached DONE/NEEDS_USER can never deliver another effect.
+ * Reserving into it reported `enrolled` and left the caller waiting for a turn
+ * that the terminal action forbids.
+ */
+function requireNonTerminalTask(store: WorkflowSupervisorStore, taskId: string): void {
+  const terminal = store.terminalAction(taskId);
+  if (terminal) throw new Error(`WORKFLOW_SUPERVISOR_TASK_TERMINAL:${terminal}`);
+}
 function browserSnapshot(evidence: Record<string, unknown> | undefined): { latestUserText: string; latestAssistantResponse: string } | undefined {
   const latestUserText = boundedBrowserText(evidence?.latest_user_text, 128 * 1024);
   const latestAssistantResponse = boundedBrowserText(evidence?.latest_assistant_response, 512 * 1024);

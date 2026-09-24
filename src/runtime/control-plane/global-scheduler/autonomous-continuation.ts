@@ -56,7 +56,10 @@ export type SchedulerProviderFailureDisposition = 'outcome_unknown' | 'wait_for_
 export function classifySchedulerProviderFailure(reason: string | undefined): SchedulerProviderFailureDisposition {
   const normalized = (reason ?? '').toUpperCase();
   if (normalized.includes('OUTCOME_UNKNOWN') || normalized.includes('MESSAGE_DELIVERY_TIMED_OUT') || normalized.includes('RESPONSE_STREAM_UNAVAILABLE')) return 'outcome_unknown';
-  if (normalized.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED') || normalized.includes('AUTHORIZATION_REQUIRED') || normalized.includes('AUTHENTICATION_REQUIRED') || normalized.includes('LOGIN_REQUIRED') || normalized.includes('PERMISSION_REQUIRED') || normalized.includes('CONSENT_REQUIRED') || normalized.includes('CAPABILITY_GRANT')) return 'wait_for_user';
+  // A terminal Supervisor task (the operator or the provider already decided the
+  // conversation needs a human) is the same class of decision: surface one
+  // actionable Handoff and stop retrying instead of looping invisibly.
+  if (normalized.includes('EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED') || normalized.includes('AUTHORIZATION_REQUIRED') || normalized.includes('AUTHENTICATION_REQUIRED') || normalized.includes('LOGIN_REQUIRED') || normalized.includes('PERMISSION_REQUIRED') || normalized.includes('CONSENT_REQUIRED') || normalized.includes('CAPABILITY_GRANT') || normalized.includes('WORKFLOW_SUPERVISOR_TASK_TERMINAL')) return 'wait_for_user';
   if (normalized.includes('CONTROLLER_HOST_KIND_MISMATCH') || normalized.includes('CHATGPT_CONTROLLER_BINDING_NOT_FOUND') || normalized.includes('CONTROLLER_ROUND_CONTEXT_STALE') || normalized.includes('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE')) return 'failed';
   return 'retryable';
 }
