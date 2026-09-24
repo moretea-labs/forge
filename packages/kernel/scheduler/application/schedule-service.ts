@@ -17,6 +17,8 @@ export {
   saveSchedule,
   saveScheduleDecision,
   updateSchedule,
+  getScheduleDefinition,
+  getScheduleRuntimeState,
   type ScheduleHistoryCleanupResult,
   type ScheduleDedupeApplyResult,
   type ScheduleDedupeReport,

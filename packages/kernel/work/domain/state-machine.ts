@@ -73,6 +73,15 @@ export function transitionPhaseEvidence(
 
 export function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (!contract.objective.trim()) throw new Error('WORK_OBJECTIVE_REQUIRED');
+  if (contract.semanticState === 'completed' || contract.semanticState === 'cancelled') {
+    return contract;
+  }
+  if (contract.semanticRevision) {
+    if (contract.status === 'completed' && !contract.completionReceipt) {
+      throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
+    }
+    return contract;
+  }
   if (contract.status === 'completed' && !contract.completionReceipt) {
     throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
   }

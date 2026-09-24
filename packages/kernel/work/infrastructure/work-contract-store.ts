@@ -1000,12 +1000,16 @@ export function reviseWorkSemanticContext(
         if (!Number.isInteger(value) || value < 1) throw new Error(code);
         return value;
       };
+      const nextSemanticState = input.state ?? currentSemanticState;
       return validateWorkSemantics({
         ...current,
         objective,
         semanticRevision: semanticRevision + 1,
         semanticUpdatedAt: at,
-        semanticState: input.state ?? currentSemanticState,
+        semanticState: nextSemanticState,
+        ...(nextSemanticState === 'completed' || nextSemanticState === 'cancelled'
+          ? { status: nextSemanticState as 'completed' | 'cancelled' }
+          : {}),
         ...(input.requirementRevision !== undefined ? { requirementRevision: positiveRevision(input.requirementRevision, 'WORK_REQUIREMENT_REVISION_INVALID') } : {}),
         ...(input.planRevision !== undefined ? { planRevision: positiveRevision(input.planRevision, 'WORK_PLAN_REVISION_INVALID') } : {}),
         ...(input.resultRefs !== undefined ? { semanticResultRefs: [...new Set(input.resultRefs.map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100) } : {}),
@@ -2112,7 +2116,8 @@ export function recordWorkCompletionReceipt(
     const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
       && Boolean(receipt.reconciliationId?.trim())
       && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
-    const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
+    const isSemanticCompletion = current.semanticState === 'completed' || (receipt as any).source === 'semantic_complete';
+    const reviewRequired = !isSemanticCompletion && workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
     if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
       throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
     }

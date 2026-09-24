@@ -1,3 +1,4 @@
+import { recordUserRequest, resolveUserRequest } from '../../../../packages/kernel/identity/api/index';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
@@ -143,6 +144,25 @@ export function createHandoffItem(options: HandoffInboxStoreOptions, input: Crea
       items: [item, ...store.items],
     };
     writeHandoffInboxStore(options, nextStore);
+    try {
+      if (options.controllerHome) {
+        const rootCauseKey = 'handoff:' + item.repoId + ':' + (item.workId ?? item.id) + ':' + item.reason;
+        recordUserRequest(options.controllerHome, {
+          requestId: item.id,
+          kind: 'user_action_request',
+          rootCauseKey,
+          title: item.title,
+          summary: item.summary,
+          actionRequired: item.creationReason === 'missing_authorization' ? 'grant_permission' : 'product_decision',
+          targetScope: {
+            scopeKind: 'work',
+            scopeId: item.workId ?? item.id,
+            repoId: item.repoId,
+            workId: item.workId,
+          },
+        });
+      }
+    } catch { /* non-blocking */ }
     return item;
   });
 }
@@ -212,6 +232,15 @@ function setHandoffStatus(
     const items = [...store.items];
     items[index] = item;
     writeHandoffInboxStore(options, { schemaVersion: 1, updatedAt: at, items });
+    try {
+      if (options.controllerHome && (status === 'resolved' || status === 'dismissed')) {
+        resolveUserRequest(options.controllerHome, {
+          requestId: sanitizedId,
+          decision: patch.decision || status,
+          resolvedBy: patch.resolver || 'system',
+        });
+      }
+    } catch { /* non-blocking */ }
     return item;
   });
 }

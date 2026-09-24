@@ -553,7 +553,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             if (requirementOperationResult) return requirementOperationResult;
           }
 
-          const stableSemanticSpec = operation === 'work_get' || operation === 'work_revise'
+          const stableSemanticSpec = operation === 'work_get' || operation === 'work_revise' || operation === 'work_complete'
             ? { namespace: 'work_contract', id: String(args.work_id ?? '').trim(), kind: 'work' as const }
             : operation === 'plan_get' || operation === 'plan_revise'
               ? { namespace: 'plan_contract', id: String(args.plan_id ?? '').trim(), kind: 'plan' as const }
@@ -1057,11 +1057,14 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
   
           if (operation === 'finalize') {
             const workId = String(args.work_id ?? '').trim();
+            const workBeforeFinalize = workId ? getWorkContract(store, workId) : undefined;
             try {
               if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
             } catch (error) {
-              const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`, data: { workId, lifecycleClosed: false } });
-              return result(blocked as unknown as Record<string, unknown>, true);
+              if (workBeforeFinalize?.semanticState !== 'completed') {
+                const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`, data: { workId, lifecycleClosed: false } });
+                return result(blocked as unknown as Record<string, unknown>, true);
+              }
             }
             const finalizeReconciliation = workId
               ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
@@ -1084,8 +1087,10 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               try {
                 terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
               } catch (error) {
-                const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`, data: { workId, terminalizationApplied: false, lifecycleClosed: false } });
-                return result(blocked as unknown as Record<string, unknown>, true);
+                if (before.semanticState !== 'completed') {
+                  const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`, data: { workId, terminalizationApplied: false, lifecycleClosed: false } });
+                  return result(blocked as unknown as Record<string, unknown>, true);
+                }
               }
             }
             if (before && !before.completionReceipt && args.reconcile_historical_delivery === true) {

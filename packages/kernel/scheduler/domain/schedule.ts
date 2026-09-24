@@ -147,3 +147,83 @@ export interface ScheduleOccurrence {
   handoffId?: string;
   reason?: string;
 }
+
+/**
+ * Authored schedule intent, revisioned independently from runtime/execution state.
+ */
+export interface ScheduleDefinition {
+  schemaVersion: 1;
+  revision: number;
+  scheduleId: string;
+  requestId: string;
+  scopeRef?: ScopeRef;
+  executionPlacement?: ExecutionPlacement;
+  repoId?: string;
+  name: string;
+  enabled: boolean;
+  trigger: ScheduleTrigger;
+  policy: SchedulePolicy;
+  action: ScheduleAction;
+  stopConditions: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Mechanical runtime facts and observation state for a schedule.
+ */
+export interface ScheduleRuntimeState {
+  schemaVersion: 1;
+  scheduleId: string;
+  repoId?: string;
+  lastTriggeredAt?: string;
+  lastOccurrenceId?: string;
+  consecutiveFailures: number;
+  consecutiveNoops?: number;
+  nextEligibleAt?: string;
+  pausedReason?: string;
+  lastObservationAt?: string;
+  lastObservationFingerprint?: string;
+  lastObservationChangedAt?: string;
+  lastObservationStatus?: 'baseline' | 'unchanged' | 'changed' | 'keepalive' | 'auth_required';
+  updatedAt: string;
+}
+
+export function extractScheduleDefinition(schedule: RepositorySchedule): ScheduleDefinition {
+  return {
+    schemaVersion: schedule.schemaVersion,
+    revision: schedule.revision,
+    scheduleId: schedule.scheduleId,
+    requestId: schedule.requestId,
+    scopeRef: schedule.scopeRef,
+    executionPlacement: schedule.executionPlacement,
+    repoId: schedule.repoId,
+    name: schedule.name,
+    enabled: schedule.enabled,
+    trigger: schedule.trigger,
+    policy: schedule.policy,
+    action: schedule.action,
+    stopConditions: schedule.stopConditions,
+    createdAt: schedule.createdAt,
+    updatedAt: schedule.updatedAt,
+  };
+}
+
+export function extractScheduleRuntimeState(schedule: RepositorySchedule): ScheduleRuntimeState {
+  return {
+    schemaVersion: 1,
+    scheduleId: schedule.scheduleId,
+    repoId: schedule.repoId,
+    lastTriggeredAt: schedule.lastTriggeredAt,
+    lastOccurrenceId: schedule.lastOccurrenceId,
+    consecutiveFailures: schedule.consecutiveFailures,
+    consecutiveNoops: schedule.consecutiveNoops,
+    nextEligibleAt: schedule.nextEligibleAt,
+    pausedReason: schedule.pausedReason,
+    lastObservationAt: schedule.lastObservationAt,
+    lastObservationFingerprint: schedule.lastObservationFingerprint,
+    lastObservationChangedAt: schedule.lastObservationChangedAt,
+    lastObservationStatus: schedule.lastObservationStatus,
+    updatedAt: schedule.updatedAt,
+  };
+}

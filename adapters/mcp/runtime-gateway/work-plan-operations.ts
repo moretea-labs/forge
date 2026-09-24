@@ -399,19 +399,7 @@ export function callRhWorkPlanAcceptStepOperation(
     const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
     const claimedRelay = predecessorWorkId ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
     const currentOwner = predecessorWorkId ? getControllerSession(store, predecessorWorkId) : undefined;
-    const claimedTerminalRound = Boolean(
-      predecessorWork
-      && predecessorWork.status === 'completed'
-      && claimedRelay?.status === 'claimed'
-    );
-    if (claimedTerminalRound && predecessorWorkId) {
-      assertFacadeControllerRoundAuthority(ctx, store, predecessorWorkId, args);
-      if (currentOwner) {
-        if (currentOwner.controllerType !== identity.controllerType) throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${predecessorWorkId}`);
-        if (currentOwner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${predecessorWorkId}`);
-        if (controllerSessionPrincipalId(currentOwner) !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${predecessorWorkId}`);
-      }
-    }
+    // In thin architecture, PlanStep does not own execution or require ControllerRound relay claims.
     const plan = acceptPlanStepEvidence(store, {
       planId,
       stepId,

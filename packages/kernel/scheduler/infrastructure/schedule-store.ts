@@ -11,7 +11,7 @@ import {
 } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { readJsonFile, writeJsonAtomic } from '../../../../src/runtime/shared/json-files';
 import { appendRuntimeEvent } from '../../../../src/runtime/evidence/event-ledger';
-import type { RepositorySchedule, ScheduleDecision, ScheduleOccurrence } from '../domain/schedule';
+import { type RepositorySchedule, type ScheduleDecision, type ScheduleOccurrence, type ScheduleDefinition, type ScheduleRuntimeState, extractScheduleDefinition, extractScheduleRuntimeState } from '../domain/schedule';
 
 interface OccurrenceIndex {
   schemaVersion: 1;
@@ -813,4 +813,14 @@ export function applyScheduleDedupe(controllerHome: string, repoId: string, inpu
     }
     return { repoId, appliedAt: new Date().toISOString(), dryRun, report, disabled };
   }, 10_000);
+}
+
+export function getScheduleDefinition(controllerHome: string, repoId: string, scheduleId: string): ScheduleDefinition {
+  const schedule = getSchedule(controllerHome, repoId, scheduleId);
+  return extractScheduleDefinition(schedule);
+}
+
+export function getScheduleRuntimeState(controllerHome: string, repoId: string, scheduleId: string): ScheduleRuntimeState {
+  const schedule = getSchedule(controllerHome, repoId, scheduleId);
+  return extractScheduleRuntimeState(schedule);
 }

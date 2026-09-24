@@ -16,6 +16,7 @@ export const RH_WORK_OPERATIONS = [
   'stop',
   'work_get',
   'work_revise',
+  'work_complete',
   'delegate',
   'controller_claim',
   'controller_release',

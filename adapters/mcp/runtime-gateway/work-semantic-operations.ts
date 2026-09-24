@@ -9,7 +9,7 @@ import {
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 
-const RH_WORK_SEMANTIC_OPERATIONS = new Set(['work_get', 'work_revise']);
+const RH_WORK_SEMANTIC_OPERATIONS = new Set(['work_get', 'work_revise', 'work_complete']);
 
 export async function callRhWorkSemanticOperation(
   store: WorkContractStoreOptions,
@@ -35,11 +35,14 @@ export async function callRhWorkSemanticOperation(
   }
 
   const expectedRevision = Number(args.expected_revision);
+  const targetState = operation === 'work_complete'
+    ? 'completed'
+    : (args.work_state === 'open' || args.work_state === 'completed' || args.work_state === 'cancelled' ? args.work_state : undefined);
   try {
     const revised = reviseWorkSemanticContext(store, workId, {
       expectedRevision,
       ...(typeof args.objective === 'string' ? { objective: args.objective } : {}),
-      ...(args.work_state === 'open' || args.work_state === 'completed' || args.work_state === 'cancelled' ? { state: args.work_state } : {}),
+      ...(targetState ? { state: targetState } : {}),
       ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
       ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
       ...(Array.isArray(args.work_result_refs) ? { resultRefs: args.work_result_refs.map(String) } : {}),

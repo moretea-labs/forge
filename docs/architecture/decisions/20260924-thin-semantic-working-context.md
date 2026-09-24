@@ -21,3 +21,24 @@ Semantic CAS protects authored context. Git/worktree, Process/resource leases, a
 The current runtime still contains legacy Requirement waiting/continue, Plan approval/PlanStep/supersession execution, and Work/Controller claim machinery for frozen-client compatibility and delivery continuity. Those mechanisms are not current model-facing semantic operations, are not semantic revision authorities, and must not be consulted as semantic-write gates. Their retirement is a separate migration step required before the thin-model target can be considered fully converged; this decision does not create a fallback path or a duplicate lifecycle authority.
 
 No Runtime/Recovery release transition is part of this decision.
+
+## Thin capability substrate consolidation (2026-09-24)
+
+### 1. Mode-free capability surface
+- Capabilities (`read`, `search`, `edit`, `command`, `process`, `git`, `workspace`, `browser`, `computer`, `plugin`, `API`, `agent`, `schedule`, `release`, `recovery`) remain domain-shaped public capabilities and compose without mandatory Requirement, Plan, Work, task-size thresholds, or mode tokens.
+- Shared invocation conventions are deliberately small: principal/target, typed arguments, optional expected revision, timeout/cancellation, idempotency token, and result or typed handle.
+- A direct task may acquire Work durability later by attaching existing semantic refs/handles/receipts without replaying prior effects.
+
+### 2. Mechanical authority consolidation
+- Canonical `Grant` is the single authorization fact for principal + capability/action set + target/resource scope + constraints + expiry/revocation. Generic and plugin-specific grants converge into this canonical authority; repository ID is optional locator metadata, not mandatory scope.
+- Optimistic CAS and native Git/OS conflict semantics are default; short exclusive claims exist only for concrete shared mutable resources (Git refs/index, release promotion, physical input, mutable provider target).
+- Work is not a mutex. General Work/controller claim/lease locks are retired in favor of concrete resource fences.
+
+### 3. Continuity, schedule, and user requests
+- Open Work is durable context, not an autonomous execution loop instruction.
+- `ScheduleDefinition` (authored trigger, target, policy, action, stop conditions, enabled) is split from `ScheduleRuntimeState` (lastTriggeredAt, consecutiveFailures, nextEligibleAt, occurrences, observation data).
+- `UserActionRequest` / `UserDecisionRequest` is created only for unproxyable human actions/judgments and coalesces repeated occurrences by rootCauseKey.
+
+### 4. Completion vs release/recovery
+- `work_complete` records only the model/user semantic decision and result references. Source integration, git merge, publication, and resource cleanup are separate capabilities/effects.
+- Cleanup debt is derived from owned-resource facts, acts only on resources proven Forge-owned, and is retryable/idempotent independently of Work completion.

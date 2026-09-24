@@ -2538,6 +2538,34 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
+  if (work.semanticState === 'completed' && !work.completionReceipt) {
+    const recordedAt = nowIso(ctx);
+    const receipt = {
+      schemaVersion: 1 as const,
+      receiptId: `SEMANTIC-WORK-${randomUUID()}`,
+      source: 'semantic_complete',
+      workId: work.workId,
+      baseRevision: work.baseRevision ?? 'unknown',
+      sourceRevision: ctx.sourceRevision ?? 'unknown',
+      workspaceChangedPaths: ctx.workspaceChangedPaths ?? [],
+      recordedAt,
+    };
+    const completed = completeWorkWithReceipt(ctx.workStore, work.workId, receipt as any, 'completed_changed');
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Finalize result: succeeded for ${work.workId}.`,
+      data: {
+        work: summarizeWorkContract(completed),
+        finalStatus: 'completed',
+        completionReceipt: receipt,
+        idempotent: false,
+        hiddenFailure: false,
+      },
+      evidenceRefs: completed.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
+    });
+  }
+
   const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
   if (workRequiresImplementationReview(work.workKind, currentChangedPaths, work.engineeringContext?.riskClass)) {
     try {
