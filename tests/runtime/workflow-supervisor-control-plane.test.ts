@@ -14,7 +14,7 @@ import { parseSupervisorCompletion, renderSupervisorPrompt, SUPERVISOR_BLOCK_END
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { bindChatgptWorkConversation, getChatgptWorkConversationBinding } from '../../adapters/chatgpt/work-conversation-binding-store';
+import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -422,6 +422,47 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovered).toMatchObject({ status: 'dispatching', roundCount: blocked.roundCount, repeatedStateCount: blocked.repeatedStateCount, maxRepeatedState: blocked.maxRepeatedState });
   });
 
+  test('retires a predecessor browser task after the Work CAS-rebinds to a fresh conversation', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-supervisor-conversation-rebind';
+    const workId = 'work-supervisor-conversation-rebind';
+    const oldConversationId = '11111111-aaaa-bbbb-cccc-222222222222';
+    const newConversationId = '33333333-dddd-eeee-ffff-444444444444';
+    createRequirement({ controllerHome: fx.controllerHome }, { requirementId, title: 'Supervisor rebind', outcomeStatement: 'Only the current exact Work conversation owns browser delivery.' });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, mode: 'goal_workloop',
+      objective: 'Move autonomous execution onto a fresh conversation without retaining the predecessor writer.',
+      acceptanceCriteria: ['old conversation becomes browser-inactive after rebind'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    beginInitialControllerRoundDispatch(fx.store, {
+      workId, requirementId, identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
+    });
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` });
+    const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'supervisor-home'));
+    const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+    const oldTaskId = `forge:${fx.repository.repoId}:conversation:${oldConversationId}`;
+    control.registerTask({
+      taskId: oldTaskId, conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}`, objective: 'Old execution conversation.',
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
+    });
+    control.reserveEnrollment(oldTaskId);
+    expect(control.browserTasks()).toHaveLength(1);
+
+    rebindChatgptWorkConversation(fx.store, {
+      workId, previousConversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${newConversationId}`,
+    });
+    expect(workflowSupervisorBoundaryForWork(fx.store, workId)).toMatchObject({
+      status: 'outer_turn', conversationId: newConversationId,
+      taskId: `forge:${fx.repository.repoId}:conversation:${newConversationId}`,
+    });
+    expect(control.browserTasks()).toEqual([]);
+    expect(() => control.browserPoll({ conversationId: oldConversationId, conversationUrl: `https://chatgpt.com/c/${oldConversationId}` }))
+      .toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
+  });
+
   test('retires a stale relay when its canonical origin Work is cancelled', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-terminal-reconcile';
@@ -438,6 +479,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(join(fx.root, 'supervisor-home')), {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
     const conversationId = 'abababab-cdcd-efef-1212-343434343434';
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${conversationId}` });
     const taskId = `forge:${fx.repository.repoId}:requirement:${requirementId}`;
     control.registerTask({
       taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Retire stale relay.',
@@ -471,6 +513,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     const control = new WorkflowSupervisorControlPlane(new WorkflowSupervisorStore(join(fx.root, 'supervisor-home')), {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
     const conversationId = 'cdcdcdcd-abab-efef-3434-121212121212';
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: `https://chatgpt.com/c/${conversationId}` });
     const taskId = `forge:${fx.repository.repoId}:requirement:${requirementId}`;
     control.registerTask({
       taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`, objective: 'Retire completed Work projection.',

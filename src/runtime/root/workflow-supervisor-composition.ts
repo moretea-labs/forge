@@ -269,8 +269,6 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }
-    const cached = workStateById.get(relay.originWorkId);
-    if (cached?.revision === revision) return cached.active;
     const work = getWorkContract(store, relay.originWorkId);
     if (!work) {
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
@@ -287,6 +285,18 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
       workStateById.set(work.workId, { revision, active: false });
       return false;
     }
+    // A Work may deliberately CAS-rebind from an interactive/control
+    // conversation onto a fresh autonomous execution conversation. Requirement
+    // scope alone is not enough to keep the predecessor task alive: only the
+    // Work's current exact conversation boundary may own browser delivery.
+    // Check this before consulting the Work-revision cache because a conversation
+    // rebind does not have to mutate the WorkContract revision.
+    const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
+    if (boundary.status !== 'outer_turn'
+      || boundary.conversationId !== task.conversationId
+      || boundary.conversationUrl !== task.conversationUrl) return false;
+    const cached = workStateById.get(relay.originWorkId);
+    if (cached?.revision === revision) return cached.active;
     workStateById.set(work.workId, { revision, active: true });
     return true;
   };
