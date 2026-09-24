@@ -32,6 +32,8 @@ import { controllerPluginRepository, submitAssistantPluginAction } from '../../s
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -149,6 +151,58 @@ function corruptProjectionWork(controllerHome: string, repoId: string, workId: s
 }
 
 describe('runtime source isolation', () => {
+  test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
+    const controllerHome = tempRoot('forge-home-stable-semantic-id-');
+    const primaryRoot = tempRoot('forge-stable-semantic-primary-');
+    const siblingRoot = tempRoot('forge-stable-semantic-sibling-');
+    initGitRepo(primaryRoot, 'stable-semantic-primary');
+    initGitRepo(siblingRoot, 'stable-semantic-sibling');
+    ensureControllerHome(controllerHome);
+    const primary = registerRepository({ path: primaryRoot, controllerHome, displayName: 'Stable semantic primary' });
+    registerRepository({ path: siblingRoot, controllerHome, displayName: 'Stable semantic sibling' });
+
+    const requirementId = 'REQ-stable-semantic-id';
+    const planId = 'PLAN-stable-semantic-id';
+    const workId = 'work-stable-semantic-id';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Stable semantic id lookup',
+      outcomeStatement: 'Model-facing semantic reads resolve from stable identity without selecting repository ownership first.',
+    });
+    createPlanContract({ controllerHome, repoId: primary.repoId }, {
+      planId,
+      repoId: primary.repoId,
+      requirementId,
+      scopeKey: 'stable-semantic-id',
+      sourceRevision: git(primaryRoot, 'rev-parse', 'HEAD'),
+      goal: 'Read the semantic Plan directly by stable id.',
+      steps: [],
+    });
+    createProjectionWork(controllerHome, primary, workId);
+
+    const unscoped = {
+      ...mcpContext(controllerHome, primary),
+      explicitRepository: undefined,
+    } as MultiRepositoryMcpToolContext;
+
+    const requirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_get',
+      requirement_id: requirementId,
+    }));
+    const plan = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'plan_get',
+      plan_id: planId,
+    }));
+    const work = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'work_get',
+      work_id: workId,
+    }));
+
+    expect((requirement.data as { requirement?: { requirementId?: string } })?.requirement?.requirementId).toBe(requirementId);
+    expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
+    expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
+  });
+
   test('resolver prefers package root over ambient execution cwd', () => {
     const business = tempRoot('forge-business-cwd-');
     initGitRepo(business, 'business-app');

@@ -1009,6 +1009,7 @@ export async function callRepositoryTool(
                   repository,
                   workId: binding.workId,
                   principalId: binding.principalId ?? caller?.principalId ?? '',
+                  sessionId: caller?.sessionId,
                 })
               : undefined;
             const patchResult = applySafePatch(repository, {
@@ -1183,6 +1184,7 @@ export async function callRepositoryTool(
                 repository,
                 workId: executionIdentity.workId!,
                 principalId: caller?.principalId ?? '',
+                sessionId: caller?.sessionId,
                 deferEffectPromotion: true,
               }),
               60_000,

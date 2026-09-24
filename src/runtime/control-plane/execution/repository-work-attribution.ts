@@ -1,5 +1,4 @@
 import { readExecutionSession } from './session-store';
-import { controllerSessionPrincipalId, getControllerSession, listControllerSessions } from '../../../../packages/kernel/controller/api/index';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 
@@ -23,11 +22,6 @@ export function resolveExplicitClaimedRepositoryWork(
   if (!caller?.principalId?.trim()) return undefined;
   const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
   if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
-  const owner = getControllerSession({ controllerHome, repoId: target.repoId }, workId);
-  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
-  if (controllerSessionPrincipalId(owner) !== caller.principalId.trim()) {
-    throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${workId}`);
-  }
   if (work.checkoutId && work.checkoutId !== target.activeCheckoutId) {
     throw new Error(
       `WORK_CHECKOUT_MISMATCH: work=${workId}; resolved_checkout=${target.activeCheckoutId}; expected_work_checkout=${work.checkoutId}; retry with checkout_id=${work.checkoutId} and the same work_id`,
@@ -83,24 +77,8 @@ export function resolveClaimedRepositoryWorkId(
       if (work && isTerminalWorkContractStatus(work.status)) {
         throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
       }
-      const owner = getControllerSession({ controllerHome, repoId: target.repoId }, workId);
-      if (work && owner?.sessionId === caller.sessionId && controllerSessionPrincipalId(owner) === caller.principalId.trim()) {
-        return workId;
-      }
+      if (work) return workId;
     }
-  }
-  const principal = caller.principalId.trim();
-  const candidates = listControllerSessions({ controllerHome, repoId: target.repoId })
-    .filter((owner) => controllerSessionPrincipalId(owner) === principal)
-    .map((owner) => ({ owner, work: getWorkContract({ controllerHome, repoId: target.repoId }, owner.workId) }))
-    .filter((entry): entry is { owner: ReturnType<typeof listControllerSessions>[number]; work: NonNullable<ReturnType<typeof getWorkContract>> } => Boolean(
-      entry.work
-      && !isTerminalWorkContractStatus(entry.work.status)
-      && (!entry.work.checkoutId || entry.work.checkoutId === target.activeCheckoutId),
-    ));
-  if (candidates.length === 1) return candidates[0].work.workId;
-  if (candidates.length > 1) {
-    throw new Error(`WORK_ATTRIBUTION_AMBIGUOUS: principal ${principal} owns ${candidates.length} active Works on checkout ${target.activeCheckoutId}`);
   }
   return undefined;
 }

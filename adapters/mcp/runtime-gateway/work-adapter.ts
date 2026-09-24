@@ -29,7 +29,7 @@ import { finalizeRemoteEffectWorkFromActionReceipt } from "../../../src/runtime/
 import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workflow-watchdog";
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { callRhWorkControllerOperation } from './work-controller-operations';
-import { callRhWorkRequirementOperation } from './work-requirement-operations';
+import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkSemanticOperation } from './work-semantic-operations';
 import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
@@ -47,6 +47,7 @@ import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-p
 import { callExecutionTool } from "./execution-tools";
 import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
 import { normalizeRhWorkInputCompatibility } from './work-input-compatibility';
+import { findControlPlaneRecordsByKey } from '../../../src/runtime/control-plane/persistence/sqlite-store';
 import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
 import { callRhWorkControllerRecoveryOperation } from './work-controller-recovery-operations';
@@ -545,8 +546,6 @@ export async function runFacadeVerify(
 /** MCP rh_work transport adapter. Canonical lifecycle semantics remain in Kernel/application services; this layer normalizes ABI input and orchestrates those services. */
 export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<CallToolResult> {
   {
-          let repository = selected(ctx, args);
-          const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
           const compatibility = normalizeRhWorkInputCompatibility(args);
           if (!compatibility.ok) {
             return result(buildFacadeResult({
@@ -561,6 +560,56 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (!allowedFacadeOperations('rh_work').includes(operation)) {
             return invalidFacadeOperation('rh_work', operation);
           }
+
+          const requirementOperationArgs = compatibility.requirementOperationArgs ?? args;
+          if (isRhWorkRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
+            const requirementOperationResult = await callRhWorkRequirementOperation(ctx, undefined, operation, requirementOperationArgs);
+            if (requirementOperationResult) return requirementOperationResult;
+          }
+
+          const stableSemanticSpec = operation === 'work_get' || operation === 'work_revise'
+            ? { namespace: 'work_contract', id: String(args.work_id ?? '').trim(), kind: 'work' as const }
+            : operation === 'plan_get' || operation === 'plan_revise'
+              ? { namespace: 'plan_contract', id: String(args.plan_id ?? '').trim(), kind: 'plan' as const }
+              : undefined;
+          if (stableSemanticSpec) {
+            if (!stableSemanticSpec.id) {
+              return result(buildFacadeResult({
+                status: 'not_found',
+                summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} stable id is required.`,
+                data: {},
+              }) as unknown as Record<string, unknown>, true);
+            }
+            const matches = findControlPlaneRecordsByKey<unknown>(ctx.controllerHome, {
+              namespace: stableSemanticSpec.namespace,
+              key: stableSemanticSpec.id,
+              limit: 2,
+            });
+            if (matches.length === 0) {
+              return result(buildFacadeResult({
+                status: 'not_found',
+                summary: `${stableSemanticSpec.kind === 'work' ? 'Work' : 'Plan'} ${stableSemanticSpec.id} not found.`,
+                data: stableSemanticSpec.kind === 'work'
+                  ? { workId: stableSemanticSpec.id }
+                  : { planId: stableSemanticSpec.id },
+              }) as unknown as Record<string, unknown>, true);
+            }
+            if (matches.length > 1) {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: `SEMANTIC_ID_SCOPE_AMBIGUOUS: ${stableSemanticSpec.id} resolves to ${matches.length} scopes.`,
+                data: { id: stableSemanticSpec.id, scopes: matches.map((record) => record.scope).sort() },
+              }) as unknown as Record<string, unknown>, true);
+            }
+            const semanticStore = { controllerHome: ctx.controllerHome, repoId: matches[0]!.scope };
+            const semanticResult = stableSemanticSpec.kind === 'work'
+              ? await callRhWorkSemanticOperation(semanticStore, operation, args)
+              : await callRhWorkPlanOperation(semanticStore, operation, args);
+            if (semanticResult) return semanticResult;
+          }
+
+          let repository = selected(ctx, args);
+          const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
           if (isRhWorkScheduleOperation(operation)) {
             return await callRhWorkScheduleAdapter(ctx, repository, operation, args, {
               scheduleIdOverride: frozenScheduleDeleteId || undefined,
@@ -580,7 +629,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
   
           const controllerOperationResult = await callRhWorkControllerOperation(ctx, repository, operation, args);
           if (controllerOperationResult) return controllerOperationResult;
-          const requirementOperationArgs = compatibility.requirementOperationArgs ?? args;
           const requirementOperationResult = await callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs);
           if (requirementOperationResult) return requirementOperationResult;
           const planOperationResult = await callRhWorkPlanOperation(store, operation, args);

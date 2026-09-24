@@ -21,7 +21,7 @@ export function isRhWorkRequirementOperation(operation: string): boolean {
 
 export async function callRhWorkRequirementOperation(
   ctx: MultiRepositoryMcpToolContext,
-  repository: { repoId: string; activeCheckoutId?: string },
+  repository: { repoId: string; activeCheckoutId?: string } | undefined,
   operation: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
@@ -123,6 +123,7 @@ export async function callRhWorkRequirementOperation(
     };
     const admission = operation === 'requirement_promote_candidate'
       ? (() => {
+          if (!repository) throw new Error('REQUIREMENT_CANDIDATE_REPOSITORY_PLACEMENT_REQUIRED');
           const candidateMemoryId = typeof args.requirement_candidate_id === 'string' ? args.requirement_candidate_id.trim() : '';
           if (!candidateMemoryId) throw new Error('REQUIREMENT_CANDIDATE_ID_REQUIRED');
           const instance = readForgeInstanceIdentity(ctx.controllerHome);
