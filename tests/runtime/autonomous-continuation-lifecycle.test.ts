@@ -1210,15 +1210,13 @@ describe('autonomous continuation lifecycle', () => {
       dispatchPrompt,
     });
     expect(first).toEqual({ claimed: 1, dispatched: 0, failed: 1 });
-    expect(observed[0]).toMatchObject({
-      repoId: repository.repoId,
-      repoRoot: repository.canonicalRoot ?? repository.localRoot,
-      workId,
-      browserSessionId: 'browser-recovery',
-      conversationUrl: 'https://chatgpt.com/c/recovery-conversation',
-    });
+    // The exact conversation binding makes the Workflow Supervisor the outer-turn
+    // owner, so this pass may only enroll it. Without a Supervisor daemon the pass
+    // records a bounded failure instead of dispatching a provider prompt.
+    expect(observed).toEqual([]);
     const retryPending = getControllerRoundRelay(store, workId)!;
-    expect(retryPending).toMatchObject({ status: 'dispatching', consecutiveFailures: 1, lastError: 'Connection closed' });
+    expect(retryPending).toMatchObject({ status: 'dispatching', consecutiveFailures: 1 });
+    expect(retryPending.lastError).toContain('WORKFLOW_SUPERVISOR_ENROLLMENT_');
     expect(retryPending.nextRecoveryAt).toBeTruthy();
     const retryAt = Date.parse(retryPending.nextRecoveryAt!);
     expect(retryAt).toBe(firstRecoveryAt + 60_000);
@@ -1250,6 +1248,73 @@ describe('autonomous continuation lifecycle', () => {
       blockedReason: 'consecutive_failures:2>=2',
     });
     expect(getControllerRoundRelay(store, workId)?.nextRecoveryAt).toBeUndefined();
+  });
+
+  test('stalled ControllerRound recovery records bounded failure when Supervisor enrollment does not happen', async () => {
+    const root = temp('forge-autonomous-recovery-enrollment-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-recovery-enrollment' });
+    const workId = 'WORK-AUTONOMOUS-RECOVERY-ENROLLMENT';
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Surface a truthful bounded reason when Supervisor enrollment cannot happen.',
+      acceptanceCriteria: ['the relay never stays silently dispatching'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    // An exact conversation binding makes the Workflow Supervisor the outer-turn
+    // owner, so this pass may only enroll it - never dispatch a provider prompt.
+    const binding = bindChatgptWorkConversation(store, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/enrollment-conversation',
+      latestBrowserSessionId: 'browser-enrollment',
+    });
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:enrollment-recovery', controllerType: 'chatgpt',
+        principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-enrollment-recovery',
+      },
+      bindingId: binding.bindingId,
+      maxFailures: 2,
+    });
+    const dispatched = finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: binding.bindingId })!;
+    const recoveryAt = Date.parse(dispatched.updatedAt) + 61_000;
+    let dispatches = 0;
+    const result = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs: recoveryAt,
+      repositories: [repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => undefined,
+      dispatchPrompt: async () => {
+        dispatches += 1;
+        throw new Error('recovery must not dispatch while Supervisor owns the outer turn');
+      },
+    });
+    // The recovery attempt is counted as a failure and recorded on the relay, so the
+    // next pass backs off instead of repeating the same silent scan every minute.
+    expect(result).toEqual({ claimed: 1, dispatched: 0, failed: 1 });
+    expect(dispatches).toBe(0);
+    const relay = getControllerRoundRelay(store, workId)!;
+    expect(relay.status).toBe('dispatching');
+    expect(relay.consecutiveFailures).toBe(1);
+    expect(relay.lastError).toContain('WORKFLOW_SUPERVISOR_ENROLLMENT_');
+    expect(relay.nextRecoveryAt).toBeTruthy();
+    expect(Date.parse(relay.nextRecoveryAt!)).toBe(recoveryAt + 60_000);
   });
 
   test('stalled ControllerRound recovery isolates malformed Work history per repository and continues healthy repositories', async () => {
@@ -1391,10 +1456,17 @@ describe('autonomous continuation lifecycle', () => {
       },
     });
 
-    expect(result).toEqual({ claimed: 1, dispatched: 1, failed: 1 });
-    expect(observed).toHaveLength(1);
-    expect(observed[0]).toMatchObject({ repoId: healthyRepository.repoId, workId: healthyWorkId });
-    expect(getControllerRoundRelay(healthyStore, healthyWorkId)).toMatchObject({ status: 'dispatched' });
+    // The malformed repository fails its scan, which is counted once. The healthy
+    // repository is still inspected and its relay is settled with a bounded,
+    // truthful reason instead of being silently re-scanned every pass.
+    expect(result).toEqual({ claimed: 1, dispatched: 0, failed: 2 });
+    // Both Works carry an exact conversation binding, so the Supervisor owns the
+    // outer turn: recovery settles each relay with a bounded reason and never
+    // dispatches a provider prompt itself.
+    expect(observed).toEqual([]);
+    const healthyRelayAfterRecovery = getControllerRoundRelay(healthyStore, healthyWorkId)!;
+    expect(healthyRelayAfterRecovery.status).toBe('dispatching');
+    expect(healthyRelayAfterRecovery.lastError).toContain('WORKFLOW_SUPERVISOR_ENROLLMENT_');
     expect(getControllerRoundRelay(malformedStore, malformedWorkId)).toMatchObject({ status: 'dispatched' });
     const retainedMalformed = readControlPlaneRecord<WorkContract>(
       controllerHome,

@@ -353,8 +353,24 @@ export async function runSchedulerControllerRoundRecovery(input: {
         });
         const boundary = workflowSupervisorBoundaryForWork(store, record.originWorkId);
         if (boundary.status === 'outer_turn') {
-          await ensureWorkflowSupervisorEnrollmentForWork(store, record.originWorkId, {
+          const enrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, record.originWorkId, {
             schedulerRecoveryKey: record.occurrenceId ?? record.updatedAt,
+          });
+          if (enrollment.status === 'enrolled') continue;
+          // Enrollment is this pass's whole dispatch attempt. Ignoring its outcome
+          // left the round `dispatching` forever: the next pass rescanned the same
+          // relay, repeated the same work and reported nothing, so the Work never
+          // continued and never surfaced a blocker either. Record the truthful,
+          // bounded recovery failure instead; the transition policy applies
+          // exponential backoff and turns an exhausted budget into a visible
+          // `consecutive_failures` blocker that provider repair can rearm.
+          failed += 1;
+          finishControllerRoundRelayDispatch(store, {
+            workId: record.originWorkId,
+            ok: false,
+            error: `WORKFLOW_SUPERVISOR_ENROLLMENT_${enrollment.status.toUpperCase()}${enrollment.reason ? `:${enrollment.reason}` : ''}`,
+            recovery: true,
+            nowMs: input.nowMs,
           });
           continue;
         }
@@ -362,6 +378,16 @@ export async function runSchedulerControllerRoundRecovery(input: {
           // Automatic recovery must never manufacture a replacement ChatGPT
           // conversation while current-conversation enrollment is unresolved.
           // An explicit launcher may still create a new conversation by design.
+          // Still settle the attempt so the relay cannot sit in `dispatching`
+          // indefinitely without evidence or a bounded retry budget.
+          failed += 1;
+          finishControllerRoundRelayDispatch(store, {
+            workId: record.originWorkId,
+            ok: false,
+            error: 'WORKFLOW_SUPERVISOR_EXACT_WORK_CONVERSATION_REQUIRED',
+            recovery: true,
+            nowMs: input.nowMs,
+          });
           continue;
         }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
