@@ -7,3 +7,5 @@ export * from '../domain/semantic-sync';
 export * from '../infrastructure/grant-store';
 export * from '../domain/user-request';
 export * from '../infrastructure/user-request-store';
+export * from '../domain/owned-resource';
+export * from '../infrastructure/owned-resource-store';

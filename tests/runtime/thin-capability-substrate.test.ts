@@ -7,6 +7,12 @@ import {
   listCanonicalGrants,
   recordCanonicalGrant,
   revokeCanonicalGrant,
+  listUserRequests,
+  recordUserRequest,
+  resolveUserRequest,
+  recordOwnedResource,
+  listOwnedResources,
+  markOwnedResourceCleaned,
 } from '../../packages/kernel/identity/api/index';
 import {
   createSchedule,
@@ -16,11 +22,6 @@ import {
   getScheduleRuntimeState,
 } from '../../packages/kernel/scheduler/api/index';
 import {
-  listUserRequests,
-  recordUserRequest,
-  resolveUserRequest,
-} from '../../packages/kernel/identity/api/index';
-import {
   createWorkContract,
   getWorkContract,
   isCurrentWorkContract,
@@ -29,11 +30,10 @@ import {
 } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
-
 const roots: string[] = [];
 afterEach(() => {
-  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
-});
+});  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+
 
 function tempHome(prefix = 'forge-thin-substrate-test-'): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
@@ -213,5 +213,41 @@ describe('Thin capability substrate', () => {
     expect(finalizeResult.status).toBe('ok');
     expect(finalizeResult.data?.finalStatus).toBe('completed');
     expect(finalizeResult.data?.completionReceipt).toBeDefined();
+  });
+
+
+  test('Step 5 & 3: OwnedResource tracks explicit ownership provenance and supports idempotent cleanup', () => {
+    const controllerHome = tempHome();
+
+    // 1) Record a Forge-owned worktree
+    const worktreeResource = recordOwnedResource(controllerHome, {
+      kind: 'worktree',
+      targetRef: '/tmp/forge-isolated-worktree-1',
+      creator: 'forge:worktree-manager',
+      associatedWorkId: 'work-abc',
+      retentionIntent: 'temporary',
+    });
+    expect(worktreeResource.resourceId).toBeDefined();
+    expect(worktreeResource.status).toBe('active');
+    expect(worktreeResource.provenance.creator).toBe('forge:worktree-manager');
+
+    // 2) List owned active resources
+    const active = listOwnedResources(controllerHome, { kind: 'worktree', status: 'active' });
+    expect(active.length).toBe(1);
+    expect(active[0].resourceId).toBe(worktreeResource.resourceId);
+
+    // 3) Mark cleaned up with proof
+    const cleaned = markOwnedResourceCleaned(
+      controllerHome,
+      worktreeResource.resourceId,
+      'forge:cleanup-daemon',
+      'receipt:git-worktree-remove-ok',
+    );
+    expect(cleaned?.status).toBe('released');
+    expect(cleaned?.cleanupProof?.cleanedBy).toBe('forge:cleanup-daemon');
+
+    // 4) Verify active list is now empty
+    const remainingActive = listOwnedResources(controllerHome, { kind: 'worktree', status: 'active' });
+    expect(remainingActive.length).toBe(0);
   });
 });
