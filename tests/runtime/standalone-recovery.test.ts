@@ -4945,13 +4945,23 @@ describe('Recovery explicit performance acceptance', () => {
   test('CPU-time samples enforce thresholds, identity, expiry and measurement availability', async () => {
     const deps = idleCpuDependencies();
     const evidence = await measureRuntimePerformance(() => identity, deps);
-    expect(evidence).toMatchObject({ policy: 'runaway-cpu-v3', sampleCount: 20, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0 });
+    expect(evidence).toMatchObject({ policy: 'runaway-cpu-v4', sampleCount: 20, warmupMs: 10_000, durationMs: 50_000, meanCpuPercent: 0, sustainedHighWindowCount: 0 });
     expect(() => assertRuntimePerformanceEvidence(evidence, identity, Date.parse(evidence.measuredUntil) + 60_001)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence(evidence, { ...identity, authorityRevision: 4 })).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 10.34, p95CpuPercent: 31.09 }, identity)).not.toThrow();
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: 90.64, p95CpuPercent: 104.72 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
     expect(() => assertRuntimePerformanceEvidence({ ...evidence, meanCpuPercent: RECOVERY_RUNAWAY_MEAN_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
-    expect(() => assertRuntimePerformanceEvidence({ ...evidence, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 0.01 }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    // A bounded scheduled maintenance pass lands in at most a few windows of one
+    // observation. Live evidence: healthy Canonical Runtime at mean=12.60%, p95=65.05%
+    // with four high windows out of twenty. That is bounded periodic work, not runaway.
+    expect(() => assertRuntimePerformanceEvidence({
+      ...evidence, meanCpuPercent: 12.6, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 15.05, sustainedHighWindowCount: 4,
+    }, identity)).not.toThrow();
+    // Sustained consumption at the same tail still rejects: half or more of the windows.
+    expect(() => assertRuntimePerformanceEvidence({
+      ...evidence, meanCpuPercent: 12.6, p95CpuPercent: RECOVERY_RUNAWAY_P95_CPU_PERCENT + 15.05, sustainedHighWindowCount: 10,
+    }, identity)).toThrow('RECOVERY_PERFORMANCE_REJECTED');
+    expect(() => assertRuntimePerformanceEvidence({ ...evidence, sustainedHighWindowCount: 21 }, identity)).toThrow('RECOVERY_PERFORMANCE_UNKNOWN');
 
     let singleSpikeElapsed = 0;
     const singleSpike = await measureRuntimePerformance(() => identity, {
@@ -4968,7 +4978,7 @@ describe('Recovery explicit performance acceptance', () => {
     let repeatedSpikeElapsed = 0;
     await expect(measureRuntimePerformance(() => identity, {
       readCpu: () => ({
-        cpuMs: repeatedSpikeElapsed < 12_500 ? 0 : repeatedSpikeElapsed < 15_000 ? 1_500 : 3_000,
+        cpuMs: repeatedSpikeElapsed < 12_500 ? 0 : (repeatedSpikeElapsed - 12_500) * 0.6,
         processStartTime: 'same',
       }),
       monotonicNow: () => repeatedSpikeElapsed,

@@ -10,7 +10,7 @@ export interface RuntimePerformanceIdentity {
 }
 
 export interface RuntimePerformanceEvidence extends RuntimePerformanceIdentity {
-  policy: 'runaway-cpu-v3';
+  policy: 'runaway-cpu-v4';
   measuredFrom: string;
   measuredUntil: string;
   warmupMs: number;
@@ -18,6 +18,8 @@ export interface RuntimePerformanceEvidence extends RuntimePerformanceIdentity {
   sampleCount: number;
   meanCpuPercent: number;
   p95CpuPercent: number;
+  /** Windows whose CPU consumption reached the per-window runaway ceiling. */
+  sustainedHighWindowCount: number;
 }
 
 export interface RuntimeCpuReading { cpuMs: number; processStartTime: string }
@@ -30,11 +32,25 @@ const PERFORMANCE_WARMUP_MS = PERFORMANCE_WINDOW_MS * PERFORMANCE_WARMUP_WINDOWS
 const PERFORMANCE_DURATION_MS = PERFORMANCE_WINDOW_MS * PERFORMANCE_SAMPLE_WINDOWS;
 
 // Recovery known-good is a runaway safety gate, not the comparative release benchmark.
-// The v3 sampler keeps the same 60-second budget and 25%/50% ceilings as v2, but
-// doubles tail resolution: twenty 2.5-second sample windows make nearest-rank p95
-// the second-highest window instead of the single maximum. One transient window can
-// no longer masquerade as sustained runaway; two or more high-tail windows still can.
-// Live audit evidence keeps a wide gap between healthy mean CPU and true runaway CPU.
+// The v4 sampler keeps the same 60-second budget, the same twenty 2.5-second windows
+// and the same 25%/50% ceilings as v2/v3, but decides runaway from *sustained*
+// consumption instead of from nearest-rank p95.
+//
+// Why p95 cannot be the decision rule: the Canonical Runtime performs bounded,
+// scheduled maintenance (the release-fenced periodic cleanup child and the in-process
+// scheduler/recovery passes). Such a pass lasts several seconds and recurs about once
+// per minute, so in any 50-second observation at least two windows necessarily land
+// inside it. nearest-rank p95 is exactly the second-highest window, so a healthy
+// Runtime with an ~11% mean was deterministically rejected (live evidence:
+// mean=12.60% p95=65.05% and mean=11.41% p95=65.13%, both rolled back within minutes
+// of cutover) and every automatic release progression converged on rollback.
+//
+// A watchdog duty must distinguish "unbounded spin" from "bounded periodic work", so
+// v4 rejects a sample only when the process is high for at least half of the observed
+// windows (sustainedHighWindowCount * 2 >= sampleCount) or when the mean exceeds the
+// ceiling. The historical runaway population (mean >= 90.64%, p95 >= 104.72%) fails
+// both tests by a wide margin, while a once-per-minute bounded pass (<= 4 of 20
+// windows) can no longer be mistaken for runaway. p95 stays in the evidence for audit.
 // Relative <=10% regression remains Benchmark/Release Evaluation authority.
 export const RECOVERY_RUNAWAY_MEAN_CPU_PERCENT = 25;
 export const RECOVERY_RUNAWAY_P95_CPU_PERCENT = 50;
@@ -71,17 +87,20 @@ export function assertRuntimePerformanceEvidence(
   now = Date.now(),
 ): void {
   const age = now - Date.parse(evidence.measuredUntil);
-  if (evidence.policy !== 'runaway-cpu-v3' || !samePerformanceIdentity(evidence, identity)
+  if (evidence.policy !== 'runaway-cpu-v4' || !samePerformanceIdentity(evidence, identity)
     || !Number.isFinite(age) || age < 0 || age > 60_000
     || evidence.warmupMs < PERFORMANCE_WARMUP_MS || evidence.warmupMs > PERFORMANCE_MAX_WINDOW_MS * PERFORMANCE_WARMUP_WINDOWS
     || evidence.durationMs < PERFORMANCE_DURATION_MS || evidence.durationMs > PERFORMANCE_MAX_WINDOW_MS * PERFORMANCE_SAMPLE_WINDOWS || evidence.sampleCount !== PERFORMANCE_SAMPLE_WINDOWS
     || !Number.isFinite(evidence.meanCpuPercent) || evidence.meanCpuPercent < 0
-    || !Number.isFinite(evidence.p95CpuPercent) || evidence.p95CpuPercent < 0) {
+    || !Number.isFinite(evidence.p95CpuPercent) || evidence.p95CpuPercent < 0
+    || !Number.isInteger(evidence.sustainedHighWindowCount)
+    || evidence.sustainedHighWindowCount < 0
+    || evidence.sustainedHighWindowCount > evidence.sampleCount) {
     throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: incomplete, stale or mismatched performance evidence');
   }
-  if (evidence.meanCpuPercent > RECOVERY_RUNAWAY_MEAN_CPU_PERCENT
-    || evidence.p95CpuPercent > RECOVERY_RUNAWAY_P95_CPU_PERCENT) {
-    throw new Error(`RECOVERY_PERFORMANCE_REJECTED: mean=${evidence.meanCpuPercent.toFixed(2)}% p95=${evidence.p95CpuPercent.toFixed(2)}%`);
+  const sustained = evidence.sustainedHighWindowCount * 2 >= evidence.sampleCount;
+  if (evidence.meanCpuPercent > RECOVERY_RUNAWAY_MEAN_CPU_PERCENT || sustained) {
+    throw new Error(`RECOVERY_PERFORMANCE_REJECTED: mean=${evidence.meanCpuPercent.toFixed(2)}% p95=${evidence.p95CpuPercent.toFixed(2)}% sustained=${evidence.sustainedHighWindowCount}/${evidence.sampleCount}`);
   }
 }
 
@@ -143,10 +162,11 @@ export async function measureRuntimePerformance(
   const durationMs = previousAt - startedAt;
   windows.sort((a, b) => a - b);
   const evidence: RuntimePerformanceEvidence = {
-    ...identity, policy: 'runaway-cpu-v3', measuredFrom, measuredUntil: new Date(wallNow()).toISOString(),
+    ...identity, policy: 'runaway-cpu-v4', measuredFrom, measuredUntil: new Date(wallNow()).toISOString(),
     warmupMs, durationMs, sampleCount: windows.length,
     meanCpuPercent: totalCpuMs / durationMs * 100,
     p95CpuPercent: windows[Math.ceil(windows.length * 0.95) - 1]!,
+    sustainedHighWindowCount: windows.filter((cpuPercent) => cpuPercent >= RECOVERY_RUNAWAY_P95_CPU_PERCENT).length,
   };
   assertRuntimePerformanceEvidence(evidence, observeIdentity(), wallNow());
   return evidence;
