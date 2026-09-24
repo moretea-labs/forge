@@ -9,3 +9,5 @@ export * from '../domain/user-request';
 export * from '../infrastructure/user-request-store';
 export * from '../domain/owned-resource';
 export * from '../infrastructure/owned-resource-store';
+export * from '../domain/capability-broker';
+export * from '../infrastructure/capability-broker';

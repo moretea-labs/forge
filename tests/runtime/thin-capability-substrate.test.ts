@@ -13,6 +13,8 @@ import {
   recordOwnedResource,
   listOwnedResources,
   markOwnedResourceCleaned,
+  canonicalCapabilityRegistry,
+  invokeCapability,
 } from '../../packages/kernel/identity/api/index';
 import {
   createSchedule,
@@ -249,5 +251,57 @@ describe('Thin capability substrate', () => {
     // 4) Verify active list is now empty
     const remainingActive = listOwnedResources(controllerHome, { kind: 'worktree', status: 'active' });
     expect(remainingActive.length).toBe(0);
+  });
+
+  test('Step 2: Mode-free capability broker dispatches domain capability directly with typed handle and authorization', async () => {
+    const controllerHome = tempHome();
+
+    // 1) Register a domain capability
+    canonicalCapabilityRegistry.register('browser:navigate', async (input) => {
+      return {
+        success: true,
+        result: { currentUrl: input.arguments.url, title: 'Example Domain' },
+        handle: {
+          handleId: 'handle-browser-1',
+          capabilityId: 'browser:navigate',
+          executionKind: 'synchronous',
+          target: input.target,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          result: { currentUrl: input.arguments.url },
+        },
+      };
+    });
+
+    // 2) Unprivileged caller without grant fails authorization
+    const unauthResult = await invokeCapability(controllerHome, {
+      capabilityId: 'browser:navigate',
+      principalId: 'unauthorized-user',
+      target: { scope: 'global' },
+      arguments: { url: 'https://example.com' },
+    });
+    expect(unauthResult.success).toBe(false);
+    expect(unauthResult.error?.code).toBe('UNAUTHORIZED_CAPABILITY');
+
+    // 3) Issue grant to principal
+    recordCanonicalGrant(controllerHome, {
+      principalId: 'test-agent',
+      ownerScope: 'controller:global',
+      capabilities: ['browser:*'],
+      riskCeiling: 'workspace_write',
+      expiresInMinutes: 60,
+    });
+
+    // 4) Authorized caller succeeds directly without Requirement, Plan, or Work
+    const authResult = await invokeCapability(controllerHome, {
+      capabilityId: 'browser:navigate',
+      principalId: 'test-agent',
+      target: { scope: 'global' },
+      arguments: { url: 'https://example.com' },
+    });
+    expect(authResult.success).toBe(true);
+    expect(authResult.result).toEqual({ currentUrl: 'https://example.com', title: 'Example Domain' });
+    expect(authResult.handle?.status).toBe('completed');
   });
 });
