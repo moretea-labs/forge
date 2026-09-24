@@ -37,7 +37,7 @@ function computerCompositionKey(controllerHome: string): string {
   const registration = currentDesktopOperatorRegistration(controllerHome);
   const fingerprint = registration
     ? `${registration.revision}:${registration.registrationFingerprint}:${registration.enabled ? 'enabled' : 'disabled'}`
-    : 'desktop_operator:unregistered_v0_2';
+    : 'desktop_operator:unregistered';
   return `${controllerHome}:${currentComputerPlatform()}:${fingerprint}`;
 }
 
@@ -54,9 +54,6 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
         if (providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID || !registration) return undefined;
         return computerProviderRegistrationSnapshot(registration);
       },
-      // Compatibility is an explicit Runtime composition decision, never an adapter fallback.
-      // Remove this switch once Desktop Operator 0.2.x support is retired.
-      legacyFallback: 'unregistered_v0_2',
     });
     next.register(desktopOperatorProvider);
   }

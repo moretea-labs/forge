@@ -20,12 +20,11 @@ import {
 } from './desktop-operator-contract';
 
 export const DESKTOP_OPERATOR_MAX_RESPONSE_BYTES = 4 * 1_048_576;
-const LEGACY_REGISTRATION_CAPABILITIES = ['desktop.observe', 'desktop.interact', 'desktop.capture'] as const;
 let testSocketPath: string | undefined;
 
 export interface DesktopOperatorComputerEndpoint {
   socketPath: string;
-  source: 'registration' | 'legacy_fallback' | 'test_override';
+  source: 'registration' | 'test_override';
   healthTimeoutMs: number;
   actionTimeoutMs: number;
   maxResponseBytes: number;
@@ -33,11 +32,8 @@ export interface DesktopOperatorComputerEndpoint {
   capabilityIds: ComputerRuntimeProviderCapabilityId[];
 }
 
-export type DesktopOperatorLegacyFallbackMode = 'disabled' | 'unregistered_v0_2';
-
 export interface DesktopOperatorComputerProviderOptions {
   lookupRegistration?: ComputerProviderRegistrationLookup;
-  legacyFallback?: DesktopOperatorLegacyFallbackMode;
 }
 
 export function desktopOperatorComputerSocketPath(accountHome = process.env.HOME?.trim() || homedir()): string {
@@ -95,16 +91,14 @@ function declaredComputerCapabilities(
     COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
     COMPUTER_ELEMENT_ACTION_CAPABILITY,
   ].filter((capability): capability is ComputerRuntimeProviderCapabilityId => capabilityIds.has(capability));
-  const legacyRegistrationCompatible = LEGACY_REGISTRATION_CAPABILITIES.every((capability) => capabilityIds.has(capability));
-  if (recognized.length === 0 && !legacyRegistrationCompatible) {
+  if (recognized.length === 0) {
     throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_CAPABILITY_UNDECLARED',
-      'Forge Desktop Operator registration does not declare a supported Computer capability or the bounded legacy Desktop capability set required for compatibility.',
+      'Forge Desktop Operator registration does not declare a supported Unified Computer capability.',
       {
         retryable: false,
         details: {
           supportedComputerCapabilities: [COMPUTER_OBSERVE_CAPABILITY, COMPUTER_INPUT_CAPABILITY, COMPUTER_CONSOLE_UNLOCK_CAPABILITY, COMPUTER_CAPTURE_CAPABILITY, COMPUTER_ELEMENT_OBSERVE_CAPABILITY, COMPUTER_ELEMENT_ACTION_CAPABILITY],
-          legacyRequiredCapabilities: [...LEGACY_REGISTRATION_CAPABILITIES],
           registrationRevision: registration.revision,
         },
       },
@@ -161,27 +155,14 @@ export function resolveDesktopOperatorComputerEndpoint(
     const registered = registeredEndpoint(options.lookupRegistration);
     if (registered) return registered;
   }
-  if (options.legacyFallback !== 'unregistered_v0_2') {
-    throw new ComputerProviderError(
-      'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED',
-      'Computer provider registration is required unless the Runtime composition explicitly enables the bounded Desktop Operator 0.2.x compatibility fallback.',
-      {
-        retryable: false,
-        details: {
-          providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
-          legacyFallback: options.legacyFallback ?? 'disabled',
-        },
-      },
-    );
-  }
-  return {
-    socketPath: desktopOperatorComputerSocketPath(),
-    source: 'legacy_fallback',
-    healthTimeoutMs: 2_000,
-    actionTimeoutMs: 30_000,
-    maxResponseBytes: DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
-    capabilityIds: [],
-  };
+  throw new ComputerProviderError(
+    'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED',
+    'Computer provider registration is required before Forge can use the Desktop Operator.',
+    {
+      retryable: false,
+      details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID },
+    },
+  );
 }
 
 export function desktopOperatorComputerProviderCapabilities(
@@ -192,7 +173,6 @@ export function desktopOperatorComputerProviderCapabilities(
     const registration = readRegisteredProvider(options.lookupRegistration);
     if (registration) return declaredComputerCapabilities(registration);
   }
-  if (options.legacyFallback === 'unregistered_v0_2') return [];
   throw new ComputerProviderError(
     'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED',
     'Computer provider registration is required before capabilities can be declared.',

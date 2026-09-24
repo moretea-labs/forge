@@ -1,5 +1,5 @@
-import { cpSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'fs';
-import { basename, join, resolve } from 'path';
+import { cpSync, lstatSync, mkdirSync, readlinkSync, rmSync } from 'fs';
+import { join, resolve } from 'path';
 import type {
   ComputerSurfaceProviderBinding,
   ComputerSurfaceTarget,
@@ -12,12 +12,23 @@ import {
   cleanupLegacyBrowserSessionJson,
   readLegacyBrowserSessionMigrationEntries,
 } from './browser-session-legacy-migration';
-import { writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError } from './errors';
 
 const BROWSER_STATE_ROOT = '.forge/browser';
 const BROWSER_SESSION_COMPATIBILITY_NAMESPACE = 'browser.session.v1';
 const BROWSER_SESSION_COMPUTER_MIGRATION_ID = 'browser-session-authority-v1-to-computer-surface-v1';
+
+function requireBrowserSessionExecutionContext() {
+  const context = currentRuntimeBrowserSessionExecutionContext();
+  if (!context) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_SESSION_CONTEXT_REQUIRED',
+      'Browser session identity is owned by the Computer target authority and requires an explicit Controller execution context.',
+      { retryable: false },
+    );
+  }
+  return context;
+}
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
@@ -109,8 +120,7 @@ function surfaceInput(
  * Browser actions never read or write Browser-owned durable session state.
  */
 export function ensureBrowserSessionsMigratedToComputer(repoRoot: string): number {
-  const context = currentRuntimeBrowserSessionExecutionContext();
-  if (!context) return 0;
+  const context = requireBrowserSessionExecutionContext();
   const computer = runtimeComputerInteractionTargetAuthority();
   if (computer.compatibilityMigrationMarker(context.controllerHome, BROWSER_SESSION_COMPUTER_MIGRATION_ID, context.repoId)) {
     cleanupLegacyBrowserSessionJson(context.controllerHome, context.repoId, repoRoot);
@@ -178,50 +188,25 @@ export function ensureBrowserStateInControllerHome(controllerHome: string, repoI
 /**
  * Browser semantic identity belongs to Computer SurfaceTarget authority. Provider
  * working state (profiles, screenshots, downloads, diagnostics) remains
- * repository-scoped under Controller Home. Repo-local session JSON exists only
- * for standalone compatibility when no Controller execution context is present.
+ * repository-scoped under Controller Home. Session identity has no standalone
+ * repository-local fallback; callers must supply Controller execution context.
  */
 export function browserStateDir(
   repoRoot: string,
   name: 'sessions' | 'screenshots' | 'profiles' | 'downloads' | 'diagnostics',
 ): string {
   const context = currentRuntimeBrowserSessionExecutionContext();
+  if (name === 'sessions') {
+    const sessionContext = context ?? requireBrowserSessionExecutionContext();
+    return join(ensureBrowserStateInControllerHome(sessionContext.controllerHome, sessionContext.repoId, repoRoot), name);
+  }
   return context
     ? join(ensureBrowserStateInControllerHome(context.controllerHome, context.repoId, repoRoot), name)
     : join(repoRoot, BROWSER_STATE_ROOT, name);
 }
 
-function sessionPath(repoRoot: string, sessionId: string): string {
-  return join(browserStateDir(repoRoot, 'sessions'), `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
-}
-
-function readLegacyBrowserSessionJson(path: string): BrowserSessionState | undefined {
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_READ_FAILED', 'Saved browser session metadata could not be read.', {
-      retryable: true,
-      details: { fileName: basename(path), cause: error instanceof Error ? error.message : String(error) },
-    });
-  }
-  try {
-    return JSON.parse(raw) as BrowserSessionState;
-  } catch (error) {
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Saved browser session metadata is malformed; refusing to treat corrupt state as a missing session.', {
-      retryable: false,
-      details: { fileName: basename(path), cause: error instanceof Error ? error.message : String(error) },
-    });
-  }
-}
-
 export function saveBrowserSession(repoRoot: string, session: BrowserSessionState): BrowserSessionState {
-  const context = currentRuntimeBrowserSessionExecutionContext();
-  if (!context) {
-    writeJsonAtomic(sessionPath(repoRoot, session.sessionId), session);
-    return session;
-  }
+  const context = requireBrowserSessionExecutionContext();
   ensureBrowserSessionsMigratedToComputer(repoRoot);
   const computer = runtimeComputerInteractionTargetAuthority();
   const binding = surfaceProviderBinding(session);
@@ -256,49 +241,27 @@ export function saveBrowserSession(repoRoot: string, session: BrowserSessionStat
 
 export function findBrowserSession(repoRoot: string, sessionId?: string): BrowserSessionState | undefined {
   if (!sessionId) return undefined;
-  const context = currentRuntimeBrowserSessionExecutionContext();
-  if (!context) return readLegacyBrowserSessionJson(sessionPath(repoRoot, sessionId));
+  const context = requireBrowserSessionExecutionContext();
   ensureBrowserSessionsMigratedToComputer(repoRoot);
   const target = runtimeComputerInteractionTargetAuthority().findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
   return target ? browserSessionFromSurface(target) : undefined;
 }
 
 export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
-  const context = currentRuntimeBrowserSessionExecutionContext();
-  if (context) {
-    ensureBrowserSessionsMigratedToComputer(repoRoot);
-    return runtimeComputerInteractionTargetAuthority().listAllSurfaces(context.controllerHome, { repoId: context.repoId })
-      .map(browserSessionFromSurface)
-      .filter((session): session is BrowserSessionState => Boolean(session))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.sessionId.localeCompare(right.sessionId));
-  }
-  const root = browserStateDir(repoRoot, 'sessions');
-  let names: string[];
-  try {
-    names = readdirSync(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_READ_FAILED', 'Saved browser session directory could not be read.', {
-      retryable: true,
-      details: { cause: error instanceof Error ? error.message : String(error) },
-    });
-  }
-  return names
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => readLegacyBrowserSessionJson(join(root, name)))
-    .filter((session): session is BrowserSessionState => Boolean(session));
+  const context = requireBrowserSessionExecutionContext();
+  ensureBrowserSessionsMigratedToComputer(repoRoot);
+  return runtimeComputerInteractionTargetAuthority().listAllSurfaces(context.controllerHome, { repoId: context.repoId })
+    .map(browserSessionFromSurface)
+    .filter((session): session is BrowserSessionState => Boolean(session))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.sessionId.localeCompare(right.sessionId));
 }
 
 export function removeBrowserSession(repoRoot: string, sessionId: string): void {
-  const context = currentRuntimeBrowserSessionExecutionContext();
-  if (context) {
-    ensureBrowserSessionsMigratedToComputer(repoRoot);
-    const computer = runtimeComputerInteractionTargetAuthority();
-    const target = computer.findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
-    if (target) computer.tombstoneSurface(context.controllerHome, target.targetId);
-    return;
-  }
-  rmSync(sessionPath(repoRoot, sessionId), { force: true });
+  const context = requireBrowserSessionExecutionContext();
+  ensureBrowserSessionsMigratedToComputer(repoRoot);
+  const computer = runtimeComputerInteractionTargetAuthority();
+  const target = computer.findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
+  if (target) computer.tombstoneSurface(context.controllerHome, target.targetId);
 }
 
 export function loadBrowserSession(repoRoot: string, sessionId?: string): BrowserSessionState | undefined {

@@ -236,7 +236,7 @@ describe('macOS capability broker handshake', () => {
     await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic', connections });
     setMacOsCapabilityBrokerSocketPathForTest(socketPath);
 
-    const provider = createDesktopOperatorComputerProvider({ legacyFallback: 'unregistered_v0_2' });
+    const provider = createDesktopOperatorComputerProvider();
     try {
       await provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000);
       await provider.executeBrowserCompatibility({ action: 'metadata', product: 'chrome' }, 2_000);
@@ -256,7 +256,7 @@ describe('macOS capability broker handshake', () => {
     await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls, mode: 'generic', connections, closeAfterFirstHandshake });
     setMacOsCapabilityBrokerSocketPathForTest(socketPath);
 
-    const provider = createDesktopOperatorComputerProvider({ legacyFallback: 'unregistered_v0_2' });
+    const provider = createDesktopOperatorComputerProvider();
     try {
       await expect(provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000))
         .rejects.toThrow('renegotiate before executing the action');

@@ -1916,10 +1916,9 @@ requireText('adapters/computer/desktop-operator-negotiation.ts', 'buildDesktopOp
 requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
 requireText('adapters/computer/desktop-operator-discovery.ts', 'ComputerProviderRegistrationLookup');
 requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'registration'");
-requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'legacy_fallback'");
-requireText('adapters/computer/desktop-operator-discovery.ts', "DesktopOperatorLegacyFallbackMode");
 requireText('adapters/computer/desktop-operator-discovery.ts', "PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED");
-requireText('src/runtime/root/computer-composition.ts', "legacyFallback: 'unregistered_v0_2'");
+forbid('adapters/computer/desktop-operator-discovery.ts', /legacy_fallback|DesktopOperatorLegacyFallbackMode|unregistered_v0_2/, 'Computer provider discovery must not bypass canonical Desktop Operator registration with a legacy socket fallback');
+forbid('src/runtime/root/computer-composition.ts', /legacyFallback|unregistered_v0_2/, 'Computer Runtime composition must not enable an unregistered Desktop Operator compatibility provider');
 requireText('src/cli/commands/computer.ts', "new Command('computer')");
 requireText('src/cli/commands/computer.ts', 'installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID');
 requireText('src/cli/commands/computer.ts', 'provider release: independent');
@@ -2003,6 +2002,8 @@ requireText('src/runtime/plugins/browser-session-authority.ts', 'findComputerBac
 requireText('src/runtime/plugins/browser-session-authority.ts', 'saveComputerBackedBrowserSession');
 forbid('src/runtime/plugins/browser-session-authority.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'Browser compatibility facade must delegate semantic identity to Computer and cannot persist its own authority');
 requireText('src/runtime/plugins/browser-session-legacy-migration.ts', 'readLegacyBrowserSessionMigrationEntries');
+requireText('src/runtime/plugins/browser-session-store.ts', 'PLUGIN_BROWSER_SESSION_CONTEXT_REQUIRED');
+forbid('src/runtime/plugins/browser-session-store.ts', /writeJsonAtomic\(sessionPath|readLegacyBrowserSessionJson|rmSync\(sessionPath/, 'steady-state Browser session identity must never fall back to repository-local JSON outside Computer target authority');
 forbid('src/runtime/plugins/browser-session-legacy-migration.ts', /\b(?:writeControlPlaneRecord|deleteControlPlaneRecord|withControlPlaneTransaction|createBrowserSessionAuthority|runtimeBrowserSessionAuthority)\b/, 'legacy Browser migration may read retired state but cannot mutate or recreate Browser durable authority');
 requireText('src/runtime/root/browser-session-composition.ts', 'BrowserSessionExecutionContext');
 forbid('src/runtime/root/browser-session-composition.ts', /\b(?:createBrowserSessionAuthority|runtimeBrowserSessionAuthority|createRuntimeBrowserSessionPersistence)\b/, 'Browser Runtime composition may carry execution context but cannot compose a second durable interaction authority');
