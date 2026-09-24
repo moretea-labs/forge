@@ -11,3 +11,5 @@ export * from '../domain/owned-resource';
 export * from '../infrastructure/owned-resource-store';
 export * from '../domain/capability-broker';
 export * from '../infrastructure/capability-broker';
+export * from '../domain/activity-projection';
+export * from '../infrastructure/activity-projection-store';
