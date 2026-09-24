@@ -16,8 +16,9 @@ import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain }
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { controllerPluginRepository, getAssistantPluginManifest, listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
-import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot } from "../../../src/runtime/control-plane/facade";
-import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView } from "../../../src/runtime/control-plane/facade";
+import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
+import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity, type ScopeRef } from "../../../packages/kernel/identity/api/index";
 import { memoryAddressKey } from "../../../packages/kernel/cognition/api/index";
 import { currentControllerInstanceId } from "../../../src/runtime/control-plane/execution/session-store";
@@ -38,6 +39,13 @@ function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && timestamp >= cutoffMs;
 }
+
+const RESUME_CONTEXT_HUMAN_REQUEST_REASONS = new Set([
+  'policy_approval_required',
+  'missing_authorization',
+  'invalid_objective',
+  'destructive_action_requires_confirmation',
+]);
 
 function isRecentRhContextWork(
   contract: { status: string; updatedAt?: string },
@@ -886,6 +894,76 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       ? currentAttentionScan.filter((item) => Boolean(item.workId && currentLineageWorkIds.has(item.workId)))
       : [];
     const workAttention = workAttentionItems[0];
+    const resumeContext = work ? (() => {
+      const semanticWork = workSemanticView(work);
+      const requirementRecord = work.requirementId?.trim()
+        ? readRequirement({ controllerHome: ctx.controllerHome }, work.requirementId.trim())
+        : undefined;
+      const semanticRequirement = requirementRecord ? requirementSemanticView(requirementRecord.value) : undefined;
+      const plan = work.planId?.trim() ? getPlanContract(store, work.planId.trim()) : undefined;
+      const semanticPlan = plan ? planSemanticView(plan) : undefined;
+      const exactCheckout = work.checkoutId?.trim()
+        ? repository.checkouts.find((candidate) => candidate.checkoutId === work.checkoutId)
+        : repository.checkouts.find((candidate) => candidate.checkoutId === repository.activeCheckoutId);
+      const source = freshGitIdentity(exactCheckout?.canonicalRoot ?? repository.canonicalRoot);
+      const unresolvedHumanRequests = workAttentionItems
+        .filter((item) => Boolean(item.creationReason && RESUME_CONTEXT_HUMAN_REQUEST_REASONS.has(item.creationReason)))
+        .slice(0, 8)
+        .map((item) => ({
+          id: item.id,
+          reason: item.reason.slice(0, 500),
+          creationReason: item.creationReason,
+          blockingDecision: item.blockingDecision?.slice(0, 500),
+          recommendedDecision: item.recommendedDecision.slice(0, 500),
+        }));
+      const checkReceiptRefs = work.checkRefs
+        .flatMap((record) => record.receipt?.receiptId?.trim() ? [record.receipt.receiptId.trim()] : [])
+        .slice(-24);
+      return {
+        schemaVersion: 1 as const,
+        derived: true as const,
+        semantic: {
+          ...(semanticRequirement ? { requirement: semanticRequirement } : {}),
+          ...(semanticPlan ? { plan: semanticPlan } : {}),
+          work: semanticWork,
+        },
+        source: {
+          checkoutId: exactCheckout?.checkoutId ?? work.checkoutId,
+          worktree: exactCheckout?.worktree ?? false,
+          head: source.head,
+          branch: source.branch,
+          dirty: source.dirty,
+          workingTreeFingerprint: source.workingTreeFingerprint,
+          observedAt: new Date(source.sampledAt).toISOString(),
+        },
+        staleness: {
+          requirementBasisStale: Boolean(semanticRequirement && semanticPlan?.requirementBasisRevision && semanticRequirement.revision !== semanticPlan.requirementBasisRevision),
+          workRequirementBasisStale: Boolean(semanticRequirement && semanticWork.requirementRevision && semanticRequirement.revision !== semanticWork.requirementRevision),
+          workPlanBasisStale: Boolean(semanticPlan && semanticWork.planRevision && semanticPlan.revision !== semanticWork.planRevision),
+          sourceBasisStale: Boolean(semanticPlan?.sourceBasisRevision && source.head && semanticPlan.sourceBasisRevision !== source.head),
+          advisoryOnly: true as const,
+        },
+        unresolvedHumanRequests,
+        durableHandles: {
+          processes: relevantProcesses.slice(0, 8).map((process) => ({
+            processId: process.processId,
+            status: process.status,
+            workId: process.workId,
+            updatedAt: process.updatedAt,
+          })),
+          ...(workController ? { controller: {
+            controllerType: workController.controllerType,
+            sessionId: workController.sessionId,
+            leaseExpiresAt: workController.leaseExpiresAt,
+          } } : {}),
+        },
+        receipts: {
+          resultRefs: semanticWork.resultRefs,
+          ...(work.completionReceipt?.receiptId?.trim() ? { completionReceiptRef: work.completionReceipt.receiptId.trim() } : {}),
+          checkReceiptRefs,
+        },
+      };
+    })() : undefined;
     const currentAttentionItems = work
       ? workAttentionItems
       : isSummary
@@ -951,6 +1029,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       activeProcesses: activeProcesses.slice(0, 3).map((process) => ({ processId: process.processId, workId: process.workId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
       recentProcesses: relevantProcesses.slice(0, 5).map((process) => ({ processId: process.processId, workId: process.workId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
       currentTask: work ? currentTaskSemanticProjectionForWork(work) : undefined,
+      ...(resumeContext ? { resumeContext } : {}),
       activeWork: activeContracts.map((entry) => ({
         relation: 'repository_inventory' as const,
         relevance: ['ownership', 'conflict', 'release_admission'] as const,
@@ -1014,6 +1093,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         dynamicDomainSchemaLoadingSupported: false,
       },
       currentTask: work ? currentTaskSemanticProjectionForWork(work) : undefined,
+      ...(resumeContext ? { resumeContext } : {}),
       work: work ? { ...work, continuation: buildWorkContinuationSnapshot(work) } : undefined,
       executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
       executionState: work ? (workAttention ? 'blocked' : activeProcesses.length > 0 ? 'executing' : workController ? 'controller_active' : 'waiting_trigger') : undefined,

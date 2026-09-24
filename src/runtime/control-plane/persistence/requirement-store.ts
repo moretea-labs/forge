@@ -31,6 +31,10 @@ export interface Requirement {
     planIds: string[];
     acceptedAt: string;
   };
+  /** Semantic authored-context revision. Legacy rows normalize to semantic revision 1 until first thin semantic write. */
+  semanticRevision?: number;
+  /** Timestamp of the authored semantic content; mechanical Requirement updates must not change it. */
+  semanticUpdatedAt?: string;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -53,7 +57,36 @@ export interface CreateRequirementInput {
   auditRefs?: string[];
 }
 
+export type SemanticRequirementState = 'open' | 'completed' | 'cancelled';
+
+export interface RequirementSemanticView {
+  requirementId: string;
+  revision: number;
+  title: string;
+  outcomeStatement: string;
+  acceptanceCriteria: string[];
+  requiredDeliveryReferences: string[];
+  state: SemanticRequirementState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RequirementRevisionRecord extends RequirementSemanticView {
+  schemaVersion: 1;
+  recordedAt: string;
+}
+
+export interface ReviseRequirementSemanticInput {
+  expectedRevision: number;
+  title?: string;
+  outcomeStatement?: string;
+  acceptanceCriteria?: string[];
+  requiredDeliveryReferences?: string[];
+  state?: SemanticRequirementState;
+}
+
 const NAMESPACE = 'requirement';
+const REVISION_NAMESPACE = 'requirement_revision';
 const SCOPE = 'controller';
 const SCHEMA_VERSION = 1;
 
@@ -69,6 +102,35 @@ function id(value: string): string {
 
 function bounded(values: readonly string[] | undefined, limit: number, maxLength = 500): string[] {
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
+}
+
+export function currentRequirementSemanticRevision(requirement: Requirement): number {
+  const semantic = Number(requirement.semanticRevision);
+  return Number.isInteger(semantic) && semantic > 0 ? semantic : 1;
+}
+
+export function semanticRequirementState(requirement: Pick<Requirement, 'state'>): SemanticRequirementState {
+  if (requirement.state === 'done') return 'completed';
+  if (requirement.state === 'cancelled') return 'cancelled';
+  return 'open';
+}
+
+export function requirementSemanticView(requirement: Requirement): RequirementSemanticView {
+  return {
+    requirementId: requirement.requirementId,
+    revision: currentRequirementSemanticRevision(requirement),
+    title: requirement.title,
+    outcomeStatement: requirement.outcomeStatement,
+    acceptanceCriteria: [...requirement.acceptanceCriteria],
+    requiredDeliveryReferences: [...requirement.requiredDeliveryReferences],
+    state: semanticRequirementState(requirement),
+    createdAt: requirement.createdAt,
+    updatedAt: requirement.semanticUpdatedAt ?? requirement.createdAt,
+  };
+}
+
+function requirementRevisionKey(requirementId: string, revision: number): string {
+  return `${id(requirementId)}:r${revision}`;
 }
 
 export function isLegacyMachineRequirementWait(requirement: Pick<Requirement, 'state' | 'attentionSummary'>): boolean {
@@ -98,6 +160,78 @@ export function listRequirements(
   });
 }
 
+export function listRequirementRevisionRecords(
+  options: RequirementStoreOptions,
+  requirementId?: string,
+  limit = 200,
+): RequirementRevisionRecord[] {
+  const normalizedId = requirementId ? id(requirementId) : undefined;
+  return listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
+    namespace: REVISION_NAMESPACE,
+    scope: SCOPE,
+    limit: Math.max(1, Math.min(Math.trunc(limit), 1000)),
+  }).map((record) => record.value)
+    .filter((record) => !normalizedId || record.requirementId === normalizedId)
+    .sort((left, right) => right.revision - left.revision);
+}
+
+export function reviseRequirementSemantic(
+  options: RequirementStoreOptions,
+  requirementIdInput: string,
+  input: ReviseRequirementSemanticInput,
+): Requirement {
+  const requirementId = id(requirementIdInput);
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('REQUIREMENT_EXPECTED_REVISION_INVALID');
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    const current = readWithin(database, requirementId);
+    if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+    const semanticRevision = currentRequirementSemanticRevision(current.value);
+    if (semanticRevision !== input.expectedRevision) {
+      throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
+    }
+    const at = nowIso(options);
+    const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
+    if (!readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(database, REVISION_NAMESPACE, SCOPE, revisionKey)) {
+      const archived: RequirementRevisionRecord = { schemaVersion: 1, ...requirementSemanticView(current.value), recordedAt: at };
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: REVISION_NAMESPACE, scope: SCOPE, key: revisionKey, schemaVersion: 1,
+        value: archived, action: 'requirement_semantic_revision_archived', expectedRevision: null,
+      });
+    }
+    const requestedState = input.state;
+    if (requestedState === 'open' && (current.value.state === 'done' || current.value.state === 'cancelled')) {
+      throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
+    }
+    const legacyState: RequirementState = requestedState === 'completed'
+      ? 'done'
+      : requestedState === 'cancelled'
+        ? 'cancelled'
+        : requestedState === 'open'
+          ? 'active'
+          : current.value.state;
+    const title = input.title === undefined ? current.value.title : String(input.title).trim().slice(0, 500);
+    const outcomeStatement = input.outcomeStatement === undefined ? current.value.outcomeStatement : String(input.outcomeStatement).trim().slice(0, 2_000);
+    if (!title || !outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
+    const updated: Requirement = {
+      ...current.value,
+      title,
+      outcomeStatement,
+      acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
+      requiredDeliveryReferences: input.requiredDeliveryReferences === undefined ? [...current.value.requiredDeliveryReferences] : bounded(input.requiredDeliveryReferences, 50),
+      state: legacyState,
+      ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
+      semanticRevision: semanticRevision + 1,
+      semanticUpdatedAt: at,
+      revision: current.value.revision + 1,
+      updatedAt: at,
+    };
+    return writeControlPlaneRecordWithinTransaction(database, {
+      namespace: NAMESPACE, scope: SCOPE, key: requirementId, schemaVersion: SCHEMA_VERSION,
+      value: updated, action: 'requirement_semantic_revised', expectedRevision: current.revision,
+    }).value;
+  });
+}
+
 export function createRequirement(
   options: RequirementStoreOptions,
   input: CreateRequirementInput,
@@ -115,6 +249,8 @@ export function createRequirement(
     auditRefs: bounded(input.auditRefs, 50),
     state: 'planned',
     needsAttention: false,
+    semanticRevision: 1,
+    semanticUpdatedAt: at,
     revision: 1,
     createdAt: at,
     updatedAt: at,

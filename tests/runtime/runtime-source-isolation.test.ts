@@ -828,7 +828,7 @@ printf '{"ok":true}\\n'
       title: 'Current task decision',
       severity: 'needs_review',
       reason: 'Belongs to the exact requested Work.',
-      creationReason: 'ambiguous_outcome',
+      creationReason: 'missing_authorization',
       summary: 'Current task attention.',
       currentState: { repoId: repository.repoId, workId: currentWork.workId, statusSummary: 'pending' },
       evidenceRefs: [],
@@ -860,10 +860,24 @@ printf '{"ok":true}\\n'
     }));
     const exact = exactPayload.data as {
       currentTask?: { workId?: string; objective?: string };
+      resumeContext?: {
+        derived?: boolean;
+        semantic?: { work?: { workId?: string; revision?: number; state?: string; objective?: string } };
+        source?: { head?: string | null; dirty?: boolean; checkoutId?: string };
+        staleness?: { advisoryOnly?: boolean };
+        unresolvedHumanRequests?: Array<{ id?: string; creationReason?: string }>;
+      };
       activeAttention?: Array<{ id?: string; workId?: string }>;
       counts?: { currentWork?: number; currentAttention?: number; repositoryAttention?: number };
     };
     expect(exact.currentTask).toMatchObject({ workId: currentWork.workId, objective: currentWork.objective });
+    expect(exact.resumeContext).toMatchObject({
+      derived: true,
+      semantic: { work: { workId: currentWork.workId, revision: 1, state: 'open', objective: currentWork.objective } },
+      source: { dirty: false },
+      staleness: { advisoryOnly: true },
+      unresolvedHumanRequests: [{ id: currentHandoff.id, creationReason: 'missing_authorization' }],
+    });
     expect(exact.activeAttention).toEqual([expect.objectContaining({ id: currentHandoff.id, workId: currentWork.workId })]);
     expect(exact.activeAttention?.some((item) => item.id === unrelatedHandoff.id)).toBe(false);
     expect(exact.counts).toMatchObject({ currentWork: 1, currentAttention: 1, repositoryAttention: 2 });
@@ -875,6 +889,7 @@ printf '{"ok":true}\\n'
     }));
     const repositoryContext = repositoryPayload.data as {
       currentTask?: unknown;
+      resumeContext?: unknown;
       activeWork?: Array<{
         workId?: string;
         relation?: string;
@@ -886,6 +901,7 @@ printf '{"ok":true}\\n'
       counts?: { currentWork?: number };
     };
     expect(repositoryContext.currentTask).toBeUndefined();
+    expect(repositoryContext.resumeContext).toBeUndefined();
     expect(repositoryContext.counts?.currentWork).toBe(0);
     const currentInventory = repositoryContext.activeWork?.find((item) => item.workId === currentWork.workId);
     expect(currentInventory).toMatchObject({

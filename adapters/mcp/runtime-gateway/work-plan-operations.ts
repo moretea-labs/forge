@@ -12,6 +12,9 @@ import {
   normalizeCheckIds,
   resolvePlanAdmission,
   summarizePlanContract,
+  planSemanticView,
+  revisePlanSemanticContext,
+  listPlanSemanticRevisionRecords,
   supersedePlanContract,
   type CheckDefinitionLike,
   type PlanContractStoreOptions,
@@ -23,6 +26,7 @@ import { result } from './result-adapter';
 const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([
   'plan_list',
   'plan_get',
+  'plan_revise',
   'plan_approve',
   'plan_supersede',
 ]);
@@ -41,8 +45,8 @@ export async function callRhWorkPlanOperation(
   if (operation === 'plan_list') {
     const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
     const facade = buildFacadeResult({
-      summary: `${plans.length} active PlanContract(s) in this repository.`,
-      data: { plans: plans.map(summarizePlanContract), bounded: true },
+      summary: `${plans.length} current semantic Plan(s) in this repository.`,
+      data: { plans: plans.map(planSemanticView), bounded: true },
     });
     return result(facade as unknown as Record<string, unknown>);
   }
@@ -51,8 +55,11 @@ export async function callRhWorkPlanOperation(
     const plan = getPlanContract(store, String(args.plan_id ?? ''));
     const facade = plan
       ? buildFacadeResult({
-          summary: `PlanContract ${plan.planId} retrieved.`,
-          data: { plan: args.detail_level === 'detail' ? plan : summarizePlanContract(plan) },
+          summary: `Plan ${plan.planId} retrieved at semantic revision ${planSemanticView(plan).revision}.`,
+          data: {
+            plan: planSemanticView(plan),
+            ...(args.detail_level === 'detail' ? { revisionHistory: listPlanSemanticRevisionRecords(store, plan.planId) } : {}),
+          },
           detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
         })
       : buildFacadeResult({
@@ -64,6 +71,34 @@ export async function callRhWorkPlanOperation(
   }
 
   try {
+    if (operation === 'plan_revise') {
+      const planId = String(args.plan_id ?? '').trim();
+      const expectedRevision = Number(args.expected_revision);
+      const plan = revisePlanSemanticContext(store, planId, {
+        expectedRevision,
+        ...(typeof args.requirement_revision === 'number' ? { requirementBasisRevision: args.requirement_revision } : {}),
+        ...(typeof args.source_revision === 'string' ? { sourceBasisRevision: args.source_revision } : {}),
+        ...(typeof args.objective === 'string' ? { goal: args.objective } : {}),
+        ...(Array.isArray(args.non_goals) ? { nonGoals: args.non_goals.map(String) } : {}),
+        ...(Array.isArray(args.assumptions) ? { assumptions: args.assumptions.map(String) } : {}),
+        ...(Array.isArray(args.resolved_decisions) ? { resolvedDecisions: args.resolved_decisions.map(String) } : {}),
+        ...(Array.isArray(args.stop_conditions) ? { stopConditions: args.stop_conditions.map(String) } : {}),
+        ...(Array.isArray(args.replan_conditions) ? { replanConditions: args.replan_conditions.map(String) } : {}),
+        ...(args.integration_strategy === null || typeof args.integration_strategy === 'string' ? { integrationStrategy: args.integration_strategy as string | null } : {}),
+        ...(Array.isArray(args.plan_items) ? { items: args.plan_items
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+          .map((entry) => ({
+            id: String(entry.id ?? ''),
+            objective: String(entry.objective ?? ''),
+            dependencies: Array.isArray(entry.dependencies) ? entry.dependencies.map(String) : [],
+          })) } : {}),
+      });
+      return result(buildFacadeResult({
+        summary: `Plan ${plan.planId} revised atomically to semantic revision ${planSemanticView(plan).revision}; source basis remains provenance metadata and no approval/execution transition was implied.`,
+        data: { plan: planSemanticView(plan), expectedRevision },
+      }) as unknown as Record<string, unknown>);
+    }
+
     if (operation === 'plan_approve') {
       const plan = await approvePlanContractAsync(store, String(args.plan_id ?? ''));
       const facade = buildFacadeResult({
@@ -80,10 +115,16 @@ export async function callRhWorkPlanOperation(
     });
     return result(facade as unknown as Record<string, unknown>);
   } catch (error) {
+    const currentPlanId = String(args.plan_id ?? '').trim();
+    const currentPlan = operation === 'plan_revise' && currentPlanId ? getPlanContract(store, currentPlanId) : undefined;
     const facade = buildFacadeResult({
       status: 'blocked',
       summary: error instanceof Error ? error.message : 'PlanContract operation failed.',
-      data: { operation, executionStarted: false },
+      data: {
+        operation,
+        executionStarted: false,
+        ...(currentPlan ? { currentPlan: planSemanticView(currentPlan) } : {}),
+      },
     });
     return result(facade as unknown as Record<string, unknown>, true);
   }

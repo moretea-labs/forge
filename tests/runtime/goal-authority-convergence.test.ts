@@ -10,10 +10,16 @@ import {
   completePlanStepForWork,
   createPlanContract,
   getPlanExecutionBaselineRevision,
+  listPlanSemanticRevisionRecords,
+  planSemanticView,
+  revisePlanSemanticContext,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
   createRequirement,
+  listRequirementRevisionRecords,
   readRequirement,
+  requirementSemanticView,
+  reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
 
@@ -71,6 +77,81 @@ function activateRequirement(controllerHome: string, requirementId: string) {
 }
 
 describe('Goal authority convergence', () => {
+  test('persists thin Requirement/Plan semantic revisions with fail-closed CAS', () => {
+    const controllerHome = home();
+    const repoId = 'repo-semantic-revision';
+    const requirementId = 'REQ-SEMANTIC-REVISION';
+    const planId = 'PLAN-SEMANTIC-REVISION';
+    const requirement = createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Original requirement',
+      outcomeStatement: 'Original outcome',
+      acceptanceCriteria: ['original acceptance'],
+    });
+    expect(requirementSemanticView(requirement)).toMatchObject({ revision: 1, state: 'open' });
+    const revisedRequirement = reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: 1,
+      title: 'Revised requirement',
+      acceptanceCriteria: ['revised acceptance'],
+    });
+    const revisedRequirementSemantic = requirementSemanticView(revisedRequirement);
+    expect(revisedRequirementSemantic).toMatchObject({ revision: 2, title: 'Revised requirement', state: 'open' });
+    const mechanicallyUpdatedRequirement = updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'test_mechanical_wait',
+      mutate: (current) => ({ ...current, state: 'waiting_for_user', needsAttention: true, attentionSummary: 'mechanical-only wait' }),
+    });
+    expect(requirementSemanticView(mechanicallyUpdatedRequirement)).toMatchObject({
+      revision: 2, title: 'Revised requirement', state: 'open', updatedAt: revisedRequirementSemantic.updatedAt,
+    });
+    const explicitlyOpenedRequirement = reviseRequirementSemantic({ controllerHome }, requirementId, { expectedRevision: 2, state: 'open' });
+    expect(explicitlyOpenedRequirement).toMatchObject({ state: 'active', needsAttention: false });
+    expect(requirementSemanticView(explicitlyOpenedRequirement)).toMatchObject({ revision: 3, state: 'open' });
+    expect(listRequirementRevisionRecords({ controllerHome }, requirementId)).toMatchObject([{ revision: 2, title: 'Revised requirement' }, { revision: 1, title: 'Original requirement' }]);
+    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, { expectedRevision: 2, title: 'stale writer' }))
+      .toThrow('REQUIREMENT_REVISION_CONFLICT');
+
+    const planOptions = { controllerHome, repoId, now: () => '2026-09-24T04:58:00.000Z' };
+    const plan = createPlanContract(planOptions, {
+      planId,
+      repoId,
+      requirementId,
+      scopeKey: 'semantic-revision',
+      sourceRevision: 'source-a',
+      goal: 'Original plan goal',
+      steps: [{ id: 'item-a', objective: 'Keep one authored item.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check-semantic-compatibility'], acceptanceCriteria: ['Legacy mechanical approval remains separate from semantic Plan content.'] }],
+    });
+    expect(planSemanticView(plan)).toMatchObject({ revision: 1, sourceBasisRevision: 'source-a' });
+    const revisedPlan = revisePlanSemanticContext(planOptions, planId, {
+      expectedRevision: 1,
+      requirementBasisRevision: 3,
+      sourceBasisRevision: 'source-b',
+      goal: 'Revised plan goal',
+      items: [{ id: 'item-b', objective: 'Replace the authored working-memory item.', dependencies: [] }],
+    });
+    expect(revisedPlan.revision).toBe(plan.revision);
+    expect(planSemanticView(revisedPlan)).toMatchObject({
+      revision: 2, requirementBasisRevision: 3, sourceBasisRevision: 'source-b', goal: 'Revised plan goal',
+      items: [{ id: 'item-b', objective: 'Replace the authored working-memory item.', dependencies: [] }],
+    });
+    expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([{ revision: 1, sourceBasisRevision: 'source-a', goal: 'Original plan goal' }]);
+    const semanticBeforeLegacyApproval = planSemanticView(revisedPlan);
+    const mechanicallyApprovedPlan = approvePlanContract(planOptions, planId);
+    expect(planSemanticView(mechanicallyApprovedPlan)).toEqual(semanticBeforeLegacyApproval);
+    const revisedAfterMechanicalApproval = revisePlanSemanticContext(planOptions, planId, {
+      expectedRevision: 2,
+      goal: 'Semantic revision after mechanical approval',
+    });
+    expect(revisedAfterMechanicalApproval.status).toBe('approved');
+    expect(planSemanticView(revisedAfterMechanicalApproval)).toMatchObject({
+      revision: 3,
+      goal: 'Semantic revision after mechanical approval',
+      sourceBasisRevision: 'source-b',
+    });
+    expect(() => revisePlanSemanticContext(planOptions, planId, { expectedRevision: 2, goal: 'stale writer' }))
+      .toThrow('PLAN_REVISION_CONFLICT');
+  });
+
   test('distinguishes Work delivery source advance, Plan acceptance, Requirement acceptance, and unrelated drift', () => {
     const controllerHome = home();
     const repoId = 'repo-goal-authority';
@@ -152,13 +233,18 @@ describe('Goal authority convergence', () => {
       workId,
     });
     expect(projectAutonomousGoalProgression({ ...deliveredSnapshot, currentSourceRevision: 'rev-c' })).toMatchObject({
-      kind: 'request_replan',
-      reasonCode: 'PLAN_SOURCE_DRIFT',
+      kind: 'request_controller_acceptance',
+      reasonCode: 'MACHINE_COMPLETE_REQUIRES_CONTROLLER_ACCEPTANCE',
+      workId,
     });
     expect(projectAutonomousGoalProgression({
       ...deliveredSnapshot,
       works: [{ ...deliveredSnapshot.works[0], baseRevision: 'rev-other' }],
-    })).toMatchObject({ kind: 'request_replan', reasonCode: 'PLAN_SOURCE_DRIFT' });
+    })).toMatchObject({
+      kind: 'request_controller_acceptance',
+      reasonCode: 'MACHINE_COMPLETE_REQUIRES_CONTROLLER_ACCEPTANCE',
+      workId,
+    });
     expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
 
     const finalized = acceptPlanStepEvidence(planOptions, {

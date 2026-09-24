@@ -30,6 +30,7 @@ import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workf
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation } from './work-requirement-operations';
+import { callRhWorkSemanticOperation } from './work-semantic-operations';
 import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
@@ -584,6 +585,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (requirementOperationResult) return requirementOperationResult;
           const planOperationResult = await callRhWorkPlanOperation(store, operation, args);
           if (planOperationResult) return planOperationResult;
+          const workSemanticOperationResult = await callRhWorkSemanticOperation(store, operation, args);
+          if (workSemanticOperationResult) return workSemanticOperationResult;
   
           const checks = listControllerChecks(repository.canonicalRoot);
           const workloopSource = freshGitIdentity(repository.canonicalRoot);

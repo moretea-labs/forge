@@ -7,6 +7,11 @@ import {
   createWorkContract,
   readWorkContractStore,
   recordWorkEvidenceState,
+  recordWorkCompletionReceipt,
+  listWorkSemanticRevisionRecords,
+  reviseWorkSemanticContext,
+  isCurrentWorkContract,
+  workSemanticView,
   updateWorkContract,
   workContractStorePath,
 } from '../../packages/kernel/work/api/index';
@@ -18,6 +23,62 @@ afterEach(() => {
 });
 
 describe('Work v3 lifecycle authority', () => {
+  test('keeps thin Work semantic revision/CAS independent from mechanical lifecycle state', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-work-semantic-authority-'));
+    roots.push(root);
+    const store = { root };
+    const workId = 'work-semantic-authority';
+    const created = createWorkContract(store, {
+      workId,
+      repoId: 'repo-work-semantic-authority',
+      mode: 'direct_control',
+      objective: 'Original semantic objective.',
+      acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    const createdSemantic = workSemanticView(created);
+    expect(createdSemantic).toMatchObject({ workId, revision: 1, state: 'open', objective: 'Original semantic objective.' });
+
+    const mechanical = recordWorkEvidenceState(store, workId, 'partial');
+    expect(workSemanticView(mechanical)).toMatchObject({ revision: 1, updatedAt: createdSemantic.updatedAt });
+    const revised = reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 1,
+      objective: 'Revised semantic objective.',
+      requirementRevision: 3,
+      planRevision: 7,
+      resultRefs: ['receipt-a'],
+    });
+    expect(workSemanticView(revised)).toMatchObject({
+      revision: 2, state: 'open', objective: 'Revised semantic objective.',
+      requirementRevision: 3, planRevision: 7, resultRefs: ['receipt-a'],
+    });
+    expect(listWorkSemanticRevisionRecords(store, workId)).toMatchObject([{ revision: 1, objective: 'Original semantic objective.' }]);
+    expect(() => reviseWorkSemanticContext(store, workId, { expectedRevision: 1, objective: 'stale writer' }))
+      .toThrow('WORK_REVISION_CONFLICT');
+    const mechanicallyCompleted = recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'mechanical-completion-receipt',
+      source: 'local_effect',
+      workId,
+      operation: 'test-local-effect',
+      target: { kind: 'controller_local', id: 'semantic-authority-test' },
+      changed: true,
+      recordedAt: '2026-09-24T05:00:00.000Z',
+    }, 'completed_local', 'local_effect');
+    expect(workSemanticView(mechanicallyCompleted)).toMatchObject({
+      revision: 2,
+      state: 'open',
+      resultRefs: ['receipt-a'],
+    });
+    expect(workSemanticView(mechanicallyCompleted).resultRefs).not.toContain('mechanical-completion-receipt');
+    expect(isCurrentWorkContract(mechanicallyCompleted)).toBe(true);
+    const semanticallyCompleted = reviseWorkSemanticContext(store, workId, { expectedRevision: 2, state: 'completed' });
+    expect(semanticallyCompleted.status).toBe('completed');
+    expect(workSemanticView(semanticallyCompleted)).toMatchObject({ revision: 3, state: 'completed' });
+    expect(isCurrentWorkContract(semanticallyCompleted)).toBe(false);
+  });
+
   test('legacy inference is a one-way migration boundary and current lifecycle writes require canonical APIs', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-work-v3-authority-'));
     roots.push(root);
