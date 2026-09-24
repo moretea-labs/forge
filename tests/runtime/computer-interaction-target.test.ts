@@ -8,7 +8,7 @@ import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTar
 import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock } from '../../src/runtime/root/computer-composition';
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
-import { isDirectNonPersistentPluginAction } from '../../src/runtime/plugins/store';
+import { isDirectNonPersistentPluginAction, isDirectPluginReadAction } from '../../src/runtime/plugins/store';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
@@ -802,6 +802,7 @@ describe('protected Computer stable plugin transport', () => {
       expect(prepare).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
       expect(unlock).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', idempotent: false });
       expect(status).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true });
+      expect(isDirectPluginReadAction(status)).toBe(false);
       expect(recover).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'none', idempotent: false });
 
       expect(isDirectNonPersistentPluginAction({ ...status, confirmation: 'authorization' })).toBe(false);

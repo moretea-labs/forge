@@ -824,7 +824,8 @@ export function removeAssistantPluginManifestProjection(
 }
 
 export function isDirectPluginReadAction(action: AssistantPluginActionDescriptor): boolean {
-  return action.readOnly === true
+  return action.executionMode !== 'direct_non_persistent'
+    && action.readOnly === true
     && action.risk === 'readonly'
     && action.confirmation === 'none'
     && action.idempotent === true;
