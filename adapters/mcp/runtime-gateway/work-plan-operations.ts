@@ -4,6 +4,7 @@ import { controllerSessionPrincipalId, getControllerRoundRelay, getControllerSes
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import {
   admitPlanContractAsync,
+  createPlanSemanticContext,
   approvePlanContractAsync,
   acceptPlanStepEvidence,
   buildFacadeResult,
@@ -157,8 +158,48 @@ export async function callRhWorkPlanCreateOperation(
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'plan_create') return undefined;
 
+  if (!Array.isArray(args.plan_steps)) {
+    try {
+      const plan = createPlanSemanticContext(store, {
+        planId: String(args.plan_id ?? ''),
+        repoId: context.repoId,
+        requirementId: typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined,
+        requirementBasisRevision: typeof args.requirement_revision === 'number' ? args.requirement_revision : undefined,
+        scopeKey: typeof args.scope_key === 'string' ? args.scope_key : undefined,
+        sourceBasisRevision: typeof args.source_revision === 'string' ? args.source_revision : undefined,
+        goal: String(args.objective ?? ''),
+        nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : undefined,
+        assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : undefined,
+        resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : undefined,
+        stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
+        replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : undefined,
+        integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : undefined,
+        items: Array.isArray(args.plan_items)
+          ? args.plan_items
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+              .map((entry) => ({
+                id: String(entry.id ?? ''),
+                objective: String(entry.objective ?? ''),
+                dependencies: Array.isArray(entry.dependencies) ? entry.dependencies.map(String) : [],
+              }))
+          : [],
+      });
+      return result(buildFacadeResult({
+        summary: `Plan ${plan.planId} created at semantic revision 1. Plan items are descriptive working memory; no approval, PlanStep, path/check, scheduling, Work, or acceptance authority was created.`,
+        data: { plan: planSemanticView(plan), planContractCreated: true, executionStarted: false },
+      }) as unknown as Record<string, unknown>);
+    } catch (error) {
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'Semantic Plan creation failed.',
+        data: { planContractCreated: false, executionStarted: false },
+      }) as unknown as Record<string, unknown>, true);
+    }
+  }
+
   try {
-    const rawSteps = Array.isArray(args.plan_steps) ? args.plan_steps : [];
+    // Frozen-client compatibility only. Current model-facing schema no longer exposes plan_steps.
+    const rawSteps = args.plan_steps;
     const requestedPlanId = String(args.plan_id ?? '').trim();
     const requestedRequirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
     const requestedPlanRelation: 'extend' | 'parallel' | undefined = args.plan_relation === 'extend' || args.plan_relation === 'parallel'

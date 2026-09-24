@@ -17,6 +17,7 @@ import {
   approvePlanContract,
   claimPlanStepForWork,
   createPlanContract,
+  createPlanSemanticContext,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { runSchedulerAutonomousContinuationReconciliation } from '../../src/runtime/control-plane/global-scheduler/autonomous-continuation';
 
@@ -177,6 +178,48 @@ describe('autonomous Work liveness reconciliation', () => {
     const second = await runSchedulerAutonomousContinuationReconciliation(input);
     expect(second.dispatched).toBe(0);
     expect(second.skippedByReason.controller_round_present).toBe(1);
+    expect(providerDispatches).toBe(1);
+  });
+
+  test('thin Plan provenance never becomes Scheduler step authority', async () => {
+    const controllerHome = home();
+    createRequirement({ controllerHome }, {
+      requirementId: 'REQ-THIN-PLAN',
+      title: 'Thin Plan liveness',
+      outcomeStatement: 'Continue Work mechanically without PlanStep scheduling authority.',
+    });
+    createPlanSemanticContext({ controllerHome, repoId: 'repo-a' }, {
+      planId: 'PLAN-THIN',
+      repoId: 'repo-a',
+      requirementId: 'REQ-THIN-PLAN',
+      scopeKey: 'thin-plan-liveness',
+      sourceBasisRevision: 'abc123',
+      goal: 'Keep model-authored working memory without owning execution.',
+      items: [{ id: 'item-a', objective: 'Describe the next useful slice.', dependencies: [] }],
+    });
+    createRunningWork(controllerHome, {
+      workId: 'WORK-THIN-PLAN',
+      requirementId: 'REQ-THIN-PLAN',
+      planId: 'PLAN-THIN',
+    });
+    bindReleasedChatgptController(controllerHome, 'WORK-THIN-PLAN');
+
+    let providerDispatches = 0;
+    const host: ControllerHost = {
+      resume: async () => {
+        providerDispatches += 1;
+        return { accepted: true, dispatchId: 'dispatch-thin-plan' };
+      },
+    };
+    const result = await runSchedulerAutonomousContinuationReconciliation({
+      controllerHome,
+      nowMs: Date.parse('2026-09-19T10:00:00.000Z'),
+      repositories: [{ repoId: 'repo-a', canonicalRoot: controllerHome, localRoot: controllerHome }],
+      dependencies: dependencies(host),
+    });
+
+    expect(result).toMatchObject({ eligible: 1, dispatched: 1, failed: 0 });
+    expect(result.skippedByReason['progression:PLAN_EMPTY'] ?? 0).toBe(0);
     expect(providerDispatches).toBe(1);
   });
 

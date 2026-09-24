@@ -190,7 +190,9 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       let relayScopeId = currentTask.requirementId ? 'requirement:' + currentTask.requirementId : undefined;
       let continuationHint = 'Resume exact Work ' + currentTask.workId + '; scheduler observed no active execution or live Controller owner and no explicit wait.';
 
-      if (currentTask.planId) {
+      // Only historical PlanStep-bound Work delegates mechanical progression to the legacy Plan projector.
+      // Thin Plan references are provenance/working memory and never own Work scheduling.
+      if (currentTask.planId && currentTask.planStepId) {
         const plan = plansById.get(currentTask.planId);
         if (!plan) { skip(skippedByReason, 'current_plan_missing'); continue; }
         const requirementRecord = plan.requirementId

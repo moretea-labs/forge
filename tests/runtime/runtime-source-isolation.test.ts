@@ -201,6 +201,42 @@ describe('runtime source isolation', () => {
     expect((requirement.data as { requirement?: { requirementId?: string } })?.requirement?.requirementId).toBe(requirementId);
     expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
     expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
+
+    const revisedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_revise',
+      requirement_id: requirementId,
+      expected_revision: 1,
+      requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+    }));
+    const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'plan_revise',
+      plan_id: planId,
+      expected_revision: 1,
+      objective: 'Revise Plan directly by stable id without repository selection.',
+    }));
+    const revisedWork = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'work_revise',
+      work_id: workId,
+      expected_revision: 1,
+      objective: 'Revise Work directly by stable id without repository selection.',
+    }));
+
+    const revisedRequirementData = (revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }).data;
+    const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
+    const revisedWorkData = (revisedWork as unknown as { data?: { work?: Record<string, unknown> } }).data;
+    expect(revisedRequirementData?.requirement).toMatchObject({ requirementId, revision: 2 });
+    expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
+    expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
+
+    const staleWork = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'work_revise',
+      work_id: workId,
+      expected_revision: 1,
+      objective: 'A stale semantic writer must not overwrite revision 2.',
+    }));
+    expect(staleWork.status).toBe('blocked');
+    const staleWorkData = (staleWork as unknown as { data?: { currentWork?: Record<string, unknown> } }).data;
+    expect(staleWorkData?.currentWork).toMatchObject({ workId, revision: 2 });
   });
 
   test('resolver prefers package root over ambient execution cwd', () => {

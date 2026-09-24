@@ -9,6 +9,7 @@ import {
   claimPlanStepForWork,
   completePlanStepForWork,
   createPlanContract,
+  createPlanSemanticContext,
   getPlanExecutionBaselineRevision,
   listPlanSemanticRevisionRecords,
   planSemanticView,
@@ -88,7 +89,9 @@ describe('Goal authority convergence', () => {
       outcomeStatement: 'Original outcome',
       acceptanceCriteria: ['original acceptance'],
     });
-    expect(requirementSemanticView(requirement)).toMatchObject({ revision: 1, state: 'open' });
+    expect(requirementSemanticView(requirement)).toMatchObject({
+      revision: 1, state: 'open', semanticScope: { kind: 'requirement', id: requirementId },
+    });
     const revisedRequirement = reviseRequirementSemantic({ controllerHome }, requirementId, {
       expectedRevision: 1,
       title: 'Revised requirement',
@@ -121,7 +124,12 @@ describe('Goal authority convergence', () => {
       goal: 'Original plan goal',
       steps: [{ id: 'item-a', objective: 'Keep one authored item.', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check-semantic-compatibility'], acceptanceCriteria: ['Legacy mechanical approval remains separate from semantic Plan content.'] }],
     });
-    expect(planSemanticView(plan)).toMatchObject({ revision: 1, sourceBasisRevision: 'source-a' });
+    expect(planSemanticView(plan)).toMatchObject({
+      revision: 1,
+      semanticScope: { kind: 'requirement', id: requirementId },
+      sourceBasisRevision: 'source-a',
+    });
+    expect(planSemanticView(plan)).not.toHaveProperty('repoId');
     const revisedPlan = revisePlanSemanticContext(planOptions, planId, {
       expectedRevision: 1,
       requirementBasisRevision: 3,
@@ -327,6 +335,29 @@ describe('Goal authority convergence', () => {
       rationale: 'Should not be accepted yet.',
     })).toThrow(/REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE/);
     expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
+  });
+
+  test('thin semantic Plan never blocks Requirement acceptance as an execution gate', () => {
+    const controllerHome = home();
+    const repoId = 'repo-goal-thin-plan';
+    const requirementId = 'REQ-GOAL-THIN-PLAN';
+    activateRequirement(controllerHome, requirementId);
+    createPlanSemanticContext({ controllerHome, repoId }, {
+      planId: 'PLAN-GOAL-THIN',
+      repoId,
+      requirementId,
+      scopeKey: 'thin-plan-acceptance',
+      sourceBasisRevision: 'rev-a',
+      goal: 'Retain useful planning context without owning Requirement completion.',
+      items: [{ id: 'item-a', objective: 'Describe progress only.', dependencies: [] }],
+    });
+
+    expect(() => acceptRequirementOutcome({ controllerHome, repoId }, {
+      requirementId,
+      workId: 'work-missing',
+      reviewer: 'controller-a',
+      rationale: 'Thin Plan must not become a completion gate.',
+    })).toThrow(/REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND/);
   });
 
   test('terminal Requirement rejects new Plan admission', () => {

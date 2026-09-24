@@ -38,7 +38,10 @@ describe('Work v3 lifecycle authority', () => {
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
     const createdSemantic = workSemanticView(created);
-    expect(createdSemantic).toMatchObject({ workId, revision: 1, state: 'open', objective: 'Original semantic objective.' });
+    expect(createdSemantic).toMatchObject({
+      workId, revision: 1, state: 'open', objective: 'Original semantic objective.',
+      semanticScope: { kind: 'work', id: workId },
+    });
 
     const mechanical = recordWorkEvidenceState(store, workId, 'partial');
     expect(workSemanticView(mechanical)).toMatchObject({ revision: 1, updatedAt: createdSemantic.updatedAt });

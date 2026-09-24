@@ -10,6 +10,7 @@ import {
 } from './sqlite-store';
 import { isRepositoryCompletionReceipt, type WorkContract } from '../facade/types';
 import { REQUIREMENT_STATE_TRANSITIONS, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
@@ -62,6 +63,7 @@ export type SemanticRequirementState = 'open' | 'completed' | 'cancelled';
 export interface RequirementSemanticView {
   requirementId: string;
   revision: number;
+  semanticScope: ScopeRef;
   title: string;
   outcomeStatement: string;
   acceptanceCriteria: string[];
@@ -119,6 +121,7 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
   return {
     requirementId: requirement.requirementId,
     revision: currentRequirementSemanticRevision(requirement),
+    semanticScope: { schemaVersion: 1, kind: 'requirement', id: requirement.requirementId },
     title: requirement.title,
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
@@ -172,6 +175,10 @@ export function listRequirementRevisionRecords(
     limit: Math.max(1, Math.min(Math.trunc(limit), 1000)),
   }).map((record) => record.value)
     .filter((record) => !normalizedId || record.requirementId === normalizedId)
+    .map((record) => ({
+      ...record,
+      semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
+    }))
     .sort((left, right) => right.revision - left.revision);
 }
 

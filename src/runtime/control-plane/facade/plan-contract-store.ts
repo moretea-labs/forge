@@ -21,6 +21,7 @@ import {
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
 import { readRequirement } from '../persistence/requirement-store';
+import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 import {
   getWorkContract,
   canonicalizeWorkContractForAuthority,
@@ -109,6 +110,18 @@ function bounded(values: readonly string[] | undefined, limit: number, maxLength
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
 }
 
+function normalizePlanSemanticItems(items: readonly { id: string; objective: string; dependencies?: string[] }[] | undefined) {
+  const normalized = (items ?? []).slice(0, 100).map((item) => ({
+    id: String(item.id).trim().slice(0, 200),
+    objective: String(item.objective).trim().slice(0, 2_000),
+    dependencies: [...new Set((item.dependencies ?? []).map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100),
+  }));
+  if (normalized.some((item) => !item.id || !item.objective) || new Set(normalized.map((item) => item.id)).size !== normalized.length) {
+    throw new Error('PLAN_SEMANTIC_ITEMS_INVALID');
+  }
+  return normalized;
+}
+
 function normalizeScopeKey(value: string): string {
   return normalizePlanScopeKey(value) || 'unknown';
 }
@@ -126,7 +139,7 @@ export function currentPlanSemanticRevision(plan: PlanContract): number {
 export interface PlanSemanticView {
   planId: string;
   revision: number;
-  repoId: string;
+  semanticScope: ScopeRef;
   requirementId?: string;
   requirementBasisRevision?: number;
   sourceBasisRevision: string;
@@ -161,6 +174,23 @@ export interface RevisePlanSemanticInput {
   items?: Array<{ id: string; objective: string; dependencies?: string[] }>;
 }
 
+export interface CreatePlanSemanticInput {
+  planId: string;
+  repoId: string;
+  requirementId?: string;
+  requirementBasisRevision?: number;
+  scopeKey?: string;
+  sourceBasisRevision?: string;
+  goal: string;
+  nonGoals?: string[];
+  assumptions?: string[];
+  resolvedDecisions?: string[];
+  stopConditions?: string[];
+  replanConditions?: string[];
+  integrationStrategy?: string;
+  items?: Array<{ id: string; objective: string; dependencies?: string[] }>;
+}
+
 function legacyPlanSemanticContext(plan: PlanContract) {
   return {
     requirementBasisRevision: undefined,
@@ -178,10 +208,13 @@ function legacyPlanSemanticContext(plan: PlanContract) {
 
 export function planSemanticView(plan: PlanContract): PlanSemanticView {
   const semantic = plan.semanticContext ?? legacyPlanSemanticContext(plan);
+  const semanticScope: ScopeRef = plan.requirementId?.trim()
+    ? { schemaVersion: 1, kind: 'requirement', id: plan.requirementId.trim() }
+    : { schemaVersion: 1, kind: 'plan', id: plan.planId };
   return {
     planId: plan.planId,
     revision: currentPlanSemanticRevision(plan),
-    repoId: plan.repoId,
+    semanticScope,
     requirementId: plan.requirementId,
     requirementBasisRevision: semantic.requirementBasisRevision,
     sourceBasisRevision: semantic.sourceBasisRevision,
@@ -566,12 +599,24 @@ export function listPlanSemanticRevisionRecords(options: PlanContractStoreOption
   if (!sqliteBacked(options)) {
     const store = readJsonFile<PlanSemanticRevisionStore>(planSemanticRevisionStorePath(options), { schemaVersion: 1, updatedAt: nowIso(options), revisions: [] });
     return store.revisions.filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
+      .map((record) => ({
+        ...record,
+        semanticScope: record.semanticScope ?? (record.requirementId
+          ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+          : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+      } as PlanSemanticRevisionRecord))
       .sort((left, right) => right.revision - left.revision);
   }
   return listControlPlaneRecords<PlanSemanticRevisionRecord>(options.controllerHome, {
     namespace: 'plan_semantic_revision', scope: options.repoId, limit: 5_000,
   }).map((record) => record.value)
     .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
+    .map((record) => ({
+      ...record,
+      semanticScope: record.semanticScope ?? (record.requirementId
+        ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+        : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+    } as PlanSemanticRevisionRecord))
     .sort((left, right) => right.revision - left.revision);
 }
 
@@ -1231,6 +1276,75 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
   });
 }
 
+export function createPlanSemanticContext(options: PlanContractStoreOptions, input: CreatePlanSemanticInput): PlanContract {
+  return withPlanAdmissionLock(options, () => {
+    assertRequirementReference(options, input.requirementId);
+    const store = readPlanContractStore(options);
+    const planId = sanitizeFileComponent(input.planId);
+    if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
+    if (store.contracts.some((existing) => existing.planId === planId)) throw new Error(`plan contract already exists: ${planId}`);
+
+    // Thin Plan scope is descriptive discovery/lineage metadata only. It is not
+    // execution ownership and therefore must never reject another semantic Plan.
+    // Defaulting the compatibility field to planId keeps legacy storage readable
+    // without creating a synthetic mutex.
+    const scopeKey = normalizeScopeKey(input.scopeKey?.trim() || planId);
+
+    const goal = String(input.goal ?? '').trim().slice(0, 2_000);
+    if (!goal) throw new Error('PLAN_GOAL_REQUIRED');
+    const requirementBasisRevision = input.requirementBasisRevision === undefined
+      ? undefined
+      : (() => {
+          if (!Number.isInteger(input.requirementBasisRevision) || Number(input.requirementBasisRevision) < 1) {
+            throw new Error('PLAN_REQUIREMENT_BASIS_REVISION_INVALID');
+          }
+          return Number(input.requirementBasisRevision);
+        })();
+    const sourceBasisRevision = String(input.sourceBasisRevision ?? '').trim().slice(0, 200);
+    const items = normalizePlanSemanticItems(input.items);
+    const at = nowIso(options);
+    const semanticContext = {
+      requirementBasisRevision,
+      sourceBasisRevision,
+      goal,
+      nonGoals: bounded(input.nonGoals, 20),
+      assumptions: bounded(input.assumptions, 30),
+      resolvedDecisions: bounded(input.resolvedDecisions, 30),
+      stopConditions: bounded(input.stopConditions, 20),
+      replanConditions: bounded(input.replanConditions, 20),
+      integrationStrategy: input.integrationStrategy?.trim().slice(0, 1_000) || undefined,
+      items,
+    };
+    const plan: PlanContract = {
+      schemaVersion: 1,
+      planId,
+      revision: 1,
+      semanticRevision: 1,
+      semanticUpdatedAt: at,
+      semanticContext,
+      repoId: input.repoId,
+      requirementId: input.requirementId?.trim().slice(0, 160) || undefined,
+      scopeKey,
+      sourceRevision: sourceBasisRevision,
+      goal,
+      nonGoals: [...semanticContext.nonGoals],
+      assumptions: [...semanticContext.assumptions],
+      resolvedDecisions: [...semanticContext.resolvedDecisions],
+      stopConditions: [...semanticContext.stopConditions],
+      replanConditions: [...semanticContext.replanConditions],
+      integrationStrategy: semanticContext.integrationStrategy,
+      // Legacy lifecycle projection only. Thin Plan items never become PlanSteps.
+      status: 'approved',
+      steps: [],
+      evidenceRefs: [],
+      createdAt: at,
+      updatedAt: at,
+    };
+    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [plan, ...store.contracts] });
+    return plan;
+  });
+}
+
 function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
   assertRequirementReference(options, input.requirementId);
   const plans = listPlanContracts({ ...options, status: 'all', limit: 100 });
@@ -1281,14 +1395,7 @@ export function revisePlanSemanticContext(
             return Number(input.requirementBasisRevision);
           })();
       const sourceBasisRevision = input.sourceBasisRevision === undefined ? previous.sourceBasisRevision : String(input.sourceBasisRevision).trim().slice(0, 200);
-      const items = input.items === undefined
-        ? previous.items
-        : input.items.slice(0, 100).map((item) => ({
-            id: String(item.id).trim().slice(0, 200),
-            objective: String(item.objective).trim().slice(0, 2_000),
-            dependencies: [...new Set((item.dependencies ?? []).map(String).map((value) => value.trim()).filter(Boolean))].slice(0, 100),
-          }));
-      if (items.some((item) => !item.id || !item.objective) || new Set(items.map((item) => item.id)).size !== items.length) throw new Error('PLAN_SEMANTIC_ITEMS_INVALID');
+      const items = input.items === undefined ? previous.items : normalizePlanSemanticItems(input.items);
       const semanticContext = {
         requirementBasisRevision,
         sourceBasisRevision,

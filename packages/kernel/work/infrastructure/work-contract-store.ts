@@ -198,6 +198,7 @@ export function workSemanticView(work: WorkContract): WorkSemanticView {
   return {
     workId: work.workId,
     revision: currentWorkSemanticRevision(work),
+    semanticScope: semanticScopeRefForWork(work),
     objective: work.objective,
     state: semanticWorkState(work),
     ...(work.requirementId?.trim() ? { requirementId: work.requirementId.trim() } : {}),
@@ -639,7 +640,9 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       issueId: input.issueId,
       taskId: input.taskId,
       requirementId: input.requirementId,
+      requirementRevision: input.requirementRevision,
       planId: input.planId,
+      planRevision: input.planRevision,
       planStepId: input.planStepId,
       planSourceRevision: input.planSourceRevision,
       scopeSummary: input.scopeSummary?.slice(0, 1_000),
@@ -960,6 +963,15 @@ export function listWorkSemanticRevisionRecords(
     : readWorkSemanticRevisionStore(options).records;
   return records
     .filter((record) => !normalizedId || record.workId === normalizedId)
+    .map((record) => ({
+      ...record,
+      semanticScope: record.semanticScope ?? semanticScopeRefForWork({
+        workId: record.workId,
+        requirementId: record.requirementId,
+        planId: record.planId,
+        planStepId: undefined,
+      }),
+    }))
     .sort((left, right) => right.revision - left.revision)
     .slice(0, boundedLimit);
 }

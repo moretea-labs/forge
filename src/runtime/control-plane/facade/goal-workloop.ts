@@ -41,12 +41,13 @@ import {
   completePlanStepForWork,
   getPlanContract,
   getPlanExecutionBaselineRevision,
+  currentPlanSemanticRevision,
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
 import { completeWorkWithReceipt } from '../execution/work-completion-authority';
 import { effectiveCurrentWorkVerificationRecords, evaluateReadOnlyReviewSourceIdentity, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
-import { readRequirement } from '../persistence/requirement-store';
+import { currentRequirementSemanticRevision, readRequirement } from '../persistence/requirement-store';
 import {
   classifyVerificationOutcome,
   normalizeCheckIds,
@@ -503,10 +504,10 @@ export function routeWorkStart(
       ? false
       : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
-  if (effectiveModeInput.explicitMode === 'scale' && (!input.planId || !input.planStepId || !ctx.planStore)) {
+  if (effectiveModeInput.explicitMode === 'scale' && (!input.planId || !ctx.planStore)) {
     return buildFacadeResult({
       status: 'blocked',
-      summary: 'SCALE_PLAN_REQUIRED: explicit Scale execution requires a bound approved PlanContract step.',
+      summary: 'SCALE_PLAN_REQUIRED: explicit Scale execution requires a durable semantic Plan context.',
       data: { executionStarted: false, workContractCreated: false, planRequired: true, explicitMode: 'scale' },
     });
   }
@@ -886,6 +887,9 @@ export function startGoalWorkloop(
     resolvedPlanId = terminalContinuationSource.planId;
   }
   const plan = resolvedPlanId && ctx.planStore ? getPlanContract(ctx.planStore, resolvedPlanId) : undefined;
+  if (resolvedPlanId && !plan) {
+    return buildFacadeResult({ status: 'blocked', summary: `PLAN_NOT_FOUND: ${resolvedPlanId}. Recover or create the semantic Plan before using it as Work provenance.`, data: { executionStarted: false, workContractCreated: false, planId: resolvedPlanId } });
+  }
   if (terminalContinuationSource?.planId && !plan) {
     return buildFacadeResult({
       status: 'blocked',
@@ -1013,10 +1017,11 @@ export function startGoalWorkloop(
     });
   }
   const effectiveRequirementId = requestedRequirementId || plan?.requirementId || predecessorRequirementId;
+  const effectiveRequirementRecord = effectiveRequirementId && ctx.workStore.controllerHome ? readRequirement({ controllerHome: ctx.workStore.controllerHome }, effectiveRequirementId) : undefined;
   if (
     effectiveRequirementId
     && ctx.workStore.controllerHome
-    && !readRequirement({ controllerHome: ctx.workStore.controllerHome }, effectiveRequirementId)
+    && !effectiveRequirementRecord
   ) {
     return buildFacadeResult({
       status: 'blocked',
@@ -1309,9 +1314,9 @@ export function startGoalWorkloop(
     });
   }
   const generatedWorkId = requestedWorkId ?? workIdFor(effectiveObjective);
-  if (resolvedPlanId || resolvedPlanStepId) {
-    if (!resolvedPlanId || !resolvedPlanStepId || !ctx.planStore || !ctx.sourceRevision || !plan || !planStep) {
-      return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id, an executable Plan step and a current source revision are required.', data: { executionStarted: false } });
+  if (resolvedPlanStepId) {
+    if (!resolvedPlanId || !ctx.planStore || !ctx.sourceRevision || !plan || !planStep) {
+      return buildFacadeResult({ status: 'blocked', summary: 'LEGACY_PLAN_STEP_CONTEXT_REQUIRED: legacy plan_step_id compatibility requires plan_id, a persisted PlanStep and a current source revision.', data: { executionStarted: false } });
     }
     if (plan.status !== 'approved' && plan.status !== 'executing') {
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_NOT_EXECUTABLE: ${plan.planId} is ${plan.status}`, data: { executionStarted: false, planId: plan.planId } });
@@ -1394,10 +1399,12 @@ export function startGoalWorkloop(
     issueId: input.issueId,
     taskId: input.taskId,
     requirementId: effectiveRequirementId,
+    requirementRevision: effectiveRequirementRecord ? currentRequirementSemanticRevision(effectiveRequirementRecord.value) : undefined,
     predecessorWorkId: terminalContinuationSource?.workId,
     planId: resolvedPlanId,
+    planRevision: plan ? currentPlanSemanticRevision(plan) : undefined,
     planStepId: resolvedPlanStepId,
-    planSourceRevision: resolvedPlanId ? plan?.sourceRevision : undefined,
+    planSourceRevision: resolvedPlanStepId ? plan?.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
     scopeEvidence: {
       initialLikelyPaths: [...new Set(input.initialLikelyPaths ?? effectiveAllowedPaths)].slice(0, 100),

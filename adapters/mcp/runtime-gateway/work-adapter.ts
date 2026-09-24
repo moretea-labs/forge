@@ -35,7 +35,8 @@ import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callR
 import { runFacadeRepair } from './work-repair-adapter';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 export { runFacadeRepair };
-import { allowedFacadeOperations, buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
+import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
+import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from "../../../src/runtime/control-plane/execution/work-task-receipt";
@@ -557,7 +558,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           args = compatibility.args;
           const operation = compatibility.operation;
           const frozenScheduleDeleteId = compatibility.scheduleIdOverride ?? '';
-          if (!allowedFacadeOperations('rh_work').includes(operation)) {
+          if (!isRhWorkAcceptedOperation(operation)) {
             return invalidFacadeOperation('rh_work', operation);
           }
 

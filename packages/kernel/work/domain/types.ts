@@ -75,6 +75,7 @@ export type SemanticWorkState = 'open' | 'completed' | 'cancelled';
 export interface WorkSemanticView {
   workId: string;
   revision: number;
+  semanticScope: ScopeRef;
   objective: string;
   state: SemanticWorkState;
   requirementId?: string;
