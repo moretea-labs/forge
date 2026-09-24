@@ -1,6 +1,7 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context/types';
 import { RH_WORK_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 import { ENGINEERING_DECISION_INPUT_FIELDS } from './engineering-tool-contract';
 
 const engineeringDecisionProperties = Object.fromEntries(
@@ -43,7 +44,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Preferred ChatGPT facade and default repository code-discovery/read path. Semantic task/capability queries can also recall a small, relevance-gated Cognitive advisory working set when Project/Workspace scope is available. Reuse that working set through routine micro-steps instead of repeatedly re-recalling it. Start broad once to combine heuristic lexical discovery, current raw source, and optional CodeGraph structural evidence with few round trips. Natural-language lexical terms are discovery hints: do not require every guessed term to match and do not repeat the same broad search merely because a heuristic term missed. After credible files or symbols are found, derive follow-up paths/symbols from the returned source and prefer known_paths, compiler semantic_navigation/@tsnav for TypeScript, or structural relationships before another broad lexical pass. Call rh_context repeatedly only when that progressive expansion can materially improve correctness; follow-ups reuse session-scoped evidence when source identity is unchanged. Shell rg/grep/sed/cat loops are fallback-only when this Context Plane cannot supply the needed evidence.', {
+  definition('rh_context', 'Preferred ChatGPT facade and default repository code-discovery/read path. Semantic task/capability queries can also recall an initial bounded, relevance-gated Cognitive advisory working set when Project/Workspace scope is available. That first pack is an attention envelope, never a claim that the top N items are cognitively complete. Reuse it through routine micro-steps; when the model judges prior context insufficient, progressively narrow/expand recall with another semantic query or explicit knowledge audit. Start broad once to combine heuristic lexical discovery, current raw source, and optional CodeGraph structural evidence with few round trips. Natural-language lexical terms are discovery hints: do not require every guessed term to match and do not repeat the same broad search merely because a heuristic term missed. After credible files or symbols are found, derive follow-up paths/symbols from the returned source and prefer known_paths, compiler semantic_navigation/@tsnav for TypeScript, or structural relationships before another broad lexical pass. Call rh_context repeatedly only when that progressive expansion can materially improve correctness; follow-ups reuse session-scoped evidence when source identity is unchanged. Shell rg/grep/sed/cat loops are fallback-only when this Context Plane cannot supply the needed evidence.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
@@ -57,7 +58,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     knowledge_facet: { type: 'string', description: 'Optional exact learned facet filter.' },
     knowledge_source_kind: { type: 'string', enum: ['experience', 'outcome', 'knowledge', 'controller', 'system', 'external'], description: 'Optional provenance source-kind filter.' },
     knowledge_source_work_id: { type: 'string', description: 'Optional provenance source Work filter.' },
-    knowledge_limit: { type: 'number', minimum: 1, maximum: 100, description: 'Maximum returned learned memories; defaults to 24.' },
+    knowledge_limit: { type: 'number', minimum: 1, maximum: 100, description: 'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24. This is a context/transport budget, not a semantic claim that N memories are sufficient.' },
     known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority.' },
     include_globs: { type: 'array', items: { type: 'string' } },
     exclude_globs: { type: 'array', items: { type: 'string' } },
@@ -122,10 +123,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     assistant_context_usage: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
       properties: { kind: { type: 'string', enum: ['knowledge', 'experience'] }, itemId: { type: 'string' }, decision: { type: 'string', enum: ['used', 'rejected'] }, reason: { type: 'string', maxLength: 1000 }, rejectionKind: { type: 'string', enum: ['irrelevant', 'stale', 'contradicted'], description: 'For rejected items, model-authored semantic classification. Forge never infers this from reason text. Optional only for frozen-client compatibility; omission is treated as irrelevant.' } },
       required: ['kind', 'itemId', 'decision', 'reason'] }, description: 'Exact claim-time context items classified as used or rejected. If supplied, every delivered item must be classified. Current clients should provide rejectionKind for rejected items; omitted usage remains an explicit coverage gap.' },
-    learning_signals: { type: 'array', maxItems: 8, items: { type: 'object', additionalProperties: false,
+    learning_signals: { type: 'array', maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS, items: { type: 'object', additionalProperties: false,
       properties: {
         scope_kind: { type: 'string', enum: ['work', 'requirement', 'project', 'workspace'] },
-        kind: { type: 'string', enum: ['knowledge', 'success', 'failure', 'novelty', 'correction', 'contradiction', 'pattern', 'preference', 'principle', 'procedure'] },
+        kind: { type: 'string', maxLength: 64, description: 'Compact model-authored descriptive kind (for example principle, procedure, product-model, architecture-pattern). This vocabulary is open and never an admission gate.' },
         valence: { type: 'string', enum: ['positive', 'negative', 'neutral'] },
         summary: { type: 'string', maxLength: 2000 },
         concepts: { type: 'array', minItems: 1, maxItems: 32, uniqueItems: true, items: { type: 'string', maxLength: 256 } },
@@ -140,7 +141,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
         expires_at: { type: 'string' },
       },
       required: ['scope_kind', 'kind', 'valence', 'summary', 'concepts', 'admission_source', 'portability', 'salience', 'confidence', 'utility'] },
-      description: 'Bounded semantic knowledge selected by the model, never by keyword/phrase matching. With operation=learning_record, project/workspace learning is persisted without Work lifecycle and Forge derives identity/source/time; Workspace still requires explicit_human + portable. With controller_disposition, the same draft is bound to the exact Work/ControllerRound. Submit concise reusable knowledge only, never raw transcripts.' },
+      description: 'Model-authored semantic deltas, never keyword/phrase-derived lessons. The array bound is only one MCP transport envelope; it is not a per-interaction learning quota, and the model may submit additional batches until the semantic delta it chose is recorded. With operation=learning_record, project/workspace learning is persisted without Work lifecycle and Forge derives identity/source/time; Workspace requires the model to explicitly choose workspace scope and portable intent, not a fixed admission source/category/repetition count. With controller_disposition, the same draft is bound to the exact Work/ControllerRound. Distill reusable judgement/procedure/product/architecture knowledge rather than copying raw transcripts or source prose.' },
     learning_feedback: { type: 'array', maxItems: 32, items: { type: 'object', additionalProperties: false,
       properties: {
         memory_address: { type: 'string', maxLength: 1024, description: 'Exact stable memoryId/address returned by learningRecall or Cognitive audit.' },

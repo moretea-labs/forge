@@ -812,11 +812,17 @@ describe('connected assistant learning loops', () => {
     });
     expect(audited.activation.reasons).toContainEqual(expect.objectContaining({ signal: 'usage', detail: 'used:1;rejected:0' }));
 
+    const generalized = parseControllerLearningSignalDrafts([{
+      scope_kind: 'workspace', kind: 'product-architecture-pattern', valence: 'positive',
+      summary: 'The model may generalize evidence-backed guidance to Workspace when it judges the lesson genuinely cross-project.', concepts: ['workspace.generalization'], facets: [],
+      admission_source: 'controller_observation', portability: 'portable', salience: 0.8, confidence: 0.7, utility: 0.6,
+    }]);
+    expect(generalized[0]).toMatchObject({ scopeKind: 'workspace', kind: 'product-architecture-pattern', portability: 'portable' });
     expect(() => parseControllerLearningSignalDrafts([{
       scope_kind: 'workspace', kind: 'principle', valence: 'positive',
-      summary: 'Inferred guidance must not jump to Workspace.', concepts: ['unsafe.workspace-promotion'], facets: [],
-      admission_source: 'controller_observation', portability: 'portable', salience: 0.8, confidence: 0.7, utility: 0.6,
-    }])).toThrow('COGNITION_CONTROLLER_LEARNING_WORKSPACE_REQUIRES_EXPLICIT_PORTABLE_HUMAN:0');
+      summary: 'Workspace scope still requires explicit portable intent.', concepts: ['workspace.portability'], facets: [],
+      admission_source: 'explicit_human', portability: 'local', salience: 0.8, confidence: 0.7, utility: 0.6,
+    }])).toThrow('COGNITION_CONTROLLER_LEARNING_WORKSPACE_PORTABILITY_REQUIRED:0');
   });
 
   test('automatically associates paraphrased learning across rounds and consolidates after two corroborating sources', () => {
@@ -1171,6 +1177,12 @@ describe('direct model-authored learning without Work lifecycle', () => {
     const recalledPayload = recalled?.structuredContent as Record<string, any>;
     expect(recalledPayload.data.learningRecall).toMatchObject({
       scopePolicy: 'narrow_scopes_then_workspace_fallback',
+      progressiveAttention: {
+        workingSetBounded: true,
+        moreCandidatesAvailable: expect.any(Boolean),
+        inspectedCandidates: expect.any(Number),
+        modelDecision: expect.any(String),
+      },
     });
     expect(recalledPayload.data.learningRecall.items).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1293,6 +1305,21 @@ describe('direct model-authored learning without Work lifecycle', () => {
     expect(payload.data.storedMemoryIds).toHaveLength(2);
     expect(payload.data.associatedEdgeCount).toBeGreaterThan(0);
     expect(payload.data.consolidatedMemoryIds.length).toBeGreaterThan(0);
+
+    const fullEnvelope = parseControllerLearningSignalDrafts(Array.from({ length: 32 }, (_, index) => ({
+      scope_kind: 'project', kind: `distilled-${index}`, valence: 'neutral',
+      summary: `Reusable model-authored knowledge ${index}.`, concepts: [`knowledge.${index}`], facets: [],
+      admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
+    })));
+    expect(fullEnvelope).toHaveLength(32);
+    expect(() => parseControllerLearningSignalDrafts([...Array.from({ length: 32 }, (_, index) => ({
+      scope_kind: 'project', kind: `distilled-${index}`, valence: 'neutral',
+      summary: `Reusable model-authored knowledge ${index}.`, concepts: [`knowledge.${index}`], facets: [],
+      admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
+    })), {
+      scope_kind: 'project', kind: 'overflow', valence: 'neutral', summary: 'Transport overflow only.', concepts: ['overflow'], facets: [],
+      admission_source: 'controller_observation', portability: 'local', salience: 0.5, confidence: 0.5, utility: 0.5,
+    }])).toThrow('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
 
     const stored = cognitionReadPort(fx.controllerHome).readByIds(
       [{ schemaVersion: 1, kind: 'project', id: 'project-learning-loop' }],

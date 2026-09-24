@@ -370,7 +370,7 @@ describe('generic cognitive memory', () => {
     expect(pack.items.map(item => item.memory.id)).toContain(stored.id);
   });
 
-  test('keeps single-round inferred learning local and reserves portable intent for explicit human teaching', () => {
+  test('keeps Workspace generalization model-authored instead of admission-source or kind gated', () => {
     const workspaceScope = { schemaVersion: 1 as const, kind: 'workspace' as const, id: 'workspace-cognition' };
     const base = {
       schemaVersion: 1 as const,
@@ -390,17 +390,20 @@ describe('generic cognitive memory', () => {
       evidenceRefs: ['E-1'],
     };
     expect(memoryDraftFromLearningSignal(base).scope).toEqual(scope);
-    expect(() => memoryDraftFromLearningSignal({ ...base, scope: workspaceScope })).toThrow('COGNITION_LEARNING_AUTOMATIC_SCOPE_INVALID');
-    expect(() => memoryDraftFromLearningSignal({ ...base, portability: 'portable' })).toThrow('COGNITION_LEARNING_PORTABILITY_REQUIRES_EXPLICIT_HUMAN');
+    expect(() => memoryDraftFromLearningSignal({ ...base, scope: workspaceScope }))
+      .toThrow('COGNITION_LEARNING_WORKSPACE_PORTABILITY_REQUIRED');
 
-    const portableTeaching = memoryDraftFromLearningSignal({
+    const generalized = memoryDraftFromLearningSignal({
       ...base,
-      id: 'portable-human-teaching',
+      id: 'model-generalized-workspace-learning',
       scope: workspaceScope,
-      admissionSource: 'explicit_human',
+      kind: 'architecture-pattern',
+      admissionSource: 'system_inference',
       portability: 'portable',
       confidence: 0.95,
     });
-    expect(portableTeaching.facets).toContain('portability.portable');
+    expect(generalized.facets).toContain('portability.portable');
+    expect(generalized.facets).toContain('architecture-pattern');
+    expect(generalized.tier).toBe('warm');
   });
 });

@@ -227,6 +227,14 @@ function rhContextLearningRecall(
       provenance: entry.memory.provenance,
     })),
     gaps: [...resolved.gaps, ...activation.gaps],
+    progressiveAttention: {
+      workingSetBounded: true,
+      moreCandidatesAvailable: activation.truncated,
+      inspectedCandidates: activation.inspectedCandidates,
+      modelDecision: activation.truncated
+        ? 'This is an initial working set, not semantic completeness. If the current decision still lacks relevant prior context, issue a narrower rh_context query or an explicit knowledge_query/knowledge_limit expansion; otherwise reuse this working set through routine micro-steps.'
+        : 'Decide whether this working set is semantically sufficient. Reuse it through routine micro-steps; only recall again when the task meaning/strategy changes or missing prior context could change the decision.',
+    },
   };
 }
 

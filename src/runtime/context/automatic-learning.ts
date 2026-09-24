@@ -62,9 +62,8 @@ const CONTROLLER_LEARNING_FIELDS = new Set([
   'scope_kind', 'kind', 'valence', 'summary', 'concepts', 'facets', 'admission_source',
   'portability', 'salience', 'confidence', 'utility', 'evidence_refs', 'counter_evidence_refs', 'expires_at',
 ]);
-const CONTROLLER_LEARNING_KINDS: readonly LearningSignal['kind'][] = [
-  'knowledge', 'success', 'failure', 'novelty', 'correction', 'contradiction', 'pattern', 'preference', 'principle', 'procedure',
-];
+export const CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS = 32;
+const CONTROLLER_LEARNING_KIND = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const CONTROLLER_LEARNING_VALENCES: readonly LearningSignal['valence'][] = ['positive', 'negative', 'neutral'];
 const CONTROLLER_LEARNING_ADMISSION_SOURCES: readonly ControllerLearningAdmissionSource[] = ['explicit_human', 'controller_observation', 'system_inference'];
 const CONTROLLER_LEARNING_SCOPE_KINDS: readonly ControllerLearningScopeKind[] = ['work', 'requirement', 'project', 'workspace'];
@@ -91,31 +90,31 @@ function boundedStrings(value: unknown, label: string, maxItems: number, maxLeng
 /** Validate the frozen MCP draft shape after disposition so learning errors never roll back lifecycle state. */
 export function parseControllerLearningSignalDrafts(value: unknown): ControllerLearningSignalDraft[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 8) throw new Error('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
+  if (!Array.isArray(value) || value.length > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) throw new Error('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
   return value.map((entry, index) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`COGNITION_CONTROLLER_LEARNING_SIGNAL_INVALID:${index}`);
     const raw = entry as Record<string, unknown>;
     if (Object.keys(raw).some(key => !CONTROLLER_LEARNING_FIELDS.has(key))) throw new Error(`COGNITION_CONTROLLER_LEARNING_SIGNAL_FIELD_INVALID:${index}`);
     const scopeKind = raw.scope_kind;
-    const kind = raw.kind;
+    const kind = typeof raw.kind === 'string' ? raw.kind.trim() : '';
     const valence = raw.valence;
     const admissionSource = raw.admission_source;
     const portability = raw.portability;
     const summary = typeof raw.summary === 'string' ? raw.summary.trim().replace(/\s+/g, ' ') : '';
     if (!CONTROLLER_LEARNING_SCOPE_KINDS.includes(scopeKind as ControllerLearningScopeKind)) throw new Error(`COGNITION_CONTROLLER_LEARNING_SCOPE_INVALID:${index}`);
-    if (!CONTROLLER_LEARNING_KINDS.includes(kind as LearningSignal['kind'])) throw new Error(`COGNITION_CONTROLLER_LEARNING_KIND_INVALID:${index}`);
+    if (!CONTROLLER_LEARNING_KIND.test(kind)) throw new Error(`COGNITION_CONTROLLER_LEARNING_KIND_INVALID:${index}`);
     if (!CONTROLLER_LEARNING_VALENCES.includes(valence as LearningSignal['valence'])) throw new Error(`COGNITION_CONTROLLER_LEARNING_VALENCE_INVALID:${index}`);
     if (!CONTROLLER_LEARNING_ADMISSION_SOURCES.includes(admissionSource as ControllerLearningAdmissionSource)) throw new Error(`COGNITION_CONTROLLER_LEARNING_ADMISSION_INVALID:${index}`);
     if (portability !== 'local' && portability !== 'portable') throw new Error(`COGNITION_CONTROLLER_LEARNING_PORTABILITY_INVALID:${index}`);
-    if (scopeKind === 'workspace' && (admissionSource !== 'explicit_human' || portability !== 'portable')) {
-      throw new Error(`COGNITION_CONTROLLER_LEARNING_WORKSPACE_REQUIRES_EXPLICIT_PORTABLE_HUMAN:${index}`);
+    if (scopeKind === 'workspace' && portability !== 'portable') {
+      throw new Error(`COGNITION_CONTROLLER_LEARNING_WORKSPACE_PORTABILITY_REQUIRED:${index}`);
     }
     if (!summary || summary.length > 2_000) throw new Error(`COGNITION_CONTROLLER_LEARNING_SUMMARY_INVALID:${index}`);
     const expiresAt = typeof raw.expires_at === 'string' && raw.expires_at.trim() ? raw.expires_at.trim() : undefined;
     if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) throw new Error(`COGNITION_CONTROLLER_LEARNING_EXPIRY_INVALID:${index}`);
     return {
       scopeKind: scopeKind as ControllerLearningScopeKind,
-      kind: kind as LearningSignal['kind'],
+      kind,
       valence: valence as LearningSignal['valence'],
       summary,
       concepts: boundedStrings(raw.concepts, 'CONCEPTS', 32, 256, true),
@@ -165,7 +164,6 @@ function roundDerivedAuthority(input: {
   const localScopeAllowed = (scope: ScopeRef) => allowedScopes.some(candidate => sameScope(candidate, scope));
   const scopeAllowed = (memory: MemoryUnit) => localScopeAllowed(memory.scope)
     || workspaceScopes.some(candidate => sameScope(candidate, memory.scope))
-      && memory.facets.includes('source.explicit_human')
       && memory.facets.includes('portability.portable');
   return {
     assertMemoryWrite(memory) {
@@ -495,6 +493,9 @@ export function persistAutomaticControllerRoundLearning(input: {
   if (!work) throw new Error('COGNITION_AUTOMATIC_LEARNING_WORK_NOT_FOUND');
   if (!sourceRoundObserved(input)) throw new Error('COGNITION_AUTOMATIC_LEARNING_ROUND_NOT_CLOSED');
 
+  if ((input.controllerSignals?.length ?? 0) > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) {
+    throw new Error('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
+  }
   const observedAt = input.now ?? new Date().toISOString();
   const authority = roundDerivedAuthority({
     controllerHome: input.controllerHome,
@@ -505,7 +506,7 @@ export function persistAutomaticControllerRoundLearning(input: {
   const stored: MemoryUnit[] = [];
   const skipped: string[] = [];
 
-  for (const signal of (input.controllerSignals ?? []).slice(0, 8)) {
+  for (const signal of input.controllerSignals ?? []) {
     const signalScope = controllerLearningScope(work, input.controllerHome, signal.scopeKind);
     if (!signalScope) {
       skipped.push(`controller:${signal.kind}:scope_unavailable:${signal.scopeKind}`);

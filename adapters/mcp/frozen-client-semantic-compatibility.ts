@@ -1,3 +1,5 @@
+import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
+
 const FROZEN_SEMANTIC_COMPATIBILITY_PREFIX = 'semantic.v1:';
 const MAX_FROZEN_SEMANTIC_ENCODED_CHARS = 96 * 1024;
 const MAX_FROZEN_SEMANTIC_DECODED_BYTES = 64 * 1024;
@@ -262,7 +264,7 @@ function normalizeLearningSignalArgs(value: unknown, label: 'controller_disposit
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} args must be an object`);
   const args = value as Record<string, unknown>;
   assertExactKeys(args, new Set(['learning_signals']), `${label} args`);
-  if (!Array.isArray(args.learning_signals) || args.learning_signals.length > 8) {
+  if (!Array.isArray(args.learning_signals) || args.learning_signals.length > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) {
     fail('learning_signals must be a bounded array');
   }
   return {

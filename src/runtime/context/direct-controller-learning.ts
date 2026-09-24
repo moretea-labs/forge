@@ -16,6 +16,7 @@ import { controllerPluginRepository, findPluginActionReceipt } from '../plugins/
 import {
   associateStoredMemories,
   consolidateAffectedMemories,
+  CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS,
   type ControllerLearningSignalDraft,
 } from './automatic-learning';
 
@@ -96,9 +97,8 @@ function directLearningAuthority(input: {
         || memory.provenance.sourceRoundId) {
         throw new Error('COGNITION_DIRECT_LEARNING_AUTHORITY_INVALID');
       }
-      if (memory.scope.kind === 'workspace'
-        && (!memory.facets.includes('source.explicit_human') || !memory.facets.includes('portability.portable'))) {
-        throw new Error('COGNITION_DIRECT_LEARNING_WORKSPACE_REQUIRES_EXPLICIT_PORTABLE_HUMAN');
+      if (memory.scope.kind === 'workspace' && !memory.facets.includes('portability.portable')) {
+        throw new Error('COGNITION_DIRECT_LEARNING_WORKSPACE_PORTABILITY_REQUIRED');
       }
     },
     assertEdgeWrite() {
@@ -203,6 +203,9 @@ export function persistDirectControllerLearning(input: {
   controllerType?: string;
   now?: string;
 }): DirectControllerLearningResult {
+  if (!input.signals.length || input.signals.length > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) {
+    throw new Error('COGNITION_DIRECT_LEARNING_SIGNALS_INVALID');
+  }
   const scopes = directLearningScopes(input.controllerHome, input.repository);
   const observedAt = input.now ?? new Date().toISOString();
   const sourceId = directSourceId(input);

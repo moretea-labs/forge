@@ -1,17 +1,8 @@
 import type { ScopeRef } from '../../identity/api/index';
 import type { MemoryPayloadRef, MemorySourceKind, MemoryUnitDraft } from './memory';
 
-export type LearningSignalKind =
-  | 'knowledge'
-  | 'success'
-  | 'failure'
-  | 'novelty'
-  | 'correction'
-  | 'contradiction'
-  | 'pattern'
-  | 'preference'
-  | 'principle'
-  | 'procedure';
+/** Open vocabulary on purpose: kind describes the model-authored semantic delta; it is not an admission taxonomy. */
+export type LearningSignalKind = string;
 
 export type LearningValence = 'positive' | 'negative' | 'neutral';
 
@@ -26,13 +17,7 @@ export type LearningAdmissionSource =
 /** Portability is semantic intent only; cross-scope writes still require the existing write authority. */
 export type LearningPortability = 'local' | 'portable';
 
-const AUTOMATIC_ADMISSION_SOURCES: readonly LearningAdmissionSource[] = [
-  'controller_observation',
-  'verified_outcome',
-  'execution_quality',
-  'system_inference',
-];
-const AUTOMATIC_LOCAL_SCOPE_KINDS: readonly ScopeRef['kind'][] = ['work', 'requirement', 'project'];
+const LEARNING_KIND = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 
 /** A learning trigger is domain-independent. Failure is only one possible signal. */
 export interface LearningSignal {
@@ -70,13 +55,15 @@ function score(value: number, label: string): void {
 export function validateLearningSignal(signal: LearningSignal): LearningSignal {
   if (signal.schemaVersion !== 1 || !signal.id.trim() || signal.id.length > 512) throw new Error('COGNITION_LEARNING_ID_INVALID');
   if (!signal.summary.trim() || signal.summary.length > 8_192) throw new Error('COGNITION_LEARNING_SUMMARY_INVALID');
+  if (typeof signal.kind !== 'string' || !LEARNING_KIND.test(signal.kind)) throw new Error('COGNITION_LEARNING_KIND_INVALID');
   if (!signal.concepts.length || signal.concepts.length > 64 || new Set(signal.concepts).size !== signal.concepts.length) throw new Error('COGNITION_LEARNING_CONCEPTS_INVALID');
   if (!Number.isFinite(Date.parse(signal.observedAt))) throw new Error('COGNITION_LEARNING_TIME_INVALID');
   if (!['explicit_human', 'controller_observation', 'verified_outcome', 'execution_quality', 'system_inference'].includes(signal.admissionSource)) throw new Error('COGNITION_LEARNING_ADMISSION_SOURCE_INVALID');
   if (!['local', 'portable'].includes(signal.portability)) throw new Error('COGNITION_LEARNING_PORTABILITY_INVALID');
-  if (signal.portability === 'portable' && signal.admissionSource !== 'explicit_human') throw new Error('COGNITION_LEARNING_PORTABILITY_REQUIRES_EXPLICIT_HUMAN');
-  if (AUTOMATIC_ADMISSION_SOURCES.includes(signal.admissionSource) && !AUTOMATIC_LOCAL_SCOPE_KINDS.includes(signal.scope.kind)) throw new Error('COGNITION_LEARNING_AUTOMATIC_SCOPE_INVALID');
-  if (signal.scope.kind === 'workspace' && (signal.admissionSource !== 'explicit_human' || signal.portability !== 'portable')) throw new Error('COGNITION_LEARNING_WORKSPACE_PROMOTION_REQUIRED');
+  // Scope/generalization is a model-authored semantic decision. Forge only enforces
+  // that Workspace memory was explicitly marked portable; admission source, kind,
+  // confidence and repetition count never authorize or forbid that decision.
+  if (signal.scope.kind === 'workspace' && signal.portability !== 'portable') throw new Error('COGNITION_LEARNING_WORKSPACE_PORTABILITY_REQUIRED');
   score(signal.salience, 'SALIENCE'); score(signal.confidence, 'CONFIDENCE'); score(signal.utility, 'UTILITY');
   if (signal.expiresAt && Date.parse(signal.expiresAt) <= Date.parse(signal.observedAt)) throw new Error('COGNITION_LEARNING_EXPIRY_INVALID');
   return signal;
@@ -84,7 +71,6 @@ export function validateLearningSignal(signal: LearningSignal): LearningSignal {
 
 export function memoryDraftFromLearningSignal(input: LearningSignal): MemoryUnitDraft {
   const signal = validateLearningSignal(input);
-  const durable = ['knowledge', 'success', 'correction', 'pattern', 'preference', 'principle', 'procedure'].includes(signal.kind);
   return {
     id: `learning:${signal.id}`,
     scope: signal.scope,
@@ -110,7 +96,9 @@ export function memoryDraftFromLearningSignal(input: LearningSignal): MemoryUnit
     },
     confidence: signal.confidence,
     utility: signal.utility,
-    tier: durable ? 'warm' : 'cold',
+    // The model has already decided this semantic delta is worth retaining.
+    // Kind is descriptive metadata, so it must not silently change retention tier.
+    tier: 'warm',
     validFrom: signal.observedAt,
     ...(signal.expiresAt ? { expiresAt: signal.expiresAt } : {}),
     counterEvidenceRefs: signal.counterEvidenceRefs ?? [],
