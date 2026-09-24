@@ -147,6 +147,38 @@ describe('generic cognitive memory', () => {
     expect(opportunistic.items.map(item => item.memory.id)).not.toContain(weak.id);
   });
 
+  test('does not penalize long CJK distilled memory when multiple current-task cues match', () => {
+    const fx = fixture();
+    const relevant = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft(
+        'mem:cjk-distilled',
+        'Avela 的业务写入完成要区分持久化提交、当前页面可见状态发布，以及通知和共享快照等派生收敛。完成一次服药以后，库存应来自同一事实写链，通知只是可重建投影，当前 UI 不应等待所有远期收敛才更新。',
+        ['avela.mutation.convergence'],
+        'E-1',
+      ),
+      confidence: 0.9,
+      utility: 0.9,
+    });
+    const generic = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft(
+        'mem:cjk-generic',
+        '另一个很长的产品说明只偶然提到一次用户界面，但讨论的是完全不同的主题和历史材料。',
+        ['other.product'],
+        'E-2',
+      ),
+      confidence: 0.99,
+      utility: 0.99,
+    });
+    const opportunistic = activateCognitiveMemory(
+      fx.controllerHome,
+      [scope],
+      '用户完成一次服药后 UI、库存和通知应该如何收敛',
+      { now: at, maxItems: 8, minCueScore: 0.12 },
+    );
+    expect(opportunistic.items.map(item => item.memory.id)).toContain(relevant.id);
+    expect(opportunistic.items.map(item => item.memory.id)).not.toContain(generic.id);
+  });
+
   test('does not let graph propagation alone admit unrelated opportunistic recall', () => {
     const fx = fixture();
     const seed = recordCognitiveMemory(fx.store, fx.authority, {

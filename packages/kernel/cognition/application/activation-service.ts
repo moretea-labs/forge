@@ -75,10 +75,15 @@ function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<strin
   if (!haystack.size) return 0;
   let matches = 0;
   for (const term of terms) if (haystack.has(term)) matches += 1;
-  // Automatic recall needs evidence in both directions: how much of the
-  // current cue matched, and how specifically that cue identifies this
-  // memory. A single generic word in a long memory must not count as recall.
-  return matches / Math.sqrt(terms.size * haystack.size);
+  // Automatic recall still rejects a single generic overlap, but a long
+  // distilled memory must not become harder to recall merely because it has
+  // more explanatory text. This especially matters for CJK bigram terms,
+  // where one useful paragraph naturally has a much larger haystack. Require
+  // at least two direct cue units before query coverage can qualify a memory;
+  // otherwise retain the symmetric specificity score used for short/exact cues.
+  const symmetricSpecificity = matches / Math.sqrt(terms.size * haystack.size);
+  const multiCueQueryCoverage = matches >= 2 ? matches / terms.size : 0;
+  return Math.max(symmetricSpecificity, multiCueQueryCoverage);
 }
 
 function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>): number {
