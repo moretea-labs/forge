@@ -179,6 +179,27 @@ describe('generic cognitive memory', () => {
     expect(opportunistic.items.map(item => item.memory.id)).not.toContain(generic.id);
   });
 
+  test('does not apply CJK long-memory coverage to unrelated ASCII process cues', () => {
+    const fx = fixture();
+    const unrelated = recordCognitiveMemory(fx.store, fx.authority, {
+      ...draft(
+        'mem:ascii-noise',
+        'Medication notification projection uses a single coordinator and command path for terminal actions, future planning, and local delivery cleanup.',
+        ['avela.notification.projection'],
+        'E-1',
+      ),
+      confidence: 0.99,
+      utility: 0.99,
+    });
+    const opportunistic = activateCognitiveMemory(
+      fx.controllerHome,
+      [scope],
+      'inspect local process pid for a stuck command',
+      { now: at, maxItems: 8, minCueScore: 0.12 },
+    );
+    expect(opportunistic.items.map(item => item.memory.id)).not.toContain(unrelated.id);
+  });
+
   test('does not let graph propagation alone admit unrelated opportunistic recall', () => {
     const fx = fixture();
     const seed = recordCognitiveMemory(fx.store, fx.authority, {

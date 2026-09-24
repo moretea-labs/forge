@@ -69,7 +69,7 @@ function boundedUnitScore(value: number | undefined, label: string): number {
   return value;
 }
 
-function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>): number {
+function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>, allowCjkQueryCoverage = false): number {
   if (!terms.size) return 0;
   const haystack = cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`);
   if (!haystack.size) return 0;
@@ -81,13 +81,21 @@ function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<strin
   // where one useful paragraph naturally has a much larger haystack. Require
   // at least two direct cue units before query coverage can qualify a memory;
   // otherwise retain the symmetric specificity score used for short/exact cues.
-  const symmetricSpecificity = matches / Math.sqrt(terms.size * haystack.size);
-  const multiCueQueryCoverage = matches >= 2 ? matches / terms.size : 0;
-  return Math.max(symmetricSpecificity, multiCueQueryCoverage);
+  const queryCoverage = matches / terms.size;
+  const memoryCoverage = matches / haystack.size;
+  // For ASCII lexical cues require bidirectional specificity: the query must
+  // meaningfully identify the memory and the memory must meaningfully explain
+  // the query. CJK bigram tokenization naturally makes the memory side much
+  // larger, so a CJK query with multiple direct cue units may use bounded query
+  // coverage instead. This remains candidate discovery, never semantic authority.
+  const bidirectionalSpecificity = Math.min(queryCoverage, memoryCoverage);
+  const multiCueQueryCoverage = allowCjkQueryCoverage && matches >= 2 ? queryCoverage : 0;
+  return Math.max(bidirectionalSpecificity, multiCueQueryCoverage);
 }
 
-function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>): number {
-  let score = associativeLexicalCueScore(item.memory, queryTerms);
+function retrievalCueScore(item: ActivationItem, queryTerms: ReadonlySet<string>, query: string): number {
+  const hasCjkQuery = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(query);
+  let score = associativeLexicalCueScore(item.memory, queryTerms, hasCjkQuery);
   for (const reason of item.reasons) {
     if (reason.signal === 'exact' || reason.signal === 'semantic') {
       score = Math.max(score, reason.score);
@@ -294,7 +302,7 @@ export function activateMemory(
     // list of globally high-confidence memories. Confidence/utility rank a
     // relevant memory after it is cued; they must not make a weakly related
     // memory "come to mind" by themselves.
-    if (retrievalCueScore(item, queryTerms) < minCueScore) continue;
+    if (retrievalCueScore(item, queryTerms, query) < minCueScore) continue;
     const size = Buffer.byteLength(JSON.stringify({
       address: memoryAddressLabel(memoryAddressOf(item.memory)),
       facets: item.memory.facets,

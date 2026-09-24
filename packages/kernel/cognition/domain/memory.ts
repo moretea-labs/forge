@@ -227,8 +227,16 @@ export function validateMemoryEdge(edge: MemoryEdge): MemoryEdge {
   return edge;
 }
 
+const COGNITIVE_ENGLISH_FUNCTION_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'by', 'for', 'from', 'in', 'into', 'is', 'it',
+  'of', 'on', 'or', 'that', 'the', 'this', 'to', 'was', 'were', 'with',
+]);
+
 export function cognitiveTerms(text: string): Set<string> {
-  const terms = new Set(text.toLocaleLowerCase('en-US').match(/[a-z0-9_.:/-]+/g) ?? []);
+  const terms = new Set(
+    (text.toLocaleLowerCase('en-US').match(/[a-z0-9_.:/-]+/g) ?? [])
+      .filter(term => !COGNITIVE_ENGLISH_FUNCTION_WORDS.has(term)),
+  );
   for (const run of text.match(/\p{Script=Han}+/gu) ?? []) {
     const chars = [...run];
     if (chars.length === 1) terms.add(run);
