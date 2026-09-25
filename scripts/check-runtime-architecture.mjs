@@ -272,7 +272,7 @@ requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequireme
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_promote_candidate|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanCreateOperation');
-requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'approvePlanContractAsync');
+forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /approvePlanContractAsync|acceptPlanStepEvidence/, 'legacy plan_approve/plan_accept_step must stay a bounded compatibility read instead of a Plan lifecycle writer');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'supersedePlanContract');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'resolvePlanAdmission');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'admitPlanContractAsync');

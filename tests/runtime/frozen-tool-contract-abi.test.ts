@@ -11,6 +11,7 @@ import {
   recoveryStatusDerivedArguments,
 } from '../../adapters/mcp/runtime-gateway/recovery-tool-contract';
 import { RECOVERY_TOOLS } from '../../src/runtime/standalone-recovery/entry';
+import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 
 const activationTool = RECOVERY_TOOLS.find((tool) => tool.name === 'activate_runtime_release');
 if (!activationTool) throw new Error('activate_runtime_release schema is required for Tool Contract ABI regression');
@@ -157,6 +158,34 @@ describe('Tool Contract ABI authority', () => {
     })).toThrow('controller_authority_id and relay_scope_id must be paired');
   });
 
+  test('semantic.v1 carries thin Requirement Plan and Work CAS operations without lifecycle fallbacks', () => {
+    const requirementRevision = buildFrozenSemanticCompatibilityCapability({
+      operation: 'requirement_revise',
+      args: { expected_revision: 3, requirement_outcome: 'Keep the same durable goal while refining acceptance.', requirement_state: 'open' },
+    });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', requirementRevision)).toEqual({
+      operation: 'requirement_revise',
+      args: { expected_revision: 3, requirement_outcome: 'Keep the same durable goal while refining acceptance.', requirement_state: 'open' },
+    });
+
+    const planRevision = buildFrozenSemanticCompatibilityCapability({
+      operation: 'plan_revise',
+      args: { plan_id: 'PLAN-FROZEN-REVISE', expected_revision: 7, objective: 'Revise durable model-authored working memory.', plan_items: [{ id: 'item-a', objective: 'Keep one semantic writer.', dependencies: [] }], integration_strategy: null },
+    });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', planRevision)).toEqual({
+      operation: 'plan_revise',
+      args: { plan_id: 'PLAN-FROZEN-REVISE', expected_revision: 7, objective: 'Revise durable model-authored working memory.', plan_items: [{ id: 'item-a', objective: 'Keep one semantic writer.', dependencies: [] }], integration_strategy: null },
+    });
+
+    const workCompletion = buildFrozenSemanticCompatibilityCapability({ operation: 'work_complete', args: { expected_revision: 5, work_result_refs: ['commit:abc123'] } });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', workCompletion)).toEqual({ operation: 'work_complete', args: { expected_revision: 5, work_result_refs: ['commit:abc123'] } });
+    const workRevision = buildFrozenSemanticCompatibilityCapability({ operation: 'work_revise', args: { expected_revision: 4, objective: 'Continue exact root-cause delivery.', plan_revision: 9 } });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', workRevision)).toEqual({ operation: 'work_revise', args: { expected_revision: 4, objective: 'Continue exact root-cause delivery.', plan_revision: 9 } });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', buildFrozenSemanticCompatibilityCapability({ operation: 'requirement_get', args: {} }))).toEqual({ operation: 'requirement_get', args: {} });
+    expect(parseFrozenSemanticCompatibilityCapability('repair', buildFrozenSemanticCompatibilityCapability({ operation: 'work_get', args: {} }))).toEqual({ operation: 'work_get', args: {} });
+    expect(() => buildFrozenSemanticCompatibilityCapability({ operation: 'work_complete', args: { expected_revision: 0 } })).toThrow('expected_revision must be a positive integer');
+  });
+
   test('semantic.v1 carries frozen continue Engineering admission without Work authority', () => {
     const engineeringPreconditions = {
       context_closure: { receipt_id: 'runtime-issued-context' },
@@ -199,9 +228,11 @@ describe('Tool Contract ABI authority', () => {
       operation: 'controller_disposition',
       args: { learning_signals: learningSignals },
     });
+    // The envelope bound is the single shared transport constant; a batch may
+    // carry more than one signal as long as it stays inside that envelope.
     expect(() => buildFrozenSemanticCompatibilityCapability({
       operation: 'controller_disposition',
-      args: { learning_signals: Array.from({ length: 9 }, () => learningSignals[0]) },
+      args: { learning_signals: Array.from({ length: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS + 1 }, () => learningSignals[0]) },
     })).toThrow('learning_signals must be a bounded array');
     expect(() => buildFrozenSemanticCompatibilityCapability({
       operation: 'controller_disposition',
@@ -311,4 +342,3 @@ describe('Tool Contract ABI authority', () => {
     expect(canonical.status).toBe(0);
   });
 });
-

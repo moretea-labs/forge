@@ -346,51 +346,24 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
   }
 
   if (operation === 'handoff') {
-    const handoff = createHandoffItem(ctx.handoffStore, {
-      id: `hnd-heal-${randomUUID().slice(0, 8)}`,
-      repoId: ctx.repoId,
-      workId: input.workId,
-      title: 'Self-healing needs judgement',
-      severity: 'needs_review',
-      creationReason: 'repeated_infrastructure_failure',
-      reason: 'Self-healing could not safely complete without ChatGPT or user decision.',
-      summary: issues.map((issue) => issue.summary).join(' | ').slice(0, 500) || 'Manual recovery decision required.',
-      currentState: {
-        repoId: ctx.repoId,
-        workId: input.workId,
-        statusSummary: 'self-healing handoff pending',
+    // Infrastructure recovery is internal execution state. Escalate only when a
+    // concrete user authorization or product decision has actually been found.
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'Self-healing could not safely complete automatically; keep the exact Work blocked for bounded internal recovery rather than escalating infrastructure failure to the user.',
+      data: {
+        operation: 'handoff',
+        internalRecoveryRequired: true,
+        isAcceptanceFailure: false,
       },
-      attemptedActions: ['self_healing_diagnose', 'self_healing_repair'],
-      evidenceRefs: [],
-      blockingDecision: 'Choose bounded metadata repair, external lifecycle handoff, retry later, or re-scope work.',
-      recommendedDecision: 'Prefer safe dry-run repairs; Runtime lifecycle changes belong to the external lifecycle owner.',
-      recommendedPrompt: 'Review self-healing handoff and choose repair or stop.',
       suggestedNextActions: [
         {
           label: 'Diagnose again (dry-run)',
           tool: 'rh_work',
           operation: 'repair',
-          payload: { repair_operation: 'diagnose', dry_run: true },
-          risk: 'readonly',
-        },
-      ],
-    });
-
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `Self-healing handoff ${handoff.id} created.`,
-      data: {
-        operation: 'handoff',
-        handoffId: handoff.id,
-        isAcceptanceFailure: false,
-      },
-      suggestedNextActions: [
-        {
-          label: 'Get handoff',
-          tool: 'rh_inbox',
-          operation: 'get',
-          payload: { handoff_id: handoff.id },
-          risk: 'readonly',
+          payload: { repair_operation: 'diagnose', dry_run: true, work_id: input.workId },
+          risk: 'workspace_write',
+          confidence: 'low',
         },
       ],
     });

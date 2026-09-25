@@ -895,22 +895,26 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 if (physical.isError === true) return physical;
                 const cleanup = contextRecord(physical.structuredContent);
                 const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
+                const cleanupRetained = cleanup.cleanupRetained === true;
+                const cleanupSettled = cleanupCompleted || cleanupRetained;
                 return result(buildFacadeResult({
-                  status: cleanupCompleted ? 'ok' : 'blocked',
+                  status: cleanupSettled ? 'ok' : 'blocked',
                   summary: cleanupCompleted
-                    ? `Terminal Work ${workId} outcome was preserved; explicit managed repository cleanup completed through canonical Work finalization authority.`
-                    : `Terminal Work ${workId} outcome was preserved; explicit managed repository cleanup remains incomplete and visible for retry.`,
+                    ? `Terminal Work ${workId} outcome was preserved; explicit managed repository cleanup completed through canonical cleanup authority.`
+                    : cleanupRetained
+                      ? `Terminal Work ${workId} outcome was preserved; dirty managed repository resources were retained in place and were not mutated by cleanup.`
+                      : `Terminal Work ${workId} outcome was preserved; explicit managed repository cleanup remains incomplete and visible for retry.`,
                   data: {
                     work: summarizeWorkContract(existingWork),
                     finalStatus: existingWork.status,
                     terminalizationApplied: false,
                     cleanupOnly: true,
                     worktreeDeleted: cleanupCompleted,
-                    cleanupPending: !cleanupCompleted,
-                    cleanupRetained: false,
+                    cleanupPending: !cleanupSettled,
+                    cleanupRetained,
                     lifecycleCleanup: cleanup,
                   },
-                }) as unknown as Record<string, unknown>, !cleanupCompleted);
+                }) as unknown as Record<string, unknown>, !cleanupSettled);
               } catch (error) {
                 return result(buildFacadeResult({
                   status: 'blocked',

@@ -129,7 +129,7 @@ export function buildPluginManagementManifest(previousRevision = 0, previousUpda
   return {
     schemaVersion: 1, manifestVersion: 1, revision: Math.max(1, previousRevision || 1), pluginId: PLUGIN_ID,
     provider: 'forge-controller', displayName: 'Forge Plugin Management', pluginVersion: '1.0.0',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-home:plugins/external/registrations', 'controller-home:system/plugin-capability-authorizations/grants.json'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-home:plugins/external/registrations', 'controller-home:system/authorization-grants/grants.json'] },
     enabled: true, lifecycle: { state: 'enabled', reason: 'Canonical external plugin registration authority is available.' },
     health: { state: 'ready', checkedAt: now(), ready: true, probed: true, errors: [], warnings: [] },
     permissions: permissions(), capabilities: capabilities(), actions: actions(), updatedAt: previousUpdatedAt ?? now(),

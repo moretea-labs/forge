@@ -19,7 +19,7 @@ import {
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { withControlPlaneReadDatabase } from '../control-plane/persistence/sqlite-store';
-import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment, reserveWorkflowSupervisorSchedulerRecovery } from '../../../supervisor/client';
+import { getWorkflowSupervisorCurrentConversation, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorCompletion, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask, WorkflowSupervisorTurnSettlement } from '../../../supervisor/types';
 
@@ -175,12 +175,12 @@ async function settleForgeWorkflowSupervisorTurn(
     inheritWorkflowSupervisorConversationBinding(store, settledWorkId, relay.originWorkId);
   }
   const continuationContext = [
-    `Exact lower-layer ControllerRound prepared for Work ${relay.originWorkId} in repo ${repoId}.`,
+    `Exact lower-layer continuation is prepared for Work ${relay.originWorkId} in repo ${repoId}.`,
     `controller_authority_id=${relay.authorityId}`,
     `relay_scope_id=${relay.relayScopeId}`,
-    `Before any repository mutation, call rh_work operation=controller_claim for exact Work ${relay.originWorkId} with this exact authority pair.`,
-    'Reuse the same controller_authority_id and relay_scope_id for continue/verify/review/finalize/stop/controller_release in this round.',
-    'Never mint a replacement authority and never substitute a transport session id.',
+    `Current frozen Runtime may require this exact authority pair for the mechanical controller_claim/continuation/release envelope for Work ${relay.originWorkId}.`,
+    'Treat ControllerRound identity as resume/transport bookkeeping only. Re-read current Requirement/Plan/Work/UserRequest facts and use canonical stable-id + expected_revision semantic operations; do not invent mandatory verify/review/finalize/PlanStep lifecycle from this authority.',
+    'Never mint a replacement continuation authority and never substitute a transport session id.',
   ].join('\n');
   return { continuationAllowed: true, continuationContext };
 }
@@ -422,6 +422,5 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
     },
   });
   const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId);
-  const schedulerRecovery = await reserveWorkflowSupervisorSchedulerRecovery(forgeHome, registeredTask.taskId, input.schedulerRecoveryKey);
-  return { status: 'enrolled', taskId: registeredTask.taskId, effectId: schedulerRecovery?.effectId ?? effect.effectId };
+  return { status: 'enrolled', taskId: registeredTask.taskId, effectId: effect.effectId };
 }

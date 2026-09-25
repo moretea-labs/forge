@@ -772,6 +772,10 @@ function inspectStaleWorkRepositorySource(
 }
 
 function staleWorkSemanticTerminalizationReady(contract: WorkContract): boolean {
+  // Automatic stale maintenance may terminalize only pre-semantic legacy Work.
+  // Once a Work has a canonical semantic revision, cancellation is a model/user
+  // semantic CAS decision and maintenance can only report mechanical stale facts.
+  if (Number.isInteger(contract.semanticRevision) && Number(contract.semanticRevision) >= 1) return false;
   if (contract.phase !== 'cleanup') return false;
   return (['implementation', 'verification', 'delivery'] as const).every((phase) =>
     ['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state));

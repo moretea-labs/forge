@@ -1,4 +1,11 @@
-import { recordCanonicalGrant, revokeCanonicalGrant } from '../../../packages/kernel/identity/api/index';
+import {
+  findActiveCanonicalGrant,
+  listCanonicalGrants,
+  reconcileCanonicalGrants,
+  recordCanonicalGrant,
+  revokeCanonicalGrant,
+  type Grant,
+} from '../../../packages/kernel/identity/api/index';
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -229,6 +236,72 @@ function scopesContain(granted: readonly string[], requested: readonly string[])
   return requested.every((scope) => available.has(scope));
 }
 
+function pluginMetadataFromCanonicalGrant(grant: Grant): { pluginId: string; capabilityId: string } | undefined {
+  const constraints = grant.constraints;
+  if (!constraints || constraints.kind !== 'plugin_capability_authorization') return undefined;
+  const pluginId = typeof constraints.pluginId === 'string' ? constraints.pluginId.trim() : '';
+  const capabilityId = typeof constraints.capabilityId === 'string' ? constraints.capabilityId.trim() : '';
+  return pluginId && capabilityId ? { pluginId, capabilityId } : undefined;
+}
+
+function pluginGrantFromCanonical(
+  grant: Grant,
+  fallback?: { pluginId: string; capabilityId: string; repoId?: string; target?: AssistantPluginAuthorizationTarget },
+): PluginCapabilityAuthorizationGrant | undefined {
+  const metadata = pluginMetadataFromCanonicalGrant(grant)
+    ?? (fallback ? { pluginId: fallback.pluginId, capabilityId: fallback.capabilityId } : undefined);
+  if (!metadata || !grant.target) return undefined;
+  const ownerScope = grant.ownerScope?.trim() || grant.principalId.trim();
+  if (!ownerScope) return undefined;
+  const target: AssistantPluginAuthorizationTarget = {
+    kind: grant.target.kind,
+    id: grant.target.id,
+    ...(grant.target.identityFingerprint ? { identityFingerprint: grant.target.identityFingerprint } : fallback?.target?.identityFingerprint ? { identityFingerprint: fallback.target.identityFingerprint } : {}),
+  };
+  return {
+    schemaVersion: 1,
+    grantId: grant.grantId,
+    ownerScope,
+    repoId: grant.target.repoId ?? fallback?.repoId ?? 'controller:global',
+    pluginId: metadata.pluginId,
+    capabilityId: metadata.capabilityId,
+    target,
+    scopes: [...(grant.scopes ?? [])],
+    riskCeiling: grant.riskCeiling ?? 'readonly',
+    createdAt: grant.createdAt,
+    updatedAt: grant.updatedAt,
+    expiresAt: grant.expiresAt,
+    ...(grant.revokedAt ? { revokedAt: grant.revokedAt } : {}),
+    ...(grant.revokedReason ? { revokedReason: grant.revokedReason } : {}),
+  };
+}
+
+function recordCanonicalPluginGrant(
+  controllerHome: string,
+  grant: PluginCapabilityAuthorizationGrant,
+  now?: Date,
+): PluginCapabilityAuthorizationGrant {
+  const expiresInMinutes = Math.max(1, Math.ceil((Date.parse(grant.expiresAt) - (now ?? new Date()).getTime()) / 60_000));
+  const canonical = recordCanonicalGrant(controllerHome, {
+    grantId: grant.grantId,
+    principalId: grant.ownerScope,
+    ownerScope: grant.ownerScope,
+    capabilities: [`${grant.pluginId}:${grant.capabilityId}`, grant.capabilityId],
+    target: {
+      kind: grant.target.kind,
+      id: grant.target.id,
+      repoId: grant.repoId,
+      ...(grant.target.identityFingerprint ? { identityFingerprint: grant.target.identityFingerprint } : {}),
+    },
+    scopes: grant.scopes,
+    riskCeiling: grant.riskCeiling,
+    constraints: { kind: 'plugin_capability_authorization', pluginId: grant.pluginId, capabilityId: grant.capabilityId },
+    expiresInMinutes,
+    now,
+  });
+  return pluginGrantFromCanonical(canonical, grant)!;
+}
+
 export function findActivePluginCapabilityAuthorization(
   controllerHome: string,
   query: PluginCapabilityAuthorizationQuery,
@@ -240,8 +313,19 @@ export function findActivePluginCapabilityAuthorization(
   const capabilityId = required(query.capabilityId, 'capabilityId');
   const target = normalizeTarget(query.target);
   const scopes = normalizeScopes(query.scopes);
+  const canonical = findActiveCanonicalGrant(controllerHome, {
+    ownerScope,
+    capability: `${pluginId}:${capabilityId}`,
+    target: { kind: target.kind, id: target.id, repoId, ...(target.identityFingerprint ? { identityFingerprint: target.identityFingerprint } : {}) },
+    scopes,
+    risk: query.risk,
+    at: query.at,
+  });
+  if (canonical) return pluginGrantFromCanonical(canonical, { pluginId, capabilityId, repoId, target });
+
+  // One-way migration seed for installations that predate canonical Grant.
   const atMs = (query.at ?? new Date()).getTime();
-  return loadStore(controllerHome).grants
+  const legacy = loadStore(controllerHome).grants
     .filter((grant) => !grant.revokedAt && Date.parse(grant.expiresAt) > atMs)
     .filter((grant) => grant.ownerScope === ownerScope
       && grant.repoId === repoId
@@ -251,6 +335,7 @@ export function findActivePluginCapabilityAuthorization(
       && scopesContain(grant.scopes, scopes)
       && RISK_RANK[grant.riskCeiling] >= RISK_RANK[query.risk])
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  return legacy ? recordCanonicalPluginGrant(controllerHome, legacy, query.at) : undefined;
 }
 
 /**
@@ -265,9 +350,13 @@ export function findActivePluginCapabilityAuthorizationById(
 ): PluginCapabilityAuthorizationGrant | undefined {
   const normalizedGrantId = required(grantId, 'grantId');
   const atMs = at.getTime();
-  const grant = loadStore(controllerHome).grants.find((entry) => entry.grantId === normalizedGrantId);
-  if (!grant || grant.revokedAt || Date.parse(grant.expiresAt) <= atMs) return undefined;
-  return structuredClone(grant);
+  const canonical = listCanonicalGrants(controllerHome).find((entry) => entry.grantId === normalizedGrantId);
+  if (canonical && !canonical.revokedAt && Date.parse(canonical.expiresAt) > atMs) {
+    return pluginGrantFromCanonical(canonical);
+  }
+  const legacy = loadStore(controllerHome).grants.find((entry) => entry.grantId === normalizedGrantId);
+  if (!legacy || legacy.revokedAt || Date.parse(legacy.expiresAt) <= atMs) return undefined;
+  return recordCanonicalPluginGrant(controllerHome, legacy, at);
 }
 
 export function recordPluginCapabilityAuthorization(
@@ -313,6 +402,19 @@ export function recordPluginCapabilityAuthorization(
       { scope: 'global', resource: 'plugin-capability-authorization-grants' },
       `plugin-capability-grant:${ownerScope}`,
       () => {
+        const canonicalGrant = recordCanonicalGrant(controllerHome, {
+          grantId: grant.grantId,
+          principalId: grant.ownerScope,
+          ownerScope: grant.ownerScope,
+          capabilities: [`${grant.pluginId}:${grant.capabilityId}`, grant.capabilityId],
+          target: { kind: grant.target.kind, id: grant.target.id, repoId: grant.repoId, ...(grant.target.identityFingerprint ? { identityFingerprint: grant.target.identityFingerprint } : {}) },
+          scopes: grant.scopes,
+          riskCeiling: grant.riskCeiling,
+          constraints: { kind: 'plugin_capability_authorization', pluginId: grant.pluginId, capabilityId: grant.capabilityId },
+          expiresInMinutes,
+          now,
+        });
+        const projected = pluginGrantFromCanonical(canonicalGrant, grant)!;
         const store = loadStore(controllerHome);
         store.grants = store.grants.filter((entry) => !(entry.ownerScope === ownerScope
           && entry.repoId === repoId
@@ -320,21 +422,9 @@ export function recordPluginCapabilityAuthorization(
           && entry.capabilityId === capabilityId
           && entry.target.kind === target.kind
           && entry.target.id === target.id));
-        store.grants.push(grant);
+        store.grants.push(projected);
         saveStore(controllerHome, store);
-        try {
-          recordCanonicalGrant(controllerHome, {
-            grantId: grant.grantId,
-            principalId: grant.ownerScope,
-            ownerScope: grant.ownerScope,
-            capabilities: [grant.pluginId + ':' + grant.capabilityId, grant.capabilityId],
-            target: { kind: grant.target.kind, id: grant.target.id, repoId: grant.repoId },
-            scopes: grant.scopes,
-            riskCeiling: grant.riskCeiling,
-            now,
-          });
-        } catch { /* mirror is non-blocking */ }
-        return grant;
+        return projected;
       },
       5_000,
     );
@@ -360,24 +450,18 @@ export function revokePluginCapabilityAuthorization(
       { scope: 'global', resource: 'plugin-capability-authorization-grants' },
       `plugin-capability-revoke:${ownerScope}`,
       () => {
-        const store = loadStore(controllerHome);
-        const index = store.grants.findIndex((grant) => grant.grantId === grantId);
-        if (index < 0) throw new PluginCapabilityAuthorizationGrantError('PLUGIN_CAPABILITY_GRANT_NOT_FOUND', `Grant ${grantId} was not found.`);
-        const current = store.grants[index]!;
+        const current = findActivePluginCapabilityAuthorizationById(controllerHome, grantId, now);
+        if (!current) throw new PluginCapabilityAuthorizationGrantError('PLUGIN_CAPABILITY_GRANT_NOT_FOUND', `Grant ${grantId} was not found.`);
         if (current.ownerScope !== ownerScope) {
           throw new PluginCapabilityAuthorizationGrantError('PLUGIN_CAPABILITY_GRANT_OWNER_MISMATCH', `Grant ${grantId} belongs to another owner scope.`);
         }
-        const revoked: PluginCapabilityAuthorizationGrant = {
-          ...current,
-          updatedAt: now.toISOString(),
-          revokedAt: now.toISOString(),
-          revokedReason: reason,
-        };
-        store.grants[index] = revoked;
+        const canonical = revokeCanonicalGrant(controllerHome, { grantId, ownerScope, reason, now });
+        const revoked = pluginGrantFromCanonical(canonical, current)!;
+        const store = loadStore(controllerHome);
+        const index = store.grants.findIndex((grant) => grant.grantId === grantId);
+        if (index >= 0) store.grants[index] = revoked;
+        else store.grants.push(revoked);
         saveStore(controllerHome, store);
-        try {
-          revokeCanonicalGrant(controllerHome, { grantId: revoked.grantId, ownerScope: revoked.ownerScope, reason });
-        } catch { /* mirror is non-blocking */ }
         return revoked;
       },
       5_000,
@@ -405,37 +489,22 @@ export function reconcilePluginCapabilityAuthorizations(
       { scope: 'global', resource: 'plugin-capability-authorization-grants' },
       'plugin-capability-reconcile',
       () => {
-        const store = loadStore(controllerHome);
-        let removedRetiredOwner = 0;
-        let removedRevoked = 0;
-        let removedExpired = 0;
-        const grants = store.grants.filter((grant) => {
-          if (retiredOwnerScopes.has(grant.ownerScope)) {
-            removedRetiredOwner += 1;
-            return false;
-          }
-          if (grant.revokedAt) {
-            removedRevoked += 1;
-            return false;
-          }
-          if (Date.parse(grant.expiresAt) <= nowMs) {
-            removedExpired += 1;
-            return false;
-          }
-          return true;
+        void nowMs;
+        const canonical = reconcileCanonicalGrants(controllerHome, {
+          retiredOwnerScopes: [...retiredOwnerScopes],
+          now: input.now,
         });
-        const removedTotal = removedRetiredOwner + removedRevoked + removedExpired;
-        if (removedTotal > 0) {
-          store.grants = grants;
-          saveStore(controllerHome, store);
-        }
+        const grants = listCanonicalGrants(controllerHome)
+          .map((grant) => pluginGrantFromCanonical(grant))
+          .filter((grant): grant is PluginCapabilityAuthorizationGrant => Boolean(grant));
+        saveStore(controllerHome, { schemaVersion: 1, grants });
         return {
-          removedRetiredOwner,
-          removedRevoked,
-          removedExpired,
-          removedTotal,
+          removedRetiredOwner: canonical.removedRetiredOwner,
+          removedRevoked: canonical.removedRevoked,
+          removedExpired: canonical.removedExpired,
+          removedTotal: canonical.removedTotal,
           remaining: grants.length,
-          changed: removedTotal > 0,
+          changed: canonical.changed,
         };
       },
       5_000,
@@ -453,7 +522,7 @@ export function listPluginCapabilityAuthorizations(
   ownerScope?: string,
 ): PluginCapabilityAuthorizationGrant[] {
   const normalizedOwner = ownerScope?.trim();
-  return loadStore(controllerHome).grants
-    .filter((grant) => !normalizedOwner || grant.ownerScope === normalizedOwner)
-    .map((grant) => structuredClone(grant));
+  return listCanonicalGrants(controllerHome, normalizedOwner ? { ownerScope: normalizedOwner } : undefined)
+    .map((grant) => pluginGrantFromCanonical(grant))
+    .filter((grant): grant is PluginCapabilityAuthorizationGrant => Boolean(grant));
 }

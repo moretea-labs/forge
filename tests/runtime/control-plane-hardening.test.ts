@@ -21,7 +21,8 @@ import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkComp
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { continueGoalWorkloop, routeWorkStart, stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { recordUserRequest } from '../../packages/kernel/identity/api/index';
 import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
@@ -44,7 +45,7 @@ import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFr
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
-import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
+import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
@@ -1059,7 +1060,7 @@ describe('scheduled external Controller wake', () => {
     expect(dispatchedPrompt).toContain(JSON.stringify(opened.relayScopeId));
     expect(dispatchedPrompt).not.toContain('<controller-home>');
     expect(dispatchedPrompt).not.toContain('<controller_authority_id>');
-    expect(dispatchedPrompt).toContain('本轮结束协议是强制的');
+    expect(dispatchedPrompt).toContain('若当前 frozen Runtime 仍要求 controller disposition/release，在结束本轮前完成这一机械 bookkeeping');
   });
 
 
@@ -1508,21 +1509,20 @@ describe('scheduled external Controller wake', () => {
     expect(opened).toMatchObject({ status: 'dispatching', lifecycleStage: 'dispatching' });
     const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
 
-    expect(scheduledPrompt).toContain(`只允许 claim 并推进 origin Work ${workId}。`);
+    expect(scheduledPrompt).toContain(`只推进 origin Work ${workId} 的既定范围`);
     expect(scheduledPrompt).toContain(`controller_authority_id=${opened.authorityId}`);
     expect(scheduledPrompt).toContain(`relay_scope_id=${opened.relayScopeId}`);
-    expect(scheduledPrompt).toContain(`controller.round:<operation>:${opened.authorityId}:${opened.relayScopeId}`);
-    expect(scheduledPrompt).toContain(`controller.round:review:<approved|changes_required|blocked>:${opened.authorityId}:${opened.relayScopeId}`);
-    expect(scheduledPrompt).toContain('通过 reason 携带 review rationale');
+    expect(scheduledPrompt).toContain('不是 Requirement、Plan 或 Work 的语义写权限');
+    expect(scheduledPrompt).not.toContain('controller.round:<operation>:');
     expect(scheduledPrompt).toContain('这是新的 ChatGPT controller round。');
     expect(scheduledPrompt).not.toContain('This is a new ChatGPT controller round.');
-    expect(scheduledPrompt).toContain('不得选择、启动、delegate、resume sibling Work');
+    expect(scheduledPrompt).toContain('不得扩大 scope、创建 sibling Work 或新增 schedule');
     expect(scheduledPrompt).not.toContain('选择、启动或 claim 正确的 Work');
     expect(scheduledPrompt).toContain('ROUND4_EXPLICITLY_WAITS_AFTER_EXTERNAL_EVALUATOR_BOUNDARY');
     expect(scheduledPrompt).toContain('origin Work acceptanceCriteria（durable semantic contract）');
     expect(scheduledPrompt).toContain('ROUND4_TERMINAL_OBLIGATION: when the external evaluator boundary is reached, use wait rather than goal_complete.');
     expect(scheduledPrompt).toContain('origin Work 的 objective 与 acceptanceCriteria 是本轮必须显式检查的 durable semantic contract');
-    expect(scheduledPrompt).toContain('本轮结束协议是强制的');
+    expect(scheduledPrompt).toContain('若当前 frozen Runtime 仍要求 controller disposition/release，在结束本轮前完成这一机械 bookkeeping');
     expect(scheduledPrompt).toContain('必须选择 continue_immediately');
     expect(scheduledPrompt).toContain('必须立即 controller_release 当前 Work');
     expect(scheduledPrompt).toContain('正常连续推进不得依赖用户再次发送“继续”');
@@ -2567,67 +2567,59 @@ describe('scheduled external Controller wake', () => {
     const browserFirst = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'browser-old-noise' });
     expect(browserFirst?.decision).toBe('would_execute');
 
+    // Person-only blocker authority is the canonical UserRequest. A blocker that
+    // targets a different Work must not stop this Work's continuation.
+    recordUserRequest(controllerHome, {
+      kind: 'user_decision_request',
+      rootCauseKey: `work:WORK-OTHER:product-decision`,
+      title: 'Unrelated Work needs a product decision',
+      summary: 'A sibling Work owns this decision and must not gate the target Work.',
+      actionRequired: 'product_decision',
+      targetScope: { scopeKind: 'work', scopeId: 'WORK-OTHER', repoId: repository.repoId, workId: 'WORK-OTHER' },
+    });
+    const unrelated = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'unrelated-user-request' });
+    expect(unrelated?.decision).toBe('would_execute');
+
+    // A legacy ambiguous Handoff is also projected into canonical authority, so
+    // a genuine judgement request on the exact Work stops continuation.
     createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-SCOPE', repoId: repository.repoId, workId, title: 'Current Work needs controller review', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'Current Work needs semantic review.', summary: 'Bounded controller review required.', currentState: { repoId: repository.repoId, workId, statusSummary: 'reviewable' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Review current Work.', recommendedPrompt: 'Review current Work.', suggestedNextActions: [] });
     const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'controller-review-handoff' });
-    expect(second?.decision).toBe('would_execute');
+    expect(second).toMatchObject({ decision: 'stopped', status: 'skipped' });
+    expect(second?.reason).toContain(`Work ${workId} has pending UserRequest`);
 
     createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-HUMAN', repoId: repository.repoId, workId, title: 'Current Work requires authorization', severity: 'needs_review', creationReason: 'policy_approval_required', reason: 'Explicit user authorization is required.', summary: 'Human approval required before continuation.', currentState: { repoId: repository.repoId, workId, statusSummary: 'approval required' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Request approval.', recommendedPrompt: 'Request explicit approval.', suggestedNextActions: [] });
     const third = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'human-review-handoff' });
     expect(third).toMatchObject({ decision: 'stopped', status: 'skipped' });
-    expect(third?.reason).toContain('HND-WORK-HUMAN');
+    expect(third?.reason).toContain(`Work ${workId} has pending UserRequest`);
   });
 
-  test('deduplicates recurring infrastructure handoffs by failure class and resolves them after recovery', () => {
-    const root = temp('forge-schedule-handoff-dedup-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
-    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+  test('rejects infrastructure failure as a human Handoff reason', () => {
+    const root = temp('forge-schedule-infra-not-human-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'handoff@example.test'], ['config', 'user.name', 'Handoff Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'handoff\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-handoff-dedup' });
-    const schedule = createSchedule(controllerHome, { requestId: 'schedule-handoff-dedup-request', repoId: repository.repoId, name: 'dedup schedule failures', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 10, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: {} }, stopConditions: [] });
-    const otherSchedule = createSchedule(controllerHome, { requestId: 'schedule-handoff-other-request', repoId: repository.repoId, name: 'other schedule failures', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 10, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: { scope: 'other' } }, stopConditions: [] });
-    const at = new Date().toISOString();
-    const occurrence = (occurrenceId: string, scheduleId = schedule.scheduleId, status: 'failed' | 'succeeded' = 'failed') => saveOccurrence(controllerHome, {
-      schemaVersion: 1, revision: 0, occurrenceId, scheduleId, repoId: repository.repoId, windowKey: occurrenceId,
-      status, decision: 'execute', createdAt: at, updatedAt: at,
-      reason: status === 'succeeded' ? 'Recovered.' : 'Failed.',
-    });
-    const handoffInput = (reason: string) => ({
-      title: 'Scheduled operation failed', summary: 'Repeated infrastructure failure.', reason,
-      creationReason: 'repeated_infrastructure_failure' as const,
-      blockingDecision: 'Repair the infrastructure blocker.', recommendedDecision: 'Repair and retrigger.',
-      recommendedPrompt: 'Repair the schedule infrastructure blocker.', statusSummary: 'Schedule blocked.',
-      blockedBy: ['infrastructure'], attemptedActions: ['schedule-test'],
-    });
+    writeFileSync(join(repoRoot, 'README.md'), 'handoff\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-infra-not-human' });
 
-    const legacy = createHandoffItem({ controllerHome, repoId: repository.repoId }, {
-      id: 'schedule-OCC-legacy-failure', repoId: repository.repoId, title: 'Legacy schedule failure', severity: 'blocked',
-      creationReason: 'repeated_infrastructure_failure', reason: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: legacy',
-      summary: 'Legacy occurrence-specific handoff.', currentState: { repoId: repository.repoId, taskId: schedule.scheduleId, statusSummary: 'blocked' },
-      attemptedActions: [`schedule:${schedule.scheduleId}`, 'occurrence:legacy'], evidenceRefs: [], blockingDecision: 'Repair browser readiness.',
-      recommendedDecision: 'Repair.', recommendedPrompt: 'Repair.', suggestedNextActions: [],
-    });
-    const first = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-1'), handoffInput('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: first'));
-    const second = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-2'), handoffInput('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: second'));
-    expect(first.handoffId).toBe(legacy.id);
-    expect(second.handoffId).toBe(legacy.id);
-
-    const distinct = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-3'), handoffInput('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED: timeout'));
-    const distinctAgain = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-4'), handoffInput('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED: another timeout'));
-    expect(distinct.handoffId).toBeTruthy();
-    expect(distinctAgain.handoffId).toBe(distinct.handoffId);
-    expect(distinct.handoffId).not.toBe(legacy.id);
-
-    const other = recordScheduleOccurrenceHandoff(controllerHome, otherSchedule, occurrence('OCC-other-1', otherSchedule.scheduleId), handoffInput('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: other schedule'));
-    const beforeRecovery = listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 });
-    expect(beforeRecovery.filter((item) => item.currentState?.taskId === schedule.scheduleId && item.creationReason === 'repeated_infrastructure_failure')).toHaveLength(2);
-    expect(beforeRecovery.some((item) => item.id === other.handoffId)).toBe(true);
-
-    occurrence('OCC-dedup-recovered', schedule.scheduleId, 'succeeded');
-    const afterRecovery = listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 });
-    expect(afterRecovery.filter((item) => item.currentState?.taskId === schedule.scheduleId && item.creationReason === 'repeated_infrastructure_failure')).toHaveLength(0);
-    expect(afterRecovery.some((item) => item.id === other.handoffId)).toBe(true);
-    expect(getHandoffItem({ controllerHome, repoId: repository.repoId }, legacy.id)?.status).toBe('resolved');
-    expect(getHandoffItem({ controllerHome, repoId: repository.repoId }, distinct.handoffId!)?.status).toBe('resolved');
+    expect(() => createHandoffItem({ controllerHome, repoId: repository.repoId }, {
+      id: 'schedule-infrastructure-failure',
+      repoId: repository.repoId,
+      title: 'Internal infrastructure failure',
+      severity: 'blocked',
+      creationReason: 'repeated_infrastructure_failure' as any,
+      reason: 'PLUGIN_BROWSER_NATIVE_OPERATION_FAILED: timeout',
+      summary: 'Internal failure must remain scheduler/recovery evidence.',
+      currentState: { repoId: repository.repoId, statusSummary: 'internal recovery required' },
+      attemptedActions: ['schedule-test'],
+      evidenceRefs: [],
+      recommendedDecision: 'Retry internally.',
+      recommendedPrompt: 'Retry internally.',
+      suggestedNextActions: [],
+    })).toThrow(/handoff creation reason is not eligible/);
   });
 
   test('blocks a scheduled external Controller wake without an existing ControllerSession authority', async () => {

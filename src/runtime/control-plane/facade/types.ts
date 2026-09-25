@@ -187,6 +187,8 @@ export interface HandoffItem {
   id: string;
   repoId: string;
   workId?: string;
+  /** Canonical person-only blocker/decision authority when this legacy Handoff projects one. */
+  canonicalUserRequestId?: string;
   issueId?: string;
   taskId?: string;
   title: string;

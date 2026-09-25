@@ -87,7 +87,10 @@ export async function callRhWorkControllerOperation(
       const workId = String(args.work_id ?? '').trim();
       const work = getWorkContract(store, workId);
       if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-      const identity = authenticatedFacadeControllerIdentity(ctx, args);
+      // An exact `session_id` carrier is the frozen-client compatibility form of
+      // an explicit controller authority. The downstream relay/session checks own
+      // which principal, Work and round that authority may actually claim.
+      const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
       const activeLaunchReservation = identity.controllerType === 'codex'
         ? getExternalControllerLaunchReservation(store, workId)
         : undefined;

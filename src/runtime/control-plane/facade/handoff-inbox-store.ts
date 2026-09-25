@@ -1,4 +1,9 @@
-import { recordUserRequest, resolveUserRequest } from '../../../../packages/kernel/identity/api/index';
+import {
+  recordUserRequest,
+  resolveUserRequest,
+  type CreateUserRequestInput,
+  type UserRequest,
+} from '../../../../packages/kernel/identity/api/index';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
@@ -58,8 +63,6 @@ export const HANDOFF_ELIGIBLE_REASONS = new Set<HandoffCreationReason>([
   'ambiguous_outcome',
   'missing_authorization',
   'invalid_objective',
-  'repeated_infrastructure_failure',
-  'codex_worker_requires_review',
   'destructive_action_requires_confirmation',
 ]);
 
@@ -116,6 +119,31 @@ export function shouldCreateHandoff(reason: HandoffCreationReason | string | und
   return HANDOFF_ELIGIBLE_REASONS.has(reason as HandoffCreationReason);
 }
 
+function canonicalUserRequestInput(item: HandoffItem): CreateUserRequestInput | undefined {
+  const actionRequired = item.creationReason === 'missing_authorization' || item.creationReason === 'policy_approval_required'
+    ? 'grant_permission'
+    : item.creationReason === 'destructive_action_requires_confirmation'
+      ? 'confirm_destructive'
+      : item.creationReason === 'ambiguous_outcome' || item.creationReason === 'invalid_objective'
+        ? 'product_decision'
+        : undefined;
+  if (!actionRequired) return undefined;
+  const rootCauseKey = ['user-request', item.repoId, item.workId ?? 'repo', item.creationReason ?? 'decision', item.reason].join(':');
+  return {
+    kind: actionRequired === 'product_decision' ? 'user_decision_request' : 'user_action_request',
+    rootCauseKey,
+    title: item.title,
+    summary: item.summary,
+    actionRequired,
+    targetScope: {
+      scopeKind: item.workId ? 'work' : 'repository',
+      scopeId: item.workId ?? item.repoId,
+      repoId: item.repoId,
+      ...(item.workId ? { workId: item.workId } : {}),
+    },
+  };
+}
+
 export function createHandoffItem(options: HandoffInboxStoreOptions, input: CreateHandoffInput): HandoffItem {
   if (input.creationReason && !shouldCreateHandoff(input.creationReason)) {
     throw new Error(`handoff creation reason is not eligible: ${input.creationReason}`);
@@ -134,36 +162,26 @@ export function createHandoffItem(options: HandoffInboxStoreOptions, input: Crea
     updatedAt: input.updatedAt ?? at,
   };
   return withHandoffInboxWriteLock(options, `create-handoff:${item.id}`, () => {
-    const store = readHandoffInboxStore(options);
-    if (store.items.some((existing) => existing.id === item.id)) {
-      throw new Error(`handoff already exists: ${item.id}`);
+    let canonicalRequest: UserRequest | undefined;
+    const requestInput = canonicalUserRequestInput(item);
+    if (options.controllerHome && requestInput) {
+      // Human blocker/decision authority is written first. The legacy Handoff is
+      // a compatibility/UI projection only and cannot become the sole authority.
+      canonicalRequest = recordUserRequest(options.controllerHome, requestInput);
     }
+    const projectedItem: HandoffItem = canonicalRequest
+      ? { ...item, canonicalUserRequestId: canonicalRequest.requestId }
+      : item;
+    const store = readHandoffInboxStore(options);
+    const existing = store.items.find((candidate) => candidate.id === projectedItem.id);
+    if (existing) return existing;
     const nextStore: HandoffInboxStore = {
       schemaVersion: 1,
-      updatedAt: item.updatedAt,
-      items: [item, ...store.items],
+      updatedAt: projectedItem.updatedAt,
+      items: [projectedItem, ...store.items],
     };
     writeHandoffInboxStore(options, nextStore);
-    try {
-      if (options.controllerHome) {
-        const rootCauseKey = 'handoff:' + item.repoId + ':' + (item.workId ?? item.id) + ':' + item.reason;
-        recordUserRequest(options.controllerHome, {
-          requestId: item.id,
-          kind: 'user_action_request',
-          rootCauseKey,
-          title: item.title,
-          summary: item.summary,
-          actionRequired: item.creationReason === 'missing_authorization' ? 'grant_permission' : 'product_decision',
-          targetScope: {
-            scopeKind: 'work',
-            scopeId: item.workId ?? item.id,
-            repoId: item.repoId,
-            workId: item.workId,
-          },
-        });
-      }
-    } catch { /* non-blocking */ }
-    return item;
+    return projectedItem;
   });
 }
 
@@ -222,9 +240,18 @@ function setHandoffStatus(
     const store = readHandoffInboxStore(options);
     const index = store.items.findIndex((item) => item.id === sanitizedId);
     if (index < 0) throw new Error(`handoff not found: ${sanitizedId}`);
+    const current = store.items[index]!;
+    if (options.controllerHome && current.canonicalUserRequestId && (status === 'resolved' || status === 'dismissed')) {
+      // Resolve canonical authority first; Handoff status follows as projection.
+      resolveUserRequest(options.controllerHome, {
+        requestId: current.canonicalUserRequestId,
+        decision: patch.decision || status,
+        resolvedBy: patch.resolver || 'system',
+      });
+    }
     const at = nowIso(options);
     const item: HandoffItem = {
-      ...store.items[index],
+      ...current,
       ...patch,
       status,
       updatedAt: at,
@@ -232,15 +259,6 @@ function setHandoffStatus(
     const items = [...store.items];
     items[index] = item;
     writeHandoffInboxStore(options, { schemaVersion: 1, updatedAt: at, items });
-    try {
-      if (options.controllerHome && (status === 'resolved' || status === 'dismissed')) {
-        resolveUserRequest(options.controllerHome, {
-          requestId: sanitizedId,
-          decision: patch.decision || status,
-          resolvedBy: patch.resolver || 'system',
-        });
-      }
-    } catch { /* non-blocking */ }
     return item;
   });
 }

@@ -2116,8 +2116,9 @@ export function recordWorkCompletionReceipt(
     const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
       && Boolean(receipt.reconciliationId?.trim())
       && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
-    const isSemanticCompletion = current.semanticState === 'completed' || (receipt as any).source === 'semantic_complete';
-    const reviewRequired = !isSemanticCompletion && workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
+    // A real delivery receipt is independent from semantic Work completion.
+    // Semantic completion never bypasses delivery/review evidence requirements.
+    const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
     if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
       throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
     }

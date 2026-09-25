@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'crypto';
 import { globMatches } from '../../../cli/mcp/paths';
 import {
   createHandoffItem,
-  listHandoffItems,
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
@@ -38,7 +37,6 @@ import {
 } from '../../../../packages/kernel/work/api/index';
 import {
   claimPlanStepForWork,
-  completePlanStepForWork,
   getPlanContract,
   getPlanExecutionBaselineRevision,
   currentPlanSemanticRevision,
@@ -316,7 +314,8 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
 function resolvedWorkKindFor(input: GoalWorkloopStartInput): WorkKind {
   if (input.workKind) return input.workKind;
   // allowed_paths and discovery hints do not prove repository mutation. External
-  // effects become repository_change only when source-change intent is explicit.
+  // effects become repository_change only when the caller declares source-change
+  // intent; task size never selects the execution mode or provider.
   const repositoryChangeIntent = (input.modeInput.expectedFiles ?? 0) > 0
     || (input.modeInput.expectedChangedLines ?? 0) > 0;
   const typedRecoverableReadOnlyReview = input.modeInput.mutation === false
@@ -330,33 +329,17 @@ function resolvedWorkKindFor(input: GoalWorkloopStartInput): WorkKind {
 }
 
 function suggestedForWorkIdentity(workId: string, checks: string[], extras: SuggestedNextAction[] = []): SuggestedNextAction[] {
-  const base: SuggestedNextAction[] = [
-    {
-      label: 'Continue workloop',
-      tool: 'rh_work',
-      operation: 'continue',
-      payload: { work_id: workId },
-      risk: 'readonly',
-      confidence: 'high',
-    },
-    {
-      label: 'Verify registered checks',
-      tool: 'rh_work',
-      operation: 'verify',
-      payload: { work_id: workId, check_id: checks[0] },
-      risk: 'workspace_write',
-      confidence: checks[0] ? 'high' : 'low',
-    },
-    {
-      label: 'Finalize when ready',
-      tool: 'rh_work',
-      operation: 'finalize',
-      payload: { work_id: workId },
-      risk: 'readonly',
-      confidence: 'medium',
-    },
-  ];
-  return validateSuggestedNextActions([...extras, ...base], {
+  const semanticRead: SuggestedNextAction = {
+    label: 'Read current Work semantic context',
+    tool: 'rh_work',
+    operation: 'work_get',
+    payload: { work_id: workId },
+    risk: 'readonly',
+    confidence: 'high',
+  };
+  // Suggested actions expose facts/capabilities only. The model decides whether
+  // implementation, checks, review, delivery, or semantic completion is next.
+  return validateSuggestedNextActions([...extras, semanticRead], {
     validCheckIds: checks,
   }).actions;
 }
@@ -455,8 +438,6 @@ export function routeWorkStart(
   const readOnlyReviewRequested = effectiveWorkKind === 'read_only_review';
   const readOnlyMutationConflict = readOnlyReviewRequested && (
     input.modeInput.mutation === true
-    || (input.modeInput.expectedFiles ?? 0) > 0
-    || (input.modeInput.expectedChangedLines ?? 0) > 0
     || input.modeInput.requiresExternalEffect === true
     || input.modeInput.remoteWrite === true
     || input.modeInput.destructive === true
@@ -1454,6 +1435,10 @@ export function startGoalWorkloop(
     continuationPrompt: `Continue work ${ctx.repoId}: ${effectiveObjective.slice(0, 200)}`,
   });
 
+  // Bounded legacy compatibility: the frozen PlanStep execution plane still
+  // records its Work link while Work starts against an explicit plan item. This
+  // projection is deleted together with the legacy PlanStep gates; it must not
+  // grow new consumers or become the Plan's semantic authority.
   if (resolvedPlanId && resolvedPlanStepId && ctx.planStore && ctx.sourceRevision) {
     try {
       claimPlanStepForWork(ctx.planStore, {
@@ -1892,141 +1877,39 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  // Ambiguous acceptance failure without an explicit bounded Controller decision →
-  // ask once per distinct failure evidence. Repeated continue calls must not
-  // manufacture an unbounded handoff loop. A resolved handoff remains the decision
-  // authority until newer valid-fail evidence; an unresolved matching handoff is reused.
-  if (history.acceptanceFailures.length > 0 && !explicitAcceptanceRepair && work.recoveryPolicy.handoffOnAmbiguity) {
+  // Acceptance failure is a model/controller decision point, not a human blocker.
+  // Do not manufacture Handoff/UserRequest state for repair vs re-scope.
+  if (history.acceptanceFailures.length > 0 && !explicitAcceptanceRepair) {
     const failureReason = `Acceptance checks failed: ${history.acceptanceFailures.join(', ')}`;
-    const latestFailureAt = work.checkRefs
-      .filter((record) => record.outcome === 'valid_fail' && history.acceptanceFailures.includes(record.checkId))
-      .map((record) => record.recordedAt)
-      .sort((left, right) => right.localeCompare(left))[0];
-    const matchingHandoffs = listHandoffItems({ ...ctx.handoffStore, status: 'all', limit: 100 })
-      .filter((item) => (
-        item.workId === input.workId
-        && item.creationReason === 'ambiguous_outcome'
-        && item.title === 'Acceptance failure needs review'
-        && item.reason === failureReason
-        && (!latestFailureAt || item.createdAt >= latestFailureAt)
-      ));
-    const activeHandoff = matchingHandoffs.find((item) => item.status === 'pending' || item.status === 'acknowledged');
-    if (activeHandoff) {
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `Continue remains paused for ChatGPT review through existing handoff ${activeHandoff.id}.`,
-        data: {
-          work: summarizeWorkContract(work),
-          handoffId: activeHandoff.id,
-          acceptanceFailures: history.acceptanceFailures,
-          infrastructureIssues: history.infrastructureIssues,
-          backgroundCompleted: false,
-        },
-        evidenceRefs: work.evidenceRefs.slice(0, 5),
-        suggestedNextActions: [{
-          label: 'Get handoff',
-          tool: 'rh_inbox',
-          operation: 'get',
-          payload: { handoff_id: activeHandoff.id },
-          risk: 'readonly',
-          confidence: 'high',
-        }],
-      });
-    }
-
-    const resolvedHandoff = matchingHandoffs.find((item) => item.status === 'resolved');
-    if (!resolvedHandoff) {
-      const continuation = buildWorkContinuationSnapshot(work);
-      const handoff = createHandoffItem(ctx.handoffStore, {
-        id: handoffIdFor('continue'),
-        repoId: ctx.repoId,
-        workId: work.workId,
-        title: 'Acceptance failure needs review',
-        severity: 'needs_review',
-        creationReason: 'ambiguous_outcome',
-        reason: failureReason,
-        summary: 'Continue paused; ChatGPT must decide repair vs re-scope.',
-        currentState: {
-          repoId: ctx.repoId,
-          workId: work.workId,
-          mode: work.mode,
-          statusSummary: 'waiting_for_review after acceptance failure',
-          checks: history.acceptanceFailures.map((checkId) => ({ checkId, ok: false, outcome: 'valid_fail' as const })),
-          workSemantics: continuation.semantics,
-          reconciliationRequired: continuation.reconciliationRequired,
-          nextSafeAction: continuation.nextSafeAction,
-        },
-        attemptedActions: ['continue'],
-        evidenceRefs: work.evidenceRefs.slice(0, 5),
-        blockingDecision: 'Decide whether to repair code, adjust acceptance criteria, or stop.',
-        recommendedDecision: 'Inspect evidence and either repair or stop the workloop.',
-        recommendedPrompt: work.continuationPrompt ?? `Continue from work ${work.workId}.`,
-        recommendedContinuationPrompt: continuation.continuationPrompt,
-        suggestedNextActions: [
-          {
-            label: 'Read work context',
-            tool: 'rh_context',
-            operation: 'get',
-            payload: { work_id: work.workId },
-            risk: 'readonly',
-          },
-        ],
-      });
-      transitionWorkContractPhase(ctx.workStore, work.workId, {
-        status: 'ready',
-        phase: 'verification',
-        state: 'blocked',
-        summary: `Acceptance failure requires review through handoff ${handoff.id}.`,
-        evidenceRefs: work.evidenceRefs,
-      });
-      const updated = appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
-
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `Continue paused for ChatGPT review; handoff ${handoff.id} created. No background execution pretended.`,
-        data: {
-          work: summarizeWorkContract(updated),
-          handoffId: handoff.id,
-          acceptanceFailures: history.acceptanceFailures,
-          infrastructureIssues: history.infrastructureIssues,
-          backgroundCompleted: false,
-        },
-        evidenceRefs: work.evidenceRefs.slice(0, 5),
-        suggestedNextActions: [
-          {
-            label: 'Get handoff',
-            tool: 'rh_inbox',
-            operation: 'get',
-            payload: { handoff_id: handoff.id },
-            risk: 'readonly',
-            confidence: 'high',
-          },
-        ],
-      });
-    }
-
-    transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
-      phase: 'verification',
-      state: 'active',
-      summary: `Resolved acceptance-failure handoff ${resolvedHandoff.id} authorizes bounded continuation to re-verification.`,
-      evidenceRefs: work.evidenceRefs,
-    });
-    work = getWorkContract(ctx.workStore, work.workId) ?? work;
     return buildFacadeResult({
-      status: 'ok',
-      summary: `Continue accepted resolved acceptance-failure handoff ${resolvedHandoff.id}; re-verification may resume.`,
+      status: 'blocked',
+      summary: `${failureReason}. The model must explicitly choose bounded repair or re-scope before continuing; no human Handoff was created.`,
       data: {
         work: summarizeWorkContract(work),
-        handoffId: resolvedHandoff.id,
         acceptanceFailures: history.acceptanceFailures,
         infrastructureIssues: history.infrastructureIssues,
         backgroundCompleted: false,
-        nextStep: 'verify',
-        remainingChecks: history.acceptanceFailures,
+        acceptanceFailureDecisionRequired: true,
       },
       evidenceRefs: work.evidenceRefs.slice(0, 5),
-      suggestedNextActions: suggestedForWork(work),
+      suggestedNextActions: [
+        {
+          label: 'Continue with bounded repair',
+          tool: 'rh_work',
+          operation: 'continue',
+          payload: { work_id: work.workId, acceptance_failure_decision: 'repair' },
+          risk: 'workspace_write',
+          confidence: 'high',
+        },
+        {
+          label: 'Continue with bounded re-scope',
+          tool: 'rh_work',
+          operation: 'continue',
+          payload: { work_id: work.workId, acceptance_failure_decision: 'rescope' },
+          risk: 'workspace_write',
+          confidence: 'medium',
+        },
+      ],
     });
   }
 
@@ -2520,9 +2403,6 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   // retry must be idempotent and must never re-run weaker pre-delivery evidence
   // evaluation that could attempt to demote an already completed Work.
   if (work.status === 'completed' && work.completionReceipt) {
-    if (work.planId && work.planStepId && ctx.planStore) {
-      completePlanStepForWork(ctx.planStore, { planId: work.planId, stepId: work.planStepId, work });
-    }
     return buildFacadeResult({
       status: 'ok',
       summary: `Finalize result: succeeded for ${work.workId}.`,
@@ -2539,30 +2419,19 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   if (work.semanticState === 'completed' && !work.completionReceipt) {
-    const recordedAt = nowIso(ctx);
-    const receipt = {
-      schemaVersion: 1 as const,
-      receiptId: `SEMANTIC-WORK-${randomUUID()}`,
-      source: 'semantic_complete',
-      workId: work.workId,
-      baseRevision: work.baseRevision ?? 'unknown',
-      sourceRevision: ctx.sourceRevision ?? 'unknown',
-      workspaceChangedPaths: ctx.workspaceChangedPaths ?? [],
-      recordedAt,
-    };
-    const completed = completeWorkWithReceipt(ctx.workStore, work.workId, receipt as any, 'completed_changed');
     return buildFacadeResult({
       status: 'ok',
-      summary: `Finalize result: succeeded for ${work.workId}.`,
+      summary: `FINALIZE_COMPATIBILITY_NOOP: Work ${work.workId} is already semantically completed. Semantic completion does not create delivery, verification, review, release, or cleanup authority.`,
       data: {
-        work: summarizeWorkContract(completed),
+        work: summarizeWorkContract(work),
         finalStatus: 'completed',
-        completionReceipt: receipt,
-        idempotent: false,
+        semanticCompletionOnly: true,
+        completionReceipt: null,
+        idempotent: true,
         hiddenFailure: false,
       },
-      evidenceRefs: completed.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
+      evidenceRefs: work.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [],
     });
   }
 
@@ -2640,9 +2509,6 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       summary: `Work failed acceptance/finalization while in ${work.phase}: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
       evidenceRefs: work.evidenceRefs,
     });
-    if (updated.planId && updated.planStepId && ctx.planStore) {
-      completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, work: updated });
-    }
     return buildFacadeResult({
       status: 'failed',
       summary: `Finalize result: failed. Acceptance failures: ${history.acceptanceFailures.join(', ') || 'forced'}.`,
@@ -2729,9 +2595,6 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       'completed_no_change',
       'read_only_review',
     );
-    if (completed.planId && completed.planStepId && ctx.planStore) {
-      completePlanStepForWork(ctx.planStore, { planId: completed.planId, stepId: completed.planStepId, work: completed });
-    }
     return buildFacadeResult({
       status: 'ok',
       summary: `Finalize result: clean read-only review completed with no source change for ${work.workId}.`,
@@ -2771,9 +2634,6 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       'completed_local',
       'local_effect',
     );
-    if (completed.planId && completed.planStepId && ctx.planStore) {
-      completePlanStepForWork(ctx.planStore, { planId: completed.planId, stepId: completed.planStepId, work: completed });
-    }
     return buildFacadeResult({
       status: 'ok',
       summary: `Finalize result: succeeded for ${work.workId}.`,
@@ -2809,9 +2669,6 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   const updated = getWorkContract(ctx.workStore, work.workId)!;
-  if (updated.planId && updated.planStepId && ctx.planStore) {
-    completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, work: updated });
-  }
   return buildFacadeResult({
     status: 'ok',
     summary: `Finalize result: succeeded for ${work.workId}.`,
@@ -2893,12 +2750,6 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   let plan = planId && ctx.planStore
     ? getPlanContract(ctx.planStore, planId)
     : undefined;
-  if (plan && planId && planStepId && ctx.planStore) {
-    const step = plan.steps.find((entry) => entry.id === planStepId);
-    if (step?.workId === updated.workId) {
-      plan = completePlanStepForWork(ctx.planStore, { planId, stepId: planStepId, work: updated });
-    }
-  }
 
   return buildFacadeResult({
     status: 'ok',

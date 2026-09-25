@@ -81,40 +81,26 @@ describe("HandoffItem persistence authority", () => {
     }
   });
 
-  test("attention projection hides only canonically terminal or inactive owners", () => {
+  test("attention projection follows canonical pending UserRequest authority only", () => {
     const root = mkdtempSync(join(tmpdir(), "forge-handoff-attention-"));
     const location = { root };
     try {
-      const workItem = createHandoffItem(location, {
-        id: "work-decision",
+      const legacyOnly = createHandoffItem(location, {
+        id: "legacy-decision",
         repoId: "repo_attention",
         workId: "work-terminal",
-        title: "Historical work decision",
+        title: "Historical compatibility projection",
         severity: "needs_review",
-        reason: "Review work.",
+        reason: "Historical decision.",
         creationReason: "ambiguous_outcome",
-        summary: "Review work.",
+        summary: "Historical decision.",
         currentState: { repoId: "repo_attention", workId: "work-terminal", statusSummary: "pending" },
         evidenceRefs: [],
         recommendedDecision: "Review.",
         recommendedPrompt: "Review.",
         suggestedNextActions: [],
       });
-      const scheduleItem = createHandoffItem(location, {
-        id: "schedule-failure-deadbeef",
-        repoId: "repo_attention",
-        title: "Historical schedule failure",
-        severity: "blocked",
-        reason: "Schedule failed.",
-        creationReason: "repeated_infrastructure_failure",
-        summary: "Schedule failed.",
-        currentState: { repoId: "repo_attention", taskId: "schedule-old", statusSummary: "blocked" },
-        evidenceRefs: [],
-        recommendedDecision: "Repair schedule.",
-        recommendedPrompt: "Repair schedule.",
-        suggestedNextActions: [],
-      });
-      const unresolvedItem = createHandoffItem(location, {
+      const projected = createHandoffItem(location, {
         id: "decision-current",
         repoId: "repo_attention",
         title: "Current decision",
@@ -128,14 +114,12 @@ describe("HandoffItem persistence authority", () => {
         recommendedPrompt: "Decide.",
         suggestedNextActions: [],
       });
-      const terminalResolver = {
-        workIsTerminal: (workId: string) => workId === "work-terminal" ? true : undefined,
-        scheduleIsEnabled: (scheduleId: string) => scheduleId === "schedule-old" ? false : undefined,
-      };
-      expect(handoffRequiresAttention(workItem, terminalResolver)).toBe(false);
-      expect(handoffRequiresAttention(scheduleItem, terminalResolver)).toBe(false);
-      expect(handoffRequiresAttention(unresolvedItem, terminalResolver)).toBe(true);
-      expect(handoffRequiresAttention(workItem, { workIsTerminal: () => undefined, scheduleIsEnabled: () => undefined })).toBe(true);
+      const pendingProjection = { ...projected, canonicalUserRequestId: "usr-current" };
+      const resolvedProjection = { ...projected, id: "decision-resolved", canonicalUserRequestId: "usr-resolved" };
+      const resolver = { userRequestIsPending: (requestId: string) => requestId === "usr-current" };
+      expect(handoffRequiresAttention(legacyOnly, resolver)).toBe(false);
+      expect(handoffRequiresAttention(pendingProjection, resolver)).toBe(true);
+      expect(handoffRequiresAttention(resolvedProjection, resolver)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

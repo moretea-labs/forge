@@ -1426,7 +1426,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(delegated.executionPath).toBe('durable');
   });
 
-  test('keeps size-only work direct and reserves Agent modes for explicit opt-in', () => {
+  test('keeps task size and Agent/provider preference out of Work topology decisions', () => {
     const medium = assessWorkMode({
       description: 'Implement a broad but bounded refactor directly',
       expectedFiles: 10,
@@ -1442,7 +1442,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expectedChangedLines: 1_500,
       agentRequested: true,
     });
-    expect(explicitQuickAgent.recommendedMode).toBe('quick_agent');
+    expect(explicitQuickAgent.recommendedMode).toBe('direct_edit');
+    expect(explicitQuickAgent.executionPath).toBe('fast');
+    expect(explicitQuickAgent.issueRequired).toBe(false);
 
     const broad = assessWorkMode({
       description: 'Implement a large cross-cutting change directly',
@@ -1460,11 +1462,12 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expectedChangedLines: 3_000,
       agentRequested: true,
     });
-    expect(explicitIssueAgent.recommendedMode).toBe('issue_task');
-    expect(explicitIssueAgent.issueRequired).toBe(true);
+    expect(explicitIssueAgent.recommendedMode).toBe('direct_edit');
+    expect(explicitIssueAgent.executionPath).toBe('fast');
+    expect(explicitIssueAgent.issueRequired).toBe(false);
   });
 
-  test('workbench assess_work_mode keeps Agent routing opt-in', async () => {
+  test('workbench assess_work_mode reports Agent/provider preference without changing topology', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
@@ -1491,7 +1494,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       },
     });
     expect(agentResponse?.isError).not.toBe(true);
-    expect((agentResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('quick_agent');
+    expect((agentResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('direct_edit');
   });
 
   test('workbench batch_execute runs multi-step Fast Path with one parent receipt', async () => {

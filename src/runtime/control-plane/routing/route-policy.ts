@@ -244,8 +244,6 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const reasons: RouteReason[] = [];
   const objective = input.intent.objective.trim();
   const paths = [...new Set((input.workspace.knownPaths ?? []).map((path) => path.trim()).filter(Boolean))].sort();
-  const expectedFiles = Math.max(0, Math.trunc(input.intent.expectedFiles ?? paths.length));
-  const expectedChangedLines = Math.max(0, Math.trunc(input.intent.expectedChangedLines ?? 0));
   const independentTaskCount = Math.max(0, Math.trunc(input.intent.independentTaskCount ?? 0));
   const risk = input.policy.risk ?? (input.intent.mutation === false ? 'readonly' : 'local_repo_write');
   const mutation = input.intent.mutation ?? risk !== 'readonly';
@@ -334,41 +332,27 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     && !requiresIsolation
     && !requiresRecovery
     && !coordinationRequired;
-  const complex = directModeCanRemainFast
+  // Durable Work is a mechanical continuity/placement choice, not an engineering
+  // method inferred from provider kind, effect risk, task size, or model strategy.
+  const durableWorkRequired = directModeCanRemainFast
     ? false
     : coordinationRequired
     || explicitBoundedMode
     || requiresRecovery
     || requiresIsolation
-    || input.intent.agentRequested === true
-    || input.capabilities.requiresWorker === true
-    || input.capabilities.requiresExternalEffect === true
-    || input.intent.needsDependencies === true
-    || destructive
-    || remoteWrite
-    || secretAccess;
-  const executionMode: RouteExecutionMode = complex ? 'goal_workloop' : 'direct_control';
-  // Work topology is independent from executor/provider choice. Independent or
-  // parallel deliverables stay in the durable Goal Workloop and are decomposed by
-  // PlanContract/Work rather than introducing another project-level lifecycle.
-  const workMode: RouteWorkMode = directModeCanRemainFast
-    ? 'direct_edit'
-    : coordinationRequired
-    ? 'bounded_work'
-    : input.intent.agentRequested
-      ? expectedFiles > 10 || expectedChangedLines > 1_500 ? 'issue_task' : 'quick_agent'
-      : complex
-        ? 'bounded_work'
-        : 'direct_edit';
-  const executionPath: RouteExecutionPath = complex ? 'durable' : 'fast';
+    || input.intent.needsDependencies === true;
+  // Legacy projections retained for callers whose ABI still carries these fields.
+  const executionMode: RouteExecutionMode = durableWorkRequired ? 'goal_workloop' : 'direct_control';
+  const workMode: RouteWorkMode = durableWorkRequired ? 'bounded_work' : 'direct_edit';
+  const executionPath: RouteExecutionPath = durableWorkRequired ? 'durable' : 'fast';
   const providerSelection = selectProvider(input);
   const providersWereSupplied = input.capabilities.providers !== undefined;
   if (providersWereSupplied && !providerSelection.provider) {
     reasons.push({ code: 'provider_unavailable', message: 'No allowed provider with the required capabilities is ready.' });
     return {
-      executionMode: 'handoff_only', executorKind: 'handoff_only', selectedProviderId: 'chatgpt_handoff',
-      workMode, executionPath: 'durable', requiresWork: mutation || requiresRecovery, requiresApproval: false,
-      requiresIsolation, requiresRecovery, createHandoff: true, waitForUser: false,
+      executionMode, executorKind: 'handoff_only', selectedProviderId: null,
+      workMode, executionPath, requiresWork: durableWorkRequired, requiresApproval: false,
+      requiresIsolation, requiresRecovery, createHandoff: false, waitForUser: false,
       approvalState: 'approval_not_required', alternatives: providerSelection.alternatives,
       ...decisionBase(input, reasons),
     };
@@ -377,7 +361,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const executorKind: RouteExecutorKind = selectedProvider?.kind
     ?? (input.capabilities.requiresWorker ? 'external_controller' : 'direct_edit');
   if (selectedProvider) reasons.push({ code: 'provider_selected', message: `Selected ${selectedProvider.providerId} using ${providerSelection.key} order.` });
-  if (reasons.length === 0) reasons.push({ code: executionMode === 'direct_control' ? 'bounded_direct' : 'durable_work', message: executionMode === 'direct_control' ? 'Bounded supervised work stays on Direct Control.' : 'The operation requires a durable Goal Workloop.' });
+  if (reasons.length === 0) reasons.push({ code: durableWorkRequired ? 'durable_work' : 'direct_capability', message: durableWorkRequired ? 'A concrete continuity/placement constraint requires durable Work.' : 'No durable continuity/placement constraint requires Work; execute the selected capability directly.' });
 
   return {
     executionMode,
@@ -388,7 +372,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     // Direct Control is intentionally contract-free. Persistence belongs to
     // Goal Workloop/Agent tiers; bounded direct edits rely on the
     // existing permission, patch, Process, and evidence boundaries instead.
-    requiresWork: executionMode !== 'direct_control',
+    requiresWork: durableWorkRequired,
     requiresApproval: approvalRequired,
     requiresIsolation,
     requiresRecovery,

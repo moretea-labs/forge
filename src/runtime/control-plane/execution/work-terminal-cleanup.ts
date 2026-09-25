@@ -1,11 +1,9 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
-  writeFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repoLocalNoIndexControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
@@ -20,6 +18,8 @@ import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { getWorkContract, recordCancelledWorkCleanupCompleted } from '../../../../packages/kernel/work/api/index';
+import { markOwnedResourceCleaned, markOwnedResourceRetained } from '../../../../packages/kernel/identity/api/index';
+import { managedBranchOwnedResourceId, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
 import {
   controllerTerminalizationAuthorityFromSession,
   getControllerSession,
@@ -48,8 +48,6 @@ import {
   type WorkTerminalOutcome,
 } from './work-handle-store';
 import { proveWorkPreservationContained } from '../cleanup-artifact-retention';
-
-const CHECKPOINT_MESSAGE = 'chore(checkpoint): preserve terminal work before cleanup';
 
 export interface TerminalWorkCleanupInput {
   controllerHome: string;
@@ -168,62 +166,6 @@ function branchUsedByAnotherWorktree(root: string, branch: string, currentPath: 
   return false;
 }
 
-function copyUntrackedFiles(worktreePath: string, archiveRoot: string): Array<{ path: string; sha256: string }> {
-  const listed = git(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z']);
-  if (!listed.ok || !listed.stdout) return [];
-  const manifest: Array<{ path: string; sha256: string }> = [];
-  for (const relativePath of listed.stdout.split('\0').filter(Boolean)) {
-    const source = join(worktreePath, relativePath);
-    const destination = join(archiveRoot, 'untracked', relativePath);
-    mkdirSync(dirname(destination), { recursive: true });
-    if (!existsSync(destination)) {
-      cpSync(source, destination, { recursive: true, force: false, errorOnExist: true });
-    }
-    if (existsSync(source)) {
-      try {
-        manifest.push({ path: relativePath, sha256: hashText(readFileSync(source)) });
-      } catch {
-        manifest.push({ path: relativePath, sha256: 'directory-or-unreadable' });
-      }
-    }
-  }
-  return manifest;
-}
-
-function createPatchArchive(controllerHome: string, handle: WorkHandleState): {
-  path: string;
-  sha256: string;
-  recoveryInstructions: string;
-} {
-  const root = artifactRoot(controllerHome, handle);
-  const path = join(root, 'worktree.patch.json');
-  if (!existsSync(path)) {
-    const unstaged = git(handle.worktreePath, ['diff', '--binary', 'HEAD']);
-    const staged = git(handle.worktreePath, ['diff', '--binary', '--cached', 'HEAD']);
-    const untracked = copyUntrackedFiles(handle.worktreePath, root);
-    const archive = {
-      schemaVersion: 1,
-      repoId: handle.repositoryId,
-      checkoutId: handle.checkoutId,
-      workId: handle.workId,
-      branch: handle.branch,
-      baseCommit: handle.baseCommit,
-      expectedHead: handle.expectedHead,
-      createdAt: nowIso(),
-      unstagedPatch: unstaged.stdout,
-      stagedPatch: staged.stdout,
-      untracked,
-    };
-    writeFileSync(path, `${JSON.stringify(archive, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  }
-  const sha256 = hashText(readFileSync(path));
-  return {
-    path,
-    sha256,
-    recoveryInstructions: `Apply tracked changes from ${path}; restore copied untracked files from ${join(root, 'untracked')}. Verify SHA-256 ${sha256}.`,
-  };
-}
-
 function createVerifiedBundle(controllerHome: string, handle: WorkHandleState, targetRoot: string): {
   path: string;
   sha256: string;
@@ -330,59 +272,22 @@ function preserveDirtyWorktree(
     return persist(input.controllerHome, current, receipt);
   }
   if (!status.stdout) {
-    receipt.preservation.status = receipt.preservation.checkpointCommit || receipt.preservation.patchArchivePath
-      ? receipt.preservation.status
-      : 'not_needed';
+    receipt.preservation.status = 'not_needed';
     return persist(input.controllerHome, current, receipt);
   }
 
-  if (!receipt.preservation.checkpointCommit && !receipt.preservation.patchArchivePath) {
-    const staged = git(current.worktreePath, ['add', '-A']);
-    const committed = staged.ok
-      ? git(current.worktreePath, [
-          '-c', 'user.name=forge',
-          '-c', 'user.email=forge@local.invalid',
-          'commit', '-m', CHECKPOINT_MESSAGE,
-        ], 60_000)
-      : { ok: false, stdout: '', stderr: staged.stderr };
-    if (committed.ok) {
-      const head = git(current.worktreePath, ['rev-parse', 'HEAD']);
-      if (!head.ok || !head.stdout) {
-        receipt.preservation.status = 'failed';
-        addBlocker(receipt, 'CHECKPOINT_HEAD_UNAVAILABLE');
-      } else {
-        receipt.preservation.status = 'checkpointed';
-        receipt.preservation.checkpointCommit = head.stdout;
-        current = writeWorkHandle(input.controllerHome, {
-          ...current,
-          expectedHead: head.stdout,
-          cleanupReceipt: receipt,
-        });
-      }
-    } else {
-      try {
-        const archive = createPatchArchive(input.controllerHome, current);
-        receipt.preservation.status = 'patch_archived';
-        receipt.preservation.patchArchivePath = archive.path;
-        receipt.preservation.patchArchiveSha256 = archive.sha256;
-        receipt.preservation.recoveryInstructions = archive.recoveryInstructions;
-      } catch (error) {
-        receipt.preservation.status = 'failed';
-        addBlocker(receipt, `PRESERVATION_FAILED: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  } else if (receipt.preservation.checkpointCommit && status.stdout) {
-    try {
-      const archive = createPatchArchive(input.controllerHome, current);
-      receipt.preservation.status = 'patch_archived';
-      receipt.preservation.patchArchivePath = archive.path;
-      receipt.preservation.patchArchiveSha256 = archive.sha256;
-      receipt.preservation.recoveryInstructions = archive.recoveryInstructions;
-    } catch (error) {
-      receipt.preservation.status = 'failed';
-      addBlocker(receipt, `POST_CHECKPOINT_PRESERVATION_FAILED: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+  // Semantic Work terminal state is not authority to mutate, commit, archive,
+  // or delete uncommitted workspace content. Dirty bytes stay exactly where the
+  // model/user left them until an explicit delivery/discard action resolves them.
+  receipt.preservation.status = 'not_needed';
+  receipt.preservation.recoveryInstructions = `Dirty managed worktree retained in place at ${current.worktreePath}; commit, deliver, or explicitly discard the pending changes before cleanup.`;
+  receipt.worktree.status = 'retained';
+  receipt.worktree.reason = 'Dirty managed worktree retained; terminal semantic state does not authorize destructive cleanup.';
+  receipt.branchCleanup.status = 'retained';
+  receipt.branchCleanup.reason = 'Branch retained with dirty managed worktree.';
+  addBlocker(receipt, 'DIRTY_WORKTREE_RETAINED');
+  markOwnedResourceRetained(input.controllerHome, managedWorkspaceOwnedResourceId(current.repositoryId, current.checkoutId));
+  markOwnedResourceRetained(input.controllerHome, managedBranchOwnedResourceId(current.repositoryId, current.checkoutId));
   return persist(input.controllerHome, current, receipt);
 }
 
@@ -697,6 +602,24 @@ function cleanupReceiptComplete(receipt: WorkCleanupReceipt, deleteBranch: boole
     && (deleteBranch
       ? ['deleted', 'already_deleted', 'archived'].includes(receipt.branchCleanup.status)
       : receipt.branchCleanup.status === 'retained');
+}
+
+function projectOwnedResourceCleanup(
+  controllerHome: string,
+  handle: WorkHandleState,
+  receipt: WorkCleanupReceipt,
+): void {
+  const worktreeResourceId = managedWorkspaceOwnedResourceId(handle.repositoryId, handle.checkoutId);
+  if (['removed', 'already_removed'].includes(receipt.worktree.status)) {
+    markOwnedResourceCleaned(controllerHome, worktreeResourceId, 'forge:work-terminal-cleanup', receipt.receiptId);
+  }
+
+  const branchResourceId = managedBranchOwnedResourceId(handle.repositoryId, handle.checkoutId);
+  if (['deleted', 'already_deleted', 'archived'].includes(receipt.branchCleanup.status)) {
+    markOwnedResourceCleaned(controllerHome, branchResourceId, 'forge:work-terminal-cleanup', receipt.receiptId);
+  } else if (receipt.branchCleanup.status === 'retained') {
+    markOwnedResourceRetained(controllerHome, branchResourceId);
+  }
 }
 
 function reconcileCleanedManagedBranchRetirement(
@@ -1087,6 +1010,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   receipt.complete = cleanupReceiptComplete(receipt, deleteBranch);
   receipt.partial = !receipt.complete;
   if (receipt.complete) receipt.completedAt = receipt.completedAt ?? nowIso();
+  projectOwnedResourceCleanup(input.controllerHome, current, receipt);
 
   const finalization = {
     ...current.finalization,
@@ -1288,6 +1212,18 @@ export async function reconcileTerminalWorkCleanups(
       }
       if (!contract || !isTerminalWorkContractStatus(contract.status)) {
         report.skippedNonTerminal.push(originalHandle.workId);
+        continue;
+      }
+      // Stable semantic Work CAS is not a cleanup authorization. A model can
+      // close/cancel working context without implicitly granting filesystem
+      // deletion. Legacy delivery receipts and explicit cleanup requests remain
+      // separate mechanical authorities.
+      if ((contract.semanticState === 'completed' || contract.semanticState === 'cancelled')
+        && !contract.completionReceipt
+        && !originalHandle.cleanupReceipt) {
+        report.skippedRetained.push(originalHandle.workId);
+        markOwnedResourceRetained(controllerHome, managedWorkspaceOwnedResourceId(repository.repoId, originalHandle.checkoutId));
+        markOwnedResourceRetained(controllerHome, managedBranchOwnedResourceId(repository.repoId, originalHandle.checkoutId));
         continue;
       }
       if (cleanupRetainedByRequest(contract, originalHandle)) {

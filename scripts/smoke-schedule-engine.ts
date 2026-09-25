@@ -71,8 +71,8 @@ try {
     manualOccurrence?.status === 'skipped'
       && manualOccurrence.decision === 'operation_blocked'
       && manualOccurrence.decisionId
-      && manualOccurrence.handoffId,
-    'manual semantic Schedule did not create an external-controller handoff',
+      && !manualOccurrence.handoffId,
+    'manual semantic Schedule manufactured a human blocker instead of recording a trigger',
   );
   assert(
     getScheduleDecision(controllerHome, repository.repoId, manualOccurrence.decisionId)?.decision === 'operation_blocked',
@@ -105,7 +105,7 @@ try {
     { source: 'repository-event', eventName: 'git.push', eventId: 'evt-1' },
   );
   assert(eventA?.occurrenceId === eventB?.occurrenceId, 'repository event was not idempotent');
-  assert(eventA?.handoffId === eventB?.handoffId, 'repository event created duplicate handoffs');
+  assert(eventA?.decisionId === eventB?.decisionId, 'repository event created a duplicate occurrence decision');
 
   const missingDependency = createSchedule(controllerHome, {
     ...semanticBase,
@@ -132,8 +132,8 @@ try {
   assert(
     conditionOccurrence?.status === 'skipped'
       && conditionOccurrence.decision === 'operation_blocked'
-      && conditionOccurrence.handoffId,
-    'condition Schedule did not create an external-controller handoff',
+      && !conditionOccurrence.handoffId,
+    'condition Schedule manufactured a human blocker instead of recording a trigger',
   );
 
   const cron = createSchedule(controllerHome, {
@@ -143,7 +143,7 @@ try {
     trigger: { type: 'cron', cronExpression: '* * * * *' },
   });
   const cronOccurrence = await evaluateSchedule(controllerHome, cron);
-  assert(cronOccurrence?.decision === 'operation_blocked' && cronOccurrence.handoffId, 'cron Schedule did not hand off');
+  assert(cronOccurrence?.decision === 'operation_blocked' && !cronOccurrence.handoffId, 'cron Schedule did not record a bounded trigger');
 
   const calendar = createSchedule(controllerHome, {
     ...semanticBase,
@@ -153,8 +153,8 @@ try {
   });
   const calendarOccurrence = await evaluateSchedule(controllerHome, calendar);
   assert(
-    calendarOccurrence?.decision === 'operation_blocked' && calendarOccurrence.handoffId,
-    'calendar Schedule did not hand off',
+    calendarOccurrence?.decision === 'operation_blocked' && !calendarOccurrence.handoffId,
+    'calendar Schedule did not record a bounded trigger',
   );
 
   const staleJobPath = writeLocalJob('JOB-stale', {
@@ -243,17 +243,25 @@ try {
   );
 
   const handoffs = listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'all' });
-  assert(handoffs.length >= 6, 'expected external-controller and maintenance handoffs were not persisted');
+  // Semantic Schedule triggers are continuation input, not human blockers. Only
+  // a real authorization/judgement boundary may persist a Handoff projection.
+  assert(
+    !manualOccurrence.handoffId && !conditionOccurrence.handoffId && !cronOccurrence.handoffId && !calendarOccurrence.handoffId,
+    'semantic Schedule triggers manufactured human blockers',
+  );
+  assert(
+    Boolean(blockedOccurrence.handoffId) && handoffs.some((item) => item.id === blockedOccurrence.handoffId),
+    'the bounded maintenance blocker handoff was not persisted',
+  );
   assert(listExecutionJobs(controllerHome, repository.repoId, 100).length === 0, 'Schedule smoke created an ExecutionJob');
 
   console.log(JSON.stringify({
     status: 'ok',
-    manualHandoff: manualOccurrence.handoffId,
+    manualTriggerRecorded: manualOccurrence.decisionId,
     repositoryEventIdempotent: eventA?.occurrenceId === eventB?.occurrenceId,
     missingDependencySuppressed: true,
-    conditionHandoff: conditionOccurrence.handoffId,
-    cronHandoff: cronOccurrence.handoffId,
-    calendarHandoff: calendarOccurrence.handoffId,
+    semanticScheduleHandoffs: 0,
+    maintenanceBlockerHandoff: blockedOccurrence.handoffId,
     maintenance: maintenanceOccurrence.status,
     maintenanceBackoffUntil: backedOff.nextEligibleAt,
     handoffCount: handoffs.length,

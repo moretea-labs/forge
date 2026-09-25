@@ -593,7 +593,7 @@ test('browserTasks polls only tasks with pending browser work or an applied effe
   expect(control.browserTasks()).toHaveLength(1);
 });
 
-test('browserTasks stops polling after bounded provider recovery is exhausted', () => {
+test('provider recovery is a single exactly-once resume and does not recurse through Scheduler policy', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-exhausted-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -607,31 +607,31 @@ test('browserTasks stops polling after bounded provider recovery is exhausted', 
 
   const first = store.observeProviderTurn({
     taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 1_000, graceMs: 1_000,
-    maxRecoveryDepth: 0, recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery' },
+    recovery: { effectId: 'fx_34343434343434343434343434343434', prompt: 'recovery' },
   });
   expect(first.state).toBe('idle_pending');
-  const exhausted = store.observeProviderTurn({
+  const resumed = store.observeProviderTurn({
     taskId, effectId: effect.effectId, generating: false, assistantDigest: 'digest', observedAtMs: 2_001, graceMs: 1_000,
-    maxRecoveryDepth: 0, recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'recovery' },
+    recovery: { effectId: 'fx_56565656565656565656565656565656', prompt: 'recovery' },
+  });
+  expect(resumed.state).toBe('recovery_reserved');
+  expect(resumed.recoveryEffect?.kind).toBe('recovery');
+  expect(control.browserTasks()).toHaveLength(1);
+
+  const resume = resumed.recoveryEffect!;
+  control.observeEffect({ effectId: resume.effectId, observationId: 'provider-resume-applied', outcome: 'applied' });
+  const resumePending = store.observeProviderTurn({
+    taskId, effectId: resume.effectId, generating: false, assistantDigest: 'resume-digest', observedAtMs: 3_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_78787878787878787878787878787878', prompt: 'must-not-send' },
+  });
+  expect(resumePending.state).toBe('idle_pending');
+  const exhausted = store.observeProviderTurn({
+    taskId, effectId: resume.effectId, generating: false, assistantDigest: 'resume-digest', observedAtMs: 4_001, graceMs: 1_000,
+    recovery: { effectId: 'fx_90909090909090909090909090909090', prompt: 'must-not-send' },
   });
   expect(exhausted.state).toBe('exhausted');
-  expect(store.providerRecoveryExhausted(effect.effectId)).toBe(true);
-  expect(control.browserTasks()).toEqual([]);
-
-  const schedulerRecovery = control.reserveSchedulerRecovery(taskId)!;
-  expect(schedulerRecovery.kind).toBe('recovery');
-  expect(control.browserTasks()).toHaveLength(1);
-  expect(control.reserveSchedulerRecovery(taskId)?.effectId).toBe(schedulerRecovery.effectId);
-
-  // A later Scheduler-owned ControllerRound recovery needs a fresh causal
-  // effect after the prior recovery was applied without a Supervisor completion;
-  // replaying the permanent task-level key would leave the browser with no new
-  // message to send. Replaying the same occurrence remains idempotent.
-  control.observeEffect({ effectId: schedulerRecovery.effectId, observationId: 'scheduler-recovery-applied', outcome: 'applied' });
-  const nextRecovery = control.reserveSchedulerRecovery(taskId, 'occ-supervisor-rearm-2')!;
-  expect(nextRecovery.effectId).not.toBe(schedulerRecovery.effectId);
-  expect(control.reserveSchedulerRecovery(taskId, 'occ-supervisor-rearm-2')?.effectId).toBe(nextRecovery.effectId);
-  expect(control.browserTasks()).toHaveLength(1);
+  expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
+  expect(control.reserveSchedulerRecovery(taskId, 'legacy-retry')).toBeUndefined();
 });
 
 test('browserTasks keeps an applied external effect observable while lower ControllerRound waits', () => {

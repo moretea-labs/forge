@@ -441,19 +441,24 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
     h.advance(1_000);
     await h.adapter.runOnce();
-    expect(h.dispatchAttempts()).toBe(3);
-    const secondRecovery = h.control.store.latestAppliedEffectWithoutCompletion(`task-${conversationId}`)!;
-    expect(secondRecovery.kind).toBe('recovery');
+    expect(h.dispatchAttempts()).toBe(2);
+    const dispatchedEffects = h.dispatchedPrompts
+      .map((prompt) => /<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt)?.[1])
+      .filter((id): id is string => Boolean(id));
+    expect(new Set(dispatchedEffects).size).toBe(2);
+    const providerResumeId = dispatchedEffects[dispatchedEffects.length - 1]!;
+    // Provider resume is exactly-once: the resume turn going stably idle again
+    // must not reserve a second recursive resume effect.
     page.latestTurnRole = 'assistant';
-    page.providerActivityText = 'second recovery provider turn completed without supervisor block';
+    page.providerActivityText = 'resume provider turn completed without supervisor block';
     await h.adapter.runOnce();
     h.advance(1_000);
     await h.adapter.runOnce();
-    expect(h.dispatchAttempts()).toBe(3);
-    expect(h.control.store.providerRecoveryExhausted(secondRecovery.effectId)).toBe(true);
+    expect(h.dispatchAttempts()).toBe(2);
+    expect(h.control.store.providerResumeExhausted(providerResumeId)).toBe(true);
     h.advance(60_000);
     await h.adapter.runOnce();
-    expect(h.dispatchAttempts()).toBe(3);
+    expect(h.dispatchAttempts()).toBe(2);
     expect(h.control.browserTasks()).toEqual([]);
     expect(h.errors).toEqual([]);
   });
@@ -507,10 +512,11 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     await h.adapter.runOnce();
     await h.adapter.runOnce();
     await h.adapter.runOnce();
-    expect(h.dispatchAttempts()).toBe(3);
+    // Exactly-once provider resume: one original dispatch plus one bounded resume.
+    expect(h.dispatchAttempts()).toBe(2);
     const effectIds = h.dispatchedPrompts.map((prompt) => /<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt)?.[1]);
-    expect(effectIds.filter(Boolean)).toHaveLength(3);
-    expect(new Set(effectIds.filter(Boolean)).size).toBe(3);
+    expect(effectIds.filter(Boolean)).toHaveLength(2);
+    expect(new Set(effectIds.filter(Boolean)).size).toBe(2);
     expect(h.control.browserTasks()).toEqual([]);
     expect(h.errors).toEqual([]);
   });

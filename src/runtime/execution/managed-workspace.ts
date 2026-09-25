@@ -16,10 +16,13 @@ import { resolveGitExecutable } from '../../effects/git-executable';
 import { runProcess } from '../../effects/process-runner';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
+import { recordOwnedResource } from '../../../packages/kernel/identity/api/index';
 
 export interface EnsureManagedWorkspaceInput {
   requestId: string;
   title: string;
+  /** Semantic Work provenance for durable ownership; never an execution mutex. */
+  associatedWorkId?: string;
   baseRef?: string;
   branchName?: string;
   /** Explicitly materialize lockfile-backed Node dependencies in this isolated worktree. */
@@ -63,6 +66,14 @@ interface ManagedWorkspaceManifest {
 
 function suffix(repoId: string, requestId: string): string {
   return createHash('sha256').update(`${repoId}:${requestId}`).digest('hex').slice(0, 12);
+}
+
+export function managedWorkspaceOwnedResourceId(repoId: string, checkoutId: string): string {
+  return `managed-worktree:${repoId}:${checkoutId}`;
+}
+
+export function managedBranchOwnedResourceId(repoId: string, checkoutId: string): string {
+  return `managed-branch:${repoId}:${checkoutId}`;
 }
 
 function git(root: string, args: string[], timeoutMs = 30_000): string {
@@ -425,6 +436,24 @@ export function ensureManagedWorkspace(
       );
       if (!checkout) throw new Error(`MANAGED_WORKSPACE_CHECKOUT_NOT_REGISTERED: ${path}`);
       const selected = selectRepositoryCheckout(record, checkout.checkoutId);
+      recordOwnedResource(controllerHome, {
+        resourceId: managedWorkspaceOwnedResourceId(repository.repoId, checkout.checkoutId),
+        kind: 'worktree',
+        targetRef: selected.canonicalRoot,
+        creator: 'forge:managed-workspace',
+        associatedWorkId: input.associatedWorkId,
+        repoId: repository.repoId,
+        retentionIntent: 'temporary',
+      });
+      recordOwnedResource(controllerHome, {
+        resourceId: managedBranchOwnedResourceId(repository.repoId, checkout.checkoutId),
+        kind: 'git_branch',
+        targetRef: branch,
+        creator: 'forge:managed-workspace',
+        associatedWorkId: input.associatedWorkId,
+        repoId: repository.repoId,
+        retentionIntent: 'retain_on_failure',
+      });
       if (!manifest) {
         writeJsonAtomic(statePath, {
           schemaVersion: 1,

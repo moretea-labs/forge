@@ -8,7 +8,6 @@ import { buildWorkflowWatchdogReport } from '../../../src/runtime/watchdog/workf
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from '../../../src/runtime/recovery';
 import {
   buildFacadeResult,
-  completePlanStepForWork,
   getPlanContract,
   normalizeCheckIds,
   repairDanglingPlanStepWorkBinding,
@@ -158,7 +157,7 @@ export async function runFacadeRepair(
       const facade = buildFacadeResult({
         summary: pendingRevision ? `PlanContract ${repaired.planId} staged revision repaired in place; stable Plan identity and committed authority were preserved.` : `PlanContract ${repaired.planId} draft repaired in place; identity and Requirement authority were preserved.`,
         data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(repaired), repaired: true, replacementPlanCreated: false },
-        suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: repaired.planId }, risk: 'workspace_write', confidence: 'medium' }],
+        suggestedNextActions: [{ label: 'Read repaired Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: repaired.planId }, risk: 'readonly', confidence: 'medium' }],
       });
       return result(facade as unknown as Record<string, unknown>);
     } catch (error) {
@@ -186,25 +185,12 @@ export async function runFacadeRepair(
     const boundWork = getWorkContract(store, step.workId);
     if (boundWork) {
       if (['completed', 'failed', 'cancelled'].includes(boundWork.status)) {
-        if (repairOperation !== 'repair' || dryRun) {
-          const facade = buildFacadeResult({
-            summary: `PLAN_STEP_TERMINAL_WORK_RECONCILIABLE: ${planId}/${planStepId} is bound to existing terminal Work ${boundWork.workId}. Explicit repair can project that exact Work without creating a replacement.`,
-            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, repairRequired: true, reusedExistingWork: true },
-            suggestedNextActions: [{ label: 'Project existing terminal Work', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
-          });
-          return result(facade as unknown as Record<string, unknown>);
-        }
-        try {
-          const reconciledPlan = completePlanStepForWork(store, { planId, stepId: planStepId, work: boundWork });
-          const facade = buildFacadeResult({
-            summary: `Reconciled Plan step ${planId}/${planStepId} from its existing terminal Work ${boundWork.workId}; no replacement Work was created.`,
-            data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(reconciledPlan), boundWorkId: boundWork.workId, repaired: true, reusedExistingWork: true },
-          });
-          return result(facade as unknown as Record<string, unknown>);
-        } catch (error) {
-          const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_STEP_TERMINAL_WORK_RECONCILIATION_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: boundWork.workId, repaired: false } });
-          return result(facade as unknown as Record<string, unknown>, true);
-        }
+        const facade = buildFacadeResult({
+          summary: `PLAN_STEP_TERMINAL_WORK_FACT: ${planId}/${planStepId} is bound to terminal Work ${boundWork.workId}. Execution repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact changes the plan.`,
+          data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, terminalWorkStatus: boundWork.status, repaired: false, repairRequired: false, reusedExistingWork: true },
+          suggestedNextActions: [{ label: 'Revise Plan from terminal Work fact', tool: 'rh_work', operation: 'plan_revise', payload: { plan_id: planId, expected_revision: plan.revision }, risk: 'workspace_write', confidence: 'high' }],
+        });
+        return result(facade as unknown as Record<string, unknown>);
       }
       const requestedRevisionLabel = typeof args.superseded_by === 'string' ? args.superseded_by.trim() : '';
       const requestedAllowedPaths = Array.isArray(args.allowed_paths)

@@ -125,7 +125,11 @@ export function assertFacadeControllerRoundAuthority(
   workId: string,
   args: Record<string, unknown>,
 ): ControllerRoundRelayRecord | undefined {
-  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  // A frozen client may carry its explicit controller authority through the
+  // bounded `session_id` compatibility carrier. Resolving that carrier is not an
+  // authorization shortcut: `assertControllerRoundInvocationAuthority` still owns
+  // the exact principal/Work/round comparison below.
+  const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
   return assertControllerRoundInvocationAuthority({
     ...store,
     workId,
@@ -173,7 +177,10 @@ export function currentFacadeTerminalizationAuthority(
   workId: string,
   args: Record<string, unknown>,
 ): ControllerTerminalizationAuthority {
-  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  // Frozen clients may carry an exact controller authority through the bounded
+  // `session_id` compatibility carrier; the terminalization authority check below
+  // still owns the exact owner/Work/revision comparison.
+  const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
   return controllerTerminalizationAuthorityForInvocation({
     ...store,
     workId,
@@ -189,7 +196,7 @@ export function currentTerminalCleanupAuthority(
   workId: string,
   args: Record<string, unknown>,
 ): ControllerTerminalizationAuthority {
-  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
   return terminalCleanupAuthorityForInvocation({
     ...store,
     workId,

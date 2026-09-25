@@ -6,6 +6,7 @@ import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
+import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
   HANDOFF_STATUSES,
@@ -49,7 +50,9 @@ describe('handoff and facade contracts', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
     const learning = properties?.learning_signals;
-    expect(learning?.maxItems).toBe(8);
+    // The per-call array bound is a transport envelope owned by one constant, not
+    // an interaction quota and not a second schema-local policy.
+    expect(learning?.maxItems).toBe(CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS);
     expect(learning?.items?.additionalProperties).toBe(false);
     expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project', 'workspace']);
     expect(learning?.items?.properties?.admission_source?.enum).toContain('explicit_human');

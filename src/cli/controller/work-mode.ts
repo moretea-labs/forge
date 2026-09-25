@@ -65,7 +65,7 @@ function behaviorFor(mode: EffectiveTaskMode): WorkModeAssessment['modeBehavior'
   switch (mode) {
     case 'direct': return {
       structuralContext: 'off', mutationPhase: 'execute', issueRequired: false, planRequired: false, worktreeRequired: false,
-      workflow: ['search/read exact known scope', 'edit 1-2 low-risk files', 'run focused checks', 'commit'],
+      workflow: ['use the required domain capabilities directly', 'let the model choose implementation and validation strategy', 'record durable semantic state only when continuity is useful'],
     };
     case 'plan': return {
       structuralContext: 'required', mutationPhase: 'plan_only', issueRequired: false, planRequired: true, worktreeRequired: false,
@@ -85,24 +85,23 @@ function behaviorFor(mode: EffectiveTaskMode): WorkModeAssessment['modeBehavior'
     };
     case 'scale': return {
       structuralContext: 'off', mutationPhase: 'coordinate', issueRequired: false, planRequired: true, worktreeRequired: true,
-      workflow: ['decompose independent deliverables in an approved Plan', 'start bounded isolated Work per Plan step', 'run independent units concurrently when resource claims permit', 'verify deterministic conflict handling and publish coordination evidence'],
+      workflow: ['use the model-authored Plan for explicit independent deliverables', 'use isolated Work only where durable coordination is useful', 'coordinate concurrency through concrete resource claims rather than PlanStep lifecycle'],
     };
     default: return {
       structuralContext: 'off', mutationPhase: 'execute', issueRequired: false, planRequired: false, worktreeRequired: false,
-      workflow: ['start resumable bounded Work', 'implement within declared scope', 'verify focused checks', 'finalize durable evidence'],
+      workflow: ['resume the existing durable Work context', 'use domain capabilities directly', 'let the model decide checks/review', 'record work_complete when the model decides the Work is complete'],
     };
   }
 }
 
 function nextTools(decision: RouteDecision, investigation: boolean): string[] {
-  if (decision.workMode === 'issue_task') return ['inspect_issue_readiness', 'create_issue or append_task', 'dispatch_task', 'verify_task', 'accept_task'];
-  if (decision.workMode === 'quick_agent') return ['search_repository', 'rh_work(operation=delegate)', 'rh_work(operation=continue)', 'rh_work(operation=verify)'];
-  if (decision.workMode === 'bounded_work') return [
+  if (decision.requiresWork) return [
     ...(investigation ? ['rh_context', 'search_repository'] : []),
-    'rh_work(operation=start)',
-    'rh_work(operation=continue)',
-    'rh_work(operation=verify)',
-    'rh_work(operation=finalize)',
+    'rh_work(operation=start or work_get)',
+    'repository_workbench(operation=batch_execute)',
+    'process_get/process_wait when needed',
+    'rh_work(operation=work_revise) when semantic working context changes',
+    'rh_work(operation=work_complete) when the model decides completion',
   ];
   return [
     ...(investigation ? ['search_repository', 'repository_workbench(operation=batch_execute reads)'] : []),
@@ -156,7 +155,7 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
     },
   });
   const taskMode: EffectiveTaskMode = explicitMode
-    ?? (routeDecision.workMode === 'direct_edit' ? 'direct' : 'bounded');
+    ?? (routeDecision.requiresWork ? 'bounded' : 'direct');
   const modeBehavior = behaviorFor(taskMode);
   return {
     recommendedMode: routeDecision.workMode,
@@ -172,7 +171,7 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
           : explicitMode === 'scale'
             ? ['rh_work(operation=plan_create)', 'rh_work(operation=start)', 'process_get', 'process_wait', 'benchmark evidence']
             : nextTools(routeDecision, input.requiresInvestigation === true || investigationMode || (input.knownPaths?.length ?? 0) === 0),
-    issueRequired: routeDecision.workMode === 'issue_task',
+    issueRequired: false,
     taskMode,
     explicitMode: explicitMode ?? null,
     modeBehavior,

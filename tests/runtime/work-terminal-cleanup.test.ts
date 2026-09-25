@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import type { CompletionReceipt } from '../../src/cli/controller/types';
-import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, failWorkContract, getWorkContract, recordWorkCompletionReceipt, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import {
   readWorkHandle,
@@ -669,13 +669,13 @@ describe('terminal Work cleanup', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('cleaned');
   });
 
-  test('periodic reconciler repairs only clean zero-unique-commit legacy branch drift before cleanup', async () => {
+  test('periodic reconciler does not repair branch drift from semantic cancellation alone', async () => {
     const fx = fixture('periodic-branch-drift');
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       mode: 'direct_control',
-      objective: 'Legacy branch identity drift should be reconciled only when cleanup is provably lossless.',
+      objective: 'Semantic cancellation must not authorize branch mutation or cleanup.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
       allowedPaths: [],
@@ -689,10 +689,38 @@ describe('terminal Work cleanup', () => {
     git(fx.workspace.root!, ['branch', '-m', actualBranch]);
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
-    expect(report.branchReconciled).toContainEqual({ workId: fx.handle.workId, from: fx.branch, to: actualBranch });
-    expect(report.cleaned).toContain(fx.handle.workId);
-    expect(existsSync(fx.workspace.root!)).toBe(false);
-    expect(branchExists(fx.repositoryRoot, actualBranch)).toBe(false);
+    expect(report.branchReconciled).toEqual([]);
+    expect(report.skippedRetained).toContain(fx.handle.workId);
+    expect(report.cleaned).not.toContain(fx.handle.workId);
+    expect(existsSync(fx.workspace.root!)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, actualBranch)).toBe(true);
+  });
+
+  test('periodic reconciler does not treat semantic work_complete as cleanup authorization', async () => {
+    const fx = fixture('periodic-semantic-complete');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.workspace.checkoutId!,
+      mode: 'direct_control',
+      objective: 'Semantic completion must not imply filesystem cleanup.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    reviseWorkSemanticContext(store, fx.handle.workId, { expectedRevision: 1, state: 'completed', resultRefs: ['result:semantic-only'] });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 5 });
+    expect(report.skippedRetained).toContain(fx.handle.workId);
+    expect(report.cleaned).not.toContain(fx.handle.workId);
+    expect(existsSync(fx.workspace.root!)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
   });
 
   test('periodic reconciler leaves non-terminal Work untouched', async () => {
@@ -880,22 +908,20 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(fx.workspace.root!)).toBe(true);
   });
 
-  test('checkpoints dirty work, bundles unique commits, then removes worktree and branch', async () => {
+  test('retains dirty managed work in place instead of checkpointing or deleting it', async () => {
     const fx = fixture('dirty');
     writeFileSync(join(fx.workspace.root!, 'dirty.txt'), 'preserve me\n');
     const result = await cleanup(fx);
-    expect(result.receipt.complete).toBe(true);
-    expect(result.receipt.preservation.status).toBe('checkpointed');
-    expect(result.receipt.preservation.checkpointCommit).toBeTruthy();
-    expect(result.receipt.preservation.bundlePath).toBeTruthy();
-    expect(existsSync(result.receipt.preservation.bundlePath!)).toBe(true);
-    expect(git(fx.repositoryRoot, ['show', '-s', '--format=%s', result.receipt.preservation.checkpointCommit!]))
-      .toBe('chore(checkpoint): preserve terminal work before cleanup');
-    expect(git(fx.repositoryRoot, ['bundle', 'verify', result.receipt.preservation.bundlePath!]))
-      .toContain(`refs/heads/${fx.branch}`);
-    expect(result.receipt.branchCleanup.status).toBe('archived');
-    expect(existsSync(fx.workspace.root!)).toBe(false);
-    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    expect(result.receipt.complete).toBe(false);
+    expect(result.receipt.blockers).toContain('DIRTY_WORKTREE_RETAINED');
+    expect(result.receipt.preservation.status).toBe('not_needed');
+    expect(result.receipt.preservation.checkpointCommit).toBeUndefined();
+    expect(result.receipt.preservation.patchArchivePath).toBeUndefined();
+    expect(result.receipt.worktree.status).toBe('retained');
+    expect(result.receipt.branchCleanup.status).toBe('retained');
+    expect(existsSync(fx.workspace.root!)).toBe(true);
+    expect(readFileSync(join(fx.workspace.root!, 'dirty.txt'), 'utf8')).toBe('preserve me\n');
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
   });
 
   test('archives an unmerged committed branch before deleting it', async () => {

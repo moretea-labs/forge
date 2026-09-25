@@ -18,13 +18,13 @@ export interface ControllerOperationalPlan {
     reviewRequired: boolean;
   };
   validationStrategy: {
-    source: "task-targeted-validation-policy";
+    source: "declared-check-projection";
     policy: "minimal" | "task-targeted" | "release-gate";
     checks: string[];
     reason: string;
   };
   recipeSystem: {
-    source: "controller-recipe-system";
+    source: "legacy-recipe-projection";
     recipes: Array<{
       id: string;
       label: string;
@@ -34,7 +34,7 @@ export interface ControllerOperationalPlan {
     }>;
   };
   workerAbstraction: {
-    source: "worker-routing-abstraction";
+    source: "execution-capability-projection";
     workers: Array<{
       id: string;
       role: string;
@@ -107,11 +107,9 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
   const dirty = changedFiles.length > 0;
   const blocked = ledger.status.kind === "blocked" || ledger.status.kind === "needs_retry_decision";
   const needsAttention = blocked || ledger.status.severity === "action" || ledger.status.severity === "warning" || dirty;
-  const policy = checks.some((check) => check.includes("release") || check.includes("ci"))
-    ? "release-gate" as const
-    : checks.length > 0
-      ? "task-targeted" as const
-      : "minimal" as const;
+  // Compatibility projection only. Declared checks are facts the model may use;
+  // this projection does not choose a validation method or release gate.
+  const policy = "minimal" as const;
 
   return {
     schemaVersion: OPERATIONAL_PLAN_SCHEMA_VERSION,
@@ -122,70 +120,45 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
       "task-ledger",
       "context-pack",
       "diff-projection",
-      "validation-strategy",
-      "recipe-system",
-      "worker-abstraction",
+      "declared-check-projection",
+      "legacy-recipe-projection",
+      "execution-capability-projection",
       "gui-interaction-model",
       "mcp-tool-schema-convergence",
       "controller-home-runtime-storage-policy",
       "branch-worktree-cleanup-policy",
       "task-recovery-loop",
     ],
-    remainingDecisionPoints: dirty
-      ? ["Review and commit or discard current diff before dispatching unrelated work."]
-      : [],
+    remainingDecisionPoints: [],
     diffProjection: {
       source: "live-git-diff-projection",
       dirty,
       changedFiles,
       diffStat: diffStat.ok ? diffStat.stdout.trim() : diffStat.error || diffStat.stderr.trim(),
-      reviewRequired: dirty,
+      // Legacy field retained for UI ABI only. Dirty state is a fact, not an
+      // automatic review lifecycle decision.
+      reviewRequired: false,
     },
     validationStrategy: {
-      source: "task-targeted-validation-policy",
+      source: "declared-check-projection",
       policy,
       checks,
-      reason: policy === "release-gate"
-        ? "Release or CI checks are declared by the focused work."
-        : policy === "task-targeted"
-          ? "Use checks declared on the focused task or ready queue; do not expand validation scope by default."
-          : "No task-specific checks were found; keep validation minimal and explicit.",
+      reason: checks.length > 0
+        ? "These checks are declared context only; the model decides whether, when, and how to validate."
+        : "No declared checks were found; Forge does not invent a validation strategy.",
     },
     recipeSystem: {
-      source: "controller-recipe-system",
-      recipes: [
-        {
-          id: "scoped-direct-edit",
-          label: "Scoped direct edit",
-          when: "Known files and low/medium-risk bounded changes.",
-          steps: ["build context pack", "read exact ranges", "apply bounded patch", "review diff projection", "run task-targeted checks"],
-          requiredEvidence: ["contextPack", "diffProjection", "validationStrategy"],
-        },
-        {
-          id: "isolated-worker-run",
-          label: "Isolated worker run",
-          when: "Large, risky, or long-running implementation requiring agent execution.",
-          steps: ["derive worker scope", "dispatch isolated run", "inspect run diff", "integrate through edit session", "verify exact revision"],
-          requiredEvidence: ["run", "task diff", "integration session", "checks"],
-        },
-        {
-          id: "recovery-resume",
-          label: "Fresh-session recovery",
-          when: "A controller session restarts or loses conversation state.",
-          steps: ["load task ledger", "read operational plan", "select continuation state", "expand only needed context", "resume or ask for the one missing decision"],
-          requiredEvidence: ["taskLedger", "operationalPlan", "recoveryArtifacts"],
-        },
-      ],
+      source: "legacy-recipe-projection",
+      recipes: [],
     },
     workerAbstraction: {
-      source: "worker-routing-abstraction",
+      source: "execution-capability-projection",
       workers: [
-        { id: "direct_edit", role: "transactional patch executor", preferredFor: ["small scoped edits", "known paths"], avoidWhen: ["unknown architecture", "long-running generation"] },
-        { id: "quick_agent", role: "bounded investigation or small implementation", preferredFor: ["uncertain file discovery", "medium-risk changes"], avoidWhen: ["dirty main workspace", "release-critical changes"] },
-        { id: "isolated_task_run", role: "durable worker with worktree", preferredFor: ["parallel tasks", "risky implementation"], avoidWhen: ["single-line fixes"] },
-        { id: "github_copilot", role: "visible cloud coding session", preferredFor: ["remote reviewable work", "GitHub issue flow"], avoidWhen: ["secret-local context", "offline tasks"] },
+        { id: "direct_capability", role: "direct domain capability execution", preferredFor: [], avoidWhen: [] },
+        { id: "isolated_process", role: "isolated process/workspace capability when explicitly useful", preferredFor: [], avoidWhen: [] },
+        { id: "external_provider", role: "optional external model/provider capability", preferredFor: [], avoidWhen: [] },
       ],
-      recommendedWorker: dirty ? "direct_edit" : ledger.status.kind === "ready_to_dispatch" ? "isolated_task_run" : "direct_edit",
+      recommendedWorker: "model_selected",
     },
     guiInteraction: {
       source: "controller-console-interaction-model",

@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { approvePlanContract, claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
@@ -324,11 +324,14 @@ describe('rh_work Requirement bootstrap', () => {
       objective: 'Predecessor Plan.',
       plan_steps: [step],
     })).status).toBe('ok');
-    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+    const predecessorApproveNoop = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'plan_approve',
       plan_id: predecessorPlanId,
-    })).status).toBe('ok');
+    }));
+    expect(predecessorApproveNoop.status).toBe('ok');
+    expect(predecessorApproveNoop.data.compatibilityNoop).toBe(true);
+    approvePlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
 
     const predecessor = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
     expect(predecessor).toBeTruthy();
@@ -418,6 +421,8 @@ describe('rh_work Requirement bootstrap', () => {
       plan_id: predecessorPlanId,
     }));
     expect(approvedSuccessor.status).toBe('ok');
+    expect(approvedSuccessor.data.compatibilityNoop).toBe(true);
+    approvePlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({ planId: predecessorPlanId, revision: 2, status: 'approved' });
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
 
@@ -453,9 +458,12 @@ describe('rh_work Requirement bootstrap', () => {
       repo_id: repository.repoId, operation: 'plan_create', plan_id: predecessorPlanId, requirement_id: requirementId,
       scope_key: 'v2-release', source_revision: sourceRevision, objective: 'Predecessor Plan.', plan_steps: [step],
     })).status).toBe('ok');
-    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+    const approveNoop = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_approve', plan_id: predecessorPlanId,
-    })).status).toBe('ok');
+    }));
+    expect(approveNoop.status).toBe('ok');
+    expect(approveNoop.data.compatibilityNoop).toBe(true);
+    approvePlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
     const claimed = claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, {
       planId: predecessorPlanId, stepId: 'stage-a', workId: 'work-never-created', sourceRevision: 'different-source-revision',
     });
@@ -847,6 +855,8 @@ describe('rh_work Requirement bootstrap', () => {
       repo_id: repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-ACTIVE-SCOPE-R1',
     }));
     expect(approved.status).toBe('ok');
+    expect(approved.data.compatibilityNoop).toBe(true);
+    approvePlanContract(store, 'PLAN-ACTIVE-SCOPE-R1');
 
     createWorkContract(store, {
       workId: 'work-active-scope', repoId: repository.repoId, planId: 'PLAN-ACTIVE-SCOPE-R1', planStepId: 'stage', planSourceRevision: sourceRevision,
@@ -978,7 +988,10 @@ describe('rh_work Requirement bootstrap', () => {
       plan_id: 'PLAN-LEGACY-MALFORMED',
     }));
     expect(approved.status).toBe('ok');
-    expect(approved.data.plan.status).toBe('approved');
+    expect(approved.data.compatibilityNoop).toBe(true);
+    expect(approved.data.plan.status).not.toBe('approved');
+    approvePlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-LEGACY-MALFORMED');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-LEGACY-MALFORMED')?.status).toBe('approved');
   }, 15_000);
 });
 

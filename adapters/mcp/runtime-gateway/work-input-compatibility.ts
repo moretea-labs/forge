@@ -74,6 +74,10 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
     if (frozenSemanticOperation) {
       const requirementScoped = frozenSemanticOperation.operation !== 'work_review'
         && frozenSemanticOperation.operation !== 'continue'
+        && frozenSemanticOperation.operation !== 'plan_revise'
+        && frozenSemanticOperation.operation !== 'work_get'
+        && frozenSemanticOperation.operation !== 'work_revise'
+        && frozenSemanticOperation.operation !== 'work_complete'
         && frozenSemanticOperation.operation !== 'controller_disposition'
         && frozenSemanticOperation.operation !== 'learning_record'
         && frozenSemanticOperation.operation !== 'learning_feedback';
@@ -81,9 +85,12 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
         const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
         if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
       }
-      if (frozenSemanticOperation.operation === 'continue') {
+      if (frozenSemanticOperation.operation === 'continue'
+        || frozenSemanticOperation.operation === 'work_get'
+        || frozenSemanticOperation.operation === 'work_revise'
+        || frozenSemanticOperation.operation === 'work_complete') {
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-        if (!explicitWorkId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: work_id must remain explicit outside the continue envelope');
+        if (!explicitWorkId) throw new Error(`FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: work_id must remain explicit outside the ${frozenSemanticOperation.operation} envelope`);
       }
       if (frozenSemanticOperation.operation === 'controller_disposition') {
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
@@ -134,6 +141,9 @@ export function normalizeRhWorkInputCompatibility(input: Record<string, unknown>
   if (frozenSemanticOperation?.operation === 'plan_create') {
     args.obligation_dispositions = frozenSemanticOperation.args.obligation_dispositions;
   }
+  if (frozenSemanticOperation?.operation === 'requirement_revise') Object.assign(args, frozenSemanticOperation.args);
+  if (frozenSemanticOperation?.operation === 'plan_revise') Object.assign(args, frozenSemanticOperation.args);
+  if (frozenSemanticOperation?.operation === 'work_revise' || frozenSemanticOperation?.operation === 'work_complete') Object.assign(args, frozenSemanticOperation.args);
   if (frozenSemanticOperation?.operation === 'start') Object.assign(args, frozenSemanticOperation.args);
   if (frozenSemanticOperation?.operation === 'continue') {
     args.engineering_preconditions = frozenSemanticOperation.args.engineering_preconditions;

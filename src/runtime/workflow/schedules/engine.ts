@@ -28,7 +28,6 @@ import {
   listActiveOccurrences,
   listOccurrences,
   reclaimStaleCreatedOccurrences,
-  recordScheduleOccurrenceHandoff,
   listSchedules,
   saveOccurrence,
   saveScheduleDecision,
@@ -38,7 +37,7 @@ import { getControllerRoundRelay, prepareControllerRoundOccurrence, resumeContro
 import { ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork } from '../../root/workflow-supervisor-composition';
 export { cronDue };
 import { ensureScheduledControllerBinding, controllerHostForScheduledBinding } from '../../root/scheduled-controller-composition';
-import { listHandoffItems } from '../../control-plane/facade/handoff-inbox-store';
+import { listUserRequests } from '../../../../packages/kernel/identity/api/index';
 import { runStandaloneChatgptPrompt } from '../../control-plane/launcher/chatgpt-work-continuation';
 
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
@@ -94,30 +93,18 @@ function workBoundScheduleWorkId(schedule: RepositorySchedule): string | undefin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-const HUMAN_ONLY_HANDOFF_REASONS = new Set([
-  'policy_approval_required',
-  'missing_authorization',
-  'invalid_objective',
-  'destructive_action_requires_confirmation',
-]);
-
-function handoffRequiresHumanReview(item: ReturnType<typeof listHandoffItems>[number]): boolean {
-  if (item.approvalAction) return true;
-  if (!item.creationReason) return true;
-  return HUMAN_ONLY_HANDOFF_REASONS.has(item.creationReason);
-}
-
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
   const workId = workBoundScheduleWorkId(schedule);
   const work = workId ? getWorkContract({ controllerHome, repoId: schedule.repoId }, workId) : undefined;
   if (schedule.stopConditions.includes('human_review_required')) {
+    const pendingUserRequests = listUserRequests(controllerHome, 'pending');
     if (workId) {
-      const activeHandoff = listHandoffItems({ controllerHome, repoId: schedule.repoId, status: 'active', limit: 100 })
-        .find((item) => item.workId === workId && handoffRequiresHumanReview(item));
-      if (activeHandoff) return `Work ${workId} has active Handoff ${activeHandoff.id} requiring human review.`;
-    } else if (projection.currentAttention.length > 0) {
-      return 'Repository has jobs requiring human attention.';
+      const request = pendingUserRequests.find((item) => item.targetScope?.workId === workId);
+      if (request) return `Work ${workId} has pending UserRequest ${request.requestId} requiring human action.`;
+    } else {
+      const request = pendingUserRequests.find((item) => item.targetScope?.repoId === schedule.repoId);
+      if (request) return `Repository ${schedule.repoId} has pending UserRequest ${request.requestId}.`;
     }
   }
   if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen) return 'Repository is in release freeze.';
@@ -594,20 +581,20 @@ async function executeExternalControllerWake(
       decision: 'execute',
       reason,
       ...(failureClass === 'user_action_required' ? { pauseReason: reason } : {}),
-      handoff: {
-        title: `External Controller wake ${occurrence.occurrenceId} failed`,
-        summary: 'Forge recorded the schedule trigger but could not resume the exact configured ControllerSession through ControllerHost.',
-        reason,
-        creationReason: 'repeated_infrastructure_failure',
-        blockingDecision: reason.startsWith('CONTROLLER_CONTINUATION_OUTCOME_UNKNOWN:')
-          ? 'Inspect the durable ControllerHost dispatch outcome before any retry; automatic replay is fenced.'
-          : 'Repair the ControllerHost adapter/binding or update the retained ControllerSession.',
-        recommendedDecision: 'Inspect the exact ControllerRound provider-dispatch effect, ControllerSession, and adapter binding, then retrigger only when the outcome is known.',
-        recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the exact ControllerHost continuation path before unattended continuation resumes.`,
-        statusSummary: 'Scheduled ControllerHost continuation failed.',
-        blockedBy: ['external_controller_wake_failed'],
-        attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`, `session:${retainedSession.sessionId}`, `binding:${bindingRecord.binding.bindingId}`],
-      },
+      ...(failureClass === 'user_action_required' ? {
+        handoff: {
+          title: `External Controller wake ${occurrence.occurrenceId} requires user authorization`,
+          summary: 'Forge cannot resume the configured ControllerSession until the required user authorization is restored.',
+          reason,
+          creationReason: 'missing_authorization' as const,
+          blockingDecision: 'Restore the required authenticated/authorized controller capability, then retry the same scheduled Work.',
+          recommendedDecision: 'Restore authorization only; do not create replacement Work or replay an unknown external effect.',
+          recommendedPrompt: `Restore authorization for Work ${workId} and retry scheduled continuation ${occurrence.occurrenceId}.`,
+          statusSummary: 'Scheduled Controller continuation is waiting on user authorization.',
+          blockedBy: ['controller_authorization_required'],
+          attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`, `session:${retainedSession.sessionId}`, `binding:${bindingRecord.binding.bindingId}`],
+        },
+      } : {}),
     });
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return failed.occurrence ?? saveOccurrence(controllerHome, { ...wakeDecision, status: 'failed', reason });
@@ -662,36 +649,21 @@ export async function evaluateSchedule(
     updatedAt: timestamp,
   });
 
-  // Semantic / model-backed schedules only record a trigger + Handoff.
-  // Deterministic allowlisted operations continue into the local engine path.
+  // Semantic/model-owned schedule actions record the trigger only. A trigger is
+  // continuation input for the external Controller/Supervisor, not a human
+  // blocker and therefore must not manufacture Handoff/UserRequest state.
   if (!isDeterministicSchedule(schedule)) {
-    const externalControllerHandoff = recordScheduleOccurrenceHandoff(
+    const recorded = decideOccurrence(
       controllerHome,
       schedule,
-      decideOccurrence(
-        controllerHome,
-        schedule,
-        occurrence,
-        'operation_blocked',
-        'skipped',
-        'Schedule execution is external-controller-owned; no ExecutionJob was created.',
-        occurrenceDecisionEvidence({ operation: schedule.action.operation, trigger: occurrence.triggerContext?.source }),
-      ),
-      {
-        title: `Schedule ${schedule.name} requires an external Controller`,
-        summary: 'The scheduled trigger was recorded without dispatching a Kernel Job.',
-        reason: 'Schedule execution is external-controller-owned.',
-        creationReason: 'ambiguous_outcome',
-        blockingDecision: 'Claim or create the related Work before executing the scheduled operation.',
-        recommendedDecision: 'Review the trigger evidence and continue it through an explicitly claimed external Controller session.',
-        recommendedPrompt: `Review schedule ${schedule.scheduleId} occurrence ${occurrence.occurrenceId}; create or claim Work for ${schedule.action.operation} and continue through Process Runtime or Thin Launcher.`,
-        statusSummary: 'Schedule trigger is waiting for external Controller ownership.',
-        blockedBy: ['external_controller_required'],
-        attemptedActions: [`operation:${schedule.action.operation}`],
-      },
+      occurrence,
+      'operation_blocked',
+      'skipped',
+      'Schedule trigger recorded for external Controller continuation; no Kernel ExecutionJob or human Handoff was created.',
+      occurrenceDecisionEvidence({ operation: schedule.action.operation, trigger: occurrence.triggerContext?.source }),
     );
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
-    return externalControllerHandoff;
+    return recorded;
   }
 
   const recent = listOccurrences(controllerHome, schedule.repoId, schedule.scheduleId, 1000);
@@ -715,18 +687,7 @@ export async function evaluateSchedule(
       reason: stop,
       countFailure: false,
       pauseReason: stop,
-      handoff: {
-        title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} stopped`,
-        summary: 'A live maintenance occurrence was blocked by an explicit schedule stop condition and requires review before automation resumes.',
-        reason: stop,
-        creationReason: 'ambiguous_outcome',
-        blockingDecision: 'Review the stop condition and decide whether automatic maintenance should stay paused.',
-        recommendedDecision: 'Resolve the stop condition, then explicitly re-enable or retrigger the maintenance schedule.',
-        recommendedPrompt: `Review maintenance schedule ${schedule.scheduleId} for repo ${schedule.repoId}, inspect stop condition ${stop}, and decide whether to resume the schedule.`,
-        statusSummary: 'Scheduled maintenance occurrence stopped before dispatch.',
-        blockedBy: ['schedule_stop_condition'],
-        attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
-      },
+
     });
     return failed.occurrence ?? stopped;
   }
@@ -900,18 +861,7 @@ export async function evaluateSchedule(
         outcome: 'failed',
         decision: 'execute',
         reason,
-        handoff: {
-          title: `GitHub issue watcher occurrence ${occurrence.occurrenceId} failed`,
-          summary: 'The local GitHub issue poll failed before Forge could compare issue state.',
-          reason,
-          creationReason: 'repeated_infrastructure_failure',
-          blockingDecision: 'Repair GitHub CLI authentication/connectivity before unattended issue monitoring resumes.',
-          recommendedDecision: 'Restore gh read access, then retrigger the watcher.',
-          recommendedPrompt: `Inspect GitHub issue watcher occurrence ${occurrence.occurrenceId} and restore the local read-only gh issue polling path.`,
-          statusSummary: 'GitHub issue watcher poll failed.',
-          blockedBy: ['github_issue_watch_failed'],
-          attemptedActions: [`schedule:${schedule.scheduleId}`, 'gh:api:issues'],
-        },
+
       });
       return failed.occurrence ?? occurrence;
     }
@@ -1054,18 +1004,7 @@ export async function evaluateSchedule(
         outcome: 'failed',
         decision: 'execute',
         reason,
-        handoff: {
-          title: `Browser watcher occurrence ${occurrence.occurrenceId} failed`,
-          summary: 'A bounded browser probe failed before Forge could compare the external observation.',
-          reason,
-          creationReason: 'repeated_infrastructure_failure',
-          blockingDecision: 'Repair browser/session readiness or update the watcher target before unattended probing resumes.',
-          recommendedDecision: 'Inspect the browser plugin/session and retrigger the watcher after the target is readable.',
-          recommendedPrompt: `Inspect browser watcher schedule ${schedule.scheduleId} for Work ${workId}, repair the failed browser probe, then retrigger one bounded occurrence.`,
-          statusSummary: 'Scheduled browser watcher failed.',
-          blockedBy: ['browser_probe_failed'],
-          attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, 'operation:browser_probe'],
-        },
+
       });
       updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
       return failed.occurrence ?? saveOccurrence(controllerHome, { ...occurrence, status: 'failed', decision: 'execute', reason });
@@ -1130,22 +1069,7 @@ export async function evaluateSchedule(
       outcome: 'failed',
       decision: 'execute',
       reason,
-      handoff: {
-        title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} failed`,
-        summary: 'A bounded live maintenance occurrence failed during deterministic apply and requires review before the schedule continues unattended.',
-        reason,
-        creationReason: 'repeated_infrastructure_failure',
-        blockingDecision: 'Review the failed maintenance occurrence and decide whether the schedule should continue automatically.',
-        recommendedDecision: 'Inspect the failed occurrence, fix the runtime blocker, then re-enable or retrigger the schedule intentionally.',
-        recommendedPrompt: `Review schedule occurrence ${occurrence.occurrenceId} for ${schedule.scheduleId}, inspect the failed runtime maintenance action, and decide whether to resume automatic maintenance.`,
-        statusSummary: 'Scheduled maintenance execution failed.',
-        blockedBy: ['scheduled_execution_failed'],
-        attemptedActions: [
-          `schedule:${schedule.scheduleId}`,
-          `operation:${schedule.action.operation}`,
-          actionIdRaw ? `action:${actionIdRaw}` : 'action:unknown',
-        ],
-      },
+
     });
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
       lastTriggeredAt: timestamp,

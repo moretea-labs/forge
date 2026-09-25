@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import { getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import { buildFacadeResult, repairPlanStepForTechnicalRetry, summarizePlanContract } from '../../../src/runtime/control-plane/facade';
+import { buildFacadeResult, completePlanStepForWork, getPlanContract, repairPlanStepForTechnicalRetry, summarizePlanContract } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
 
@@ -58,6 +58,11 @@ export function callRhWorkPlanRepairOperation(
           .filter((candidate) => candidate.planId === work.planId && candidate.planStepId === work.planStepId)
       : [];
     if (conflicting.length > 0) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_ACTIVE_WORK_CONFLICT: ${conflicting.map((candidate) => candidate.workId).join(',')}`);
+    // Bounded legacy translation owned by this explicit compatibility
+    // operation: terminal Work state never rewrites model-authored Plan
+    // progress, so the caller-invoked retry releases the exact legacy PlanStep
+    // binding before restoring the item for a replacement admission.
+    releaseLegacyPlanStepBinding(store, work);
     const repairedPlan = repairPlanStepForTechnicalRetry(store, { work, cleanupComplete, reason });
     return result(buildFacadeResult({
       summary: `Plan step ${work.planId}/${work.planStepId} was restored for an explicit technical retry after terminal Work ${work.workId}; no Work was revived or created.`,
@@ -70,4 +75,21 @@ export function callRhWorkPlanRepairOperation(
       data: { workId, repaired: false },
     }) as unknown as Record<string, unknown>, true);
   }
+}
+
+function releaseLegacyPlanStepBinding(
+  store: { controllerHome: string; repoId: string },
+  work: NonNullable<ReturnType<typeof getWorkContract>>,
+): void {
+  const planId = work.planId?.trim();
+  const stepId = work.planStepId?.trim();
+  if (!planId || !stepId) throw new Error(`PLAN_STEP_TECHNICAL_RETRY_LINEAGE_REQUIRED: ${work.workId}`);
+  const plan = getPlanContract(store, planId);
+  const step = plan?.steps.find((candidate) => candidate.id === stepId);
+  if (!plan || !step) throw new Error(`PLAN_STEP_NOT_FOUND: ${planId}/${stepId}`);
+  if (!step.workId && step.status === 'ready') return;
+  if (step.workId !== work.workId) {
+    throw new Error(`PLAN_STEP_TECHNICAL_RETRY_BINDING_MISMATCH: ${stepId} is bound to ${step.workId ?? 'no Work'}, expected ${work.workId}`);
+  }
+  completePlanStepForWork(store, { planId, stepId, work });
 }

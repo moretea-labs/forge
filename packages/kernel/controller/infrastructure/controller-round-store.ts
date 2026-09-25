@@ -1016,7 +1016,7 @@ export function beginInitialControllerRoundDispatch(
         && !existing.value.providerDispatchStartedAt
         && !existing.value.providerDispatchReceiptId
         && (existing.value.providerDispatchAttempt ?? 0) === 0
-        && (existing.value.occurrenceId ?? '') === occurrenceId;
+        && (existing.value.occurrenceId ?? '') === (occurrenceId ?? '');
       if (reusableUnsubmittedRelay) return existing.value;
     }
     const previous = relayHistory(options, relayScopeId)[0];

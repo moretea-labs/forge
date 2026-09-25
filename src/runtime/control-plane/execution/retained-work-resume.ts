@@ -167,6 +167,7 @@ function restoreArchivedBlockedDeliveryCheckout(input: {
   const workspace = ensureManagedWorkspace(controllerHome, repository, {
     requestId: `${work.workId}:archived-delivery-recovery:${candidateRevision}`,
     title: `${work.objective} archived delivery recovery`,
+    associatedWorkId: work.workId,
     branchName,
     baseRef: candidateRevision,
     prepareDependencies: input.prepareDependencies === true,
@@ -325,6 +326,7 @@ function restoreArchivedPendingCandidateCheckout(input: {
   const workspace = ensureManagedWorkspace(controllerHome, repository, {
     requestId: `${work.workId}:pending-candidate-recovery:${candidateRevision}`,
     title: `${work.objective} pending candidate recovery`,
+    associatedWorkId: work.workId,
     branchName,
     baseRef: candidateRevision,
   });
@@ -488,6 +490,7 @@ export function ensureRunningRepositoryWorkCheckout(
   const workspace = ensureManagedWorkspace(controllerHome, repository, {
     requestId: `${workId}:active-checkout-recovery:${baseRevision}`,
     title: `${work.objective} checkout recovery`,
+    associatedWorkId: workId,
     branchName,
     baseRef: baseRevision,
     prepareDependencies: input.prepareDependencies === true,
@@ -659,6 +662,7 @@ export function reauthorizeRetainedCancelledRepositoryWork(
   const workspace = ensureManagedWorkspace(controllerHome, repository, {
     requestId: `${workId}:explicit-user-resume:${baseRevision}`,
     title: `${work.objective} explicit user resume`,
+    associatedWorkId: workId,
     branchName,
     baseRef: baseRevision,
     prepareDependencies: input.prepareDependencies === true,

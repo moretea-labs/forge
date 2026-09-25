@@ -1,12 +1,8 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { controllerSessionPrincipalId, getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import {
   admitPlanContractAsync,
   createPlanSemanticContext,
-  approvePlanContractAsync,
-  acceptPlanStepEvidence,
   buildFacadeResult,
   getPlanContract,
   listPlanContracts,
@@ -21,7 +17,6 @@ import {
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
-import { assertFacadeControllerRoundAuthority, authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
 import { result } from './result-adapter';
 
 const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([
@@ -101,10 +96,11 @@ export async function callRhWorkPlanOperation(
     }
 
     if (operation === 'plan_approve') {
-      const plan = await approvePlanContractAsync(store, String(args.plan_id ?? ''));
+      const plan = getPlanContract(store, String(args.plan_id ?? ''));
+      if (!plan) throw new Error(`PlanContract ${String(args.plan_id ?? '')} not found.`);
       const facade = buildFacadeResult({
-        summary: `PlanContract ${plan.planId} approved at source revision ${plan.sourceRevision}; execution remains explicit.`,
-        data: { plan: summarizePlanContract(plan), executionStarted: false },
+        summary: `PLAN_APPROVE_COMPATIBILITY_NOOP: Plan ${plan.planId} is revisioned model-authored working memory and has no approval transition.`,
+        data: { plan: planSemanticView(plan), executionStarted: false, compatibilityNoop: true },
       });
       return result(facade as unknown as Record<string, unknown>);
     }
@@ -389,36 +385,22 @@ export function callRhWorkPlanAcceptStepOperation(
 ): CallToolResult | undefined {
   if (operation !== 'plan_accept_step') return undefined;
   try {
-    const identity = authenticatedFacadeControllerIdentity(ctx, args);
+    void ctx;
+    void context;
     const planId = String(args.plan_id ?? '').trim();
     const stepId = String(args.plan_step_id ?? '').trim();
-    const rationale = String(args.acceptance_rationale ?? '').trim();
-    const before = getPlanContract(store, planId);
-    const beforeStep = before?.steps.find((candidate) => candidate.id === stepId);
-    const predecessorWorkId = beforeStep?.workId?.trim();
-    const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
-    const claimedRelay = predecessorWorkId ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
-    const currentOwner = predecessorWorkId ? getControllerSession(store, predecessorWorkId) : undefined;
-    // In thin architecture, PlanStep does not own execution or require ControllerRound relay claims.
-    const plan = acceptPlanStepEvidence(store, {
-      planId,
-      stepId,
-      reviewer: identity.principalId,
-      rationale,
-      acceptedSourceRevision: context.sourceRevision,
-    });
+    const plan = getPlanContract(store, planId);
+    if (!plan) throw new Error(`PlanContract ${planId} not found.`);
+    const stepExists = plan.steps.some((candidate) => candidate.id === stepId);
+    if (!stepExists) throw new Error(`Plan step ${stepId} not found in ${planId}.`);
     const facade = buildFacadeResult({
-      summary: `Plan step ${stepId} semantically accepted by the current Controller. Successor execution remains an explicit Controller start.`,
+      summary: `PLAN_ACCEPT_STEP_COMPATIBILITY_NOOP: Plan item ${stepId} is descriptive working memory; acceptance is not a semantic transition. Revise Plan content explicitly if model-authored progress changed.`,
       data: {
-        plan: summarizePlanContract(plan),
-        semanticAcceptanceRecorded: true,
-        reviewer: identity.principalId,
-        ...(predecessorWorkId ? { predecessorWorkId } : {}),
-        successorAdmissionRequired: plan.status !== 'finalized',
+        plan: planSemanticView(plan),
+        semanticAcceptanceRecorded: false,
+        compatibilityNoop: true,
       },
-      suggestedNextActions: plan.status === 'finalized'
-        ? []
-        : [{ label: 'Read the next approved Plan step', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
+      suggestedNextActions: [{ label: 'Read current Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
     });
     return result(facade as unknown as Record<string, unknown>);
   } catch (error) {

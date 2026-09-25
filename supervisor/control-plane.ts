@@ -25,16 +25,11 @@ export class WorkflowSupervisorControlPlane {
     const id = effectId();
     return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey: `enrollment:${taskId}`, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
   }
-  reserveSchedulerRecovery(taskId: string, recoveryKey?: string): WorkflowSupervisorEffect | undefined {
+  /** @deprecated Compatibility RPC. Recovery policy no longer lives in Supervisor/Scheduler. */
+  reserveSchedulerRecovery(taskId: string, _recoveryKey?: string): WorkflowSupervisorEffect | undefined {
     const task = this.requireTask(taskId);
     requireNonTerminalTask(this.store, task.taskId);
-    const id = effectId();
-    return this.store.reserveSchedulerRecovery({
-      taskId,
-      effectId: id,
-      recoveryKey,
-      prompt: renderSupervisorPrompt(task, id, 'recovery', undefined, 'The previous bounded Supervisor recovery attempts were exhausted. This is one scheduler-owned retry; preserve completed work and end with the required Supervisor control block.'),
-    });
+    return undefined;
   }
   observeEffect(input: { effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown> }): void {
     this.store.recordEffectObservation(validateEffectId(input.effectId), input.observationId, input.outcome, input.evidence);
@@ -156,7 +151,6 @@ export class WorkflowSupervisorControlPlane {
       providerFailureCode,
       observedAtMs: input.observedAtMs,
       graceMs: input.graceMs,
-      maxRecoveryDepth: 2,
       recovery: { effectId: recoveryId, prompt: renderSupervisorPrompt(task, recoveryId, 'recovery', undefined, recoveryReason) },
     });
   }

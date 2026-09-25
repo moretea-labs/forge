@@ -134,23 +134,6 @@ function latestRetryEvidenceEventId(db: Database, effectId: string): number {
     ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effectId)) as { event_id?: number } | undefined;
   return Math.max(Number(notApplied?.event_id ?? 0), Number(preSubmitUnknown?.event_id ?? 0));
 }
-function providerRecoveryDepth(db: Database, effectId: string): number {
-  let current = effectId;
-  let depth = 0;
-  const seen = new Set<string>();
-  while (depth < 32 && !seen.has(current)) {
-    seen.add(current);
-    const row = statement(db, 'SELECT origin_key FROM effects WHERE effect_id = ?', (s) => s.get(current)) as { origin_key?: string } | undefined;
-    const origin = String(row?.origin_key ?? '');
-    if (!origin.startsWith('provider-recovery:')) break;
-    const parent = origin.slice('provider-recovery:'.length).trim();
-    if (!parent) break;
-    depth += 1;
-    current = parent;
-  }
-  return depth;
-}
-
 export class WorkflowSupervisorStore {
   private readonly db: Database;
   private closed = false;
@@ -303,7 +286,7 @@ export class WorkflowSupervisorStore {
   }
   terminalAction(taskId: string): 'DONE' | 'NEEDS_USER' | undefined { return this.read((db) => { const row = statement(db, "SELECT kind FROM events WHERE task_id = ? AND kind IN ('terminal_done','terminal_needs_user') ORDER BY event_id DESC LIMIT 1", (s) => s.get(taskId)) as { kind?: string } | undefined; return row?.kind === 'terminal_done' ? 'DONE' : row?.kind === 'terminal_needs_user' ? 'NEEDS_USER' : undefined; }); }
   effectApplied(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effectId)))); }
-  providerRecoveryExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
+  providerResumeExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
   latestAppliedEffectWithoutCompletion(taskId: string): WorkflowSupervisorEffect | undefined {
     return this.read((db) => {
       const row = statement(db, `SELECT e.* FROM effects e
@@ -354,12 +337,10 @@ export class WorkflowSupervisorStore {
     providerFailureCode?: string;
     observedAtMs: number;
     graceMs: number;
-    maxRecoveryDepth: number;
     recovery: { effectId: string; prompt: string };
   }): { state: 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     if (!Number.isFinite(input.observedAtMs)) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_OBSERVED_AT_INVALID');
     const graceMs = Math.max(1_000, Math.min(10 * 60_000, Math.floor(input.graceMs)));
-    const maxRecoveryDepth = Math.max(0, Math.min(8, Math.floor(input.maxRecoveryDepth)));
     const digest = input.assistantDigest.trim().slice(0, 128);
     const observedAt = new Date(input.observedAtMs).toISOString();
     return this.transaction((db) => {
@@ -370,6 +351,8 @@ export class WorkflowSupervisorStore {
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(effect.effectId));
       const completed = statement(db, 'SELECT 1 AS ok FROM completions WHERE task_id = ? AND source_effect_id = ? LIMIT 1', (s) => s.get(input.taskId, effect.effectId));
       if (!applied || completed) return { state: 'none' };
+      const effectOrigin = String(row.origin_key ?? '');
+      const isProviderResume = effect.kind === 'recovery' && effectOrigin.startsWith('provider-recovery:');
       const recoveryOrigin = `provider-recovery:${effect.effectId}`;
       const providerFailureCode = input.providerFailureCode?.trim().slice(0, 128);
       if (providerFailureCode) {
@@ -385,13 +368,12 @@ export class WorkflowSupervisorStore {
       const existingRecovery = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(recoveryOrigin)) as Record<string, unknown> | undefined;
       if (existingRecovery) return { state: 'recovery_reserved', recoveryEffect: effectFromRow(existingRecovery) };
       if (providerFailureCode) {
-        const depth = providerRecoveryDepth(db, effect.effectId);
-        if (depth >= maxRecoveryDepth) {
-          statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ depth, max_recovery_depth: maxRecoveryDepth, assistant_digest: digest, provider_failure_code: providerFailureCode }), observedAt));
+        if (isProviderResume) {
+          statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, provider_failure_code: providerFailureCode, exactly_once_resume: true }), observedAt));
           return { state: 'exhausted' };
         }
         const recoveryEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.recovery.effectId, kind: 'recovery', originKey: recoveryOrigin, prompt: input.recovery.prompt });
-        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-reserved:${effect.effectId}`, 'assistant_recovery_reserved', effect.effectId, json({ recovery_effect_id: recoveryEffect.effectId, recovery_depth: depth + 1, provider_failure_code: providerFailureCode }), observedAt));
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-reserved:${effect.effectId}`, 'assistant_recovery_reserved', effect.effectId, json({ recovery_effect_id: recoveryEffect.effectId, provider_failure_code: providerFailureCode, exactly_once_resume: true }), observedAt));
         return { state: 'recovery_reserved', recoveryEffect };
       }
 
@@ -410,43 +392,18 @@ export class WorkflowSupervisorStore {
       const idleSinceMs = Date.parse(String(latest?.occurred_at ?? ''));
       if (!Number.isFinite(idleSinceMs) || input.observedAtMs - idleSinceMs < graceMs) return { state: 'idle_pending' };
 
-      const depth = providerRecoveryDepth(db, effect.effectId);
-      if (depth >= maxRecoveryDepth) {
-        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ depth, max_recovery_depth: maxRecoveryDepth, assistant_digest: digest }), observedAt));
+      if (isProviderResume) {
+        statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-exhausted:${effect.effectId}`, 'assistant_recovery_exhausted', effect.effectId, json({ assistant_digest: digest, exactly_once_resume: true }), observedAt));
         return { state: 'exhausted' };
       }
       const recoveryEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.recovery.effectId, kind: 'recovery', originKey: recoveryOrigin, prompt: input.recovery.prompt });
-      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-reserved:${effect.effectId}`, 'assistant_recovery_reserved', effect.effectId, json({ recovery_effect_id: recoveryEffect.effectId, recovery_depth: depth + 1 }), observedAt));
+      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `assistant-recovery-reserved:${effect.effectId}`, 'assistant_recovery_reserved', effect.effectId, json({ recovery_effect_id: recoveryEffect.effectId, exactly_once_resume: true }), observedAt));
       return { state: 'recovery_reserved', recoveryEffect };
     });
   }
 
   reserveEffect(input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     return this.transaction((db) => this.reserveEffectWithin(db, input));
-  }
-  reserveSchedulerRecovery(input: { taskId: string; effectId: string; recoveryKey?: string; prompt: string }): WorkflowSupervisorEffect | undefined {
-    return this.transaction((db) => {
-      const recoveryKey = input.recoveryKey?.trim();
-      if (recoveryKey && /[\r\n]/.test(recoveryKey)) throw new Error('WORKFLOW_SUPERVISOR_RECOVERY_KEY_INVALID');
-      const originKey = `scheduler-recovery:${input.taskId}${recoveryKey ? `:${recoveryKey.slice(0, 240)}` : ''}`;
-      const existing = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)) as Record<string, unknown> | undefined;
-      if (existing) return effectFromRow(existing);
-      const exhausted = statement(db, `SELECT e.effect_id FROM effects e
-        JOIN events exhausted ON exhausted.effect_id = e.effect_id AND exhausted.kind = 'assistant_recovery_exhausted'
-        WHERE e.task_id = ?
-          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-        ORDER BY exhausted.event_id DESC LIMIT 1`, (s) => s.get(input.taskId)) as { effect_id?: string } | undefined;
-      if (!exhausted?.effect_id) return undefined;
-      const recovery = this.reserveEffectWithin(db, {
-        taskId: input.taskId,
-        effectId: input.effectId,
-        kind: 'recovery',
-        originKey,
-        prompt: input.prompt,
-      });
-      statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(input.taskId, `scheduler-recovery-reserved:${input.taskId}`, 'scheduler_recovery_reserved', exhausted.effect_id, json({ recovery_effect_id: recovery.effectId }), now()));
-      return recovery;
-    });
   }
   private reserveEffectWithin(db: Database, input: { taskId: string; effectId: string; kind: WorkflowEffectKind; originKey: string; sourceCompletionFingerprint?: string; prompt: string }): WorkflowSupervisorEffect {
     statement(db, 'INSERT OR IGNORE INTO effects(effect_id,task_id,kind,origin_key,source_completion_fingerprint,prompt_text,created_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.effectId, input.taskId, input.kind, input.originKey, input.sourceCompletionFingerprint ?? null, input.prompt, now()));

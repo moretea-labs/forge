@@ -1,6 +1,5 @@
 import { getControllerSession, releaseObservedControllerSession } from '../../../../packages/kernel/controller/api/index';
-import { getWorkContract, isTerminalWorkContractStatus } from '../../../../packages/kernel/work/api/index';
-import { listSchedules } from '../../../../packages/kernel/scheduler/api/index';
+import { listUserRequests } from '../../../../packages/kernel/identity/api/index';
 import type { HandoffItem } from './types';
 import {
   acknowledgeHandoffItem,
@@ -44,8 +43,7 @@ export type HandoffInboxApplicationRunner = (
 ) => ReturnType<typeof runHandoffInboxApplication>;
 
 export interface HandoffAttentionResolver {
-  workIsTerminal(workId: string): boolean | undefined;
-  scheduleIsEnabled(scheduleId: string): boolean | undefined;
+  userRequestIsPending(requestId: string): boolean | undefined;
 }
 
 /**
@@ -55,15 +53,9 @@ export interface HandoffAttentionResolver {
  */
 export function handoffRequiresAttention(item: HandoffItem, resolver: HandoffAttentionResolver): boolean {
   if (item.status !== 'pending') return false;
-  const workId = item.workId?.trim();
-  if (workId && resolver.workIsTerminal(workId) === true) return false;
-
-  const scheduleId = item.currentState.taskId?.trim();
-  const scheduleFailure = item.creationReason === 'repeated_infrastructure_failure'
-    && Boolean(scheduleId)
-    && (item.id.startsWith('schedule-failure-') || item.id.startsWith('schedule-'));
-  if (scheduleFailure && scheduleId && resolver.scheduleIsEnabled(scheduleId) === false) return false;
-  return true;
+  const requestId = item.canonicalUserRequestId?.trim();
+  if (!requestId) return false;
+  return resolver.userRequestIsPending(requestId) === true;
 }
 
 export function listHandoffAttentionItems(
@@ -71,22 +63,9 @@ export function listHandoffAttentionItems(
   limit = 50,
 ): HandoffItem[] {
   const candidates = listHandoffItems({ ...store, status: 'pending', limit: 100 });
-  const scheduleIds = new Set(candidates
-    .filter((item) => item.creationReason === 'repeated_infrastructure_failure'
-      && (item.id.startsWith('schedule-failure-') || item.id.startsWith('schedule-')))
-    .map((item) => item.currentState.taskId?.trim())
-    .filter((value): value is string => Boolean(value)));
-  const schedules = scheduleIds.size > 0
-    ? new Map(listSchedules(store.controllerHome, store.repoId).map((schedule) => [schedule.scheduleId, schedule.enabled] as const))
-    : new Map<string, boolean>();
+  const pendingRequests = new Set(listUserRequests(store.controllerHome, 'pending').map((request) => request.requestId));
   const resolver: HandoffAttentionResolver = {
-    workIsTerminal: (workId) => {
-      const work = getWorkContract(store, workId);
-      return work ? isTerminalWorkContractStatus(work.status) : undefined;
-    },
-    scheduleIsEnabled: (scheduleId) => scheduleIds.has(scheduleId)
-      ? schedules.get(scheduleId) ?? false
-      : undefined,
+    userRequestIsPending: (requestId) => pendingRequests.has(requestId),
   };
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
   return candidates.filter((item) => handoffRequiresAttention(item, resolver)).slice(0, boundedLimit);

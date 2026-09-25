@@ -423,6 +423,7 @@ export async function reconcileTerminalCleanup(
     completed: false,
     cleanupCompleted: cleaned.receipt.complete,
     cleanupPartial: cleaned.receipt.partial,
+    cleanupRetained: cleaned.receipt.worktree.status === 'retained' || cleaned.receipt.branchCleanup.status === 'retained',
     failurePreserved: true,
     cleanupReceipt: cleaned.receipt,
     idempotent: wasComplete,

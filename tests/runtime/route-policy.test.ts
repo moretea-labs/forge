@@ -288,7 +288,7 @@ describe('single Route Policy authority', () => {
       executionPath: 'durable',
       requiresWork: true,
     });
-    expect(assessment.nextTools).toContain('rh_work(operation=start)');
+    expect(assessment.nextTools).toContain('rh_work(operation=start or work_get)');
   });
   test('keeps readonly investigation on the direct fast path without durable Work', () => {
     const decision = decideRoute(sharedInput({
@@ -663,7 +663,7 @@ describe('single Route Policy authority', () => {
       executionPath: 'durable',
     });
   });
-  test('keeps Agent preference subordinate to routing tier topology', () => {
+  test('keeps Agent/provider preference separate from Work topology', () => {
     expect(decideRoute(sharedInput({
       intent: {
         objective: 'Delegate a small bounded implementation',
@@ -673,7 +673,7 @@ describe('single Route Policy authority', () => {
         expectedChangedLines: 80,
         agentRequested: true,
       },
-    }))).toMatchObject({ workMode: 'quick_agent', executionPath: 'durable', requiresWork: true });
+    }))).toMatchObject({ workMode: 'direct_edit', executionPath: 'fast', requiresWork: false });
     expect(decideRoute(sharedInput({
       intent: {
         objective: 'Delegate a large single deliverable',
@@ -683,7 +683,7 @@ describe('single Route Policy authority', () => {
         expectedChangedLines: 1_800,
         agentRequested: true,
       },
-    }))).toMatchObject({ workMode: 'issue_task', executionPath: 'durable' });
+    }))).toMatchObject({ workMode: 'direct_edit', executionPath: 'fast', requiresWork: false });
   });
   test('allows complex Goal Workloop execution without a Plan while explicit Plan remains optional', () => {
     const root = temp('route-workloop-');

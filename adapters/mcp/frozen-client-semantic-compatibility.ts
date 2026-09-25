@@ -8,7 +8,7 @@ const MAX_FROZEN_PLAN_OBLIGATION_DISPOSITIONS = 512;
 const MAX_FROZEN_PLAN_SUCCESSOR_REFS = 32;
 const MAX_FROZEN_SEMANTIC_STRING_CHARS = 16 * 1024;
 
-export const FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS = ['requirement_create', 'plan_create', 'start', 'continue', 'work_review', 'controller_disposition'] as const;
+export const FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS = ['requirement_create', 'requirement_get', 'requirement_revise', 'plan_create', 'plan_revise', 'work_get', 'work_revise', 'work_complete', 'start', 'continue', 'work_review', 'controller_disposition'] as const;
 export type FrozenSemanticCompatibilityOperation = (typeof FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS)[number];
 
 export interface FrozenRequirementCreateCompatibilityArgs {
@@ -22,6 +22,25 @@ export interface FrozenRequirementCreateCompatibilityArgs {
 export interface FrozenRequirementCreateCompatibilityEnvelope {
   operation: 'requirement_create';
   args: FrozenRequirementCreateCompatibilityArgs;
+}
+
+export interface FrozenRequirementGetCompatibilityEnvelope {
+  operation: 'requirement_get';
+  args: Record<string, never>;
+}
+
+export interface FrozenRequirementReviseCompatibilityArgs {
+  expected_revision: number;
+  requirement_title?: string;
+  requirement_outcome?: string;
+  requirement_acceptance_criteria?: string[];
+  requirement_delivery_references?: string[];
+  requirement_state?: 'open' | 'completed' | 'cancelled';
+}
+
+export interface FrozenRequirementReviseCompatibilityEnvelope {
+  operation: 'requirement_revise';
+  args: FrozenRequirementReviseCompatibilityArgs;
 }
 
 export interface FrozenPlanObligationDispositionCompatibilityArgs {
@@ -39,6 +58,61 @@ export interface FrozenPlanCreateCompatibilityArgs {
 export interface FrozenPlanCreateCompatibilityEnvelope {
   operation: 'plan_create';
   args: FrozenPlanCreateCompatibilityArgs;
+}
+
+export interface FrozenPlanItemCompatibilityArgs {
+  id: string;
+  objective: string;
+  dependencies?: string[];
+}
+
+export interface FrozenPlanReviseCompatibilityArgs {
+  plan_id: string;
+  expected_revision: number;
+  requirement_revision?: number;
+  source_revision?: string;
+  objective?: string;
+  non_goals?: string[];
+  assumptions?: string[];
+  resolved_decisions?: string[];
+  stop_conditions?: string[];
+  replan_conditions?: string[];
+  integration_strategy?: string | null;
+  plan_items?: FrozenPlanItemCompatibilityArgs[];
+}
+
+export interface FrozenPlanReviseCompatibilityEnvelope {
+  operation: 'plan_revise';
+  args: FrozenPlanReviseCompatibilityArgs;
+}
+
+export interface FrozenWorkGetCompatibilityEnvelope {
+  operation: 'work_get';
+  args: Record<string, never>;
+}
+
+export interface FrozenWorkReviseCompatibilityArgs {
+  expected_revision: number;
+  objective?: string;
+  requirement_revision?: number;
+  plan_revision?: number;
+  work_result_refs?: string[];
+  work_state?: 'open' | 'completed' | 'cancelled';
+}
+
+export interface FrozenWorkReviseCompatibilityEnvelope {
+  operation: 'work_revise';
+  args: FrozenWorkReviseCompatibilityArgs;
+}
+
+export interface FrozenWorkCompleteCompatibilityArgs {
+  expected_revision: number;
+  work_result_refs?: string[];
+}
+
+export interface FrozenWorkCompleteCompatibilityEnvelope {
+  operation: 'work_complete';
+  args: FrozenWorkCompleteCompatibilityArgs;
 }
 
 export const FROZEN_WORK_START_KINDS = [
@@ -107,7 +181,13 @@ export interface FrozenLearningFeedbackCompatibilityEnvelope {
 
 export type FrozenSemanticCompatibilityEnvelope =
   | FrozenRequirementCreateCompatibilityEnvelope
+  | FrozenRequirementGetCompatibilityEnvelope
+  | FrozenRequirementReviseCompatibilityEnvelope
   | FrozenPlanCreateCompatibilityEnvelope
+  | FrozenPlanReviseCompatibilityEnvelope
+  | FrozenWorkGetCompatibilityEnvelope
+  | FrozenWorkReviseCompatibilityEnvelope
+  | FrozenWorkCompleteCompatibilityEnvelope
   | FrozenWorkStartCompatibilityEnvelope
   | FrozenWorkContinueCompatibilityEnvelope
   | FrozenWorkReviewCompatibilityEnvelope
@@ -147,6 +227,18 @@ function boundedStringArray(value: unknown, field: string): string[] | undefined
   return value.map((entry, index) => boundedString(entry, `${field}[${index}]`));
 }
 
+function boundedPositiveInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) fail(`${field} must be a positive integer`);
+  return value;
+}
+
+function normalizeEmptyArgs(value: unknown, label: string): Record<string, never> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} args must be an object`);
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, new Set(), `${label} args`);
+  return {};
+}
+
 function normalizeRequirementCreateArgs(value: unknown): FrozenRequirementCreateCompatibilityArgs {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('requirement_create args must be an object');
   const args = value as Record<string, unknown>;
@@ -160,6 +252,27 @@ function normalizeRequirementCreateArgs(value: unknown): FrozenRequirementCreate
     ...(acceptanceCriteria !== undefined ? { requirement_acceptance_criteria: acceptanceCriteria } : {}),
     ...(deliveryReferences !== undefined ? { requirement_delivery_references: deliveryReferences } : {}),
     ...(legacyAliases !== undefined ? { requirement_legacy_aliases: legacyAliases } : {}),
+  };
+}
+
+const REQUIREMENT_REVISE_KEYS = new Set([
+  'expected_revision', 'requirement_title', 'requirement_outcome',
+  'requirement_acceptance_criteria', 'requirement_delivery_references', 'requirement_state',
+]);
+
+function normalizeRequirementReviseArgs(value: unknown): FrozenRequirementReviseCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('requirement_revise args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, REQUIREMENT_REVISE_KEYS, 'requirement_revise args');
+  const state = args.requirement_state;
+  if (state !== undefined && state !== 'open' && state !== 'completed' && state !== 'cancelled') fail('requirement_state is invalid');
+  return {
+    expected_revision: boundedPositiveInteger(args.expected_revision, 'expected_revision'),
+    ...(args.requirement_title !== undefined ? { requirement_title: boundedString(args.requirement_title, 'requirement_title') } : {}),
+    ...(args.requirement_outcome !== undefined ? { requirement_outcome: boundedString(args.requirement_outcome, 'requirement_outcome') } : {}),
+    ...(args.requirement_acceptance_criteria !== undefined ? { requirement_acceptance_criteria: boundedStringArray(args.requirement_acceptance_criteria, 'requirement_acceptance_criteria')! } : {}),
+    ...(args.requirement_delivery_references !== undefined ? { requirement_delivery_references: boundedStringArray(args.requirement_delivery_references, 'requirement_delivery_references')! } : {}),
+    ...(state !== undefined ? { requirement_state: state } : {}),
   };
 }
 
@@ -198,6 +311,79 @@ function normalizePlanCreateArgs(value: unknown): FrozenPlanCreateCompatibilityA
   }
   return {
     obligation_dispositions: args.obligation_dispositions.map(normalizePlanObligationDisposition),
+  };
+}
+
+const PLAN_REVISE_KEYS = new Set([
+  'plan_id', 'expected_revision', 'requirement_revision', 'source_revision', 'objective',
+  'non_goals', 'assumptions', 'resolved_decisions', 'stop_conditions', 'replan_conditions',
+  'integration_strategy', 'plan_items',
+]);
+const PLAN_ITEM_KEYS = new Set(['id', 'objective', 'dependencies']);
+
+function normalizePlanReviseArgs(value: unknown): FrozenPlanReviseCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('plan_revise args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, PLAN_REVISE_KEYS, 'plan_revise args');
+  let planItems: FrozenPlanItemCompatibilityArgs[] | undefined;
+  if (args.plan_items !== undefined) {
+    if (!Array.isArray(args.plan_items) || args.plan_items.length > MAX_FROZEN_SEMANTIC_ARRAY_ITEMS) fail('plan_items must be a bounded array');
+    planItems = args.plan_items.map((value, index) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`plan_items[${index}] must be an object`);
+      const item = value as Record<string, unknown>;
+      assertExactKeys(item, PLAN_ITEM_KEYS, `plan_items[${index}]`);
+      const dependencies = boundedStringArray(item.dependencies, `plan_items[${index}].dependencies`);
+      return {
+        id: boundedString(item.id, `plan_items[${index}].id`),
+        objective: boundedString(item.objective, `plan_items[${index}].objective`),
+        ...(dependencies !== undefined ? { dependencies } : {}),
+      };
+    });
+  }
+  const integrationStrategy = args.integration_strategy;
+  if (integrationStrategy !== undefined && integrationStrategy !== null && typeof integrationStrategy !== 'string') fail('integration_strategy must be string or null');
+  return {
+    plan_id: boundedString(args.plan_id, 'plan_id'),
+    expected_revision: boundedPositiveInteger(args.expected_revision, 'expected_revision'),
+    ...(args.requirement_revision !== undefined ? { requirement_revision: boundedPositiveInteger(args.requirement_revision, 'requirement_revision') } : {}),
+    ...(args.source_revision !== undefined ? { source_revision: boundedString(args.source_revision, 'source_revision') } : {}),
+    ...(args.objective !== undefined ? { objective: boundedString(args.objective, 'objective') } : {}),
+    ...(args.non_goals !== undefined ? { non_goals: boundedStringArray(args.non_goals, 'non_goals')! } : {}),
+    ...(args.assumptions !== undefined ? { assumptions: boundedStringArray(args.assumptions, 'assumptions')! } : {}),
+    ...(args.resolved_decisions !== undefined ? { resolved_decisions: boundedStringArray(args.resolved_decisions, 'resolved_decisions')! } : {}),
+    ...(args.stop_conditions !== undefined ? { stop_conditions: boundedStringArray(args.stop_conditions, 'stop_conditions')! } : {}),
+    ...(args.replan_conditions !== undefined ? { replan_conditions: boundedStringArray(args.replan_conditions, 'replan_conditions')! } : {}),
+    ...(integrationStrategy !== undefined ? { integration_strategy: integrationStrategy as string | null } : {}),
+    ...(planItems !== undefined ? { plan_items: planItems } : {}),
+  };
+}
+
+const WORK_REVISE_KEYS = new Set(['expected_revision', 'objective', 'requirement_revision', 'plan_revision', 'work_result_refs', 'work_state']);
+const WORK_COMPLETE_KEYS = new Set(['expected_revision', 'work_result_refs']);
+
+function normalizeWorkReviseArgs(value: unknown): FrozenWorkReviseCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('work_revise args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, WORK_REVISE_KEYS, 'work_revise args');
+  const state = args.work_state;
+  if (state !== undefined && state !== 'open' && state !== 'completed' && state !== 'cancelled') fail('work_state is invalid');
+  return {
+    expected_revision: boundedPositiveInteger(args.expected_revision, 'expected_revision'),
+    ...(args.objective !== undefined ? { objective: boundedString(args.objective, 'objective') } : {}),
+    ...(args.requirement_revision !== undefined ? { requirement_revision: boundedPositiveInteger(args.requirement_revision, 'requirement_revision') } : {}),
+    ...(args.plan_revision !== undefined ? { plan_revision: boundedPositiveInteger(args.plan_revision, 'plan_revision') } : {}),
+    ...(args.work_result_refs !== undefined ? { work_result_refs: boundedStringArray(args.work_result_refs, 'work_result_refs')! } : {}),
+    ...(state !== undefined ? { work_state: state } : {}),
+  };
+}
+
+function normalizeWorkCompleteArgs(value: unknown): FrozenWorkCompleteCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('work_complete args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, WORK_COMPLETE_KEYS, 'work_complete args');
+  return {
+    expected_revision: boundedPositiveInteger(args.expected_revision, 'expected_revision'),
+    ...(args.work_result_refs !== undefined ? { work_result_refs: boundedStringArray(args.work_result_refs, 'work_result_refs')! } : {}),
   };
 }
 
@@ -294,7 +480,13 @@ function normalizeLearningFeedbackArgs(value: unknown): FrozenLearningFeedbackCo
 
 function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): FrozenSemanticCompatibilityEnvelope['args'] {
   if (input.operation === 'requirement_create') return normalizeRequirementCreateArgs(input.args);
+  if (input.operation === 'requirement_get') return normalizeEmptyArgs(input.args, 'requirement_get');
+  if (input.operation === 'requirement_revise') return normalizeRequirementReviseArgs(input.args);
   if (input.operation === 'plan_create') return normalizePlanCreateArgs(input.args);
+  if (input.operation === 'plan_revise') return normalizePlanReviseArgs(input.args);
+  if (input.operation === 'work_get') return normalizeEmptyArgs(input.args, 'work_get');
+  if (input.operation === 'work_revise') return normalizeWorkReviseArgs(input.args);
+  if (input.operation === 'work_complete') return normalizeWorkCompleteArgs(input.args);
   if (input.operation === 'start') return normalizeWorkStartArgs(input.args);
   if (input.operation === 'continue') return normalizeWorkContinueArgs(input.args);
   if (input.operation === 'work_review') return normalizeWorkReviewArgs(input.args);
@@ -354,12 +546,18 @@ export function parseFrozenSemanticCompatibilityCapability(
       args: normalizeRequirementCreateArgs(payload.a),
     };
   }
+  if (payload.op === 'requirement_get') return { operation: 'requirement_get', args: normalizeEmptyArgs(payload.a, 'requirement_get') };
+  if (payload.op === 'requirement_revise') return { operation: 'requirement_revise', args: normalizeRequirementReviseArgs(payload.a) };
   if (payload.op === 'plan_create') {
     return {
       operation: 'plan_create',
       args: normalizePlanCreateArgs(payload.a),
     };
   }
+  if (payload.op === 'plan_revise') return { operation: 'plan_revise', args: normalizePlanReviseArgs(payload.a) };
+  if (payload.op === 'work_get') return { operation: 'work_get', args: normalizeEmptyArgs(payload.a, 'work_get') };
+  if (payload.op === 'work_revise') return { operation: 'work_revise', args: normalizeWorkReviseArgs(payload.a) };
+  if (payload.op === 'work_complete') return { operation: 'work_complete', args: normalizeWorkCompleteArgs(payload.a) };
   if (payload.op === 'start') {
     return {
       operation: 'start',

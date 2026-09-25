@@ -81,6 +81,22 @@ export function listOwnedResources(controllerHome: string, filter?: { kind?: str
   return results.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+/** Mark an owned resource as intentionally retained without changing cleanup authority. */
+export function markOwnedResourceRetained(
+  controllerHome: string,
+  resourceId: string,
+): OwnedResource | undefined {
+  const existing = getOwnedResource(controllerHome, resourceId);
+  if (!existing) return undefined;
+  const updated: OwnedResource = {
+    ...existing,
+    status: 'retained',
+    updatedAt: new Date().toISOString(),
+  };
+  writeResourceFile(controllerHome, updated);
+  return updated;
+}
+
 export function markOwnedResourceCleaned(
   controllerHome: string,
   resourceId: string,

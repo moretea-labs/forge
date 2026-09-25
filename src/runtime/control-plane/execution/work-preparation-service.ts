@@ -454,6 +454,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         ? ensureManagedWorkspace(ctx.controllerHome, repository, {
           requestId: createdWorkId,
           title: objective,
+          associatedWorkId: createdWorkId,
           baseRef,
           prepareDependencies: needsDependencies,
         })
