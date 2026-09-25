@@ -990,6 +990,10 @@
     "tests/runtime/plan-authority-thin.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/work-semantic-lifecycle.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
     }
   }
 }

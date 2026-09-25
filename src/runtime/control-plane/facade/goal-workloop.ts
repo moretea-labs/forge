@@ -41,7 +41,7 @@ import {
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
 import { completeWorkWithReceipt } from '../execution/work-completion-authority';
-import { effectiveCurrentWorkVerificationRecords, evaluateReadOnlyReviewSourceIdentity, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
+import { effectiveCurrentWorkVerificationRecords, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
 import { currentRequirementSemanticRevision, readRequirement } from '../persistence/requirement-store';
 import {
   classifyVerificationOutcome,
@@ -1207,16 +1207,13 @@ export function startGoalWorkloop(
         ? `Direct-control Work lineage started as ${work.workId}.`
         : `Goal workloop started as ${work.workId}.`,
     data: {
-      mode: {
-        mode: executionMode,
-        reason: executionMode === 'direct_control'
-          ? 'A lightweight WorkContract records the mutation while execution stays on Direct Control.'
-          : 'WorkContract created for multi-step recoverable work.',
-        createWorkContract: true,
-        createHandoff: false,
-        missingContractFields: [],
-        requiresWork: true,
-        routeDecision,
+      // Caller-visible placement facts only. Execution mode tokens, route reasons
+      // and RouteDecision are legacy orchestration metadata, not Work semantics.
+      placement: {
+        workContractCreated: true,
+        worktreeRequired: work.worktreePolicy.required,
+        isolated: work.worktreePolicy.required,
+        requiresRecovery: work.recoveryPolicy.allowSelfHealing === true || false,
       },
       workContractCreated: true,
       work: summarizeWorkContract(work),
@@ -1426,17 +1423,6 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       data: { work: summarizeWorkContract(work), reviewFindingsRecorded: false },
     });
   }
-  if (work.workKind === 'read_only_review') {
-    const sourceIdentity = evaluateReadOnlyReviewSourceIdentity(work, ctx.sourceRevision, ctx.workspaceChangedPaths);
-    if (sourceIdentity.status !== 'complete') {
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `READ_ONLY_REVIEW_SOURCE_IDENTITY_REQUIRED: ${sourceIdentity.reasons.join(' ')}`,
-        data: { work: summarizeWorkContract(work), sourceIdentityProven: false },
-      });
-    }
-  }
-
   const explicitPolicyScope = input.allowedPaths !== undefined
     || input.forbiddenPaths !== undefined
     || input.checks !== undefined;
@@ -2307,9 +2293,23 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   // Read-only review completion is semantic no-change authority, not Git delivery.
-  // The exact source/workspace fence is re-evaluated above at finalize time; only
-  // a clean review with persisted inspected paths and zero findings can close.
+  // Findings never gate completion, but the receipt still claims an exact
+  // no-change delivery, so the frozen source/workspace identity must hold.
   if (work.workKind === 'read_only_review' && !work.completionReceipt) {
+    const sourceDrift = work.baseRevision?.trim() && ctx.sourceRevision?.trim() && work.baseRevision !== ctx.sourceRevision
+      ? `source drifted from frozen base ${work.baseRevision} to ${ctx.sourceRevision}`
+      : ctx.workspaceChangedPaths === undefined
+        ? 'workspace changed-path proof is unavailable'
+        : ctx.workspaceChangedPaths.length > 0
+          ? `workspace is not unchanged: ${[...new Set(ctx.workspaceChangedPaths)].slice(0, 12).join(', ')}`
+          : undefined;
+    if (sourceDrift) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `READ_ONLY_REVIEW_SOURCE_IDENTITY_REQUIRED: read-only review ${work.workId} cannot claim no-change delivery because ${sourceDrift}.`,
+        data: { work: summarizeWorkContract(work), sourceIdentityProven: false },
+      });
+    }
     const reviewEvidence = work.readOnlyReviewEvidence!;
     const recordedAt = nowIso(ctx);
     const completed = completeWorkWithReceipt(

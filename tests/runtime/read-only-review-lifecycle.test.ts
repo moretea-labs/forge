@@ -87,7 +87,7 @@ describe('recoverable read-only review lifecycle', () => {
     });
   });
 
-  test('persists findings but refuses clean no-change completion', () => {
+  test('persists findings and still allows terminal no-change completion', () => {
     const context = reviewContext('read-only-findings');
     const started = routeWorkStart(context, {
       objective: 'READ-ONLY architecture review with no edits.',
@@ -95,16 +95,16 @@ describe('recoverable read-only review lifecycle', () => {
       modeInput: { scopeClear: true, mutation: false, requiresInvestigation: true, requiresRecovery: true, risk: 'readonly' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
+    // Findings are durable observations, not a completion gate: continue records
+    // them and the same Work can still close terminally.
     const continued = continueGoalWorkloop(context, {
       workId,
       inspectedPaths: ['ios/App/AppState.swift'],
       reviewFindings: ['HIGH: two-tier cache invalidation can certify stale data under a new revision'],
     });
-    expect(continued.status).toBe('blocked');
-    expect(continued.summary).toContain('unresolved semantic findings');
+    expect(continued.status).toBe('ok');
     const persisted = getWorkContract(context.workStore, workId)!;
     expect(persisted.workKind).toBe('read_only_review');
-    expect(persisted.phase).toBe('verification');
     expect(persisted.readOnlyReviewEvidence?.findings).toEqual([
       'HIGH: two-tier cache invalidation can certify stale data under a new revision',
     ]);
@@ -112,8 +112,12 @@ describe('recoverable read-only review lifecycle', () => {
     expect(persisted.scopeEvidence?.actualChangedPaths).toEqual([]);
 
     const finalized = finalizeGoalWorkloop(context, { workId });
-    expect(finalized.status).toBe('blocked');
-    expect(getWorkContract(context.workStore, workId)?.completionReceipt).toBeUndefined();
+    expect(finalized.status).toBe('ok');
+    const completed = getWorkContract(context.workStore, workId)!;
+    expect(completed.status).toBe('completed');
+    expect(completed.readOnlyReviewEvidence?.findings).toEqual([
+      'HIGH: two-tier cache invalidation can certify stale data under a new revision',
+    ]);
   });
 
   test('fails closed when source identity drifts after review evidence was recorded', () => {
@@ -160,7 +164,7 @@ describe('recoverable read-only review lifecycle', () => {
     expect(getWorkContract(context.workStore, replacementId!)?.risk).toBe('readonly');
   });
 
-  test('rejects a synthetic clean receipt when durable review evidence contains findings', () => {
+  test('allows terminal completion when durable review evidence contains findings', () => {
     const context = reviewContext('read-only-synthetic-clean');
     const started = routeWorkStart(context, {
       objective: 'READ-ONLY review whose findings must remain authoritative.',
@@ -174,12 +178,14 @@ describe('recoverable read-only review lifecycle', () => {
       reviewFindings: ['HIGH: correctness finding'],
     });
 
-    expect(() => recordWorkCompletionReceipt(
+    // Findings are durable observations, not a completion gate: the same receipt
+    // that records the inspected scope closes the Work.
+    const completed = recordWorkCompletionReceipt(
       context.workStore,
       workId,
       {
         schemaVersion: 1,
-        receiptId: 'ROR-WORK-synthetic-clean',
+        receiptId: 'ROR-WORK-with-findings',
         source: 'read_only_review',
         workId,
         baseRevision: context.sourceRevision,
@@ -192,8 +198,10 @@ describe('recoverable read-only review lifecycle', () => {
       },
       'completed_no_change',
       'read_only_review',
-    )).toThrow('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_CLEAN_SCOPE_REQUIRED');
-    expect(getWorkContract(context.workStore, workId)?.status).not.toBe('completed');
+    );
+    expect(completed.status).toBe('completed');
+    expect(getWorkContract(context.workStore, workId)?.readOnlyReviewEvidence?.findings)
+      .toEqual(['HIGH: correctness finding']);
   });
 
   test('infers read-only review from an explicit all-source mutation fence without requiring a risk hint', () => {

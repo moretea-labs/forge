@@ -423,9 +423,7 @@ describe('single Route Policy authority', () => {
     expect(result.data).toMatchObject({
       workContractCreated: true,
       worktreeRequired: false,
-      mode: {
-        routeDecision: { executionMode: 'goal_workloop', requiresWork: true, requiresIsolation: false },
-      },
+      placement: { workContractCreated: true, worktreeRequired: false, isolated: false },
     });
   });
 

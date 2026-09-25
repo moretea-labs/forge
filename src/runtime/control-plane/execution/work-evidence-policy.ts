@@ -97,25 +97,6 @@ export function evaluateWorkImplementationEvidence(
   };
 }
 
-export function evaluateReadOnlyReviewSourceIdentity(
-  work: WorkContract,
-  currentRevision?: string,
-  currentWorkspaceChangedPaths?: readonly string[],
-): { status: 'complete' | 'incomplete'; reasons: string[] } {
-  if (work.workKind !== 'read_only_review') return { status: 'complete', reasons: [] };
-  const reasons: string[] = [];
-  if (!work.baseRevision?.trim()) reasons.push('Read-only review has no frozen base revision.');
-  if (!currentRevision?.trim()) reasons.push('Current source revision is unavailable, so unchanged-source proof is incomplete.');
-  if (work.baseRevision && currentRevision && work.baseRevision !== currentRevision) {
-    reasons.push(`Read-only review source drifted from frozen base ${work.baseRevision} to ${currentRevision}.`);
-  }
-  if (currentWorkspaceChangedPaths === undefined) {
-    reasons.push('Current workspace changed-path proof is unavailable for read-only review.');
-  } else if (currentWorkspaceChangedPaths.length > 0) {
-    reasons.push(`Read-only review workspace is not unchanged: ${[...new Set(currentWorkspaceChangedPaths)].slice(0, 12).join(', ')}.`);
-  }
-  return { status: reasons.length === 0 ? 'complete' : 'incomplete', reasons };
-}
 
 export function evaluateWorkCompletionEvidence(
   work: WorkContract,
@@ -133,23 +114,9 @@ export function evaluateWorkCompletionEvidence(
     applicableCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
   const missingChecks = work.checks.filter((checkId) => !history.validPasses.includes(checkId));
-  const readOnlySourceIdentity = evaluateReadOnlyReviewSourceIdentity(work, currentRevision, currentWorkspaceChangedPaths);
-  const readOnlyEvidence = work.readOnlyReviewEvidence;
-  const readOnlyEvidenceMatchesCurrentSource = Boolean(
-    work.workKind === 'read_only_review'
-    && readOnlyEvidence
-    && currentRevision
-    && readOnlyEvidence.sourceRevision === currentRevision
-    && (readOnlyEvidence.workspaceFingerprint === undefined
-      || currentWorkspaceFingerprint === undefined
-      || readOnlyEvidence.workspaceFingerprint === currentWorkspaceFingerprint),
-  );
-  const cleanReadOnlyReviewEvidence = Boolean(
-    readOnlyEvidenceMatchesCurrentSource
-    && readOnlySourceIdentity.status === 'complete'
-    && (readOnlyEvidence?.inspectedPaths.length ?? 0) > 0
-    && (readOnlyEvidence?.findings.length ?? 0) === 0,
-  );
+  // Review findings are recorded observations, never a completion gate. A
+  // read-only review Work closes like any other Work; its inspected paths and
+  // findings stay durable evidence for the model/user to act on.
   const workEvidenceIds = work.evidenceRefs.flatMap((evidence) => [evidence.evidenceId, evidence.artifactId])
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
@@ -157,9 +124,16 @@ export function evaluateWorkCompletionEvidence(
     ...workEvidenceIds,
     ...workBoundProcessEvidenceIds.map((value) => value.trim()).filter(Boolean),
   ]);
+  // Recorded read-only review scope is durable observation evidence for this Work
+  // kind; findings inside it never gate completion.
+  const readOnlyReviewEvidenceRecorded = Boolean(
+    work.workKind === 'read_only_review'
+    && work.readOnlyReviewEvidence
+    && (work.readOnlyReviewEvidence.inspectedPaths.length > 0 || work.readOnlyReviewEvidence.findings.length > 0),
+  );
   const durableResultEvidence = availableDurableEvidenceIds.size > 0
     || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision))
-    || cleanReadOnlyReviewEvidence;
+    || readOnlyReviewEvidenceRecorded;
   const sourceDeltaRequiresImplementationReview = work.workKind === 'local_effect'
     && (currentWorkspaceChangedPaths?.length ?? 0) > 0;
   const requiresSemanticAcceptance = work.workKind === 'local_effect'
@@ -188,17 +162,6 @@ export function evaluateWorkCompletionEvidence(
   if (missingChecks.length > 0) {
     reasons.push(`Declared checks are missing valid_pass evidence: ${missingChecks.join(', ')}.`);
   }
-  if (work.workKind === 'read_only_review') {
-    reasons.push(...readOnlySourceIdentity.reasons);
-    if (!readOnlyEvidence || readOnlyEvidence.inspectedPaths.length === 0) {
-      reasons.push('Read-only review has no persisted inspected-path evidence.');
-    } else if (!readOnlyEvidenceMatchesCurrentSource) {
-      reasons.push('Persisted read-only review evidence is stale for the current source/workspace identity.');
-    }
-    if ((readOnlyEvidence?.findings.length ?? 0) > 0) {
-      reasons.push(`Read-only review has unresolved semantic findings (${readOnlyEvidence!.findings.length}); clean no-change completion is not allowed.`);
-    }
-  }
   if (work.checks.length === 0 && !durableResultEvidence) {
     const staleWorkVerification = work.checkRefs.some((record) =>
       Boolean(record.receipt)
@@ -217,8 +180,7 @@ export function evaluateWorkCompletionEvidence(
     && history.invalidCheckIds.length === 0
     && missingChecks.length === 0
     && (work.checks.length > 0 || durableResultEvidence)
-    && semanticAcceptanceComplete
-    && (work.workKind !== 'read_only_review' || cleanReadOnlyReviewEvidence);
+    && semanticAcceptanceComplete;
   return {
     status: complete ? 'complete' : 'incomplete',
     history,

@@ -1842,6 +1842,18 @@ for (const path of ['packages/kernel/progression/api/index.ts']) requireMissing(
 for (const path of productionTypeScriptFiles()) {
   if (/packages\/kernel\/progression/.test(text(path))) failures.push(`${path} must not depend on the retired PlanStep progression engine`);
 }
+// Thin semantic Work lifecycle: Work is open/completed/cancelled and
+// work.complete is a mechanical durable close. Review findings are durable
+// observations, never a completion gate.
+requireText('packages/kernel/work/domain/types.ts', "export type SemanticWorkState = 'open' | 'completed' | 'cancelled';");
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "'work_get', 'work_revise', 'work_complete'");
+for (const path of [
+  'packages/kernel/work/domain/state-machine.ts',
+  'src/runtime/control-plane/execution/work-evidence-policy.ts',
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+]) {
+  forbid(path, /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/, 'read-only review findings must not gate terminal completion');
+}
 for (const path of [
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',

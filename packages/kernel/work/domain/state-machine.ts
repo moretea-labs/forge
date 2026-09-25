@@ -128,7 +128,9 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (receipt.workspaceChangedPaths.length !== 0) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_WORKSPACE_CHANGED');
       const reviewEvidence = contract.readOnlyReviewEvidence;
       if (!reviewEvidence || reviewEvidence.sourceRevision !== receipt.sourceRevision) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_EVIDENCE_REQUIRED');
-      if (reviewEvidence.findings.length !== 0 || receipt.findingCount !== 0 || receipt.inspectedPaths.length === 0) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_CLEAN_SCOPE_REQUIRED');
+      // Findings are durable observations the model/user acts on; they never block
+      // terminal completion. Only the exact inspected scope must stay consistent.
+      if (receipt.inspectedPaths.length === 0) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_SCOPE_REQUIRED');
       const evidencePaths = [...new Set(reviewEvidence.inspectedPaths)].sort();
       const receiptPaths = [...new Set(receipt.inspectedPaths)].sort();
       if (evidencePaths.length !== receiptPaths.length || evidencePaths.some((path, index) => path !== receiptPaths[index])) {
