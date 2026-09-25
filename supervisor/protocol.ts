@@ -4,7 +4,7 @@ import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisor
 export const SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
-const EFFECT_ID = /^fx_[a-zA-Z0-9_-]{8,120}$/;
+const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
 
 function boundedString(value: unknown, name: string, max: number): string {

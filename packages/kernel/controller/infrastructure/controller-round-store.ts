@@ -1186,7 +1186,7 @@ export function beginControllerRoundProviderDispatch(
       throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_STALE: ${input.workId}`);
     }
     if (current.value.providerDispatchStartedAt) throw new Error(`CONTROLLER_CONTINUATION_ALREADY_DISPATCHING:${input.workId}`);
-    const providerDispatchEffectId = controllerRoundProviderEffectId(current.value.relayScopeId, input.authorityId);
+    const providerDispatchEffectId = current.value.providerDispatchEffectId ?? controllerRoundProviderEffectId(current.value);
     return applyControllerRoundTransition(options, current, {
       type: 'provider_dispatch_started', at: nowIso(options), providerDispatchEffectId,
       ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}),
@@ -1220,7 +1220,8 @@ export function finishControllerRoundRelayDispatch(
           ? 'CONTROLLER_RELAY_RECOVERY_FAILED'
           : 'CONTROLLER_RELAY_DISPATCH_FAILED');
     const providerDispatchEffectId = bounded(input.providerDispatchEffectId, 500)
-      ?? (current.value.authorityId ? controllerRoundProviderEffectId(current.value.relayScopeId, current.value.authorityId) : undefined);
+      ?? current.value.providerDispatchEffectId
+      ?? controllerRoundProviderEffectId(current.value);
     let event: ControllerRoundTransitionEvent;
     if (input.ok) {
       if (!providerDispatchEffectId) throw new Error('CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED');

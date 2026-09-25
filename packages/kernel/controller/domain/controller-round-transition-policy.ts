@@ -2,8 +2,14 @@ import { createHash } from 'crypto';
 import type { ControllerSession } from './types';
 import type { ControllerRoundDisposition, ControllerRoundRelayIdentity, ControllerRoundRelayRecord } from './controller-round';
 
-export function controllerRoundProviderEffectId(relayScopeId: string, authorityId: string): string {
-  return `crpe_${createHash('sha256').update(JSON.stringify([relayScopeId.trim(), authorityId.trim()])).digest('hex')}`;
+export function controllerRoundProviderEffectId(
+  round: Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'roundCount'>,
+): string {
+  return `crpe_${createHash('sha256').update(JSON.stringify([
+    round.relayScopeId.trim(),
+    round.originWorkId.trim(),
+    round.roundCount,
+  ])).digest('hex')}`;
 }
 
 export type ControllerRoundBlockerClass =

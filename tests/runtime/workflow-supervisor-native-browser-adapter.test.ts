@@ -213,16 +213,31 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.errors).toEqual([]);
   });
 
-  test('retries a historical pre-submit send-control failure without treating unknown submit outcomes as replayable', async () => {
+  test('effect_unknown never authorizes replay; canonical not-applied reconciliation is required before generation advances', async () => {
     const conversationId = '13131313-2424-3535-4646-575757575757';
     const url = `https://chatgpt.com/c/${conversationId}`;
     const h = harness([], '', false, 'send_button_missing');
     const { effect } = register(h.control, conversationId);
+
     await h.adapter.runOnce();
-    h.control.browserObserveEffect({ conversationId, conversationUrl: url, effectId: effect.effectId, observationId: 'generic-reconcile-after-safe-failure', outcome: 'unknown', evidence: { reason: 'not_applied_proof_incomplete', reconciliation: true } });
-    const retry = h.control.browserPoll({ conversationId, conversationUrl: url });
-    expect(retry.command?.mode).toBe('send');
-    expect(retry.command?.dispatchGeneration).toBe(2);
+    h.control.browserObserveEffect({
+      conversationId,
+      conversationUrl: url,
+      effectId: effect.effectId,
+      observationId: 'generic-reconcile-after-safe-failure',
+      outcome: 'unknown',
+      evidence: { reason: 'not_applied_proof_incomplete', reconciliation: true },
+    });
+
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+
+    // The adapter must first reconcile the exact conversation state. Only that
+    // canonical negative proof may authorize a second dispatch generation.
+    await h.adapter.runOnce();
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'send', dispatchGeneration: 2 });
+
     await h.adapter.runOnce();
     expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(2);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();

@@ -124,15 +124,9 @@ function storedGeneration(value: unknown): number {
   const generation = Number(parsedObject(value).generation);
   return Number.isInteger(generation) && generation > 0 ? generation : 1;
 }
-function latestRetryEvidenceEventId(db: Database, effectId: string): number {
+function latestNotAppliedProofEventId(db: Database, effectId: string): number {
   const notApplied = statement(db, "SELECT event_id FROM events WHERE effect_id = ? AND kind = 'effect_not_applied' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number } | undefined;
-  const preSubmitUnknown = statement(db, `SELECT event_id FROM events
-    WHERE effect_id = ?
-      AND kind = 'effect_unknown'
-      AND json_extract(payload_json, '$.surface') = 'macos-native'
-      AND json_extract(payload_json, '$.reason') IN ('composer_missing', 'send_button_missing')
-    ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effectId)) as { event_id?: number } | undefined;
-  return Math.max(Number(notApplied?.event_id ?? 0), Number(preSubmitUnknown?.event_id ?? 0));
+  return Number(notApplied?.event_id ?? 0);
 }
 export class WorkflowSupervisorStore {
   private readonly db: Database;
@@ -280,7 +274,7 @@ export class WorkflowSupervisorStore {
       const dispatch = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effect.effectId)) as { event_id?: number; payload_json?: string } | undefined;
       if (!dispatch?.event_id) return { effect, mode: 'send', generation: 1 };
       const currentGeneration = storedGeneration(dispatch.payload_json);
-      const retryAuthorized = latestRetryEvidenceEventId(db, effect.effectId) > Number(dispatch.event_id);
+      const retryAuthorized = latestNotAppliedProofEventId(db, effect.effectId) > Number(dispatch.event_id);
       return { effect, mode: retryAuthorized ? 'send' : 'reconcile', generation: retryAuthorized ? currentGeneration + 1 : currentGeneration };
     });
   }
@@ -421,7 +415,7 @@ export class WorkflowSupervisorStore {
       if (applied) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
       const prior = statement(db, "SELECT event_id,payload_json FROM events WHERE effect_id = ? AND kind = 'effect_dispatch_started' ORDER BY event_id DESC LIMIT 1", (s) => s.get(effectId)) as { event_id?: number; payload_json?: string } | undefined;
       const currentGeneration = prior?.event_id ? storedGeneration(prior.payload_json) : 0;
-      const retryAuthorized = !prior?.event_id || latestRetryEvidenceEventId(db, effectId) > Number(prior.event_id);
+      const retryAuthorized = !prior?.event_id || latestNotAppliedProofEventId(db, effectId) > Number(prior.event_id);
       if (!retryAuthorized || generation !== currentGeneration + 1) return false;
       statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}:${generation}`, 'effect_dispatch_started', effectId, json({ dispatchId, generation, ...evidence }), now()));
       return true;

@@ -3,6 +3,7 @@ import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
+  controllerRoundProviderEffectId,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   getControllerSession,
@@ -39,7 +40,7 @@ export type WorkflowSupervisorEnrollmentStatus =
 export function workflowSupervisorLowerLayerReadyForWork(
   options: { controllerHome: string; repoId: string },
   workId: string,
-): { ready: true; workId: string } | { ready: false; reason: string } {
+): { ready: true; workId: string; providerEffectId: string } | { ready: false; reason: string } {
   const directRelay = getControllerRoundRelay(options, workId);
   const work = getWorkContract(options, workId);
   const relay = directRelay ?? (work?.requirementId ? getRequirementControllerRoundRelay(options, work.requirementId) : undefined);
@@ -48,7 +49,11 @@ export function workflowSupervisorLowerLayerReadyForWork(
   if (!['dispatching', 'dispatched', 'claimed'].includes(relay.status)) {
     return { ready: false, reason: `CONTROLLER_ROUND_NOT_DISPATCHABLE:${relay.status}:${relay.blockedReason ?? relay.originWorkId}` };
   }
-  return { ready: true, workId: relay.originWorkId };
+  return {
+    ready: true,
+    workId: relay.originWorkId,
+    providerEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay),
+  };
 }
 
 function taskIdForConversation(repoId: string, conversationId: string): string {
@@ -182,7 +187,11 @@ async function settleForgeWorkflowSupervisorTurn(
     'Treat ControllerRound identity as resume/transport bookkeeping only. Re-read current Requirement/Plan/Work/UserRequest facts and use canonical stable-id + expected_revision semantic operations; do not invent mandatory verify/review/finalize/PlanStep lifecycle from this authority.',
     'Never mint a replacement continuation authority and never substitute a transport session id.',
   ].join('\n');
-  return { continuationAllowed: true, continuationContext };
+  return {
+    continuationAllowed: true,
+    continuationContext,
+    continuationEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay),
+  };
 }
 
 export function resolveWorkflowSupervisorChatgptDelivery(
@@ -331,6 +340,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       finishControllerRoundRelayDispatch(store, {
         workId: relay.originWorkId,
         ok: true,
+        providerDispatchEffectId: effect.effectId,
         providerDispatchReceiptId: `workflow-supervisor:${effect.effectId}:${observation.observationId}`,
       });
     },
@@ -421,6 +431,6 @@ export async function ensureWorkflowSupervisorEnrollmentForWork(
       ...(requirement ? { requirement_id: requirement.requirementId } : { work_id: boundary.workId ?? workId }),
     },
   });
-  const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId);
+  const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId);
   return { status: 'enrolled', taskId: registeredTask.taskId, effectId: effect.effectId };
 }

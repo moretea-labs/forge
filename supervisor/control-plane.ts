@@ -15,14 +15,14 @@ export class WorkflowSupervisorControlPlane {
     this.hooks = hooks;
   }
   registerTask(input: WorkflowSupervisorTaskInput): WorkflowSupervisorTask { return this.store.registerTask(input); }
-  reserveEnrollment(taskId: string): WorkflowSupervisorEffect {
+  reserveEnrollment(taskId: string, canonicalEffectId?: string): WorkflowSupervisorEffect {
     const task = this.requireTask(taskId);
     // A task that already reached a terminal supervisor action is not deliverable.
     // Reserving another enrollment effect for it produced an "enrolled" result that
     // could never be delivered, so the ControllerRound waited forever instead of
     // surfacing the operator/provider decision that terminal state represents.
     requireNonTerminalTask(this.store, task.taskId);
-    const id = effectId();
+    const id = canonicalEffectId ? validateEffectId(canonicalEffectId) : effectId();
     return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey: `enrollment:${taskId}`, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
   }
   /** @deprecated Compatibility RPC. Recovery policy no longer lives in Supervisor/Scheduler. */
@@ -196,7 +196,9 @@ export class WorkflowSupervisorControlPlane {
       if (!settlement.continuationAllowed) {
         throw new Error(`WORKFLOW_SUPERVISOR_LOWER_LAYER_CONTINUATION_BLOCKED:${settlement.reason ?? 'unspecified'}`);
       }
-      const nextId = effectId();
+      const nextId = settlement.continuationEffectId
+        ? validateEffectId(settlement.continuationEffectId)
+        : effectId();
       const prompt = renderSupervisorPrompt(task, nextId, 'continuation', parsed.proposal.checkpoint, undefined, settlement.continuationContext);
       const withSuccessor = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
       return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: withSuccessor.successorEffect!, deduplicated: committed.deduplicated || withSuccessor.deduplicated };

@@ -66,6 +66,8 @@ export interface WorkflowSupervisorValidators {
 export interface WorkflowSupervisorTurnSettlement {
   continuationAllowed: boolean;
   continuationContext?: string;
+  /** Canonical lower-layer non-idempotent send effect identity for the next outer turn. */
+  continuationEffectId?: string;
   reason?: string;
 }
 

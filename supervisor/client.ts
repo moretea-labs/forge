@@ -64,8 +64,11 @@ export async function registerWorkflowSupervisorTask(forgeHome: string, input: W
   }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
-export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, taskId: string): Promise<WorkflowSupervisorEffect> {
-  return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', { task_id: taskId }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+export async function reserveWorkflowSupervisorEnrollment(forgeHome: string, taskId: string, canonicalEffectId?: string): Promise<WorkflowSupervisorEffect> {
+  return await rpc<WorkflowSupervisorEffect>(forgeHome, 'reserve_enrollment', {
+    task_id: taskId,
+    ...(canonicalEffectId?.trim() ? { effect_id: canonicalEffectId.trim() } : {}),
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
 export async function reserveWorkflowSupervisorSchedulerRecovery(forgeHome: string, taskId: string, recoveryKey?: string): Promise<WorkflowSupervisorEffect | undefined> {

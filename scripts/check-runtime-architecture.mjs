@@ -1921,6 +1921,22 @@ forbid(
   /withControllerSessionTerminalizationFence|listControllerSessions|getControllerSession|controllerWorkIds|controller_session/,
   'stale Work maintenance must re-check concrete Work/source/resource facts instead of using ControllerSession as lifecycle authority',
 );
+forbid(
+  'supervisor/store.ts',
+  /effect_unknown[\s\S]{0,300}(composer_missing|send_button_missing)|latestRetryEvidenceEventId/,
+  'dispatch generation may advance only from canonical effect_not_applied proof; effect_unknown never authorizes replay',
+);
+requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'roundCount'>");
+forbid(
+  'packages/kernel/controller/domain/controller-round-transition-policy.ts',
+  /controllerRoundProviderEffectId[\s\S]{0,400}authorityId/,
+  'canonical continuation/provider effect identity must survive Controller authority rotation',
+);
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'continuationEffectId: relay.providerDispatchEffectId ?? controllerRoundProviderEffectId(relay)');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId)');
+requireText('src/runtime/root/workflow-supervisor-composition.ts', 'providerDispatchEffectId: effect.effectId');
+requireText('supervisor/control-plane.ts', 'settlement.continuationEffectId');
+requireText('supervisor/protocol.ts', '(?:fx|crpe)_');
 for (const path of [
   'adapters/mcp/runtime-gateway/work-learning-operations.ts',
   'src/runtime/control-plane/persistence/experience-store.ts',
