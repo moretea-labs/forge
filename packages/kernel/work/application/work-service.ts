@@ -3,9 +3,6 @@ import {
   getWorkContract as readWorkContract,
   recordWorkCompletionReceipt as persistWorkCompletionReceipt,
   canonicalizeWorkContractForAuthority,
-  rebindPlanBoundWorkContract as buildPlanBoundWorkRebind,
-  refreshPlanBoundWorkRevision as buildPlanBoundWorkRevisionRefresh,
-  retirePlanBoundWorkContract as buildPlanBoundWorkRetirement,
 } from '../infrastructure/work-contract-store';
 import type { WorkContract } from '../domain/types';
 import type { WorkContractStoreOptions } from '../ports/work-contract-store';
@@ -125,30 +122,3 @@ export type {
   WorkContractMetadataPatch,
 } from '../infrastructure/work-contract-store';
 
-/**
- * Public Work application command for constructing a validated scope-only
- * successor-Plan binding. Persistence remains with the caller so a higher-level
- * control-plane transaction can atomically update Plan + Work authority.
- */
-export function rebindPlanBoundWorkContract(
-  current: WorkContract,
-  input: Parameters<typeof buildPlanBoundWorkRebind>[1],
-): WorkContract {
-  return buildPlanBoundWorkRebind(current, input);
-}
-
-/** Build a validated terminal authority-retirement transition for a Work whose Plan is no longer current. */
-/** Refresh a Work against a newer revision of the same stable Plan identity. */
-export function refreshPlanBoundWorkRevision(
-  current: WorkContract,
-  input: Parameters<typeof buildPlanBoundWorkRevisionRefresh>[1],
-): WorkContract {
-  return buildPlanBoundWorkRevisionRefresh(current, input);
-}
-
-export function retirePlanBoundWorkContract(
-  current: WorkContract,
-  input: Parameters<typeof buildPlanBoundWorkRetirement>[1],
-): WorkContract {
-  return buildPlanBoundWorkRetirement(current, input);
-}

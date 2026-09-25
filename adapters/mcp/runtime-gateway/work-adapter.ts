@@ -35,7 +35,7 @@ import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callR
 import { runFacadeRepair } from './work-repair-adapter';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 export { runFacadeRepair };
-import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDanglingPlanStepWorkBinding, replanActivePlanBoundWorkScope, repairDraftPlanContractAsync, completePlanStepForWork, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
+import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDraftPlanContractAsync, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
 import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { getWorkContract, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readExecutionSession, startExecutionSession, updateExecutionSession } from "../../../src/runtime/control-plane/execution/session-store";

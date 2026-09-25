@@ -15,7 +15,6 @@ import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controlle
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
   approvePlanContract,
-  claimPlanStepForWork,
   createPlanContract,
   createPlanSemanticContext,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -123,10 +122,6 @@ describe('autonomous Work liveness reconciliation', () => {
       planId: 'PLAN-A',
       planStepId: 'stage-a',
     });
-    claimPlanStepForWork(
-      { controllerHome, repoId: 'repo-a' },
-      { planId: 'PLAN-A', stepId: 'stage-a', workId: 'WORK-A', sourceRevision: 'abc123' },
-    );
     bindReleasedChatgptController(controllerHome, 'WORK-A');
 
     let providerDispatches = 0;
@@ -150,7 +145,7 @@ describe('autonomous Work liveness reconciliation', () => {
 
     const second = await runSchedulerAutonomousContinuationReconciliation(input);
     expect(second.dispatched).toBe(0);
-    expect(second.skippedByReason['progression:CONTROLLER_ROUND_IN_FLIGHT']).toBe(1);
+    expect(second.skippedByReason.controller_round_present).toBe(1);
     expect(providerDispatches).toBe(1);
   });
 
@@ -272,10 +267,6 @@ describe('autonomous Work liveness reconciliation', () => {
       planId: 'PLAN-SUPERVISOR',
       planStepId: 'stage-current',
     });
-    claimPlanStepForWork(
-      store,
-      { planId: 'PLAN-SUPERVISOR', stepId: 'stage-current', workId: 'WORK-CURRENT', sourceRevision: 'abc123' },
-    );
     bindReleasedChatgptController(controllerHome, 'WORK-CURRENT');
 
     let enrollments = 0;

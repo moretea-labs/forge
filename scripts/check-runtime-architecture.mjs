@@ -969,31 +969,22 @@ requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'completeRemoteEffec
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
-requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'PLAN_STEP_SEMANTIC_ACCEPTANCE_REQUIRED');
-requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED');
-requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'CONTINUATION_GOAL_COMPLETE');
+forbid('src/runtime/control-plane/facade/goal-workloop.ts', /PLAN_(?:STEP_|SUCCESSOR_|NOT_EXECUTABLE|EXECUTION_BASELINE)/, 'Work admission must not consult Plan item status, binding, dependency or approval state');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', "requestedBy ?? 'chatgpt') === 'scheduler'");
 // V2 Goal authority convergence: lifecycle enums are canonical Kernel Goal
-// domain facts; progression is a pure derived decision service and explicit
-// Controller goal_complete is the Requirement semantic acceptance boundary.
+// domain facts and explicit Controller goal_complete is the Requirement semantic
+// acceptance boundary. PlanStep progression is retired: Plan items are authored
+// working memory that never selects, gates or progresses Work.
 requireText('packages/kernel/goal/domain/types.ts', 'export const REQUIREMENT_STATES');
 requireText('packages/kernel/goal/domain/types.ts', 'export const PLAN_CONTRACT_STATUSES');
 requireText('packages/kernel/goal/domain/types.ts', 'export const PLAN_STEP_STATUSES');
 requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'packages/kernel/goal/api/index');
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/goal/api/index');
-requireText('packages/kernel/progression/domain/types.ts', "from '../../goal/api/index'");
-requireText('packages/kernel/progression/domain/types.ts', "from '../../scheduler/api/index'");
-forbid('packages/kernel/progression/domain/types.ts', /export type Progression(?:RequirementState|PlanStatus|PlanStepStatus)\s*=/, 'Goal progression must consume canonical Goal lifecycle types instead of copying status unions');
-requireText('packages/kernel/progression/domain/types.ts', 'completionTargetRevision?: string');
-requireText('packages/kernel/progression/application/projector.ts', 'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE');
 requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'reviseRequirementSemantic');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'revisePlanSemanticContext');
 requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'only three cross-domain model-authored semantic records');
 requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'semantic revision must be applied to the latest persisted aggregate inside the same storage transaction');
-requireText('packages/kernel/progression/application/projector.ts', 'provenance/staleness context only');
-forbid('packages/kernel/progression/application/projector.ts', /return decision\(snapshot,\s*'request_replan',\s*'PLAN_SOURCE_DRIFT'/, 'Plan source basis is provenance/staleness context and must not directly gate autonomous progression');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'acceptRequirementOutcome');
-requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'withPlanAdmissionLock');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
@@ -1811,6 +1802,45 @@ for (const [symbol, label] of b7UniqueMutationSymbols) {
     count += (text(path).match(new RegExp(`export\\s+(?:async\\s+)?function\\s+${symbol}\\s*\\(`, 'g')) ?? []).length;
   }
   if (count !== 1) failures.push(`${label} must have exactly one exported production owner; found ${count} for ${symbol}`);
+}
+// Thin Plan authority: Plan items are authored working memory. Work execution,
+// Plan admission and Plan revision must never re-acquire PlanStep execution
+// writers, Plan approval/acceptance gates or Plan-derived Work progression.
+const retiredPlanExecutionSymbols = [
+  'claimPlanStepForWork',
+  'completePlanStepForWork',
+  'acceptPlanStepEvidence',
+  'repairPlanStepForTechnicalRetry',
+  'repairDanglingPlanStepWorkBinding',
+  'replanActivePlanBoundWorkScope',
+  'retireTerminalPlanBoundWorkAuthorities',
+  'getPlanExecutionBaselineRevision',
+  'updatePlanContractWithExecutionBaseline',
+  'refreshPlanBoundWorkRevision',
+  'retirePlanBoundWorkContract',
+  'rebindPlanBoundWorkContract',
+];
+for (const path of productionTypeScriptFiles()) {
+  const source = text(path);
+  for (const symbol of retiredPlanExecutionSymbols) {
+    if (new RegExp(`\\b${symbol}\\b`).test(source)) failures.push(`${path} must not reintroduce retired PlanStep execution writer ${symbol}`);
+  }
+}
+const retiredPlanGateCodes = /PLAN_STEP_(?:SEMANTIC_ACCEPTANCE_REQUIRED|TERMINAL_WORK_RECONCILIATION_REQUIRED|DEPENDENCIES_PENDING|ALREADY_ACTIVE|ALREADY_COMPLETED|MULTIPLE_PRIMARY_WORKS|BOUND_WORK_MISSING|REUSES_ACTIVE_WORK|WORK_CONTRACT_MISMATCH)|PLAN_NOT_EXECUTABLE|PLAN_EXECUTION_BASELINE_LOCKED|PLAN_OBLIGATION_CONTINUITY_REQUIRED|PLAN_STEP_SEMANTIC_ACCEPTANCE/;
+for (const path of [
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+  'src/runtime/control-plane/facade/plan-contract-store.ts',
+  'src/runtime/control-plane/facade/requirement-authority.ts',
+  'src/runtime/control-plane/global-scheduler/autonomous-continuation.ts',
+  'adapters/mcp/runtime-gateway/work-plan-operations.ts',
+  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
+  'adapters/mcp/runtime-gateway/work-repair-adapter.ts',
+]) {
+  if (retiredPlanGateCodes.test(text(path))) failures.push(`${path} must not reintroduce a PlanStep execution gate`);
+}
+for (const path of ['packages/kernel/progression/api/index.ts']) requireMissing(path);
+for (const path of productionTypeScriptFiles()) {
+  if (/packages\/kernel\/progression/.test(text(path))) failures.push(`${path} must not depend on the retired PlanStep progression engine`);
 }
 for (const path of [
   'src/runtime/gateway/mcp/execution-tools.ts',

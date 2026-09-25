@@ -9,10 +9,8 @@ import {
   prepareControllerRoundOccurrence,
   resumeControllerRoundOccurrence,
 } from '../../../../packages/kernel/controller/api/index';
-import { projectAutonomousGoalProgression, type ProgressionWorkSnapshot } from '../../../../packages/kernel/progression/api/index';
-import { currentTaskSemanticProjectionForWork, getWorkContract, listWorkContracts } from '../../../../packages/kernel/work/api/index';
+import { currentTaskSemanticProjectionForWork, listWorkContracts } from '../../../../packages/kernel/work/api/index';
 import { workHasActiveExecution } from '../../execution/work-activity';
-import { listPlanContracts } from '../facade/plan-contract-store';
 import { readRequirement } from '../persistence/requirement-store';
 import { createHandoffItem, getHandoffItem } from '../facade/handoff-inbox-store';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
@@ -93,34 +91,16 @@ function planlessOccurrenceId(workId: string, updatedAt: string): string {
   return 'work-liveness:v1:' + digest;
 }
 
-function workSnapshot(work: NonNullable<ReturnType<typeof getWorkContract>>): ProgressionWorkSnapshot {
-  const currentTask = currentTaskSemanticProjectionForWork(work);
-  return {
-    workId: currentTask.workId,
-    requirementId: currentTask.requirementId,
-    planId: currentTask.planId,
-    planStepId: currentTask.planStepId,
-    status: work.status,
-    baseRevision: work.baseRevision,
-    completionTargetRevision: work.completionReceipt && 'targetRevision' in work.completionReceipt
-      ? work.completionReceipt.targetRevision
-      : undefined,
-  };
-}
-
 /**
  * Materialize already-authorized Work continuation. This is deliberately a
  * reconciliation hook, not a second planner:
  *
- * - Plan-bound Work must be selected by projectAutonomousGoalProgression.
- * - Planless Work receives only a mechanical liveness wake when its own Work,
- *   Requirement and ControllerRound authorities expose no wait/terminal state.
+ * - Work receives only a mechanical liveness wake when its own Work, Requirement
+ *   and ControllerRound authorities expose no wait/terminal state. Plan and Plan
+ *   item state never select, block or progress Work.
  * - ControllerRound remains the provider-effect/idempotency fence.
  * - Workflow Supervisor remains the outer ChatGPT-turn owner when enrolled.
  *
- * Current Plan source is intentionally frozen at plan.sourceRevision here.
- * Baseline drift is an admission/replan concern, not a reason to interrupt an
- * already-running isolated Work halfway through its execution.
  */
 export async function runSchedulerAutonomousContinuationReconciliation(input: {
   controllerHome: string;
@@ -151,16 +131,13 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
     if (materialized >= maxContinuations) break;
     const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
     let works: ReturnType<typeof listWorkContracts>;
-    let plans: ReturnType<typeof listPlanContracts>;
     try {
       works = listWorkContracts({ ...store, status: 'active', limit: 100 });
-      plans = listPlanContracts({ ...store, status: 'active', limit: 100 });
     } catch (error) {
       failed += 1;
-      console.error('[forge liveness] failed to read current Work/Plan authority for ' + repository.repoId + ':', error);
+      console.error('[forge liveness] failed to read current Work authority for ' + repository.repoId + ':', error);
       continue;
     }
-    const plansById = new Map(plans.map((plan) => [plan.planId, plan] as const));
 
     for (const work of works) {
       if (materialized >= maxContinuations) break;
@@ -190,65 +167,18 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
       let relayScopeId = currentTask.requirementId ? 'requirement:' + currentTask.requirementId : undefined;
       let continuationHint = 'Resume exact Work ' + currentTask.workId + '; scheduler observed no active execution or live Controller owner and no explicit wait.';
 
-      // Only historical PlanStep-bound Work delegates mechanical progression to the legacy Plan projector.
-      // Thin Plan references are provenance/working memory and never own Work scheduling.
-      if (currentTask.planId && currentTask.planStepId) {
-        const plan = plansById.get(currentTask.planId);
-        if (!plan) { skip(skippedByReason, 'current_plan_missing'); continue; }
-        const requirementRecord = plan.requirementId
-          ? readRequirement({ controllerHome: input.controllerHome }, plan.requirementId)
-          : undefined;
-        if (plan.requirementId && !requirementRecord) { skip(skippedByReason, 'requirement_missing'); continue; }
-
-        const planWorks = plan.steps
-          .flatMap((step) => step.workId ? [getWorkContract(store, step.workId)] : [])
-          .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
-        const controllerRounds = planWorks.flatMap((candidate) => {
-          const round = getControllerRoundRelay(store, candidate.workId);
-          return round ? [{ originWorkId: round.originWorkId, status: round.status, roundCount: round.roundCount }] : [];
-        });
-        const progression = projectAutonomousGoalProgression({
-          requirement: {
-            requirementId: plan.requirementId ?? work.requirementId ?? 'plan:' + plan.planId,
-            state: requirementRecord?.value.state ?? 'active',
-            revision: requirementRecord?.revision ?? 0,
-          },
-          plan: {
-            planId: plan.planId,
-            requirementId: plan.requirementId,
-            sourceRevision: plan.sourceRevision,
-            status: plan.status,
-            steps: plan.steps.map((step) => ({
-              id: step.id,
-              dependencies: step.dependencies,
-              status: step.status,
-              workId: step.workId,
-            })),
-          },
-          currentSourceRevision: plan.sourceRevision,
-          works: planWorks.map(workSnapshot),
-          controllerRounds,
-        });
-        if (progression.kind !== 'continue_current_work' || progression.workId !== work.workId) {
-          skip(skippedByReason, 'progression:' + progression.reasonCode);
-          continue;
-        }
-        occurrenceId = existingRound?.status === 'failed' && existingRound.occurrenceId
-          ? existingRound.occurrenceId
-          : progression.idempotencyKey;
-        relayScopeId = plan.requirementId ? 'requirement:' + plan.requirementId : relayScopeId;
-        continuationHint = 'Resume exact Work ' + work.workId + '; Goal Progression returned ' + progression.reasonCode + ' for ' + plan.planId + '/' + (progression.planStepId ?? 'current-step') + '.';
-      } else {
-        const requirementRecord = work.requirementId
-          ? readRequirement({ controllerHome: input.controllerHome }, work.requirementId)
-          : undefined;
-        if (work.requirementId && !requirementRecord) { skip(skippedByReason, 'requirement_missing'); continue; }
-        const requirementState = requirementRecord?.value.state;
-        if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
-        if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
-        if (existingRound && existingRound.status !== 'failed') { skip(skippedByReason, 'controller_round_present'); continue; }
-        occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
-      }
+      // Work liveness is decided by the Work's own Requirement/ControllerRound
+      // facts. Plan provenance, Plan item status and Plan dependencies never
+      // select, block or progress an autonomous wake.
+      const requirementRecord = work.requirementId
+        ? readRequirement({ controllerHome: input.controllerHome }, work.requirementId)
+        : undefined;
+      if (work.requirementId && !requirementRecord) { skip(skippedByReason, 'requirement_missing'); continue; }
+      const requirementState = requirementRecord?.value.state;
+      if (requirementState === 'waiting_for_user') { skip(skippedByReason, 'requirement_waiting_for_user'); continue; }
+      if (requirementState === 'done' || requirementState === 'cancelled') { skip(skippedByReason, 'requirement:' + requirementState); continue; }
+      if (existingRound && existingRound.status !== 'failed') { skip(skippedByReason, 'controller_round_present'); continue; }
+      occurrenceId = existingRound?.occurrenceId ?? planlessOccurrenceId(work.workId, work.updatedAt);
 
       const retainedSession = getRetainedControllerSession(store, work.workId);
       if (!retainedSession) { skip(skippedByReason, 'retained_controller_session_missing'); continue; }

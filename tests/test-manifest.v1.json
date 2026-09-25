@@ -361,10 +361,6 @@
       "module": "ios",
       "resource": "temp-isolated"
     },
-    "tests/runtime/autonomous-goal-progression-contract.test.ts": {
-      "module": "controller",
-      "resource": "pure"
-    },
     "tests/runtime/autonomous-work-liveness-reconciler.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -610,10 +606,6 @@
       "resource": "temp-isolated"
     },
     "tests/runtime/pending-continuation-activation.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/plan-obligation-continuity.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
@@ -994,6 +986,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated",
       "smoke": false
+    },
+    "tests/runtime/plan-authority-thin.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
     }
   }
 }

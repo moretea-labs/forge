@@ -8,7 +8,6 @@ import {
   type Requirement,
   type RequirementStoreOptions,
 } from '../persistence/requirement-store';
-import { readPlanContractStore } from './plan-contract-store';
 import { cognitionMemoryStore } from '../persistence/cognition-store';
 import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
 import { withPlanAdmissionLock } from './semantic-admission';
@@ -293,21 +292,13 @@ function requirementAcceptanceContext(
     return { requirement: current, finalizedPlanIds: current.semanticAcceptance?.planIds ?? [] };
   }
 
-  const currentPlans = readPlanContractStore({ controllerHome: options.controllerHome, repoId: options.repoId, now: options.now })
-    .contracts
-    .filter((plan) => plan.requirementId === requirementId && !plan.supersededBy?.trim() && plan.status !== 'superseded');
-  // Only historical PlanStep execution plans participate in the legacy completion gate.
-  // Thin semantic Plans have no execution/acceptance authority and therefore cannot block Requirement completion.
-  const legacyExecutionPlans = currentPlans.filter((plan) => plan.steps.length > 0);
-  const incomplete = legacyExecutionPlans.filter((plan) => plan.status !== 'finalized');
-  if (incomplete.length > 0) {
-    throw new Error(`REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE: ${incomplete.map((plan) => `${plan.planId}:${plan.status}`).join(',')}`);
-  }
+  // Requirement completion is model/user judgement. Plan records, Plan item
+  // status and Plan acceptance never gate or determine it.
   const work = getWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, workId);
   if (!work) throw new Error(`REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND: ${workId}`);
   if (work.requirementId !== requirementId) throw new Error(`REQUIREMENT_ACCEPTANCE_WORK_MISMATCH: ${workId}:${work.requirementId ?? 'none'}:${requirementId}`);
   if (work.status !== 'completed') throw new Error(`REQUIREMENT_ACCEPTANCE_WORK_NOT_COMPLETED: ${workId}:${work.status}`);
-  return { requirement: current, finalizedPlanIds: legacyExecutionPlans.map((plan) => plan.planId).sort() };
+  return { requirement: current, finalizedPlanIds: [] };
 }
 
 function acceptRequirementOutcomeUnlocked(

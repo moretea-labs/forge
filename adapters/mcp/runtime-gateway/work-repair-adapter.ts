@@ -10,9 +10,7 @@ import {
   buildFacadeResult,
   getPlanContract,
   normalizeCheckIds,
-  repairDanglingPlanStepWorkBinding,
   repairDraftPlanContractAsync,
-  replanActivePlanBoundWorkScope,
   runSelfHealingLoop,
   summarizePlanContract,
   summarizeWorkContract,
@@ -172,114 +170,35 @@ export async function runFacadeRepair(
   }
 
   if (planId && planStepId) {
+    // Plan items are authored working memory. Repair reports the observable
+    // relationship as a read-only fact and never clears a binding, replans a
+    // scope or decides replacement admission on the Plan's behalf.
     const plan = getPlanContract(store, planId);
     const step = plan?.steps.find((candidate) => candidate.id === planStepId);
     if (!plan || !step) {
       const facade = buildFacadeResult({ status: 'not_found', summary: !plan ? `PlanContract ${planId} not found.` : `PLAN_STEP_NOT_FOUND: ${planStepId}`, data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false } });
       return result(facade as unknown as Record<string, unknown>, true);
     }
-    if (!step.workId) {
-      const facade = buildFacadeResult({ summary: `Plan step ${planId}/${planStepId} has no Work binding to repair.`, data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false, repairRequired: false } });
-      return result(facade as unknown as Record<string, unknown>);
-    }
-    const boundWork = getWorkContract(store, step.workId);
-    if (boundWork) {
-      if (['completed', 'failed', 'cancelled'].includes(boundWork.status)) {
-        const facade = buildFacadeResult({
-          summary: `PLAN_STEP_TERMINAL_WORK_FACT: ${planId}/${planStepId} is bound to terminal Work ${boundWork.workId}. Execution repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact changes the plan.`,
-          data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, terminalWorkStatus: boundWork.status, repaired: false, repairRequired: false, reusedExistingWork: true },
-          suggestedNextActions: [{ label: 'Revise Plan from terminal Work fact', tool: 'rh_work', operation: 'plan_revise', payload: { plan_id: planId, expected_revision: plan.revision }, risk: 'workspace_write', confidence: 'high' }],
-        });
-        return result(facade as unknown as Record<string, unknown>);
-      }
-      const requestedRevisionLabel = typeof args.superseded_by === 'string' ? args.superseded_by.trim() : '';
-      const requestedAllowedPaths = Array.isArray(args.allowed_paths)
-        ? [...new Set([...step.allowedPaths, ...args.allowed_paths.map(String).map((value) => value.trim()).filter(Boolean)])]
-        : step.allowedPaths;
-      const scopeReplanRequested = Boolean(requestedRevisionLabel) || requestedAllowedPaths.length > step.allowedPaths.length;
-      if (scopeReplanRequested) {
-        const requestedSourceRevision = typeof args.source_revision === 'string' ? args.source_revision.trim() : '';
-        if (!requestedRevisionLabel || !requestedSourceRevision || requestedAllowedPaths.length === step.allowedPaths.length) {
-          const facade = buildFacadeResult({
-            status: 'blocked',
-            summary: 'PLAN_WORK_SCOPE_REPLAN_INPUT_REQUIRED: superseded_by, source_revision, and at least one new allowed_paths entry are required for an active Plan-bound Work scope replan.',
-            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, requestedRevisionLabel: requestedRevisionLabel || undefined, requestedSourceRevision: requestedSourceRevision || undefined, requestedAllowedPaths },
-          });
-          return result(facade as unknown as Record<string, unknown>, true);
-        }
-        if (repairOperation !== 'repair' || dryRun) {
-          const facade = buildFacadeResult({
-            summary: `PLAN_WORK_SCOPE_REPLAN_AVAILABLE: ${planId}/${planStepId} can atomically move exact Work ${boundWork.workId} to stable Plan ${planId} revision label ${requestedRevisionLabel} while widening only allowed-path authority.`,
-            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, requestedRevisionLabel, requestedSourceRevision, requestedAllowedPaths, repaired: false, repairRequired: true, reusedExistingWork: true },
-            suggestedNextActions: [{ label: 'Replan exact active Work scope', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, superseded_by: requestedRevisionLabel, source_revision: requestedSourceRevision, allowed_paths: requestedAllowedPaths, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
-          });
-          return result(facade as unknown as Record<string, unknown>);
-        }
-        try {
-          const replanned = replanActivePlanBoundWorkScope(store, {
-            planId,
-            stepId: planStepId,
-            workId: boundWork.workId,
-            requestedRevisionLabel,
-            sourceRevision: requestedSourceRevision,
-            allowedPaths: requestedAllowedPaths,
-            reason: typeof args.reason === 'string' && args.reason.trim()
-              ? args.reason.trim()
-              : 'Explicit Controller repair widened a frozen Plan path fence after current-source evidence proved the existing Plan contract omitted a path required by its own acceptance scope.',
-          });
-          const facade = buildFacadeResult({
-            summary: `Replanned ${planId}/${planStepId} as ${replanned.currentPlan.planId} r${replanned.currentPlan.revision ?? 1} and retained the same active Work ${replanned.work.workId} atomically; semantic acceptance and checks were not widened.`,
-            data: { operation: repairOperation, dryRun: false, priorPlan: summarizePlanContract(replanned.priorPlan), currentPlan: summarizePlanContract(replanned.currentPlan), work: summarizeWorkContract(replanned.work), repaired: true, replacementWorkCreated: false, reusedExistingWork: true },
-          });
-          return result(facade as unknown as Record<string, unknown>);
-        } catch (error) {
-          const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_WORK_SCOPE_REPLAN_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: boundWork.workId, requestedRevisionLabel, repaired: false } });
-          return result(facade as unknown as Record<string, unknown>, true);
-        }
-      }
-      const facade = buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_STEP_BOUND_WORK_STILL_EXISTS: ${planId}/${planStepId} is bound to active Work ${boundWork.workId}; continue that exact Work, or explicitly request a scope-only stable Plan revision instead of replacing the Work.`,
-        data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, repairRequired: false },
-        suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: boundWork.workId }, risk: 'readonly', confidence: 'high' }],
-      });
-      return result(facade as unknown as Record<string, unknown>, true);
-    }
-    const conflicting = listWorkContracts({ ...store, status: 'active', limit: 200 })
-      .filter((candidate) => candidate.planId === planId && candidate.planStepId === planStepId && candidate.workId !== step.workId);
-    if (conflicting.length > 0) {
-      const facade = buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_STEP_REPAIR_CONFLICT: ${planId}/${planStepId} is bound to missing Work ${step.workId}, but ${conflicting.length} other active Work record(s) claim the same step. Resolve the conflicting authority before changing the Plan binding.`,
-        data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: step.workId, conflictingWorkIds: conflicting.map((candidate) => candidate.workId), repaired: false },
-      });
-      return result(facade as unknown as Record<string, unknown>, true);
-    }
-    if (repairOperation !== 'repair' || dryRun) {
-      const facade = buildFacadeResult({
-        summary: `PLAN_STEP_DANGLING_WORK_BINDING: ${planId}/${planStepId} points to missing Work ${step.workId}. Exact repair is available and will clear only this unchanged ghost binding.`,
-        data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: step.workId, repaired: false, repairRequired: true },
-        suggestedNextActions: [{ label: 'Repair exact dangling binding', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
-      });
-      return result(facade as unknown as Record<string, unknown>);
-    }
-    try {
-      const repairedPlan = repairDanglingPlanStepWorkBinding(store, {
+    const boundWork = step.workId ? getWorkContract(store, step.workId) : undefined;
+    const facade = buildFacadeResult({
+      summary: `PLAN_STEP_AUTHORED_FACT: ${planId}/${planStepId} is ${step.status}${boundWork ? ` and records terminal-or-active Work ${boundWork.workId} (${boundWork.status})` : ''}. Repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact should change it.`,
+      data: {
+        operation: repairOperation,
+        dryRun,
         planId,
-        stepId: planStepId,
-        expectedWorkId: step.workId,
-        reason: 'Explicit Controller repair confirmed that the exact bound Work record is absent and no other active primary Work claims this Plan step.',
-      });
-      const facade = buildFacadeResult({
-        summary: `Repaired dangling Plan step binding ${planId}/${planStepId}; ${step.workId} was cleared without creating a replacement Work.`,
-        data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(repairedPlan), boundWorkId: step.workId, repaired: true, replacementWorkCreated: false },
-      });
-      return result(facade as unknown as Record<string, unknown>);
-    } catch (error) {
-      const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_STEP_DANGLING_WORK_REPAIR_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: step.workId, repaired: false } });
-      return result(facade as unknown as Record<string, unknown>, true);
-    }
+        planStepId,
+        planItemStatus: step.status,
+        recordedWorkId: step.workId ?? null,
+        ...(boundWork ? { workStatus: boundWork.status } : {}),
+        repaired: false,
+        repairRequired: false,
+        compatibilityNoop: true,
+      },
+      suggestedNextActions: [{ label: 'Read current Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: planId }, risk: 'readonly', confidence: 'high' }],
+    });
+    return result(facade as unknown as Record<string, unknown>);
   }
+
 
   // The self-healing facade is a policy/planning surface; the authoritative
   // maintenance executor owns mutations. Execute it here only for an explicit,
@@ -387,4 +306,3 @@ export async function runFacadeRepair(
   );
   return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'approval_required' || facade.status === 'failed');
 }
-

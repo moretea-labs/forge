@@ -1,16 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
-import { projectAutonomousGoalProgression } from '../../packages/kernel/progression/api/index';
 import { acceptRequirementOutcome } from '../../src/runtime/control-plane/facade/requirement-authority';
 import {
-  acceptPlanStepEvidence,
   approvePlanContract,
-  claimPlanStepForWork,
-  completePlanStepForWork,
   createPlanContract,
   createPlanSemanticContext,
-  getPlanExecutionBaselineRevision,
+  getPlanContract,
   listPlanSemanticRevisionRecords,
   planSemanticView,
   revisePlanSemanticContext,
@@ -23,6 +19,8 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -160,7 +158,7 @@ describe('Goal authority convergence', () => {
       .toThrow('PLAN_REVISION_CONFLICT');
   });
 
-  test('distinguishes Work delivery source advance, Plan acceptance, Requirement acceptance, and unrelated drift', () => {
+  test('keeps Work delivery evidence separate from authored Plan and Requirement progress', () => {
     const controllerHome = home();
     const repoId = 'repo-goal-authority';
     const requirementId = 'REQ-GOAL-AUTHORITY';
@@ -188,122 +186,84 @@ describe('Goal authority convergence', () => {
       }],
     });
     approvePlanContract(planOptions, planId);
-    claimPlanStepForWork(planOptions, { planId, stepId: 'step-a', workId, sourceRevision: 'rev-a' });
-    const delivered = completePlanStepForWork(planOptions, {
+    createWorkContract({ controllerHome, repoId }, {
+      workId,
+      repoId,
+      requirementId,
       planId,
-      stepId: 'step-a',
-      work: {
-        workId,
-        status: 'completed',
-        phase: 'cleanup',
-        evidenceState: 'valid',
-        completionOutcome: 'completed_changed',
-        completionReceipt: completionReceipt(workId, 'rev-b'),
-        evidenceRefs: [],
-      },
+      planStepId: 'step-a',
+      planSourceRevision: 'rev-a',
+      mode: 'goal_workloop',
+      workKind: 'completed_no_change',
+      objective: 'Advance source A to B.',
+      acceptanceCriteria: ['Controller reviews the exact delivered result.'],
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: ['package:check:type'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+      baseRevision: 'rev-a',
     });
-    const requirementBeforeAcceptance = readRequirement({ controllerHome }, requirementId)!.value;
+    const recordedAt = '2026-09-05T00:00:00.000Z';
+    transitionWorkContractPhase({ controllerHome, repoId }, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change delivery verified.' });
+    requestWorkImplementationReview({ controllerHome, repoId }, workId, 'Delivery requires explicit implementation review before completion.');
+    recordWorkImplementationReview({ controllerHome, repoId }, workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-goal-authority',
+      workId,
+      reviewerPrincipalId: 'controller-a',
+      reviewerControllerSessionId: 'transport-goal-authority',
+      decision: 'approved',
+      rationale: 'Exact delivered evidence reviewed before completion.',
+      findings: [],
+      sourceRevision: 'rev-b',
+      workspaceFingerprint: `${workId}:content`,
+      verificationWorkspaceFingerprint: `${workId}:verification`,
+      changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Controller reviews the exact delivered result.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt,
+    });
+    const completed = recordWorkCompletionReceipt({ controllerHome, repoId }, workId, {
+      schemaVersion: 1,
+      receiptId: `receipt-${workId}`,
+      source: 'controller_work',
+      issueId: workId,
+      taskId: workId,
+      workId,
+      targetBranch: 'main',
+      targetRevision: 'rev-b',
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    }, 'completed_no_change');
+    expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_no_change' });
 
-    const deliveredSnapshot = {
-      requirement: {
-        requirementId,
-        state: requirementBeforeAcceptance.state,
-        revision: requirementBeforeAcceptance.revision,
-      },
-      plan: {
-        planId,
-        requirementId,
-        sourceRevision: delivered.sourceRevision,
-        status: delivered.status,
-        steps: delivered.steps.map((step) => ({
-          id: step.id,
-          dependencies: step.dependencies,
-          status: step.status,
-          workId: step.workId,
-        })),
-      },
-      currentSourceRevision: 'rev-b',
-      works: [{
-        workId,
-        requirementId,
-        planId,
-        planStepId: 'step-a',
-        status: 'completed' as const,
-        baseRevision: 'rev-a',
-        completionTargetRevision: 'rev-b',
-      }],
-      controllerRounds: [],
-    };
-
-    expect(projectAutonomousGoalProgression(deliveredSnapshot)).toMatchObject({
-      kind: 'request_controller_acceptance',
-      reasonCode: 'MACHINE_COMPLETE_REQUIRES_CONTROLLER_ACCEPTANCE',
-      workId,
-    });
-    expect(projectAutonomousGoalProgression({ ...deliveredSnapshot, currentSourceRevision: 'rev-c' })).toMatchObject({
-      kind: 'request_controller_acceptance',
-      reasonCode: 'MACHINE_COMPLETE_REQUIRES_CONTROLLER_ACCEPTANCE',
-      workId,
-    });
-    expect(projectAutonomousGoalProgression({
-      ...deliveredSnapshot,
-      works: [{ ...deliveredSnapshot.works[0], baseRevision: 'rev-other' }],
-    })).toMatchObject({
-      kind: 'request_controller_acceptance',
-      reasonCode: 'MACHINE_COMPLETE_REQUIRES_CONTROLLER_ACCEPTANCE',
-      workId,
-    });
+    // Work evidence advances nothing authored: the Plan item and Requirement stay
+    // exactly as the model left them.
+    const plan = getPlanContract(planOptions, planId)!;
+    expect(plan.status).toBe('approved');
+    expect(plan.steps[0]).toMatchObject({ id: 'step-a', status: 'pending' });
+    expect(plan.steps[0]?.workId).toBeUndefined();
     expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
 
-    const finalized = acceptPlanStepEvidence(planOptions, {
-      planId,
-      stepId: 'step-a',
-      reviewer: 'controller-a',
-      rationale: 'The delivered Work satisfies the approved Plan step.',
-      acceptedSourceRevision: 'rev-b',
-    });
-    expect(finalized.status).toBe('finalized');
-    // Plan semantic source remains the approved contract revision. Delivery
-    // advancement is tracked by the separate execution baseline authority.
-    expect(finalized.sourceRevision).toBe('rev-a');
-    expect(getPlanExecutionBaselineRevision(planOptions, finalized)).toBe('rev-b');
-
-    const requirementStillActive = readRequirement({ controllerHome }, requirementId)!.value;
-    const finalizedDecision = projectAutonomousGoalProgression({
-      ...deliveredSnapshot,
-      requirement: {
-        requirementId,
-        state: requirementStillActive.state,
-        revision: requirementStillActive.revision,
-      },
-      plan: {
-        ...deliveredSnapshot.plan,
-        sourceRevision: finalized.sourceRevision,
-        executionBaselineRevision: getPlanExecutionBaselineRevision(planOptions, finalized),
-        status: finalized.status,
-        steps: finalized.steps.map((step) => ({
-          id: step.id,
-          dependencies: step.dependencies,
-          status: step.status,
-          workId: step.workId,
-        })),
-      },
-    });
-    expect(finalizedDecision).toMatchObject({
-      kind: 'request_requirement_acceptance',
-      reasonCode: 'PLAN_FINALIZED_REQUIRES_REQUIREMENT_ACCEPTANCE',
-    });
-
+    // Requirement completion keeps its own canonical evidence requirements
+    // (completed Work plus controller lineage); Plan acceptance is not a gate.
     expect(() => acceptRequirementOutcome({ controllerHome, repoId }, {
       requirementId,
       workId,
       reviewer: 'controller-a',
-      rationale: 'The finalized Plan evidence satisfies the Requirement outcome.',
-    })).toThrow(/REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND|REQUIREMENT_ACCEPTANCE_GOAL_COMPLETE_REQUIRED/);
+      rationale: 'The delivered Work satisfies the Requirement outcome.',
+    })).toThrow(/REQUIREMENT_ACCEPTANCE_GOAL_COMPLETE_REQUIRED|REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND/);
     expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
   });
 
-  test('refuses Requirement acceptance while a current Plan slice is not finalized', () => {
+  test('never gates Requirement completion on Plan status or Plan acceptance', () => {
     const controllerHome = home();
     const repoId = 'repo-goal-authority-parallel';
     const requirementId = 'REQ-GOAL-PARALLEL';
@@ -328,12 +288,14 @@ describe('Goal authority convergence', () => {
       }],
     });
     approvePlanContract(options, 'PLAN-GOAL-PENDING');
+    // An unfinished Plan item is not a completion gate; only the exact completed
+    // Work record is required.
     expect(() => acceptRequirementOutcome(options, {
       requirementId,
       workId: 'work-missing',
       reviewer: 'controller-a',
-      rationale: 'Should not be accepted yet.',
-    })).toThrow(/REQUIREMENT_ACCEPTANCE_PLAN_INCOMPLETE/);
+      rationale: 'Should not be accepted without the exact completed Work.',
+    })).toThrow(/REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND/);
     expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
   });
 

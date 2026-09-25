@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { approvePlanContract, claimPlanStepForWork, getPlanContract, getPlanExecutionBaselineRevision, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { approvePlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
@@ -286,7 +286,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(hiddenScope.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED');
   });
 
-  test('lets a frozen rh_work schema create a canonical Plan successor with complete obligation continuity', async () => {
+  test('lets a frozen rh_work schema replan the stable Plan without predecessor obligation continuity', async () => {
     const repoRoot = tempRoot('forge-frozen-plan-successor-repo-');
     const controllerHome = tempRoot('forge-frozen-plan-successor-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -335,22 +335,16 @@ describe('rh_work Requirement bootstrap', () => {
 
     const predecessor = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
     expect(predecessor).toBeTruthy();
-    const obligations = listUnresolvedPlanObligations(predecessor!);
-    const validCapability = buildFrozenSemanticCompatibilityCapability({
+    // The frozen transport still carries obligation dispositions for ABI
+    // compatibility, but they are provenance only and never gate admission.
+    const emptyDispositionCapability = buildFrozenSemanticCompatibilityCapability({
       operation: 'plan_create',
-      args: {
-        obligation_dispositions: obligations.map((obligation) => ({
-          predecessor_plan_id: predecessorPlanId,
-          obligation_id: obligation.obligationId,
-          disposition: 'keep' as const,
-          successor_refs: [obligation.sourceRef],
-        })),
-      },
+      args: { obligation_dispositions: [] },
     });
     const successorArgs = {
       repo_id: repository.repoId,
       operation: 'repair',
-      capability_id: validCapability,
+      capability_id: emptyDispositionCapability,
       plan_id: successorPlanId,
       requirement_id: requirementId,
       scope_key: 'frozen-plan-successor',
@@ -361,21 +355,11 @@ describe('rh_work Requirement bootstrap', () => {
       plan_steps: [step],
     };
 
-    const incompleteCapability = buildFrozenSemanticCompatibilityCapability({
-      operation: 'plan_create',
-      args: { obligation_dispositions: [] },
-    });
-    const incomplete = structured(await callRuntimeTool(ctx, 'rh_work', {
+    // Predecessor obligation continuity is no longer an admission gate: the same
+    // explicit Plan relation stages the stable Plan revision with no dispositions.
+    const successor = structured(await callRuntimeTool(ctx, 'rh_work', {
       ...successorArgs,
-      plan_id: 'PLAN-FROZEN-PLAN-SUCCESSOR-INCOMPLETE',
-      capability_id: incompleteCapability,
     }));
-    expect(incomplete.status).toBe('blocked');
-    expect(incomplete.summary).toContain('PLAN_OBLIGATION_CONTINUITY_REQUIRED');
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)?.status).toBe('approved');
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-FROZEN-PLAN-SUCCESSOR-INCOMPLETE')).toBeUndefined();
-
-    const successor = structured(await callRuntimeTool(ctx, 'rh_work', successorArgs));
     expect(successor.status).toBe('ok');
     expect(successor.summary).toContain('PLAN_REVISION_REUSED_AUTHORITY');
     expect(successor.data).toMatchObject({
@@ -394,7 +378,7 @@ describe('rh_work Requirement bootstrap', () => {
         requestedRevisionLabel: successorPlanId,
       },
     });
-    expect(stagedBeforeRepair.pendingRevision?.obligationDispositions).toHaveLength(obligations.length);
+    expect(stagedBeforeRepair.pendingRevision?.obligationDispositions ?? []).toHaveLength(0);
 
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
@@ -464,15 +448,14 @@ describe('rh_work Requirement bootstrap', () => {
     expect(approveNoop.status).toBe('ok');
     expect(approveNoop.data.compatibilityNoop).toBe(true);
     approvePlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
-    const claimed = claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, {
-      planId: predecessorPlanId, stepId: 'stage-a', workId: 'work-never-created', sourceRevision: 'different-source-revision',
-    });
-    expect(claimed).toMatchObject({
+    // The predecessor keeps its authored item state; no Work link, execution
+    // baseline or approval-derived status is written.
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({
       planId: predecessorPlanId,
-      status: 'executing',
-      steps: [{ id: 'stage-a', status: 'executing', workId: 'work-never-created' }],
+      revision: 1,
+      status: 'approved',
+      steps: [{ id: 'stage-a', status: 'pending' }],
     });
-    expect(getPlanExecutionBaselineRevision({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toBe('different-source-revision');
 
     expect(structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId, operation: 'plan_create', plan_id: unrelatedPlanId, requirement_id: requirementId,
@@ -482,8 +465,8 @@ describe('rh_work Requirement bootstrap', () => {
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({
       planId: predecessorPlanId,
       revision: 1,
-      status: 'executing',
-      steps: [{ id: 'stage-a', status: 'executing', workId: 'work-never-created' }],
+      status: 'approved',
+      steps: [{ id: 'stage-a', status: 'pending' }],
     });
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.status).toBe('draft');
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.supersededBy).toBeUndefined();
@@ -828,7 +811,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(readRequirement({ controllerHome }, requirementId)?.value.state).toBe('done');
   }, 15_000);
 
-  test('atomically replans an active Plan-bound Work scope through rh_work without replacing the Work', async () => {
+  test('retires the Plan scope-replan writer and keeps Work scope widening a Work-owned operation', async () => {
     const repoRoot = tempRoot('forge-active-plan-work-replan-repo-');
     const controllerHome = tempRoot('forge-active-plan-work-replan-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -836,11 +819,12 @@ describe('rh_work Requirement bootstrap', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Active Plan Work replan fixture' });
     const ctx = mcpContext(controllerHome, repository);
     const store = { controllerHome, repoId: repository.repoId };
+    const planId = 'PLAN-ACTIVE-SCOPE-R1';
 
     const created = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'plan_create',
-      plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+      plan_id: planId,
       scope_key: 'active-scope-replan',
       source_revision: sourceRevision,
       objective: 'Deliver one active scope-bound Work.',
@@ -852,39 +836,24 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(created.status).toBe('ok');
     const approved = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+      repo_id: repository.repoId, operation: 'plan_approve', plan_id: planId,
     }));
     expect(approved.status).toBe('ok');
     expect(approved.data.compatibilityNoop).toBe(true);
-    approvePlanContract(store, 'PLAN-ACTIVE-SCOPE-R1');
+    approvePlanContract(store, planId);
 
     createWorkContract(store, {
-      workId: 'work-active-scope', repoId: repository.repoId, planId: 'PLAN-ACTIVE-SCOPE-R1', planStepId: 'stage', planSourceRevision: sourceRevision,
+      workId: 'work-active-scope', repoId: repository.repoId, planId, planStepId: 'stage', planSourceRevision: sourceRevision,
       mode: 'goal_workloop', objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
       allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
-    claimPlanStepForWork(store, { planId: 'PLAN-ACTIVE-SCOPE-R1', stepId: 'stage', workId: 'work-active-scope', sourceRevision });
 
-    const diagnosed = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId,
-      operation: 'repair',
-      plan_id: 'PLAN-ACTIVE-SCOPE-R1',
-      plan_step_id: 'stage',
-      superseded_by: 'PLAN-ACTIVE-SCOPE-R2',
-      source_revision: sourceRevision,
-      allowed_paths: ['src/runtime/context/**'],
-      repair_operation: 'diagnose',
-      dry_run: true,
-    }));
-    expect(diagnosed.status).toBe('ok');
-    expect(diagnosed.summary).toContain('PLAN_WORK_SCOPE_REPLAN_AVAILABLE');
-    expect(diagnosed.data).toMatchObject({ boundWorkId: 'work-active-scope', requestedRevisionLabel: 'PLAN-ACTIVE-SCOPE-R2', repaired: false, reusedExistingWork: true });
-    expect(diagnosed.data.requestedAllowedPaths).toEqual(['src/**', 'src/runtime/context/**']);
-
+    // Plan-scoped repair is a read-only fact now: it neither replans the Plan nor
+    // rewrites the Work, and it never decides replacement admission.
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'repair',
-      plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+      plan_id: planId,
       plan_step_id: 'stage',
       superseded_by: 'PLAN-ACTIVE-SCOPE-R2',
       source_revision: sourceRevision,
@@ -894,16 +863,19 @@ describe('rh_work Requirement bootstrap', () => {
       reason: 'Current-source evidence proved the active Plan omitted a path required by its own accepted scope.',
     }));
     expect(repaired.status).toBe('ok');
-    expect(repaired.summary).toContain('PLAN-ACTIVE-SCOPE-R1 r2');
-    expect(repaired.data).toMatchObject({ repaired: true, replacementWorkCreated: false, reusedExistingWork: true });
-    expect(repaired.data.priorPlan).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 1, status: 'executing' });
-    expect(repaired.data.currentPlan).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 2, status: 'executing' });
-    expect(repaired.data.work).toMatchObject({ workId: 'work-active-scope', status: 'running' });
-    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 2, status: 'executing' });
+    expect(repaired.summary).toContain('PLAN_STEP_AUTHORED_FACT');
+    expect(repaired.data).toMatchObject({ repaired: false, repairRequired: false, compatibilityNoop: true, planItemStatus: 'pending' });
+    expect(getPlanContract(store, planId)).toMatchObject({ planId, revision: 1, status: 'approved' });
+    expect(getPlanContract(store, planId)?.steps[0]).toMatchObject({ allowedPaths: ['src/**'] });
+    expect(getPlanContract(store, planId)?.steps[0]?.workId).toBeUndefined();
     expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')).toBeUndefined();
-    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')?.steps[0]).toMatchObject({ workId: 'work-active-scope', allowedPaths: ['src/**', 'src/runtime/context/**'] });
-    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', allowedPaths: ['src/**', 'src/runtime/context/**'], checks: ['package:check:type'] });
+    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ allowedPaths: ['src/**'] });
+
+    // Work scope is owned by the Work: no Plan revision, approval or accepted
+    // Plan path fence is consulted when a caller widens its own scope.
+    expect(getWorkContract(store, 'work-active-scope')?.planSourceRevision).toBe(sourceRevision);
   }, 15_000);
+
 
   test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {
     const repoRoot = tempRoot('forge-plan-repair-repo-');

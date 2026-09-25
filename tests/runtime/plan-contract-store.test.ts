@@ -5,17 +5,11 @@ import { join } from 'path';
 import {
   admitPlanContract,
   approvePlanContract,
-  claimPlanStepForWork,
-  acceptPlanStepEvidence,
-  completePlanStepForWork,
   createPlanContract,
   getPlanContract,
-  getPlanExecutionBaselineRevision,
   listPlanContracts,
   listUnresolvedPlanObligations,
   repairDraftPlanContract,
-  repairPlanStepForTechnicalRetry,
-  replanActivePlanBoundWorkScope,
   listPlanRevisionRecords,
   supersedePlanContract,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -147,7 +141,9 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
 
   const approved = approvePlanContract(options, 'plan-1');
   expect(approved.status).toBe('approved');
-  expect(approved.steps[0]?.status).toBe('ready');
+  // Approval is Plan identity bookkeeping; authored Plan item progress is never
+  // promoted by Forge.
+  expect(approved.steps[0]?.status).toBe('pending');
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(2);
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-2')?.revision).toBe(1);
 });
@@ -258,7 +254,7 @@ test('rejects a dangling Requirement reference before Plan persistence', () => {
   expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(0);
 });
 
-test('fails closed when a legacy Plan gains a dangling Requirement before approval or Work claim', () => {
+test('fails closed when a legacy Plan gains a dangling Requirement before approval', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-legacy-requirement-integrity-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-legacy-requirement-integrity' };
@@ -276,13 +272,9 @@ test('fails closed when a legacy Plan gains a dangling Requirement before approv
     value: { ...plan, requirementId: 'REQ-legacy-missing' }, expectedRevision: draftRecord.revision, action: 'seed_legacy_dangling_requirement',
   });
   expect(() => approvePlanContract(options, plan.planId)).toThrow(/PLAN_REQUIREMENT_NOT_FOUND: REQ-legacy-missing/);
-  const dangling = readControlPlaneRecord<typeof plan>(home, 'plan_contract', options.repoId, plan.planId)!;
-  writeControlPlaneRecord(home, {
-    namespace: 'plan_contract', scope: options.repoId, key: plan.planId, schemaVersion: 1,
-    value: { ...dangling.value, status: 'approved' }, expectedRevision: dangling.revision, action: 'seed_legacy_approved_dangling_requirement',
-  });
-  expect(() => claimPlanStepForWork(options, { planId: plan.planId, stepId: 'step-a', workId: 'work-never-created', sourceRevision: 'abc123' }))
-    .toThrow(/PLAN_REQUIREMENT_NOT_FOUND: REQ-legacy-missing/);
+  // Plan state is not consulted by Work execution, so a dangling legacy
+  // Requirement reference cannot become an execution gate either.
+  expect(getPlanContract(options, plan.planId)?.status).toBe('draft');
 });
 
 test('rejects a second create and stale writer without changing the authoritative row', () => {
@@ -433,48 +425,7 @@ test('repeated committed replans advance one stable Plan while revision history 
   ]);
 });
 
-test('advances the Plan execution baseline without semantic replanning when no step is active', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-execution-baseline-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-plan-execution-baseline' };
-  const plan = createPlanContract(options, {
-    planId: 'plan-baseline-r1', repoId: options.repoId, scopeKey: 'release-scope', sourceRevision: 'revision-a', goal: 'Deliver one Plan slice',
-    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
-  });
-  approvePlanContract(options, plan.planId);
 
-  const claimed = claimPlanStepForWork(options, {
-    planId: plan.planId, stepId: 'step-a', workId: 'work-baseline-b', sourceRevision: 'revision-b',
-  });
-  expect(claimed).toMatchObject({
-    revision: 1,
-    sourceRevision: 'revision-a',
-    status: 'executing',
-    steps: [{ id: 'step-a', status: 'executing', workId: 'work-baseline-b' }],
-  });
-  expect(getPlanExecutionBaselineRevision(options, plan.planId)).toBe('revision-b');
-});
-
-test('keeps the Plan execution baseline frozen while any step is active', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-execution-baseline-fence-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-plan-execution-baseline-fence' };
-  const plan = createPlanContract(options, {
-    planId: 'plan-baseline-fence', repoId: options.repoId, scopeKey: 'release-scope', sourceRevision: 'revision-a', goal: 'Deliver independent slices',
-    steps: [
-      { id: 'step-a', objective: 'first', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['first done'] },
-      { id: 'step-b', objective: 'second', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['second done'] },
-    ],
-  });
-  approvePlanContract(options, plan.planId);
-  claimPlanStepForWork(options, { planId: plan.planId, stepId: 'step-a', workId: 'work-a', sourceRevision: 'revision-a' });
-
-  expect(() => claimPlanStepForWork(options, {
-    planId: plan.planId, stepId: 'step-b', workId: 'work-b', sourceRevision: 'revision-b',
-  })).toThrow(/PLAN_EXECUTION_BASELINE_LOCKED/);
-  expect(getPlanContract(options, plan.planId)).toMatchObject({ sourceRevision: 'revision-a', steps: [{ id: 'step-a', workId: 'work-a' }, { id: 'step-b' }] });
-  expect(getPlanExecutionBaselineRevision(options, plan.planId)).toBe('revision-a');
-});
 
 test('does not allow cancelled Plans to become extension predecessors', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-cancelled-predecessor-'));
@@ -507,74 +458,7 @@ test('does not allow cancelled Plans to become extension predecessors', () => {
   expect(getPlanContract(options, 'plan-cancelled')?.supersededBy).toBeUndefined();
 });
 
-test('atomically replans one active Plan-bound Work by widening only its allowed-path authority', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-work-scope-replan-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-plan-work-scope-replan', now: () => '2026-09-03T09:30:00.000Z' };
-  createRequirement({ controllerHome: home }, { requirementId: 'REQ-scope-replan', title: 'Scope replan', outcomeStatement: 'Keep exact Work authority while correcting a frozen Plan path omission.' });
-  createPlanContract(options, {
-    planId: 'plan-scope-r1', repoId: options.repoId, requirementId: 'REQ-scope-replan', scopeKey: 'stage-7c', sourceRevision: 'revision-a', goal: 'Deliver Stage7C',
-    steps: [{ id: 'stage-7c', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] }],
-  });
-  approvePlanContract(options, 'plan-scope-r1');
-  createWorkContract(options, {
-    workId: 'work-stage-7c', repoId: options.repoId, requirementId: 'REQ-scope-replan', planId: 'plan-scope-r1', planStepId: 'stage-7c', planSourceRevision: 'revision-a',
-    mode: 'goal_workloop', objective: 'deliver', acceptanceCriteria: ['same semantic outcome'], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'],
-    constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
-  });
-  claimPlanStepForWork(options, { planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', sourceRevision: 'revision-a' });
-  // Historical SQLite rows can predate the first-class review checkpoint. The
-  // atomic replan reads raw rows inside one transaction, so it must canonicalize
-  // that legacy payload before applying current Work semantic validation.
-  const legacyRow = readControlPlaneRecord<any>(home, 'work_contract', options.repoId, 'work-stage-7c')!;
-  const legacyWork = structuredClone(legacyRow.value);
-  delete legacyWork.phaseEvidence.review;
-  writeControlPlaneRecord(home, {
-    namespace: 'work_contract', scope: options.repoId, key: 'work-stage-7c', schemaVersion: 2,
-    value: legacyWork, action: 'fixture_legacy_work_without_review_phase', expectedRevision: legacyRow.revision,
-  });
 
-  const replanned = replanActivePlanBoundWorkScope(options, {
-    planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', requestedRevisionLabel: 'plan-scope-r2', sourceRevision: 'revision-b',
-    allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], reason: 'The Plan requires current-source context closure but omitted its runtime context path.',
-  });
-
-  expect(replanned.priorPlan).toMatchObject({ planId: 'plan-scope-r1', revision: 1, status: 'executing', sourceRevision: 'revision-a' });
-  expect(replanned.priorPlan.supersededBy).toBeUndefined();
-  expect(replanned.currentPlan).toMatchObject({ planId: 'plan-scope-r1', revision: 2, status: 'executing', sourceRevision: 'revision-b' });
-  expect(replanned.currentPlan.supersedes).toBeUndefined();
-  expect(replanned.currentPlan.steps[0]).toMatchObject({ status: 'executing', workId: 'work-stage-7c', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] });
-  expect(getWorkContract(options, 'work-stage-7c')).toMatchObject({ workId: 'work-stage-7c', planId: 'plan-scope-r1', planStepId: 'stage-7c', planSourceRevision: 'revision-b', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], requirementId: 'REQ-scope-replan' });
-  expect(getWorkContract(options, 'work-stage-7c')?.phaseEvidence.review).toBeDefined();
-  expect(getPlanContract(options, 'plan-scope-r2')).toBeUndefined();
-  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-scope-r1']);
-  expect(listPlanRevisionRecords(options, 'plan-scope-r1')).toMatchObject([{ planId: 'plan-scope-r1', revision: 1, sourceRevision: 'revision-a', requestedRevisionLabel: 'plan-scope-r2' }]);
-});
-
-test('active Plan-bound Work scope replan rejects narrowing or changing the Work identity', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-work-scope-replan-fence-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-plan-work-scope-replan-fence' };
-  createPlanContract(options, {
-    planId: 'plan-fence-r1', repoId: options.repoId, scopeKey: 'stage-fence', sourceRevision: 'revision-a', goal: 'Fence replan authority',
-    steps: [{ id: 'stage', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: ['src/a/**', 'src/b/**'], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['unchanged'] }],
-  });
-  approvePlanContract(options, 'plan-fence-r1');
-  createWorkContract(options, {
-    workId: 'work-fence', repoId: options.repoId, planId: 'plan-fence-r1', planStepId: 'stage', planSourceRevision: 'revision-a', mode: 'goal_workloop', objective: 'deliver', acceptanceCriteria: ['unchanged'],
-    allowedPaths: ['src/a/**', 'src/b/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
-  });
-  claimPlanStepForWork(options, { planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', sourceRevision: 'revision-a' });
-  expect(() => replanActivePlanBoundWorkScope(options, {
-    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', requestedRevisionLabel: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/c/**'], reason: 'attempt narrowing',
-  })).toThrow('PLAN_WORK_REPLAN_SCOPE_NARROWING_FORBIDDEN: src/b/**');
-  expect(() => replanActivePlanBoundWorkScope(options, {
-    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-other', requestedRevisionLabel: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/b/**', 'src/c/**'], reason: 'attempt Work replacement',
-  })).toThrow('PLAN_WORK_REPLAN_STEP_BINDING_MISMATCH');
-  expect(getPlanContract(options, 'plan-fence-r1')?.status).toBe('executing');
-  expect(getPlanContract(options, 'plan-fence-r1')?.supersededBy).toBeUndefined();
-  expect(getPlanContract(options, 'plan-fence-r2')).toBeUndefined();
-});
 
 test('direct supersession records bidirectional Plan lineage and removes the predecessor from current Plans', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-direct-supersession-'));
@@ -652,238 +536,5 @@ test('serializes concurrent approval so only one same-scope draft becomes commit
   expect(sameScope.filter((plan) => plan.status === 'draft')).toHaveLength(1);
 });
 
-test('keeps PlanStep materialization as a Work reference', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-1' };
-  const plan = createPlanContract(options, {
-    planId: 'plan-work-link',
-    repoId: 'repo-1',
-    scopeKey: 'runtime',
-    sourceRevision: 'abc123',
-    goal: 'materialize one Work',
-    steps: [{ id: 'step-1', objective: 'execute bounded work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['Work is bound'], workId: 'work-existing' }],
-  });
-  expect(plan.steps[0]?.workId).toBe('work-existing');
-  expect(getPlanContract(options, plan.planId)?.steps[0]?.workId).toBe('work-existing');
-});
 
-function claimedPlan(options: { controllerHome: string; repoId: string; now: () => string }, planId: string, workId: string): void {
-  createPlanContract(options, {
-    planId,
-    repoId: options.repoId,
-    scopeKey: planId,
-    sourceRevision: 'abc123',
-    goal: 'complete only from Work authority',
-    steps: [{ id: 'step-1', objective: 'execute bounded work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['Work receipt is exact'] }],
-  });
-  approvePlanContract(options, planId);
-  claimPlanStepForWork(options, { planId, stepId: 'step-1', workId, sourceRevision: 'abc123' });
-}
 
-test('rejects nonterminal Work and replans from failed Work', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-03T00:00:00.000Z' };
-  claimedPlan(options, 'plan-work-terminal', 'work-terminal');
-  expect(() => completePlanStepForWork(options, {
-    planId: 'plan-work-terminal',
-    stepId: 'step-1',
-    work: { workId: 'work-terminal', status: 'running', phase: 'verification', evidenceState: 'partial', completionOutcome: undefined, completionReceipt: undefined, evidenceRefs: [] },
-  })).toThrow(/PLAN_STEP_WORK_NOT_TERMINAL/);
-  const failed = completePlanStepForWork(options, {
-    planId: 'plan-work-terminal',
-    stepId: 'step-1',
-    work: { workId: 'work-terminal', status: 'failed', phase: 'cleanup', evidenceState: 'failed', completionOutcome: undefined, completionReceipt: undefined, evidenceRefs: [] },
-  });
-  expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: undefined, status: 'ready' }] });
-});
-
-test('explicit technical retry restores only a cleaned zero-delta cancelled Plan step without rewriting the Plan', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-technical-retry-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-09-06T00:00:00.000Z' };
-  claimedPlan(options, 'plan-technical-retry', 'work-technical-retry');
-  createWorkContract(options, {
-    workId: 'work-technical-retry', repoId: options.repoId, planId: 'plan-technical-retry', planStepId: 'step-1', planSourceRevision: 'abc123',
-    mode: 'goal_workloop', objective: 'execute bounded work', acceptanceCriteria: ['Work receipt is exact'], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'],
-    constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
-  });
-  const cancelled = {
-    ...getWorkContract(options, 'work-technical-retry')!,
-    status: 'cancelled' as const, phase: 'cleanup' as const, dispatchState: 'terminal' as const, evidenceState: 'none' as const,
-    scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: '2026-09-06T00:00:00.000Z' },
-  };
-  const replanning = completePlanStepForWork(options, { planId: 'plan-technical-retry', stepId: 'step-1', work: cancelled });
-  expect(replanning).toMatchObject({ status: 'replanning', steps: [{ status: 'ready', workId: undefined }] });
-
-  const repaired = repairPlanStepForTechnicalRetry(options, {
-    work: cancelled, cleanupComplete: true, reason: 'The Work was cancelled only to correct its technical WorkKind before any delivery.',
-  });
-  expect(repaired).toMatchObject({ planId: 'plan-technical-retry', status: 'executing', sourceRevision: 'abc123', steps: [{ status: 'ready' }] });
-  expect(repaired.steps[0]).not.toHaveProperty('workId');
-  expect(repaired.steps[0]?.evidenceRefs[0]?.title).toBe('technical Work retry authorized');
-  expect(getWorkContract(options, 'work-technical-retry')).toMatchObject({ status: 'running' });
-});
-
-test('technical retry remains fail-closed for delivery, source delta, incomplete cleanup, changed contract, and non-replanning state', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-technical-retry-fences-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-09-06T00:00:00.000Z' };
-  claimedPlan(options, 'plan-technical-retry-fences', 'work-technical-retry-fences');
-  createWorkContract(options, {
-    workId: 'work-technical-retry-fences', repoId: options.repoId, planId: 'plan-technical-retry-fences', planStepId: 'step-1', planSourceRevision: 'abc123',
-    mode: 'goal_workloop', objective: 'execute bounded work', acceptanceCriteria: ['Work receipt is exact'], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'],
-    constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
-  });
-  const cancelled = {
-    ...getWorkContract(options, 'work-technical-retry-fences')!,
-    status: 'cancelled' as const, phase: 'cleanup' as const, dispatchState: 'terminal' as const, evidenceState: 'none' as const,
-    scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: '2026-09-06T00:00:00.000Z' },
-  };
-  expect(() => repairPlanStepForTechnicalRetry(options, { work: cancelled, cleanupComplete: true, reason: 'too early' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_PLAN_STATUS_INVALID');
-  completePlanStepForWork(options, { planId: 'plan-technical-retry-fences', stepId: 'step-1', work: cancelled });
-  expect(() => repairPlanStepForTechnicalRetry(options, { work: cancelled, cleanupComplete: false, reason: 'cleanup missing' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_CLEANUP_INCOMPLETE');
-  expect(() => repairPlanStepForTechnicalRetry(options, { work: { ...cancelled, scopeEvidence: { ...cancelled.scopeEvidence!, actualChangedPaths: ['src/changed.ts'] } }, cleanupComplete: true, reason: 'changed' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_SOURCE_DELTA_PRESENT');
-  expect(() => repairPlanStepForTechnicalRetry(options, { work: { ...cancelled, completionOutcome: 'completed_no_change' }, cleanupComplete: true, reason: 'delivered' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_DELIVERY_PRESENT');
-  expect(() => repairPlanStepForTechnicalRetry(options, { work: { ...cancelled, objective: 'different objective' }, cleanupComplete: true, reason: 'contract drift' })).toThrow('PLAN_STEP_TECHNICAL_RETRY_CONTRACT_MISMATCH');
-});
-
-test('projects terminal Work evidence to validating and requires explicit semantic acceptance to complete the PlanStep', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-03T00:00:00.000Z' };
-  claimedPlan(options, 'plan-work-receipt', 'work-receipt');
-  const receipt = {
-    schemaVersion: 1 as const,
-    receiptId: 'receipt-plan-work',
-    source: 'controller_work' as const,
-    issueId: 'ISS-plan-work-receipt',
-    taskId: 'T1',
-    workId: 'work-receipt',
-    targetBranch: 'main',
-    targetRevision: 'abc123',
-    changedPaths: [],
-    delivery: { kind: 'no_change' as const, status: 'integrated' as const, strategy: 'no_change' as const, reachable: true, recordedAt: '2026-08-03T00:00:00.000Z' },
-    cleanup: { status: 'complete' as const, warnings: [], blockers: [], recordedAt: '2026-08-03T00:00:00.000Z' },
-    verifiedAt: '2026-08-03T00:00:00.000Z',
-    recordedAt: '2026-08-03T00:00:00.000Z',
-  };
-  const verifying = completePlanStepForWork(options, {
-    planId: 'plan-work-receipt',
-    stepId: 'step-1',
-    work: {
-      workId: 'work-receipt',
-      status: 'completed',
-      phase: 'cleanup',
-      evidenceState: 'valid',
-      completionOutcome: 'completed_no_change',
-      completionReceipt: receipt,
-      evidenceRefs: [{ evidenceId: receipt.receiptId, title: 'Exact Work completion receipt.', summary: 'PlanStep completion is derived from the Work-owned receipt.' }],
-    },
-  });
-  expect(verifying).toMatchObject({ status: 'verifying', steps: [{ workId: 'work-receipt', status: 'validating' }] });
-  expect(() => acceptPlanStepEvidence(options, { planId: 'plan-work-receipt', stepId: 'step-1', reviewer: '', rationale: 'looks good' })).toThrow(/PLAN_STEP_SEMANTIC_ACCEPTANCE_METADATA_REQUIRED/);
-  const accepted = acceptPlanStepEvidence(options, { planId: 'plan-work-receipt', stepId: 'step-1', reviewer: 'chatgpt', rationale: 'Acceptance criteria reviewed against Work evidence.' });
-  expect(accepted).toMatchObject({ status: 'finalized', steps: [{ workId: 'work-receipt', status: 'completed' }] });
-  expect(accepted.steps[0]?.evidenceRefs[0]?.title).toBe('semantic acceptance');
-});
-
-test('keeps dependent Plan steps blocked while a delivered dependency still awaits semantic acceptance', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-27T00:00:00.000Z' };
-  createPlanContract(options, {
-    planId: 'plan-partial-semantic-acceptance',
-    repoId: 'repo-1',
-    scopeKey: 'partial-semantic-acceptance',
-    sourceRevision: 'abc123',
-    goal: 'prove that Work delivery cannot unlock a dependent release step',
-    steps: [
-      {
-        id: 'canary-and-soak',
-        objective: 'combine canary delivery with broader stabilization evidence',
-        dependencies: [],
-        authoritativeFiles: [],
-        allowedPaths: [],
-        forbiddenPaths: [],
-        checks: ['package:check:main'],
-        acceptanceCriteria: ['canary is delivered', 'stabilization supervisor completes two timer-origin wakes'],
-      },
-      {
-        id: 'publish',
-        objective: 'publish only after the whole gate is semantically accepted',
-        dependencies: ['canary-and-soak'],
-        authoritativeFiles: [],
-        allowedPaths: [],
-        forbiddenPaths: [],
-        checks: ['package:check:release'],
-        acceptanceCriteria: ['release gate is accepted'],
-      },
-    ],
-  });
-  approvePlanContract(options, 'plan-partial-semantic-acceptance');
-  claimPlanStepForWork(options, {
-    planId: 'plan-partial-semantic-acceptance',
-    stepId: 'canary-and-soak',
-    workId: 'work-canary-only',
-    sourceRevision: 'abc123',
-  });
-  const receipt = {
-    schemaVersion: 1 as const,
-    receiptId: 'receipt-canary-only',
-    source: 'controller_work' as const,
-    issueId: 'ISS-canary-only',
-    taskId: 'canary',
-    workId: 'work-canary-only',
-    targetBranch: 'main',
-    targetRevision: 'abc123',
-    changedPaths: [],
-    delivery: { kind: 'no_change' as const, status: 'integrated' as const, strategy: 'no_change' as const, reachable: true, recordedAt: '2026-08-27T00:00:00.000Z' },
-    cleanup: { status: 'complete' as const, warnings: [], blockers: [], recordedAt: '2026-08-27T00:00:00.000Z' },
-    verifiedAt: '2026-08-27T00:00:00.000Z',
-    recordedAt: '2026-08-27T00:00:00.000Z',
-  };
-  const validating = completePlanStepForWork(options, {
-    planId: 'plan-partial-semantic-acceptance',
-    stepId: 'canary-and-soak',
-    work: {
-      workId: 'work-canary-only',
-      status: 'completed',
-      phase: 'cleanup',
-      evidenceState: 'valid',
-      completionOutcome: 'completed_no_change',
-      completionReceipt: receipt,
-      evidenceRefs: [{ evidenceId: receipt.receiptId, title: 'Canary Work delivered.' }],
-    },
-  });
-  expect(validating).toMatchObject({
-    status: 'verifying',
-    steps: [
-      { id: 'canary-and-soak', status: 'validating', workId: 'work-canary-only' },
-      { id: 'publish', status: 'pending' },
-    ],
-  });
-  expect(() => claimPlanStepForWork(options, {
-    planId: 'plan-partial-semantic-acceptance',
-    stepId: 'publish',
-    workId: 'work-publish-too-early',
-    sourceRevision: 'abc123',
-  })).toThrow(/PLAN_NOT_EXECUTABLE: plan-partial-semantic-acceptance is verifying/);
-
-  const accepted = acceptPlanStepEvidence(options, {
-    planId: 'plan-partial-semantic-acceptance',
-    stepId: 'canary-and-soak',
-    reviewer: 'chatgpt',
-    rationale: 'Reviewed both the canary receipt and the independent stabilization-supervisor evidence.',
-  });
-  expect(accepted.steps[0]?.status).toBe('completed');
-  expect(accepted.steps[1]?.status).toBe('ready');
-  const admitted = claimPlanStepForWork(options, {
-    planId: 'plan-partial-semantic-acceptance',
-    stepId: 'publish',
-    workId: 'work-publish-after-acceptance',
-    sourceRevision: 'abc123',
-  });
-  expect(admitted.steps[1]).toMatchObject({ status: 'executing', workId: 'work-publish-after-acceptance' });
-});

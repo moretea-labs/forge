@@ -25,7 +25,7 @@ import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositorie
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { approvePlanContract, claimPlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { approvePlanContract, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
@@ -1078,6 +1078,7 @@ describe('runtime maintenance executor', () => {
     const oldAt = '2026-01-01T00:00:00.000Z';
     createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
       workId: 'work-plan-owned', repoId: repository.repoId, mode: 'goal_workloop', objective: 'authoritative old work',
+      planId: 'PLAN-owned', planStepId: 'step-a', planSourceRevision: 'revision-a',
       acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
     });
@@ -1086,7 +1087,6 @@ describe('runtime maintenance executor', () => {
       steps: [{ id: 'step-a', objective: 'Execute authoritative work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['finish plan'] }],
     });
     approvePlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-owned');
-    claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, { planId: 'PLAN-owned', stepId: 'step-a', workId: 'work-plan-owned', sourceRevision: 'revision-a' });
 
     const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
     expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));

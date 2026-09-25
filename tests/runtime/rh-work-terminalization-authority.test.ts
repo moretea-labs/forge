@@ -11,7 +11,7 @@ import { getRepository, reconcileRepositoryCheckouts, registerRepository, select
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest, workRequiresImplementationReview } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, rearmControllerRoundAfterProviderRecovery, rearmControllerRoundAfterProviderUserAction, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryMutationWorkHandle, ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
@@ -4535,7 +4535,7 @@ describe('rh_work terminalization authority', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('prepared');
   }, 20_000);
 
-  test('finalize leaves Plan semantic acceptance explicit and does not unlock dependent steps', async () => {
+  test('finalize never promotes Plan item state and dependent Plan items never become execution gates', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
@@ -4588,7 +4588,6 @@ describe('rh_work terminalization authority', () => {
       planStepId: 'release-gate',
       planSourceRevision: targetRevision,
     });
-    claimPlanStepForWork(store, { planId, stepId: 'release-gate', workId, sourceRevision: targetRevision });
     const recordedAt = '2026-08-27T07:00:00.000Z';
     transitionWorkContractPhase(store, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change Plan candidate verified.' });
     requestWorkImplementationReview(store, workId, 'Plan candidate requires explicit implementation review before completion.');
@@ -4626,8 +4625,10 @@ describe('rh_work terminalization authority', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change');
-    completePlanStepForWork(store, { planId, stepId: 'release-gate', work: completed });
-    expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('validating');
+    expect(completed.status).toBe('completed');
+    // Work completion is evidence; it never advances authored Plan item progress.
+    expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('pending');
+    expect(getPlanContract(store, planId)?.steps[0]?.workId).toBeUndefined();
 
     const finalized = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-semantic-reviewer', 'transport-finalize', 'runtime-finalize'),
@@ -4637,18 +4638,12 @@ describe('rh_work terminalization authority', () => {
     expect(finalized.status).toBe('ok');
     expect(finalized.data.semanticAcceptanceRecorded).not.toBe(true);
     expect(getPlanContract(store, planId)).toMatchObject({
-      status: 'verifying',
+      status: 'approved',
       steps: [
-        { id: 'release-gate', status: 'validating' },
+        { id: 'release-gate', status: 'pending' },
         { id: 'publish', status: 'pending' },
       ],
     });
-    expect(() => claimPlanStepForWork(store, {
-      planId,
-      stepId: 'publish',
-      workId: 'work-publish-premature',
-      sourceRevision: targetRevision,
-    })).toThrow(/PLAN_NOT_EXECUTABLE: plan-explicit-semantic-acceptance is verifying/);
 
     const accepted = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-semantic-reviewer', 'transport-accept', 'runtime-finalize'),
@@ -4664,7 +4659,8 @@ describe('rh_work terminalization authority', () => {
     expect(accepted.status).toBe('ok');
     expect(accepted.data.semanticAcceptanceRecorded).toBe(false);
     expect(accepted.data.compatibilityNoop).toBe(true);
-    expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('validating');
+    expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('pending');
+    expect(getPlanContract(store, planId)?.steps[1]?.status).toBe('pending');
   }, 15_000);
 
 
@@ -6721,7 +6717,7 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
   });
 
-  test('plan.step.retry restores a cleaned zero-delta cancelled Plan step through rh_work without reviving the terminal Work', async () => {
+  test('retired plan.step.retry reports a read-only fact instead of mutating Plan or Work authority', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const planId = 'plan-technical-retry-facade';
@@ -6754,7 +6750,6 @@ describe('rh_work terminalization authority', () => {
       status: 'running', phase: 'implementation', evidenceState: 'none', worktreeRef: workspace.root,
       scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
     });
-    claimPlanStepForWork(store, { planId, stepId, workId, sourceRevision });
     writeWorkHandle(fx.controllerHome, {
       schemaVersion: 1,
       workId,
@@ -6795,37 +6790,29 @@ describe('rh_work terminalization authority', () => {
     expect(stopped.status).toBe('ok');
     expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
     expect(existsSync(workspace.root!)).toBe(false);
-    // Terminal Work state is evidence, not a Plan writer: cancelling the Work
-    // leaves model-authored Plan progress exactly as it was.
-    expect(getPlanContract(store, planId)).toMatchObject({ status: 'executing', steps: [{ id: stepId, status: 'executing', workId }] });
+    const beforeRetry = structuredClone(getPlanContract(store, planId));
 
     const mismatch = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, 'principal-technical-retry', 'transport-technical-retry', 'runtime-technical-retry'),
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-technical-retry', runtimeInstanceId),
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'repair', work_id: 'wrong-work', capability_id: `plan.step.retry:${workId}`, reason: 'technical classification retry' },
     ));
     expect(mismatch.status).toBe('blocked');
     expect(mismatch.summary).toContain('PLAN_STEP_TECHNICAL_RETRY_SCOPE_MISMATCH');
 
-    const repaired = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, 'principal-technical-retry', 'transport-technical-retry', 'runtime-technical-retry'),
+    const retired = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-technical-retry', runtimeInstanceId),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `plan.step.retry:${workId}`, reason: 'The prior Work was cancelled only to correct its technical WorkKind before delivery.' },
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `plan.step.retry:${workId}`, reason: 'technical classification retry' },
     ));
-    expect(repaired.status).toBe('ok');
-    expect(repaired.data?.repaired).toBe(true);
-    expect(repaired.data?.replacementWorkCreated).toBe(false);
-    const plan = getPlanContract(store, planId)!;
-    expect(plan).toMatchObject({ status: 'executing', steps: [{ id: stepId, status: 'ready' }] });
-    expect(plan.steps[0]?.workId).toBeUndefined();
-    expect(plan.steps[0]?.evidenceRefs[0]?.title).toBe('technical Work retry authorized');
+    expect(retired.status).toBe('ok');
+    expect(retired.data).toMatchObject({ workId, repaired: false, replacementWorkCreated: false, compatibilityNoop: true, terminalWorkStatus: 'cancelled' });
+    // The retired entry is read-only: Plan content, the terminal Work and the
+    // authored Plan item status are all unchanged.
+    expect(getPlanContract(store, planId)).toEqual(beforeRetry);
     expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
-  });
+  }, 15_000);
 
-});
-
-
-describe('rh_work content-equivalent commit authority transfer', () => {
   test('finalize atomically transfers verification and approved review across its own managed commit before merge and cleanup', async () => {
     const fx = fixture();
     const checkId = 'package:check:content-equivalent-finalize';

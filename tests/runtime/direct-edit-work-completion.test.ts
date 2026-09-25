@@ -14,7 +14,7 @@ import { implementationReviewContentFingerprint } from '../../src/runtime/contro
 import { implementationReviewCommittedBaseRevision } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
@@ -240,7 +240,7 @@ describe('standalone Direct Edit Work completion', () => {
     });
   });
 
-  test('projects a Plan-bound Direct Edit delivery to semantic validation without auto-accepting the Plan step', () => {
+  test('leaves model-authored Plan progress untouched when a Plan-provenance Direct Edit delivery completes', () => {
     const fx = fixture();
     const planId = 'plan-direct-edit-delivery';
     const stepId = 'direct-step';
@@ -269,8 +269,10 @@ describe('standalone Direct Edit Work completion', () => {
       planStepId: stepId,
       planSourceRevision: sourceRevision,
     });
-    claimPlanStepForWork(planStore, { planId, stepId, workId: fx.workId, sourceRevision });
-    expect(getPlanContract(planStore, planId)?.steps[0]).toMatchObject({ status: 'executing', workId: fx.workId });
+    // The Work records its Plan provenance; the Plan item is not bound, claimed
+    // or promoted by Work execution.
+    expect(getPlanContract(planStore, planId)?.steps[0]).toMatchObject({ status: 'pending' });
+    expect(getPlanContract(planStore, planId)?.steps[0]?.workId).toBeUndefined();
 
     approveCurrentDirectEditCandidate(fx);
     let commitPlan: ReviewedDirectEditWorkCommitPlan | undefined;
@@ -294,18 +296,12 @@ describe('standalone Direct Edit Work completion', () => {
       fallbackBranch: 'main',
     });
 
-    const validating = getPlanContract(planStore, planId)!;
-    expect(validating.status).toBe('verifying');
-    expect(validating.steps[0]).toMatchObject({ status: 'validating', workId: fx.workId });
-    const accepted = acceptPlanStepEvidence(planStore, {
-      planId,
-      stepId,
-      reviewer: 'controller-test',
-      rationale: 'The reviewed Direct Edit delivery satisfies the Plan step acceptance criteria.',
-      acceptedSourceRevision: committed.commit?.after?.head ?? undefined,
-    });
-    expect(accepted.status).toBe('finalized');
-    expect(accepted.steps[0]).toMatchObject({ status: 'completed', workId: fx.workId });
+    // Delivery receipts and Work completion never rewrite authored Plan progress.
+    const unchanged = getPlanContract(planStore, planId)!;
+    expect(unchanged.status).toBe('approved');
+    expect(unchanged.steps[0]).toMatchObject({ status: 'pending' });
+    expect(unchanged.steps[0]?.workId).toBeUndefined();
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('completed');
   });
 
   test('blocks a Work-bound selected-path commit before Git mutation when implementation review is missing', () => {
@@ -906,7 +902,7 @@ describe('standalone Direct Edit Work completion', () => {
     expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
   });
 
-  test('keeps completed Work authoritative when downstream Plan projection is unavailable', () => {
+  test('keeps completed Work authoritative without any Plan projection or Plan record dependency', () => {
     const fx = fixture();
     const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
@@ -933,8 +929,9 @@ describe('standalone Direct Edit Work completion', () => {
 
     const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
     expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
-    expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'plan step delivery projection pending'
-      && (evidence.summary ?? '').includes('plan contract not found: plan-direct-edit-missing-record'))).toBe(true);
+    // Plan provenance is not an execution prerequisite: an absent legacy Plan
+    // record neither blocks completion nor manufactures projection debt.
+    expect(completed?.evidenceRefs.some((evidence) => (evidence.title ?? '').includes('plan step'))).toBe(false);
   });
 
   test('narrowly reconciles an already-delivered effect Work only with exact validation, remote containment, and a clean source tree', () => {
