@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
-import { acceptRequirementOutcome } from '../../src/runtime/control-plane/facade/requirement-authority';
 import {
-  approvePlanContract,
   createPlanContract,
   createPlanSemanticContext,
   getPlanContract,
@@ -20,7 +18,7 @@ import {
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -141,15 +139,12 @@ describe('Goal authority convergence', () => {
       items: [{ id: 'item-b', objective: 'Replace the authored working-memory item.', dependencies: [] }],
     });
     expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([{ revision: 1, sourceBasisRevision: 'source-a', goal: 'Original plan goal' }]);
-    const semanticBeforeLegacyApproval = planSemanticView(revisedPlan);
-    const mechanicallyApprovedPlan = approvePlanContract(planOptions, planId);
-    expect(planSemanticView(mechanicallyApprovedPlan)).toEqual(semanticBeforeLegacyApproval);
-    const revisedAfterMechanicalApproval = revisePlanSemanticContext(planOptions, planId, {
+    const revisedAfterAnotherSemanticRevision = revisePlanSemanticContext(planOptions, planId, {
       expectedRevision: 2,
       goal: 'Semantic revision after mechanical approval',
     });
-    expect(revisedAfterMechanicalApproval.status).toBe('approved');
-    expect(planSemanticView(revisedAfterMechanicalApproval)).toMatchObject({
+    expect(revisedAfterAnotherSemanticRevision.status).toBe('draft');
+    expect(planSemanticView(revisedAfterAnotherSemanticRevision)).toMatchObject({
       revision: 3,
       goal: 'Semantic revision after mechanical approval',
       sourceBasisRevision: 'source-b',
@@ -185,7 +180,6 @@ describe('Goal authority convergence', () => {
         acceptanceCriteria: ['Controller reviews the exact delivered result.'],
       }],
     });
-    approvePlanContract(planOptions, planId);
     createWorkContract({ controllerHome, repoId }, {
       workId,
       repoId,
@@ -242,84 +236,24 @@ describe('Goal authority convergence', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change');
-    expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_no_change' });
+    expect(completed).toMatchObject({ semanticState: 'open', completionOutcome: 'completed_no_change' });
 
     // Work evidence advances nothing authored: the Plan item and Requirement stay
     // exactly as the model left them.
     const plan = getPlanContract(planOptions, planId)!;
-    expect(plan.status).toBe('approved');
+    expect(plan.status).toBe('draft');
     expect(plan.steps[0]).toMatchObject({ id: 'step-a', status: 'pending' });
     expect(plan.steps[0]?.workId).toBeUndefined();
     expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
 
-    // Requirement completion keeps its own canonical evidence requirements
-    // (completed Work plus controller lineage); Plan acceptance is not a gate.
-    expect(() => acceptRequirementOutcome({ controllerHome, repoId }, {
-      requirementId,
-      workId,
-      reviewer: 'controller-a',
-      rationale: 'The delivered Work satisfies the Requirement outcome.',
-    })).toThrow(/REQUIREMENT_ACCEPTANCE_GOAL_COMPLETE_REQUIRED|REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND/);
-    expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
-  });
-
-  test('never gates Requirement completion on Plan status or Plan acceptance', () => {
-    const controllerHome = home();
-    const repoId = 'repo-goal-authority-parallel';
-    const requirementId = 'REQ-GOAL-PARALLEL';
-    activateRequirement(controllerHome, requirementId);
-    const options = { controllerHome, repoId };
-    createPlanContract(options, {
-      planId: 'PLAN-GOAL-PENDING',
-      repoId,
-      requirementId,
-      scopeKey: 'pending-slice',
-      sourceRevision: 'rev-a',
-      goal: 'Remain active.',
-      steps: [{
-        id: 'step-a',
-        objective: 'Pending slice.',
-        dependencies: [],
-        authoritativeFiles: [],
-        allowedPaths: [],
-        forbiddenPaths: [],
-        checks: ['package:check:type'],
-        acceptanceCriteria: ['The pending slice remains incomplete.'],
-      }],
+    // Physical Work evidence does not change authored Requirement semantics.
+    // Only revisioned Requirement CAS may do so.
+    const currentRequirement = requirementSemanticView(readRequirement({ controllerHome }, requirementId)!.value);
+    const explicitlyCompleted = reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: currentRequirement.revision,
+      state: 'completed',
     });
-    approvePlanContract(options, 'PLAN-GOAL-PENDING');
-    // An unfinished Plan item is not a completion gate; only the exact completed
-    // Work record is required.
-    expect(() => acceptRequirementOutcome(options, {
-      requirementId,
-      workId: 'work-missing',
-      reviewer: 'controller-a',
-      rationale: 'Should not be accepted without the exact completed Work.',
-    })).toThrow(/REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND/);
-    expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
-  });
-
-  test('thin semantic Plan never blocks Requirement acceptance as an execution gate', () => {
-    const controllerHome = home();
-    const repoId = 'repo-goal-thin-plan';
-    const requirementId = 'REQ-GOAL-THIN-PLAN';
-    activateRequirement(controllerHome, requirementId);
-    createPlanSemanticContext({ controllerHome, repoId }, {
-      planId: 'PLAN-GOAL-THIN',
-      repoId,
-      requirementId,
-      scopeKey: 'thin-plan-acceptance',
-      sourceBasisRevision: 'rev-a',
-      goal: 'Retain useful planning context without owning Requirement completion.',
-      items: [{ id: 'item-a', objective: 'Describe progress only.', dependencies: [] }],
-    });
-
-    expect(() => acceptRequirementOutcome({ controllerHome, repoId }, {
-      requirementId,
-      workId: 'work-missing',
-      reviewer: 'controller-a',
-      rationale: 'Thin Plan must not become a completion gate.',
-    })).toThrow(/REQUIREMENT_ACCEPTANCE_WORK_NOT_FOUND/);
+    expect(requirementSemanticView(explicitlyCompleted).state).toBe('completed');
   });
 
   test('terminal Requirement rejects new Plan admission', () => {

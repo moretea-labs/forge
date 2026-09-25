@@ -191,9 +191,6 @@ export function runGoalWorkloop(
     issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
     approvalConfirmed: args.approval_confirmed === true,
     dryRun: args.dry_run === true,
-    forceMode: args.force_mode === 'direct_control' || args.force_mode === 'goal_workloop' || args.force_mode === 'handoff_only'
-      ? args.force_mode
-      : undefined,
     planId: typeof args.plan_id === 'string' ? args.plan_id : undefined,
     planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
     verifiedEngineeringEvidence: trusted.verifiedEngineeringEvidence,

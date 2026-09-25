@@ -439,11 +439,8 @@ describe('handoff and facade contracts', () => {
     expect(browser.find((entry) => entry.capabilityId === 'plugin.native_computer.observe_ui')?.descriptor.exposedVia).toBe('plugin_action_execute');
   });
 
-  test('policy gate preserves bounded direct edit and blocks raw secret access', () => {
-    expect(evaluatePolicyGate({
-      risk: 'local_repo_write',
-      directEditBoundary: { scopeClear: true, pathsExplicit: true, maxChangedFiles: 2, maxChangedLines: 80 },
-    })).toMatchObject({ decision: 'allowed' });
+  test('policy gate allows normal local writes without a task-size boundary and blocks raw secret access', () => {
+    expect(evaluatePolicyGate({ risk: 'local_repo_write' })).toMatchObject({ decision: 'allowed' });
     expect(evaluatePolicyGate({ risk: 'raw_secret_config' })).toMatchObject({ decision: 'denied' });
     expect(evaluatePolicyGate({ risk: 'remote_write' })).toMatchObject({ decision: 'allowed' });
   });

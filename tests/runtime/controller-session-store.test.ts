@@ -14,7 +14,7 @@ import {
 import { bindControllerOwnershipForInvocation, recoverDirectControllerAuthority } from '../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, finishControllerRoundRelayDispatch, getControllerRoundRelay } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, finishControllerRoundRelayDispatch, getControllerRoundRelay } from '../../packages/kernel/controller/api/index';
 
 const roots: string[] = [];
 afterEach(() => {

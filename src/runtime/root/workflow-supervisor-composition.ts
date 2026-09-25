@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { getRepository } from '../../cli/repositories/registry';
-import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
   controllerRoundProviderEffectId,
@@ -71,7 +71,7 @@ export function workflowSupervisorBoundaryForWork(
   workId: string,
 ): WorkflowSupervisorBoundary {
   const work = getWorkContract(options, workId);
-  if (!work || isTerminalWorkContractStatus(work.status)) return { status: 'not_eligible' };
+  if (!work || semanticWorkState(work) !== 'open') return { status: 'not_eligible' };
   const binding = getChatgptWorkConversationBinding(options, workId);
   if (!binding) return { status: 'conversation_pending', reason: 'EXACT_WORK_CONVERSATION_BINDING_REQUIRED' };
   return {
@@ -283,8 +283,9 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }
-    if (isTerminalWorkContractStatus(work.status)) {
-      if (work.status === 'failed' || work.status === 'cancelled') {
+    const semanticState = semanticWorkState(work);
+    if (semanticState !== 'open') {
+      if (semanticState === 'cancelled') {
         try {
           relay = reconcileControllerRoundAfterTerminalWork(store, { workId: work.workId, actor: `workflow-supervisor-task-reconcile:${task.taskId}` }) ?? relay;
         } catch {
@@ -373,7 +374,7 @@ export async function bindCurrentWorkflowSupervisorConversationForWork(
   | { status: 'not_eligible' | 'current_conversation_unbound' | 'daemon_unavailable'; reason?: string }
 > {
   const work = getWorkContract(options, workId);
-  if (!work || isTerminalWorkContractStatus(work.status)) return { status: 'not_eligible' };
+  if (!work || semanticWorkState(work) !== 'open') return { status: 'not_eligible' };
   const forgeHome = resolveWorkflowSupervisorForgeHome(options.controllerHome);
   if (!existsSync(workflowSupervisorSocketPath(forgeHome))) return { status: 'daemon_unavailable', reason: 'WORKFLOW_SUPERVISOR_DAEMON_UNAVAILABLE' };
   const current = await getWorkflowSupervisorCurrentConversation(forgeHome);

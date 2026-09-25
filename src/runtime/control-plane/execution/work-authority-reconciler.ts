@@ -1,6 +1,6 @@
 import { listControllerSessions } from '../../../../packages/kernel/controller/api/index';
 import { listSchedules, listActiveOccurrences } from '../../../../packages/kernel/scheduler/api/index';
-import { cancelWorkContract, listWorkContracts, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { listWorkContracts } from '../../../../packages/kernel/work/api/index';
 import { listActiveLeases } from '../../resources/leases/store';
 import { listProcessRecords } from '../../execution/process-runtime/store';
 import { isManagedProcessActive } from '../../execution/process-runtime/types';
@@ -35,16 +35,12 @@ function skip(counts: Record<string, number>, reason: string): void {
 }
 
 /**
- * Retire only exact Work authority that has lost every durable continuation owner.
+ * Observe exact Work that has lost every durable continuation owner.
  *
- * This deliberately does not resurrect the retired repository-wide stale Work
- * reconciler. Liveness is evaluated per Work. Current Plan authority, an active
- * Controller session, Work-bound lease, Schedule/occurrence, or active Process
- * protects the Work. Blocked Work is also retained unless its WorkHandle is
- * already terminal, because blocked may be an intentional user/dependency wait.
- *
- * Retiring authority cancels the Work but keeps its SQLite history. Filesystem
- * cleanup and later physical retention/GC remain separate phases.
+ * Liveness facts are mechanical evidence only. They may drive resource cleanup
+ * or diagnostics, but they never decide semantic Work cancellation/completion.
+ * Open Work remains model/user-owned working context until an explicit semantic
+ * CAS transition closes it.
  */
 export function reconcileOwnerlessWorkAuthorities(
   options: OwnerlessWorkAuthorityReconcileOptions,
@@ -82,25 +78,10 @@ export function reconcileOwnerlessWorkAuthorities(
     if (!Number.isFinite(updatedMs)) { skip(skippedByReason, 'invalid_updated_at'); continue; }
     if (!terminalHandleMismatch && nowMs - updatedMs < graceMs) { skip(skippedByReason, 'grace_period'); continue; }
 
-    const reason = terminalHandleMismatch
-      ? `WorkHandle is already ${handle!.state} while Work remained ${work.status}.`
-      : `Work has no current Plan, Controller session, Work-bound lease, Schedule/occurrence, or active Process after ${Math.round(graceMs / 60_000)} minutes.`;
-    cancelWorkContract(
-      { controllerHome: options.controllerHome, repoId: options.repoId },
-      work.workId,
-      {
-        summary: reason,
-        evidenceRefs: [{
-          title: 'ownerless Work authority retired',
-          summary: reason,
-          detailLevel: 'summary',
-        }, ...work.evidenceRefs],
-      },
-    );
-    updateWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, work.workId, {
-      continuationPrompt: `Runtime maintenance retired ownerless Work authority ${work.workId}. Historical evidence is retained; create or continue current Requirement/Plan authority instead of reviving stale execution state.`,
-    });
-    retired.push(work.workId);
+    // Absence of a runtime owner is not semantic cancellation authority.
+    // Keep the Work open and surface the observation to cleanup/status callers.
+    skip(skippedByReason, terminalHandleMismatch ? 'terminal_handle_semantic_work_open' : 'semantic_work_open_ownerless');
+    continue;
   }
 
   return {

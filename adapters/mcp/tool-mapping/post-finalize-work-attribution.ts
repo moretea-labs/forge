@@ -1,8 +1,7 @@
 import { classifyRepositoryCommand } from '../../../src/cli/repositories/command-classifier';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
-import { getWorkContract } from '../../../packages/kernel/work/api';
-import { isTerminalWorkContractStatus } from '../../../src/runtime/control-plane/facade/types';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api';
 import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
@@ -69,10 +68,7 @@ export async function callPostFinalizeWorkReadOnlyCommand(
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
   if (
     !work
-    || !isTerminalWorkContractStatus(work.status)
-    || work.status !== 'completed'
-    || !work.completionReceipt
-    || work.completionReceipt.workId !== requestedWorkId
+    || semanticWorkState(work) !== 'completed'
     || !work.principalId?.trim()
     || work.principalId.trim() !== principalId
   ) {
@@ -110,7 +106,7 @@ export async function callPostFinalizeWorkReadOnlyCommand(
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       workId: requestedWorkId,
-      lifecycleClosed: true,
+      semanticWorkState: 'completed',
       error: {
         code: 'POST_FINALIZE_READONLY_ROUTE_MISMATCH',
         message: 'Post-finalize Work attribution may execute only through the bounded readonly direct lane.',
@@ -127,9 +123,8 @@ export async function callPostFinalizeWorkReadOnlyCommand(
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
     workId: requestedWorkId,
-    lifecycleClosed: true,
+    semanticWorkState: 'completed',
     postFinalizeAttribution: 'readonly_followup',
-    completed: true,
     ok: execution.ok === true,
     exitCode: execution.exitCode,
     stdout: execution.stdout,

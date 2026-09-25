@@ -178,14 +178,46 @@ async function observeDesktopPointerTarget(
   return { frame, point, ...(reboundSelector ? { reboundSelector } : {}) };
 }
 
+function focusedAxNodes(root: Record<string, unknown> | undefined): Record<string, unknown>[] {
+  if (!root) return [];
+  const focused: Record<string, unknown>[] = [];
+  const visit = (node: Record<string, unknown>): void => {
+    if (node.focused === true) focused.push(node);
+    for (const child of recordArray(node.children)) visit(child);
+  };
+  visit(root);
+  return focused;
+}
+
 function exactFocusedDesktopWindowId(observation: Record<string, unknown>): number | undefined {
   const snapshot = recordValue(observation.snapshot);
   const root = recordValue(snapshot?.root);
-  const focusedAxWindows = recordArray(root?.children).filter((window) =>
-    firstString(window, 'role') === 'AXWindow' && window.focused === true);
-  if (focusedAxWindows.length !== 1) return undefined;
+  const axWindows = recordArray(root?.children).filter((window) => firstString(window, 'role') === 'AXWindow');
+  const explicitFocused = axWindows.filter((window) => window.focused === true);
+  let focusedAxWindow: Record<string, unknown> | undefined;
+  if (explicitFocused.length === 1) {
+    focusedAxWindow = explicitFocused[0];
+  } else if (explicitFocused.length > 1) {
+    return undefined;
+  } else {
+    // Chromium-family apps can expose the system-frontmost window with
+    // AXWindow.focused=false while a descendant/control in that window is the
+    // unique focused AX node. Recover the same window only from unique bounded
+    // geometry; any ambiguity still fails closed.
+    const focusedNodes = focusedAxNodes(root).filter((node) => firstString(node, 'role') !== 'AXApplication');
+    if (focusedNodes.length !== 1) return undefined;
+    const focusedFrame = desktopFrame(focusedNodes[0]?.frame);
+    if (!focusedFrame) return undefined;
+    const point = desktopFrameCenter(focusedFrame);
+    const containingWindows = axWindows.filter((window) => {
+      const frame = desktopFrame(window.frame);
+      return Boolean(frame && frameContainsPoint(frame, point.x, point.y));
+    });
+    if (containingWindows.length !== 1) return undefined;
+    focusedAxWindow = containingWindows[0];
+  }
 
-  const focusedTitle = firstString(focusedAxWindows[0]!, 'title');
+  const focusedTitle = firstString(focusedAxWindow, 'title');
   if (!focusedTitle) return undefined;
   const matches = recordArray(observation.windows).filter((window) => {
     const windowId = firstNumber(window, 'windowId', 'window_id');

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { approvePlanContract, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createWorkContract, getWorkContract, listWorkContracts } from '../../packages/kernel/work/api/index';
 import { reconcileOwnerlessWorkAuthorities } from '../../src/runtime/control-plane/execution/work-authority-reconciler';
 
@@ -51,28 +51,24 @@ function planInput(planId: string) {
 }
 
 describe('exact Work authority reconciliation', () => {
-  test('retires stale ownerless non-Plan Work while preserving its history row', () => {
+  test('observes stale ownerless non-Plan Work without changing semantic state', () => {
     const controllerHome = home();
     work(controllerHome, 'WORK-OLD', '2026-09-04T00:00:00.000Z', {
       evidenceRefs: [{ title: 'prior implementation evidence', summary: 'Existing evidence must survive authority retirement.', detailLevel: 'summary' }],
     });
     const result = reconcileOwnerlessWorkAuthorities({ controllerHome, repoId: 'repo-a', nowMs: Date.parse('2026-09-04T04:00:00.000Z'), graceMs: 60 * 60_000 });
-    expect(result.workIds).toEqual(['WORK-OLD']);
-    const retired = getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-OLD');
-    expect(retired?.evidenceRefs.map((entry) => entry.title)).toEqual(['ownerless Work authority retired', 'prior implementation evidence']);
-    expect(retired).toMatchObject({
-      status: 'cancelled',
-      dispatchState: 'terminal',
+    expect(result.workIds).toEqual([]);
+    expect(result.retired).toBe(0);
+    expect(result.skippedByReason.semantic_work_open_ownerless).toBe(1);
+    const observed = getWorkContract({ controllerHome, repoId: 'repo-a' }, 'WORK-OLD');
+    expect(observed?.evidenceRefs.map((entry) => entry.title)).toEqual(['prior implementation evidence']);
+    expect(observed).toMatchObject({
+      status: 'running',
+      semanticState: 'open',
+      dispatchState: 'running',
       phase: 'implementation',
-      phaseEvidence: {
-        implementation: { state: 'skipped' },
-        verification: { state: 'pending' },
-        review: { state: 'pending' },
-        delivery: { state: 'pending' },
-        cleanup: { state: 'pending' },
-      },
     });
-    expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'active', limit: 20 }).map((entry) => entry.workId)).not.toContain('WORK-OLD');
+    expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'active', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
     expect(listWorkContracts({ controllerHome, repoId: 'repo-a', status: 'all', limit: 20 }).map((entry) => entry.workId)).toContain('WORK-OLD');
   });
 
@@ -89,7 +85,6 @@ describe('exact Work authority reconciliation', () => {
     const controllerHome = home();
     createRequirement({ controllerHome }, { requirementId: 'REQ-A', title: 'Requirement A', outcomeStatement: 'Deliver the current Plan.' });
     createPlanContract({ controllerHome, repoId: 'repo-a' }, planInput('PLAN-A'));
-    approvePlanContract({ controllerHome, repoId: 'repo-a' }, 'PLAN-A');
     work(controllerHome, 'WORK-PLAN', '2026-09-04T00:00:00.000Z', { requirementId: 'REQ-A', planId: 'PLAN-A', planStepId: 'stage-a' });
     const result = reconcileOwnerlessWorkAuthorities({ controllerHome, repoId: 'repo-a', nowMs: Date.parse('2026-09-04T04:00:00.000Z'), graceMs: 60 * 60_000 });
     expect(result.workIds).toEqual([]);

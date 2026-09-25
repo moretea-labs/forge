@@ -266,19 +266,19 @@ requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkControlle
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:controller_get_owner|controller_claim|controller_disposition|controller_release|launcher_start)['"]/, 'rh_work compatibility adapter must delegate ControllerRound/Launcher operation orchestration to work-controller-operations');
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'export async function callRhWorkRequirementOperation');
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'admitRequirement');
-requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'continueRequirement');
+forbid('adapters/mcp/runtime-gateway/work-requirement-operations.ts', /continueRequirement|requirement_continue/, 'retired Requirement continue lifecycle must not remain in the runtime adapter');
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'promoteRequirementCandidate');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs)');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_promote_candidate|requirement_continue)['"]/, 'rh_work compatibility adapter must delegate Requirement operation orchestration to work-requirement-operations');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_promote_candidate)['"]/, 'rh_work adapter must delegate Requirement operation orchestration to work-requirement-operations');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanCreateOperation');
-forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /approvePlanContractAsync|acceptPlanStepEvidence/, 'legacy plan_approve/plan_accept_step must stay a bounded compatibility read instead of a Plan lifecycle writer');
-requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'supersedePlanContract');
+forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/, 'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface');
+forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /approvePlanContract|approvePendingPlanRevision|supersedePlanContract|plan_revision_approved/, 'legacy Plan approval/supersession writers must be physically deleted after semantic CAS cutover');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'resolvePlanAdmission');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'admitPlanContractAsync');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanCreateOperation(store, operation, args');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:plan_list|plan_get|plan_approve|plan_supersede|plan_create)['"]/, 'rh_work compatibility adapter must delegate Plan transport/admission orchestration to work-plan-operations');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:plan_list|plan_get|plan_create)['"]/, 'rh_work compatibility adapter must delegate Plan transport/admission orchestration to work-plan-operations');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
@@ -718,7 +718,6 @@ const required = [
   'packages/kernel/controller/infrastructure/controller-session-store.ts',
   'packages/kernel/controller/application/controller-service.ts',
   'packages/kernel/controller/api/index.ts',
-  'src/runtime/control-plane/facade/work-implementation-review.ts',
   'src/runtime/control-plane/execution/repository-work-attribution.ts',
   'src/runtime/control-plane/execution/work-completion-authority.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',
@@ -726,7 +725,6 @@ const required = [
   'src/runtime/control-plane/execution/work-finalization-service.ts',
   'src/runtime/control-plane/execution/work-preparation-service.ts',
   'src/runtime/control-plane/execution/work-operation-service.ts',
-  'src/runtime/control-plane/facade/work-state-machine.ts',
   'src/runtime/evidence/process-check-execution.ts',
   'src/runtime/context/semantic-navigation-contract.ts',
   'packages/protocols/mcp/tool-contract.ts',
@@ -805,7 +803,7 @@ for (const { from, specifier } of stage7fMemoryImports) {
     failures.push(`Stage7F operational Memory store has an unauthorized active consumer: ${from} -> ${specifier}`);
   }
 }
-forbid('src/runtime/control-plane/persistence/operational-prior-store.ts', /context-plane|brain|pks|requirement-authority|plan-contract|work-state-machine|approval|authorization/, 'Stage7F operational Memory must remain mechanical derived state only');
+forbid('src/runtime/control-plane/persistence/operational-prior-store.ts', /context-plane|brain|pks|requirement-authority|plan-contract|approval|authorization/, 'Stage7F operational Memory must remain mechanical derived state only');
 requireText('src/runtime/control-plane/persistence/operational-prior-store.ts', "OPERATIONAL_MEMORY_NAMESPACE = 'operational_memory_prior'");
 requireText('src/runtime/control-plane/persistence/operational-prior-store.ts', 'resolveCheckCompletionGraceWaitMs');
 requireText('src/runtime/execution/process-runtime/check-facade.ts', 'resolveCheckCompletionGraceWaitMs');
@@ -815,6 +813,86 @@ for (const path of sourceFiles('src/runtime/control-plane')) {
 requireText('src/runtime/control-plane/routing/route-policy.ts', "export function decideRoute");
 requireText('src/runtime/control-plane/routing/route-policy.ts', 'inputFingerprint');
 requireText('src/runtime/control-plane/routing/route-policy.ts', 'policyVersion');
+requireText('src/runtime/control-plane/routing/route-policy.ts', 'requiresWork: false');
+forbid('src/runtime/control-plane/routing/route-policy.ts', /taskIntent|lastFailureClass|browser_planning|ios_analysis|PREFERRED_CAPABILITY/, 'capability broker must not infer provider strategy from task semantics');
+requireText('src/runtime/control-plane/routing/route-policy.ts', "providerSelection.key === 'multiple'");
+for (const path of [
+  'adapters/mcp/tool-mapping/repository-tools.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts',
+]) {
+  forbid(path, /assessWorkMode|parseExplicitTaskMode|assess_work_mode|assess_work_request|recommendedMode\s*:/, 'production capability/context surfaces must not expose or infer engineering work modes');
+}
+forbid(
+  'src/runtime/control-plane/routing/route-policy.ts',
+  /durableWorkRequired|coordinationRequired|explicitParallelMode|expectedFiles|expectedChangedLines|requiresInvestigation|requiresLongRunningChecks|requiresParallelism|needsDependencies|requiresIndependentDeliverables|independentTaskCount|agentRequested|explicitMode|lastProviderId|lastFailureClass|routingOrders|defaultProviders|routingKey\(|providerOrder\(|PREFERRED_CAPABILITY|KIND_RANK|protected_path|taskIntent\s*===/,
+  'route policy may expose auth/provider/placement facts but must not carry or infer Work topology, engineering method, or provider choice from task size, method, failure class, path classification, or semantic intent',
+);
+for (const path of [
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+  'src/runtime/control-plane/facade/repository-work-admission.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  'src/runtime/plugins/store.ts',
+]) {
+  forbid(path, /routeDecision\.(?:executionMode|workMode|executionPath)|mode\.mode\s*===|selected\.mode\s*===/, 'legacy route/mode projections must not control production execution');
+}
+forbid(
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  /defaultDriver\(mode|input\.mode\s*===\s*['"](?:goal_workloop|direct_control|handoff_only)['"]/,
+  'legacy Work mode must not select driver or worktree placement',
+);
+forbid(
+  'src/runtime/plugins/store.ts',
+  /acceptSubmittedWorkContract|localSystemActionRequiresWork/,
+  'plugin capability execution must not manufacture semantic Work from action risk',
+);
+forbid(
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+  /repositoryChangeIntent|directEditWithinBoundary|maxChangedFiles\s*<|maxChangedLines\s*</,
+  'Work-kind classification must not be inferred from predicted scope size or a task-size threshold',
+);
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'WORK_KIND_REQUIRED_FOR_EXTERNAL_EFFECT_WITH_PREDICTED_SCOPE');
+forbid(
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+  /linkedEngineeringBlockerWorkId|work-linked-engineering-blocker-/,
+  'continuation must not manufacture child Work; an unrelated blocker names an explicitly created owning Work',
+);
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
+for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
+  forbid(path, /operation:\s*['"](?:plan_approve|plan_accept_step|plan_supersede)['"]/, 'retired Plan approval/acceptance/supersession operations must not be advertised or suggested');
+}
+forbid(
+  'src/runtime/control-plane/facade/rh-work-operation-contract.ts',
+  /plan_approve|plan_accept_step|plan_supersede/,
+  'retired Plan lifecycle operations must not remain accepted rh_work ABI operations',
+);
+forbid(
+  'adapters/mcp/controller-round-compatibility.ts',
+  /plan_accept_step/,
+  'Controller compatibility must not preserve retired Plan acceptance authority',
+);
+for (const path of [
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+  'src/runtime/control-plane/facade/goal-workloop-access.ts',
+  'src/cli/local-bridge/facade-api.ts',
+  'src/cli/local-bridge/server.ts',
+]) {
+  forbid(path, /force_mode|forceMode/, 'retired mode-override tokens must not return as caller-visible input');
+}
+requireText('src/runtime/plugins/capability-authorization-grants.ts', 'migrateLegacyPluginCapabilityGrants');
+requireText('src/runtime/plugins/capability-authorization-grants.ts', 'findActiveCanonicalGrant');
+requireText('src/runtime/plugins/capability-authorization-grants.ts', 'legacyPluginGrantMigrationMarkerPath');
+forbid(
+  'src/runtime/plugins/capability-authorization-grants.ts',
+  /saveStore\(|writeJsonAtomic\(\s*pluginCapabilityAuthorizationGrantStorePath|writeFileSync/,
+  'the legacy plugin capability authorization file is migration input only; the canonical Grant authority is the single writer',
+);
+for (const path of [
+  ...sourceFiles('src/runtime/control-plane'),
+  ...sourceFiles('adapters/mcp'),
+]) {
+  forbid(path, /directEditWithinBoundary|DirectEditBoundary/, 'task-size authorization shortcuts must not be reintroduced');
+}
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'runPersistedCheckViaProcessRuntime({');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
@@ -859,12 +937,10 @@ requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'work_
 forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /phaseForStatusUpdate|dispatchStateForStatusUpdate/, 'Work status must not regain hidden phase/dispatch transition authority');
 forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /phaseEvidence:\s*legacyPhaseEvidence\(/, 'new Work construction must not reuse legacy migration phase-evidence inference');
 requireText('src/runtime/control-plane/facade/work-contract-store.ts', '@deprecated Kernel V2 compatibility shim');
-requireText('src/runtime/control-plane/facade/work-state-machine.ts', '@deprecated Kernel V2 compatibility shim');
-requireText('src/runtime/control-plane/facade/work-implementation-review.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('packages/kernel/work/domain/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
-requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'completeReviewedDirectEditWorkAfterCommit');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'recordReviewedDirectEditDeliveryAfterCommit');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'planWorkVerificationAcrossContentEquivalentCommit');
 forbid(
@@ -918,14 +994,8 @@ forbid(
   /function\s+deriveImplementationReviewAcrossCommit/,
   'Finalizer must consume the canonical Kernel Work review derivation instead of owning a second review authority',
 );
-for (const adapter of [
-  'src/cli/controller/work-mode.ts',
-  'src/runtime/control-plane/facade/types.ts',
-]) {
-  requireText(adapter, '@deprecated Compatibility adapter');
-  requireText(adapter, 'decideRoute(');
-  forbid(adapter, /expectedFiles\s*>|expectedChangedLines\s*>|KIND_RANK|providerOrder\s*\(/, 'delegate all routing thresholds and provider selection to Route Policy');
-}
+requireMissing('src/cli/controller/work-mode.ts');
+forbid('src/runtime/control-plane/facade/types.ts', /repeated_infrastructure_failure|codex_worker_requires_review/, 'Handoff compatibility types may represent only genuine human blockers');
 let routeAuthorityCount = 0;
 for (const path of sourceFiles('src')) {
   routeAuthorityCount += (text(path).match(/export function decideRoute\s*\(/g) ?? []).length;
@@ -949,7 +1019,7 @@ for (const path of sourceFiles('src/runtime/control-plane')) {
 // B2 ownership fence: production code may consume only the Kernel Work API/domain,
 // never the retired facade store/state-machine or Kernel persistence implementation.
 for (const path of sourceFiles('src')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-state-machine|work-implementation-review)['"]/, 'production source must consume packages/kernel/work instead of retired Work facade authority');
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-implementation-review)['"]/, 'production source must consume packages/kernel/work instead of retired Work facade authority');
   forbid(path, /packages\/kernel\/work\/infrastructure\/work-contract-store/, 'production source must consume the Work application/API boundary, not persistence infrastructure');
 }
 for (const record of genericWorkLifecycleMutationRecords([...sourceFiles('src'), ...sourceFiles('adapters')])) {
@@ -965,7 +1035,7 @@ forbid(
   /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'completeRemoteEffectWorkFromProcessReceipt');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'recordRemoteEffectWorkProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
@@ -984,13 +1054,14 @@ requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'revis
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'revisePlanSemanticContext');
 requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'only three cross-domain model-authored semantic records');
 requireText('docs/architecture/decisions/20260924-thin-semantic-working-context.md', 'semantic revision must be applied to the latest persisted aggregate inside the same storage transaction');
-requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'acceptRequirementOutcome');
-requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');
-requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'withPlanAdmissionLock');
+forbid('src/runtime/control-plane/facade/requirement-authority.ts', /continueRequirement|acceptRequirementOutcome|completeRequirementGoal|requirement_semantic_acceptance|requirement_semantic_continue/, 'Requirement semantic state changes must use revisioned requirement_revise CAS only');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
-requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'completeRequirementGoal');
-forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must delegate Requirement-bound goal completion to the canonical Goal application boundary');
-requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', "disposition === 'goal_complete' && work.requirementId");
+forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /completeRequirementGoal|requirementAcceptance/, 'Controller disposition must not complete or accept Requirement semantics');
+forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must never own Requirement semantic completion');
+forbid('src/runtime/control-plane/facade/rh-work-operation-contract.ts', /requirement_continue/, 'retired Requirement lifecycle compatibility operation must not remain accepted');
+requireText('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts', 'semanticWorkState(work)');
+forbid('adapters/mcp/tool-mapping/post-finalize-work-attribution.ts', /isTerminalWorkContractStatus|lifecycleClosed|work\.status\s*!==?\s*['"]completed['"]/, 'post-completion readonly attribution must follow semantic Work state, not legacy lifecycle projections');
+forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /goal_complete[^\n]{0,200}requirementId|requirementId[^\n]{0,200}goal_complete/, 'Controller goal_complete may settle continuation but must not own Requirement completion');
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');
@@ -1071,21 +1142,32 @@ for (const path of sourceFiles('src')) {
 }
 const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
   'src/runtime/control-plane/facade/controller-session-store.ts',
-  'src/runtime/control-plane/facade/controller-round-relay.ts',
   'src/runtime/control-plane/facade/work-contract-store.ts',
-  'src/runtime/control-plane/facade/work-state-machine.ts',
-  'src/runtime/control-plane/facade/work-implementation-review.ts',
   'src/runtime/control-plane/facade/types.ts',
   'src/runtime/workflow/schedules/settlement.ts',
   'src/runtime/workflow/schedules/types.ts',
 ]);
+// The compatibility-shim ledger may only shrink. A shim with no remaining
+// importer at all is migration debt, not a boundary: delete the file and its
+// entry in the same slice instead of keeping an unused authority surface alive.
+// Shims that survive only because a test still imports them are bounded debt to
+// be removed together with that test, never a reason to keep production authority.
+const shimImportRecords = staticTypeScriptImportRecords([...productionTypeScriptFiles(), ...sourceFiles('tests')]);
+for (const shim of B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS) {
+  const shimBasename = shim.slice(shim.lastIndexOf('/') + 1).replace(/\.ts$/, '');
+  const importedBy = shimImportRecords.filter((record) => record.from !== shim
+    && (record.specifier === `./${shimBasename}` || record.specifier.endsWith(`/${shimBasename}`)));
+  if (importedBy.length === 0) {
+    failures.push(`${shim} is a dead compatibility shim with no importer; delete it and remove its compatibility-shim entry`);
+  }
+}
 for (const path of sourceFiles('src')) {
   if (B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS.has(path)) continue;
   forbid(path, /packages\/kernel\/[^'"/]+\/(?:domain|application|infrastructure)\//, 'active legacy Runtime code must consume Kernel public api/index surfaces; direct internals are compatibility-boundary-only');
 }
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/work/domain/types');
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/controller/domain/types');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'recordWorkDeliveryReceipt(');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
@@ -1921,6 +2003,52 @@ forbid(
   /withControllerSessionTerminalizationFence|listControllerSessions|getControllerSession|controllerWorkIds|controller_session/,
   'stale Work maintenance must re-check concrete Work/source/resource facts instead of using ControllerSession as lifecycle authority',
 );
+requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'migrateLegacyHandoffInbox');
+requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'HANDOFF_LEGACY_STORE_READ_ONLY');
+requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'UserRequest owns the durable write');
+forbid('src/runtime/control-plane/facade/handoff-inbox-store.ts', /writeLegacyHandoffInboxStore|export function writeHandoffInboxStore/, 'legacy Handoff store must never remain a writable second authority');
+forbid('src/runtime/plugins/store.ts', /status:\s*terminalRemoteEffect\s*\?\s*['\"]completed['\"]/, 'plugin/effect delivery results must never claim semantic Work completion');
+requireText('src/runtime/plugins/store.ts', "semanticState: 'open' as const");
+for (const path of sourceFiles('src')) {
+  forbid(path, /\bcancelWorkContract\s*\(/, 'runtime/maintenance code must never auto-cancel semantic Work; cancellation belongs to explicit semantic CAS');
+}
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', "state: 'cancelled'");
+requireText('src/runtime/recovery/maintenance-executor.ts', "result: 'work_semantic_completion_required'");
+requireText('src/runtime/control-plane/execution/work-authority-reconciler.ts', "'semantic_work_open_ownerless'");
+forbid(
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts',
+  /repeated_infrastructure_failure|activeScheduleFailureHandoff|stableScheduleFailureHandoffId|resolveRecoveredScheduleFailureHandoffs/,
+  'mechanical Scheduler failures must remain runtime/backoff facts and must not create human-request authority',
+);
+forbid(
+  'src/runtime/control-plane/execution/work-task-receipt.ts',
+  /completeWorkWithReceipt|recordWorkDeliveryReceipt/,
+  'legacy Issue/Task acceptance may project an already-completed Work but must never write Work delivery/completion authority',
+);
+{
+  const workStoreSource = text('packages/kernel/work/infrastructure/work-contract-store.ts');
+  const receiptWriterStart = workStoreSource.indexOf('export function recordWorkCompletionReceipt(');
+  const receiptWriterEnd = workStoreSource.indexOf('\nexport interface AcceptSubmittedWorkInput', receiptWriterStart);
+  const receiptWriter = receiptWriterStart >= 0 && receiptWriterEnd > receiptWriterStart
+    ? workStoreSource.slice(receiptWriterStart, receiptWriterEnd)
+    : '';
+  if (!receiptWriter) fail('recordWorkCompletionReceipt writer not found');
+  if (/status:\s*['"]completed['"]|dispatchState:\s*['"]terminal['"]|phase:\s*['"]cleanup['"]|WORK_IMPLEMENTATION_REVIEW_REQUIRED|transitionWorkContractPhase|requestWorkImplementationReview/.test(receiptWriter)) {
+    fail('delivery/effect receipt recording must not terminalize Work or reintroduce review/lifecycle gates');
+  }
+}
+forbid(
+  'src/runtime/control-plane/execution/work-completion-authority.ts',
+  /completeRequirementFromWork|projectRequirementDeliveryFromCompletedWork|completeWorkWithReceipt/,
+  'delivery evidence must not auto-complete Work or Requirement',
+);
+for (const path of [
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  'adapters/mcp/runtime-gateway/repository-compat-adapter.ts',
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+]) {
+  forbid(path, /lifecycleClosed|finalStatus:\s*['"]completed['"]|directEditWorkCompletion/, 'mechanical delivery/finalize responses must not masquerade as semantic Work completion');
+}
 forbid(
   'supervisor/store.ts',
   /effect_unknown[\s\S]{0,300}(composer_missing|send_button_missing)|latestRetryEvidenceEventId/,

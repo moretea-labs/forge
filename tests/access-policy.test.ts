@@ -109,16 +109,7 @@ describe('policy gate access mode integration', () => {
 
   test('legacy request mode no longer adds approval for normal repository work', () => {
     expect(evaluatePolicyGate({ risk: 'workspace_write', accessMode: 'request' }).decision).toBe('allowed');
-    expect(evaluatePolicyGate({
-      risk: 'local_repo_write',
-      accessMode: 'request',
-      directEditBoundary: {
-        scopeClear: true,
-        pathsExplicit: true,
-        maxChangedFiles: 2,
-        maxChangedLines: 100,
-      },
-    }).decision).toBe('allowed');
+    expect(evaluatePolicyGate({ risk: 'local_repo_write', accessMode: 'request' }).decision).toBe('allowed');
   });
 
   test('ordinary remote writes proceed while destructive and secret gates remain', () => {
@@ -129,7 +120,7 @@ describe('policy gate access mode integration', () => {
 });
 
 describe('access-aware work routing', () => {
-  test('legacy request mode keeps bounded direct work contract-free without an approval handoff', () => {
+  test('legacy request mode admits an explicit Work without an approval handoff', () => {
     const home = controllerHome();
     const ctx = workloopContext(home);
     writeRepositoryAccessPolicy(home, 'repo-test', 'request');
@@ -145,12 +136,13 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(false);
+    // Invoking rh_work is the explicit durable-Work choice; size never decides it.
+    expect(result.data.workContractCreated).toBe(true);
     expect(result.data.policy).toMatchObject({ decision: 'allowed' });
     expect(listHandoffItems({ controllerHome: home, repoId: 'repo-test', status: 'pending' })).toHaveLength(0);
   });
 
-  test('legacy request mode does not require an approval hint or WorkContract', () => {
+  test('legacy request mode does not require an approval hint before admitting Work', () => {
     const home = controllerHome();
     const ctx = workloopContext(home);
     writeRepositoryAccessPolicy(home, 'repo-test', 'request');
@@ -166,12 +158,12 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.workContractCreated).toBe(true);
     expect(result.data.policy).toMatchObject({ decision: 'allowed' });
     expect(listHandoffItems({ controllerHome: home, repoId: 'repo-test', status: 'pending' })).toHaveLength(0);
   });
 
-  test('repository full access keeps bounded direct work contract-free', () => {
+  test('repository full access admits explicit bounded Work', () => {
     const home = controllerHome();
     const ctx = workloopContext(home);
     writeRepositoryAccessPolicy(home, 'repo-test', 'full_access');
@@ -188,7 +180,7 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.workContractCreated).toBe(true);
     expect(result.data.policy).toMatchObject({ decision: 'allowed' });
   });
 
@@ -207,9 +199,11 @@ describe('access-aware work routing', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(false);
+    expect(result.data.workContractCreated).toBe(true);
     expect(result.data.policy).toMatchObject({ decision: 'allowed' });
     expect(readRepositoryAccessPolicy(home, 'repo-test').mode).toBe('request');
+    const workId = String((result.data.work as { workId?: string }).workId ?? '');
+    expect(getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)?.constraints.accessMode).toBe('full_access');
   });
   test('running work keeps its captured mode and current-workspace policy after repository settings change', () => {
     const home = controllerHome();

@@ -39,13 +39,18 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
     expect(summary.pendingIds).toEqual([]);
   });
 
-  test('keeps semantic authority as one durable identity row instead of deleting it through Runtime GC', () => {
-    for (const id of ['requirement', 'plan', 'work', 'controller_round'] as const) {
+  test('keeps authored semantic authority durable while ControllerRound remains execution mechanics', () => {
+    for (const id of ['requirement', 'plan', 'work'] as const) {
       const entry = RUNTIME_LIFECYCLE_INVENTORY.find((candidate) => candidate.id === id);
       expect(entry).toBeDefined();
-      expect(entry!.retentionCapacity).toContain('Permanent semantic/audit retention');
-      expect(entry!.cleanupAuthority).toContain('Runtime GC does not delete');
+      expect(entry!.dataClass).toBe('semantic_authority');
+      expect(entry!.retentionCapacity).toMatch(/semantic|revision history|audit retention/i);
+      expect(entry!.cleanupAuthority).toMatch(/does not delete|never rewrites|never rewrite semantic Work completion|semantic retention/i);
     }
+    const controllerRound = RUNTIME_LIFECYCLE_INVENTORY.find((candidate) => candidate.id === 'controller_round');
+    expect(controllerRound).toBeDefined();
+    expect(controllerRound!.dataClass).toBe('execution_authority');
+    expect(controllerRound!.cleanupAuthority).toContain('continuation mechanics');
   });
 
   test('keeps already-bounded Process, transport, Context and Operational Memory classes explicit', () => {

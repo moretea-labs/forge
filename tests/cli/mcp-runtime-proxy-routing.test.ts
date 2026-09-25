@@ -50,7 +50,7 @@ import {
   requestWorkImplementationReview,
   transitionWorkContractPhase,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
+import { implementationReviewChangedPathDigest, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 
 describe('MCP canonical Runtime proxy routing', () => {
   test('bounds inner Runtime proxy lanes and leases them exclusively under concurrency', async () => {
@@ -850,6 +850,10 @@ function postFinalizeAttributionFixture() {
     verifiedAt: recordedAt,
     recordedAt,
   }, 'completed_no_change', 'completed_no_change');
+  reviseWorkSemanticContext({ controllerHome, repoId: repository.repoId }, workId, {
+    expectedRevision: 1,
+    state: 'completed',
+  });
   return {
     root,
     controllerHome,
@@ -882,7 +886,7 @@ describe('MCP post-finalize Work attribution', () => {
       const structured = (response?.structuredContent ?? {}) as Record<string, unknown>;
       expect(structured.accepted).toBe(true);
       expect(structured.ok).toBe(true);
-      expect(structured.lifecycleClosed).toBe(true);
+      expect(structured.semanticWorkState).toBe('completed');
       expect(structured.workId).toBe(fx.workId);
       expect(structured.postFinalizeAttribution).toBe('readonly_followup');
       expect(String(structured.stdout)).toContain('## main');

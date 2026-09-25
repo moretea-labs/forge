@@ -17,10 +17,10 @@ import {
 import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repositories/worktree-storage';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
-import { getWorkContract, recordCancelledWorkCleanupCompleted } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, recordCancelledWorkCleanupCompleted, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { markOwnedResourceCleaned, markOwnedResourceRetained } from '../../../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
-import { isRepositoryCompletionReceipt, isTerminalWorkContractStatus, type WorkContract } from '../facade/types';
+import { isRepositoryCompletionReceipt, type WorkContract } from '../facade/types';
 import {
   cancelProcess,
   getProcessHandle,
@@ -240,7 +240,7 @@ function workHandleOwnsCheckout(controllerHome: string, handle: WorkHandleState)
   // WorkContract completion is the authoritative ownership boundary. Older
   // runtimes could persist a completed contract while leaving the handle in a
   // non-terminal state; that historical handle must not remain a live owner.
-  return contract === undefined || !isTerminalWorkContractStatus(contract.status);
+  return contract === undefined || semanticWorkState(contract) === 'open';
 }
 
 function assertNoOtherLiveWork(input: TerminalWorkCleanupInput, receipt: WorkCleanupReceipt): void {
@@ -359,8 +359,8 @@ export interface TerminalWorkCleanupReconcileReport {
 }
 
 function terminalOutcomeForContract(contract: WorkContract): WorkTerminalOutcome {
-  if (contract.status === 'cancelled') return 'cancelled';
-  if (contract.status === 'completed') return 'completed_cleanup';
+  if (semanticWorkState(contract) === 'cancelled') return 'cancelled';
+  if (semanticWorkState(contract) === 'completed') return 'completed_cleanup';
   return 'failed';
 }
 
@@ -372,7 +372,7 @@ export function recoverTerminalWorkHandle(
   const existing = readWorkHandle(controllerHome, repositoryId, workId);
   if (existing) return existing;
   const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
-  if (!contract || !isTerminalWorkContractStatus(contract.status)) return undefined;
+  if (!contract || semanticWorkState(contract) === 'open') return undefined;
   const worktreePath = contract.worktreeRef?.trim();
   const checkoutId = contract.checkoutId?.trim();
   if (!worktreePath || !checkoutId || !existsSync(worktreePath)) return undefined;
@@ -398,7 +398,7 @@ export function recoverTerminalWorkHandle(
   const contained = targetExists
     ? git(repository.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]).ok
     : false;
-  const delivered = contract.status === 'completed' && contained;
+  const delivered = semanticWorkState(contract) === 'completed' && contained;
   const recordedAt = nowIso();
   return writeWorkHandle(controllerHome, {
     schemaVersion: 1,
@@ -624,7 +624,7 @@ function reconcileCleanedManagedBranchRetirement(
 ): TerminalWorkCleanupResult | undefined {
   const workId = current.workContractId ?? current.workId;
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: current.repositoryId }, workId);
-  if (!contract || !isTerminalWorkContractStatus(contract.status)
+  if (!contract || semanticWorkState(contract) === 'open'
     || !cleanedManagedBranchRetirementCandidate(repository, contract, current, targetBranch, deleteBranch)) return undefined;
 
   const target = selectTerminalCleanupTarget(repository, current);
@@ -1088,7 +1088,7 @@ export async function reconcileSingleTerminalWorkCleanup(
 ): Promise<SingleTerminalWorkCleanupResult> {
   const repository = getRepository(repositoryId, controllerHome, { includeRemoved: true });
   const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
-  if (!contract || !isTerminalWorkContractStatus(contract.status)) {
+  if (!contract || semanticWorkState(contract) === 'open') {
     return { status: 'not_terminal', workId, reason: 'Work is not terminal.' };
   }
   const originalHandle = readWorkHandle(controllerHome, repositoryId, workId)
@@ -1157,7 +1157,7 @@ export async function reconcileTerminalWorkCleanups(
       limit: 10_000,
     })) {
       const contract = record.value;
-      if (knownWorkIds.has(contract.workId) || !isTerminalWorkContractStatus(contract.status)) continue;
+      if (knownWorkIds.has(contract.workId) || semanticWorkState(contract) === 'open') continue;
       if (!contract.worktreeRef?.trim() || !existsSync(contract.worktreeRef)) continue;
       let recovered: WorkHandleState | undefined;
       try {
@@ -1181,7 +1181,7 @@ export async function reconcileTerminalWorkCleanups(
         report.errors.push({ workId: originalHandle.workId, error: error instanceof Error ? error.message : String(error) });
         continue;
       }
-      if (!contract || !isTerminalWorkContractStatus(contract.status)) {
+      if (!contract || semanticWorkState(contract) === 'open') {
         report.skippedNonTerminal.push(originalHandle.workId);
         continue;
       }

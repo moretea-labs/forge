@@ -8,11 +8,11 @@ import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } f
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { cancelWorkContract, getWorkContract, readWorkContractStore, updateWorkContract } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, readWorkContractStore, semanticWorkState, updateWorkContract } from '../../../packages/kernel/work/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
-import { isTerminalWorkContractStatus, type WorkContract } from '../control-plane/facade/types';
+import type { WorkContract } from '../control-plane/facade/types';
 import { listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import {
   collectRuntimeProcesses,
@@ -463,7 +463,7 @@ function listRetainedMigratedWork(destinationHomeInput: string, repoId: string):
     }
     for (const source of sourceWork) {
       const work = source.value;
-      if (work.repoId !== repoId || !isTerminalWorkContractStatus(work.status)) continue;
+      if (work.repoId !== repoId || semanticWorkState(work) === 'open') continue;
       if (!work.worktreeRef?.trim() || !existsSync(work.worktreeRef)) continue;
       if (destinationWorkIds.has(work.workId)) continue;
       retained.push({ migrationId: migration.migrationId, sourceHome, work });
@@ -572,7 +572,7 @@ function inspectLegacyRemoteEffectPlacement(
   if (registeredPath !== path && resolve(checkout.localRoot) !== path) return { safe: false, path, detail: 'Legacy remote_effect WorkContract path does not match its registered checkout identity.' };
   const otherOwner = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts.find((candidate) =>
     candidate.workId !== contract.workId
-    && !isTerminalWorkContractStatus(candidate.status)
+    && semanticWorkState(candidate) === 'open'
     && candidate.worktreeRef
     && resolve(candidate.worktreeRef) === path);
   if (otherOwner) return { safe: false, path, detail: `Managed worktree is also owned by active Work ${otherOwner.workId}; resource detachment is fenced.` };
@@ -770,24 +770,11 @@ function inspectStaleWorkRepositorySource(
   };
 }
 
-function staleWorkSemanticTerminalizationReady(contract: WorkContract): boolean {
-  // Automatic stale maintenance may terminalize only pre-semantic legacy Work.
-  // Once a Work has a canonical semantic revision, cancellation is a model/user
-  // semantic CAS decision and maintenance can only report mechanical stale facts.
-  if (Number.isInteger(contract.semanticRevision) && Number(contract.semanticRevision) >= 1) return false;
-  if (contract.phase !== 'cleanup') return false;
-  return (['implementation', 'verification', 'delivery'] as const).every((phase) =>
-    ['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state));
-}
-
-function staleWorkCandidateReason(source: StaleWorkSourceInspection, semanticReady: boolean): string {
+function staleWorkCandidateReason(source: StaleWorkSourceInspection): string {
   if (!source.safeToCancel) {
-    return `Protected stale Work: no active lifecycle authority remains, but repository source preservation is required. ${source.detail} The Work must remain nonterminal until source is explicitly adopted, delivered, or cleanup is semantically authorized.`;
+    return `Protected stale Work: repository source preservation is required. ${source.detail} Maintenance may reconcile only concrete owned resources; semantic Work remains model/user-owned.`;
   }
-  if (!semanticReady) {
-    return `Protected stale Work: repository source has no unique live changes, but the Work semantic lifecycle has not reached cleanup with implementation, verification, and delivery explicitly satisfied or skipped. ${source.detail} Maintenance may clean source debt, but it cannot infer that the objective or acceptance criteria are complete.`;
-  }
-  return `Cleanup-ready WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority. ${source.detail} Explicit full maintenance may finish cleanup while retaining durable evidence.`;
+  return `Observed stale Work: repository source has no unique live changes, but liveness/legacy phase facts do not authorize semantic cancellation or completion. ${source.detail} Use explicit Work semantic CAS to close the Work.`;
 }
 
 function scanRetainedWorktreeCandidates(
@@ -814,7 +801,7 @@ function scanRetainedWorktreeCandidates(
     if (normalized === resolve(repository.canonicalRoot) || currentOwnedPaths.has(normalized)) continue;
     const migrated = retainedByPath.get(normalized);
     if (migrated) {
-      const completed = migrated.work.status === 'completed';
+      const completed = semanticWorkState(migrated.work) === 'completed';
       candidates.push({
         kind: 'retained_migrated_work',
         id: migrated.work.workId,
@@ -863,7 +850,7 @@ function scanRetainedWorktreeCandidates(
     // path outside current Git inventory only remains lifecycle debt when its
     // worktree .git marker still exists for manual reconciliation.
     if (!existsSync(join(normalized, '.git'))) continue;
-    const completed = migrated.work.status === 'completed';
+    const completed = semanticWorkState(migrated.work) === 'completed';
     candidates.push({
       kind: 'retained_migrated_work',
       id: migrated.work.workId,
@@ -961,7 +948,7 @@ function scanStaleWorkContractCandidates(
 ): RuntimeMaintenanceCandidate[] {
   const nowMs = Date.now();
   return snapshot.contracts
-    .filter((contract) => !isTerminalWorkContractStatus(contract.status))
+    .filter((contract) => semanticWorkState(contract) === 'open')
     .map((contract) => {
       const updatedMs = Date.parse(contract.updatedAt);
       const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
@@ -981,21 +968,20 @@ function scanStaleWorkContractCandidates(
     }))
     .map(({ contract, ageMinutes, source }) => {
       const legacyRemotePlacement = isLegacyImplicitRemoteEffectPlacement(contract);
-      const semanticReady = staleWorkSemanticTerminalizationReady(contract);
       return {
         kind: 'stale_work_contract' as const,
         id: contract.workId,
         path: source.path,
         status: contract.status,
-        safe: legacyRemotePlacement ? source.safeToCancel : source.safeToCancel && semanticReady,
-        reason: legacyRemotePlacement ? source.detail : staleWorkCandidateReason(source, semanticReady),
+        safe: legacyRemotePlacement ? source.safeToCancel : false,
+        reason: legacyRemotePlacement ? source.detail : staleWorkCandidateReason(source),
         ageMinutes,
         suggestedAction: 'full_maintenance_pass' as const,
         ownershipStatus: 'explicit' as const,
         sourceState: source.state,
         disposition: !source.safeToCancel
           ? ('source_preservation_required' as const)
-          : !legacyRemotePlacement && !semanticReady
+          : !legacyRemotePlacement
             ? ('semantic_completion_required' as const)
             : undefined,
       };
@@ -1048,7 +1034,7 @@ export function applyStaleWorkContractMaintenanceCandidate(
   candidate: RuntimeMaintenanceCandidate,
 ): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, candidate.id);
-  if (!work || isTerminalWorkContractStatus(work.status)) {
+  if (!work || semanticWorkState(work) !== 'open') {
     return { ...candidate, applied: false, result: 'already_terminal' };
   }
 
@@ -1057,7 +1043,7 @@ export function applyStaleWorkContractMaintenanceCandidate(
   // serialized by the canonical Work store writer; ControllerSession ownership is
   // continuation state and cannot fence maintenance of semantic Work.
   const current = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
-  if (!current || isTerminalWorkContractStatus(current.status)) {
+  if (!current || semanticWorkState(current) !== 'open') {
     return { ...candidate, applied: false, result: 'already_terminal' };
   }
   const authorityRefs = activeWorkAuthorityRefs(current, buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome));
@@ -1077,7 +1063,7 @@ export function applyStaleWorkContractMaintenanceCandidate(
           ...candidate,
           path: source.path ?? candidate.path,
           safe: false,
-          reason: isLegacyImplicitRemoteEffectPlacement(current) ? source.detail : staleWorkCandidateReason(source, staleWorkSemanticTerminalizationReady(current)),
+          reason: isLegacyImplicitRemoteEffectPlacement(current) ? source.detail : staleWorkCandidateReason(source),
           sourceState: source.state,
           disposition: 'source_preservation_required' as const,
           applied: false,
@@ -1087,36 +1073,15 @@ export function applyStaleWorkContractMaintenanceCandidate(
   if (isLegacyImplicitRemoteEffectPlacement(current)) {
         return detachLegacyRemoteEffectPlacement(repository, controllerHome, current, candidate);
       }
-  const semanticReady = staleWorkSemanticTerminalizationReady(current);
-  if (!semanticReady) {
-        return {
-          ...candidate,
-          path: source.path ?? candidate.path,
-          safe: false,
-          reason: staleWorkCandidateReason(source, false),
-          sourceState: source.state,
-          disposition: 'semantic_completion_required' as const,
-          applied: false,
-          result: 'work_semantic_completion_required',
-        };
-      }
-  cancelWorkContract(
-        { controllerHome, repoId: repository.repoId },
-        current.workId,
-        {
-          summary: 'Cancelled by explicit full maintenance after the Work had already reached cleanup with prior semantic phases satisfied and no unique live repository source remained; durable evidence retained.',
-          evidenceRefs: current.evidenceRefs,
-        },
-      );
   return {
     ...candidate,
     path: source.path ?? candidate.path,
-    safe: true,
-    reason: staleWorkCandidateReason(source, true),
+    safe: false,
+    reason: staleWorkCandidateReason(source),
     sourceState: source.state,
-    disposition: undefined,
-    applied: true,
-    result: 'work_contract_cancelled_evidence_retained',
+    disposition: 'semantic_completion_required' as const,
+    applied: false,
+    result: 'work_semantic_completion_required',
   };
 }
 
@@ -1140,7 +1105,7 @@ function scanStaleEditSessionCandidates(
     .slice(0, options.maxCandidates)
     .flatMap(({ session, ageMinutes }) => {
       const work = session.workId ? snapshot.workById.get(session.workId) : undefined;
-      const terminalWork = Boolean(work && isTerminalWorkContractStatus(work.status));
+      const terminalWork = Boolean(work && semanticWorkState(work) !== 'open');
       if (work && !terminalWork && activeWorkAuthorityRefs(work, snapshot).length > 0) {
         // The Edit Session inherits the live Work lifecycle authority. Reporting it
         // as stale maintenance debt while that authority is active would duplicate
@@ -1489,7 +1454,7 @@ export function applyRuntimeMaintenance(
     : undefined;
   const currentWork = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
   const protectedWorkIds = currentWork
-    .filter((contract) => !isTerminalWorkContractStatus(contract.status))
+    .filter((contract) => semanticWorkState(contract) === 'open')
     .map((contract) => contract.workId);
   const verificationSnapshotGc = options.actionId === 'full_maintenance_pass'
     ? cleanupStaleWorkVerificationSnapshots(controllerHome, repository.repoId, {

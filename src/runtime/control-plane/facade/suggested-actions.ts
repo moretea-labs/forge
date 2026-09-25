@@ -17,7 +17,6 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
     case 'launcher_start':
     case 'requirement_create':
     case 'requirement_promote_candidate':
-    case 'requirement_continue':
     case 'schedule_create':
     case 'schedule_pause':
     case 'schedule_resume':
@@ -30,7 +29,6 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
       return 'readonly';
     case 'plan_create':
     case 'plan_revise':
-    case 'plan_supersede':
       return 'workspace_write';
     case 'plan_get':
     case 'plan_list':

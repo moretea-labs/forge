@@ -64,6 +64,7 @@ export function buildChatgptControllerRoundPrompt(
     '如果最新 durable state 表明 Requirement/Goal 尚有可执行工作，且不存在真实 external blocker、active Handoff 或必须由用户决定的边界，则必须选择 continue_immediately。wait 只用于真实等待条件；wait_for_user 必须绑定 active Handoff；goal_complete 只用于 Requirement/Goal 已语义完成。',
     '提交 continue_immediately 后必须立即 controller_release 当前 Work。controller_release 是立即续跑的 canonical trigger：Forge 将通过现有 ChatGPT launcher 复用 durable conversation binding 并投递下一 ControllerRound prompt。正常连续推进不得依赖用户再次发送“继续”，也不得用 interval schedule 代替该即时 relay；schedule 只能作为故障恢复/watchdog。',
     'Forge 不得自行推断 semantic next step。语义 CAS、真实 UserRequest、具体资源/效果 fence 与外部授权事实分别保持各自权威；Work/controller ownership 不得充当通用语义锁。',
+    'Presentation-only progress：本轮持续较久或包含多轮工具调用时，在关键阶段用 1–2 句 user-visible 进度说明已确认的阶段性结果、当前要做的下一件事、或新发现的 blocker/关键结论。不要逐工具播报，不要输出 private reasoning / chain-of-thought。这些句子只是展示，不构成 completion authority，不进入 durable semantic state，也不影响本轮 disposition 选择。',
   ].join('\n');
 }
 

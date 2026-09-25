@@ -1,5 +1,4 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import {
   admitPlanContractAsync,
   createPlanSemanticContext,
@@ -12,7 +11,6 @@ import {
   planSemanticView,
   revisePlanSemanticContext,
   listPlanSemanticRevisionRecords,
-  supersedePlanContract,
   type CheckDefinitionLike,
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
@@ -23,8 +21,6 @@ const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([
   'plan_list',
   'plan_get',
   'plan_revise',
-  'plan_approve',
-  'plan_supersede',
 ]);
 
 export function isRhWorkLightweightPlanOperation(operation: string): boolean {
@@ -95,22 +91,7 @@ export async function callRhWorkPlanOperation(
       }) as unknown as Record<string, unknown>);
     }
 
-    if (operation === 'plan_approve') {
-      const plan = getPlanContract(store, String(args.plan_id ?? ''));
-      if (!plan) throw new Error(`PlanContract ${String(args.plan_id ?? '')} not found.`);
-      const facade = buildFacadeResult({
-        summary: `PLAN_APPROVE_COMPATIBILITY_NOOP: Plan ${plan.planId} is revisioned model-authored working memory and has no approval transition.`,
-        data: { plan: planSemanticView(plan), executionStarted: false, compatibilityNoop: true },
-      });
-      return result(facade as unknown as Record<string, unknown>);
-    }
-
-    const plan = supersedePlanContract(store, String(args.plan_id ?? ''), String(args.superseded_by ?? ''));
-    const facade = buildFacadeResult({
-      summary: `PlanContract ${plan.planId} superseded by ${plan.supersededBy}.`,
-      data: { plan: summarizePlanContract(plan) },
-    });
-    return result(facade as unknown as Record<string, unknown>);
+    return undefined;
   } catch (error) {
     const currentPlanId = String(args.plan_id ?? '').trim();
     const currentPlan = operation === 'plan_revise' && currentPlanId ? getPlanContract(store, currentPlanId) : undefined;
@@ -341,7 +322,9 @@ export async function callRhWorkPlanCreateOperation(
           admissionDecision: 'reuse_existing',
           resolutionRequired: false,
         },
-        suggestedNextActions: [{ label: 'Approve revised Plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'high' }],
+        // Plan approval is a retired ceremony no-op; the projection must not steer
+        // the model back into it. Reading the current revision is the honest action.
+        suggestedNextActions: [{ label: 'Read current Plan revision', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
       });
       return result(facade as unknown as Record<string, unknown>);
     }
@@ -352,55 +335,7 @@ export async function callRhWorkPlanCreateOperation(
     const facade = buildFacadeResult({
       summary: `PlanContract ${plan.planId} created as draft after atomic authority admission; no execution was started.`,
       data: { plan: summarizePlanContract(plan), executionStarted: false, planContractCreated: true, admissionDecision: 'create_new' },
-      suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
-    });
-    return result(facade as unknown as Record<string, unknown>);
-  } catch (error) {
-    const facade = buildFacadeResult({
-      status: 'blocked',
-      summary: error instanceof Error ? error.message : 'PlanContract operation failed.',
-      data: { operation, executionStarted: false },
-    });
-    return result(facade as unknown as Record<string, unknown>, true);
-  }
-}
-
-
-export interface RhWorkPlanAcceptStepContext {
-  sourceRevision?: string;
-}
-
-type RhWorkPlanAcceptStepStore = PlanContractStoreOptions & { controllerHome: string; repoId: string };
-
-/**
- * Semantic PlanStep acceptance stays in the Plan adapter while exact terminal
- * ControllerRound authority is proven through the canonical authority adapter.
- */
-export function callRhWorkPlanAcceptStepOperation(
-  ctx: MultiRepositoryMcpToolContext,
-  store: RhWorkPlanAcceptStepStore,
-  operation: string,
-  args: Record<string, unknown>,
-  context: RhWorkPlanAcceptStepContext,
-): CallToolResult | undefined {
-  if (operation !== 'plan_accept_step') return undefined;
-  try {
-    void ctx;
-    void context;
-    const planId = String(args.plan_id ?? '').trim();
-    const stepId = String(args.plan_step_id ?? '').trim();
-    const plan = getPlanContract(store, planId);
-    if (!plan) throw new Error(`PlanContract ${planId} not found.`);
-    const stepExists = plan.steps.some((candidate) => candidate.id === stepId);
-    if (!stepExists) throw new Error(`Plan step ${stepId} not found in ${planId}.`);
-    const facade = buildFacadeResult({
-      summary: `PLAN_ACCEPT_STEP_COMPATIBILITY_NOOP: Plan item ${stepId} is descriptive working memory; acceptance is not a semantic transition. Revise Plan content explicitly if model-authored progress changed.`,
-      data: {
-        plan: planSemanticView(plan),
-        semanticAcceptanceRecorded: false,
-        compatibilityNoop: true,
-      },
-      suggestedNextActions: [{ label: 'Read current Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
+      suggestedNextActions: [{ label: 'Read current Plan revision', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
     });
     return result(facade as unknown as Record<string, unknown>);
   } catch (error) {

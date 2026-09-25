@@ -5,9 +5,9 @@ import { getEditSession, listEditSessions, type EditSession } from '../../../cli
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { runProcess } from '../../../effects/process-runner';
-import { getWorkContract, implementationReviewChangedPathDigest, updateWorkContract } from '../../../../packages/kernel/work/api/index';
-import { completeWorkWithReceipt } from './work-completion-authority';
-import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkContract, type WorkReconciliationRecord } from '../facade/types';
+import { getWorkContract, implementationReviewChangedPathDigest, semanticWorkState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { recordWorkDeliveryReceipt } from './work-completion-authority';
+import { isDirectEditWorkCompletionReceipt, type DirectEditWorkCompletionReceipt, type WorkContract, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
 import { readWorkHandle, transitionWorkHandle, type WorkHandleState } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
@@ -21,8 +21,8 @@ import {
   type ImplementationReviewCandidateIdentity,
 } from '../../../../packages/kernel/work/api/index';
 
-export interface DirectEditWorkCompletionReconciliation {
-  completedWorkIds: string[];
+export interface DirectEditWorkDeliveryReconciliation {
+  deliveredWorkIds: string[];
   examinedSessionIds: string[];
   skipped: Array<{ sessionId: string; workId?: string; reason: string }>;
   targetBranch?: string;
@@ -109,7 +109,7 @@ export function prepareReviewedDirectEditWorkCommit(input: {
   if (session.checkoutId && session.checkoutId !== input.repository.activeCheckoutId) throw new Error('DIRECT_EDIT_WORK_COMMIT_CHECKOUT_MISMATCH');
   const workId = session.workId!;
   const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, workId);
-  if (!work || work.completionReceipt || isTerminalWorkContractStatus(work.status)) throw new Error(`DIRECT_EDIT_WORK_COMMIT_WORK_NOT_ACTIVE: ${workId}`);
+  if (!work || work.completionReceipt || semanticWorkState(work) !== 'open') throw new Error(`DIRECT_EDIT_WORK_COMMIT_WORK_NOT_ACTIVE: ${workId}`);
   if (work.checkoutId && work.checkoutId !== input.repository.activeCheckoutId) throw new Error('DIRECT_EDIT_WORK_COMMIT_WORK_CHECKOUT_MISMATCH');
   assertWorkPathsWithinScope(work, paths, {
     forbidden: 'DIRECT_EDIT_WORK_COMMIT_FORBIDDEN_PATH',
@@ -159,15 +159,15 @@ export function prepareReviewedDirectEditWorkCommit(input: {
   return { workId, editSessionId: session.sessionId, changedPaths: paths, preCommitCandidate: candidate, preCommitContentFingerprint: contentFingerprint };
 }
 
-/** Complete the exact pre-gated Direct Edit Work after the physical commit. */
-export function completeReviewedDirectEditWorkAfterCommit(input: {
+/** Record exact reviewed Direct Edit delivery after the physical commit. Semantic Work remains independent. */
+export function recordReviewedDirectEditDeliveryAfterCommit(input: {
   controllerHome: string;
   repository: RepositoryRecord;
   plan: ReviewedDirectEditWorkCommitPlan;
   fallbackBranch?: string;
-}): DirectEditWorkCompletionReconciliation {
+}): DirectEditWorkDeliveryReconciliation {
   const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.plan.workId);
-  if (!work || work.completionReceipt || isTerminalWorkContractStatus(work.status)) {
+  if (!work || work.completionReceipt || semanticWorkState(work) !== 'open') {
     throw new Error(`DIRECT_EDIT_WORK_COMMIT_WORK_NOT_ACTIVE: ${input.plan.workId}`);
   }
   const postStatus = repositoryGitStatus(input.repository);
@@ -219,7 +219,7 @@ export function completeReviewedDirectEditWorkAfterCommit(input: {
     verifiedAt: recordedAt,
     recordedAt,
   };
-  completeWorkWithReceipt(
+  recordWorkDeliveryReceipt(
     { controllerHome: input.controllerHome, repoId: input.repository.repoId },
     input.plan.workId,
     receipt,
@@ -227,7 +227,7 @@ export function completeReviewedDirectEditWorkAfterCommit(input: {
     'repository_change',
   );
   return {
-    completedWorkIds: [input.plan.workId],
+    deliveredWorkIds: [input.plan.workId],
     examinedSessionIds: [input.plan.editSessionId],
     skipped: [],
     targetBranch,
@@ -243,7 +243,7 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
   committedPaths: string[];
   fallbackBranch?: string;
   limit?: number;
-}): DirectEditWorkCompletionReconciliation {
+}): DirectEditWorkDeliveryReconciliation {
   const targetRevisionResult = git(input.repoRoot, ['rev-parse', '--verify', 'HEAD']);
   const targetRevision = targetRevisionResult.ok ? targetRevisionResult.stdout.trim() : undefined;
   const branchResult = git(input.repoRoot, ['branch', '--show-current']);
@@ -252,7 +252,7 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
     : input.fallbackBranch?.trim();
   const committedPathSet = new Set(input.committedPaths);
   const examinedSessionIds: string[] = [];
-  const skipped: DirectEditWorkCompletionReconciliation['skipped'] = [];
+  const skipped: DirectEditWorkDeliveryReconciliation['skipped'] = [];
   for (const summary of listEditSessions(input.repoRoot, input.limit ?? 200)) {
     const session = getEditSession(input.repoRoot, summary.sessionId);
     if (session.status !== 'finalized' || !session.workId) continue;
@@ -269,10 +269,10 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
   }
   // Historical helper intentionally never completes new Work. New delivery must
   // pass prepareReviewedDirectEditWorkCommit() before commit and
-  // completeReviewedDirectEditWorkAfterCommit() afterward. Already-delivered
+  // recordReviewedDirectEditDeliveryAfterCommit() afterward. Already-delivered
   // recovery remains explicit through acceptReviewedDirectEditWorkReconciliation,
   // whose completion receipt is cross-bound to a durable reconciliationId.
-  return { completedWorkIds: [], examinedSessionIds, skipped, targetBranch, targetRevision };
+  return { deliveredWorkIds: [], examinedSessionIds, skipped, targetBranch, targetRevision };
 }
 
 export interface ReviewedDirectEditWorkReconciliationInput {
@@ -361,7 +361,7 @@ function isStalePreMutationDirectOwnershipRecovery(
   const targetBranch = input.targetBranch.trim();
   if (
     work.workKind !== 'repository_change'
-    || isTerminalWorkContractStatus(work.status)
+    || semanticWorkState(work) !== 'open'
     || !baseRevision
     || !target
     || !targetBranch
@@ -395,7 +395,7 @@ function reviewedMaterializedDirectOwnershipRecovery(
   const targetBranch = input.targetBranch.trim();
   if (
     work.workKind !== 'repository_change'
-    || isTerminalWorkContractStatus(work.status)
+    || semanticWorkState(work) !== 'open'
     || !originalBase
     || !target
     || !targetBranch
@@ -494,9 +494,9 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     targetRevision: input.targetRevision,
   });
   const historicalEffectRecovery = !currentHandle
-    && !isTerminalWorkContractStatus(work.status)
+    && semanticWorkState(work) === 'open'
     && (work.workKind === 'local_effect' || work.workKind === 'remote_effect');
-  if ((isTerminalWorkContractStatus(work.status) && !failedReviewedRecovery)
+  if ((semanticWorkState(work) !== 'open' && !failedReviewedRecovery)
     || (work.workKind !== 'repository_change' && !historicalEffectRecovery)) {
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_NOT_ELIGIBLE: ${input.workId}`);
   }
@@ -617,7 +617,7 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     verifiedAt,
     recordedAt,
   };
-  completeWorkWithReceipt(
+  recordWorkDeliveryReceipt(
     { controllerHome: input.controllerHome, repoId: input.repoId },
     input.workId,
     receipt,

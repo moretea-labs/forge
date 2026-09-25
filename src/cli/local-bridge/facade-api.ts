@@ -1071,7 +1071,6 @@ export function startConsoleWork(
     requireWorktree?: boolean;
     directMainProhibited?: boolean;
     approvalConfirmed?: boolean;
-    forceMode?: 'direct_control' | 'goal_workloop' | 'handoff_only';
     checkIds?: string[];
   },
 ): FacadeResult {
@@ -1113,7 +1112,6 @@ export function startConsoleWork(
       },
       requestedBy: 'user',
       approvalConfirmed: input.approvalConfirmed === true,
-      forceMode: input.forceMode,
     },
   );
 }
@@ -1294,7 +1292,6 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
     requireWorktree: typeof payload.requireWorktree === 'boolean' ? payload.requireWorktree : undefined,
     directMainProhibited: typeof payload.directMainProhibited === 'boolean' ? payload.directMainProhibited : undefined,
     approvalConfirmed: true,
-    forceMode: 'goal_workloop',
     checkIds: strings(payload.checkIds),
   });
 

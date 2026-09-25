@@ -6,15 +6,16 @@ import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, claimStalledControllerRoundRelays, controllerRoundProviderEffectId, finishControllerRoundRelayDispatch, getRequirementControllerRoundRelay, recoverControllerRoundRelayAuthority, submitControllerRoundDisposition } from '../../packages/kernel/controller/api/index';
-import { cancelWorkContract, createWorkContract, implementationReviewChangedPathDigest, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../packages/kernel/work/api/index';
+import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { parseSupervisorCompletion, renderSupervisorPrompt, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
+import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../adapters/chatgpt/work-conversation-binding-store';
+import { CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, chatgptProviderPageFailure, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -94,6 +95,14 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       checkpoint: 'protocol-ready', reason: 'continue', evidence: ['identity-bound'],
     })}\n${SUPERVISOR_BLOCK_END}`);
     expect(parsed.proposal).toMatchObject({ conversationId: 'abababab-cdcd-efef-1212-343434343434', taskId: 'task-supervisor-action-contract', supervisorState: 'running', activeScope: 'requirement:REQ-protocol' });
+    expect(prompt).toContain(SUPERVISOR_BLOCK_START);
+    expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
+    const legacy = parseSupervisorCompletion(`${LEGACY_SUPERVISOR_BLOCK_START}\n${JSON.stringify({
+      action: 'CONTINUE', conversation_id: 'abababab-cdcd-efef-1212-343434343434', task_id: 'task-supervisor-action-contract',
+      supervisor_state: 'running', active_scope: 'requirement:REQ-protocol', source_effect_id: 'fx_12345678',
+      checkpoint: 'legacy-readable', reason: 'compatibility', evidence: ['legacy-wire'],
+    })}\n${LEGACY_SUPERVISOR_BLOCK_END}`);
+    expect(legacy.proposal.checkpoint).toBe('legacy-readable');
   });
 
   test('keeps normal continuation minimal while recovery retains bounded restoration context', () => {
@@ -495,7 +504,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(control.browserTasks()).toHaveLength(1);
     expect(getRequirementControllerRoundRelay(fx.store, requirementId)?.status).toBe('dispatching');
 
-    cancelWorkContract(fx.store, workId, { summary: 'Canonical cancellation for Supervisor reconciliation.' });
+    reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'cancelled' });
     expect(control.browserTasks()).toEqual([]);
     expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toMatchObject({ status: 'failed', originWorkId: workId });
     expect(() => control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` })).toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
@@ -528,27 +537,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     control.reserveEnrollment(taskId);
     expect(control.browserTasks()).toHaveLength(1);
 
-    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
-    const recordedAt = '2026-09-19T00:00:00.000Z';
-    transitionWorkContractPhase(fx.store, workId, {
-      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Canonical no-change Work verified for terminal projection coverage.',
-    });
-    requestWorkImplementationReview(fx.store, workId, 'Review canonical completed Work projection coverage.');
-    recordWorkImplementationReview(fx.store, workId, {
-      schemaVersion: 1, reviewId: 'REV-supervisor-completed-reconcile', workId, reviewerPrincipalId: 'test-reviewer',
-      decision: 'approved', rationale: 'The no-change fixture is reviewed before canonical completion.', findings: [],
-      sourceRevision: targetRevision, workspaceFingerprint: 'supervisor-completed-content',
-      verificationWorkspaceFingerprint: 'supervisor-completed-verification', changedPaths: [],
-      changedPathDigest: implementationReviewChangedPathDigest([]),
-      acceptanceCriteriaSummary: 'completed Work cannot remain active outer-turn authority',
-      verificationEvidence: [], architectureEvidence: [], recordedAt,
-    });
-    recordWorkCompletionReceipt(fx.store, workId, {
-      schemaVersion: 1, receiptId: 'receipt-supervisor-completed-reconcile', source: 'controller_work',
-      issueId: 'supervisor-completed-reconcile', taskId: workId, workId, targetBranch: 'main', targetRevision, changedPaths: [],
-      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
-      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
-    }, 'completed_no_change', 'completed_no_change');
+    reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'completed' });
     expect(control.browserTasks()).toEqual([]);
     expect(() => control.browserPoll({ conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}` })).toThrow('WORKFLOW_SUPERVISOR_BROWSER_TASK_INACTIVE');
   });
@@ -636,6 +625,83 @@ test('provider recovery is a single exactly-once resume and does not recurse thr
   expect(exhausted.state).toBe('exhausted');
   expect(store.providerResumeExhausted(resume.effectId)).toBe(true);
   expect(control.reserveSchedulerRecovery(taskId, 'legacy-retry')).toBeUndefined();
+});
+
+test('Resume stream unavailable reserves exactly one same-conversation recovery effect and never replays the applied effect', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-stream-unavailable-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-stream-unavailable';
+  const conversationId = '12121212-1212-1212-1212-121212121212';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl,
+    objective: 'Resume after a provider stream loss.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+  });
+
+  // A real dispatch of the enrollment effect so "never replay" is observable.
+  const effect = control.reserveEnrollment(taskId);
+  const began = control.browserBeginEffect({
+    conversationId, conversationUrl, effectId: effect.effectId, dispatchId: 'dispatch-enrollment-1', dispatchGeneration: 1,
+    evidence: { surface: 'test', latest_user_text: '@forge enrollment', latest_assistant_response: '' },
+  });
+  expect(began.started).toBe(true);
+  control.observeEffect({ effectId: effect.effectId, observationId: 'stream-applied', outcome: 'applied' });
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+
+  // Direct delivery and durable Supervisor observation share one detector, and a
+  // stream loss is always outcome-unknown rather than a retryable failure.
+  const failureCode = chatgptProviderPageFailure('Resume stream unavailable');
+  expect(failureCode).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+  expect(classifyChatgptProviderFailure(failureCode!)).toBe('outcome_unknown');
+
+  const observed = control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: false, latestAssistantResponse: '',
+    providerFailureCode: failureCode!, observedAtMs: 1_000, graceMs: 1_000,
+  });
+  expect(observed.state).toBe('recovery_reserved');
+  const recovery = observed.recoveryEffect!;
+  expect(recovery.kind).toBe('recovery');
+  expect(recovery.effectId).not.toBe(effect.effectId);
+
+  // Durable authority deduplicates: a second reservation attempt with a different
+  // candidate id returns the same single recovery effect.
+  const repeated = store.observeProviderTurn({
+    taskId, effectId: effect.effectId, generating: false, assistantDigest: 'stream-digest',
+    providerFailureCode: failureCode!, observedAtMs: 2_000, graceMs: 1_000,
+    recovery: { effectId: 'fx_10101010101010101010101010101010', prompt: 'must-not-send' },
+  });
+  expect(repeated.state).toBe('recovery_reserved');
+  expect(repeated.recoveryEffect?.effectId).toBe(recovery.effectId);
+
+  // A repeated control-plane observation must not manufacture a further effect.
+  const reobserved = control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: false, latestAssistantResponse: '',
+    providerFailureCode: failureCode!, observedAtMs: 2_500, graceMs: 1_000,
+  });
+  expect(reobserved.state).toBe('none');
+
+  // The single recovery effect resumes on the exact same conversation.
+  const poll = control.browserPoll({ conversationId, conversationUrl });
+  expect(poll.command).toMatchObject({ mode: 'send', kind: 'recovery', effectId: recovery.effectId, conversationId });
+
+  // The applied source effect is never re-dispatched: its generation is unchanged
+  // and only canonical not-applied proof could ever advance it.
+  expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+  expect(() => store.recordEffectDispatchStarted(effect.effectId, 2, 'dispatch-enrollment-2'))
+    .toThrow('WORKFLOW_SUPERVISOR_EFFECT_ALREADY_APPLIED');
+
+  // A provider failure on the recovery resume itself terminates the chain instead
+  // of recursively producing unlimited recovery effects.
+  control.observeEffect({ effectId: recovery.effectId, observationId: 'recovery-applied', outcome: 'applied' });
+  const exhausted = control.browserObserveProviderTurn({
+    conversationId, conversationUrl, generating: false, latestAssistantResponse: '',
+    providerFailureCode: failureCode!, observedAtMs: 3_000, graceMs: 1_000,
+  });
+  expect(exhausted.state).toBe('exhausted');
+  expect(exhausted.recoveryEffect).toBeUndefined();
+  expect(store.providerResumeExhausted(recovery.effectId)).toBe(true);
 });
 
 test('browserTasks keeps an applied external effect observable while lower ControllerRound waits', () => {

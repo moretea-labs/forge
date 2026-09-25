@@ -15,17 +15,18 @@ import {
   appendVerificationRecord,
   appendWorkEvidence,
   appendWorkHandoffRef,
-  cancelWorkContract,
   createWorkContract,
   failWorkContract,
   getWorkContract,
   isTerminalWorkContractStatus,
+  semanticWorkState,
   listWorkContracts,
   readActiveWorkCandidates,
   recordWorkEvidenceState,
   recordWorkScopeEvidence,
   recordWorkImplementationReview,
   requestWorkImplementationReview,
+  reviseWorkSemanticContext,
   summarizeWorkContract,
   transitionWorkContractPhase,
   updateWorkContract,
@@ -39,7 +40,7 @@ import {
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
-import { completeWorkWithReceipt } from '../execution/work-completion-authority';
+import { recordWorkDeliveryReceipt } from '../execution/work-completion-authority';
 import { effectiveCurrentWorkVerificationRecords, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
 import { currentRequirementSemanticRevision, readRequirement } from '../persistence/requirement-store';
 import {
@@ -134,7 +135,6 @@ export interface GoalWorkloopStartInput {
   issueId?: string;
   approvalConfirmed?: boolean;
   dryRun?: boolean;
-  forceMode?: WorkContract['mode'];
   planId?: string;
   planStepId?: string;
   /** Explicit technical evidence shape chosen by the semantic Controller. Never inferred from objective/check text. */
@@ -171,6 +171,8 @@ export interface GoalWorkloopContinueInput {
     classification: 'same_root_cause' | 'same_root_cause_scope_extension' | 'unrelated';
     rationale: string;
     semanticScopeKeys?: string[];
+    /** Required for classification=unrelated: the exact Work that already owns the blocker. */
+    linkedWorkId?: string;
   };
 }
 
@@ -285,11 +287,6 @@ function workIdFor(objective: string): string {
   return `work-${slug}-${randomUUID().slice(0, 8)}`;
 }
 
-function linkedEngineeringBlockerWorkId(parentWorkId: string, blockerId: string): string {
-  const digest = createHash('sha256').update(`${parentWorkId}\0${blockerId.trim()}`).digest('hex').slice(0, 24);
-  return `work-linked-engineering-blocker-${digest}`;
-}
-
 function handoffIdFor(prefix: string): string {
   return `hnd-${prefix}-${randomUUID().slice(0, 8)}`;
 }
@@ -309,16 +306,19 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
 
 function resolvedWorkKindFor(input: GoalWorkloopStartInput): WorkKind {
   if (input.workKind) return input.workKind;
-  // allowed_paths and discovery hints do not prove repository mutation. External
-  // effects become repository_change only when the caller declares source-change
-  // intent; task size never selects the execution mode or provider.
-  const repositoryChangeIntent = (input.modeInput.expectedFiles ?? 0) > 0
-    || (input.modeInput.expectedChangedLines ?? 0) > 0;
   const typedRecoverableReadOnlyReview = input.modeInput.mutation === false
     && input.modeInput.requiresInvestigation === true
     && input.modeInput.requiresRecovery === true;
   if (typedRecoverableReadOnlyReview) return 'read_only_review';
-  if (input.modeInput.requiresExternalEffect === true && !repositoryChangeIntent) {
+  if (input.modeInput.requiresExternalEffect === true) {
+    // Predicted scope size is model strategy, never Work-kind classification
+    // authority. allowed_paths and discovery hints do not prove repository
+    // mutation either, so an ambiguous "external effect + predicted scope" input
+    // fails closed instead of letting Forge guess between a pure effect and an
+    // implementation-plus-publish Work. The caller declares work_kind to decide.
+    const predictedScopeSupplied = (input.modeInput.expectedFiles ?? 0) > 0
+      || (input.modeInput.expectedChangedLines ?? 0) > 0;
+    if (predictedScopeSupplied) throw new Error('WORK_KIND_REQUIRED_FOR_EXTERNAL_EFFECT_WITH_PREDICTED_SCOPE');
     return input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect';
   }
   return 'repository_change';
@@ -453,7 +453,7 @@ export function routeWorkStart(
     ? resolveContextPlane({
         controllerHome: ctx.workStore.controllerHome,
         scopes: contextScopes,
-        intent: input.modeInput.routePolicyInput?.intent.taskIntent ?? 'implementation',
+        intent: 'implementation',
         now: nowIso(ctx),
       })
     : undefined;
@@ -481,143 +481,43 @@ export function routeWorkStart(
       ? false
       : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
-  if (effectiveModeInput.explicitMode === 'scale' && (!input.planId || !ctx.planStore)) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: 'SCALE_PLAN_REQUIRED: explicit Scale execution requires a durable semantic Plan context.',
-      data: { executionStarted: false, workContractCreated: false, planRequired: true, explicitMode: 'scale' },
-    });
-  }
-  const applyForcedMode = (selected: ReturnType<typeof selectExecutionMode>) => input.forceMode
-    ? {
-        ...selected,
-        mode: input.forceMode,
-        reason: `Forced mode: ${input.forceMode}. ${selected.reason}`,
-        createWorkContract: input.forceMode === 'handoff_only' ? false : selected.requiresWork,
-        createHandoff: input.forceMode === 'handoff_only',
-      }
-    : selected;
-  const evaluateAccessPolicy = (selected: ReturnType<typeof selectExecutionMode>) => evaluatePolicyGate({
-    capabilityId: selected.mode === 'direct_control' ? 'repository.direct_edit' : selected.mode === 'goal_workloop' ? 'controller.goal_workloop' : 'controller.handoff_inbox',
+  // Compatibility mode tokens are accepted by older clients but never choose
+  // whether rh_work creates Work. Invoking this path is already the explicit
+  // model/user decision to use durable Work.
+  const applyForcedMode = (selected: ReturnType<typeof selectExecutionMode>) => ({
+    ...selected,
+    mode: 'goal_workloop' as const,
+    createWorkContract: true,
+    createHandoff: false,
+    requiresWork: true,
+  });
+  const evaluateAccessPolicy = () => evaluatePolicyGate({
+    capabilityId: 'controller.goal_workloop',
     risk: effectiveModeInput.risk
       ?? (input.modeInput.secretAccess === true ? 'raw_secret_config'
         : input.modeInput.destructive === true ? 'destructive'
           : input.modeInput.remoteWrite === true ? 'remote_write'
             : input.modeInput.requiresApproval === true || input.modeInput.requiresUserApproval === true ? 'workspace_write'
-              : selected.mode === 'direct_control' ? 'local_repo_write'
-                : selected.mode === 'goal_workloop' ? 'workspace_write'
-                  : 'readonly'),
+              : 'workspace_write'),
     accessMode: input.constraints?.accessMode,
     approvalConfirmed: input.approvalConfirmed === true,
     dryRun: input.dryRun === true,
-    directEditBoundary: {
-      scopeClear: effectiveModeInput.scopeClear,
-      maxChangedFiles: effectiveModeInput.expectedFiles,
-      maxChangedLines: effectiveModeInput.expectedChangedLines,
-      pathsExplicit: effectiveModeInput.scopeClear,
-    },
   });
 
-  let selectedMode = selectExecutionMode(effectiveModeInput);
-  if (input.forceMode === 'direct_control' && selectedMode.routeDecision.requiresIsolation) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: 'WORKSPACE_PLACEMENT_DIRECT_CONTROL_FORBIDDEN: typed placement requires isolation, so force_mode=direct_control cannot override admission policy.',
-      data: { executionStarted: false, workContractCreated: false, routeDecision: selectedMode.routeDecision },
-      rawAvailable: false,
-    });
-  }
-  let policy = evaluateAccessPolicy(selectedMode);
-  if (policy.decision === 'allowed' && effectiveModeInput.requiresUserApproval !== true) {
-    selectedMode = selectExecutionMode({ ...effectiveModeInput, approvalConfirmed: true });
-    policy = evaluateAccessPolicy(selectedMode);
-  }
-  let mode = applyForcedMode(selectedMode);
-  const routeApprovalRequired = mode.routeDecision.requiresApproval
-    && mode.routeDecision.waitForUser
-    && mode.routeDecision.approvalState !== 'blocked_by_policy';
-  const approvalRequired = policy.decision === 'approval_required' || routeApprovalRequired;
+  const selectedMode = selectExecutionMode(effectiveModeInput);
+  const policy = evaluateAccessPolicy();
+  const mode = applyForcedMode(selectedMode);
+  const approvalRequired = policy.decision === 'approval_required';
 
-  // Route Policy is the sole execution-depth authority. Existing Work is
-  // ownership context, not a reason to upgrade an otherwise Direct operation
-  // into Durable Work. Explicit Work/Plan ownership is resolved only after a
-  // durable route has already been selected; checkout writer conflicts affect
-  // placement, not semantic task identity.
-
-  if (mode.mode === 'direct_control') {
-    const available = ctx.availableChecks ?? [];
-    const normalized = normalizeCheckIds(input.checks ?? [], available);
-    // Explicit ownership may annotate a Direct operation, but it never changes
-    // the RouteDecision. The actual repository mutation can pass this Work id
-    // to repository_safe_patch_apply / repository_command_execute for evidence
-    // attribution while staying on the Direct/Process path.
-    const directAdmissionSnapshot = input.relatedWorkId
-      ? readActiveWorkCandidates({ ...ctx.workStore, limit: 100 })
-      : { contracts: [], invalid: [] };
-    const invalidDirectOwner = directAdmissionSnapshot.invalid.find((candidate) =>
-      candidate.workId === input.relatedWorkId);
-    if (invalidDirectOwner) {
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `WORK_ADMISSION_INVALID_OWNER: ${invalidDirectOwner.workId} is malformed and cannot be used as Direct Control ownership authority.`,
-        data: { executionStarted: false, workContractCreated: false, invalidWorkId: invalidDirectOwner.workId, invalidWorkError: invalidDirectOwner.error },
-      });
-    }
-    const directOwnershipCandidates = directAdmissionSnapshot.contracts
-      .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
-    const directOwner = (input.relatedWorkId
-      ? directOwnershipCandidates.find((candidate) => candidate.workId === input.relatedWorkId)
-      : undefined);
-    const suggested = validateSuggestedNextActions([
-      {
-        label: 'Apply bounded direct edit',
-        tool: 'rh_work',
-        operation: 'start',
-        payload: { mode: 'direct_control', objective: input.objective.slice(0, 200) },
-        risk: 'local_repo_write',
-        confidence: 'high',
-        reason: 'Small supervised task stays on Direct Control; no WorkContract created.',
-      },
-      ...normalized.suggestedNextActions,
-      {
-        label: 'Read repository context',
-        tool: 'rh_context',
-        operation: 'get',
-        risk: 'readonly',
-        confidence: 'medium',
-      },
-    ], { validCheckIds: normalized.validCheckIds }).actions;
-
-    return buildFacadeResult({
-      status: policy.decision === 'denied' ? 'blocked' : 'ok',
-      summary: `Direct control recommended. No WorkContract created. ${mode.reason}`,
-      data: {
-        mode,
-        policy,
-        workContractCreated: false,
-        directControlPreserved: true,
-        objective: input.objective.slice(0, 1_000),
-        normalizedChecks: normalized,
-        ...(directOwner ? {
-          ownership: {
-            workId: directOwner.workId,
-            relation: input.workRelation ?? 'continue',
-            executionDepthPreserved: true,
-          },
-        } : {}),
-      },
-      warnings: [...policy.warnings, ...normalized.warnings],
-      suggestedNextActions: suggested,
-      rawAvailable: false,
-    });
-  }
+  // Route/provider policy is not execution-depth authority. Existing Work,
+  // Requirement and Plan references are semantic/provenance context; concrete
+  // workspace conflicts affect placement only.
 
   // Policy approval decisions stop before Work creation. Ordinary host-managed local work
   // reaches this point only after the same Route Policy has been replayed with the Access
   // Policy's explicit allowed decision as authorization evidence.
   const blockForHandoff =
-    mode.mode === 'handoff_only'
-    || policy.decision === 'denied'
+    policy.decision === 'denied'
     || policy.decision === 'approval_required';
 
   if (blockForHandoff) {
@@ -631,8 +531,8 @@ export function routeWorkStart(
         : approvalRequired
           ? (input.modeInput.destructive ? 'destructive_action_requires_confirmation' : 'policy_approval_required')
           : 'missing_authorization',
-      reason: mode.reason,
-      summary: `Handoff-only routing: ${mode.reason}`,
+      reason: policy.reason,
+      summary: `Execution blocked by access policy: ${policy.reason}`,
       currentState: {
         repoId: ctx.repoId,
         mode: 'handoff_only',
@@ -672,7 +572,6 @@ export function routeWorkStart(
               requireWorktree: placementConstraint.requireWorktree,
               directMainProhibited: placementConstraint.directMainProhibited,
               approvalConfirmed: true,
-              forceMode: 'goal_workloop',
             },
           }
         : undefined,
@@ -723,14 +622,13 @@ export function routeWorkStart(
     constraints: canonicalConstraints,
     modeInput: effectiveModeInput,
     workKind: effectiveWorkKind,
-  }, policy, 'goal_workloop', mode.routeDecision);
+  }, policy, mode.routeDecision);
 }
 
 export function startGoalWorkloop(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
   policy?: PolicyDecision,
-  executionMode: 'direct_control' | 'goal_workloop' = 'goal_workloop',
   routeDecision = selectExecutionMode({ ...input.modeInput, objective: input.objective, knownPaths: input.allowedPaths }).routeDecision,
 ): FacadeResult {
   const placementResolution = resolveWorkspaceAdmissionConstraint(input.constraints);
@@ -755,12 +653,21 @@ export function startGoalWorkloop(
       { ...ctx, semanticAdmissionLocked: true },
       input,
       policy,
-      executionMode,
       routeDecision,
     ));
   }
   const at = nowIso(ctx);
-  const resolvedWorkKind = resolvedWorkKindFor(input);
+  let resolvedWorkKind: WorkKind;
+  try {
+    resolvedWorkKind = resolvedWorkKindFor(input);
+  } catch (error) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: error instanceof Error ? error.message : 'WORK_KIND_RESOLUTION_INVALID',
+      data: { executionStarted: false, workContractCreated: false },
+      rawAvailable: false,
+    });
+  }
   const workRisk = workRiskFor(input);
   // External-effect risk is governed by authorization/confirmation/receipt
   // semantics. Engineering admission is specifically for repository mutation.
@@ -927,8 +834,7 @@ export function startGoalWorkloop(
   }
   const newWorkWillBeIsolated = placementConstraint.requireWorktree
     || placementConstraint.workspaceMode === 'isolated'
-    || input.modeInput.requiresParallelism === true
-    || routeDecision.requiresIsolation === true;
+    || input.workRelation === 'parallel';
   const invalidSharedWorkspaceOwner = !newWorkWillBeIsolated
     ? activeAdmissionSnapshot.invalid.find((candidate) => candidate.isolation === 'shared'
       && (!candidate.checkoutId || candidate.checkoutId === ctx.checkoutId))
@@ -946,7 +852,7 @@ export function startGoalWorkloop(
   // remain unrelated for semantic admission and meet only in
   // placement/resource arbitration.
   const deterministicTarget = input.relatedWorkId ? explicitRelatedWork : undefined;
-  const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
+  const requestedRelation = input.workRelation;
   // Only strong semantic bindings participate in ownership resolution. An
   // unrelated active Work or a checkout writer is a placement fact, not a
   // semantic candidate for continue/extend/parallel/new_goal.
@@ -1061,13 +967,10 @@ export function startGoalWorkloop(
   const automaticRepositoryIsolation = repositoryWorkspaceParticipant && (
     placementConflict
     || dirtyWorkspaceOwnershipConflict
-    || input.modeInput.requiresParallelism === true
+    || requestedRelation === 'parallel'
   );
-  const needsWorktree = executionMode === 'goal_workloop' && (
-    placementConstraint.requireWorktree
-    || automaticRepositoryIsolation
-    || routeDecision.requiresIsolation === true
-  );
+  const needsWorktree = placementConstraint.requireWorktree
+    || automaticRepositoryIsolation;
   if (!needsWorktree && workspaceOwner && repositoryWorkspaceParticipant) {
     return buildFacadeResult({
       status: 'blocked',
@@ -1104,14 +1007,14 @@ export function startGoalWorkloop(
     ...(needsWorktree ? { workspaceMode: 'isolated' as const, requireWorktree: true } : {}),
     ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
   };
-  const worktreeReason = placementConstraint.requireWorktree || routeDecision.requiresIsolation === true
-    ? 'Typed placement or Route Policy requires isolated execution.'
+  const worktreeReason = placementConstraint.requireWorktree
+    ? 'Typed workspace placement requires isolated execution.'
     : dirtyWorkspaceOwnershipConflict
       ? 'Trusted repository observation found dirty paths outside or ambiguous to the Work path fence; isolated placement prevents unrelated changes from entering Work ownership or verification.'
       : placementConflict
         ? 'The selected checkout is already owned by another active Work; this Work requires isolated placement.'
-        : repositoryWorkspaceParticipant && input.modeInput.requiresParallelism === true
-          ? 'Parallel Work requires isolated placement.'
+        : requestedRelation === 'parallel'
+          ? 'Explicit parallel Work relation requires isolated placement.'
           : 'Current workspace is the stability-first default; isolation remains opt-in.';
   const forgeInstanceId = ctx.workStore.controllerHome
     ? readForgeInstanceIdentity(ctx.workStore.controllerHome)?.instanceId
@@ -1132,7 +1035,7 @@ export function startGoalWorkloop(
     workspaceFingerprint: needsWorktree ? undefined : ctx.workspaceFingerprint,
     routeDecisionFingerprint: routeDecision.inputFingerprint,
     routeDecision,
-    mode: executionMode,
+    mode: 'goal_workloop',
     objective: effectiveObjective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
     constraints: effectiveConstraints,
@@ -1164,11 +1067,9 @@ export function startGoalWorkloop(
     forbiddenPaths: effectiveForbiddenPaths,
     checks: normalized.validCheckIds,
     driver: {
-      preferred: executionMode === 'direct_control'
-        ? 'direct_edit'
-        : input.modeInput.requiresWorker === true ? 'external_controller' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
+      preferred: input.modeInput.requiresWorker === true ? 'external_controller' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
       allowWorker: false,
-      allowDirectEdit: executionMode === 'direct_control' || (input.modeInput.requiresWorker !== true && !needsWorktree),
+      allowDirectEdit: input.modeInput.requiresWorker !== true && !needsWorktree,
     },
     worktreePolicy: {
       required: needsWorktree,
@@ -1202,9 +1103,7 @@ export function startGoalWorkloop(
     status: 'ok',
     summary: terminalContinuationSource
       ? `Successor Work ${work.workId} continues semantic lineage from terminal ${terminalContinuationSource.workId}${resolvedPlanId && resolvedPlanStepId ? ` at ${resolvedPlanId}/${resolvedPlanStepId}` : ''}.`
-      : executionMode === 'direct_control'
-        ? `Direct-control Work lineage started as ${work.workId}.`
-        : `Goal workloop started as ${work.workId}.`,
+      : `Work started as ${work.workId}.`,
     data: {
       // Caller-visible placement facts only. Execution mode tokens, route reasons
       // and RouteDecision are legacy orchestration metadata, not Work semantics.
@@ -1321,43 +1220,34 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     try {
       let linkedWorkId: string | undefined;
       if (input.engineeringBlocker.classification === 'unrelated') {
-        linkedWorkId = linkedEngineeringBlockerWorkId(work.workId, input.engineeringBlocker.blockerId);
-        linkedWork = getWorkContract(ctx.workStore, linkedWorkId);
-        if (!linkedWork) {
-          const linked = routeWorkStart(ctx, {
-            workId: linkedWorkId,
-            objective: `Resolve unrelated blocker ${input.engineeringBlocker.blockerId}: ${input.engineeringBlocker.rationale}`,
-            acceptanceCriteria: [
-              `Resolve blocker ${input.engineeringBlocker.blockerId} without widening Work ${work.workId}.`,
-              'Return bounded evidence or a precise wake/blocker condition to the owning Controller.',
-            ],
-            allowedPaths: [],
-            initialLikelyPaths: [],
-            forbiddenPaths: [],
-            checks: [],
-            modeInput: {
-              scopeClear: false,
-              mutation: false,
-              requiresInvestigation: true,
-              requiresRecovery: true,
-              requiresParallelism: true,
-            },
-            requestedBy: 'chatgpt',
-            relatedWorkId: work.workId,
-            workRelation: 'parallel',
-            requirementId: work.requirementId,
-            workKind: 'investigation',
-            constraints: { accessMode: work.constraints.accessMode },
+        // Forge does not decompose work on the model's behalf. An unrelated blocker
+        // must name the Work that already owns it; the caller creates that Work
+        // explicitly (rh_work start) and passes its exact id here.
+        const declaredLinkedWorkId = input.engineeringBlocker.linkedWorkId?.trim();
+        if (!declaredLinkedWorkId) {
+          return buildFacadeResult({
+            status: 'blocked',
+            summary: 'ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED: an unrelated blocker must name the Work that owns it via linked_work_id; Forge never creates a child Work automatically.',
+            data: { work: summarizeWorkContract(work), linkedWorkCreated: false },
+            suggestedNextActions: [{
+              label: 'Start the owning Work explicitly',
+              tool: 'rh_work',
+              operation: 'start',
+              payload: { objective: `Resolve unrelated blocker ${input.engineeringBlocker.blockerId}: ${input.engineeringBlocker.rationale}` },
+              risk: 'readonly',
+              confidence: 'medium',
+            }],
           });
-          linkedWork = getWorkContract(ctx.workStore, linkedWorkId);
-          if (linked.status !== 'ok' || !linkedWork) {
-            return buildFacadeResult({
-              status: 'blocked',
-              summary: `ENGINEERING_LINKED_WORK_ADMISSION_FAILED: ${linked.summary}`,
-              data: { work: summarizeWorkContract(work), linkedWorkId, linkedWorkCreated: false },
-            });
-          }
         }
+        linkedWork = getWorkContract(ctx.workStore, declaredLinkedWorkId);
+        if (!linkedWork) {
+          return buildFacadeResult({
+            status: 'blocked',
+            summary: `ENGINEERING_BLOCKER_LINKED_WORK_UNKNOWN: ${declaredLinkedWorkId} is not a readable Work.`,
+            data: { work: summarizeWorkContract(work), linkedWorkId: declaredLinkedWorkId, linkedWorkCreated: false },
+          });
+        }
+        linkedWorkId = linkedWork.workId;
       }
       blocker = buildEngineeringBlockerDispositionReceipt({
         sourceRevision: work.engineeringContext.sourceIdentity.revision,
@@ -2111,7 +2001,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  if (work.status === 'cancelled') {
+  if (semanticWorkState(work) === 'cancelled') {
     return buildFacadeResult({
       status: 'blocked',
       summary: `WorkContract ${work.workId} was cancelled; finalize is not allowed.`,
@@ -2119,33 +2009,13 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  // A Work-owned completion receipt is the strongest delivery/cleanup authority.
-  // Physical finalization records status=completed + receipt atomically. A facade
-  // retry must be idempotent and must never re-run weaker pre-delivery evidence
-  // evaluation that could attempt to demote an already completed Work.
-  if (work.status === 'completed' && work.completionReceipt) {
+  if (semanticWorkState(work) === 'completed' && !work.completionReceipt) {
     return buildFacadeResult({
       status: 'ok',
-      summary: `Finalize result: succeeded for ${work.workId}.`,
+      summary: `FINALIZE_COMPATIBILITY_NOOP: Work ${work.workId} is already semantically completed; no delivery/effect receipt is required for semantic closure.`,
       data: {
         work: summarizeWorkContract(work),
-        finalStatus: 'completed',
-        completionReceipt: work.completionReceipt,
-        idempotent: true,
-        hiddenFailure: false,
-      },
-      evidenceRefs: work.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
-    });
-  }
-
-  if (work.semanticState === 'completed' && !work.completionReceipt) {
-    return buildFacadeResult({
-      status: 'ok',
-      summary: `FINALIZE_COMPATIBILITY_NOOP: Work ${work.workId} is already semantically completed. Semantic completion does not create delivery, verification, review, release, or cleanup authority.`,
-      data: {
-        work: summarizeWorkContract(work),
-        finalStatus: 'completed',
+        semanticWorkState: 'completed',
         semanticCompletionOnly: true,
         completionReceipt: null,
         idempotent: true,
@@ -2156,63 +2026,22 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
-  if (workRequiresImplementationReview(work.workKind, currentChangedPaths, work.engineeringContext?.riskClass)) {
-    try {
-      const candidate = currentImplementationReviewCandidate(ctx, work);
-      assertImplementationReviewPreDeliveryBoundary({
-        repoId: work.repoId,
-        workId: work.workId,
-        workKind: work.workKind,
-        reviews: work.implementationReviews,
-        candidate,
-        requiredCheckIds: work.checks,
-        verificationRecords: work.checkRefs,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const reviewDecisionBlocked = /WORK_IMPLEMENTATION_REVIEW_(REQUIRED|STALE|CHANGES_REQUIRED|BLOCKED)/.test(message);
-      if (reviewDecisionBlocked) {
-        transitionWorkContractPhase(ctx.workStore, work.workId, {
-          status: 'running',
-          phase: 'verification',
-          state: 'satisfied',
-          summary: `Current exact verification remains authoritative, but implementation review must be renewed before delivery: ${message}`,
-          evidenceRefs: work.evidenceRefs,
-        });
-        requestWorkImplementationReview(ctx.workStore, work.workId, `Pre-delivery implementation review gate requires a renewed Controller decision: ${message}`);
-        const suggested = validateSuggestedNextActions([implementationReviewSuggestedAction(work.workId)]).actions;
-        const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: message,
-          data: { work: summarizeWorkContract(updated), nextStep: 'review' },
-          suggestedNextActions: suggested,
-        });
-      }
-      transitionWorkContractPhase(ctx.workStore, work.workId, {
-        status: 'running',
-        phase: 'verification',
-        state: 'active',
-        summary: `Pre-delivery review could not prove an exact verified candidate: ${message}`,
-        evidenceRefs: work.evidenceRefs,
-      });
-      const suggested = validateSuggestedNextActions([{
-        label: 'Verify exact candidate',
-        tool: 'rh_work',
-        operation: 'verify',
-        payload: { work_id: work.workId, check_id: work.checks[0] },
-        risk: 'workspace_write',
-        confidence: work.checks[0] ? 'high' : 'medium',
-      }], { validCheckIds: work.checks }).actions;
-      const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: message,
-        data: { work: summarizeWorkContract(updated), nextStep: 'verify' },
-        suggestedNextActions: suggested,
-      });
-    }
+  // A Work-owned delivery/effect receipt is durable physical evidence only.
+  // Re-reading it is idempotent regardless of semantic Work state.
+  if (work.completionReceipt) {
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Finalize result: delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
+      data: {
+        work: summarizeWorkContract(work),
+        deliverySettled: true,
+        completionReceipt: work.completionReceipt,
+        idempotent: true,
+        hiddenFailure: false,
+      },
+      evidenceRefs: work.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read Work before deciding semantic completion', tool: 'rh_work', operation: 'work_get', payload: { work_id: work.workId }, risk: 'readonly' }],
+    });
   }
 
   const completionEvidence = evaluateWorkCompletionEvidence(
@@ -2224,76 +2053,12 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   );
   const history = completionEvidence.history;
 
-  if (input.forceFailed || completionEvidence.status === 'failed') {
-    const updated = failWorkContract(ctx.workStore, work.workId, {
-      phase: work.phase,
-      summary: `Work failed acceptance/finalization while in ${work.phase}: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
-      evidenceRefs: work.evidenceRefs,
-    });
-    return buildFacadeResult({
-      status: 'failed',
-      summary: `Finalize result: failed. Acceptance failures: ${history.acceptanceFailures.join(', ') || 'forced'}.`,
-      data: {
-        work: summarizeWorkContract(updated),
-        finalStatus: 'failed',
-        acceptanceFailures: history.acceptanceFailures,
-        infrastructureIssues: history.infrastructureIssues,
-        invalidCheckIds: history.invalidCheckIds,
-        // Failures are not hidden.
-        hiddenFailure: false,
-      },
-      suggestedNextActions: [
-        {
-          label: 'List handoffs',
-          tool: 'rh_inbox',
-          operation: 'list',
-          risk: 'readonly',
-        },
-      ],
-    });
-  }
-
-  // Weak refs, partial checks, invalid ids, and infrastructure issues never imply successful completion.
-  if (completionEvidence.status === 'incomplete') {
-    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'ready',
-      phase: 'verification',
-      state: 'blocked',
-      summary: `Completion evidence remains incomplete: ${completionEvidence.reasons.join(' ')}`,
-      evidenceRefs: work.evidenceRefs,
-    });
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `Finalize result: waiting_for_review. ${completionEvidence.reasons.join(' ')}`,
-      data: {
-        work: summarizeWorkContract(updated),
-        finalStatus: 'ready',
-        infrastructureIssues: history.infrastructureIssues,
-        invalidCheckIds: history.invalidCheckIds,
-        validPasses: history.validPasses,
-        missingChecks: completionEvidence.missingChecks,
-        durableResultEvidence: completionEvidence.durableResultEvidence,
-        ignoredWeakReferences: {
-          workerRef: Boolean(work.workerRef),
-          worktreeRef: Boolean(work.worktreeRef),
-        },
-        hiddenFailure: false,
-      },
-      suggestedNextActions: [
-        {
-          label: 'Continue workloop',
-          tool: 'rh_work',
-          operation: 'continue',
-          payload: { work_id: work.workId },
-          risk: 'readonly',
-        },
-      ],
-    });
-  }
-
-  // Read-only review completion is semantic no-change authority, not Git delivery.
-  // Findings never gate completion, but the receipt still claims an exact
-  // no-change delivery, so the frozen source/workspace identity must hold.
+  // Verification/review sufficiency is model/user judgment. Finalize may use
+  // concrete evidence to construct a domain receipt, but it never writes a Work
+  // failure/phase or blocks semantic completion based on an engineering workflow.
+  void input.forceFailed;
+  // Read-only review finalization records an exact no-change delivery fact only.
+  // Findings never gate semantic completion; the model/user may later call work_complete.
   if (work.workKind === 'read_only_review' && !work.completionReceipt) {
     const sourceDrift = work.baseRevision?.trim() && ctx.sourceRevision?.trim() && work.baseRevision !== ctx.sourceRevision
       ? `source drifted from frozen base ${work.baseRevision} to ${ctx.sourceRevision}`
@@ -2311,7 +2076,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     }
     const reviewEvidence = work.readOnlyReviewEvidence!;
     const recordedAt = nowIso(ctx);
-    const completed = completeWorkWithReceipt(
+    const delivered = recordWorkDeliveryReceipt(
       ctx.workStore,
       work.workId,
       {
@@ -2332,28 +2097,25 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     );
     return buildFacadeResult({
       status: 'ok',
-      summary: `Finalize result: clean read-only review completed with no source change for ${work.workId}.`,
+      summary: `Finalize result: clean no-change review evidence recorded for ${work.workId}; semantic Work completion remains explicit.`,
       data: {
-        work: summarizeWorkContract(completed),
-        finalStatus: 'completed',
+        work: summarizeWorkContract(delivered),
+        deliverySettled: true,
         completionOutcome: 'completed_no_change',
-        completionReceipt: completed.completionReceipt,
+        completionReceipt: delivered.completionReceipt,
         inspectedPathCount: reviewEvidence.inspectedPaths.length,
         hiddenFailure: false,
       },
-      evidenceRefs: completed.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
+      evidenceRefs: delivered.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read Work before deciding semantic completion', tool: 'rh_work', operation: 'work_get', payload: { work_id: work.workId }, risk: 'readonly' }],
     });
   }
 
-  // For a controller-local effect Work, the semantic Controller's explicit
-  // finalize call is the terminalization decision, but it is admissible only
-  // after durable result evidence exists. Record one canonical Work receipt here
-  // instead of routing an effect-only Work through Git delivery. Remote effects
-  // remain bound to their durable plugin action receipt in the plugin layer.
+  // A controller-local effect finalize records durable result evidence only.
+  // It never decides semantic Work completion. Remote effects follow the same boundary.
   if (work.workKind === 'local_effect' && !work.completionReceipt && completionEvidence.durableResultEvidence) {
     const recordedAt = nowIso(ctx);
-    const completed = completeWorkWithReceipt(
+    const delivered = recordWorkDeliveryReceipt(
       ctx.workStore,
       work.workId,
       {
@@ -2371,45 +2133,35 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     );
     return buildFacadeResult({
       status: 'ok',
-      summary: `Finalize result: succeeded for ${work.workId}.`,
+      summary: `Finalize result: delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
       data: {
-        work: summarizeWorkContract(completed),
-        finalStatus: 'completed',
-        completionReceipt: completed.completionReceipt,
+        work: summarizeWorkContract(delivered),
+        deliverySettled: true,
+        completionReceipt: delivered.completionReceipt,
         validPasses: history.validPasses,
         hiddenFailure: false,
       },
-      evidenceRefs: completed.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
+      evidenceRefs: delivered.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read Work before deciding semantic completion', tool: 'rh_work', operation: 'work_get', payload: { work_id: work.workId }, risk: 'readonly' }],
     });
   }
 
-  // Checks and result evidence are necessary but not sufficient. Delivery and
-  // cleanup must produce the exact Work-owned receipt before Work can become
-  // terminal; a Run exit or a missing receipt is never completion authority.
   if (!work.completionReceipt) {
-    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'ready',
-      phase: 'delivery',
-      state: 'blocked',
-      summary: 'Exact delivery and cleanup completion receipt is required.',
-      evidenceRefs: work.evidenceRefs,
-    });
     return buildFacadeResult({
       status: 'blocked',
-      summary: `Finalize blocked for ${work.workId}: an exact delivery and cleanup completion receipt is required.`,
-      data: { work: summarizeWorkContract(updated), finalStatus: 'ready', completionReceiptRequired: true },
-      suggestedNextActions: [{ label: 'Complete Work delivery and cleanup', tool: 'rh_work', operation: 'finalize', payload: { work_id: work.workId }, risk: 'local_repo_write' }],
+      summary: `Finalize has no concrete delivery/effect receipt for ${work.workId}; semantic Work state is unchanged.`,
+      data: { work: summarizeWorkContract(work), deliverySettled: false, deliveryReceiptRequired: true },
+      suggestedNextActions: [],
     });
   }
 
   const updated = getWorkContract(ctx.workStore, work.workId)!;
   return buildFacadeResult({
     status: 'ok',
-    summary: `Finalize result: succeeded for ${work.workId}.`,
+    summary: `Finalize result: physical delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
     data: {
       work: summarizeWorkContract(updated),
-      finalStatus: 'completed',
+      deliverySettled: Boolean(updated.completionReceipt),
       validPasses: history.validPasses,
       hiddenFailure: false,
     },
@@ -2436,17 +2188,23 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   }
 
   const destructiveCleanup = input.authorizeDestructiveCleanup === true;
-  cancelWorkContract(ctx.workStore, work.workId, {
-    summary: input.reason ? `Stopped: ${input.reason}` : 'Work stopped without destructive cleanup.',
-    evidenceRefs: work.evidenceRefs,
-  });
-  const updated = updateWorkContract(ctx.workStore, work.workId, {
-    continuationPrompt: input.reason
-      ? `Stopped: ${input.reason}`.slice(0, 2_000)
-      : work.continuationPrompt,
-    // Authorization is not proof of cleanup. Preserve the reference until a real
-    // cleanup handler verifies ownership, cleanliness and successful removal.
-    worktreeRef: work.worktreeRef,
+  if (semanticWorkState(work) === 'completed') {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_CANCEL_COMPLETED: ${work.workId}`,
+      data: { work: summarizeWorkContract(work) },
+    });
+  }
+  const semanticRevision = Number.isInteger(work.semanticRevision) && Number(work.semanticRevision) > 0
+    ? Number(work.semanticRevision)
+    : 1;
+  const updated = reviseWorkSemanticContext(ctx.workStore, work.workId, {
+    expectedRevision: semanticRevision,
+    state: 'cancelled',
+    resultRefs: work.evidenceRefs
+      .flatMap((evidence) => [evidence.evidenceId, evidence.artifactId])
+      .map((value) => value?.trim())
+      .filter((value): value is string => Boolean(value)),
   });
   const planId = updated.planId;
   const planStepId = updated.planStepId;
@@ -2527,9 +2285,6 @@ export function runGoalWorkloop(
         issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
         approvalConfirmed: args.approval_confirmed === true,
         dryRun: args.dry_run === true,
-        forceMode: args.force_mode === 'direct_control' || args.force_mode === 'goal_workloop' || args.force_mode === 'handoff_only'
-          ? args.force_mode
-          : undefined,
         relatedWorkId: typeof args.related_work_id === 'string' ? args.related_work_id : undefined,
         workRelation: args.work_relation === 'continue' || args.work_relation === 'extend' || args.work_relation === 'parallel' || args.work_relation === 'new_goal'
           ? args.work_relation
@@ -2564,6 +2319,7 @@ export function runGoalWorkloop(
           classification,
           rationale: String(rawBlocker.rationale ?? ''),
           semanticScopeKeys: Array.isArray(rawBlocker.semantic_scope_keys) ? rawBlocker.semantic_scope_keys.map(String) : undefined,
+          linkedWorkId: typeof rawBlocker.linked_work_id === 'string' ? rawBlocker.linked_work_id : undefined,
         };
       }
       return continueGoalWorkloop(ctx, {

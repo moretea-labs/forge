@@ -9,12 +9,12 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
-import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
+import { acceptReviewedDirectEditWorkReconciliation, recordReviewedDirectEditDeliveryAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
 import { implementationReviewCommittedBaseRevision } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
@@ -215,13 +215,13 @@ describe('standalone Direct Edit Work completion', () => {
     expect(committed.commit?.ok).toBe(true);
     expect(plan).toBeDefined();
 
-    const completion = completeReviewedDirectEditWorkAfterCommit({
+    const completion = recordReviewedDirectEditDeliveryAfterCommit({
       controllerHome: fx.controllerHome,
       repository: fx.repository,
       plan: plan!,
       fallbackBranch: 'main',
     });
-    expect(completion.completedWorkIds).toEqual([fx.workId]);
+    expect(completion.deliveredWorkIds).toEqual([fx.workId]);
     const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
     expect(work.status).toBe('completed');
     expect(work.completionReceipt).toMatchObject({
@@ -263,7 +263,6 @@ describe('standalone Direct Edit Work completion', () => {
         acceptanceCriteria: ['Machine delivery reaches semantic validation before Controller acceptance.'],
       }],
     });
-    approvePlanContract(planStore, planId);
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
       planId,
       planStepId: stepId,
@@ -289,7 +288,7 @@ describe('standalone Direct Edit Work completion', () => {
       },
     });
     expect(committed.commit?.ok).toBe(true);
-    completeReviewedDirectEditWorkAfterCommit({
+    recordReviewedDirectEditDeliveryAfterCommit({
       controllerHome: fx.controllerHome,
       repository: fx.repository,
       plan: commitPlan!,
@@ -421,7 +420,7 @@ describe('standalone Direct Edit Work completion', () => {
       fallbackBranch: 'main',
     });
 
-    expect(reconciliation.completedWorkIds).toEqual([]);
+    expect(reconciliation.deliveredWorkIds).toEqual([]);
     expect(reconciliation.skipped).toContainEqual({
       sessionId: fx.sessionId,
       workId: fx.workId,
@@ -1133,7 +1132,7 @@ describe('standalone Direct Edit Work completion', () => {
       fallbackBranch: 'main',
     });
 
-    expect(reconciliation.completedWorkIds).toEqual([]);
+    expect(reconciliation.deliveredWorkIds).toEqual([]);
     expect(reconciliation.skipped).toContainEqual({
       sessionId: fx.sessionId,
       workId: fx.workId,
@@ -1155,7 +1154,7 @@ describe('standalone Direct Edit Work completion', () => {
       fallbackBranch: 'main',
     });
 
-    expect(reconciliation.completedWorkIds).toEqual([]);
+    expect(reconciliation.deliveredWorkIds).toEqual([]);
     expect(reconciliation.skipped[0]?.reason).toBe('postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('running');
   });

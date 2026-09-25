@@ -724,22 +724,20 @@ export async function evaluateSchedule(
           reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
           countFailure: !preview.blockedPermanently,
           pauseReason: preview.blockedPermanently ? preview.blockedReason : undefined,
-          handoff: {
-            title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} blocked`,
-            summary: 'A bounded live maintenance occurrence was blocked before dispatch and requires a human decision.',
-            reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
-            creationReason: preview.blockedPermanently ? 'missing_authorization' : 'ambiguous_outcome',
-            blockingDecision: preview.blockedPermanently
-              ? 'Fix the schedule operation or authorization before automatic maintenance can resume.'
-              : 'Inspect runtime maintenance readiness before allowing another unattended attempt.',
-            recommendedDecision: preview.blockedPermanently
-              ? 'Correct the automatic maintenance configuration and re-enable the schedule deliberately.'
-              : 'Review the maintenance preview, resolve the blocker, and then retrigger the schedule intentionally.',
-            recommendedPrompt: `Review blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId}. Determine whether the schedule configuration or runtime maintenance readiness should be corrected before retrying.`,
-            statusSummary: 'Scheduled maintenance occurrence blocked before dispatch.',
-            blockedBy: [decision],
-            attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
-          },
+          ...(preview.blockedPermanently ? {
+            handoff: {
+              title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} needs a user decision`,
+              summary: 'Automatic maintenance is permanently blocked and requires an explicit user decision before the schedule can resume.',
+              reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
+              creationReason: 'ambiguous_outcome' as const,
+              blockingDecision: 'Correct the configuration/authorization or intentionally keep this schedule paused.',
+              recommendedDecision: 'Review the permanent blocker and explicitly decide whether to repair configuration and resume.',
+              recommendedPrompt: `Review permanently blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId} and decide whether to repair and resume it.`,
+              statusSummary: 'Scheduled maintenance is permanently blocked pending a user decision.',
+              blockedBy: [decision],
+              attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
+            },
+          } : {}),
         });
         return failed.occurrence ?? blocked;
       }
@@ -776,22 +774,20 @@ export async function evaluateSchedule(
         reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
         countFailure: !preview.blockedPermanently,
         pauseReason: preview.blockedPermanently ? preview.blockedReason : undefined,
-        handoff: {
-          title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} blocked`,
-          summary: 'A bounded live maintenance occurrence was blocked before dispatch and requires a human decision.',
-          reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
-          creationReason: preview.blockedPermanently ? 'missing_authorization' : 'ambiguous_outcome',
-          blockingDecision: preview.blockedPermanently
-            ? 'Fix the schedule operation or authorization before automatic maintenance can resume.'
-            : 'Inspect runtime maintenance readiness before allowing another unattended attempt.',
-          recommendedDecision: preview.blockedPermanently
-            ? 'Correct the automatic maintenance configuration and re-enable the schedule deliberately.'
-            : 'Review the maintenance preview, resolve the blocker, and then retrigger the schedule intentionally.',
-          recommendedPrompt: `Review blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId}. Determine whether the schedule configuration or runtime maintenance readiness should be corrected before retrying.`,
-          statusSummary: 'Scheduled maintenance occurrence blocked before dispatch.',
-          blockedBy: [decision],
-          attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
-        },
+        ...(preview.blockedPermanently ? {
+          handoff: {
+            title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} needs a user decision`,
+            summary: 'Automatic maintenance is permanently blocked and requires an explicit user decision before the schedule can resume.',
+            reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
+            creationReason: 'ambiguous_outcome' as const,
+            blockingDecision: 'Correct the configuration/authorization or intentionally keep this schedule paused.',
+            recommendedDecision: 'Review the permanent blocker and explicitly decide whether to repair configuration and resume.',
+            recommendedPrompt: `Review permanently blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId} and decide whether to repair and resume it.`,
+            statusSummary: 'Scheduled maintenance is permanently blocked pending a user decision.',
+            blockedBy: [decision],
+            attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
+          },
+        } : {}),
       });
       return failed.occurrence ?? blocked;
     }

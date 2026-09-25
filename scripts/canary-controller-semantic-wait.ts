@@ -15,7 +15,7 @@ import {
   getControllerRoundRelay,
   readControllerRoundSemanticStateFingerprint,
   submitControllerRoundDisposition,
-} from '../src/runtime/control-plane/facade/controller-round-relay';
+} from '../packages/kernel/controller/api/index';
 import { bindControllerSessionBinding, resumeControllerRoundOccurrence } from '../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../adapters/chatgpt/controller-binding-store';
 

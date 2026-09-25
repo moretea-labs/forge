@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -10,6 +10,7 @@ import {
   resolveHandoffItem,
 } from "../../src/runtime/control-plane/facade/handoff-inbox-store";
 import { handoffRequiresAttention } from "../../src/runtime/control-plane/facade/handoff-inbox-application";
+import { listUserRequests } from "../../packages/kernel/identity/api/index";
 
 describe("HandoffItem persistence authority", () => {
   test("controller-home inbox remains authoritative across session-cache changes and fresh reads", () => {
@@ -37,7 +38,8 @@ describe("HandoffItem persistence authority", () => {
 
       expect(created.status).toBe("pending");
       expect(handoffInboxPath(location)).toBe(join(controllerHome, "repositories", repoId, "handoff-inbox", "index.json"));
-      expect(existsSync(handoffInboxPath(location))).toBe(true);
+      expect(existsSync(handoffInboxPath(location))).toBe(false);
+      expect(listUserRequests(controllerHome, 'pending')).toHaveLength(1);
 
       writeFileSync(
         join(repoRoot, ".ai/harness/session/continuation.md"),
@@ -50,14 +52,16 @@ describe("HandoffItem persistence authority", () => {
       expect(fresh?.status).toBe("resolved");
       expect(fresh?.decision).toBe("Use path A");
       expect(fresh?.resolver).toBe("chatgpt");
-      expect(readFileSync(handoffInboxPath(location), "utf8")).toContain('"status": "resolved"');
+      expect(listUserRequests(controllerHome, 'pending')).toHaveLength(0);
+      expect(listUserRequests(controllerHome, 'resolved')[0]?.resolution?.decision).toBe('Use path A');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
   test("count is not truncated by bounded list previews", () => {
     const root = mkdtempSync(join(tmpdir(), "forge-handoff-count-"));
-    const location = { root: join(root, "handoff-inbox") };
+    const controllerHome = join(root, "controller-home");
+    const location = { controllerHome, repoId: "repo_handoff_count" };
     try {
       for (let index = 0; index < 37; index += 1) {
         createHandoffItem(location, {
@@ -65,7 +69,7 @@ describe("HandoffItem persistence authority", () => {
           repoId: "repo_handoff_count",
           title: `Pending ${index}`,
           severity: "needs_review",
-          reason: "Pending review.",
+          reason: `Pending review ${index}.`,
           creationReason: "ambiguous_outcome",
           summary: "Pending review.",
           currentState: { repoId: "repo_handoff_count", statusSummary: "pending" },
@@ -83,23 +87,29 @@ describe("HandoffItem persistence authority", () => {
 
   test("attention projection follows canonical pending UserRequest authority only", () => {
     const root = mkdtempSync(join(tmpdir(), "forge-handoff-attention-"));
-    const location = { root };
+    const controllerHome = join(root, "controller-home");
+    const location = { controllerHome, repoId: "repo_attention" };
     try {
-      const legacyOnly = createHandoffItem(location, {
+      const legacyOnly = {
+        schemaVersion: 1 as const,
         id: "legacy-decision",
         repoId: "repo_attention",
         workId: "work-terminal",
         title: "Historical compatibility projection",
-        severity: "needs_review",
+        severity: "needs_review" as const,
+        status: "pending" as const,
         reason: "Historical decision.",
-        creationReason: "ambiguous_outcome",
+        creationReason: "ambiguous_outcome" as const,
         summary: "Historical decision.",
         currentState: { repoId: "repo_attention", workId: "work-terminal", statusSummary: "pending" },
+        attemptedActions: [],
         evidenceRefs: [],
         recommendedDecision: "Review.",
         recommendedPrompt: "Review.",
         suggestedNextActions: [],
-      });
+        createdAt: "2026-09-25T00:00:00.000Z",
+        updatedAt: "2026-09-25T00:00:00.000Z",
+      };
       const projected = createHandoffItem(location, {
         id: "decision-current",
         repoId: "repo_attention",

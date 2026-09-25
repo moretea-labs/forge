@@ -1,6 +1,5 @@
 import { readExecutionSession } from './session-store';
-import { getWorkContract } from '../../../../packages/kernel/work/api/index';
-import { isTerminalWorkContractStatus } from '../facade/types';
+import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 
 export interface RepositoryWorkAttributionCaller {
   sessionId?: string;
@@ -21,7 +20,7 @@ export function resolveExplicitClaimedRepositoryWork(
 ) {
   if (!caller?.principalId?.trim()) return undefined;
   const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
-  if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
+  if (!work || semanticWorkState(work) !== 'open') throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
   if (work.checkoutId && work.checkoutId !== target.activeCheckoutId) {
     throw new Error(
       `WORK_CHECKOUT_MISMATCH: work=${workId}; resolved_checkout=${target.activeCheckoutId}; expected_work_checkout=${work.checkoutId}; retry with checkout_id=${work.checkoutId} and the same work_id`,
@@ -45,7 +44,7 @@ export function assertNoBoundExecutionSessionMutation(
   if (!workId || executionSession?.activeRepositoryId !== target.repoId) return;
   const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
   if (!work) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
-  if (isTerminalWorkContractStatus(work.status)) {
+  if (semanticWorkState(work) !== 'open') {
     throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
   }
   throw new Error(`WORK_ATTRIBUTION_REQUIRED: ${work.workId}; active execution session mutations must pass work_id explicitly`);
@@ -74,7 +73,7 @@ export function resolveClaimedRepositoryWorkId(
       && executionSession?.activeRepositoryId === target.repoId
       && (!executionSession.activeCheckoutId || executionSession.activeCheckoutId === target.activeCheckoutId)) {
       const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
-      if (work && isTerminalWorkContractStatus(work.status)) {
+      if (work && semanticWorkState(work) !== 'open') {
         throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
       }
       if (work) return workId;

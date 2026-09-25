@@ -1539,9 +1539,6 @@ export async function startLocalBridgeServer(
         destructive: body.destructive === true,
         accessMode: body.accessMode === 'full_access' ? 'full_access' : body.accessMode === 'request' ? 'request' : undefined,
         approvalConfirmed: body.approvalConfirmed === true,
-        forceMode: body.forceMode === "direct_control" || body.forceMode === "goal_workloop" || body.forceMode === "handoff_only"
-          ? body.forceMode
-          : undefined,
         checkIds: Array.isArray(body.checkIds) ? body.checkIds.map(String) : undefined,
       });
       const feedback = toConsoleOperationFeedback(result);

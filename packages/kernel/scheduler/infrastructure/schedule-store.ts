@@ -34,7 +34,7 @@ export interface ScheduleOccurrenceHandoffInput {
   title: string;
   summary: string;
   reason: string;
-  creationReason: 'ambiguous_outcome' | 'missing_authorization' | 'repeated_infrastructure_failure';
+  creationReason: 'ambiguous_outcome' | 'missing_authorization';
   blockingDecision: string;
   recommendedDecision: string;
   recommendedPrompt: string;
@@ -258,81 +258,6 @@ export function deleteSchedule(controllerHome: string, repoId: string, scheduleI
   }, 10_000);
 }
 
-function scheduleFailureClass(reason: string): string {
-  const trimmed = reason.trim();
-  const explicitCode = trimmed.match(/^([A-Z][A-Z0-9_]{2,})(?::|\b)/)?.[1];
-  if (explicitCode) return explicitCode;
-  const prefix = (trimmed.split(':', 1)[0] ?? trimmed)
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase()
-    .slice(0, 120);
-  return prefix || 'unknown_failure';
-}
-
-function activeScheduleFailureHandoff(
-  controllerHome: string,
-  repoId: string,
-  scheduleId: string,
-  creationReason: ScheduleOccurrenceHandoffInput['creationReason'],
-  reason: string,
-) {
-  const failureClass = scheduleFailureClass(reason);
-  return listHandoffItems({ controllerHome, repoId, status: 'active', limit: 100 }).find((item) => (
-    item.currentState?.taskId === scheduleId
-    && item.creationReason === creationReason
-    && scheduleFailureClass(item.reason) === failureClass
-  ));
-}
-
-function stableScheduleFailureHandoffId(
-  controllerHome: string,
-  repoId: string,
-  scheduleId: string,
-  creationReason: ScheduleOccurrenceHandoffInput['creationReason'],
-  reason: string,
-  occurrenceId: string,
-): string {
-  const digest = createHash('sha256')
-    .update(`${scheduleId}:${creationReason}:${scheduleFailureClass(reason)}`)
-    .digest('hex')
-    .slice(0, 20);
-  const baseId = `schedule-failure-${digest}`;
-  if (!getHandoffItem({ controllerHome, repoId }, baseId)) return baseId;
-  // A previous failure streak may already have resolved the stable item. Handoff
-  // records are immutable apart from lifecycle status, so use one new epoch id;
-  // subsequent failures in this streak will discover and reuse the active item.
-  const epoch = createHash('sha256').update(occurrenceId).digest('hex').slice(0, 8);
-  return `${baseId}-${epoch}`;
-}
-
-function resolveRecoveredScheduleFailureHandoffs(controllerHome: string, occurrence: ScheduleOccurrence): void {
-  try {
-    const active = listHandoffItems({ controllerHome, repoId: occurrence.repoId, status: 'active', limit: 100 })
-      .filter((item) => (
-        item.currentState?.taskId === occurrence.scheduleId
-        && item.creationReason === 'repeated_infrastructure_failure'
-      ));
-    for (const item of active) {
-      try {
-        resolveHandoffItem(
-          { controllerHome, repoId: occurrence.repoId },
-          item.id,
-          {
-            decision: `Schedule ${occurrence.scheduleId} recovered on occurrence ${occurrence.occurrenceId}.`,
-            resolver: 'schedule-runtime',
-          },
-        );
-      } catch {
-        // The succeeded occurrence remains authoritative. Inbox cleanup is
-        // best-effort and must never turn schedule recovery into a failure.
-      }
-    }
-  } catch {
-    // Preserve successful Schedule settlement even if Inbox storage is unavailable.
-  }
-}
-
 export function saveOccurrence(controllerHome: string, occurrence: ScheduleOccurrence): ScheduleOccurrence {
   const next = withControllerLock(controllerHome, { scope: 'task', repoId: occurrence.repoId, taskId: `schedule-${occurrence.scheduleId}` }, `save-occurrence:${occurrence.occurrenceId}`, () => {
     const existingPath = occurrencePath(controllerHome, occurrence.repoId, occurrence.occurrenceId);
@@ -348,7 +273,6 @@ export function saveOccurrence(controllerHome: string, occurrence: ScheduleOccur
     appendRuntimeEvent(controllerHome, { repoId: saved.repoId, entityType: 'occurrence', entityId: saved.occurrenceId, eventType: `occurrence_${saved.status}`, requestId: `${schedule.requestId}:${saved.windowKey}`, revision: saved.revision, correlationId: saved.scheduleId, data: { decision: saved.decision, jobId: saved.jobId, reason: saved.reason } });
     return saved;
   }, 10_000);
-  if (next.status === 'succeeded' || next.status === 'dispatched') resolveRecoveredScheduleFailureHandoffs(controllerHome, next);
   return next;
 }
 
@@ -364,20 +288,7 @@ export function recordScheduleOccurrenceHandoff(
   input: ScheduleOccurrenceHandoffInput,
 ): ScheduleOccurrence {
   if (occurrence.handoffId) return occurrence;
-  const reusable = input.creationReason === 'repeated_infrastructure_failure'
-    ? activeScheduleFailureHandoff(controllerHome, occurrence.repoId, schedule.scheduleId, input.creationReason, input.reason)
-    : undefined;
-  if (reusable) return saveOccurrence(controllerHome, { ...occurrence, handoffId: reusable.id });
-  const handoffId = input.creationReason === 'repeated_infrastructure_failure'
-    ? stableScheduleFailureHandoffId(
-      controllerHome,
-      occurrence.repoId,
-      schedule.scheduleId,
-      input.creationReason,
-      input.reason,
-      occurrence.occurrenceId,
-    )
-    : `schedule-${occurrence.occurrenceId}`;
+  const handoffId = `schedule-${occurrence.occurrenceId}`;
   const evidenceRefs: NonNullable<ScheduleOccurrenceHandoffInput['evidenceRefs']> = [
     { title: `Occurrence ${occurrence.occurrenceId}`, summary: occurrence.reason ?? input.reason, detailLevel: 'summary' as const },
   ];

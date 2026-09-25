@@ -33,23 +33,14 @@ export interface RoutePolicyInput {
     objective: string;
     scopeClear: boolean;
     mutation?: boolean;
-    taskIntent?: string;
-    expectedFiles?: number;
-    expectedChangedLines?: number;
-    requiresInvestigation?: boolean;
-    requiresLongRunningChecks?: boolean;
-    requiresParallelism?: boolean;
-    needsDependencies?: boolean;
-    requiresIndependentDeliverables?: boolean;
-    independentTaskCount?: number;
-    agentRequested?: boolean;
-    /** Explicit operator mode. It overrides heuristic topology, never policy gates. */
-    explicitMode?: ExplicitTaskMode;
+    /**
+     * Operator-configured routing-preference key used only to match authored
+     * Context Plane `routing_preference` records. Forge never derives this key
+     * from task semantics, size, method, or failure class.
+     */
     preferredProviderId?: string;
     allowedProviderIds?: readonly string[];
     forbiddenProviderIds?: readonly string[];
-    lastProviderId?: string;
-    lastFailureClass?: string;
   };
   workspace: {
     knownPaths?: readonly string[];
@@ -76,8 +67,6 @@ export interface RoutePolicyInput {
     requiresExternalEffect?: boolean;
     requiredProviderCapabilities?: readonly string[];
     providers?: readonly RouteProviderSnapshot[];
-    routingOrders?: Readonly<Record<string, readonly string[] | undefined>>;
-    defaultProviders?: Readonly<Record<string, string | undefined>>;
   };
   recovery: {
     required?: boolean;
@@ -103,8 +92,6 @@ export interface RouteDecision {
   inputFingerprint: string;
   policyVersion: typeof ROUTE_POLICY_VERSION;
 }
-
-const PROTECTED_PATH = /(^|\/)(\.github|\.git|.*\.xcodeproj|.*\.xcworkspace)(\/|$)/;
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -140,100 +127,26 @@ function ready(provider: RouteProviderSnapshot, required: readonly string[]): bo
     && required.every((capability) => provider.capabilities.includes(capability));
 }
 
-function routingKey(input: RoutePolicyInput): string {
-  const taskIntent = input.intent.taskIntent ?? 'implementation';
-  const failure = input.intent.lastFailureClass;
-  const repair = taskIntent === 'code_repair'
-    || taskIntent === 'verification_repair'
-    || failure === 'test_failure'
-    || failure === 'typecheck_failure'
-    || failure === 'source_defect'
-    || (input.intent.lastProviderId === 'codex_cli' && (failure === 'provider_unavailable' || failure === 'unknown'));
-  if (taskIntent === 'deterministic_edit') return 'deterministic_edit';
-  if (repair) return 'repair';
-  if (taskIntent === 'architecture_planning') return 'planning';
-  if (taskIntent === 'review') return 'review';
-  if (taskIntent === 'browser_automation') return 'browser_planning';
-  if (taskIntent === 'ios_build_or_sim') return 'ios_analysis';
-  return 'implementation';
-}
-
-const KIND_RANK: Record<RouteProviderSnapshot['kind'], number> = {
-  direct_edit: 0,
-  local_cli: 10,
-  remote_api: 20,
-  cloud_agent: 30,
-  handoff_only: 90,
-};
-
-const PREFERRED_CAPABILITY: Record<string, string | undefined> = {
-  deterministic_edit: 'code_patch',
-  implementation: 'code_patch',
-  repair: 'test_failure_repair',
-  planning: 'architecture_planning',
-  review: 'code_review',
-  browser_planning: 'browser_planning',
-  ios_analysis: 'ios_log_analysis',
-};
-
-function providerOrder(input: RoutePolicyInput, key: string, providers: readonly RouteProviderSnapshot[]): string[] {
-  const configured = input.capabilities.routingOrders?.[key];
-  let order = configured?.length
-    ? [...configured]
-    : providers
-      .map((provider, index) => ({ provider, index }))
-      .filter(({ provider }) => provider.kind !== 'handoff_only' && provider.providerId !== 'chatgpt_handoff')
-      .filter(({ provider }) => key === 'deterministic_edit' || provider.kind !== 'direct_edit')
-      .sort((left, right) => {
-        const preferred = PREFERRED_CAPABILITY[key];
-        const leftSupports = preferred ? left.provider.capabilities.includes(preferred) : true;
-        const rightSupports = preferred ? right.provider.capabilities.includes(preferred) : true;
-        if (leftSupports !== rightSupports) return leftSupports ? -1 : 1;
-        return KIND_RANK[left.provider.kind] - KIND_RANK[right.provider.kind]
-          || left.index - right.index
-          || left.provider.providerId.localeCompare(right.provider.providerId);
-      })
-      .map(({ provider }) => provider.providerId);
-  const configuredDefault = input.capabilities.defaultProviders?.[key];
-  if (configuredDefault && configuredDefault !== 'chatgpt_handoff') {
-    order = [configuredDefault, ...order.filter((providerId) => providerId !== configuredDefault)];
-  }
-  if (input.intent.preferredProviderId) {
-    order = [input.intent.preferredProviderId, ...order.filter((providerId) => providerId !== input.intent.preferredProviderId)];
-  }
-  if (key === 'repair' && input.intent.lastProviderId) {
-    order = [...order.filter((providerId) => providerId !== input.intent.lastProviderId), input.intent.lastProviderId];
-  }
-  return [...new Set([...order, 'chatgpt_handoff'])];
-}
-
-function selectProvider(input: RoutePolicyInput): { provider: RouteProviderSnapshot | null; alternatives: string[]; key: string } {
+function selectProvider(input: RoutePolicyInput): { provider: RouteProviderSnapshot | null; alternatives: string[]; key: 'preferred' | 'unique' | 'multiple' | 'none' } {
   const providers = input.capabilities.providers;
-  if (!providers) return { provider: null, alternatives: [], key: routingKey(input) };
+  if (!providers) return { provider: null, alternatives: [], key: 'none' };
   const required = input.capabilities.requiredProviderCapabilities ?? [];
   const allowed = new Set(input.intent.allowedProviderIds ?? []);
   const forbidden = new Set(input.intent.forbiddenProviderIds ?? []);
-  const alternatives = providers
+  const eligible = providers
     .filter((provider) => ready(provider, required))
     .filter((provider) => !forbidden.has(provider.providerId))
     .filter((provider) => allowed.size === 0 || allowed.has(provider.providerId))
-    .map((provider) => provider.providerId)
-    .sort();
-  const key = routingKey(input);
-  const byId = new Map(providers.map((provider) => [provider.providerId, provider]));
-  for (const providerId of providerOrder(input, key, providers)) {
-    if (providerId === 'chatgpt_handoff' || forbidden.has(providerId)) continue;
-    if (allowed.size > 0 && !allowed.has(providerId)) continue;
-    const provider = byId.get(providerId);
-    if (provider && ready(provider, required)) return { provider, alternatives, key };
+    .sort((left, right) => left.providerId.localeCompare(right.providerId));
+  const alternatives = eligible.map((provider) => provider.providerId);
+  const preferredProviderId = input.intent.preferredProviderId?.trim();
+  if (preferredProviderId) {
+    const preferred = eligible.find((provider) => provider.providerId === preferredProviderId);
+    if (preferred) return { provider: preferred, alternatives, key: 'preferred' };
   }
-  const fallback = input.capabilities.routingOrders?.fallback ?? [];
-  for (const providerId of fallback) {
-    if (forbidden.has(providerId) || (allowed.size > 0 && !allowed.has(providerId))) continue;
-    const provider = byId.get(providerId);
-    if (provider && ready(provider, required)) return { provider, alternatives, key: 'fallback' };
-  }
-  return { provider: null, alternatives, key };
+  if (eligible.length === 1) return { provider: eligible[0]!, alternatives, key: 'unique' };
+  if (eligible.length > 1) return { provider: null, alternatives, key: 'multiple' };
+  return { provider: null, alternatives, key: 'none' };
 }
 
 function decisionBase(input: RoutePolicyInput, reasons: RouteReason[]): Pick<RouteDecision, 'inputFingerprint' | 'policyVersion' | 'reasons'> {
@@ -243,8 +156,6 @@ function decisionBase(input: RoutePolicyInput, reasons: RouteReason[]): Pick<Rou
 export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const reasons: RouteReason[] = [];
   const objective = input.intent.objective.trim();
-  const paths = [...new Set((input.workspace.knownPaths ?? []).map((path) => path.trim()).filter(Boolean))].sort();
-  const independentTaskCount = Math.max(0, Math.trunc(input.intent.independentTaskCount ?? 0));
   const risk = input.policy.risk ?? (input.intent.mutation === false ? 'readonly' : 'local_repo_write');
   const mutation = input.intent.mutation ?? risk !== 'readonly';
   const destructive = input.policy.destructive === true || risk === 'destructive' || risk === 'destructive_remote';
@@ -252,25 +163,16 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const secretAccess = input.policy.secretAccess === true || risk === 'raw_secret_config';
   const approvalRequired = input.policy.requiresApproval === true || input.policy.requiresUserApproval === true || destructive || remoteWrite || secretAccess;
   const approvalConfirmed = input.policy.approvalConfirmed === true;
-  const protectedPath = paths.some((path) => PROTECTED_PATH.test(path));
-  const explicitMode = input.intent.explicitMode;
-  const explicitParallelMode = explicitMode === 'scale';
-  const placementIsolationRequired = input.workspace.placement === 'isolated'
-    || input.workspace.directMainProhibited === true;
-  const requiresIsolation = placementIsolationRequired
-    || input.recovery.isolationRequired === true
-    || explicitParallelMode;
-  const requiresRecovery = input.recovery.required === true
-    || explicitMode === 'release'
-    || explicitMode === 'scale';
-  const coordinationRequired = explicitParallelMode || input.intent.requiresIndependentDeliverables === true
-    || independentTaskCount >= 3;
+  const requiresIsolation = input.workspace.placement === 'isolated'
+    || input.workspace.directMainProhibited === true
+    || input.recovery.isolationRequired === true;
+  const requiresRecovery = input.recovery.required === true;
 
   if (input.policy.policyBlocked === true) {
     reasons.push({ code: 'policy_blocked', message: 'Policy blocks execution until authorization or scope changes.' });
     return {
       executionMode: 'handoff_only', executorKind: 'handoff_only', selectedProviderId: null,
-      workMode: 'direct_edit', executionPath: 'durable', requiresWork: false, requiresApproval: true,
+      workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresApproval: true,
       requiresIsolation, requiresRecovery, createHandoff: true, waitForUser: true,
       approvalState: 'blocked_by_policy', alternatives: [], ...decisionBase(input, reasons),
     };
@@ -279,7 +181,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     reasons.push({ code: 'objective_missing', message: 'A non-empty objective is required before execution.' });
     return {
       executionMode: 'handoff_only', executorKind: 'handoff_only', selectedProviderId: null,
-      workMode: 'direct_edit', executionPath: 'durable', requiresWork: false, requiresApproval: false,
+      workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresApproval: false,
       requiresIsolation, requiresRecovery, createHandoff: true, waitForUser: true,
       approvalState: 'approval_not_required', alternatives: [], ...decisionBase(input, reasons),
     };
@@ -288,7 +190,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     reasons.push({ code: 'user_decision_required', message: 'The architecture or execution strategy change requires an explicit user decision.' });
     return {
       executionMode: 'handoff_only', executorKind: 'handoff_only', selectedProviderId: null,
-      workMode: 'direct_edit', executionPath: 'durable', requiresWork: false, requiresApproval: true,
+      workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresApproval: true,
       requiresIsolation, requiresRecovery, createHandoff: true, waitForUser: true,
       approvalState: 'normal_authorization_required', alternatives: [], ...decisionBase(input, reasons),
     };
@@ -302,7 +204,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     });
     return {
       executionMode: 'handoff_only', executorKind: 'handoff_only', selectedProviderId: null,
-      workMode: 'direct_edit', executionPath: 'durable', requiresWork: false, requiresApproval: true,
+      workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresApproval: true,
       requiresIsolation, requiresRecovery, createHandoff: true, waitForUser: true,
       approvalState: destructive || secretAccess ? 'strong_confirmation_required' : 'normal_authorization_required',
       alternatives: [], ...decisionBase(input, reasons),
@@ -315,53 +217,36 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
       message: 'The checkout is already dirty; preserve unrelated changes and treat inspected/actual scope as evidence instead of creating Work solely for adoption.',
     });
   }
-  if (explicitMode) reasons.push({ code: `explicit_${explicitMode}`, message: `Explicit -${explicitMode} mode overrides automatic work topology while policy gates remain authoritative.` });
-  if (protectedPath) reasons.push({ code: 'protected_path', message: 'The predicted scope includes a protected or release-sensitive path.' });
   if (requiresRecovery) reasons.push({ code: 'recovery_required', message: 'The operation needs resumable Work and bounded recovery.' });
   if (input.workspace.placement === 'isolated') reasons.push({ code: 'placement_isolated', message: 'Typed Work admission requires an isolated workspace.' });
   if (input.workspace.directMainProhibited === true) reasons.push({ code: 'direct_main_prohibited', message: 'Typed Work admission forbids the Direct Control/current-main mutation lane.' });
   if (requiresIsolation) reasons.push({ code: 'isolation_required', message: 'The operation requires an isolated checkout or serialized lane.' });
-  if (input.intent.requiresLongRunningChecks) reasons.push({ code: 'long_checks', message: 'Long-running checks may use a lightweight handle; duration alone does not require durable Work.' });
-  if (input.intent.requiresInvestigation) reasons.push({ code: 'investigation', message: 'Investigation is required before or during implementation.' });
-  if (input.intent.needsDependencies) reasons.push({ code: 'dependencies', message: 'Dependency ordering requires durable Work.' });
-  if (coordinationRequired) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require durable PlanContract/Work coordination.' });
-
-  const explicitBoundedMode = explicitMode === 'plan'
-    || explicitMode === 'release';
-  const directModeCanRemainFast = explicitMode === 'direct'
-    && !requiresIsolation
-    && !requiresRecovery
-    && !coordinationRequired;
-  // Durable Work is a mechanical continuity/placement choice, not an engineering
-  // method inferred from provider kind, effect risk, task size, or model strategy.
-  const durableWorkRequired = directModeCanRemainFast
-    ? false
-    : coordinationRequired
-    || explicitBoundedMode
-    || requiresRecovery
-    || requiresIsolation
-    || input.intent.needsDependencies === true;
-  // Legacy projections retained for callers whose ABI still carries these fields.
-  const executionMode: RouteExecutionMode = durableWorkRequired ? 'goal_workloop' : 'direct_control';
-  const workMode: RouteWorkMode = durableWorkRequired ? 'bounded_work' : 'direct_edit';
-  const executionPath: RouteExecutionPath = durableWorkRequired ? 'durable' : 'fast';
+  // Compatibility projections only. Route Policy no longer chooses whether a
+  // Work exists or which engineering method the model must use. Calling rh_work
+  // is the explicit durable-Work choice; direct domain capabilities bypass it.
+  const executionMode: RouteExecutionMode = 'direct_control';
+  const workMode: RouteWorkMode = 'direct_edit';
+  const executionPath: RouteExecutionPath = 'fast';
   const providerSelection = selectProvider(input);
   const providersWereSupplied = input.capabilities.providers !== undefined;
-  if (providersWereSupplied && !providerSelection.provider) {
+  if (providersWereSupplied && !providerSelection.provider && providerSelection.alternatives.length === 0) {
     reasons.push({ code: 'provider_unavailable', message: 'No allowed provider with the required capabilities is ready.' });
     return {
       executionMode, executorKind: 'handoff_only', selectedProviderId: null,
-      workMode, executionPath, requiresWork: durableWorkRequired, requiresApproval: false,
+      workMode, executionPath, requiresWork: false, requiresApproval: false,
       requiresIsolation, requiresRecovery, createHandoff: false, waitForUser: false,
       approvalState: 'approval_not_required', alternatives: providerSelection.alternatives,
       ...decisionBase(input, reasons),
     };
   }
   const selectedProvider = providerSelection.provider;
+  if (!selectedProvider && providerSelection.key === 'multiple') {
+    reasons.push({ code: 'provider_choice_available', message: 'Multiple eligible providers are available; caller/model may select one explicitly with preferredProviderId.' });
+  }
   const executorKind: RouteExecutorKind = selectedProvider?.kind
     ?? (input.capabilities.requiresWorker ? 'external_controller' : 'direct_edit');
-  if (selectedProvider) reasons.push({ code: 'provider_selected', message: `Selected ${selectedProvider.providerId} using ${providerSelection.key} order.` });
-  if (reasons.length === 0) reasons.push({ code: durableWorkRequired ? 'durable_work' : 'direct_capability', message: durableWorkRequired ? 'A concrete continuity/placement constraint requires durable Work.' : 'No durable continuity/placement constraint requires Work; execute the selected capability directly.' });
+  if (selectedProvider) reasons.push({ code: 'provider_selected', message: `Selected ${selectedProvider.providerId} from ${providerSelection.key} mechanical placement.` });
+  if (reasons.length === 0) reasons.push({ code: 'capability_ready', message: 'Policy and provider eligibility permit the requested capability; the model owns workflow and Work choice.' });
 
   return {
     executionMode,
@@ -372,7 +257,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     // Direct Control is intentionally contract-free. Persistence belongs to
     // Goal Workloop/Agent tiers; bounded direct edits rely on the
     // existing permission, patch, Process, and evidence boundaries instead.
-    requiresWork: durableWorkRequired,
+    requiresWork: false,
     requiresApproval: approvalRequired,
     requiresIsolation,
     requiresRecovery,

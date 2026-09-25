@@ -12,7 +12,7 @@ import {
   type ControllerTerminalizationAuthority,
   type ControllerType,
 } from '../../../../packages/kernel/controller/api/index';
-import { getWorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
 import { startExecutionSession, updateExecutionSession } from './session-store';
 
@@ -55,8 +55,8 @@ export function recoverDirectControllerAuthority(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const work = getWorkContract(store, workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-  if (['completed', 'failed', 'cancelled'].includes(work.status)) {
-    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${work.status}`);
+  if (semanticWorkState(work) !== 'open') {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${semanticWorkState(work)}`);
   }
   if (getControllerRoundRelay(store, workId)) {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_CONFLICT: ${workId}; relay-bound Work must recover through its exact per-round authority.`);

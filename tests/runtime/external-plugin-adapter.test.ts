@@ -54,7 +54,7 @@ function uuDesktopStatus(): Record<string, unknown> {
   };
 }
 
-function uuWindowObservation(focused: 'terminal' | 'main'): Record<string, unknown> {
+function uuWindowObservation(focused: 'terminal' | 'main' | 'descendant'): Record<string, unknown> {
   const terminalFrame = { x: 335, y: 117, width: 800, height: 520 };
   const mainFrame = { x: 485, y: 117, width: 921, height: 680 };
   return {
@@ -62,7 +62,10 @@ function uuWindowObservation(focused: 'terminal' | 'main'): Record<string, unkno
       root: {
         role: 'AXApplication',
         children: [
-          { role: 'AXWindow', title: '终端 - GREYSON-DESKTOP', focused: focused === 'terminal', frame: terminalFrame },
+          {
+            role: 'AXWindow', title: '终端 - GREYSON-DESKTOP', focused: focused === 'terminal', frame: terminalFrame,
+            ...(focused === 'descendant' ? { children: [{ role: 'AXTextArea', focused: true, frame: { x: 350, y: 250, width: 100, height: 80 } }] } : {}),
+          },
           { role: 'AXWindow', title: '', focused: focused === 'main', frame: mainFrame },
         ],
       },
@@ -437,6 +440,31 @@ describe('external plugin adapter', () => {
       { interaction_id: 'desk-uu', keys: ['return'] },
     ]);
     expect(providerActions).not.toContain('desktop_session_open');
+  });
+
+  test('maps a Chromium-style focused descendant to one exact AX/CG window without requiring AXWindow.focused', async () => {
+    const base = registration();
+    const keyAction = {
+      ...base.actions[0]!, actionId: 'desktop_key', title: 'Press desktop keys', description: 'Foreground-bound key action.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.interact'],
+    };
+    let keyCalls = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, keyAction] }), {
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_key'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_status') return uuDesktopStatus();
+        if (params?.action === 'desktop_observe') return uuWindowObservation('descendant');
+        if (params?.action === 'desktop_key') { keyCalls += 1; return { pressed: true }; }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_key', requestId: 'foreground-key-descendant-focus',
+      args: { interaction_id: 'desk-uu', keys: ['ENTER'] }, origin: { surface: 'mcp' },
+    })).resolves.toEqual({ pressed: true });
+    expect(keyCalls).toBe(1);
   });
 
   test('fails closed before key input when the main window steals focus from the bound UU terminal window', async () => {

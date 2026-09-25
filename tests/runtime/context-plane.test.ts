@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
@@ -116,8 +117,9 @@ describe('Kernel V2 structured Context Plane', () => {
       writeContextRecord({ controllerHome, expectedRevision: null, record: record({
         contextId: 'goal-prefer-b', value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-b' },
       }) });
+      const workStore = { controllerHome, repoId: 'repo-context-goal' };
       const result = routeWorkStart({
-        workStore: { controllerHome, repoId: 'repo-context-goal' },
+        workStore,
         handoffStore: { root: join(root, 'handoff') },
         repoId: 'repo-context-goal',
         sourceRevision: 'revision-a',
@@ -125,8 +127,10 @@ describe('Kernel V2 structured Context Plane', () => {
         objective: 'Apply a tiny context-routed change.',
         modeInput: { scopeClear: true, routePolicyInput: routeInput() },
       });
-      const mode = (result.data as { mode?: { routeDecision?: { selectedProviderId?: string | null } } }).mode;
-      expect(mode?.routeDecision?.selectedProviderId).toBe('provider-b');
+      const workId = (result.data as { work?: { workId?: string } }).work?.workId;
+      expect(result.status).toBe('ok');
+      expect(workId).toBeTruthy();
+      expect(getWorkContract(workStore, workId!)?.routeDecision?.selectedProviderId).toBe('provider-b');
       expect(readControlPlaneRecord(controllerHome, 'work_contract', 'repo-context-goal', 'WORK-any')).toBeUndefined();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -142,7 +146,8 @@ describe('Kernel V2 structured Context Plane', () => {
       expect(resolution.routeHints).toEqual({});
       expect(readControlPlaneRecord(home, 'work_contract', 'repo-1', 'WORK-AUTHORITY')?.value).toEqual(workValue);
       const baseline = selectExecutionMode({ scopeClear: true, routePolicyInput: routeInput() }).routeDecision;
-      expect(baseline.selectedProviderId).toBe('provider-a');
+      expect(baseline.selectedProviderId).toBeNull();
+      expect(baseline.alternatives).toEqual(['provider-a', 'provider-b']);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });

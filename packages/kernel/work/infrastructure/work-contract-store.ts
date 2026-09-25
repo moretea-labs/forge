@@ -558,13 +558,9 @@ function assertCanonicalWorkAdmissionAllowed(
   return assertWorkAdmissionPolicyAllows(policy, input);
 }
 
-function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
-  if (mode === 'direct_control') {
-    return { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true };
-  }
-  if (mode === 'handoff_only') {
-    return { preferred: 'handoff_only', allowWorker: false, allowDirectEdit: false };
-  }
+function defaultDriver(): WorkContract['driver'] {
+  // Legacy projection only. Execution method/provider choice is model-owned;
+  // capability eligibility and concrete placement are enforced at dispatch time.
   return { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true };
 }
 
@@ -648,10 +644,12 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
       forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
       checks: (input.checks ?? []).slice(0, 30),
-      driver: input.driver ?? defaultDriver(input.mode),
+      driver: input.driver ?? defaultDriver(),
       worktreePolicy: input.worktreePolicy ?? {
-        required: input.mode === 'goal_workloop',
-        reason: input.mode === 'goal_workloop' ? 'Goal workloop defaults to isolated worktree execution.' : undefined,
+        required: input.constraints?.requireWorktree === true || input.constraints?.workspaceMode === 'isolated',
+        reason: input.constraints?.requireWorktree === true || input.constraints?.workspaceMode === 'isolated'
+          ? 'Typed workspace placement requires an isolated worktree.'
+          : undefined,
       },
       evidencePolicy: input.evidencePolicy ?? {
         defaultDetailLevel: 'summary',
@@ -1930,16 +1928,17 @@ export function appendVerificationRecord(
 }
 
 /**
- * The only supported path for turning Work evidence into a completion receipt.
- * Task/Run/Process callers may supply evidence, but they cannot manufacture a
- * receipt or a terminal Work projection without this identity and cleanup gate.
+ * Legacy field name retained for storage compatibility. This records durable
+ * delivery/effect evidence only. It MUST NOT complete semantic Work, advance a
+ * Work lifecycle/phase, satisfy review policy, or infer the next action.
+ * Semantic completion is exclusively reviseWorkSemanticContext/work_complete CAS.
  */
 export function recordWorkCompletionReceipt(
   options: WorkContractStoreOptions,
   workId: string,
   receipt: NonNullable<WorkContract['completionReceipt']>,
   completionOutcome: NonNullable<WorkContract['completionOutcome']>,
-  completionWorkKind?: WorkKind,
+  _completionWorkKind?: WorkKind,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, (current) => {
     if (receipt.workId !== current.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
@@ -1951,35 +1950,8 @@ export function recordWorkCompletionReceipt(
     const receiptChangedPaths = isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)
       ? receipt.changedPaths
       : [];
-    const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
-      && Boolean(receipt.reconciliationId?.trim())
-      && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
-    // A real delivery receipt is independent from semantic Work completion.
-    // Semantic completion never bypasses delivery/review evidence requirements.
-    const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths, current.engineeringContext?.riskClass);
-    if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
-    }
-    const phaseEvidence: WorkPhaseEvidenceMap = {
-      ...current.phaseEvidence,
-      implementation: { ...current.phaseEvidence.implementation, state: 'satisfied' },
-      verification: { ...current.phaseEvidence.verification, state: 'satisfied' },
-      review: reviewRequired
-        ? historicalReconciliationException
-          ? { state: 'skipped', source: 'recorded', summary: `Historical reviewed reconciliation ${receipt.reconciliationId} is the narrow compatibility authority for this already-delivered Direct Edit Work.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt }
-          : { ...current.phaseEvidence.review, state: 'satisfied' }
-        : { state: 'skipped', source: 'recorded', summary: 'Implementation review is not required for this Work completion under the current candidate risk policy.', evidenceRefs: [], recordedAt },
-      delivery: { state: 'satisfied', source: 'recorded', summary: `Phase delivery accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
-      cleanup: { state: 'satisfied', source: 'recorded', summary: `Phase cleanup accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
-    };
     return {
-      phase: 'cleanup',
-      phaseEvidence,
-      status: 'completed',
-      dispatchState: 'terminal',
-      evidenceState: 'valid',
       completionOutcome,
-      ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
       completionReceipt: receipt,
       scopeEvidence: {
         initialLikelyPaths: current.scopeEvidence?.initialLikelyPaths ?? current.allowedPaths,
@@ -1988,7 +1960,7 @@ export function recordWorkCompletionReceipt(
         recordedAt,
       },
     };
-  }, true, true);
+  }, true, false);
 }
 export interface AcceptSubmittedWorkInput {
   requestId: string;

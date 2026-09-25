@@ -24,8 +24,8 @@ import { addRepositoryCheckout, getRepository, registerRepository } from '../../
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { approvePlanContract, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
@@ -978,19 +978,20 @@ describe('runtime maintenance executor', () => {
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
   });
 
-  it('mechanically terminalizes only a cleanup-ready stale Work with no source debt', () => {
+  it('never mechanically terminalizes a cleanup-ready stale semantic Work with no source debt', () => {
     const { controllerHome, repository, workId } = staleManagedWorkFixture('clean');
     const store = { controllerHome, repoId: repository.repoId, now: () => '2026-01-01T00:00:00.000Z' };
     advanceWorkToCleanup(store, workId);
 
     const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
+    const candidate = status.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === workId);
+    expect(candidate).toMatchObject({
       kind: 'stale_work_contract',
       id: workId,
-      safe: true,
+      safe: false,
       sourceState: 'clean_integrated',
-      disposition: undefined,
-    }));
+      disposition: 'semantic_completion_required',
+    });
 
     const applied = applyRuntimeMaintenance(repository, controllerHome, {
       actionId: 'full_maintenance_pass',
@@ -1001,14 +1002,20 @@ describe('runtime maintenance executor', () => {
     expect(applied.applied).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
       id: workId,
-      applied: true,
-      result: 'work_contract_cancelled_evidence_retained',
+      applied: false,
+      result: 'not_selected',
     }));
-    const cancelled = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-    expect(cancelled?.status).toBe('cancelled');
-    expect(cancelled?.phaseEvidence.implementation.state).toBe('satisfied');
-    expect(cancelled?.phaseEvidence.verification.state).toBe('satisfied');
-    expect(cancelled?.phaseEvidence.delivery.state).toBe('satisfied');
+    const direct = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
+    expect(direct).toMatchObject({
+      applied: false,
+      safe: false,
+      result: 'work_semantic_completion_required',
+      disposition: 'semantic_completion_required',
+    });
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      semanticState: 'open',
+      status: 'blocked',
+    });
   });
 
   it('rechecks managed-worktree source at apply time before stale cancellation', () => {
@@ -1030,7 +1037,7 @@ describe('runtime maintenance executor', () => {
     expect(readFileSync(join(worktree, 'late-write.txt'), 'utf8')).toBe('written after maintenance scan\n');
   });
 
-  it('rechecks Work authority at apply time before cancelling a previously stale candidate', () => {
+  it('does not let a late Controller claim become semantic cancellation authority for stale Work', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-work-apply-authority-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, 'controller');
@@ -1055,16 +1062,25 @@ describe('runtime maintenance executor', () => {
       workId: 'work-stale-then-claimed', controllerId: 'controller-late', controllerType: 'chatgpt', sessionId: 'mcp-late',
       principalId: 'principal-late', controllerInstanceId: 'runtime-late', leaseMs: 60_000,
     });
-    const fenced = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(fenced.applied).toBe(false);
-    expect(fenced.result).toBe('work_terminalization_fenced:active_controller_claim:claim_generation=1');
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.status).toBe('blocked');
+    const whileClaimed = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
+    expect(whileClaimed).toMatchObject({
+      applied: false,
+      result: 'work_semantic_completion_required',
+      disposition: 'semantic_completion_required',
+    });
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')).toMatchObject({
+      status: 'blocked',
+      semanticState: 'open',
+    });
 
     releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed', 'controller-late');
-    const cancelled = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(cancelled.applied).toBe(true);
-    expect(cancelled.result).toBe('work_contract_cancelled_evidence_retained');
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.status).toBe('cancelled');
+    const afterRelease = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
+    expect(afterRelease).toMatchObject({
+      applied: false,
+      result: 'work_semantic_completion_required',
+      disposition: 'semantic_completion_required',
+    });
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.semanticState).toBe('open');
   });
 
   it('does not classify an old Work as stale while an active Plan still owns it', () => {
@@ -1086,8 +1102,6 @@ describe('runtime maintenance executor', () => {
       planId: 'PLAN-owned', repoId: repository.repoId, scopeKey: 'owned-scope', sourceRevision: 'revision-a', goal: 'Own the old work',
       steps: [{ id: 'step-a', objective: 'Execute authoritative work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['finish plan'] }],
     });
-    approvePlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-owned');
-
     const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
     expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
     const applied = applyRuntimeMaintenance(repository, controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50 });
@@ -1095,7 +1109,7 @@ describe('runtime maintenance executor', () => {
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.status).toBe('ready');
   });
 
-  it('treats a live Controller lease as lifecycle authority until the lease is released', () => {
+  it('never treats a live Controller lease as semantic Work lifecycle authority', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-controller-authority-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, 'controller');
@@ -1117,11 +1131,13 @@ describe('runtime maintenance executor', () => {
     });
 
     const active = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(active.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-controller-owned' }));
+    expect(active.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract', id: 'work-controller-owned', safe: false, disposition: 'semantic_completion_required',
+    }));
     releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-controller-owned', 'controller-a');
     const released = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
     expect(released.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract', id: 'work-controller-owned', safe: true,
+      kind: 'stale_work_contract', id: 'work-controller-owned', safe: false, disposition: 'semantic_completion_required',
     }));
   });
 
@@ -1183,7 +1199,7 @@ describe('runtime maintenance executor', () => {
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
-  it('inherits live Work lifecycle authority before classifying an old Edit Session as maintenance debt', () => {
+  it('does not use a Controller lease to hide an old Edit Session maintenance observation', () => {
     const fx = editFixture({ workStatus: 'running' });
     claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: 'work-running', controllerId: 'controller-edit-owner', controllerType: 'chatgpt', sessionId: 'mcp-edit-owner',
@@ -1191,7 +1207,7 @@ describe('runtime maintenance executor', () => {
     });
 
     const active = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(active.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId }));
+    expect(active.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
 
     releaseControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-running', 'controller-edit-owner');
     const released = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });

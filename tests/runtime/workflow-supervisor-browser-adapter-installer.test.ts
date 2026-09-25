@@ -157,6 +157,7 @@ describe('workflow supervisor Chrome extension conversation identity', () => {
     parseConversation(value: string): { conversationId: string; canonicalUrl: string } | null;
     sameIdentity(a: unknown, b: unknown): boolean;
     sameConversation(a: unknown, b: unknown): boolean;
+    isCommittedAssistantResponse(text: string): boolean;
   } {
     const source = readFileSync(join(process.cwd(), 'supervisor', 'chrome-extension', 'core.js'), 'utf8');
     const sandbox: Record<string, unknown> = {};
@@ -175,6 +176,12 @@ describe('workflow supervisor Chrome extension conversation identity', () => {
     expect(api.sameConversation(projectRoute, canonicalRoute)).toBe(true);
     // Page-scoped message handling stays strict about the exact route it serves.
     expect(api.sameIdentity(projectRoute, canonicalRoute)).toBe(false);
+  });
+
+  test('accepts Markdown-safe completions while retaining legacy completion read compatibility', () => {
+    const api = core();
+    expect(api.isCommittedAssistantResponse('status\n[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]\n{}\n[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]')).toBe(true);
+    expect(api.isCommittedAssistantResponse('status\n<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>\n{}\n<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>')).toBe(true);
   });
 
   test('rejects non-ChatGPT or non-conversation routes instead of opening a tab for them', () => {

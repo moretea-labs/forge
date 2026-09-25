@@ -14,9 +14,11 @@ afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, f
 function home(): string { const value = mkdtempSync(join(tmpdir(), 'forge-supervisor-native-browser-')); roots.push(value); return value; }
 
 class FakePage implements WorkflowSupervisorNativePage {
-  owner = ''; latestUserText = ''; pageText = ''; latestAssistantResponse = ''; providerActivityText = ''; providerFailureText = ''; latestTurnRole: 'user' | 'assistant' | undefined; isGenerating = false; closed = false;
+  owner = ''; latestUserText = ''; composerText = ''; pageText = ''; latestAssistantResponse = ''; providerActivityText = ''; providerFailureText = ''; latestTurnRole: 'user' | 'assistant' | undefined; isGenerating = false; closed = false;
+  bringToFront?: () => Promise<void>;
   constructor(readonly ref: MacOsBrowserTabRef, public url: string, public title = 'ChatGPT') {}
   async evaluate<T>(): Promise<T> { throw new Error('fake evaluate should be replaced by adapter dependencies'); }
+  async waitForSelector(): Promise<unknown> { return { attached: true, visible: true }; }
   tabRef(): MacOsBrowserTabRef { return { ...this.ref }; }
 }
 function inventory(page: FakePage): MacOsBrowserTabInventoryEntry {
@@ -62,7 +64,7 @@ function harness(
       snapshotCount += 1;
       const value = page as FakePage;
       if (value.closed) throw new Error('fake transport closed');
-      return { url: value.url, title: value.title, latestUserText: value.latestUserText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, providerActivityText: value.providerActivityText, providerFailureText: value.providerFailureText, latestTurnRole: value.latestTurnRole, isGenerating: value.isGenerating };
+      return { url: value.url, title: value.title, latestUserText: value.latestUserText, composerText: value.composerText, pageText: value.pageText, latestAssistantResponse: value.latestAssistantResponse, providerActivityText: value.providerActivityText, providerFailureText: value.providerFailureText, latestTurnRole: value.latestTurnRole, isGenerating: value.isGenerating };
     },
     dispatchPrompt: async (page, prompt) => {
       dispatchAttempts += 1;
@@ -107,54 +109,50 @@ function register(control: WorkflowSupervisorControlPlane, conversationId: strin
 }
 
 describe('Workflow Supervisor macOS native browser adapter', () => {
-  test('requires trusted OS input rather than claiming a DOM click dispatched a prompt', async () => {
-    const page: WorkflowSupervisorNativePage = { evaluate: async () => { throw new Error('must not inspect DOM without trusted input'); }, tabRef: () => undefined };
-    await expect(defaultDispatchPrompt(page, 'continue')).resolves.toEqual({ dispatched: false, reason: 'trusted_input_unavailable' });
-  });
-
-  test('uses trusted text and click input, then verifies the composer before sending', async () => {
-    const inputs: unknown[] = [];
-    let reads = 0;
+  test('dispatches through one exact-tab DOM transaction without requiring foreground or Computer input', async () => {
+    let expression = '';
     const page: WorkflowSupervisorNativePage = {
-      tabRef: () => undefined,
-      foregroundState: async () => ({ frontmost: true, active: true }),
-      trustedInput: async (input) => { inputs.push(input); },
-      evaluate: async <T>() => {
-        reads += 1;
-        if (reads === 1) return { composer: { value: '', center: { x: 10, y: 20 } } } as T;
-        return { composer: { value: 'continue safely', center: { x: 10, y: 20 } }, sendButton: { value: '', center: { x: 30, y: 40 } } } as T;
+      tabRef: () => ({ windowId: 'background-window', tabId: 'background-tab' }),
+      evaluate: async <T>(source: string | ((...args: unknown[]) => unknown)) => {
+        expression += String(source);
+        return (expression.includes('sendButton.click()') ? { dispatched: true } : { prepared: true }) as T;
+      },
+      waitForSelector: async (selector, options) => {
+        expect(selector).toBe('[data-testid="send-button"]');
+        expect(options).toMatchObject({ state: 'visible', timeout: 2_000 });
+        return { attached: true, visible: true };
       },
     };
     await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: true });
-    expect(inputs).toEqual([
-      { kind: 'click', x: 10, y: 20, button: 'left', clickCount: 1 },
-      { kind: 'text', text: 'continue safely' },
-      { kind: 'click', x: 30, y: 40, button: 'left', clickCount: 1 },
-    ]);
+    expect(expression).toContain("document.execCommand('insertText'");
+    expect(expression).toContain('[data-testid="send-button"]');
+    expect(expression).toContain('sendButton.click()');
+    expect(expression).not.toContain('Enter');
   });
 
-  test('refuses to overwrite an ambiguous non-empty composer', async () => {
-    const inputs: unknown[] = [];
+  test('propagates exact background DOM refusal without falling back to physical input', async () => {
     const page: WorkflowSupervisorNativePage = {
-      tabRef: () => undefined,
-      foregroundState: async () => ({ frontmost: true, active: true }),
-      trustedInput: async (input) => { inputs.push(input); },
-      evaluate: async <T>() => ({ composer: { value: 'unsent prior content', center: { x: 10, y: 20 } } } as T),
+      tabRef: () => ({ windowId: 'background-window', tabId: 'background-tab' }),
+      evaluate: async <T>() => ({ prepared: false, reason: 'composer_not_empty' } as T),
+      waitForSelector: async () => { throw new Error('must not wait when composer preparation fails'); },
     };
     await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: false, reason: 'composer_not_empty' });
-    expect(inputs).toEqual([]);
   });
 
-  test('refuses physical input unless the exact browser tab is already foreground and active', async () => {
-    const inputs: unknown[] = [];
+  test('resume submits only the exact already-written payload in the same background tab', async () => {
+    let expression = '';
     const page: WorkflowSupervisorNativePage = {
-      tabRef: () => undefined,
-      foregroundState: async () => ({ frontmost: false, active: false }),
-      trustedInput: async (input) => { inputs.push(input); },
-      evaluate: async <T>() => ({ composer: { value: '', center: { x: 10, y: 20 } } } as T),
+      tabRef: () => ({ windowId: 'background-window', tabId: 'background-tab' }),
+      evaluate: async <T>(source: string | ((...args: unknown[]) => unknown)) => {
+        expression += String(source);
+        return (expression.includes('sendButton.click()') ? { dispatched: true } : { prepared: true }) as T;
+      },
+      waitForSelector: async () => ({ attached: true, visible: true }),
     };
-    await expect(defaultDispatchPrompt(page, 'continue safely')).resolves.toEqual({ dispatched: false, reason: 'browser_foreground_required' });
-    expect(inputs).toEqual([]);
+    await expect(defaultDispatchPrompt(page, 'continue safely', { mode: 'resume' })).resolves.toEqual({ dispatched: true });
+    expect(expression).toContain('const resume = true');
+    expect(expression).toContain('composer_resume_mismatch');
+    expect(expression).toContain('sendButton.click()');
   });
 
   test('reuses the page-validation snapshot instead of capturing the same active page twice per run', async () => {
@@ -186,6 +184,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
         };
         return Function('document', 'location', `return ${expression}`)(fakeDocument, { href: 'https://chatgpt.com/c/test' }) as T;
       },
+      waitForSelector: async () => ({ attached: true, visible: true }),
       tabRef: () => undefined,
     };
     const snapshot = await defaultSnapshot(page);
@@ -210,6 +209,31 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(userTab.latestUserText).toBe(effect.prompt);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.discovery.get().conversations).toEqual([{ conversationId, canonicalUrl: url, title: 'ChatGPT' }]);
+    expect(h.errors).toEqual([]);
+  });
+
+  test('keeps the exact owned conversation in the background during an authorized Supervisor send', async () => {
+    const conversationId = '12121212-2323-3434-4545-565656565656';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const page = new FakePage({ windowId: 'forge-window', tabId: 'forge-tab-background' }, url);
+    page.owner = `forge-workflow-supervisor:${conversationId}`;
+    let activations = 0;
+    page.bringToFront = async () => { activations += 1; };
+    const h = harness([page], '', false, '', '', false, {
+      dispatchPrompt: async (candidate, prompt) => {
+        expect(candidate).toBe(page);
+        page.latestUserText = prompt;
+        page.latestTurnRole = 'user';
+        return { dispatched: true };
+      },
+    });
+    const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+
+    expect(activations).toBe(0);
+    expect(page.latestUserText).toBe(effect.prompt);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });
 
@@ -243,6 +267,61 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.errors).toEqual([]);
   });
+  test('resumes an exact already-written composer in the same dispatch generation without retyping', async () => {
+    const conversationId = '20202020-3131-4242-5353-646464646464';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const page = new FakePage({ windowId: 'forge-window', tabId: 'forge-tab-resume' }, url);
+    page.owner = `forge-workflow-supervisor:${conversationId}`;
+    let calls = 0;
+    const h = harness([page], '', false, '', '', false, {
+      dispatchPrompt: async (candidate, prompt, _task, options) => {
+        calls += 1;
+        const fake = candidate as FakePage;
+        if (options?.mode === 'resume') {
+          expect(fake.composerText).toBe(prompt);
+          fake.composerText = '';
+          fake.latestUserText = prompt;
+          fake.latestTurnRole = 'user';
+          return { dispatched: true };
+        }
+        fake.composerText = prompt;
+        return { dispatched: false, reason: 'send_boundary_unknown' };
+      },
+    });
+    const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+    expect(page.composerText).toBe(effect.prompt);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+
+    await h.adapter.runOnce();
+    expect(calls).toBe(2);
+    expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
+    expect(page.latestUserText).toBe(effect.prompt);
+    expect(h.errors).toEqual([]);
+  });
+
+  test('does not authorize a new generation when reconcile finds a non-empty mismatched composer', async () => {
+    const conversationId = '21212121-3232-4343-5454-656565656565';
+    const url = `https://chatgpt.com/c/${conversationId}`;
+    const page = new FakePage({ windowId: 'forge-window', tabId: 'forge-tab-mismatch' }, url);
+    page.owner = `forge-workflow-supervisor:${conversationId}`;
+    const h = harness([page], '', false, 'send_button_missing');
+    const { effect } = register(h.control, conversationId);
+
+    await h.adapter.runOnce();
+    page.composerText = 'partial unrelated mutation';
+    await h.adapter.runOnce();
+
+    expect(h.control.store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
+    expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command)
+      .toMatchObject({ mode: 'reconcile', dispatchGeneration: 1 });
+    expect(h.dispatchAttempts()).toBe(1);
+    expect(h.errors).toEqual([]);
+  });
+
   test('leaves a pending effect untouched while the provider is still generating', async () => {
     const conversationId = '14141414-2525-3636-4747-585858585858';
     const url = `https://chatgpt.com/c/${conversationId}`;

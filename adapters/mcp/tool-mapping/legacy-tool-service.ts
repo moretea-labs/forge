@@ -87,11 +87,9 @@ import {
 } from "../../../src/cli/controller/progress";
 import { exportControllerWorklog, parseWorklogCategory } from "../../../src/cli/controller/worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../../../src/cli/controller/governance";
-import { assessWorkMode, parseExplicitTaskMode } from "../../../src/cli/controller/work-mode";
 import { taskExecutionPolicy } from "../../../src/cli/controller/execution-policy";
 import { finishEditSession, finishTaskRun } from "../../../src/cli/controller/completion-orchestrator";
 import { buildControllerTaskLedgerProjection } from "../../../src/cli/controller/task-ledger";
-import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { loadControllerProjectState, saveControllerProjectState } from "../../../src/cli/controller/project-state";
 import {
   FORGE_MCP_SCHEMA_VERSION,
@@ -2046,29 +2044,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: "assess_work_request",
-        description:
-          "Choose direct_edit, quick_agent, or issue_task before creating work. Prefer repository search plus bounded direct edits for low/medium-risk changes, even when exact files need discovery; use an Agent only when direct patches are not safe or practical.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            description: { type: "string" },
-            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "release", "scale", "-direct", "-plan", "-debug", "-review", "-release", "-scale"] },
-            known_paths: { type: "array", items: { type: "string" } },
-            expected_files: { type: "number" },
-            expected_changed_lines: { type: "number" },
-            requires_investigation: { type: "boolean" },
-            requires_parallelism: { type: "boolean" },
-            requires_long_running_checks: { type: "boolean" },
-            needs_dependencies: { type: "boolean" },
-            risk: { type: "string", enum: ["readonly", "low", "medium", "high", "destructive"] },
-          },
-          required: ["description"],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
         name: "create_issue",
         description:
           "Create a durable Issue only for broad, long-running, dependency-aware, parallel, protected-path, or high-risk work. File discovery by itself is not a reason to create an Issue or start an Agent; search first and use bounded direct edits when practical.",
@@ -3202,34 +3177,6 @@ export async function callMcpTool(
           timeoutMs: check.timeoutMs,
           source: check.source,
         }));
-        const assessment = assessWorkMode({
-          description: typeof args.description === "string" && args.description.trim()
-            ? String(args.description)
-            : "Inspect the selected repository context.",
-          knownPaths: stringList(args.known_paths),
-          expectedFiles: typeof args.expected_files === "number" ? args.expected_files : undefined,
-          expectedChangedLines: typeof args.expected_changed_lines === "number" ? args.expected_changed_lines : undefined,
-          requiresInvestigation: args.requires_investigation === true,
-          requiresParallelism: args.requires_parallelism === true,
-          requiresLongRunningChecks: args.requires_long_running_checks === true,
-          needsDependencies: args.needs_dependencies === true,
-          risk: typeof args.risk === "string" ? args.risk as TaskRisk : undefined,
-          explicitMode: parseExplicitTaskMode(args.mode)
-            ?? (typeof args.description === "string" && args.description.trim() ? undefined : "direct"),
-        });
-        const modeContextPack = assessment.modeBehavior.structuralContext === "required"
-          ? await buildControllerContextPackInSidecar({
-              repoRoot: ctx.repoRoot,
-              policy: ctx.policy,
-              options: {
-                description: typeof args.description === "string" ? args.description : undefined,
-                knownPaths: stringList(args.known_paths),
-                structuralContext: "required",
-                maxFiles: 8,
-                maxSnippets: 20,
-              },
-            })
-          : undefined;
         const payload = {
           git: gitSnapshot(ctx.repoRoot),
           requirementBoard,
@@ -3264,8 +3211,6 @@ export async function callMcpTool(
             })),
           },
           checks,
-          recommendedExecution: assessment,
-          ...(modeContextPack ? { modeContextPack } : {}),
         };
         audit(ctx, name, "ok", args);
         return textResult(payload);
@@ -3829,24 +3774,6 @@ export async function callMcpTool(
           `tasks/issues/${issue.id}`,
         );
         return textResult(preview);
-      }
-      case "assess_work_request": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult("TOOL_DISABLED", "assess_work_request requires the controller profile");
-        const assessment = assessWorkMode({
-          description: String(args.description ?? ""),
-          knownPaths: stringList(args.known_paths),
-          expectedFiles: typeof args.expected_files === "number" ? args.expected_files : undefined,
-          expectedChangedLines: typeof args.expected_changed_lines === "number" ? args.expected_changed_lines : undefined,
-          requiresInvestigation: args.requires_investigation === true,
-          requiresParallelism: args.requires_parallelism === true,
-          requiresLongRunningChecks: args.requires_long_running_checks === true,
-          needsDependencies: args.needs_dependencies === true,
-          risk: typeof args.risk === "string" ? args.risk as TaskRisk : undefined,
-          explicitMode: parseExplicitTaskMode(args.mode),
-        });
-        audit(ctx, name, "ok", args);
-        return textResult(assessment);
       }
       case "create_issue": {
         if (ctx.policy.profile !== "controller")
@@ -4496,8 +4423,6 @@ export async function callMcpTool(
             objective: purpose,
             scopeClear: allowedPaths.length > 0,
             mutation: true,
-            expectedFiles: typeof args.max_files === "number" ? args.max_files : allowedPaths.length,
-            expectedChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
           },
           workspace: { knownPaths: allowedPaths, checkoutId: identity.checkoutId, fingerprint: workspaceIdentity },
           policy: { risk: "local_repo_write", approvalConfirmed: true },

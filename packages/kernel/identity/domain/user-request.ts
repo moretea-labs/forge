@@ -20,6 +20,37 @@ export interface UserRequestOption {
   description?: string;
 }
 
+export interface UserRequestPresentation {
+  /** Compatibility lookup key for legacy Handoff callers; never a second authority. */
+  legacyHandoffId?: string;
+  severity?: 'info' | 'needs_review' | 'blocked' | 'failed' | 'ready_to_continue';
+  creationReason?: string;
+  reason?: string;
+  currentState?: Record<string, unknown>;
+  attemptedActions?: string[];
+  evidenceRefs?: Array<{ title: string; summary?: string; detailLevel?: 'summary' | 'detail' | 'raw' }>;
+  blockingDecision?: string;
+  recommendedDecision?: string;
+  recommendedPrompt?: string;
+  recommendedContinuationPrompt?: string;
+  approvalAction?: {
+    operation: 'start' | 'repair';
+    label: string;
+    summary: string;
+    risk: string;
+    payload: Record<string, unknown>;
+  };
+  suggestedNextActions?: Array<{
+    label: string;
+    tool?: string;
+    operation?: string;
+    payload?: Record<string, unknown>;
+    risk?: string;
+    confidence?: string;
+    reason?: string;
+  }>;
+}
+
 export interface UserRequest {
   schemaVersion: 1;
   requestId: string;
@@ -30,6 +61,7 @@ export interface UserRequest {
   actionRequired: UserActionRequired;
   targetScope?: UserRequestTargetScope;
   options?: UserRequestOption[];
+  presentation?: UserRequestPresentation;
   status: 'pending' | 'resolved' | 'cancelled';
   resolution?: {
     decision: string;
@@ -49,6 +81,7 @@ export interface CreateUserRequestInput {
   actionRequired: UserActionRequired;
   targetScope?: UserRequestTargetScope;
   options?: UserRequestOption[];
+  presentation?: UserRequestPresentation;
   now?: Date;
 }
 

@@ -56,7 +56,6 @@ import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../../src/runtime/execution/process-runtime/command-facade';
-import { assessWorkMode, parseExplicitTaskMode } from '../../../src/cli/controller/work-mode';
 import { classifyRepositoryCommand } from '../../../src/cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../src/cli/repositories/command-normalization';
 import { readRepositoryRange } from '../../../src/cli/repository/inspector';
@@ -157,12 +156,12 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     include_removed: { type: 'boolean' },
     operation: {
       type: 'string',
-      enum: ['summary', 'batch_execute', 'lanes_execute', 'lanes_integrate', 'fast_receipt_get', 'fast_receipt_list', 'execution_route', 'assess_work_mode'],
-      description: 'Defaults to summary. Use batch_execute for multi-step Fast Path (one parent receipt). Use lanes_execute for limited parallel reads. Use assess_work_mode for Fast/Durable routing advice.',
+      enum: ['summary', 'batch_execute', 'lanes_execute', 'lanes_integrate', 'fast_receipt_get', 'fast_receipt_list', 'execution_route'],
+      description: 'Defaults to summary. Use batch_execute for multi-step repository capability execution and lanes_execute for limited parallel reads. Workflow/mode selection belongs to the model/user, not Workbench.',
     },
     payload: {
       type: 'object',
-      description: 'Operation-specific bounded arguments. Batch write operations should include request_id. For batch_execute: { steps:[{id?, kind, input}], stop_on_error?, allowed_paths?, timeout_ms?, request_id?, purpose? }. For assess_work_mode: { description, known_paths?, expected_files?, requires_parallelism?, independent_task_count?, agent_requested? }. Agent routing is opt-in only.',
+      description: 'Operation-specific bounded arguments. Batch write operations should include request_id. For batch_execute: { steps:[{id?, kind, input}], stop_on_error?, allowed_paths?, timeout_ms?, request_id?, purpose? }.' ,
       additionalProperties: true,
     },
   }),
@@ -867,39 +866,6 @@ export async function callRepositoryTool(
         const payload = typeof args.payload === 'object' && args.payload !== null
           ? args.payload as Record<string, unknown>
           : {};
-        if (operation === 'assess_work_mode') {
-          const description = typeof payload.description === 'string'
-            ? payload.description
-            : typeof args.description === 'string' ? args.description : '';
-          const assessment = assessWorkMode({
-            description,
-            knownPaths: Array.isArray(payload.known_paths) ? payload.known_paths.map(String) : undefined,
-            expectedFiles: typeof payload.expected_files === 'number' ? payload.expected_files : undefined,
-            expectedChangedLines: typeof payload.expected_changed_lines === 'number' ? payload.expected_changed_lines : undefined,
-            requiresInvestigation: payload.requires_investigation === true,
-            requiresParallelism: payload.requires_parallelism === true,
-            requiresLongRunningChecks: payload.requires_long_running_checks === true,
-            needsDependencies: payload.needs_dependencies === true,
-            requiresIndependentDeliverables: payload.requires_independent_deliverables === true,
-            independentTaskCount: typeof payload.independent_task_count === 'number' ? payload.independent_task_count : undefined,
-            requiresRemoteWrite: payload.requires_remote_write === true || payload.remote_write === true,
-            requiresRecovery: payload.requires_recovery === true,
-            agentRequested: payload.agent_requested === true || payload.requires_worker === true,
-            requiresWorkerIsolation: payload.requires_worker_isolation === true,
-            risk: typeof payload.risk === 'string' ? payload.risk as 'low' | 'medium' | 'high' | 'destructive' : undefined,
-            explicitMode: parseExplicitTaskMode(payload.mode),
-          });
-          return result({
-            assessment,
-            routing: {
-              path: assessment.executionPath,
-              reasons: assessment.reasons,
-              recommendedMode: assessment.recommendedMode,
-              issueRequired: assessment.issueRequired,
-            },
-            nextTools: assessment.nextTools,
-          });
-        }
         const internalTool = {
           batch_execute: 'repository_batch_execute',
           lanes_execute: 'repository_lanes_execute',

@@ -1,7 +1,7 @@
 import {
   appendWorkEvidence as persistWorkEvidence,
   getWorkContract as readWorkContract,
-  recordWorkCompletionReceipt as persistWorkCompletionReceipt,
+  recordWorkCompletionReceipt as persistWorkDeliveryReceipt,
   canonicalizeWorkContractForAuthority,
 } from '../infrastructure/work-contract-store';
 import type { WorkContract } from '../domain/types';
@@ -17,11 +17,10 @@ export interface CompleteRemoteEffectProcessInput {
 }
 
 /**
- * Application command for terminalizing a Work from one trusted repository
- * remote-effect Process receipt. Gateway supplies evidence identity only; Work
- * kind checks, evidence append, and terminal lifecycle mutation stay here.
+ * Record one trusted repository remote-effect Process receipt as Work evidence.
+ * This never changes semantic Work state; the model/user decides completion via work_complete.
  */
-export function completeRemoteEffectWorkFromProcessReceipt(
+export function recordRemoteEffectWorkProcessReceipt(
   options: WorkContractStoreOptions,
   workId: string,
   input: CompleteRemoteEffectProcessInput,
@@ -31,7 +30,7 @@ export function completeRemoteEffectWorkFromProcessReceipt(
   if (work.workKind !== 'remote_effect') {
     throw new Error(`WORK_REMOTE_EFFECT_PROCESS_KIND_MISMATCH: ${workId} is ${work.workKind}, expected remote_effect`);
   }
-  if (work.status === 'completed' && work.completionReceipt?.source === 'remote_effect') return work;
+  if (work.completionReceipt?.source === 'remote_effect') return work;
   if (!work.evidenceRefs.some((candidate) => candidate.evidenceId === input.processId)) {
     persistWorkEvidence(options, workId, {
       evidenceId: input.processId,
@@ -40,7 +39,7 @@ export function completeRemoteEffectWorkFromProcessReceipt(
       detailLevel: 'summary',
     });
   }
-  return persistWorkCompletionReceipt(
+  return persistWorkDeliveryReceipt(
     options,
     workId,
     {

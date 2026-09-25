@@ -6,7 +6,9 @@ import {
   callBrowserAutomationBroker,
   captureBrowserAutomationRegion,
   type BrowserAutomationBrokerAction,
+  type BrowserAutomationSemanticTargetProof,
   type BrowserAutomationTrustedInput,
+  type BrowserAutomationTrustedInputRequest,
 } from './browser-automation-service';
 import { AssistantPluginError } from './errors';
 import type { BrowserNativeAttachAttempt, BrowserNativeProduct } from '../../../packages/protocols/browser/index';
@@ -291,7 +293,7 @@ async function captureBrowserAutomation(
 }
 
 async function sendBrowserTrustedInput(
-  request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>,
+  request: BrowserAutomationTrustedInputRequest,
   timeoutMs: number,
 ): Promise<void> {
   if (runtimeHooks.trustedInput) {
@@ -1195,6 +1197,57 @@ export class MacOsAppleEventsPage {
     }
     this.targetRef = await resolveCurrentMacOsBrowserTabRef(this.browser.product, this.targetRef, this.timeoutMs);
     await sendBrowserTrustedInput({ action: 'trusted_input', product: this.browser.product, ref: this.targetRef, input }, this.timeoutMs);
+    await this.refreshMetadata();
+  }
+
+  /**
+   * Supervisor-only semantic text boundary. Browser owns exact tab + DOM focus;
+   * Computer receives only a one-shot semantic target proof and remains the OS
+   * mutation transport. Generic Browser trusted text keeps its compatibility
+   * semantics and does not implicitly become ChatGPT-specific.
+   */
+  async trustedSemanticTextInput(text: string): Promise<void> {
+    if (!this.targetRef) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE', 'Semantic trusted text requires an exact saved browser tab.', { retryable: false });
+    }
+    this.targetRef = await resolveCurrentMacOsBrowserTabRef(this.browser.product, this.targetRef, this.timeoutMs);
+    const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(this.browser.product, this.targetRef, this.timeoutMs);
+    if (!metadata.frontmost || metadata.active !== true) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_FOREGROUND_REQUIRED',
+        'Semantic trusted text requires the exact saved browser tab to be frontmost and active.',
+        { retryable: true, details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } },
+      );
+    }
+    const semanticTarget = await this.evaluate<BrowserAutomationSemanticTargetProof & { valid?: boolean }>(`(() => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement)) return { valid: false };
+      const tag = element.tagName.toLowerCase();
+      const inputType = element instanceof HTMLInputElement ? String(element.type || 'text').toLowerCase() : '';
+      const textInput = element instanceof HTMLTextAreaElement
+        || element.isContentEditable
+        || (element instanceof HTMLInputElement && !['button','checkbox','color','file','hidden','image','radio','range','reset','submit'].includes(inputType));
+      const accessibleName = String(element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.getAttribute('title') || element.getAttribute('name') || '').trim();
+      const domRole = String(element.getAttribute('role') || (textInput ? 'textbox' : '')).trim();
+      const multiline = element instanceof HTMLTextAreaElement || element.isContentEditable || element.getAttribute('aria-multiline') === 'true';
+      return { valid: textInput && document.activeElement === element && Boolean(domRole) && Boolean(accessibleName), domRole, accessibleName, editable: true, focused: true, multiline };
+    })()`);
+    if (semanticTarget.valid !== true || semanticTarget.editable !== true || semanticTarget.focused !== true
+        || !semanticTarget.domRole || !semanticTarget.accessibleName) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_TRUSTED_INPUT_SEMANTIC_TARGET_UNPROVEN',
+        'Browser could not prove one focused editable DOM target with an accessible identity before trusted text mutation.',
+        { retryable: true, details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } },
+      );
+    }
+    const { valid: _valid, ...proof } = semanticTarget;
+    await sendBrowserTrustedInput({
+      action: 'trusted_input',
+      product: this.browser.product,
+      ref: this.targetRef,
+      input: { kind: 'text', text },
+      semanticTarget: proof,
+    }, this.timeoutMs);
     await this.refreshMetadata();
   }
 

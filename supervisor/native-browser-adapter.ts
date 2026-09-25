@@ -10,11 +10,10 @@ import {
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
-import type { ComputerTrustedInput } from '../packages/protocols/computer/index';
 import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
-import { renderEffectMarker, sha256, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from './protocol';
+import { hasCommittedSupervisorEnvelope, renderEffectMarker, sha256 } from './protocol';
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type { WorkflowSupervisorBrowserCommand, WorkflowSupervisorBrowserTask } from './types';
 
@@ -26,17 +25,14 @@ const MAX_TRANSPORT_BACKOFF_MS = 60_000;
 const MAX_TRANSPORT_BACKOFF_STEPS = 6;
 const MAX_PROVIDER_FAILURE_SCAN_CHARS = 250_000;
 const MAX_PROVIDER_ACTIVITY_CHARS = 64 * 1024;
-const MAX_TRUSTED_TEXT_INPUT_CHARS = 10_000;
 const NATIVE_BROWSER_PRODUCTS: readonly MacOsBrowserProduct[] = ['vivaldi', 'chrome'];
 type TaggedBrowserTabRef = MacOsBrowserTabRef & { browserProduct?: MacOsBrowserProduct };
 type TaggedBrowserTabInventoryEntry = MacOsBrowserTabInventoryEntry & { browserProduct?: MacOsBrowserProduct };
 
 export interface WorkflowSupervisorNativePage {
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+  waitForSelector(selector: string, options?: Record<string, unknown>): Promise<unknown>;
   tabRef(): MacOsBrowserTabRef | undefined;
-  foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
-  /** Real OS input, required for a provider-visible message submission. */
-  trustedInput?(input: ComputerTrustedInput): Promise<void>;
 }
 export interface WorkflowSupervisorNativeSnapshot {
   url: string;
@@ -44,6 +40,8 @@ export interface WorkflowSupervisorNativeSnapshot {
   latestUserText: string;
   pageText?: string;
   latestAssistantResponse: string;
+  /** Exact current composer payload, when the ChatGPT composer is present. */
+  composerText?: string;
   providerActivityText: string;
   providerFailureText: string;
   latestTurnRole?: 'user' | 'assistant';
@@ -62,7 +60,7 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   readOwner(page: WorkflowSupervisorNativePage): Promise<string>;
   writeOwner(page: WorkflowSupervisorNativePage, marker: string): Promise<void>;
   snapshot(page: WorkflowSupervisorNativePage, options?: WorkflowSupervisorNativeSnapshotOptions): Promise<WorkflowSupervisorNativeSnapshot>;
-  dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
+  dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask, options?: { mode?: 'send' | 'resume' }): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
   nowMs(): number;
   providerIdleGraceMs: number;
   sleep(ms: number): Promise<void>;
@@ -94,13 +92,9 @@ function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): bo
   } catch { return false; }
 }
 function committedAssistant(text: string): boolean {
-  const value = text.trim();
-  return value.length <= 512 * 1024 && value.endsWith(SUPERVISOR_BLOCK_END) && value.lastIndexOf(SUPERVISOR_BLOCK_START) >= 0;
+  return hasCommittedSupervisorEnvelope(text.trim());
 }
 function targetMarkerPresent(text: string, effectId: string): boolean { return text.includes(renderEffectMarker(effectId)); }
-type PromptControl = { value: string; center: { x: number; y: number } };
-type PromptControls = { composer?: PromptControl; sendButton?: PromptControl };
-
 function refKey(ref: TaggedBrowserTabRef): string { return `${ref.browserProduct ?? 'unknown'}:${ref.windowId}:${ref.tabId}`; }
 function productForRef(ref: TaggedBrowserTabRef): MacOsBrowserProduct {
   if (ref.browserProduct === 'chrome' || ref.browserProduct === 'vivaldi') return ref.browserProduct;
@@ -109,12 +103,11 @@ function productForRef(ref: TaggedBrowserTabRef): MacOsBrowserProduct {
 function taggedPage(page: MacOsAppleEventsPage, product: MacOsBrowserProduct): WorkflowSupervisorNativePage {
   return {
     evaluate: page.evaluate.bind(page),
+    waitForSelector: page.waitForSelector.bind(page),
     tabRef: () => {
       const ref = page.tabRef();
       return ref ? { ...ref, browserProduct: product } : undefined;
     },
-    foregroundState: page.foregroundState.bind(page),
-    trustedInput: page.trustedInput.bind(page),
   };
 }
 
@@ -135,6 +128,13 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     const includeUserHistory = ${JSON.stringify(includeUserHistory)};
     const includePageText = ${JSON.stringify(includePageText)};
     const userTexts = includeUserHistory ? allTexts('[data-message-author-role="user"]') : undefined;
+    const composer = [
+      '[data-testid="composer-text-input"]',
+      'div#prompt-textarea[contenteditable="true"]',
+      '#prompt-textarea[contenteditable="true"]',
+      'textarea[name="prompt"]',
+      'div[role="textbox"][contenteditable="true"]',
+    ].map((selector) => document.querySelector(selector)).find((element) => Boolean(element && element.getClientRects && element.getClientRects().length));
     const roleNodes = Array.from(nodes('[data-message-author-role="user"], [data-message-author-role="assistant"]'));
     const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
     const latestTurn = (() => {
@@ -147,6 +147,7 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       title: String(document.title || ''),
       latestUserText: userTexts ? userTexts.join('\\n') : latestText('[data-message-author-role="user"]'),
       latestAssistantResponse: latestText('[data-message-author-role="assistant"]'),
+      ...(composer ? { composerText: String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '') || '') } : {}),
       providerActivityText: latestTurn,
       providerFailureText: (latestTurn + '\\n' + liveProviderStatus).slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
       latestTurnRole: latestRoleNode?.getAttribute?.('data-message-author-role') || undefined,
@@ -156,59 +157,81 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     return snapshot;
   })()`);
 }
-async function promptControls(page: WorkflowSupervisorNativePage): Promise<PromptControls> {
-  return await page.evaluate<PromptControls>(`(() => {
+export async function defaultDispatchPrompt(
+  page: WorkflowSupervisorNativePage,
+  prompt: string,
+  options: { mode?: 'send' | 'resume' } = {},
+): Promise<{ dispatched: boolean; reason?: string }> {
+  const resume = options.mode === 'resume';
+  // The native Browser page is already bound to one exact windowId/tabId. Keep
+  // compose and submit inside that tab's JavaScript context so normal user activity
+  // in other tabs/windows cannot redirect the effect. React renders the send
+  // control asynchronously after contenteditable input, so use the Browser's
+  // exact-tab bounded selector wait instead of a foreground sleep or Computer input.
+  const prepared = await page.evaluate<{ prepared: boolean; reason?: string }>(`(() => {
     const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
-    const control = (element) => {
-      if (!element || !visible(element)) return undefined;
-      const rect = element.getBoundingClientRect();
-      if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top) || rect.width <= 0 || rect.height <= 0) return undefined;
-      return {
-        value: String(('value' in element ? element.value : element.innerText ?? element.textContent ?? '') || ''),
-        center: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
-      };
-    };
+    const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+    const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
+    const expected = ${JSON.stringify(prompt)};
+    const normalizedExpected = normalizeValue(expected);
+    const resume = ${JSON.stringify(resume)};
     const composer = [
-      '[data-testid="composer-text-input"]',
       'div#prompt-textarea[contenteditable="true"]',
       '#prompt-textarea[contenteditable="true"]',
-      'textarea[name="prompt"]',
-      'textarea[placeholder*="Message"]',
-      'textarea[placeholder*="问问"]',
+      '[data-testid="composer-text-input"][contenteditable="true"]',
       'div[role="textbox"][contenteditable="true"]',
     ].map((selector) => document.querySelector(selector)).find(visible);
-    const button = [
-      '[data-testid="send-button"]',
-      'button[aria-label*="Send"]',
-      'button[aria-label*="发送"]',
-      'button[data-testid*="send"]',
-    ].map((selector) => document.querySelector(selector)).find((candidate) => visible(candidate) && !candidate.disabled && candidate.getAttribute('aria-disabled') !== 'true');
-    return { composer: control(composer), sendButton: control(button) };
+    if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
+    const current = normalizeValue(value(composer));
+    if (resume) {
+      if (!current) return { prepared: false, reason: 'composer_resume_empty' };
+      if (current !== normalizedExpected) return { prepared: false, reason: 'composer_resume_mismatch' };
+    } else {
+      if (current) return { prepared: false, reason: 'composer_not_empty' };
+      composer.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      if (!selection) return { prepared: false, reason: 'composer_selection_unavailable' };
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      range.deleteContents();
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (!document.execCommand('insertText', false, expected)) {
+        return { prepared: false, reason: 'composer_text_insertion_rejected' };
+      }
+    }
+    if (normalizeValue(value(composer)) !== normalizedExpected) {
+      return { prepared: false, reason: 'composer_text_unconfirmed' };
+    }
+    return { prepared: true };
   })()`);
-}
+  if (!prepared.prepared) return { dispatched: false, reason: prepared.reason ?? 'composer_prepare_failed' };
 
-export async function defaultDispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string): Promise<{ dispatched: boolean; reason?: string }> {
-  if (!page.trustedInput) return { dispatched: false, reason: 'trusted_input_unavailable' };
-  const foreground = await page.foregroundState?.();
-  if (!foreground || !foreground.frontmost || !foreground.active) {
-    return { dispatched: false, reason: 'browser_foreground_required' };
-  }
-  const before = await promptControls(page);
-  if (!before.composer) return { dispatched: false, reason: 'composer_missing' };
-  // A non-empty composer is an unconfirmed previous external mutation. Do not
-  // overwrite it or manufacture a second submission from an ambiguous state.
-  if (normalize(before.composer.value)) return { dispatched: false, reason: 'composer_not_empty' };
-  await page.trustedInput({ kind: 'click', x: before.composer.center.x, y: before.composer.center.y, button: 'left', clickCount: 1 });
-  for (let offset = 0; offset < prompt.length; offset += MAX_TRUSTED_TEXT_INPUT_CHARS) {
-    await page.trustedInput({ kind: 'text', text: prompt.slice(offset, offset + MAX_TRUSTED_TEXT_INPUT_CHARS) });
-  }
-  const typed = await promptControls(page);
-  if (!typed.composer || normalize(typed.composer.value) !== normalize(prompt)) {
-    return { dispatched: false, reason: 'composer_text_unconfirmed' };
-  }
-  if (!typed.sendButton) return { dispatched: false, reason: 'send_button_missing' };
-  await page.trustedInput({ kind: 'click', x: typed.sendButton.center.x, y: typed.sendButton.center.y, button: 'left', clickCount: 1 });
-  return { dispatched: true };
+  await page.waitForSelector('[data-testid="send-button"]', { state: 'visible', timeout: 2_000 });
+
+  // Re-verify the exact payload after the bounded wait. If the user deliberately
+  // edits this Forge-owned tab in the tiny interval, refuse to submit rather than
+  // sending mixed content. browserBeginEffect will reconcile the same generation.
+  return await page.evaluate<{ dispatched: boolean; reason?: string }>(`(() => {
+    const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+    const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+    const normalizeValue = (input) => String(input || '').replace(/\\s+/g, ' ').trim();
+    const expected = ${JSON.stringify(prompt)};
+    const composer = document.querySelector('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]');
+    if (!(composer instanceof HTMLElement) || normalizeValue(value(composer)) !== normalizeValue(expected)) {
+      return { dispatched: false, reason: 'composer_submit_mismatch' };
+    }
+    const sendButton = document.querySelector('[data-testid="send-button"]');
+    if (!(sendButton instanceof HTMLElement)
+        || !visible(sendButton)
+        || sendButton.hasAttribute('disabled')
+        || sendButton.getAttribute('aria-disabled') === 'true') {
+      return { dispatched: false, reason: 'send_button_missing' };
+    }
+    sendButton.click();
+    return { dispatched: true };
+  })()`);
 }
 
 const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
@@ -244,7 +267,7 @@ const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   readOwner: async (page) => await page.evaluate<string>('String(window.name || "")'),
   writeOwner: async (page, marker) => { await page.evaluate(`(() => { window.name = ${JSON.stringify(marker)}; return window.name; })()`); },
   snapshot: defaultSnapshot,
-  dispatchPrompt: defaultDispatchPrompt,
+  dispatchPrompt: async (page, prompt, _task, options) => await defaultDispatchPrompt(page, prompt, options),
   nowMs: () => Date.now(),
   providerIdleGraceMs: 60_000,
   sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
@@ -577,6 +600,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       });
       if (!begin.started) mode = 'reconcile';
     }
+    let dispatch: { dispatched: boolean; confirmed?: boolean; reason?: string } | undefined;
     if (mode === 'reconcile') {
       const exact = normalize(snapshot.latestUserText) === normalize(command.prompt);
       // Page text also includes the composer and transient UI labels. Treating
@@ -584,25 +608,63 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // never became a committed user message after a send-control failure.
       // Only submitted user-role history is causal evidence for this effect.
       const markerPresent = targetMarkerPresent(snapshot.latestUserText, command.effectId);
-      this.control.browserObserveEffect({
-        conversationId: command.conversationId,
-        conversationUrl: command.conversationUrl,
-        effectId: command.effectId,
-        observationId: `native-observe-${randomUUID()}`,
-        outcome: exact || markerPresent ? 'applied' : 'not_applied',
-        evidence: {
-          surface: 'macos-native',
-          exact_user_message: exact,
-          reconciliation: true,
-          target_marker_present: markerPresent,
-          latest_user_text: snapshot.latestUserText,
-          page_text: snapshot.pageText,
-          latest_assistant_response: snapshot.latestAssistantResponse,
-        },
-      });
-      return;
+      if (exact || markerPresent) {
+        this.control.browserObserveEffect({
+          conversationId: command.conversationId,
+          conversationUrl: command.conversationUrl,
+          effectId: command.effectId,
+          observationId: `native-observe-${randomUUID()}`,
+          outcome: 'applied',
+          evidence: { surface: 'macos-native', exact_user_message: exact, reconciliation: true, target_marker_present: markerPresent },
+        });
+        return;
+      }
+      const composerPresent = snapshot.composerText !== undefined;
+      const composerValue = normalize(snapshot.composerText ?? '');
+      if (composerPresent && composerValue === normalize(command.prompt)) {
+        // Input mutation already happened in this generation, but Send did not
+        // become observable. Resume only that exact payload in the same
+        // generation; never retype it and never manufacture a retry generation.
+        // The exact Browser tab itself is the transport target. Resume the
+        // already-written payload in that background tab without activating it.
+        dispatch = await this.deps.dispatchPrompt(page, command.prompt, task, { mode: 'resume' });
+        if (!dispatch.dispatched) {
+          this.control.browserObserveEffect({
+            conversationId: command.conversationId,
+            conversationUrl: command.conversationUrl,
+            effectId: command.effectId,
+            observationId: `native-observe-${randomUUID()}`,
+            outcome: 'unknown',
+            evidence: { surface: 'macos-native', reconciliation: true, reason: dispatch.reason ?? 'resume_dispatch_failed' },
+          });
+          return;
+        }
+      } else {
+        const composerProvablyEmpty = composerPresent && !composerValue;
+        this.control.browserObserveEffect({
+          conversationId: command.conversationId,
+          conversationUrl: command.conversationUrl,
+          effectId: command.effectId,
+          observationId: `native-observe-${randomUUID()}`,
+          outcome: composerProvablyEmpty ? 'not_applied' : 'unknown',
+          evidence: {
+            surface: 'macos-native',
+            exact_user_message: false,
+            reconciliation: true,
+            target_marker_present: false,
+            reason: composerProvablyEmpty ? 'composer_proven_empty' : composerPresent ? 'composer_payload_mismatch' : 'composer_state_unavailable',
+            latest_user_text: snapshot.latestUserText,
+            latest_assistant_response: snapshot.latestAssistantResponse,
+          },
+        });
+        return;
+      }
     }
-    const dispatch = await this.deps.dispatchPrompt(page, command.prompt, task);
+    if (!dispatch) {
+      // Unattended continuation targets the exact Forge-owned tab by identity;
+      // it must not steal the user's foreground browser/tab to obtain input focus.
+      dispatch = await this.deps.dispatchPrompt(page, command.prompt, task);
+    }
     if (!dispatch.dispatched) {
       this.control.browserObserveEffect({
         conversationId: command.conversationId,

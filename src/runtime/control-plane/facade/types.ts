@@ -140,8 +140,6 @@ export const HANDOFF_CREATION_REASONS = [
   'ambiguous_outcome',
   'missing_authorization',
   'invalid_objective',
-  'repeated_infrastructure_failure',
-  'codex_worker_requires_review',
   'destructive_action_requires_confirmation',
 ] as const;
 export type HandoffCreationReason = (typeof HANDOFF_CREATION_REASONS)[number];
@@ -473,14 +471,6 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
       objective: input.objective ?? (input.scopeClear ? 'bounded repository work' : ''),
       scopeClear: input.scopeClear,
       mutation: input.mutation ?? input.risk !== 'readonly',
-      expectedFiles: input.expectedFiles,
-      expectedChangedLines: input.expectedChangedLines,
-      requiresInvestigation: input.requiresInvestigation,
-      requiresLongRunningChecks: input.requiresLongRunningChecks,
-      requiresParallelism: input.requiresParallelism,
-      explicitMode: input.explicitMode,
-      needsDependencies: input.needsDependencies,
-      agentRequested: input.requiresWorker,
     },
     workspace: {
       knownPaths: input.knownPaths,

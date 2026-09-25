@@ -2,8 +2,7 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, updateWorkContract } from '../../../../packages/kernel/work/api/index';
-import { isTerminalWorkContractStatus } from '../facade/types';
+import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, semanticWorkState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
@@ -48,7 +47,7 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
       // Missing WorkContract evidence remains fail-closed for legacy/unreconciled
       // handles; only an explicit terminal status or completion receipt releases
       // durable canonical writer ownership.
-      return !contract || (!isTerminalWorkContractStatus(contract.status) && !contract.completionReceipt);
+      return !contract || (semanticWorkState(contract) === 'open' && !contract.completionReceipt);
     })
     .sort((left, right) => left.workId.localeCompare(right.workId));
   if (owners.length === 0) return;
@@ -289,7 +288,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   let contract = getWorkContract(store, input.workId);
   if (!contract) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
-  if (isTerminalWorkContractStatus(contract.status) || contract.completionReceipt) {
+  if (semanticWorkState(contract) !== 'open' || contract.completionReceipt) {
     throw new Error(`WORK_REPOSITORY_MUTATION_TERMINAL: ${input.workId}`);
   }
   const principalId = input.principalId.trim();

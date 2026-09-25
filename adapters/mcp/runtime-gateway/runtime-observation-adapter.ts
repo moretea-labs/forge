@@ -27,16 +27,13 @@ import {
   type GradedObservation,
 } from '../../../src/runtime/health';
 import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
-import { assessWorkMode, parseExplicitTaskMode } from '../../../src/cli/controller/work-mode';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context/types';
-import { buildControllerContextPackInSidecar } from '../../../src/runtime/context/context-pack-process';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../src/cli/controller/check-runner';
 import { listActiveAgentJobSnapshots } from '../../../src/cli/agent-jobs/job-manager';
-import type { TaskRisk } from '../../../src/cli/controller/types';
 import {
   controllerContextPerformanceSnapshot,
   controllerContextProjectionAgeMs,
@@ -193,30 +190,6 @@ function summarizeRuntimeProjectionForReadiness<T extends { currentAttention?: u
  */
 
 
-function controllerContextAssessment(args: Record<string, unknown>) {
-  const description = typeof args.description === 'string' && args.description.trim()
-    ? args.description
-    : 'Inspect the selected repository context.';
-  return assessWorkMode({
-    description,
-    knownPaths: stringList(args.known_paths),
-    expectedFiles: typeof args.expected_files === 'number' ? args.expected_files : undefined,
-    expectedChangedLines: typeof args.expected_changed_lines === 'number' ? args.expected_changed_lines : undefined,
-    requiresInvestigation: args.requires_investigation === true,
-    requiresParallelism: args.requires_parallelism === true,
-    requiresLongRunningChecks: args.requires_long_running_checks === true,
-    needsDependencies: args.needs_dependencies === true,
-    requiresIndependentDeliverables: args.requires_independent_deliverables === true,
-    independentTaskCount: typeof args.independent_task_count === 'number' ? args.independent_task_count : undefined,
-    requiresRemoteWrite: args.requires_remote_write === true || args.remote_write === true,
-    requiresRecovery: args.requires_recovery === true,
-    agentRequested: args.agent_requested === true || args.requires_worker === true,
-    requiresWorkerIsolation: args.requires_worker_isolation === true,
-    risk: typeof args.risk === 'string' ? args.risk as TaskRisk : undefined,
-    explicitMode: parseExplicitTaskMode(args.mode) ?? (typeof args.description === 'string' && args.description.trim() ? undefined : 'direct'),
-  });
-}
-
 function compactContextTask(value: unknown): Record<string, unknown> {
   const task = contextRecord(value);
   return {
@@ -249,7 +222,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
   const activeRuns = Array.isArray(payload.activeRuns) ? payload.activeRuns : [];
   const attention = Array.isArray(ledger.attention) ? ledger.attention : [];
   const readyTasks = Array.isArray(ledger.readyTasks) ? ledger.readyTasks : [];
-  const recommendedExecution = contextRecord(payload.recommendedExecution);
   const runtimeIdentity = contextRecord(payload.runtimeIdentity);
   const runtime = contextRecord(payload.runtime);
   const repoId = String(payload.repoId ?? repository.repoId ?? '');
@@ -319,8 +291,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
     attention: attention.slice(0, 5).map(compactContextTask),
     readyTasks: readyTasks.slice(0, 5).map(compactContextTask),
     execution: {
-      recommendedMode: recommendedExecution.mode ?? recommendedExecution.recommendedMode ?? null,
-      executionPath: recommendedExecution.executionPath ?? recommendedExecution.path ?? null,
       requiredChecks: recommendedCheckIds,
     },
     runtime: {
@@ -390,7 +360,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       const localBridge = contextRecord(payload.localBridge);
       return { reconciliation: localBridge.reconciliation };
     })(),
-    recommendedExecution: recommendedExecution,
     ...(payload.repository ? { repositorySummary: repository } : {}),
   };
   if (ready.health || ready.ready !== undefined) {
@@ -700,23 +669,6 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               };
               const repositoryStartedAt = performance.now();
               const repository = selected(ctx, args);
-              const recommendedExecution = controllerContextAssessment(args);
-              const modeContextPack = recommendedExecution.modeBehavior.structuralContext === 'required'
-                ? await buildControllerContextPackInSidecar({
-                    repoRoot: repository.canonicalRoot,
-                    policy: ctx.policy,
-                    options: {
-                      description: typeof args.description === 'string' ? args.description : undefined,
-                      knownPaths: stringList(args.known_paths),
-                      structuralContext: 'required',
-                      maxFiles: 8,
-                      maxSnippets: 20,
-                      session: ctx.sessionId?.trim()
-                        ? { sessionId: ctx.sessionId.trim(), repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
-                        : undefined,
-                    },
-                  })
-                : undefined;
               markPhase('repositoryRouting', repositoryStartedAt);
               const variant = args.detail_level === 'detail' ? 'detail' as const : 'summary' as const;
               const runtimeRoot = repositoryControllerRoot(ctx.controllerHome, repository.repoId);
@@ -822,19 +774,11 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                 projectionRecord: typeof cached,
                 input: { cacheHit: boolean; stale: boolean; refreshJobId?: string },
               ): CallToolResult => {
-                const { modeContextPack: _cachedModeContextPack, ...basePayload } = payload;
-                const taskScopedPayload = {
-                  ...basePayload,
-                  ...(basePayload.detailLevel === 'summary' ? {
-                    execution: {
-                      ...contextRecord(basePayload.execution),
-                      recommendedMode: recommendedExecution.recommendedMode,
-                      executionPath: recommendedExecution.executionPath,
-                    },
-                  } : {}),
-                  recommendedExecution,
-                  ...(modeContextPack ? { modeContextPack } : {}),
-                };
+                const {
+                  modeContextPack: _legacyModeContextPack,
+                  recommendedExecution: _legacyRecommendedExecution,
+                  ...taskScopedPayload
+                } = payload;
                 if (!controllerContextProjectionPayloadMatchesSourceIdentity(taskScopedPayload, sourceIdentity)) {
                   const response = withRuntimeResponseMeta({
                     error: {
@@ -998,8 +942,6 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                   repoId: repository.repoId,
                   repository: repositorySummary(repository),
                   runtimeStorage,
-                  recommendedExecution,
-                  ...(modeContextPack ? { modeContextPack } : {}),
                   runtimeProjection,
                   runtimeProjectionState: {
                     stale: runtimeSnapshot.stale,

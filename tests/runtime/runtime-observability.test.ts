@@ -34,8 +34,8 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -617,6 +617,11 @@ describe('runtime observability', () => {
         worktreeCleanup: 'pending',
       }));
       recordWorkCompletionReceipt(store, completedWorkId, receipt(completedWorkId, mainRevision), 'completed_changed');
+      reviseWorkSemanticContext(store, completedWorkId, {
+        expectedRevision: getWorkContract(store, completedWorkId)!.semanticRevision!,
+        state: 'completed',
+        resultRefs: [`receipt:${completedWorkId}`],
+      });
 
       spawnSync('git', ['switch', '-c', 'receipt-unreachable'], { cwd: repoRoot, stdio: 'ignore' });
       writeFileSync(join(repoRoot, 'unreachable.txt'), 'unique\n');
@@ -635,6 +640,11 @@ describe('runtime observability', () => {
         worktreeCleanup: 'done',
       }));
       recordWorkCompletionReceipt(store, unreachableWorkId, receipt(unreachableWorkId, unreachableRevision), 'completed_changed');
+      reviseWorkSemanticContext(store, unreachableWorkId, {
+        expectedRevision: getWorkContract(store, unreachableWorkId)!.semanticRevision!,
+        state: 'completed',
+        resultRefs: [`receipt:${unreachableWorkId}`],
+      });
 
       const failedCleanupWorkId = 'work-failed-cleanup-fixture';
       baseWork(failedCleanupWorkId, 'cancelled');

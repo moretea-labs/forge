@@ -1,7 +1,6 @@
 import { spawnSync } from 'child_process';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { getWorkContract } from '../../../../packages/kernel/work/api/index';
-import { isTerminalWorkContractStatus } from '../facade/types';
+import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { executionIdentityForRepository } from './execution-identity';
 
@@ -59,7 +58,7 @@ function assertActiveWork(input: {
     !contract
     || contract.repoId !== input.repository.repoId
     || (contract.checkoutId && contract.checkoutId !== input.repository.activeCheckoutId)
-    || isTerminalWorkContractStatus(contract.status)
+    || semanticWorkState(contract) !== 'open'
     || Boolean(contract.completionReceipt)
   ) {
     throw new Error(`WORK_REMOTE_DELIVERY_ACTIVE_AUTHORITY_REQUIRED: ${input.workId}`);

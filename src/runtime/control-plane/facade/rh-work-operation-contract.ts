@@ -46,12 +46,7 @@ export const RH_WORK_OPERATIONS = [
   'experience_record',
 ] as const;
 
-export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [
-  'requirement_continue',
-  'plan_approve',
-  'plan_accept_step',
-  'plan_supersede',
-] as const;
+export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [] as const;
 
 export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
 

@@ -2,7 +2,7 @@ import type { McpToolDefinition, CallToolResult } from '../../../packages/protoc
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
-import { completeReviewedDirectEditWorkAfterCommit, prepareReviewedDirectEditWorkCommit, type ReviewedDirectEditWorkCommitPlan } from '../../../src/runtime/control-plane/execution/direct-edit-work-completion';
+import { recordReviewedDirectEditDeliveryAfterCommit, prepareReviewedDirectEditWorkCommit, type ReviewedDirectEditWorkCommitPlan } from '../../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { repositoryChangeVerify } from '../../../src/cli/controller/composite-operations';
 import {
   commitSelectedPaths,
@@ -61,8 +61,8 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
                   },
                 }, true);
               }
-              const directEditWorkCompletion = !committed.error && committed.commit?.ok === true && reviewedCommitPlan
-                ? completeReviewedDirectEditWorkAfterCommit({
+              const directEditWorkDelivery = !committed.error && committed.commit?.ok === true && reviewedCommitPlan
+                ? recordReviewedDirectEditDeliveryAfterCommit({
                     controllerHome: ctx.controllerHome,
                     repository,
                     plan: reviewedCommitPlan,
@@ -73,7 +73,7 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
                 repoId: repository.repoId,
                 checkoutId: repository.activeCheckoutId,
                 ...committed,
-                ...(directEditWorkCompletion ? { directEditWorkCompletion } : {}),
+                ...(directEditWorkDelivery ? { directEditWorkDelivery } : {}),
               }, Boolean(committed.error));
             }
       case 'repository_change_verify': {

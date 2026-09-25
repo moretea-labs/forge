@@ -8,7 +8,6 @@ const CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY = 'controller.current_conver
 const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
 export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
-  'plan_accept_step',
   'continue',
   'verify',
   'review',

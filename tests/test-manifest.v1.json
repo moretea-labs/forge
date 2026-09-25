@@ -609,10 +609,6 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/plan-contract-store.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/plugin-config-controller-home-boundary.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -986,10 +982,6 @@
       "module": "workflow",
       "resource": "controller-home-isolated",
       "smoke": false
-    },
-    "tests/runtime/plan-authority-thin.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
     },
     "tests/runtime/work-semantic-lifecycle.test.ts": {
       "module": "workflow",

@@ -317,22 +317,28 @@ describe('repository command execution lifecycle', () => {
     expect(failedTerminal?.ok ?? failedExecution.ok).toBe(false);
     expect(readWorkHandle(controllerHome, repository.repoId, failed.workId)?.expectedHead).toBe(failedHead);
 
-    const drift = seedWorkHandle(controllerHome, repository, 'work-head-branch-drift');
+    // Branch drift is asserted in its own checkout: two concurrent Works that both
+    // declare the shared canonical checkout are intentionally serialized by the
+    // shared mutation lane, and this case is about head settlement, not lane waiting.
+    const driftControllerHome = tempRoot('forge-cmd-work-head-drift-home-');
+    const driftRepoRoot = tempRoot('forge-cmd-work-head-drift-repo-');
+    const driftRepository = seedRepo(driftControllerHome, driftRepoRoot);
+    const drift = seedWorkHandle(driftControllerHome, driftRepository, 'work-head-branch-drift');
     const driftExecution = await executeRepositoryCommandViaProcessRuntime({
-      controllerHome,
-      repository,
+      controllerHome: driftControllerHome,
+      repository: driftRepository,
       command: ['git', 'switch', '-c', 'drift-branch'],
       timeoutMs: 10_000,
       workId: drift.workId,
-      executionIdentity: executionIdentityForWork(repository, drift),
+      executionIdentity: executionIdentityForWork(driftRepository, drift),
     });
     const driftTerminal = driftExecution.process?.completed
       ? driftExecution.process
       : driftExecution.process
-        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, driftExecution.process.processId, { timeoutMs: 10_000 })
+        ? await waitRepositoryCommandProcess(driftControllerHome, driftRepository.repoId, driftExecution.process.processId, { timeoutMs: 10_000 })
         : undefined;
     expect(driftTerminal?.ok ?? driftExecution.ok).toBe(true);
-    expect(readWorkHandle(controllerHome, repository.repoId, drift.workId)?.expectedHead).toBe(drift.expectedHead);
+    expect(readWorkHandle(driftControllerHome, driftRepository.repoId, drift.workId)?.expectedHead).toBe(drift.expectedHead);
   });
 
   test('raw git commits derive staged-index scope while widening forms stay blocked and selected-path commits isolate unrelated staged work', async () => {
@@ -619,7 +625,6 @@ describe('repository command execution lifecycle', () => {
       initialLikelyPaths: ['src/example.ts'],
       forbiddenPaths: [],
       checks: [],
-      forceMode: 'goal_workloop',
       workKind: 'repository_change',
       verifiedEngineeringEvidence: trustedEngineeringEvidence(gitOutput(repoRoot, ['rev-parse', 'HEAD'])),
       modeInput: {

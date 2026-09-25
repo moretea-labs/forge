@@ -9,6 +9,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
@@ -31,7 +32,7 @@ import {
   clearAssistantPluginManifestCacheForTest,
   controllerPluginRepository,
   executeAssistantPluginAction,
-  finalizeRemoteEffectWorkFromActionReceipt,
+  recordRemoteEffectWorkActionReceipt,
   getAssistantPluginManifest,
   listAssistantPluginManifests,
   submitAssistantPluginAction,
@@ -264,7 +265,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     });
     expect(readonly.receipt).toMatchObject({ status: 'succeeded', workId: firstWorkId, workRepoId: businessRepository.repoId });
     expect(getWorkContract(context.workStore, firstWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === readonly.receipt.receiptId)).toBe(false);
-    expect(finalizeGoalWorkloop(context, { workId: firstWorkId }).summary).toContain('No durable result evidence');
+    expect(finalizeGoalWorkloop(context, { workId: firstWorkId }).summary).toContain('no concrete delivery/effect receipt');
 
     const registration = {
       pluginId: 'receipt_fixture', providerPluginId: 'receipt_fixture', displayName: 'Receipt Fixture', provider: 'local-test',
@@ -280,16 +281,19 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     });
     expect(mutated.receipt).toMatchObject({ status: 'succeeded', workId: firstWorkId, workRepoId: businessRepository.repoId });
     const bound = getWorkContract(context.workStore, firstWorkId)!;
-    expect(bound).toMatchObject({ status: 'ready', workKind: 'local_effect' });
+    expect(bound).toMatchObject({ status: 'running', semanticState: 'open', workKind: 'local_effect' });
     expect(bound.completionReceipt).toBeUndefined();
     expect(bound.evidenceRefs.filter((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toHaveLength(1);
     expect(getWorkContract(context.workStore, unrelatedWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toBe(false);
-    expect(finalizeGoalWorkloop(context, { workId: unrelatedWorkId }).summary).toContain('No durable result evidence');
+    expect(finalizeGoalWorkloop(context, { workId: unrelatedWorkId }).summary).toContain('no concrete delivery/effect receipt');
 
-    const premature = finalizeGoalWorkloop(context, { workId: firstWorkId });
-    expect(premature.status).toBe('blocked');
-    expect(premature.summary).toContain('Controller-reviewed semantic acceptance evidence is incomplete');
-    expect(getWorkContract(context.workStore, firstWorkId)?.status).not.toBe('completed');
+    const deliveredLocal = finalizeGoalWorkloop(context, { workId: firstWorkId });
+    expect(deliveredLocal).toMatchObject({ status: 'ok', data: { deliverySettled: true } });
+    const deliveredLocalWork = getWorkContract(context.workStore, firstWorkId)!;
+    expect(deliveredLocalWork).toMatchObject({
+      status: 'running', semanticState: 'open', workKind: 'local_effect', completionOutcome: 'completed_local',
+      completionReceipt: { source: 'local_effect' },
+    });
 
     const unknownCriterion = continueGoalWorkloop(context, {
       workId: firstWorkId,
@@ -312,10 +316,19 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     });
     expect(reviewed).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
 
-    const completed = finalizeGoalWorkloop(context, { workId: firstWorkId });
-    expect(completed).toMatchObject({ status: 'ok', data: { finalStatus: 'completed' } });
+    const beforeSemanticComplete = getWorkContract(context.workStore, firstWorkId)!;
+    const semanticComplete = await callRhWorkSemanticOperation(
+      context.workStore,
+      'work_complete',
+      {
+        work_id: firstWorkId,
+        expected_revision: beforeSemanticComplete.semanticRevision,
+        work_result_refs: [mutated.receipt.receiptId],
+      },
+    );
+    expect(semanticComplete?.isError).toBeFalsy();
     expect(getWorkContract(context.workStore, firstWorkId)).toMatchObject({
-      status: 'completed', workKind: 'local_effect', completionOutcome: 'completed_local',
+      status: 'completed', semanticState: 'completed', workKind: 'local_effect', completionOutcome: 'completed_local',
     });
 
     const replayed = await submitAssistantPluginAction(controllerHome, providerRepository, {
@@ -593,7 +606,7 @@ describe('external plugin store integration', () => {
     }
   });
 
-  test('controller-scoped Computer provider state executes while a business repository projection refresh lock is held', async () => {
+  test('controller-scoped Computer provider effect is independent of its own derived projection refresh lock', async () => {
     if (process.platform === 'win32') return;
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-projection-lock-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-external-projection-repo-'));
@@ -603,7 +616,7 @@ describe('external plugin store integration', () => {
     await startExternalProviderFixture(controllerHome, socketPath, logPath);
     const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' });
     expect(initialized.status).toBe(0);
-    const businessRepository = registerRepository({ path: repoRoot, controllerHome, displayName: 'projection-lock-fixture' });
+    registerRepository({ path: repoRoot, controllerHome, displayName: 'projection-lock-fixture' });
     installExternalPluginRegistration(controllerHome, {
       pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator',
       provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller', enabled: true,
@@ -621,7 +634,7 @@ describe('external plugin store integration', () => {
 
     await withControllerLockAsync(
       controllerHome,
-      { scope: 'task', repoId: businessRepository.repoId, taskId: 'projection-refresh' },
+      { scope: 'task', repoId: providerRepository.repoId, taskId: 'projection-refresh' },
       'projection-refresh:test-held',
       async () => {
         const result = await submitAssistantPluginAction(
@@ -764,7 +777,7 @@ describe('Resend first-party plugin', () => {
       origin: { surface: 'mcp', actor: 'test' },
     });
     expect(intermediate.receipt).toMatchObject({ status: 'succeeded', workId });
-    expect(intermediate.result?.work).toMatchObject({ workId, workKind: 'remote_effect', status: 'running' });
+    expect(intermediate.result?.work).toMatchObject({ workId, workKind: 'remote_effect', semanticState: 'open' });
     expect((intermediate.result?.work as { completionOutcome?: string } | undefined)?.completionOutcome).toBeUndefined();
     const afterIntermediate = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
     expect(afterIntermediate).toMatchObject({ status: 'running', workKind: 'remote_effect' });
@@ -778,19 +791,28 @@ describe('Resend first-party plugin', () => {
       origin: { surface: 'mcp', actor: 'test' },
     });
     expect(submitted.receipt).toMatchObject({ status: 'succeeded', workId });
-    expect(submitted.result?.work).toMatchObject({ workId, workKind: 'remote_effect', completionOutcome: 'completed_remote', status: 'completed' });
-    const completed = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
-    expect(completed).toMatchObject({
-      status: 'completed', workKind: 'remote_effect', completionOutcome: 'completed_remote', evidenceState: 'valid', dispatchState: 'terminal',
+    expect(submitted.result?.work).toMatchObject({ workId, workKind: 'remote_effect', completionOutcome: 'completed_remote', semanticState: 'open' });
+    const delivered = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    expect(delivered).toMatchObject({
+      status: 'running', semanticState: 'open', workKind: 'remote_effect', completionOutcome: 'completed_remote',
       completionReceipt: { source: 'remote_effect', receiptId: submitted.receipt.receiptId, pluginId: 'resend', actionId: 'send_email' },
     });
-    expect(completed.evidenceRefs.some((evidence) => evidence.evidenceId === submitted.receipt.receiptId)).toBe(true);
+    expect(delivered.evidenceRefs.some((evidence) => evidence.evidenceId === submitted.receipt.receiptId)).toBe(true);
+
+    const semanticComplete = await callRhWorkSemanticOperation(
+      { controllerHome, repoId: repository.repoId },
+      'work_complete',
+      { work_id: workId, expected_revision: delivered.semanticRevision, work_result_refs: [submitted.receipt.receiptId] },
+    );
+    expect(semanticComplete?.isError).toBeFalsy();
+    const completed = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    expect(completed).toMatchObject({ status: 'completed', semanticState: 'completed', workKind: 'remote_effect' });
     const finalized = finalizeGoalWorkloop({
       workStore: { controllerHome, repoId: repository.repoId },
       handoffStore: { controllerHome, repoId: repository.repoId },
       repoId: repository.repoId,
     }, { workId });
-    expect(finalized).toMatchObject({ status: 'ok', data: { finalStatus: 'completed', idempotent: true } });
+    expect(finalized).toMatchObject({ status: 'ok', data: { idempotent: true } });
 
     const deduplicated = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-send', workId,
@@ -811,7 +833,7 @@ describe('Resend first-party plugin', () => {
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.completionReceipt?.receiptId).toBe(submitted.receipt.receiptId);
   });
 
-  test('explicit semantic finalization promotes the latest durable intermediate receipt idempotently', async () => {
+  test('explicit delivery finalization records the latest durable intermediate receipt without owning semantic completion', async () => {
     const repoRoot = resendFixture();
     const controllerHome = join(repoRoot, '.controller');
     expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
@@ -835,13 +857,25 @@ describe('Resend first-party plugin', () => {
     expect(beforeFinalize.status).toBe('running');
     expect(beforeFinalize.completionReceipt).toBeUndefined();
 
-    const completed = finalizeRemoteEffectWorkFromActionReceipt(controllerHome, repository.repoId, workId);
-    expect(completed).toMatchObject({
-      status: 'completed', workKind: 'remote_effect', completionOutcome: 'completed_remote',
+    const delivered = recordRemoteEffectWorkActionReceipt(controllerHome, repository.repoId, workId);
+    expect(delivered).toMatchObject({
+      status: 'running', semanticState: 'open', workKind: 'remote_effect', completionOutcome: 'completed_remote',
       completionReceipt: { source: 'remote_effect', receiptId: intermediate.receipt.receiptId, actionId: 'create_domain' },
     });
-    const replayed = finalizeRemoteEffectWorkFromActionReceipt(controllerHome, repository.repoId, workId);
+    const replayed = recordRemoteEffectWorkActionReceipt(controllerHome, repository.repoId, workId);
     expect(replayed.completionReceipt?.receiptId).toBe(intermediate.receipt.receiptId);
+    expect(replayed.semanticState).toBe('open');
+
+    const semanticComplete = await callRhWorkSemanticOperation(
+      { controllerHome, repoId: repository.repoId },
+      'work_complete',
+      { work_id: workId, expected_revision: replayed.semanticRevision, work_result_refs: [intermediate.receipt.receiptId] },
+    );
+    expect(semanticComplete?.isError).toBeFalsy();
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed', semanticState: 'completed',
+      completionReceipt: { source: 'remote_effect', receiptId: intermediate.receipt.receiptId },
+    });
   });
 
   test('refuses to bind a remote-write plugin receipt to a repository-change Work before the external effect runs', async () => {

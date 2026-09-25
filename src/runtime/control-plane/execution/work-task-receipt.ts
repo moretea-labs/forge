@@ -3,8 +3,7 @@ import { spawnSync } from 'child_process';
 import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, projectTaskFromWork } from '../../../cli/controller/issue-store';
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
-import { getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
-import { completeWorkWithReceipt } from './work-completion-authority';
+import { getWorkContract, semanticWorkState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { isRepositoryCompletionReceipt, WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
 import type {
   WorkReconciliationMethod,
@@ -307,19 +306,14 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
     verifiedAt: task.verification!.verifiedAt,
     recordedAt,
   };
-  const completionOutcome = noChange ? 'completed_no_change' : contract.workKind === 'remote_effect' ? 'completed_remote' : 'completed_changed';
-  const recorded = completeWorkWithReceipt(
-    { controllerHome: input.controllerHome, repoId: input.repoId },
-    input.workId,
-    receipt,
-    completionOutcome,
-    contract.workKind,
-  );
-  const recordedReceipt = recorded.completionReceipt;
+  if (semanticWorkState(contract) !== 'completed') {
+    throw new Error(`CONTROLLER_WORK_RECEIPT_WORK_NOT_COMPLETED: ${input.workId}`);
+  }
+  const recordedReceipt = contract.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = { ...task.verification!, completionReceipt: projectedReceipt };
   const accepted = task.workId
-    ? projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, recorded, {
+    ? projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, contract, {
         verification: projectedVerification,
         note: input.note ?? `Projected reviewed Work reconciliation ${reconciliation.record.reconciliationId} for ${input.workId}.`,
       })
@@ -434,24 +428,19 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
     recordedAt,
   };
 
-  // Persist the Work receipt before touching the legacy Task projection. If a
-  // historical Task write is interrupted, the Work authority is still
-  // durable and a retry can safely rebuild the projection.
-  const completionOutcome = noChange ? 'completed_no_change' : contract.workKind === 'remote_effect' ? 'completed_remote' : 'completed_changed';
-  const recorded = completeWorkWithReceipt(
-    { controllerHome: input.controllerHome, repoId: input.repoId },
-    input.workId,
-    receipt,
-    completionOutcome,
-  );
-  const recordedReceipt = recorded.completionReceipt;
+  // Legacy Task acceptance is a projection of an already-completed semantic
+  // Work. It can never close Work or manufacture Work completion evidence.
+  if (semanticWorkState(contract) !== 'completed') {
+    throw new Error(`CONTROLLER_WORK_RECEIPT_WORK_NOT_COMPLETED: ${input.workId}`);
+  }
+  const recordedReceipt = contract.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = {
     ...task.verification,
     completionReceipt: projectedReceipt,
   };
   if (task.workId) {
-    const projected = projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, recorded, {
+    const projected = projectTaskFromWork(input.repoRoot, input.issueId, input.taskId, contract, {
       verification: projectedVerification,
       note: input.note ?? `Projected completed Work ${input.workId} with receipt ${receipt.receiptId}.`,
     });

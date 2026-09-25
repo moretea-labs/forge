@@ -1216,8 +1216,12 @@ describe('local_system target adapter', () => {
     });
     expect(String((submitted.result?.result as Record<string, unknown>).stdout))
       .toContain('verified-project-script');
-    expect(getWorkContractByRequestId(controllerHome, 'target-project-script-confirmed', '__controller__'))
-      .toMatchObject({ status: 'completed', risk: 'destructive', constraints: { allowDestructive: true } });
+    // Capability risk never manufactures semantic Work; the durable record is the
+    // effect receipt, and the strong-confirmation authorization is its evidence.
+    expect(submitted.receipt).toMatchObject({ status: 'succeeded', pluginId: 'local_system', actionId: 'execute_project_script' });
+    expect(submitted.authorization).toMatchObject({ source: 'strong_confirmation' });
+    expect(submitted.workId).toBeUndefined();
+    expect(getWorkContractByRequestId(controllerHome, 'target-project-script-confirmed', '__controller__')).toBeUndefined();
   });
 
   test('writes bounded text and initializes Git without repository registration', async () => {
@@ -1281,8 +1285,8 @@ describe('local_system target adapter', () => {
     expect(existsSync(join(root, 'delete-me.txt'))).toBe(false);
     expect(existsSync(join(root, 'keep-directory'))).toBe(true);
     expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'delete-me.txt' });
-    expect(getWorkContractByRequestId(controllerHome, 'target-delete-confirmed', '__controller__'))
-      .toMatchObject({ status: 'completed', workKind: 'local_effect' });
+    expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'delete_file' });
+    expect(getWorkContractByRequestId(controllerHome, 'target-delete-confirmed', '__controller__')).toBeUndefined();
 
     await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_file', {
       target_key: 'project', path: 'keep-directory',
@@ -1292,11 +1296,11 @@ describe('local_system target adapter', () => {
 
   test('deletes only an empty non-root directory after strong confirmation', async () => {
     const controllerHome = temp('forge-target-delete-empty-dir-controller-'); const root = temp('forge-target-delete-empty-dir-root-'); mkdirSync(join(root, 'empty-directory')); mkdirSync(join(root, 'non-empty-directory')); writeFileSync(join(root, 'non-empty-directory', 'keep.txt'), 'keep\n'); authorizeWorkspaceTargetGrant(controllerHome, { targetKey: 'project', rootPath: root, ownerScope: 'chatgpt-action:principal:test-user', access: 'read_write', reason: 'bounded empty directory delete' });
-    const repository = controllerPluginRepository(controllerHome); await expect(submitAssistantPluginAction(controllerHome, repository, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-missing-confirmation', args: { target_key: 'project', path: 'empty-directory' }, origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/); const submitted = await submitAssistantPluginAction(controllerHome, repository, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-confirmed', args: { target_key: 'project', path: 'empty-directory' }, confirmAuthorization: true, confirmationText: 'delete-local-system-empty-directory', origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } }); expect(existsSync(join(root, 'empty-directory'))).toBe(false); expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'empty-directory' }); expect(getWorkContractByRequestId(controllerHome, 'target-delete-empty-dir-confirmed', '__controller__')).toMatchObject({ status: 'completed', workKind: 'local_effect' });
+    const repository = controllerPluginRepository(controllerHome); await expect(submitAssistantPluginAction(controllerHome, repository, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-missing-confirmation', args: { target_key: 'project', path: 'empty-directory' }, origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } })).rejects.toThrow(/PLUGIN_CONFIRMATION_REQUIRED/); const submitted = await submitAssistantPluginAction(controllerHome, repository, { pluginId: 'local_system', actionId: 'delete_empty_directory', requestId: 'target-delete-empty-dir-confirmed', args: { target_key: 'project', path: 'empty-directory' }, confirmAuthorization: true, confirmationText: 'delete-local-system-empty-directory', origin: { surface: 'chatgpt-action', actor: 'principal:test-user' } }); expect(existsSync(join(root, 'empty-directory'))).toBe(false); expect(submitted.result?.result).toMatchObject({ deleted: true, path: 'empty-directory' }); expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'delete_empty_directory' }); expect(getWorkContractByRequestId(controllerHome, 'target-delete-empty-dir-confirmed', '__controller__')).toBeUndefined();
     await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: 'non-empty-directory' }))).rejects.toThrow(/LOCAL_SYSTEM_DIRECTORY_NOT_EMPTY/); expect(existsSync(join(root, 'non-empty-directory'))).toBe(true); await expect(executeLocalSystemPluginAction(input(controllerHome, 'delete_empty_directory', { target_key: 'project', path: '.' }))).rejects.toThrow(/LOCAL_SYSTEM_TARGET_ROOT_DELETE_DENIED/); expect(existsSync(root)).toBe(true);
   });
 
-  test('terminalizes a lightweight local-effect Work for a target mutation', async () => {
+  test('records a durable effect receipt for a target mutation without manufacturing semantic Work', async () => {
     const controllerHome = temp('forge-target-command-write-controller-');
     const root = temp('forge-target-command-write-root-');
     authorizeWorkspaceTargetGrant(controllerHome, {
@@ -1321,26 +1325,18 @@ describe('local_system target adapter', () => {
     );
 
     expect(existsSync(join(root, 'created.txt'))).toBe(true);
-    expect(submitted.workId).toBeTruthy();
-    expect(submitted.receipt.workId).toBe(submitted.workId);
-    const work = getWorkContractByRequestId(controllerHome, requestId, '__controller__');
-    expect(work).toMatchObject({
-      workId: submitted.workId,
-      status: 'completed',
-      workKind: 'local_effect',
-      dispatchState: 'terminal',
-      evidenceState: 'valid',
-      completionOutcome: 'completed_local',
+    expect(submitted.receipt).toMatchObject({
+      requestId,
+      pluginId: 'local_system',
+      actionId: 'execute_command',
+      status: 'succeeded',
     });
-    expect(work?.completionReceipt).toMatchObject({
-      source: 'local_effect',
-      workId: submitted.workId,
-      operation: 'local_system/execute_command',
-      changed: true,
-    });
+    expect(submitted.receipt.workId).toBeUndefined();
+    expect(submitted.workId).toBeUndefined();
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
   });
 
-  test('fails mutating Work terminally when target access rejects the command', async () => {
+  test('rejects a mutating command when target access is read-only and creates no Work', async () => {
     const controllerHome = temp('forge-target-command-fail-controller-');
     const root = temp('forge-target-command-fail-root-');
     authorizeWorkspaceTargetGrant(controllerHome, {
@@ -1365,15 +1361,10 @@ describe('local_system target adapter', () => {
     )).rejects.toThrow(/LOCAL_SYSTEM_TARGET_READ_ONLY/);
 
     expect(existsSync(join(root, 'denied.txt'))).toBe(false);
-    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toMatchObject({
-      status: 'failed',
-      workKind: 'local_effect',
-      dispatchState: 'terminal',
-      evidenceState: 'failed',
-    });
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
   });
 
-  test('marks a mutating command Work failed when the process exits non-zero', async () => {
+  test('propagates a non-zero mutating command exit without creating Work', async () => {
     const controllerHome = temp('forge-target-command-exit-controller-');
     const root = temp('forge-target-command-exit-root-');
     mkdirSync(join(root, 'existing'));
@@ -1398,12 +1389,7 @@ describe('local_system target adapter', () => {
       },
     )).rejects.toThrow(/LOCAL_SYSTEM_COMMAND_FAILED/);
 
-    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toMatchObject({
-      status: 'failed',
-      workKind: 'local_effect',
-      dispatchState: 'terminal',
-      evidenceState: 'failed',
-    });
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
   });
 
   test('rejects dangerous and escaping target commands before execution', async () => {
@@ -1453,7 +1439,7 @@ describe('local_system target adapter', () => {
     }))).rejects.toThrow(/command must be a non-empty string array/);
   });
 
-  test('structured target mutations use the same terminal local-effect Work lineage', async () => {
+  test('structured target mutations record a durable receipt without manufacturing semantic Work', async () => {
     const controllerHome = temp('forge-target-structured-work-controller-');
     const root = temp('forge-target-structured-work-root-');
     authorizeWorkspaceTargetGrant(controllerHome, {
@@ -1477,11 +1463,8 @@ describe('local_system target adapter', () => {
       },
     );
     expect(existsSync(join(root, 'generated'))).toBe(true);
-    expect(submitted.workId).toBeTruthy();
-    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toMatchObject({
-      status: 'completed',
-      workKind: 'local_effect',
-      completionOutcome: 'completed_local',
-    });
+    expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'create_directory' });
+    expect(submitted.workId).toBeUndefined();
+    expect(getWorkContractByRequestId(controllerHome, requestId, '__controller__')).toBeUndefined();
   });
 });

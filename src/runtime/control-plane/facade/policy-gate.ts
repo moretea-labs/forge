@@ -14,13 +14,6 @@ export type PolicySideEffect =
   | 'destructive_remote'
   | 'raw_secret_config';
 
-export interface DirectEditBoundary {
-  scopeClear: boolean;
-  maxChangedFiles?: number;
-  maxChangedLines?: number;
-  pathsExplicit?: boolean;
-}
-
 export interface PolicyGateInput {
   capability?: CapabilityDescriptor;
   capabilityId?: string;
@@ -29,7 +22,6 @@ export interface PolicyGateInput {
   accessMode?: AccessMode;
   approvalConfirmed?: boolean;
   dryRun?: boolean;
-  directEditBoundary?: DirectEditBoundary;
 }
 
 function approvalAction(reason: string, capabilityId?: string): SuggestedNextAction {
@@ -60,11 +52,6 @@ function accessEffectFromSideEffect(sideEffect: PolicySideEffect): AccessEffect 
   if (sideEffect === 'remote_write') return 'remote_write';
   if (sideEffect === 'destructive_remote') return 'destructive';
   return 'secret_access';
-}
-
-function directEditWithinBoundary(boundary: DirectEditBoundary | undefined): boolean {
-  if (!boundary) return false;
-  return boundary.scopeClear && boundary.pathsExplicit === true && (boundary.maxChangedFiles ?? 99) <= 3 && (boundary.maxChangedLines ?? 9999) <= 200;
 }
 
 export function evaluatePolicyGate(input: PolicyGateInput): PolicyDecision {
@@ -104,16 +91,6 @@ export function evaluatePolicyGate(input: PolicyGateInput): PolicyDecision {
       reason: 'Normal operations follow the host AI permission model without a second Forge approval layer.',
       capabilityId,
       warnings: ['Destructive actions, outside-repository access, and raw secrets remain separately gated.'],
-      suggestedNextActions: [],
-    };
-  }
-
-  if (sideEffect === 'local_repo_write' && directEditWithinBoundary(input.directEditBoundary)) {
-    return {
-      decision: 'allowed',
-      reason: 'Bounded direct edit is within the lightweight Direct Control policy boundary.',
-      capabilityId,
-      warnings,
       suggestedNextActions: [],
     };
   }

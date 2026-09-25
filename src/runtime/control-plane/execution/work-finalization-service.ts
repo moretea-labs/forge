@@ -28,7 +28,7 @@ import {
   type ImplementationReviewCandidateIdentity,
 } from '../../../../packages/kernel/work/api/index';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
-import { completeWorkWithReceipt } from './work-completion-authority';
+import { recordWorkDeliveryReceipt } from './work-completion-authority';
 import { adoptWorkHandleSuccessorCandidate, readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
 import type { WorkFinalizationFailureCode, WorkFinalizationStages, WorkHandleState } from './work-handle-store';
 import { findWorkPathScopeViolation } from './work-path-scope';
@@ -1567,7 +1567,7 @@ export function resetFinalizationStagesForRequest(
   return next;
 }
 
-function completeFinalizedWorkContract(input: {
+function recordFinalizedWorkDelivery(input: {
   ctx: McpExecutionContext;
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
@@ -1575,7 +1575,7 @@ function completeFinalizedWorkContract(input: {
   outcome: 'completed_changed' | 'completed_no_change';
 }): CompletionReceipt {
   const receipt = completionReceiptForFinalizedWork(input.ctx, input.handle, input.contract, input.args);
-  completeWorkWithReceipt(
+  recordWorkDeliveryReceipt(
     { controllerHome: input.ctx.controllerHome, repoId: input.handle.repositoryId },
     input.contract.workId,
     receipt,
@@ -1779,7 +1779,7 @@ async function finalizeWorkInternal(
             },
           )
         : terminalContract;
-      completeFinalizedWorkContract({
+      recordFinalizedWorkDelivery({
         ctx, handle: current, contract: reconciledContract, args, outcome: 'completed_changed',
       });
         updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
@@ -3221,12 +3221,12 @@ async function finalizeWorkInternal(
         });
       }
       if (prevalidatedNoChangeReceipt) {
-        completeWorkWithReceipt(
+        recordWorkDeliveryReceipt(
           { controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, prevalidatedNoChangeReceipt,
           'completed_no_change', 'completed_no_change',
         );
       } else {
-        completeFinalizedWorkContract({
+        recordFinalizedWorkDelivery({
           ctx, handle: current, contract: completionContract, args,
           outcome: requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
         });

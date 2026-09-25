@@ -19,7 +19,6 @@ import {
 } from '../../../src/runtime/root/controller-round-composition';
 import { assertAutomatedOperationAllowed } from '../../../src/runtime/control-plane/governance/external-effects';
 import { ensureControllerDispositionContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
-import { completeRequirementGoal } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 import { bindCurrentWorkflowSupervisorConversationForWork, ensureWorkflowSupervisorEnrollmentForWork, workflowSupervisorBoundaryForWork, workflowSupervisorCurrentConversationMatchesWork } from '../../../src/runtime/root/workflow-supervisor-composition';
 import {
@@ -377,26 +376,7 @@ export async function callRhWorkControllerOperation(
       const rationale = typeof args.reason === 'string' ? args.reason.trim() : '';
       const chatgptBinding = chatgptControllerRoundBinding(store, workId);
       let relay: ControllerRoundRelayRecord;
-      let requirementAcceptance;
-      if (disposition === 'goal_complete' && work.requirementId) {
-        if (!rationale) throw new Error('REQUIREMENT_ACCEPTANCE_METADATA_REQUIRED: goal_complete for a Requirement-bound Work requires reason');
-        const completedGoal = completeRequirementGoal({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
-          workId,
-          identity,
-          requirementId: work.requirementId,
-          rationale,
-          relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined,
-          terminalAuthorityId: terminalAuthorizedRelay?.authorityId,
-          handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
-          stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
-          bindingId: chatgptBinding?.bindingId,
-          maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
-          maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
-          maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
-        });
-        relay = completedGoal.relay;
-        requirementAcceptance = completedGoal.requirementAcceptance;
-      } else {
+      {
         const existingRelay = disposition === 'goal_complete' ? getControllerRoundRelay(store, workId) : undefined;
         if (existingRelay?.status === 'goal_complete' && existingRelay.disposition === 'goal_complete') {
           relay = existingRelay;
@@ -466,7 +446,7 @@ export async function callRhWorkControllerOperation(
           : continuationSchedule
             ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
             : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
-        data: { relay, ...(supervisorEnrollment ? { supervisorEnrollment } : {}), ...(requirementAcceptance ? { requirementAcceptance } : {}), ...(automaticLearning ? { automaticLearning } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
+        data: { relay, ...(supervisorEnrollment ? { supervisorEnrollment } : {}), ...(automaticLearning ? { automaticLearning } : {}), ...(continuationSchedule ? { continuationSchedule } : {}) },
         warnings: automaticLearningWarning ? [automaticLearningWarning] : [],
       }) as unknown as Record<string, unknown>, relay.status === 'blocked');
     } catch (error) {

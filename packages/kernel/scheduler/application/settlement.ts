@@ -167,21 +167,6 @@ export function settleScheduledExecution(
         outcome,
         decision: 'execute',
         reason,
-        handoff: {
-          title: `Scheduled maintenance occurrence ${occurrenceId} failed`,
-          summary: 'A bounded live maintenance occurrence failed and requires review before the schedule continues unattended.',
-          reason,
-          creationReason: 'repeated_infrastructure_failure',
-          blockingDecision: 'Review the failed maintenance occurrence and decide whether the schedule should continue automatically.',
-          recommendedDecision: 'Inspect the failed occurrence, fix the runtime blocker, then re-enable or retrigger the schedule intentionally.',
-          recommendedPrompt: `Review schedule occurrence ${occurrenceId} for ${scheduleId}, inspect the failed runtime maintenance action, and decide whether to resume automatic maintenance.`,
-          statusSummary: 'Scheduled maintenance execution failed.',
-          blockedBy: ['scheduled_execution_failed'],
-          attemptedActions: [
-            `job:${job.jobId}`,
-            `operation:${String(job.payload.operation ?? 'unknown')}`,
-          ],
-        },
       });
       return;
     }

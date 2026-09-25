@@ -12,7 +12,7 @@ import { getRepository, repositoryCheckoutLifecycle, selectRepositoryCheckout } 
 import { repositoryGitStatus } from "../../../src/cli/repositories/structured-git";
 import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS } from "../../../src/runtime/execution/process-runtime";
 import { listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
-import { completeRemoteEffectWorkFromProcessReceipt } from "../../../packages/kernel/work/api/index";
+import { recordRemoteEffectWorkProcessReceipt, semanticWorkState } from "../../../packages/kernel/work/api/index";
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, workDeliveryBaseRevision, type WorkHandleState } from "../../../src/runtime/control-plane/execution/work-handle-store";
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from "../../../src/runtime/control-plane/execution/work-handle-authority";
 import { recoverTerminalWorkHandle } from "../../../src/runtime/control-plane/execution/work-terminal-cleanup";
@@ -25,13 +25,13 @@ import { ensureControllerDispositionContinuation, repositoryCleanContinuationEve
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from "./scheduler-adapter";
 import { assertAutomatedOperationAllowed } from "../../../src/runtime/control-plane/governance/external-effects";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
-import { finalizeRemoteEffectWorkFromActionReceipt } from "../../../src/runtime/plugins/store";
+import { recordRemoteEffectWorkActionReceipt } from "../../../src/runtime/plugins/store";
 import { buildWorkflowWatchdogReport } from "../../../src/runtime/watchdog/workflow-watchdog";
 import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkSemanticOperation } from './work-semantic-operations';
-import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
+import { callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
 import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDraftPlanContractAsync, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
@@ -322,7 +322,7 @@ export function repositoryWorkHandleHasSourceDelta(
   }
 }
 
-export function finalizeRemoteEffectWorkFromRepositoryProcessReceipt(
+export function recordRemoteEffectWorkFromRepositoryProcessReceipt(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   workId: string,
@@ -336,7 +336,7 @@ export function finalizeRemoteEffectWorkFromRepositoryProcessReceipt(
     workId,
   })[0];
   if (!evidence) return undefined;
-  return completeRemoteEffectWorkFromProcessReceipt(store, workId, {
+  return recordRemoteEffectWorkProcessReceipt(store, workId, {
     processId: evidence.processId,
     actionId: evidence.actionId,
     requestId: evidence.requestId,
@@ -648,9 +648,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           });
           if (planCreateOperationResult) return planCreateOperationResult;
 
-          const planAcceptStepOperationResult = callRhWorkPlanAcceptStepOperation(ctx, store, operation, args, { sourceRevision: workloopCtx.sourceRevision });
-          if (planAcceptStepOperationResult) return planAcceptStepOperationResult;
-
           if (operation.startsWith('plan_')) {
             const facade = buildFacadeResult({ status: 'blocked', summary: `PLAN_OPERATION_NOT_ROUTED: ${operation}`, data: { operation, executionStarted: false } });
             return result(facade as unknown as Record<string, unknown>, true);
@@ -810,7 +807,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             const existingWork = workId ? getWorkContract(store, workId) : undefined;
             const terminalCleanupOnly = Boolean(
               existingWork
-              && ['completed', 'failed', 'cancelled'].includes(existingWork.status)
+              && semanticWorkState(existingWork) !== 'open'
               && args.cleanup !== false,
             );
             if (terminalCleanupOnly && existingWork) {
@@ -830,7 +827,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                     summary: `Terminal Work ${workId} has no managed repository resources requiring cleanup.`,
                     data: {
                       work: summarizeWorkContract(existingWork),
-                      finalStatus: existingWork.status,
+                      semanticWorkState: semanticWorkState(existingWork),
                       terminalizationApplied: false,
                       cleanupOnly: true,
                       worktreeDeleted: false,
@@ -1008,7 +1005,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 });
                 before = getWorkContract(store, workId);
               } catch (error) {
-                const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Historical Work delivery reconciliation failed.', data: { workId, lifecycleClosed: false } });
+                const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Historical Work delivery reconciliation failed.', data: { workId, deliverySettled: false } });
                 return result(blocked as unknown as Record<string, unknown>, true);
               }
             }
@@ -1027,7 +1024,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               const blocked = buildFacadeResult({
                 status: 'blocked',
                 summary: `WORK_EFFECT_REPOSITORY_DELIVERY_HANDLE_REQUIRED: ${workId} has repository source delta and cannot use effect-only terminalization without a physical WorkHandle.`,
-                data: { workId, lifecycleClosed: false },
+                data: { workId, deliverySettled: false },
               });
               return result(blocked as unknown as Record<string, unknown>, true);
             }
@@ -1038,17 +1035,17 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             // repository delivery instead.
             if (before?.workKind === 'remote_effect' && !before.completionReceipt && !effectHasRepositoryDelta) {
               try {
-                before = finalizeRemoteEffectWorkFromActionReceipt(ctx.controllerHome, repository.repoId, workId);
+                before = recordRemoteEffectWorkActionReceipt(ctx.controllerHome, repository.repoId, workId);
               } catch (pluginError) {
                 const checkoutId = before.checkoutId ?? repositoryDeliveryHandle?.checkoutId ?? repository.activeCheckoutId;
-                const processCompleted = finalizeRemoteEffectWorkFromRepositoryProcessReceipt(ctx, repository, workId, checkoutId);
+                const processCompleted = recordRemoteEffectWorkFromRepositoryProcessReceipt(ctx, repository, workId, checkoutId);
                 if (processCompleted) {
                   before = processCompleted;
                 } else {
                   const blocked = buildFacadeResult({
                     status: 'blocked',
-                    summary: pluginError instanceof Error ? pluginError.message : 'Remote-effect semantic finalization failed.',
-                    data: { workId, lifecycleClosed: false },
+                    summary: pluginError instanceof Error ? pluginError.message : 'Remote-effect durable delivery evidence is unavailable.',
+                    data: { workId, deliverySettled: false },
                   });
                   return result(blocked as unknown as Record<string, unknown>, true);
                 }
@@ -1078,7 +1075,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 const blocked = buildFacadeResult({
                   status: 'blocked',
                   summary: error instanceof Error ? error.message : 'Work delivery/finalization failed.',
-                  data: { workId, lifecycleClosed: false },
+                  data: { workId, deliverySettled: false },
                 });
                 return result(blocked as unknown as Record<string, unknown>, true);
               }
@@ -1100,21 +1097,18 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 const blocked = buildFacadeResult({
                   status: 'blocked',
                   summary: error instanceof Error ? error.message : `Work ${workId} terminal cleanup reconciliation failed.`,
-                  data: { workId, terminalizationApplied: true, lifecycleClosed: false },
+                  data: { workId, deliverySettled: false },
                 });
                 return result(blocked as unknown as Record<string, unknown>, true);
               }
             }
-            // Finalizing a Work proves the Work lifecycle only. A Plan step may aggregate
-            // acceptance criteria that are broader than this Work (for example, a canary
-            // plus a later stabilization soak), so finalize must never synthesize semantic
-            // Plan acceptance. Only the explicit plan_accept_step operation may promote a
-            // validating step to completed after the Controller reviews all criteria.
+            // Finalizing a Work never mutates model-authored Plan progress. Plan
+            // items are descriptive working memory and have no acceptance transition.
             const completedHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-            const lifecycleClosed = Boolean(completed?.completionReceipt)
+            const deliverySettled = Boolean(completed?.completionReceipt)
               && (!completedHandle || completedHandle.finalization.worktreeCleanup !== 'pending');
             let blockerResolutionOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
-            if (lifecycleClosed && facade.status === 'ok') {
+            if (deliverySettled && facade.status === 'ok') {
               const explicitTargetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
                 ? args.target_branch.trim()
                 : undefined;
@@ -1136,7 +1130,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               ...facade,
               data: {
                 ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
-                lifecycleClosed,
+                deliverySettled,
+                ...(completed ? { semanticWorkState: semanticWorkState(completed) } : {}),
                 ...(blockerResolutionOccurrences.length > 0 ? { blockerResolutionOccurrences } : {}),
               },
             };
@@ -1155,7 +1150,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             try {
               const workId = String(args.work_id ?? '').trim();
               let work = getWorkContract(store, workId);
-              if (work?.status === 'cancelled') {
+              if (work && semanticWorkState(work) === 'cancelled') {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
                 const resumed = reauthorizeRetainedCancelledRepositoryWork({
                   controllerHome: ctx.controllerHome,
@@ -1170,7 +1165,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 reconstructedCancelledCheckout = resumed.reconstructedCheckout;
                 work = getWorkContract(store, workId);
               }
-              if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
+              if (work && semanticWorkState(work) === 'open') {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
                 // WorkHandle session/principal fields are replaceable provenance.
                 // Ordinary continue does not claim or lease the semantic Work.
@@ -1232,8 +1227,9 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (operation === 'start' && String(args.work_relation ?? '').trim() === 'continue') {
             const predecessorWorkId = String(args.related_work_id ?? '').trim();
             const predecessorWork = predecessorWorkId ? getWorkContract(store, predecessorWorkId) : undefined;
-            const relay = predecessorWork?.status === 'completed' ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
-            if (predecessorWork?.status === 'completed' && relay) {
+            const predecessorCompleted = predecessorWork ? semanticWorkState(predecessorWork) === 'completed' : false;
+            const relay = predecessorCompleted ? getControllerRoundRelay(store, predecessorWorkId) : undefined;
+            if (predecessorCompleted && relay) {
               if (!['claimed', 'pending_release', 'failed'].includes(relay.status)) {
                 const facade = buildFacadeResult({ status: 'blocked', summary: `TERMINAL_SUCCESSOR_CONTROLLER_ROUND_REQUIRED: ${predecessorWorkId}:${relay.status}`, data: { operation, executionStarted: false, predecessorWorkId } });
                 return result(facade as unknown as Record<string, unknown>, true);

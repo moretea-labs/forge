@@ -1,11 +1,21 @@
 import { createHash } from 'node:crypto';
 import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisorState, WorkflowSupervisorTask } from './types';
 
-export const SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
-export const SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
+// Assistant output is rendered through Markdown before Browser transports observe it.
+// Angle-bracket sentinels are HTML-like and current ChatGPT can truncate output at
+// that boundary. Emit a Markdown-safe wire envelope while retaining the legacy
+// markers strictly as read compatibility for already-durable conversations.
+export const SUPERVISOR_BLOCK_START = '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]';
+export const SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]';
+export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
+export const LEGACY_SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
+const SUPERVISOR_BLOCK_MARKERS = [
+  { start: SUPERVISOR_BLOCK_START, end: SUPERVISOR_BLOCK_END },
+  { start: LEGACY_SUPERVISOR_BLOCK_START, end: LEGACY_SUPERVISOR_BLOCK_END },
+] as const;
 
 function boundedString(value: unknown, name: string, max: number): string {
   if (typeof value !== 'string') throw new Error(`WORKFLOW_SUPERVISOR_${name}_REQUIRED`);
@@ -23,13 +33,32 @@ export function renderEffectMarker(effectId: string): string {
   return `${EFFECT_MARKER_PREFIX}${validateEffectId(effectId)}>>>`;
 }
 
+function supervisorBlockEnvelope(responseText: string): { start: number; end: number; startMarker: string; endMarker: string } {
+  const candidates = SUPERVISOR_BLOCK_MARKERS.flatMap((marker) => {
+    const end = responseText.lastIndexOf(marker.end);
+    if (end < 0 || responseText.slice(end + marker.end.length).trim()) return [];
+    const start = responseText.lastIndexOf(marker.start, end);
+    return start < 0 ? [] : [{ start, end, startMarker: marker.start, endMarker: marker.end }];
+  });
+  if (candidates.length === 0) throw new Error('WORKFLOW_SUPERVISOR_END_MARKER_REQUIRED');
+  if (candidates.length !== 1) throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_AMBIGUOUS');
+  const envelope = candidates[0]!;
+  const prefix = responseText.slice(0, envelope.start);
+  if (SUPERVISOR_BLOCK_MARKERS.some((marker) => prefix.includes(marker.start))) {
+    throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_AMBIGUOUS');
+  }
+  return envelope;
+}
+
+export function hasCommittedSupervisorEnvelope(responseText: string): boolean {
+  if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) return false;
+  try { supervisorBlockEnvelope(responseText); return true; } catch { return false; }
+}
+
 export function parseSupervisorCompletion(responseText: string): { proposal: WorkflowSupervisorProposal; controlBlock: string } {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TOO_LARGE');
-  const end = responseText.lastIndexOf(SUPERVISOR_BLOCK_END);
-  if (end < 0 || responseText.slice(end + SUPERVISOR_BLOCK_END.length).trim()) throw new Error('WORKFLOW_SUPERVISOR_END_MARKER_REQUIRED');
-  const start = responseText.lastIndexOf(SUPERVISOR_BLOCK_START, end);
-  if (start < 0 || responseText.slice(0, start).includes(SUPERVISOR_BLOCK_START)) throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_AMBIGUOUS');
-  const jsonText = responseText.slice(start + SUPERVISOR_BLOCK_START.length, end).trim();
+  const { start, end, startMarker, endMarker } = supervisorBlockEnvelope(responseText);
+  const jsonText = responseText.slice(start + startMarker.length, end).trim();
   let parsed: unknown;
   try { parsed = JSON.parse(jsonText); } catch { throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_JSON_INVALID'); }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('WORKFLOW_SUPERVISOR_CONTROL_BLOCK_INVALID');
@@ -51,7 +80,7 @@ export function parseSupervisorCompletion(responseText: string): { proposal: Wor
   const expectedState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
   if (supervisorState && supervisorState !== expectedState) throw new Error('WORKFLOW_SUPERVISOR_STATE_ACTION_MISMATCH');
   if (activeScope && !/^(?:requirement|goal):[^\s]{1,480}$/.test(activeScope)) throw new Error('WORKFLOW_SUPERVISOR_ACTIVE_SCOPE_INVALID');
-  const controlBlock = responseText.slice(start, end + SUPERVISOR_BLOCK_END.length);
+  const controlBlock = responseText.slice(start, end + endMarker.length);
   return {
     proposal: {
       action: action as WorkflowSupervisorProposal['action'], sourceEffectId, checkpoint, reason, evidence,
@@ -93,6 +122,7 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
       : undefined;
   const stateContractLine = 'Set supervisor_state="running" with CONTINUE, "done" with DONE, and "needs_user" with NEEDS_USER.';
   const visibleStatusContractLine = 'Before the final Supervisor control block, include exactly one standalone user-visible status line matching action: CONTINUE => "🔄 仍在执行，无需你操作"; NEEDS_USER => "⏸ 需要你处理，暂时不要关闭会话"; DONE => "✅ 已完成，可以关闭此会话". Never use "已完成" or "可以关闭此会话" for CONTINUE or NEEDS_USER. This line is presentation only; the action and validated durable Forge state remain completion authority.';
+  const progressContractLine = 'Presentation-only progress: when this round runs long or covers several tool waves, add 1-2 short user-visible sentences at key stage boundaries - a confirmed interim result, the next concrete thing you are working on, or a newly discovered blocker or conclusion. Do not narrate every tool call, do not expose private reasoning or chain-of-thought, and never let these sentences replace the required status line or the control block. They carry no completion authority and never become durable state.';
   const scopeContractLine = explicitScope
     ? `The block must echo active_scope=${JSON.stringify(explicitScope)}.`
     : 'The block must include active_scope using the exact durable Forge relay scope recovered in this turn, for example requirement:<id> or goal:<id>. Never guess a scope.';
@@ -104,6 +134,7 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
     actionContractLine,
     stateContractLine,
     visibleStatusContractLine,
+    progressContractLine,
     scopeContractLine,
     `End this turn with exactly one ${SUPERVISOR_BLOCK_START} JSON block and ${SUPERVISOR_BLOCK_END}.`,
     `The block must echo conversation_id=${JSON.stringify(task.conversationId)}, task_id=${JSON.stringify(task.taskId)}, and source_effect_id=${JSON.stringify(effectId)}. Do not invent next_prompt content.`].filter(Boolean).join('\n');

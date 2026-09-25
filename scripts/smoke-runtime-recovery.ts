@@ -13,7 +13,8 @@ import {
   requestWorkImplementationReview,
   transitionWorkContractPhase,
 } from '../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../src/runtime/control-plane/facade/work-implementation-review';
+import { reviseWorkSemanticContext } from '../packages/kernel/work/api/index';
+import { implementationReviewChangedPathDigest } from '../packages/kernel/work/domain/implementation-review';
 import {
   claimControllerSession,
   getControllerSession,
@@ -165,12 +166,13 @@ try {
     architectureEvidence: [],
     recordedAt: completionRecordedAt,
   });
+  const completionReceiptId = `REC-smoke-${accepted.contract.workId}`;
   recordWorkCompletionReceipt(
     { controllerHome, repoId: repository.repoId },
     accepted.contract.workId,
     {
       schemaVersion: 1,
-      receiptId: `REC-smoke-${accepted.contract.workId}`,
+      receiptId: completionReceiptId,
       source: 'direct_edit',
       issueId: 'ISS-runtime-recovery-smoke',
       taskId: 'T1',
@@ -186,7 +188,14 @@ try {
     'completed_no_change',
     'completed_no_change',
   );
-  assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.status === 'completed', 'completed WorkContract was not persisted');
+  const delivered = getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId);
+  assert(delivered?.status !== 'completed', 'delivery receipt must not implicitly complete semantic Work');
+  reviseWorkSemanticContext(
+    { controllerHome, repoId: repository.repoId },
+    accepted.contract.workId,
+    { expectedRevision: Number(delivered?.semanticRevision ?? 1), state: 'completed', resultRefs: [`receipt:${completionReceiptId}`] },
+  );
+  assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.status === 'completed', 'explicit semantic Work completion was not persisted');
   assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'runtime recovery created an ExecutionJob');
 
   const scheduleInput = {

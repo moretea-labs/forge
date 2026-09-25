@@ -218,7 +218,7 @@ describe('Thin capability substrate', () => {
     // receipt and without re-running the verify/review gates.
     const finalizeResult = finalizeGoalWorkloop({ workStore: store, handoffStore: { controllerHome }, repoId }, { workId });
     expect(finalizeResult.status).toBe('ok');
-    expect(finalizeResult.data?.finalStatus).toBe('completed');
+    expect(finalizeResult.data?.semanticWorkState).toBe('completed');
     expect(finalizeResult.data?.completionReceipt).toBeNull();
     expect(getWorkContract(store, workId)?.completionReceipt).toBeUndefined();
   });

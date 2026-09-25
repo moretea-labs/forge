@@ -5,7 +5,7 @@ import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
-import { disposeRuntimeComputerComposition, executeRuntimeComputerConsoleUnlock } from '../../src/runtime/root/computer-composition';
+import { disposeRuntimeComputerComposition, executeRuntimeComputerBrowserTrustedInput, executeRuntimeComputerConsoleUnlock } from '../../src/runtime/root/computer-composition';
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { isDirectNonPersistentPluginAction, isDirectPluginReadAction } from '../../src/runtime/plugins/store';
@@ -32,6 +32,8 @@ interface ProviderFixture {
     pressCount: number;
     elementObserveCount: number;
     elementActionCount: number;
+    typeTextCount: number;
+    lastTypeTextArgs?: Record<string, unknown>;
     consolePrepareCount: number;
     consoleUnlockCount: number;
     lastConsoleHandle?: string;
@@ -88,6 +90,8 @@ async function providerFixture(): Promise<ProviderFixture> {
     pressCount: 0,
     elementObserveCount: 0,
     elementActionCount: 0,
+    typeTextCount: 0,
+    lastTypeTextArgs: undefined as Record<string, unknown> | undefined,
     consolePrepareCount: 0,
     consoleUnlockCount: 0,
     lastConsoleHandle: undefined as string | undefined,
@@ -209,8 +213,17 @@ async function providerFixture(): Promise<ProviderFixture> {
           result = {
             protocolVersion: 2, interactionId, snapshotRevision, pid: 4242, bundleIdentifier: session.bundleIdentifier, appName: session.appName,
             truncated: false, nodeCount: 1,
-            root: { ref: `ax_${snapshotRevision}_1`, target, role: 'AXButton', name: 'One', state: { enabled: true }, actions: ['invoke'], children: [] },
+            root: { ref: `ax_${snapshotRevision}_1`, target, role: 'AXTextArea', name: 'One', description: 'Chat with ChatGPT', state: { enabled: true, focused: false }, actions: ['invoke', 'set_value'], children: [] },
           };
+        } else if (actionId === 'desktop_type_text') {
+          const interactionId = typeof params.interaction_id === 'string' ? params.interaction_id : '';
+          if (!sessions.has(interactionId)) {
+            fail('SESSION_NOT_FOUND', 'Desktop session was not found');
+            continue;
+          }
+          state.typeTextCount += 1;
+          state.lastTypeTextArgs = { ...params };
+          result = { characters: typeof params.text === 'string' ? params.text.length : 0, method: 'AXValue_background' };
         } else if (computerCapability === 'computer.element.action.v2') {
           const target = params.target && typeof params.target === 'object' ? params.target as Record<string, unknown> : undefined;
           const interactionId = typeof target?.interactionId === 'string' ? target.interactionId : '';
@@ -409,6 +422,32 @@ describe('Computer durable InteractionTarget authority', () => {
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
+  });
+
+  test('routes native Browser trusted text through exact Unified Computer element authority without legacy Browser input', async () => {
+    const fixture = await providerFixture();
+
+    const result = await executeRuntimeComputerBrowserTrustedInput({
+      action: 'trusted_input',
+      product: 'vivaldi',
+      ref: { windowId: '77', tabId: '88' },
+      input: { kind: 'text', text: 'continue safely' },
+      semanticTarget: { domRole: 'textbox', accessibleName: 'Chat with ChatGPT', editable: true, focused: true, multiline: true },
+    }, 10_000, fixture.controllerHome);
+
+    expect(result).toMatchObject({ performed: true, transport: 'computer', inputKind: 'text' });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.elementObserveCount).toBe(1);
+    expect(fixture.state.elementActionCount).toBe(0);
+    expect(fixture.state.typeTextCount).toBe(1);
+    expect(fixture.state.lastTypeTextArgs).toMatchObject({
+      interaction_id: 'provider_session_1',
+      selector: { ref: 'ax_1_1' },
+      text: 'continue safely',
+      replace: true,
+    });
+    expect(fixture.state.sessionCloseCount).toBe(1);
+    expect(fixture.sessions.size).toBe(0);
   });
 
   test('rebinds a lost provider session once and serializes concurrent use of the same target', async () => {

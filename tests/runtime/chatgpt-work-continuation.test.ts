@@ -15,7 +15,7 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   submitControllerRoundDisposition,
-} from '../../src/runtime/control-plane/facade/controller-round-relay';
+} from '../../packages/kernel/controller/api/index';
 import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { chatgptAutomationDeliveryFailure, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';

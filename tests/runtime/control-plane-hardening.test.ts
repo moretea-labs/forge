@@ -17,8 +17,8 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { continueGoalWorkloop, routeWorkStart, stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -32,12 +32,10 @@ import {
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
-  parseControllerDispositionCompatibilityCapability,
-  parseControllerRoundCompatibilityCapability,
-  parseCurrentConversationEnrollmentCompatibilityCapability,
   rearmControllerRoundAfterProviderRecovery,
   submitControllerRoundDisposition,
-} from '../../src/runtime/control-plane/facade/controller-round-relay';
+} from '../../packages/kernel/controller/api/index';
+import { parseControllerDispositionCompatibilityCapability, parseControllerRoundCompatibilityCapability, parseCurrentConversationEnrollmentCompatibilityCapability } from '../../adapters/mcp/controller-round-compatibility';
 import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
 import { decideControllerRoundTransition } from '../../packages/kernel/controller/domain/controller-round-transition-policy';
@@ -1607,7 +1605,7 @@ describe('scheduled external Controller wake', () => {
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace + 2 * 60_000, graceMs: 60_000 })).toEqual([]);
   });
 
-  test('keeps persistent scheduled Work running when a stale stop races after a successful bounded no-op claim', () => {
+  test('keeps explicit Work stop independent from Controller lease authority', () => {
     const root = temp('forge-controller-relay-persistent-noop-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
@@ -1656,7 +1654,7 @@ describe('scheduled external Controller wake', () => {
       detailLevel: 'summary',
     });
 
-    const staleStop = stopGoalWorkloop({
+    const explicitStop = stopGoalWorkloop({
       workStore: store,
       handoffStore: store,
       repoId: repository.repoId,
@@ -1665,28 +1663,11 @@ describe('scheduled external Controller wake', () => {
       controllerInstanceId: 'runtime-test',
     }, {
       workId,
-      reason: 'stale occurrence cleanup must not cancel persistent scheduled Work',
+      reason: 'Explicit semantic cancellation is not fenced by a Controller lease.',
     });
-    expect(staleStop.status).toBe('blocked');
-    expect(staleStop.summary).toContain('WORK_TERMINALIZATION_ACTIVE_CONTROLLER_FENCE');
-    expect(getWorkContract(store, workId)?.status).toBe('running');
-
-    const waiting = submitControllerRoundDisposition(store, {
-      workId,
-      identity: {
-        controllerId: session.controllerId,
-        controllerType: session.controllerType,
-        principalId: session.principalId ?? session.controllerId,
-        controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
-        sessionId: session.sessionId,
-      },
-      disposition: 'wait',
-      relayScopeId: opened.relayScopeId,
-      reason: 'Successful bounded no-op occurrence remains persistent for the next schedule.',
-    });
-    expect(waiting.status).toBe('waiting');
-    expect(waiting.disposition).toBe('wait');
-    expect(getWorkContract(store, workId)?.status).toBe('running');
+    expect(explicitStop.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({ status: 'cancelled', semanticState: 'cancelled' });
+    expect(getControllerSession(store, workId)?.sessionId).toBe(session.sessionId);
   });
 
   test('allows a later external wake only after semantic progress while preserving lineage round budget and same-chain suppression', () => {
@@ -2282,10 +2263,6 @@ describe('scheduled external Controller wake', () => {
     )).toEqual({ operation: 'verify', authorityId, relayScopeId: 'goal:work-compat' });
     expect(parseControllerRoundCompatibilityCapability(
       'repair',
-      `controller.round:plan_accept_step:${authorityId}:goal:work-compat`,
-    )).toEqual({ operation: 'plan_accept_step', authorityId, relayScopeId: 'goal:work-compat' });
-    expect(parseControllerRoundCompatibilityCapability(
-      'repair',
       `controller.round:review:changes_required:${authorityId}:goal:work-compat`,
     )).toEqual({ operation: 'review', authorityId, relayScopeId: 'goal:work-compat', reviewDecision: 'changes_required' });
     expect(parseControllerRoundCompatibilityCapability('continue', `controller.round:continue:${authorityId}:goal:work-compat`)).toBeUndefined();
@@ -2397,6 +2374,11 @@ describe('scheduled external Controller wake', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change', 'completed_no_change');
+    reviseWorkSemanticContext(store, workId, {
+      expectedRevision: getWorkContract(store, workId)!.semanticRevision!,
+      state: 'completed',
+      resultRefs: ['receipt-relay-terminal-disposition'],
+    });
     expect(getControllerSession(store, workId)?.controllerInstanceId).toBe('runtime-rotated');
     releaseControllerSession(store, workId, rotated.controllerId);
     expect(getControllerSession(store, workId)).toBeUndefined();

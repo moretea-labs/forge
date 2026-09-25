@@ -23,7 +23,6 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { classifyRepositoryCommandRoute, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
-import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
@@ -1393,108 +1392,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       route: 'process_managed',
       reason: 'effectful_command_managed',
     });
-  });
-
-  test('small multi-file work stays direct while independent deliverables use durable bounded Work', () => {
-    const assessment = assessWorkMode({
-      description: 'Update three TypeScript helpers and a focused unit test',
-      knownPaths: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'tests/a.test.ts'],
-      expectedFiles: 4,
-      expectedChangedLines: 120,
-    });
-    expect(assessment.recommendedMode).toBe('direct_edit');
-    expect(assessment.executionPath).toBe('fast');
-    expect(assessment.issueRequired).toBe(false);
-
-    const coordinated = assessWorkMode({
-      description: 'Ship three independent product workstreams in parallel',
-      requiresIndependentDeliverables: true,
-      independentTaskCount: 3,
-      requiresParallelism: true,
-    });
-    expect(coordinated.recommendedMode).toBe('bounded_work');
-    expect(coordinated.executionPath).toBe('durable');
-
-    const delegated = assessWorkMode({
-      description: 'Use Agents to ship three independent product workstreams in parallel',
-      requiresIndependentDeliverables: true,
-      independentTaskCount: 3,
-      requiresParallelism: true,
-      agentRequested: true,
-    });
-    expect(delegated.recommendedMode).toBe('bounded_work');
-    expect(delegated.executionPath).toBe('durable');
-  });
-
-  test('keeps task size and Agent/provider preference out of Work topology decisions', () => {
-    const medium = assessWorkMode({
-      description: 'Implement a broad but bounded refactor directly',
-      expectedFiles: 10,
-      expectedChangedLines: 1_500,
-    });
-    expect(medium.recommendedMode).toBe('direct_edit');
-    expect(medium.executionPath).toBe('fast');
-    expect(medium.issueRequired).toBe(false);
-
-    const explicitQuickAgent = assessWorkMode({
-      description: 'Use Codex for a broad but bounded refactor',
-      expectedFiles: 10,
-      expectedChangedLines: 1_500,
-      agentRequested: true,
-    });
-    expect(explicitQuickAgent.recommendedMode).toBe('direct_edit');
-    expect(explicitQuickAgent.executionPath).toBe('fast');
-    expect(explicitQuickAgent.issueRequired).toBe(false);
-
-    const broad = assessWorkMode({
-      description: 'Implement a large cross-cutting change directly',
-      expectedFiles: 20,
-      expectedChangedLines: 3_000,
-    });
-    expect(broad.recommendedMode).toBe('direct_edit');
-    expect(broad.executionPath).toBe('fast');
-    expect(broad.issueRequired).toBe(false);
-    expect(broad.nextTools).not.toContain('dispatch_task');
-
-    const explicitIssueAgent = assessWorkMode({
-      description: 'Use Codex for a large cross-cutting change',
-      expectedFiles: 20,
-      expectedChangedLines: 3_000,
-      agentRequested: true,
-    });
-    expect(explicitIssueAgent.recommendedMode).toBe('direct_edit');
-    expect(explicitIssueAgent.executionPath).toBe('fast');
-    expect(explicitIssueAgent.issueRequired).toBe(false);
-  });
-
-  test('workbench assess_work_mode reports Agent/provider preference without changing topology', async () => {
-    const fx = fixture();
-    roots.push(fx.root);
-
-    const directResponse = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
-      repo_id: fx.repository.repoId,
-      operation: 'assess_work_mode',
-      payload: {
-        description: 'Implement a broad refactor directly',
-        expected_files: 10,
-        expected_changed_lines: 1_500,
-      },
-    });
-    expect(directResponse?.isError).not.toBe(true);
-    expect((directResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('direct_edit');
-
-    const agentResponse = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
-      repo_id: fx.repository.repoId,
-      operation: 'assess_work_mode',
-      payload: {
-        description: 'Use Codex for a broad refactor',
-        expected_files: 10,
-        expected_changed_lines: 1_500,
-        agent_requested: true,
-      },
-    });
-    expect(agentResponse?.isError).not.toBe(true);
-    expect((agentResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('direct_edit');
   });
 
   test('workbench batch_execute runs multi-step Fast Path with one parent receipt', async () => {

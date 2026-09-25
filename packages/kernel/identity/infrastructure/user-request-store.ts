@@ -49,10 +49,25 @@ export function recordUserRequest(controllerHome: string, input: CreateUserReque
 
   const store = loadStore(controllerHome);
   // Coalescing: return matching pending request
-  const existing = store.requests.find(
+  const existingIndex = store.requests.findIndex(
     (r) => r.status === 'pending' && r.rootCauseKey === rootCauseKey,
   );
-  if (existing) return structuredClone(existing);
+  if (existingIndex >= 0) {
+    const existing = store.requests[existingIndex]!;
+    if (input.presentation) {
+      const merged = {
+        ...existing,
+        presentation: { ...(existing.presentation ?? {}), ...input.presentation },
+      };
+      if (JSON.stringify(merged.presentation) !== JSON.stringify(existing.presentation ?? {})) {
+        merged.updatedAt = (input.now ?? new Date()).toISOString();
+        store.requests[existingIndex] = merged;
+        saveStore(controllerHome, store);
+        return structuredClone(merged);
+      }
+    }
+    return structuredClone(existing);
+  }
 
   const now = (input.now ?? new Date()).toISOString();
   const requestId = input.requestId?.trim() || `usrreq_${randomUUID().replaceAll('-', '')}`;
@@ -66,6 +81,7 @@ export function recordUserRequest(controllerHome: string, input: CreateUserReque
     actionRequired: input.actionRequired,
     ...(input.targetScope ? { targetScope: input.targetScope } : {}),
     ...(input.options ? { options: input.options } : {}),
+    ...(input.presentation ? { presentation: input.presentation } : {}),
     status: 'pending',
     createdAt: now,
     updatedAt: now,
@@ -98,6 +114,13 @@ export function resolveUserRequest(controllerHome: string, input: ResolveUserReq
   store.requests[index] = updated;
   saveStore(controllerHome, store);
   return updated;
+}
+
+export function getUserRequest(controllerHome: string, requestId: string): UserRequest | undefined {
+  const normalized = requestId.trim();
+  if (!normalized) return undefined;
+  const record = loadStore(controllerHome).requests.find((request) => request.requestId === normalized);
+  return record ? structuredClone(record) : undefined;
 }
 
 export function listUserRequests(controllerHome: string, status?: 'pending' | 'resolved' | 'cancelled' | 'all'): UserRequest[] {

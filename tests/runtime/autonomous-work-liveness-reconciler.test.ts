@@ -14,7 +14,6 @@ import { createWorkContract, failWorkContract } from '../../packages/kernel/work
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import {
-  approvePlanContract,
   createPlanContract,
   createPlanSemanticContext,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -115,7 +114,6 @@ describe('autonomous Work liveness reconciliation', () => {
         acceptanceCriteria: ['Stage continues automatically.'],
       }],
     });
-    approvePlanContract({ controllerHome, repoId: 'repo-a' }, 'PLAN-A');
     createRunningWork(controllerHome, {
       workId: 'WORK-A',
       requirementId: 'REQ-A',
@@ -260,7 +258,6 @@ describe('autonomous Work liveness reconciliation', () => {
         acceptanceCriteria: ['Supervisor enrollment follows canonical ControllerRound preparation.'],
       }],
     });
-    approvePlanContract({ controllerHome, repoId: 'repo-a' }, 'PLAN-SUPERVISOR');
     createRunningWork(controllerHome, {
       workId: 'WORK-CURRENT',
       requirementId: 'REQ-SUPERVISOR',

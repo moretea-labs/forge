@@ -7,7 +7,7 @@ import {
   type Grant,
 } from '../../../packages/kernel/identity/api/index';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, renameSync } from 'fs';
 import { join } from 'path';
 import { controllerSystemRoot } from '../../cli/repositories/controller-home';
 import { ControllerLockContentionError, withControllerLock } from '../../cli/repositories/locks';
@@ -94,13 +94,6 @@ export interface ReconcilePluginCapabilityAuthorizationsResult {
   remaining: number;
   changed: boolean;
 }
-
-const RISK_RANK: Record<AssistantPluginActionRisk, number> = {
-  readonly: 0,
-  workspace_write: 1,
-  remote_write: 2,
-  destructive: 3,
-};
 
 const GENERIC_PLUGIN_AUTHORIZATION_ACTORS = new Set(['', 'anonymous', 'plugin_action_execute']);
 
@@ -202,6 +195,37 @@ export function pluginCapabilityAuthorizationGrantStorePath(controllerHome: stri
   return join(controllerSystemRoot(controllerHome), 'plugin-capability-authorizations', 'grants.json');
 }
 
+function legacyPluginGrantMigrationMarkerPath(controllerHome: string): string {
+  return join(controllerSystemRoot(controllerHome), 'plugin-capability-authorizations', 'migration.json');
+}
+
+/**
+ * Durable proof that this Controller Home already ran the one-way migration, so
+ * authorization reads stop consulting the legacy file at all.
+ */
+interface LegacyPluginGrantMigrationMarker {
+  schemaVersion: 1;
+  migratedAt: string;
+  legacyGrantCount: number;
+  canonicalGrantCount: number;
+}
+
+function readLegacyPluginGrantMigrationMarker(controllerHome: string): LegacyPluginGrantMigrationMarker | undefined {
+  const path = legacyPluginGrantMigrationMarkerPath(controllerHome);
+  if (!existsSync(path)) return undefined;
+  try {
+    const raw = readJsonFile<Record<string, unknown>>(path);
+    return raw?.schemaVersion === 1
+      && typeof raw.migratedAt === 'string'
+      && typeof raw.legacyGrantCount === 'number'
+      && typeof raw.canonicalGrantCount === 'number'
+      ? raw as unknown as LegacyPluginGrantMigrationMarker
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function loadStore(controllerHome: string): PluginCapabilityAuthorizationGrantStore {
   const path = pluginCapabilityAuthorizationGrantStorePath(controllerHome);
   if (!existsSync(path)) return { schemaVersion: 1, grants: [] };
@@ -217,23 +241,6 @@ function loadStore(controllerHome: string): PluginCapabilityAuthorizationGrantSt
       `Plugin capability authorization store is corrupt: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-}
-
-function saveStore(controllerHome: string, store: PluginCapabilityAuthorizationGrantStore): void {
-  const path = pluginCapabilityAuthorizationGrantStorePath(controllerHome);
-  mkdirSync(join(controllerSystemRoot(controllerHome), 'plugin-capability-authorizations'), { recursive: true });
-  writeJsonAtomic(path, store);
-}
-
-function targetMatches(left: AssistantPluginAuthorizationTarget, right: AssistantPluginAuthorizationTarget): boolean {
-  return left.kind === right.kind
-    && left.id === right.id
-    && (left.identityFingerprint ?? '') === (right.identityFingerprint ?? '');
-}
-
-function scopesContain(granted: readonly string[], requested: readonly string[]): boolean {
-  const available = new Set(granted);
-  return requested.every((scope) => available.has(scope));
 }
 
 function pluginMetadataFromCanonicalGrant(grant: Grant): { pluginId: string; capabilityId: string } | undefined {
@@ -302,6 +309,58 @@ function recordCanonicalPluginGrant(
   return pluginGrantFromCanonical(canonical, grant)!;
 }
 
+/**
+ * One-way migration input. The legacy plugin grant file is read-only history:
+ * every still-authorizable legacy grant is copied into the canonical Grant
+ * authority exactly once, and this module never writes the legacy file again.
+ * A corrupt migration input still fails closed so un-migrated grants cannot be
+ * silently dropped.
+ *
+ * Removal trigger: once a released Runtime baseline has shipped with the
+ * `migration.json` marker (so every install has migrated at least once), delete
+ * this migration, `loadStore`/`validatePersistedGrant`, the legacy path getter
+ * and the PLUGIN_CAPABILITY_GRANT_STORE_CORRUPT error code in the same slice.
+ * The archived `grants.json.migrated-*` file is recoverable history, not input.
+ */
+function migrateLegacyPluginCapabilityGrants(controllerHome: string, at = new Date()): void {
+  if (readLegacyPluginGrantMigrationMarker(controllerHome)) return;
+  const legacyGrants = loadStore(controllerHome).grants;
+  const canonicalById = new Map(listCanonicalGrants(controllerHome).map((grant) => [grant.grantId, grant]));
+  const atMs = at.getTime();
+  for (const grant of legacyGrants) {
+    if (grant.revokedAt) continue;
+    if (Date.parse(grant.expiresAt) <= atMs) continue;
+    const existing = canonicalById.get(grant.grantId);
+    if (existing) {
+      // A canonical row written before plugin metadata existed cannot be projected
+      // back into a plugin grant. Repair it in place instead of leaving a live grant
+      // that neither list nor by-id resolution can see.
+      if (existing.revokedAt || pluginMetadataFromCanonicalGrant(existing)) continue;
+      recordCanonicalPluginGrant(controllerHome, grant, new Date(grant.createdAt));
+      continue;
+    }
+    recordCanonicalPluginGrant(controllerHome, grant, new Date(grant.createdAt));
+    canonicalById.set(grant.grantId, { grantId: grant.grantId } as Grant);
+  }
+  // The migration is complete for this Controller Home: prove it durably, then
+  // move the legacy file aside so no authorization read can ever depend on it
+  // again. The archive is recoverable; a failed rename leaves an inert file.
+  writeJsonAtomic(legacyPluginGrantMigrationMarkerPath(controllerHome), {
+    schemaVersion: 1,
+    migratedAt: at.toISOString(),
+    legacyGrantCount: legacyGrants.length,
+    canonicalGrantCount: listCanonicalGrants(controllerHome).length,
+  } satisfies LegacyPluginGrantMigrationMarker);
+  const legacyPath = pluginCapabilityAuthorizationGrantStorePath(controllerHome);
+  if (existsSync(legacyPath)) {
+    try {
+      renameSync(legacyPath, `${legacyPath}.migrated-${at.getTime()}`);
+    } catch {
+      // Inert history; the marker already prevents any further legacy read.
+    }
+  }
+}
+
 export function findActivePluginCapabilityAuthorization(
   controllerHome: string,
   query: PluginCapabilityAuthorizationQuery,
@@ -313,6 +372,7 @@ export function findActivePluginCapabilityAuthorization(
   const capabilityId = required(query.capabilityId, 'capabilityId');
   const target = normalizeTarget(query.target);
   const scopes = normalizeScopes(query.scopes);
+  migrateLegacyPluginCapabilityGrants(controllerHome, query.at ?? new Date());
   const canonical = findActiveCanonicalGrant(controllerHome, {
     ownerScope,
     capability: `${pluginId}:${capabilityId}`,
@@ -321,21 +381,7 @@ export function findActivePluginCapabilityAuthorization(
     risk: query.risk,
     at: query.at,
   });
-  if (canonical) return pluginGrantFromCanonical(canonical, { pluginId, capabilityId, repoId, target });
-
-  // One-way migration seed for installations that predate canonical Grant.
-  const atMs = (query.at ?? new Date()).getTime();
-  const legacy = loadStore(controllerHome).grants
-    .filter((grant) => !grant.revokedAt && Date.parse(grant.expiresAt) > atMs)
-    .filter((grant) => grant.ownerScope === ownerScope
-      && grant.repoId === repoId
-      && grant.pluginId === pluginId
-      && grant.capabilityId === capabilityId
-      && targetMatches(grant.target, target)
-      && scopesContain(grant.scopes, scopes)
-      && RISK_RANK[grant.riskCeiling] >= RISK_RANK[query.risk])
-    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
-  return legacy ? recordCanonicalPluginGrant(controllerHome, legacy, query.at) : undefined;
+  return canonical ? pluginGrantFromCanonical(canonical, { pluginId, capabilityId, repoId, target }) : undefined;
 }
 
 /**
@@ -350,13 +396,12 @@ export function findActivePluginCapabilityAuthorizationById(
 ): PluginCapabilityAuthorizationGrant | undefined {
   const normalizedGrantId = required(grantId, 'grantId');
   const atMs = at.getTime();
+  migrateLegacyPluginCapabilityGrants(controllerHome, at);
   const canonical = listCanonicalGrants(controllerHome).find((entry) => entry.grantId === normalizedGrantId);
   if (canonical && !canonical.revokedAt && Date.parse(canonical.expiresAt) > atMs) {
     return pluginGrantFromCanonical(canonical);
   }
-  const legacy = loadStore(controllerHome).grants.find((entry) => entry.grantId === normalizedGrantId);
-  if (!legacy || legacy.revokedAt || Date.parse(legacy.expiresAt) <= atMs) return undefined;
-  return recordCanonicalPluginGrant(controllerHome, legacy, at);
+  return undefined;
 }
 
 export function recordPluginCapabilityAuthorization(
@@ -382,6 +427,7 @@ export function recordPluginCapabilityAuthorization(
   }
   const expiresInMinutes = Math.min(Math.max(1, Math.trunc(rawMinutes)), MAX_PLUGIN_CAPABILITY_GRANT_MINUTES);
   const timestamp = now.toISOString();
+  migrateLegacyPluginCapabilityGrants(controllerHome, now);
   const grant: PluginCapabilityAuthorizationGrant = {
     schemaVersion: 1,
     grantId: `plugin-grant-${randomUUID()}`,
@@ -414,17 +460,7 @@ export function recordPluginCapabilityAuthorization(
           expiresInMinutes,
           now,
         });
-        const projected = pluginGrantFromCanonical(canonicalGrant, grant)!;
-        const store = loadStore(controllerHome);
-        store.grants = store.grants.filter((entry) => !(entry.ownerScope === ownerScope
-          && entry.repoId === repoId
-          && entry.pluginId === pluginId
-          && entry.capabilityId === capabilityId
-          && entry.target.kind === target.kind
-          && entry.target.id === target.id));
-        store.grants.push(projected);
-        saveStore(controllerHome, store);
-        return projected;
+        return pluginGrantFromCanonical(canonicalGrant, grant)!;
       },
       5_000,
     );
@@ -456,13 +492,7 @@ export function revokePluginCapabilityAuthorization(
           throw new PluginCapabilityAuthorizationGrantError('PLUGIN_CAPABILITY_GRANT_OWNER_MISMATCH', `Grant ${grantId} belongs to another owner scope.`);
         }
         const canonical = revokeCanonicalGrant(controllerHome, { grantId, ownerScope, reason, now });
-        const revoked = pluginGrantFromCanonical(canonical, current)!;
-        const store = loadStore(controllerHome);
-        const index = store.grants.findIndex((grant) => grant.grantId === grantId);
-        if (index >= 0) store.grants[index] = revoked;
-        else store.grants.push(revoked);
-        saveStore(controllerHome, store);
-        return revoked;
+        return pluginGrantFromCanonical(canonical, current)!;
       },
       5_000,
     );
@@ -490,6 +520,7 @@ export function reconcilePluginCapabilityAuthorizations(
       'plugin-capability-reconcile',
       () => {
         void nowMs;
+        migrateLegacyPluginCapabilityGrants(controllerHome, input.now ?? new Date());
         const canonical = reconcileCanonicalGrants(controllerHome, {
           retiredOwnerScopes: [...retiredOwnerScopes],
           now: input.now,
@@ -497,7 +528,6 @@ export function reconcilePluginCapabilityAuthorizations(
         const grants = listCanonicalGrants(controllerHome)
           .map((grant) => pluginGrantFromCanonical(grant))
           .filter((grant): grant is PluginCapabilityAuthorizationGrant => Boolean(grant));
-        saveStore(controllerHome, { schemaVersion: 1, grants });
         return {
           removedRetiredOwner: canonical.removedRetiredOwner,
           removedRevoked: canonical.removedRevoked,
@@ -521,6 +551,7 @@ export function listPluginCapabilityAuthorizations(
   controllerHome: string,
   ownerScope?: string,
 ): PluginCapabilityAuthorizationGrant[] {
+  migrateLegacyPluginCapabilityGrants(controllerHome);
   const normalizedOwner = ownerScope?.trim();
   return listCanonicalGrants(controllerHome, normalizedOwner ? { ownerScope: normalizedOwner } : undefined)
     .map((grant) => pluginGrantFromCanonical(grant))

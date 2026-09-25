@@ -1,6 +1,8 @@
 (() => {
-  const END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
-  const START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
+  const MARKERS = [
+    { start: '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]', end: '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]' },
+    { start: '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>', end: '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>' },
+  ];
   const EFFECT = /^fx_[a-zA-Z0-9_-]{8,120}$/;
   function normalizeText(value) { return String(value ?? '').replace(/\s+/g, ' ').trim(); }
   function parseConversation(value) {
@@ -17,7 +19,10 @@
   }
   function effectMarker(effectId) { return EFFECT.test(effectId) ? `<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>` : ''; }
   function promptHasEffect(prompt, effectId) { const marker = effectMarker(effectId); return Boolean(marker && String(prompt).includes(marker)); }
-  function isCommittedAssistantResponse(text) { const value = String(text ?? '').trim(); return value.length <= 512 * 1024 && value.endsWith(END) && value.lastIndexOf(START) >= 0; }
+  function isCommittedAssistantResponse(text) {
+    const value = String(text ?? '').trim();
+    return value.length <= 512 * 1024 && MARKERS.some(({ start, end }) => value.endsWith(end) && value.lastIndexOf(start) >= 0);
+  }
   function textFingerprint(text) {
     const value = String(text ?? '');
     let hash = 2166136261;

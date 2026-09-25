@@ -5,20 +5,40 @@ import type {
   ComputerCaptureRegion,
   ComputerTrustedInput,
 } from '../../../packages/protocols/computer/index';
-import { executeRuntimeComputerBrowserAutomation } from '../root/computer-composition';
+import { executeRuntimeComputerBrowserAutomation, executeRuntimeComputerBrowserTrustedInput } from '../root/computer-composition';
 import { AssistantPluginError } from './errors';
 
 export type BrowserAutomationProduct = ComputerBrowserProduct;
 export type BrowserAutomationTabRef = ComputerBrowserTabRef;
 export type BrowserAutomationRegion = ComputerCaptureRegion;
 export type BrowserAutomationTrustedInput = ComputerTrustedInput;
-export type BrowserAutomationBrokerAction = ComputerBrowserAutomationRequest;
+export interface BrowserAutomationSemanticTargetProof {
+  domRole: string;
+  accessibleName: string;
+  editable: true;
+  focused: true;
+  multiline: boolean;
+}
+export type BrowserAutomationTrustedInputRequest = Extract<ComputerBrowserAutomationRequest, { action: 'trusted_input' }> & {
+  /** Ephemeral Browser-owned proof; never persisted or forwarded to compatibility providers. */
+  semanticTarget?: BrowserAutomationSemanticTargetProof;
+};
+export type BrowserAutomationBrokerAction =
+  | Exclude<ComputerBrowserAutomationRequest, { action: 'trusted_input' }>
+  | BrowserAutomationTrustedInputRequest;
 
 export async function callBrowserAutomationBroker(
   request: BrowserAutomationBrokerAction,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  return await executeRuntimeComputerBrowserAutomation(request, timeoutMs);
+  if (request.action === 'trusted_input'
+      && (request.input.kind === 'key' || (request.input.kind === 'text' && request.semanticTarget))) {
+    return await executeRuntimeComputerBrowserTrustedInput(request, timeoutMs);
+  }
+  // Generic trusted text remains on the explicit Browser compatibility contract.
+  // Only Browser-owned semantic proof authorizes the Unified Computer text path.
+  const { semanticTarget: _semanticTarget, ...compatibilityRequest } = request as BrowserAutomationTrustedInputRequest;
+  return await executeRuntimeComputerBrowserAutomation(compatibilityRequest as ComputerBrowserAutomationRequest, timeoutMs);
 }
 
 export async function captureBrowserAutomationRegion(region: BrowserAutomationRegion, timeoutMs: number): Promise<Buffer> {

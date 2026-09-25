@@ -231,9 +231,9 @@ try {
   assert(
     blockedOccurrence?.status === 'skipped'
       && blockedOccurrence.decision === 'maintenance_not_ready'
-      && blockedOccurrence.handoffId
+      && !blockedOccurrence.handoffId
       && !blockedOccurrence.jobId,
-    'unsafe maintenance candidate did not create a bounded handoff',
+    'retryable maintenance blocker was incorrectly promoted to a human handoff',
   );
   assert(readFileSync(brokenJobPath, 'utf8') === brokenBefore, 'blocked maintenance modified an unreadable candidate');
   const backedOff = getSchedule(controllerHome, repository.repoId, blockedMaintenance.scheduleId);
@@ -250,8 +250,8 @@ try {
     'semantic Schedule triggers manufactured human blockers',
   );
   assert(
-    Boolean(blockedOccurrence.handoffId) && handoffs.some((item) => item.id === blockedOccurrence.handoffId),
-    'the bounded maintenance blocker handoff was not persisted',
+    !blockedOccurrence.handoffId && handoffs.length === 0,
+    'retryable mechanical maintenance failure manufactured a human blocker',
   );
   assert(listExecutionJobs(controllerHome, repository.repoId, 100).length === 0, 'Schedule smoke created an ExecutionJob');
 
@@ -261,7 +261,7 @@ try {
     repositoryEventIdempotent: eventA?.occurrenceId === eventB?.occurrenceId,
     missingDependencySuppressed: true,
     semanticScheduleHandoffs: 0,
-    maintenanceBlockerHandoff: blockedOccurrence.handoffId,
+    maintenanceMechanicalBlockerHasHandoff: Boolean(blockedOccurrence.handoffId),
     maintenance: maintenanceOccurrence.status,
     maintenanceBackoffUntil: backedOff.nextEligibleAt,
     handoffCount: handoffs.length,

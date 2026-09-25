@@ -8,7 +8,7 @@ import {
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/work/domain/engineering-profile';
-import { getWorkContract } from '../../packages/kernel/work/api/index';
+import { getWorkContract, listWorkContracts } from '../../packages/kernel/work/api/index';
 import { continueGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import {
   buildDesignDecisionContractReceipt,
@@ -332,7 +332,7 @@ describe('Stage7C upstream engineering authority', () => {
   });
 
 
-  test('unrelated blockers create one deterministic linked investigation Work without widening the owner scope', () => {
+  test('unrelated blockers require an explicitly declared owning Work instead of an automatically created child Work', () => {
     const root = temp('stage7c-linked-work-');
     const context = {
       workStore: { root: join(root, 'work') },
@@ -352,8 +352,11 @@ describe('Stage7C upstream engineering authority', () => {
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
     const before = getWorkContract(context.workStore, workId)!;
     const semanticScope = before.engineeringContext?.semanticScope;
+    const workCountBefore = listWorkContracts({ ...context.workStore, status: 'all' }).length;
 
-    const first = continueGoalWorkloop(context, {
+    // Forge never decomposes work on the model's behalf: an unrelated blocker
+    // without an explicit owning Work is refused and creates no Work at all.
+    const undeclared = continueGoalWorkloop(context, {
       workId,
       engineeringBlocker: {
         blockerId: 'external-disjoint-blocker',
@@ -362,26 +365,52 @@ describe('Stage7C upstream engineering authority', () => {
         semanticScopeKeys: ['dependency.external'],
       },
     });
-    expect(first.status).toBe('blocked');
-    const firstData = first.data as { engineeringBlocker?: { linkedWorkId?: string }; linkedWork?: { workId?: string } };
-    expect(firstData.engineeringBlocker?.linkedWorkId).toBeTruthy();
-    expect(firstData.linkedWork?.workId).toBe(firstData.engineeringBlocker?.linkedWorkId);
-    const linked = getWorkContract(context.workStore, firstData.linkedWork!.workId!)!;
-    expect(linked).toMatchObject({ workKind: 'investigation' });
-    expect(linked.allowedPaths).toEqual([]);
+    expect(undeclared.status).toBe('blocked');
+    expect(undeclared.summary).toContain('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
+    expect(listWorkContracts({ ...context.workStore, status: 'all' })).toHaveLength(workCountBefore);
     expect(getWorkContract(context.workStore, workId)?.engineeringContext?.semanticScope).toEqual(semanticScope);
 
-    const second = continueGoalWorkloop(context, {
+    // The caller declares the owning Work explicitly and links it by exact id.
+    const owningWork = routeWorkStart(context, {
+      objective: 'Resolve the unrelated external dependency blocker.',
+      acceptanceCriteria: ['Bounded blocker evidence or a precise wake condition is recorded.'],
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+      workKind: 'investigation',
+      relatedWorkId: workId,
+      workRelation: 'parallel',
+    });
+    const owningWorkId = (owningWork.data as { work?: { workId?: string } }).work?.workId;
+    expect(owningWork.status).toBe('ok');
+    expect(owningWorkId).toBeTruthy();
+
+    const declared = continueGoalWorkloop(context, {
       workId,
       engineeringBlocker: {
         blockerId: 'external-disjoint-blocker',
         classification: 'unrelated',
         rationale: 'A separate dependency needs investigation outside this semantic scope.',
         semanticScopeKeys: ['dependency.external'],
+        linkedWorkId: owningWorkId,
       },
     });
-    const secondData = second.data as { engineeringBlocker?: { linkedWorkId?: string } };
-    expect(secondData.engineeringBlocker?.linkedWorkId).toBe(firstData.engineeringBlocker?.linkedWorkId);
+    expect(declared.status).toBe('blocked');
+    const declaredData = declared.data as { engineeringBlocker?: { linkedWorkId?: string }; linkedWork?: { workId?: string } };
+    expect(declaredData.engineeringBlocker?.linkedWorkId).toBe(owningWorkId);
+    expect(declaredData.linkedWork?.workId).toBe(owningWorkId);
+    expect(getWorkContract(context.workStore, workId)?.engineeringContext?.semanticScope).toEqual(semanticScope);
+
+    // An unknown declared owner is refused rather than silently created.
+    const unknown = continueGoalWorkloop(context, {
+      workId,
+      engineeringBlocker: {
+        blockerId: 'external-disjoint-blocker-2',
+        classification: 'unrelated',
+        rationale: 'Another separate dependency.',
+        linkedWorkId: 'work-does-not-exist',
+      },
+    });
+    expect(unknown.status).toBe('blocked');
+    expect(unknown.summary).toContain('ENGINEERING_BLOCKER_LINKED_WORK_UNKNOWN');
   });
 
 });

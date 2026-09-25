@@ -82,16 +82,14 @@ export interface DirectEditWorkAdmissionInput {
 
 /**
  * Canonical compatibility admission for an Edit Session bound to Direct Work.
- * The caller supplies the canonical Route Policy decision as evidence; this
- * boundary rejects any decision that requires isolation or a non-direct lane.
+ * The caller may supply a legacy Route Policy snapshot as provenance only.
+ * Direct-edit admission is selected explicitly by this capability boundary; route
+ * mode tokens never authorize or reject the operation.
  */
 export function admitDirectEditWorkContract(
   store: WorkContractStoreOptions,
   input: DirectEditWorkAdmissionInput,
 ): WorkContract {
-  if (input.routeDecision.executionMode !== 'direct_control' || input.routeDecision.requiresIsolation) {
-    throw new Error('DIRECT_EDIT_WORK_ROUTE_CONFLICT: canonical Route Policy does not permit Direct Control');
-  }
   return createWorkContract(store, {
     workId: input.workId,
     repoId: input.repoId,

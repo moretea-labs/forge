@@ -1,6 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { admitRequirement, continueRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { admitRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { listRequirementRevisionRecords, readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
@@ -12,7 +12,6 @@ const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
   'requirement_get',
   'requirement_revise',
   'requirement_promote_candidate',
-  'requirement_continue',
 ]);
 
 export function isRhWorkRequirementOperation(operation: string): boolean {
@@ -66,38 +65,6 @@ export async function callRhWorkRequirementOperation(
       return result(buildFacadeResult({
         status: 'blocked', summary: error instanceof Error ? error.message : String(error),
         data: { requirementId, expectedRevision, ...(current ? { currentRequirement: requirementSemanticView(current) } : {}) },
-      }) as unknown as Record<string, unknown>, true);
-    }
-  }
-
-  if (operation === 'requirement_continue') {
-    const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
-    if (!requirementId) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: 'REQUIREMENT_CONTINUE_INPUT_REQUIRED: requirement_id is required.',
-        data: { requirementResumed: false },
-      }) as unknown as Record<string, unknown>, true);
-    }
-    try {
-      const continued = continueRequirement({ controllerHome: ctx.controllerHome }, requirementId);
-      return result(buildFacadeResult({
-        summary: continued.resumed
-          ? `Requirement ${continued.requirement.requirementId} resumed from waiting_for_user to active by explicit semantic continue.`
-          : `REQUIREMENT_ALREADY_ACTIVE: ${continued.requirement.requirementId}. Explicit continue is idempotent.`,
-        data: {
-          requirement: requirementSemanticView(continued.requirement),
-          requirementResumed: continued.resumed,
-          semanticDecision: 'continue',
-        },
-        suggestedNextActions: [],
-      }) as unknown as Record<string, unknown>);
-    } catch (error) {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: error instanceof Error ? error.message : String(error),
-        data: { requirementResumed: false },
-        suggestedNextActions: [],
       }) as unknown as Record<string, unknown>, true);
     }
   }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { spawnSync } from 'child_process';
 import {
   buildBrowserPluginManifest,
   executeBrowserPluginAction,
@@ -33,6 +34,9 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { withControllerLockAsync } from '../../src/cli/repositories/locks';
+import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -332,6 +336,61 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(createSessionAuth?.target.kind).toBe('browser-origin');
     expect(createSessionAuth?.target.id).toBe('chrome@https://example.com');
+  });
+
+  test('browser create_session stays independent of the derived projection-refresh lock', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(repoA, { recursive: true });
+    const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoA, encoding: 'utf8' });
+    expect(initialized.status).toBe(0);
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+    const repository = registerRepository({ path: repoA, controllerHome, displayName: 'browser-projection-lock' });
+    const separator = String.fromCharCode(30);
+    const url = 'https://example.com/projection-lock';
+    const metadata = [
+      'false', url, 'Projection Lock', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(separator);
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => metadata,
+    });
+
+    await withControllerLockAsync(
+      controllerHome,
+      { scope: 'task', repoId: repository.repoId, taskId: 'projection-refresh' },
+      'projection-refresh:test-held-browser-create-session',
+      async () => {
+        const result = await submitAssistantPluginAction(controllerHome, repository, {
+          pluginId: 'browser',
+          actionId: 'create_session',
+          requestId: 'browser-create-session-projection-lock',
+          args: {
+            url,
+            native_browser_product: 'chrome',
+            native_window_id: '7',
+            native_tab_id: '9',
+          },
+          origin: { surface: 'mcp', actor: 'test' },
+          confirmAuthorization: true,
+          timeoutMs: 5_000,
+        });
+        expect(result.receipt.status).toBe('succeeded');
+      },
+      undefined,
+      0,
+    );
   });
 
   test('native active-tab adoption distinguishes browser-active from authoritative system foreground', async () => {
@@ -1041,7 +1100,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(migrated.health.details?.profileDirectory).toBeUndefined();
     expect(migrated.health.details?.browserChannel).toBe('chrome');
     expect(migrated.health.details?.cdpAttachFallback).toBe('fail_closed');
-    expect(migrated.health.details?.nativeBrowserCandidates).toEqual(['chrome']);
+    expect(migrated.health.details?.nativeBrowserCandidates).toEqual(['chrome', 'vivaldi']);
     expect(migrated.authority.sourceOfTruth).toContain('controller-home:sqlite/computer_interaction_target');
     expect(migrated.authority.sourceOfTruth).not.toContain('controller-home:sqlite/browser_session');
     expect(migrated.health.details?.sessionCountSemantics).toBe('controller_authority_unavailable');

@@ -74,11 +74,11 @@ describe('repository Work admission authority', () => {
   });
 
 
-  test('preserves bounded Direct Edit compatibility only for a canonical direct Route Policy decision', () => {
+  test('admits bounded Direct Edit explicitly while retaining the route snapshot as provenance only', () => {
     const location = store('repo-direct-admission');
     ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-direct' });
     const routeDecision = decideRoute({
-      intent: { objective: 'Edit one bounded file.', scopeClear: true, mutation: true, explicitMode: 'direct' },
+      intent: { objective: 'Edit one bounded file.', scopeClear: true, mutation: true },
       workspace: { knownPaths: ['src/a.ts'], placement: 'current' },
       policy: { risk: 'local_repo_write', approvalConfirmed: true },
       capabilities: {},
@@ -108,17 +108,17 @@ describe('repository Work admission authority', () => {
     });
   });
 
-  test('direct Edit compatibility admission rejects a Route Policy decision that requires isolation', () => {
+  test('direct Edit admission is selected by the explicit capability rather than route mode tokens', () => {
     const location = store('repo-direct-route-conflict');
     const routeDecision = decideRoute({
-      intent: { objective: 'Edit one file but require isolation.', scopeClear: true, mutation: true, explicitMode: 'direct' },
+      intent: { objective: 'Edit one file but observe an isolated placement constraint.', scopeClear: true, mutation: true },
       workspace: { knownPaths: ['src/a.ts'], placement: 'isolated', directMainProhibited: true },
       policy: { risk: 'local_repo_write', approvalConfirmed: true },
       capabilities: {},
       recovery: {},
     });
-    expect(routeDecision.executionMode).not.toBe('direct_control');
-    expect(() => admitDirectEditWorkContract(location, {
+    expect(routeDecision).toMatchObject({ requiresIsolation: true });
+    const work = admitDirectEditWorkContract(location, {
       workId: 'work-direct-route-conflict',
       repoId: location.repoId,
       workspaceFingerprint: 'workspace-fingerprint',
@@ -127,6 +127,10 @@ describe('repository Work admission authority', () => {
       allowedPaths: ['src/a.ts'],
       checks: [],
       requestedBy: 'chatgpt',
-    })).toThrow(/DIRECT_EDIT_WORK_ROUTE_CONFLICT/);
+    });
+    expect(work).toMatchObject({
+      mode: 'direct_control',
+      routeDecisionFingerprint: routeDecision.inputFingerprint,
+    });
   });
 });

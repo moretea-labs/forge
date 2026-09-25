@@ -17,14 +17,15 @@ import {
   reconcileControllerRoundAfterAbandonedRelease,
   settleControllerRoundAfterTurn,
   submitControllerRoundDisposition,
-} from '../../src/runtime/control-plane/facade/controller-round-relay';
+} from '../../packages/kernel/controller/api/index';
 import { runSchedulerControllerRoundRecovery, runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import { getChatgptControllerRoundSettlement } from '../../adapters/chatgpt/controller-round-settlement-store';
 import { launchSuperController } from '../../src/runtime/control-plane/launcher/thin-launcher';
@@ -245,7 +246,7 @@ describe('autonomous continuation lifecycle', () => {
     expect(getControllerSession(store, workId)?.controllerId).toBe('chatgpt-principal');
   });
 
-  test('frozen-schema goal_complete closes a completed Work after MCP session rotation without reclaiming the terminal Work', async () => {
+  test('frozen-schema goal_complete closes an explicitly completed Work round after MCP session rotation without reclaiming terminal Work', async () => {
     const root = temp('forge-autonomous-continuation-facade-');
     const controllerHome = join(root, 'controller');
     const repoRoot = join(root, 'repo');
@@ -257,7 +258,7 @@ describe('autonomous continuation lifecycle', () => {
     createRequirement({ controllerHome }, {
       requirementId,
       title: 'Terminal semantic goal closure',
-      outcomeStatement: 'A terminal Controller goal_complete explicitly accepts the Requirement.',
+      outcomeStatement: 'A terminal Controller goal_complete closes only the ControllerRound; Requirement authority remains independent.',
     });
     updateRequirement({ controllerHome }, {
       requirementId,
@@ -341,6 +342,9 @@ describe('autonomous continuation lifecycle', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change', 'completed_no_change');
+    const beforeSemanticClose = getWorkContract(store, workId)!;
+    reviseWorkSemanticContext(store, workId, { expectedRevision: beforeSemanticClose.semanticRevision ?? 1, state: 'completed' });
+    expect(getWorkContract(store, workId)?.status).toBe('completed');
     expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
 
     const wrong = structured(await callRuntimeTool(
@@ -374,11 +378,8 @@ describe('autonomous continuation lifecycle', () => {
       reason: 'Physical no-change finalization completed before semantic round closure.',
     }));
     expect(completed.status).toBe('ok');
-    expect(completed.data.requirementAcceptance).toMatchObject({
-      accepted: true,
-      requirement: { requirementId, state: 'done' },
-    });
-    expect(readRequirement({ controllerHome }, requirementId)?.value.state).toBe('done');
+    expect(completed.data.requirementAcceptance).toBeUndefined();
+    expect(readRequirement({ controllerHome }, requirementId)?.value.state).toBe('active');
     expect(completed.data.relay).toMatchObject({
       originWorkId: workId,
       relayScopeId: opened.relayScopeId,
@@ -646,7 +647,7 @@ describe('autonomous continuation lifecycle', () => {
     expect(launched.prompt).not.toContain('First call rh_work continue');
   });
 
-  test('exact terminal authority closes provider waiting_for_user after physical Work completion without reclaiming it', async () => {
+  test('exact terminal authority closes provider waiting_for_user after explicit semantic Work completion without reclaiming it', async () => {
     const root = temp('forge-terminal-provider-wait-goal-complete-');
     const controllerHome = join(root, 'controller');
     const repoRoot = join(root, 'repo');
@@ -760,6 +761,8 @@ describe('autonomous continuation lifecycle', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change', 'completed_no_change');
+    const beforeSemanticClose = getWorkContract(store, workId)!;
+    reviseWorkSemanticContext(store, workId, { expectedRevision: beforeSemanticClose.semanticRevision ?? 1, state: 'completed' });
     expect(getWorkContract(store, workId)?.status).toBe('completed');
     expect(getControllerSession(store, workId)).toBeUndefined();
 
@@ -794,14 +797,12 @@ describe('autonomous continuation lifecycle', () => {
         capability_id: `controller.disposition:goal_complete:${opened.authorityId}:${opened.relayScopeId}`,
         work_id: workId,
         requirement_id: requirementId,
-        reason: 'Physical completion is proven; provider authorization wait does not block semantic Requirement acceptance.',
+        reason: 'Semantic Work completion is proven; provider authorization wait does not block exact ControllerRound closure.',
       },
     ));
     expect(completed.status).toBe('ok');
-    expect(completed.data.requirementAcceptance).toMatchObject({
-      accepted: true,
-      requirement: { requirementId, state: 'done' },
-    });
+    expect(completed.data.requirementAcceptance).toBeUndefined();
+    expect(readRequirement({ controllerHome }, requirementId)?.value.state).toBe('active');
     expect(completed.data.relay).toMatchObject({
       status: 'goal_complete',
       disposition: 'goal_complete',
@@ -996,6 +997,8 @@ describe('autonomous continuation lifecycle', () => {
       delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
       cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt }, verifiedAt: recordedAt, recordedAt,
     }, 'completed_no_change', 'completed_no_change');
+    const predecessorBeforeClose = getWorkContract(store, predecessorWorkId)!;
+    reviseWorkSemanticContext(store, predecessorWorkId, { expectedRevision: predecessorBeforeClose.semanticRevision ?? 1, state: 'completed' });
     expect(getWorkContract(store, predecessorWorkId)?.status).toBe('completed');
     expect(getControllerSession(store, predecessorWorkId)?.sessionId).toBe(owner.sessionId);
 
@@ -1317,7 +1320,7 @@ describe('autonomous continuation lifecycle', () => {
     expect(Date.parse(relay.nextRecoveryAt!)).toBe(recoveryAt + 60_000);
   });
 
-  test('stalled ControllerRound recovery isolates malformed Work history per repository and continues healthy repositories', async () => {
+  test('stalled ControllerRound recovery ignores retired phase/review projections and continues repositories independently', async () => {
     const root = temp('forge-autonomous-recovery-malformed-repo-isolation-');
     const controllerHome = join(root, 'controller');
     ensureControllerHome(controllerHome);
@@ -1345,7 +1348,7 @@ describe('autonomous continuation lifecycle', () => {
       checkoutId: malformedRepository.activeCheckoutId,
       mode: 'goal_workloop',
       objective: 'Retain malformed history without stalling scheduler maintenance.',
-      acceptanceCriteria: ['malformed Work remains invalid and untouched'],
+      acceptanceCriteria: ['retired phase/review projections do not suppress recovery of semantic-open Work'],
       allowedPaths: [],
       forbiddenPaths: [],
       checks: [],
@@ -1456,10 +1459,10 @@ describe('autonomous continuation lifecycle', () => {
       },
     });
 
-    // The malformed repository fails its scan, which is counted once. The healthy
-    // repository is still inspected and its relay is settled with a bounded,
-    // truthful reason instead of being silently re-scanned every pass.
-    expect(result).toEqual({ claimed: 1, dispatched: 0, failed: 2 });
+    // Retired phase/review projections are compatibility evidence, not semantic
+    // Work authority. Both semantic-open relays are therefore recoverable, and
+    // each bounded Supervisor enrollment failure is recorded independently.
+    expect(result).toEqual({ claimed: 2, dispatched: 0, failed: 2 });
     // Both Works carry an exact conversation binding, so the Supervisor owns the
     // outer turn: recovery settles each relay with a bounded reason and never
     // dispatches a provider prompt itself.
@@ -1467,7 +1470,9 @@ describe('autonomous continuation lifecycle', () => {
     const healthyRelayAfterRecovery = getControllerRoundRelay(healthyStore, healthyWorkId)!;
     expect(healthyRelayAfterRecovery.status).toBe('dispatching');
     expect(healthyRelayAfterRecovery.lastError).toContain('WORKFLOW_SUPERVISOR_ENROLLMENT_');
-    expect(getControllerRoundRelay(malformedStore, malformedWorkId)).toMatchObject({ status: 'dispatched' });
+    const legacyProjectionRelayAfterRecovery = getControllerRoundRelay(malformedStore, malformedWorkId)!;
+    expect(legacyProjectionRelayAfterRecovery.status).toBe('dispatching');
+    expect(legacyProjectionRelayAfterRecovery.lastError).toContain('WORKFLOW_SUPERVISOR_');
     const retainedMalformed = readControlPlaneRecord<WorkContract>(
       controllerHome,
       'work_contract',
