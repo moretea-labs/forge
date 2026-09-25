@@ -1,7 +1,8 @@
 import { readFileSync, statSync } from 'fs';
 import type { Command } from 'commander';
 import { recordExperience, retractExperience, supersedeExperience, type ExperienceDraft } from '../../../packages/kernel/memory/api/index';
-import { controllerExperienceStore } from '../../runtime/control-plane/persistence/experience-store';
+import { controllerExperienceStore, workExperienceProvenance } from '../../runtime/control-plane/persistence/experience-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { prepareAssistantWorkContext } from '../../runtime/context/assistant-work-context';
 
 function readBoundedJson(path: string): unknown {
@@ -17,21 +18,34 @@ export function addBrainAssistantCommands(brain: Command): void {
     .action((options: { controllerHome: string; repoId: string; workId: string; query?: string; channel?: string; account?: string; locale?: string }) => {
       console.log(JSON.stringify(prepareAssistantWorkContext({ ...options, applicability: { channel: options.channel, account: options.account, locale: options.locale } }) ?? { status: 'project_contract_missing' }, null, 2));
     });
-  const experience = brain.command('experience').description('Submit or withdraw Controller-authored, evidence-backed experience');
+  const experience = brain.command('experience').description('Submit or withdraw Work-authored, evidence-backed advisory experience');
   for (const operation of ['record', 'supersede', 'retract'] as const) {
     experience.command(operation)
       .requiredOption('--controller-home <path>').requiredOption('--repo-id <id>').requiredOption('--work-id <id>')
-      .requiredOption('--controller-id <id>').requiredOption('--authority-env <name>', 'Environment variable containing the current Controller capability')
-      .requiredOption('--input <path>', 'Bounded JSON API input; never include the Controller capability')
-      .action((options: { controllerHome: string; repoId: string; workId: string; controllerId: string; authorityEnv: string; input: string }) => {
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.authorityEnv)) throw new Error('BRAIN_AUTHORITY_ENV_INVALID');
-        const authorityId = process.env[options.authorityEnv];
-        if (!authorityId) throw new Error('BRAIN_CONTROLLER_AUTHORITY_REQUIRED');
-        const store = controllerExperienceStore({ ...options, identity: { workId: options.workId, controllerId: options.controllerId, authorityId } });
-        const data = readBoundedJson(options.input);
-        const result = operation === 'record' ? recordExperience(store, data as ExperienceDraft)
-          : operation === 'supersede' ? supersedeExperience(store, data as Parameters<typeof supersedeExperience>[1])
-            : retractExperience(store, data as Parameters<typeof retractExperience>[1]);
+      .requiredOption('--input <path>', 'Bounded JSON API input; source Work provenance is derived by Forge')
+      .action((options: { controllerHome: string; repoId: string; workId: string; input: string }) => {
+        const work = getWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, options.workId);
+        if (!work) throw new Error(`BRAIN_WORK_NOT_FOUND: ${options.workId}`);
+        const sourceRoundId = workExperienceProvenance(work);
+        const store = controllerExperienceStore({ ...options, identity: { workId: options.workId } });
+        const raw = readBoundedJson(options.input);
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('BRAIN_INPUT_OBJECT_REQUIRED');
+        const data = raw as Record<string, unknown>;
+        const result = operation === 'record'
+          ? recordExperience(store, { ...data, sourceWorkId: options.workId, sourceRoundId } as ExperienceDraft)
+          : operation === 'supersede'
+            ? (() => {
+                const input = data as Parameters<typeof supersedeExperience>[1];
+                return supersedeExperience(store, {
+                  ...input,
+                  draft: { ...input.draft, sourceWorkId: options.workId, sourceRoundId },
+                });
+              })()
+            : retractExperience(store, {
+                ...(data as Parameters<typeof retractExperience>[1]),
+                sourceWorkId: options.workId,
+                sourceRoundId,
+              });
         console.log(JSON.stringify(result, null, 2));
       });
   }

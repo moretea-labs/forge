@@ -141,17 +141,7 @@ describe('Work execution concurrency', () => {
     writeControlPlaneRecord(home, {
       namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
       expectedRevision: record.revision, action: 'test_malformed_goal_work_admission',
-      value: {
-        ...record.value,
-        phase: 'delivery',
-        phaseEvidence: {
-          ...record.value.phaseEvidence,
-          implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
-          verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
-          review: { ...record.value.phaseEvidence.review, state: 'pending' },
-          delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
-        },
-      },
+      value: { ...record.value, objective: '   ' },
     });
 
     const snapshot = readActiveWorkCandidates({ controllerHome: home, repoId });
@@ -161,7 +151,7 @@ describe('Work execution concurrency', () => {
       planId: 'PLAN-CONCURRENCY',
       planStepId: 'legacy-step',
       isolation: 'isolated',
-      error: expect.stringContaining('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review'),
+      error: expect.stringContaining('WORK_OBJECTIVE_REQUIRED'),
     })]);
 
     const started = routeWorkStart({
@@ -236,20 +226,10 @@ describe('Work execution concurrency', () => {
     writeControlPlaneRecord(home, {
       namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
       expectedRevision: record.revision, action: 'test_malformed_concurrency_sibling',
-      value: {
-        ...record.value,
-        phase: 'delivery',
-        phaseEvidence: {
-          ...record.value.phaseEvidence,
-          implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
-          verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
-          review: { ...record.value.phaseEvidence.review, state: 'pending' },
-          delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
-        },
-      },
+      value: { ...record.value, objective: '   ' },
     });
     expect(() => getWorkContract({ controllerHome: home, repoId }, malformed.workId))
-      .toThrow('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
+      .toThrow('WORK_OBJECTIVE_REQUIRED');
 
     const independent = evaluateManagedProcessWorkCompatibility({
       controllerHome: home, repoId, processId: 'process-independent', workId: candidate.workId,
@@ -508,17 +488,7 @@ describe('Work execution concurrency', () => {
     writeControlPlaneRecord(home, {
       namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
       expectedRevision: record.revision, action: 'test_invalid_reconcile_candidate',
-      value: {
-        ...record.value,
-        phase: 'delivery',
-        phaseEvidence: {
-          ...record.value.phaseEvidence,
-          implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
-          verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
-          review: { ...record.value.phaseEvidence.review, state: 'pending' },
-          delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
-        },
-      },
+      value: { ...record.value, objective: '   ' },
     });
     expect(() => reconcileWorkExecutionConcurrencyWaits({ controllerHome: home, repoId }))
       .toThrow('WORK_CONCURRENCY_ACTIVE_WORK_INVALID: work-invalid-reconcile');

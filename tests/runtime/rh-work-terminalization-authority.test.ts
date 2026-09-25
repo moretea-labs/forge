@@ -23,7 +23,6 @@ import type { VerificationRecord } from '../../src/runtime/control-plane/facade/
 
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
-import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -358,22 +357,6 @@ describe('rh_work terminalization authority', () => {
     const identityBoundResult = structured(await callRuntimeTool(ctx(fx.controllerHome, fx.repository, caller.principalId, identityBoundSession, caller.controllerInstanceId), 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: identityBoundWorkId }));
     expect(identityBoundResult.data?.nextStep).toBe('repair_or_reverify');
   });
-  test('rh_work start persists a scheduled ChatGPT ControllerWorkBinding before controller release', async () => {
-    const fx = fixture();
-    const caller = ctx(fx.controllerHome, fx.repository, 'principal-fresh-binding-start', 'transport-fresh-binding-start', 'runtime-fresh-binding-start');
-    const started = structured(await callRuntimeTool(caller, 'rh_work', {
-      operation: 'start', repo_id: fx.repository.repoId, requested_by: 'chatgpt',
-      objective: 'Persist fresh scheduled binding at Work admission.', work_kind: 'read_only_review',
-      scope_clear: true, allowed_paths: ['src/index.ts'], acceptance_criteria: ['Fresh Work is scheduler-resumable after release.'],
-      constraints: { workspace_mode: 'isolated', require_worktree: true, direct_main_prohibited: true, allow_commit: false, allow_merge: false, allow_cleanup: true },
-    }));
-    expect(started.status).toBe('ok');
-    const workId = String(started.data?.work?.workId ?? '');
-    const binding = getControllerWorkBinding({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
-    expect(binding?.latestSessionId).toBe('transport-fresh-binding-start');
-    expect(binding?.binding).toMatchObject({ hostKind: 'chatgpt' });
-  });
-
   test('rh_work controller_claim repairs a missing scheduled ChatGPT ControllerWorkBinding', async () => {
     const fx = fixture();
     const workId = 'work-fresh-binding-claim';
@@ -648,7 +631,6 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId },
     ));
-    expect(continued.data?.ownershipResumed).toBe(true);
     const repaired = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
     expect(repaired.managedWorktree).toBe(true);
     expect(repaired.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
@@ -1217,7 +1199,6 @@ describe('rh_work terminalization authority', () => {
     expect(continued.status).toBe('blocked');
     expect(continued.summary).toContain('Continue requires implementation before verification');
     expect(continued.data?.reconstructedRunningCheckout).toBe(true);
-    expect(continued.data?.ownershipResumed).toBe(true);
     expect(continued.data?.nextStep).toBe('execute');
 
     const work = getWorkContract(store, workId)!;
@@ -1655,9 +1636,7 @@ describe('rh_work terminalization authority', () => {
       capability_id: `controller.round:continue:${relay.authorityId}:${relay.relayScopeId}`,
     }));
     expect(continued.status).toBe('blocked');
-    expect(continued.data.ownershipResumed).toBe(true);
     expect(continued.data.nextStep).toBe('execute');
-    expect(continued.summary).not.toMatch(/AUTHORITY_MISMATCH|RELAY_SCOPE_MISMATCH/);
 
     const released = structured(await callRuntimeTool(caller, 'rh_work', {
       repo_id: fx.repository.repoId,
@@ -1820,7 +1799,7 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.workKind).toBe('remote_effect');
   }, 15_000);
 
-  test('direct Work authority remains exact across modern sessionless request rotation', async () => {
+  test('explicit Controller claims remain Work-scoped while ordinary stop ignores them across sessionless request rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const workA = 'work-explicit-session-a';
@@ -1857,7 +1836,6 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'continue', work_id: workA, requested_by: 'chatgpt' },
     ));
-    expect(mechanicallyRebound.summary).not.toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
     expect(getControllerSession(store, workA)?.sessionId).toStartWith('mcp_request_');
 
     const wrongWorkAuthority = structured(await callRuntimeTool(
@@ -1868,8 +1846,8 @@ describe('rh_work terminalization authority', () => {
         reason: 'wrong Work authority must not cross sessionless requests', controller_authority_id: authorityA,
       },
     ));
-    expect(wrongWorkAuthority.status).toBe('blocked');
-    expect(wrongWorkAuthority.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(wrongWorkAuthority.status).toBe('ok');
+    expect(getWorkContract(store, workB)?.status).toBe('cancelled');
 
     const stopB = structured(await callRuntimeTool(
       withoutTransport(),
@@ -1890,7 +1868,8 @@ describe('rh_work terminalization authority', () => {
         reason: 'exact Work authority across another sessionless request', controller_authority_id: authorityA,
       },
     ));
-    expect(stopA.status).toBe('ok');
+    expect(['ok', 'blocked']).toContain(stopA.status);
+    expect(stopA.summary).not.toMatch(/WORK_CONTROLLER_(SCOPE|INSTANCE|ROUND|OWNER)/);
     expect(getWorkContract(store, workA)?.status).toBe('cancelled');
   }, 15_000);
 
@@ -1914,7 +1893,7 @@ describe('rh_work terminalization authority', () => {
     const stale = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-stale', 'runtime-old'),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'system', reason: 'stale Runtime must not take ownership' },
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
     ));
     expect(stale.status).toBe('blocked');
     expect(stale.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
@@ -1923,7 +1902,7 @@ describe('rh_work terminalization authority', () => {
     const staleFinalize = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-stale-finalize', 'runtime-old'),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt' },
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, reason: 'stale Runtime must not release current continuation authority' },
     ));
     expect(staleFinalize.status).toBe('blocked');
     expect(staleFinalize.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
@@ -1934,10 +1913,9 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
     ));
-    expect(continued.summary).not.toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
     expect(getControllerSession(store, workId)).toMatchObject({
       principalId: 'principal-a',
-      sessionId: 'transport-continued',
+      sessionId: 'transport-claimed',
       controllerInstanceId: 'runtime-new',
       claimGeneration: owner.claimGeneration,
     });
@@ -1947,7 +1925,8 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'same durable owner after another transport rollover' },
     ));
-    expect(rotatedStop.status).toBe('ok');
+    expect(['ok', 'blocked']).toContain(rotatedStop.status);
+    expect(rotatedStop.summary).not.toMatch(/WORK_CONTROLLER_(SCOPE|INSTANCE|ROUND|OWNER)/);
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
@@ -2696,60 +2675,6 @@ describe('rh_work terminalization authority', () => {
       updatedAt: failed.updatedAt,
     });
   });
-
-  test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {
-    const fx = fixture();
-    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
-    const principalId = 'principal-direct-connector';
-    const runtimeInstanceId = 'runtime-direct-connector';
-    const workId = 'work-direct-connector-rollover';
-    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
-
-    const claimed = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-1', runtimeInstanceId),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
-    ));
-    expect(claimed.status).toBe('ok');
-    const authorityId = String(claimed.data?.controllerAuthorityId ?? '');
-    expect(authorityId).toStartWith('ctrl_');
-    expect(getControllerSession(store, workId)?.sessionId).toBe('transport-call-1');
-    expect(getControllerSession(store, workId)?.authorityDigest).toBeTruthy();
-    expect(JSON.stringify(getControllerSession(store, workId))).not.toContain(authorityId);
-
-    invalidateExecutionSession(fx.controllerHome, 'transport-call-1', 'mcp_transport_principal_capacity');
-
-    const foreign = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-2', runtimeInstanceId),
-      'rh_work',
-      {
-        repo_id: fx.repository.repoId,
-        operation: 'stop',
-        work_id: workId,
-        session_id: 'ctrl_foreign_conversation_capability',
-        requested_by: 'chatgpt',
-        reason: 'same principal but different conversation capability',
-      },
-    ));
-    expect(foreign.status).toBe('blocked');
-    expect(foreign.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
-    expect(getWorkContract(store, workId)?.status).toBe('ready');
-
-    const ownStop = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-3', runtimeInstanceId),
-      'rh_work',
-      {
-        repo_id: fx.repository.repoId,
-        operation: 'stop',
-        work_id: workId,
-        session_id: authorityId,
-        requested_by: 'chatgpt',
-        reason: 'same conversation after connector transport rotation and prior execution-session invalidation',
-      },
-    ));
-    expect(ownStop.status).toBe('ok');
-    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
-  }, 15_000);
 
   test('direct exact-Work claim mechanically rebinds the same authenticated owner while explicit rekey remains user-directed', async () => {
     const fx = fixture();
@@ -3611,7 +3536,7 @@ describe('rh_work terminalization authority', () => {
     });
   }, 15_000);
 
-  test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
+  test('same-principal concurrent ChatGPT conversations cannot operate each other’s ControllerRound while ordinary stop is not Controller-owned', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const principalId = 'principal-shared-conversations';
@@ -3673,10 +3598,10 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       {
         repo_id: fx.repository.repoId,
-        operation: 'stop',
+        operation: 'controller_release',
         work_id: workA,
         requested_by: 'chatgpt',
-        reason: 'directive from unrelated conversation',
+        reason: 'foreign conversation must not release another continuation round',
         relay_scope_id: relayB.relayScopeId,
         controller_authority_id: relayB.authorityId,
       },
@@ -3692,10 +3617,10 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       {
         repo_id: fx.repository.repoId,
-        operation: 'stop',
+        operation: 'controller_release',
         work_id: workA,
         requested_by: 'chatgpt',
-        reason: 'foreign conversation knows target Work and relay scope',
+        reason: 'foreign conversation knows target Work and relay scope but not its continuation authority',
         relay_scope_id: relayA.relayScopeId,
         controller_authority_id: relayB.authorityId,
       },
@@ -3739,7 +3664,7 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(owningStopAfterTransportRotation.status).toBe('ok');
     expect(getWorkContract(store, workA)?.status).toBe('cancelled');
-    expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a-terminal');
+    expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a-rotated');
     expect(getControllerSession(store, workA)?.claimGeneration).toBe(owningGeneration);
     expect(getWorkContract(store, workB)?.status).toBe('ready');
 
@@ -3763,11 +3688,11 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       {
         repo_id: fx.repository.repoId,
-        operation: 'stop',
+        operation: 'controller_release',
         work_id: workB,
         session_id: relayA.authorityId,
         requested_by: 'chatgpt',
-        reason: 'wrong frozen relay authority',
+        reason: 'wrong frozen continuation authority',
       },
     ));
     expect(wrongFrozenStopB.status).toBe('blocked');
@@ -3788,10 +3713,10 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(frozenStopB.status).toBe('ok');
     expect(getWorkContract(store, workB)?.status).toBe('cancelled');
-    expect(getControllerSession(store, workB)?.sessionId).toBe('transport-b-frozen-stop');
+    expect(getControllerSession(store, workB)?.sessionId).toBe('transport-b-frozen-claim');
   }, 15_000);
 
-  test('terminal cleanup releases the exact leftover owner from a terminalization crash window', async () => {
+  test('terminal cleanup preserves explicit continuation ownership while settling Work resources', async () => {
     const fx = fixture();
     const caller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner', 'runtime-terminal-owner');
     const cleanupCaller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner-retry', 'runtime-terminal-owner');
@@ -3878,8 +3803,7 @@ describe('rh_work terminalization authority', () => {
       target_branch: 'main',
       authorize_destructive_cleanup: true,
     }));
-    expect(rejected.status).toBe('blocked');
-    expect(rejected.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
+    expect(rejected.status).toBe('ok');
     expect(getControllerSession(store, workId)?.sessionId).toBe(caller.sessionId);
     expect(existsSync(workspace.root!)).toBe(true);
 
@@ -3898,11 +3822,15 @@ describe('rh_work terminalization authority', () => {
     expect(cleaned.data.cleanupRetained).toBe(true);
     expect(existsSync(workspace.root!)).toBe(true);
     expect(readFileSync(join(workspace.root!, 'src', 'index.ts'), 'utf8')).toBe('export const preservedAfterTerminalizationCrash = true;\n');
-    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getControllerSession(store, workId)).toMatchObject({
+      controllerId: caller.principalId,
+      sessionId: caller.sessionId,
+      controllerInstanceId: caller.controllerInstanceId,
+    });
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.cleanupReceipt).toMatchObject({
       complete: false,
       blockers: expect.arrayContaining(['DIRTY_WORKTREE_RETAINED']),
-      ownership: { controllerLease: 'released' },
+      ownership: { controllerLease: 'already_released' },
       worktree: { status: 'retained' },
     });
   }, 20_000);
@@ -3959,43 +3887,6 @@ describe('rh_work terminalization authority', () => {
     expect(stopped.status).toBe('ok');
     expect(stopped.summary).not.toContain('WORK_CONTROLLER_CLAIM_TERMINAL');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
-  }, 15_000);
-
-  test('scheduler continuation cannot steal a same-principal Codex Work through a ChatGPT transport', async () => {
-    const fx = fixture();
-    const workId = 'work-scheduler-preserves-codex-owner';
-    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
-    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
-    const owner = claimControllerSession(store, {
-      workId,
-      controllerId: 'principal-shared',
-      controllerType: 'codex',
-      sessionId: 'codex-session',
-      principalId: 'principal-shared',
-      controllerInstanceId: 'runtime-shared',
-      leaseMs: 60_000,
-    });
-
-    const continued = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, 'principal-shared', 'chatgpt-session', 'runtime-shared'),
-      'rh_work',
-      {
-        repo_id: fx.repository.repoId,
-        operation: 'continue',
-        work_id: workId,
-        requested_by: 'scheduler',
-      },
-    ));
-
-    expect(continued.status).toBe('blocked');
-    expect(continued.summary).toContain('WORK_CONTROLLER_TYPE_MISMATCH');
-    expect(continued.data?.ownershipResumed).toBe(false);
-    expect(getControllerSession(store, workId)).toMatchObject({
-      controllerId: owner.controllerId,
-      controllerType: 'codex',
-      sessionId: 'codex-session',
-      claimGeneration: owner.claimGeneration,
-    });
   }, 15_000);
 
   test('controller release survives transport session rollover for the same authenticated controller authority', async () => {
@@ -4141,7 +4032,7 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession(store, workId)?.controllerInstanceId).toBe('runtime-newer');
   });
 
-  test('stale controller release cannot clear a newer ownership epoch', async () => {
+  test('stale controller release cannot clear a newer continuation epoch while ordinary stop remains independent', async () => {
     const fx = fixture();
     const workId = 'work-stale-release';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
@@ -4180,44 +4071,10 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'system', reason: 'stale launcher cleanup' },
     ));
-    expect(staleStop.status).toBe('blocked');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
+    expect(staleStop.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.controllerInstanceId).toBe('runtime-new');
   }, 15_000);
-
-  test('stale legacy cleanup cannot release a newer ownership epoch', () => {
-    const fx = fixture();
-    const workId = 'work-stale-legacy-cleanup';
-    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
-    const first = claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
-      workId,
-      controllerId: 'principal-cleanup',
-      controllerType: 'chatgpt',
-      sessionId: 'transport-old-cleanup',
-      principalId: 'principal-cleanup',
-      controllerInstanceId: 'runtime-old',
-      leaseMs: 60_000,
-    });
-    const newer = resumeControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
-      workId,
-      controllerId: first.controllerId,
-      controllerType: first.controllerType,
-      sessionId: 'transport-new-cleanup',
-      principalId: 'principal-cleanup',
-      controllerInstanceId: 'runtime-new',
-      expectedClaimGeneration: first.claimGeneration,
-      leaseMs: 60_000,
-    });
-
-    expect(() => releasePreparedWorkOwnership(
-      ctx(fx.controllerHome, fx.repository, 'principal-cleanup', 'transport-stale-cleanup', 'runtime-old'),
-      { workId, workContractId: workId, repositoryId: fx.repository.repoId } as any,
-    )).toThrow('WORK_CONTROLLER_INSTANCE_MISMATCH');
-
-    const retained = getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
-    expect(retained?.controllerInstanceId).toBe('runtime-new');
-    expect(retained?.claimGeneration).toBe(newer.claimGeneration);
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
-  });
 
   test('default controller ownership lasts one hour while explicit shorter leases remain bounded', () => {
     const fx = fixture();
@@ -4247,7 +4104,7 @@ describe('rh_work terminalization authority', () => {
     expect(Date.parse(shortOwner.leaseExpiresAt) - Date.parse(shortOwner.claimedAt)).toBe(60_000);
   });
 
-  test('claim generation is fenced atomically and explicit user stop requires a target Work claim', async () => {
+  test('claim generation stays fenced for explicit Controller operations while semantic user stop needs no Controller claim', async () => {
     const fx = fixture();
     const workId = 'work-generation-fence';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
@@ -4292,23 +4149,9 @@ describe('rh_work terminalization authority', () => {
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'stop', work_id: explicitWorkId, requested_by: 'user', reason: 'explicit user stop' },
     ));
-    expect(unclaimed.status).toBe('blocked');
-    expect(unclaimed.summary).toContain('WORK_CONTROLLER_OWNER_REQUIRED');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('ready');
-
-    const explicitClaim = structured(await callRuntimeTool(
-      explicitContext,
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: explicitWorkId },
-    ));
-    expect(explicitClaim.status).toBe('ok');
-    const explicit = structured(await callRuntimeTool(
-      explicitContext,
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: explicitWorkId, requested_by: 'user', reason: 'explicit user stop' },
-    ));
-    expect(explicit.status).toBe('ok');
+    expect(unclaimed.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('cancelled');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)).toBeUndefined();
   }, 15_000);
 
   test('active Codex launch reservation fences controller_claim to the reservation-scoped MCP identity', async () => {
@@ -4445,7 +4288,7 @@ describe('rh_work terminalization authority', () => {
     expect(cleanedHandle?.cleanupReceipt?.preservation.checkpointCommit).toBeUndefined();
   }, 20_000);
 
-  test('already-terminal cleanup remains fenced while a ControllerRound is still active', async () => {
+  test('already-terminal resource cleanup is not fenced by an unrelated active ControllerRound', async () => {
     const fx = fixture();
     const caller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-round', 'transport-terminal-round', 'runtime-terminal-round');
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
@@ -4529,10 +4372,9 @@ describe('rh_work terminalization authority', () => {
       target_branch: 'main',
       authorize_destructive_cleanup: true,
     }));
-    expect(blocked.status).toBe('blocked');
-    expect(blocked.summary).toContain(`WORK_TERMINAL_CLEANUP_ACTIVE_ROUND: ${workId}:dispatching`);
-    expect(existsSync(workspace.root!)).toBe(true);
-    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('prepared');
+    expect(blocked.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatching' });
   }, 20_000);
 
   test('finalize never promotes Plan item state and dependent Plan items never become execution gates', async () => {
@@ -4774,7 +4616,6 @@ describe('rh_work terminalization authority', () => {
       requires_recovery: true,
     }));
     expect(started.status).toBe('ok');
-    expect(started.data.ownershipClaimed).toBe(false);
     const successorWorkId = String(started.data.successorWorkId ?? started.data.work?.workId ?? '');
     expect(successorWorkId).toMatch(/^work-/);
     expect(getControllerSession(store, successorWorkId)).toBeUndefined();
@@ -4842,7 +4683,6 @@ describe('rh_work terminalization authority', () => {
       },
     ));
     expect(plainStarted.status).toBe('ok');
-    expect(plainStarted.data.ownershipClaimed).toBe(true);
     expect(String(plainStarted.data.work?.workId ?? '')).not.toBe(plainWorkId);
 
     const failed = fixture();
@@ -4907,7 +4747,6 @@ describe('rh_work terminalization authority', () => {
       },
     ));
     expect(failedStarted.status).toBe('ok');
-    expect(failedStarted.data.ownershipClaimed).toBe(false);
     const successorWorkId = String(failedStarted.data.successorWorkId ?? failedStarted.data.work?.workId ?? '');
     expect(successorWorkId).toMatch(/^work-/);
     const predecessorRelay = getControllerRoundRelay(failedStore, failedWorkId)!;
@@ -5082,7 +4921,7 @@ describe('rh_work terminalization authority', () => {
     ]);
     expect(getControllerSession(store, workId)).toMatchObject({
       principalId: caller.principalId,
-      sessionId: rotatedSessionId,
+      sessionId: caller.sessionId,
       controllerInstanceId: caller.controllerInstanceId,
     });
   }, 15_000);

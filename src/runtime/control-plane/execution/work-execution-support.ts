@@ -1,7 +1,6 @@
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { getRepository, listRepositories, RepositoryCheckoutSelectionError, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { reconcileWorkValidation } from './work-validation-reconciler';
-import { assertControllerOwnershipAuthority, claimControllerSession, controllerSessionPrincipalId, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { appendWorkEvidence, getWorkContract, transitionWorkContractPhase } from '../../../../packages/kernel/work/api/index';
 import { resolveLegacyWorkContractIdentity } from './execution-identity';
 import type { ExecutionSessionContext, SessionIdentity } from './session-store';
@@ -178,30 +177,16 @@ export function findWorkHandle(
   });
 }
 
-function currentControllerClaimAuthorizesTerminalCleanup(
-  ctx: McpExecutionContext,
-  session: ExecutionSessionContext,
-  handle: WorkHandleState,
-): boolean {
-  if (!terminalCleanupOutcome(ctx, handle)) return false;
-  const workIdValue = handle.workContractId ?? handle.workId;
-  const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, workIdValue);
-  if (!owner) return false;
-  return controllerSessionPrincipalId(owner) === session.principalId
-    && owner.controllerInstanceId === session.controllerInstanceId;
-}
-
 export function workForSession(
   ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   args: Record<string, unknown>,
-  options: { reconcileValidation?: boolean; allowClaimedTerminalCleanup?: boolean } = {},
+  options: { reconcileValidation?: boolean } = {},
 ): WorkHandleState {
   let handle = findWorkHandle(ctx, session, args);
-  if (
-    handle.principalId !== session.principalId
-    && !(options.allowClaimedTerminalCleanup === true && currentControllerClaimAuthorizesTerminalCleanup(ctx, session, handle))
-  ) throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
+  if (handle.principalId !== session.principalId) {
+    throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
+  }
   if (options.reconcileValidation !== false) handle = reconcileWorkValidation(ctx.controllerHome, handle).handle;
   if (
     session.activeRepositoryId !== handle.repositoryId
@@ -217,100 +202,6 @@ export function workForSession(
     });
   }
   return handle;
-}
-
-export function assertWorkControllerOwnership(
-  ctx: McpExecutionContext,
-  session: ExecutionSessionContext,
-  handle: WorkHandleState,
-  args: Record<string, unknown>,
-) {
-  const workIdValue = handle.workContractId ?? handle.workId;
-  const options = { controllerHome: ctx.controllerHome, repoId: handle.repositoryId };
-  const owner = getControllerSession(options, workIdValue);
-  const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
-    ? args.controller_id.trim()
-    : session.principalId;
-  if (controllerId !== session.principalId) {
-    throw new Error('WORK_CONTROLLER_IDENTITY_MISMATCH: controller_id must match the authenticated principal');
-  }
-  if (owner) {
-    const authority = assertControllerOwnershipAuthority(owner, {
-      workId: workIdValue,
-      controllerId,
-      principalId: session.principalId,
-      controllerInstanceId: session.controllerInstanceId,
-    });
-    const resumed = resumeControllerSession(options, {
-      workId: workIdValue,
-      controllerId,
-      controllerType: authority.controllerType,
-      sessionId: session.sessionId,
-      principalId: session.principalId,
-      controllerInstanceId: session.controllerInstanceId,
-      expectedClaimGeneration: authority.claimGeneration,
-      leaseMs: 3_600_000,
-    });
-    if (
-      resumed.controllerId !== authority.controllerId
-      || controllerSessionPrincipalId(resumed) !== authority.principalId
-      || resumed.controllerInstanceId !== authority.controllerInstanceId
-      || resumed.claimGeneration !== authority.claimGeneration
-    ) {
-      throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} ownership epoch changed during resume`);
-    }
-    return resumed;
-  }
-  return claimControllerSession(options, {
-    workId: workIdValue,
-    controllerId,
-    controllerType: 'chatgpt',
-    sessionId: session.sessionId,
-    principalId: session.principalId,
-    controllerInstanceId: session.controllerInstanceId,
-    expectedClaimGeneration: 0,
-    leaseMs: 3_600_000,
-  });
-}
-
-export function releasePreparedWorkOwnership(
-  ctx: McpExecutionContext,
-  handle: WorkHandleState,
-): 'released' | 'already_released' {
-  const workIdValue = handle.workContractId ?? handle.workId;
-  const options = { controllerHome: ctx.controllerHome, repoId: handle.repositoryId };
-  const current = getControllerSession(options, workIdValue);
-  if (!current) return 'already_released';
-
-  const callerPrincipal = principalFor(ctx);
-  const callerInstanceId = ctx.controllerInstanceId ?? currentControllerInstanceId();
-  const ownerPrincipal = current.principalId?.trim() || current.controllerId;
-  const ownerInstanceId = current.controllerInstanceId?.trim() || '';
-  if (ownerPrincipal !== callerPrincipal) {
-    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workIdValue}`);
-  }
-  if (!ownerInstanceId || ownerInstanceId !== callerInstanceId) {
-    throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workIdValue}`);
-  }
-  if (typeof current.claimGeneration !== 'number' || current.claimGeneration < 1) {
-    throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workIdValue}`);
-  }
-
-  const released = releaseControllerSessionWithAuthority(options, {
-    workId: workIdValue,
-    actor: `legacy-work-release:${callerPrincipal}:${callerInstanceId}`,
-    authority: {
-      controllerId: current.controllerId,
-      controllerType: current.controllerType,
-      principalId: ownerPrincipal,
-      controllerInstanceId: ownerInstanceId,
-      claimGeneration: current.claimGeneration,
-    },
-  });
-  if (!released.allowed) {
-    throw new Error(`WORK_CONTROLLER_RELEASE_FENCED: ${workIdValue}:${released.reason}`);
-  }
-  return 'released';
 }
 
 export function terminalCleanupOutcome(
@@ -377,8 +268,10 @@ export async function reconcileTerminalCleanup(
     terminalOutcome: outcome,
     failureReason: handle.failureReason ?? handle.finalization.lastError,
   });
-  const ownership = releasePreparedWorkOwnership(ctx, cleaned.handle);
-  cleaned.receipt.ownership.controllerLease = ownership;
+  // ControllerSession is explicit continuation state, not a Work cleanup
+  // resource. Keep the legacy receipt projection inert until its final schema
+  // deletion; cleanup never claims or releases Controller authority.
+  cleaned.receipt.ownership.controllerLease = 'already_released';
   const persisted = writeWorkHandle(ctx.controllerHome, {
     ...cleaned.handle,
     cleanupReceipt: cleaned.receipt,

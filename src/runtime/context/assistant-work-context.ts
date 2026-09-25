@@ -1,8 +1,8 @@
 import { getRepository } from '../../cli/repositories/registry';
 import { configuredBrainRoot } from '../../cli/commands/brain-root';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
-import { getControllerRoundRelay, getControllerSession, listCurrentControllerRoundRelays } from '../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay, listCurrentControllerRoundRelays } from '../../../packages/kernel/controller/api/index';
 import { recordExperience, recordOutcomeObservation, queryExperiences, type ExperienceApplicability, type ExperienceDraft, type ExperienceRecord, type OutcomeObservation } from '../../../packages/kernel/memory/api/index';
 import { memoryAddressKey, memoryUnitFromExperience, parseMemoryAddressKey, recordCognitiveMemory, recordCognitiveMemoryEdge, type CognitiveUsageFeedback, type CognitiveWriteAuthorityPort, type MemoryEdgeDraft, type MemoryProvenance, type MemoryUnit, type MemoryUnitDraft } from '../../../packages/kernel/cognition/api/index';
 import { assertMemoryWriteAuthority, canonicalWorkflowEvidenceAvailable, cognitiveScopesForWork, controllerExperienceStore, controllerOutcomeObservationStore, experienceScopesForWork, type ExperienceWriteIdentity } from '../control-plane/persistence/experience-store';
@@ -204,16 +204,16 @@ function learningStoreOptions(input: { controllerHome: string; repoId: string; i
   return { controllerHome: input.controllerHome, repoId: input.repoId, identity: input.identity, ...(input.now ? { now: () => input.now! } : {}) };
 }
 
-function currentLearningRound(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; now?: string }): { sourceWorkId: string; sourceRoundId: string } {
-  const store = learningStoreOptions(input);
-  const relay = getControllerRoundRelay(store, input.identity.workId);
-  if (relay) {
-    if (relay.status !== 'claimed' || relay.authorityId !== input.identity.authorityId) throw new Error('LEARNING_LOOP_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
-    return { sourceWorkId: input.identity.workId, sourceRoundId: `${relay.relayScopeId}:${relay.roundCount}` };
-  }
-  const owner = getControllerSession(store, input.identity.workId);
-  if (!owner || owner.controllerId !== input.identity.controllerId || !owner.claimGeneration) throw new Error('LEARNING_LOOP_CONTROLLER_CLAIM_REQUIRED');
-  return { sourceWorkId: input.identity.workId, sourceRoundId: `${input.identity.workId}:${owner.claimGeneration}` };
+function currentLearningProvenance(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; now?: string }): { sourceWorkId: string; sourceRoundId: string } {
+  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, input.identity.workId);
+  if (!work || isTerminalWorkContractStatus(work.status)) throw new Error('LEARNING_LOOP_WORK_NOT_ACTIVE');
+  const revision = Number(work.semanticRevision);
+  return {
+    sourceWorkId: work.workId,
+    // sourceRoundId is retained as a storage compatibility field. It now records
+    // Work semantic provenance rather than granting ControllerRound authority.
+    sourceRoundId: `work:${work.workId}:r${Number.isSafeInteger(revision) && revision > 0 ? revision : 'legacy'}`,
+  };
 }
 
 function controllerCognitionAuthority(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; now?: string }): CognitiveWriteAuthorityPort {
@@ -230,7 +230,7 @@ function controllerCognitionAuthority(input: { controllerHome: string; repoId: s
 }
 
 export function recordControllerMemory(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerMemoryDraft; now?: string }): MemoryUnit {
-  const lineage = currentLearningRound(input);
+  const lineage = currentLearningProvenance(input);
   const recordedAt = input.now ?? new Date().toISOString();
   return recordCognitiveMemory(cognitionMemoryStore(input.controllerHome), controllerCognitionAuthority(input), {
     ...input.draft,
@@ -240,7 +240,7 @@ export function recordControllerMemory(input: { controllerHome: string; repoId: 
 }
 
 export function recordControllerMemoryEdge(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerMemoryEdgeDraft; now?: string }) {
-  const lineage = currentLearningRound(input);
+  const lineage = currentLearningProvenance(input);
   return recordCognitiveMemoryEdge(cognitionMemoryStore(input.controllerHome), controllerCognitionAuthority(input), {
     ...input.draft,
     sourceWorkId: lineage.sourceWorkId,
@@ -250,7 +250,7 @@ export function recordControllerMemoryEdge(input: { controllerHome: string; repo
 }
 
 export function recordControllerOutcome(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerOutcomeObservationDraft; now?: string }): OutcomeObservation {
-  const lineage = currentLearningRound(input);
+  const lineage = currentLearningProvenance(input);
   return recordOutcomeObservation(controllerOutcomeObservationStore(learningStoreOptions(input)), {
     ...input.draft, schemaVersion: 1, sourceWorkId: lineage.sourceWorkId, sourceRoundId: lineage.sourceRoundId,
   }, input.now);
@@ -269,7 +269,7 @@ function outcomeEvidenceWithObservedMetric(input: { controllerHome: string; repo
 }
 
 export function recordControllerExperience(input: { controllerHome: string; repoId: string; identity: ExperienceWriteIdentity; draft: ControllerExperienceDraft; qualityAdjustmentFingerprint?: string; now?: string }): ExperienceRecord {
-  const lineage = currentLearningRound(input);
+  const lineage = currentLearningProvenance(input);
   let evidenceRefs = [...input.draft.evidenceRefs];
   if (input.qualityAdjustmentFingerprint) {
     const relay = getControllerRoundRelay(learningStoreOptions(input), input.identity.workId);

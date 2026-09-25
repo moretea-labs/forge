@@ -83,6 +83,7 @@ export {
   isCurrentWorkContract,
   supersedeWorkContract,
   getWorkContract,
+  semanticWorkState,
   workSemanticView,
   listWorkSemanticRevisionRecords,
   reviseWorkSemanticContext,

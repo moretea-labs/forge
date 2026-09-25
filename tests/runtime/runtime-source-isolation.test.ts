@@ -136,17 +136,7 @@ function corruptProjectionWork(controllerHome: string, repoId: string, workId: s
   writeControlPlaneRecord(controllerHome, {
     namespace: 'work_contract', scope: repoId, key: workId, schemaVersion: 2,
     expectedRevision: record.revision, action: 'test_malformed_runtime_facade_projection',
-    value: {
-      ...record.value,
-      phase: 'delivery',
-      phaseEvidence: {
-        ...record.value.phaseEvidence,
-        implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
-        verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
-        review: { ...record.value.phaseEvidence.review, state: 'pending' },
-        delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
-      },
-    },
+    value: { ...record.value, objective: '   ' },
   });
 }
 
@@ -889,7 +879,7 @@ printf '{"ok":true}\\n'
     expect(summary.controllerSnapshot?.invalidActiveWorkCount).toBe(1);
     expect(summary.controllerSnapshot?.invalidActiveWork?.[0]).toMatchObject({
       workId: malformed.workId,
-      error: expect.stringContaining('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review'),
+      error: expect.stringContaining('WORK_OBJECTIVE_REQUIRED'),
     });
 
     const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
@@ -980,7 +970,7 @@ printf '{"ok":true}\\n'
     expect(summary.counts).toMatchObject({ invalidActiveWork: 1, invalidActiveWorkShown: 1 });
     expect(summary.invalidActiveWork?.[0]).toMatchObject({
       workId: malformed.workId,
-      error: expect.stringContaining('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review'),
+      error: expect.stringContaining('WORK_OBJECTIVE_REQUIRED'),
     });
 
     const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {

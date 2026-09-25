@@ -466,37 +466,24 @@ describe('terminal Work cleanup', () => {
       fx.repository.repoId,
       malformedWorkId,
     )!;
-    const review = malformedRecord.value.phaseEvidence?.review;
     writeControlPlaneRecord(fx.controllerHome, {
       namespace: 'work_contract',
       scope: fx.repository.repoId,
       key: malformedWorkId,
       schemaVersion: 2,
       expectedRevision: malformedRecord.revision,
-      action: 'test_malformed_phase_evidence',
-      value: {
-        ...malformedRecord.value,
-        phase: 'delivery',
-        phaseEvidence: {
-          ...malformedRecord.value.phaseEvidence,
-          implementation: { ...malformedRecord.value.phaseEvidence!.implementation, state: 'satisfied' },
-          verification: { ...malformedRecord.value.phaseEvidence!.verification, state: 'satisfied' },
-          review: {
-            ...(review ?? { source: 'legacy_inferred', summary: 'Legacy review remains pending.', evidenceRefs: [], recordedAt: malformedAt }),
-            state: 'pending',
-          },
-        },
-      },
+      action: 'test_malformed_semantic_objective',
+      value: { ...malformedRecord.value, objective: '   ' },
     });
 
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)?.workId).toBe(fx.handle.workId);
     expect(() => getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, malformedWorkId))
-      .toThrow('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
+      .toThrow('WORK_OBJECTIVE_REQUIRED');
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
     expect(report.errors).toEqual([{
       workId: malformedWorkId,
-      error: 'WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review',
+      error: 'WORK_OBJECTIVE_REQUIRED',
     }]);
     expect(report.cleaned).toContain(fx.handle.workId);
     expect(existsSync(malformedWorkspace.root!)).toBe(true);
@@ -509,8 +496,7 @@ describe('terminal Work cleanup', () => {
       fx.repository.repoId,
       malformedWorkId,
     )!;
-    expect(retainedMalformed.value.phase).toBe('delivery');
-    expect(retainedMalformed.value.phaseEvidence?.review?.state).toBe('pending');
+    expect(retainedMalformed.value.objective).toBe('   ');
   });
 
   test('periodic reconciler closes a stale cancelled managed Work without a caller cleanup request', async () => {

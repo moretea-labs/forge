@@ -17,7 +17,6 @@ export interface ExecutionConcurrencyWaitProjection {
   wakeTrigger:
     | { kind: 'work_terminal'; workId: string }
     | { kind: 'resource_release'; resourceKeys: string[] }
-    | { kind: 'controller_release'; workId: string }
     | { kind: 'scheduler_capacity'; capacityKey: string }
     | { kind: 'work_contract_change'; workId: string };
   observedAt: string;

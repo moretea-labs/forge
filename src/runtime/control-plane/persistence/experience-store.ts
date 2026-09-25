@@ -3,7 +3,7 @@ import { resolveProjectForRepositoryPlacement } from '../workspace/workspace-sto
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 import { recordExperience, recordOutcomeObservation, type ExperienceRecord, type ExperienceStorePort, type OutcomeObservation, type OutcomeObservationStorePort } from '../../../../packages/kernel/memory/api/index';
 import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { controllerSessionAuthorityMatches, getControllerRoundRelay, getControllerSession } from '../../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay } from '../../../../packages/kernel/controller/api/index';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
 import { assertControlPlaneMetadataPayload } from './metadata-payload-policy';
@@ -12,7 +12,13 @@ import { deleteControlPlaneRecordWithinTransaction, listControlPlaneRecords, lis
 
 export const EXPERIENCE_NAMESPACE = 'assistant_experience';
 export const OUTCOME_OBSERVATION_NAMESPACE = 'assistant_outcome_observation';
-export interface ExperienceWriteIdentity { workId: string; controllerId: string; authorityId: string }
+export interface ExperienceWriteIdentity {
+  workId: string;
+  /** Legacy provenance only; never execution or write authority. */
+  controllerId?: string;
+  /** Legacy provenance only; never execution or write authority. */
+  authorityId?: string;
+}
 export interface ClosedRoundLearningAuthority { workId: string; sourceRoundId: string }
 
 interface ExperienceStoreOptions {
@@ -102,19 +108,25 @@ export function canonicalWorkflowEvidenceAvailable(input: { controllerHome: stri
   } catch { return false; }
 }
 
+export function workExperienceProvenance(work: Pick<WorkContract, 'workId' | 'semanticRevision'>): string {
+  const revision = Number(work.semanticRevision);
+  return `work:${work.workId}:r${Number.isSafeInteger(revision) && revision > 0 ? revision : 'legacy'}`;
+}
+
 export function assertMemoryWriteAuthority(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity }, scope: ScopeRef, sourceWorkId: string, sourceRoundId: string): void {
   const identity = input.identity;
-  if (!identity) throw new Error('EXPERIENCE_CONTROLLER_REQUIRED');
-  const current = getWorkContract(input, identity.workId), source = getWorkContract(input, sourceWorkId);
-  if (!current || isTerminalWorkContractStatus(current.status) || !source || !matchesExperienceScope(current, scope, input.controllerHome) || !matchesExperienceScope(source, scope, input.controllerHome)) throw new Error('EXPERIENCE_WORK_SCOPE_MISMATCH');
-  const owner = getControllerSession(input, identity.workId);
-  if (!owner || owner.controllerId !== identity.controllerId) throw new Error('EXPERIENCE_CONTROLLER_NOT_OWNER');
-  const relay = getControllerRoundRelay(input, identity.workId);
-  if (relay) {
-    if (relay.status !== 'claimed' || relay.authorityId !== identity.authorityId || relay.claimGeneration !== owner.claimGeneration
-      || sourceRoundId !== `${relay.relayScopeId}:${relay.roundCount}`) throw new Error('EXPERIENCE_ROUND_AUTHORITY_MISMATCH');
-  } else if (!controllerSessionAuthorityMatches(owner, identity.authorityId)
-    || sourceRoundId !== `${identity.workId}:${owner.claimGeneration}`) throw new Error('EXPERIENCE_CLAIM_AUTHORITY_MISMATCH');
+  if (!identity?.workId?.trim()) throw new Error('EXPERIENCE_WORK_IDENTITY_REQUIRED');
+  const current = getWorkContract(input, identity.workId);
+  const source = getWorkContract(input, sourceWorkId);
+  if (!current || isTerminalWorkContractStatus(current.status) || !source
+    || current.workId !== source.workId
+    || !matchesExperienceScope(current, scope, input.controllerHome)
+    || !matchesExperienceScope(source, scope, input.controllerHome)) {
+    throw new Error('EXPERIENCE_WORK_SCOPE_MISMATCH');
+  }
+  if (sourceRoundId !== workExperienceProvenance(source)) {
+    throw new Error('EXPERIENCE_WORK_PROVENANCE_MISMATCH');
+  }
 }
 
 function assertClosedRoundLearningWriteAuthority(

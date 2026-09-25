@@ -1,6 +1,4 @@
 import { createWorkContract } from '../../packages/kernel/work/api/index';
-import { claimControllerSession, mintControllerSessionAuthority } from '../../packages/kernel/controller/api/index';
-import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -13,7 +11,6 @@ import { executeRegisteredWorkflow } from '../../src/runtime/workflows/runtime';
 import type { WorkflowAssetDraft } from '../../packages/workflow-runtime/api/index';
 
 const roots: string[] = [];
-const controllers = new Map<string, { controllerId: string; authorityId: string }>();
 afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -68,11 +65,6 @@ async function installedRuntime(controllerHome: string, root: string, assetDraft
   const store = { controllerHome, repoId: 'repo-workflow-test' };
   createWorkContract(store, { workId: 'work-workflow-test', repoId: store.repoId, checkoutId: 'checkout-workflow-test', mode: 'direct_control',
     objective: 'workflow authority fixture', acceptanceCriteria: ['safe execution'], constraints: {}, allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'user' });
-  startExecutionSession(controllerHome, { sessionId: 'session', principalId: 'controller', controllerInstanceId: 'instance' });
-  const capability = mintControllerSessionAuthority();
-  claimControllerSession(store, { workId: 'work-workflow-test', controllerId: 'controller', controllerType: 'chatgpt', sessionId: 'session',
-    principalId: 'controller', controllerInstanceId: 'instance', authorityDigest: capability.authorityDigest, leaseMs: 60_000 });
-  controllers.set(controllerHome, { controllerId: 'controller', authorityId: capability.authorityId });
   const written = writeWorkflowAssetContent({ kind: 'controller', controllerHome }, assetDraft);
   const installed = registerWorkflowAsset({
     controllerHome,
@@ -105,7 +97,6 @@ describe('thin Workflow Runtime interpreter', () => {
       controllerHome,
       repository: repo,
       executionIdentity: identity(root),
-      controller: controllers.get(controllerHome)!,
       workId: 'work-workflow-test',
       runId: 'run-1',
       registryScope: { kind: 'controller' },
@@ -159,7 +150,6 @@ describe('thin Workflow Runtime interpreter', () => {
       controllerHome,
       repository: repo,
       executionIdentity: identity(root),
-      controller: controllers.get(controllerHome)!,
       workId: 'work-workflow-test',
       runId: 'run-reconcile',
       registryScope: { kind: 'controller' } as const,
@@ -187,7 +177,7 @@ describe('thin Workflow Runtime interpreter', () => {
       receipts: [{ stepId: 'open', outcome: 'succeeded', receiptRef: 'missing-provider-receipt', recordedAt: new Date().toISOString() }], outputs: { open: {} },
     } });
     let dispatched = 0;
-    await expect(executeRegisteredWorkflow({ controllerHome, repository: repo, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+    await expect(executeRegisteredWorkflow({ controllerHome, repository: repo, executionIdentity: identity(root),
       workId: 'work-workflow-test', runId: 'run-forged-checkpoint', registryScope: { kind: 'controller' }, workflowId: 'runtime-proof', inputs }, {
       submitPluginAction: (async () => { dispatched += 1; throw new Error('must not dispatch'); }) as any,
     })).rejects.toThrow('WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: open');
@@ -202,7 +192,6 @@ describe('thin Workflow Runtime interpreter', () => {
       controllerHome,
       repository: repo,
       executionIdentity: identity(root),
-      controller: controllers.get(controllerHome)!,
       workId: 'work-workflow-test',
       registryScope: { kind: 'controller' } as const,
       workflowId: 'runtime-proof',
@@ -223,13 +212,12 @@ test('checkpoint outputs refuse lossy JSON values and normalize retained fields'
   expect(retainWorkflowOutput(step, { data: { count: 0, missing: null }, undeclared: 'discard' })).toEqual({ data: { count: 0, missing: null } });
 });
 
-test('stale claim and wrong checkout are rejected before dispatch', async () => {
+test('wrong checkout is rejected before dispatch without requiring Controller ownership', async () => {
   const controllerHome = temp('forge-workflow-owner-home-'), root = temp('forge-workflow-owner-repo-');
   const { repository } = await installedRuntime(controllerHome, root, draft());
-  const input = { controllerHome, repository, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+  const input = { controllerHome, repository, executionIdentity: identity(root),
     workId: 'work-workflow-test', runId: 'owner-test', registryScope: { kind: 'controller' as const }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'test' } };
-  await expect(executeRegisteredWorkflow({ ...input, controller: { ...input.controller, authorityId: 'stale' } })).rejects.toThrow('WORKFLOW_CONTROLLER_AUTHORITY_STALE');
   await expect(executeRegisteredWorkflow({ ...input, executionIdentity: { ...input.executionIdentity, checkoutId: 'foreign' } })).rejects.toThrow('WORKFLOW_EXECUTION_IDENTITY_MISMATCH');
   expect(readWorkflowRun(controllerHome, input.workId, input.runId)).toBeUndefined();
 });
@@ -238,7 +226,7 @@ test('different runs cannot dispatch concurrently for the same Work', async () =
   const controllerHome = temp('forge-workflow-race-home-'), root = temp('forge-workflow-race-repo-');
   const asset = draft(); asset.steps = [asset.steps[0]!];
   const { repository } = await installedRuntime(controllerHome, root, asset);
-  const input = { controllerHome, repository, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+  const input = { controllerHome, repository, executionIdentity: identity(root),
     workId: 'work-workflow-test', runId: 'first', registryScope: { kind: 'controller' as const }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'test' } };
   let dispatched = 0;
@@ -268,7 +256,7 @@ test('sensitive retained outputs are refused before a Workflow checkpoint is per
   const { repository } = await installedRuntime(controllerHome, root, asset);
   const runId = 'sensitive-output';
   await expect(executeRegisteredWorkflow({
-    controllerHome, repository, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+    controllerHome, repository, executionIdentity: identity(root),
     workId: 'work-workflow-test', runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'not retained' },
   }, {
@@ -312,7 +300,7 @@ test('publication receipt binds real publication identity and is durably persist
   let call = 0;
   const runId = 'publication-receipt';
   const result = await executeRegisteredWorkflow({
-    controllerHome, repository, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+    controllerHome, repository, executionIdentity: identity(root),
     workId: 'work-workflow-test', runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
     inputs: { url: 'https://creator.example.test/post/123', title: 'publish once', account: 'xhs-account-1' },
   }, {

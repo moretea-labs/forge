@@ -1,5 +1,4 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import {
   recordControllerExperience,
@@ -11,16 +10,14 @@ import { parseControllerLearningSignalDrafts } from '../../../src/runtime/contex
 import { persistDirectControllerLearning, recordDirectControllerLearningFeedback, type DirectControllerLearningFeedbackDraft } from '../../../src/runtime/context/direct-controller-learning';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { assertFacadeControllerRoundAuthority } from './controller-authority-adapter';
 import { result } from './result-adapter';
 
 type RepositoryIdentity = { repoId: string; activeCheckoutId: string };
 
 /**
- * rh_work learning dispatch has two deliberately different authority shapes:
- * - learning_record / learning_feedback are generic Cognitive mutations and never require Work.
- * - outcome_record / experience_record are Work-specific verified records and retain exact
- *   ControllerRound lineage.
+ * rh_work learning dispatch is advisory. Generic learning needs no Work; Work-specific
+ * outcome/experience writes are bound to exact Work provenance and canonical evidence.
+ * ControllerSession/ControllerRound state never grants write authority here.
  */
 export function callRhWorkLearningOperation(
   ctx: MultiRepositoryMcpToolContext,
@@ -102,14 +99,7 @@ export function callRhWorkLearningOperation(
     if (!workId) throw new Error('LEARNING_LOOP_WORK_ID_REQUIRED');
     const work = getWorkContract(store, workId);
     if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-    assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-    const owner = getControllerSession(store, workId);
-    const relay = getControllerRoundRelay(store, workId);
-    if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
-    const authorityId = relay?.authorityId?.trim()
-      || (typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '');
-    if (!authorityId) throw new Error('LEARNING_LOOP_CONTROLLER_AUTHORITY_REQUIRED');
-    const identity = { workId, controllerId: owner.controllerId, authorityId };
+    const identity = { workId };
 
     if (operation === 'outcome_record') {
       if (!args.outcome_observation || typeof args.outcome_observation !== 'object' || Array.isArray(args.outcome_observation)) {
@@ -122,7 +112,7 @@ export function callRhWorkLearningOperation(
         draft: args.outcome_observation as ControllerOutcomeObservationDraft,
       });
       return result(buildFacadeResult({
-        summary: `OutcomeObservation ${outcome.id} recorded from canonical Work/ControllerRound evidence.`,
+        summary: `OutcomeObservation ${outcome.id} recorded from canonical Work evidence.`,
         data: { outcome },
       }) as unknown as Record<string, unknown>);
     }
@@ -140,7 +130,7 @@ export function callRhWorkLearningOperation(
         : undefined,
     });
     return result(buildFacadeResult({
-      summary: `Experience ${experience.id} recorded from canonical Work evidence for reuse by later Controller rounds.`,
+      summary: `Experience ${experience.id} recorded from canonical Work evidence for later advisory reuse.`,
       data: { experience },
     }) as unknown as Record<string, unknown>);
   } catch (error) {

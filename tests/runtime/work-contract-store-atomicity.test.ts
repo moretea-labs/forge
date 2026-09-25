@@ -214,7 +214,7 @@ test('serializes cross-process scope evidence merges instead of overwriting a st
   expect(new Set(current.scopeEvidence?.inspectedPaths ?? [])).toEqual(new Set(['src/alpha.ts', 'src/beta.ts']));
 });
 
-test('persists the exact historical v3 review-gap migration once and rejects broader malformed v3 rows', () => {
+test('persists the exact historical v3 review-gap migration once without making phase evidence semantic authority', () => {
   const fx = fixture('legacy-review-gap');
   const options = { controllerHome: fx.controllerHome, repoId: fx.repoId };
   const record = readControlPlaneRecord<WorkContract>(fx.controllerHome, 'work_contract', fx.repoId, fx.workId)!;
@@ -258,5 +258,5 @@ test('persists the exact historical v3 review-gap migration once and rejects bro
     namespace: 'work_contract', scope: fx.repoId, key: malformedId, schemaVersion: 3,
     value: malformed, action: 'fixture_malformed_current_v3', expectedRevision: malformedRecord.revision,
   });
-  expect(() => getWorkContract(options, malformedId)).toThrow();
+  expect(getWorkContract(options, malformedId)).toMatchObject({ workId: malformedId, semanticState: 'open' });
 });

@@ -1166,7 +1166,7 @@ describe('runtime cleanup', () => {
     internal.processGc = () => ({ ok: true });
     internal.workExecutionConcurrencyReconcile = ({ repoId }) => {
       observed.push(repoId);
-      if (repoId === repositoryA.repoId) throw new Error('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
+      if (repoId === repositoryA.repoId) throw new Error('WORK_OBJECTIVE_REQUIRED');
       return { scanned: 0, waiting: 0, cleared: 0, workIds: [] };
     };
     internal.workValidationReconcile = () => ({ errors: [] });

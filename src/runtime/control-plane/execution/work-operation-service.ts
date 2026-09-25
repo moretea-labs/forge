@@ -20,7 +20,7 @@ import { projectTerminalCheckVerification } from '../../execution/process-runtim
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from '../../execution/process-runtime/persisted-check';
 import { markWorkValidationCurrentFromReusedEvidence, markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
-import { assertWorkControllerOwnership, compactHandle, contractFor, gitHead, identityFor, makeBoundedWorkResult, reconcileTerminalCleanup, requireSession, terminalCleanupOutcome, workForSession } from './work-execution-support';
+import { compactHandle, contractFor, gitHead, identityFor, makeBoundedWorkResult, reconcileTerminalCleanup, requireSession, terminalCleanupOutcome, workForSession } from './work-execution-support';
 
 function commandInputs(args: Record<string, unknown>): Array<Record<string, unknown>> {
   if (Array.isArray(args.commands)) return args.commands.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value)));
@@ -41,7 +41,6 @@ function authorizationRisk(command: RepositoryCommandValue, classification: Retu
 export async function executeWork(ctx: McpExecutionContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
-  assertWorkControllerOwnership(ctx, session, handle, args);
   const commands = commandInputs(args);
   if (commands.length > 16) throw new Error('COMMAND_BATCH_TOO_LARGE: at most 16 commands per work_execute');
   const cheap = validateWorkHandle(ctx.controllerHome, handle, identityFor(ctx, args), 'cheap', 'execute');
@@ -230,7 +229,6 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args, {
     reconcileValidation: false,
-    allowClaimedTerminalCleanup: args.cleanup !== false,
   });
   const terminalOutcome = terminalCleanupOutcome(ctx, handle);
   if (terminalOutcome && args.cleanup !== false) {

@@ -20,13 +20,6 @@ import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { getWorkContract, recordCancelledWorkCleanupCompleted } from '../../../../packages/kernel/work/api/index';
 import { markOwnedResourceCleaned, markOwnedResourceRetained } from '../../../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
-import {
-  controllerTerminalizationAuthorityFromSession,
-  getControllerSession,
-  releaseControllerSessionWithAuthority,
-  releaseObservedControllerSession,
-  type ControllerTerminalizationAuthority,
-} from '../../../../packages/kernel/controller/api/index';
 import { isRepositoryCompletionReceipt, isTerminalWorkContractStatus, type WorkContract } from '../facade/types';
 import {
   cancelProcess,
@@ -116,7 +109,7 @@ function newReceipt(handle: WorkHandleState, targetBranch: string, terminalOutco
     updatedAt: timestamp,
     verification: { mode: 'cleanup_only', checksRun: [] },
     processes: { examined: [], terminated: [], blocking: [], allTerminal: false },
-    ownership: { controllerLease: 'pending', processLeases: 'pending' },
+    ownership: { controllerLease: 'already_released', processLeases: 'pending' },
     preservation: { status: 'not_needed' },
     worktree: { path: handle.worktreePath, status: 'pending' },
     branchCleanup: { branch: handle.branch, status: 'pending' },
@@ -406,14 +399,13 @@ export function recoverTerminalWorkHandle(
     ? git(repository.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]).ok
     : false;
   const delivered = contract.status === 'completed' && contained;
-  const session = getControllerSession({ controllerHome, repoId: repositoryId }, workId);
   const recordedAt = nowIso();
   return writeWorkHandle(controllerHome, {
     schemaVersion: 1,
     workId,
     workContractId: workId,
-    sessionId: session?.sessionId ?? `terminal-recovery:${workId}`,
-    principalId: contract.principalId?.trim() || session?.principalId || 'terminal-recovery',
+    sessionId: `terminal-recovery:${workId}`,
+    principalId: contract.principalId?.trim() || 'terminal-recovery',
     repositoryId,
     checkoutId,
     sourceCheckoutId: repository.activeCheckoutId,
@@ -750,6 +742,12 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     || receipt.checkoutId !== current.checkoutId
     || receipt.workId !== current.workId
   ) throw new Error('WORK_CLEANUP_RECEIPT_IDENTITY_MISMATCH');
+  // Legacy receipts may retain the former Controller lease stage. ControllerSession
+  // is no longer a cleanup resource; normalize this projection without touching
+  // any explicit continuation state.
+  if (receipt.ownership.controllerLease === 'pending') {
+    receipt.ownership.controllerLease = 'already_released';
+  }
 
   if (current.state === 'cleaned') {
     const branchRetirement = reconcileCleanedManagedBranchRetirement(
@@ -767,7 +765,6 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       receipt.completedAt = receipt.completedAt ?? current.updatedAt ?? nowIso();
       receipt.blockers = [];
       receipt.processes.allTerminal = true;
-      if (receipt.ownership.controllerLease === 'pending') receipt.ownership.controllerLease = 'already_released';
       if (receipt.ownership.processLeases === 'pending') receipt.ownership.processLeases = 'released';
       if (receipt.worktree.status === 'pending' || receipt.worktree.status === 'failed') {
         receipt.worktree.status = 'already_removed';
@@ -1087,37 +1084,12 @@ export async function reconcileSingleTerminalWorkCleanup(
   options: {
     targetBranch?: string;
     deleteBranch?: boolean;
-    /** Recovery authority for the narrow crash window after semantic terminalization but before owner release. */
-    controllerAuthority?: ControllerTerminalizationAuthority;
   } = {},
 ): Promise<SingleTerminalWorkCleanupResult> {
   const repository = getRepository(repositoryId, controllerHome, { includeRemoved: true });
   const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
   if (!contract || !isTerminalWorkContractStatus(contract.status)) {
     return { status: 'not_terminal', workId, reason: 'Work is not terminal.' };
-  }
-  let controllerLease: WorkCleanupReceipt['ownership']['controllerLease'] = 'already_released';
-  const owner = getControllerSession({ controllerHome, repoId: repositoryId }, workId);
-  if (owner) {
-    const authority = options.controllerAuthority;
-    if (!authority) return { status: 'blocked', workId, reason: 'Active Controller ownership still exists.' };
-    const ownerAuthority = controllerTerminalizationAuthorityFromSession(owner);
-    if (!ownerAuthority
-      || ownerAuthority.controllerId !== authority.controllerId
-      || ownerAuthority.controllerType !== authority.controllerType
-      || ownerAuthority.principalId !== authority.principalId
-      || ownerAuthority.controllerInstanceId !== authority.controllerInstanceId
-      || ownerAuthority.claimGeneration !== authority.claimGeneration) {
-      return { status: 'blocked', workId, reason: 'Active Controller ownership does not match the cleanup authority.' };
-    }
-    const released = releaseControllerSessionWithAuthority(
-      { controllerHome, repoId: repositoryId },
-      { workId, actor: `terminal-cleanup:${workId}`, authority },
-    );
-    if (!released.allowed) {
-      return { status: 'blocked', workId, reason: `Active Controller ownership release fenced: ${released.reason}.` };
-    }
-    controllerLease = 'released';
   }
   const originalHandle = readWorkHandle(controllerHome, repositoryId, workId)
     ?? recoverTerminalWorkHandle(controllerHome, repositoryId, workId);
@@ -1136,7 +1108,6 @@ export async function reconcileSingleTerminalWorkCleanup(
     terminalOutcome: terminalOutcomeForContract(contract),
     failureReason: drift.handle.failureReason ?? drift.handle.finalization.lastError,
   });
-  cleaned.receipt.ownership.controllerLease = controllerLease;
   const persisted = writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
   if (cleaned.receipt.complete) {
     reconcileCancelledCleanupProjection(controllerHome, repositoryId, contract, cleaned.receipt);
@@ -1272,24 +1243,6 @@ export async function reconcileTerminalWorkCleanups(
           terminalOutcome: terminalOutcomeForContract(contract),
           failureReason: drift.handle.failureReason ?? drift.handle.finalization.lastError,
         });
-        const workId = cleaned.handle.workContractId ?? cleaned.handle.workId;
-        const controllerSession = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
-        if (controllerSession) {
-          const released = releaseObservedControllerSession(
-            { controllerHome, repoId: repository.repoId },
-            { workId, actor: `terminal-cleanup:${originalHandle.workId}`, owner: controllerSession },
-          );
-          if (released.allowed) {
-            cleaned.receipt.ownership.controllerLease = 'released';
-          } else {
-            cleaned.receipt.complete = false;
-            cleaned.receipt.partial = true;
-            cleaned.receipt.completedAt = undefined;
-            cleaned.receipt.blockers = appendUnique(cleaned.receipt.blockers, `controller lease release fenced: ${released.reason}`);
-          }
-        } else {
-          cleaned.receipt.ownership.controllerLease = 'already_released';
-        }
         writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
         if (cleaned.receipt.complete) {
           reconcileCancelledCleanupProjection(controllerHome, repository.repoId, contract, cleaned.receipt);

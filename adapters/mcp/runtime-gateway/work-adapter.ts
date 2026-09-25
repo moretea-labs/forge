@@ -10,7 +10,7 @@ import { controllerReadinessEvidence, invalidFacadeOperation, repositoryRevision
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
 import { getRepository, repositoryCheckoutLifecycle, selectRepositoryCheckout } from "../../../src/cli/repositories/registry";
 import { repositoryGitStatus } from "../../../src/cli/repositories/structured-git";
-import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
+import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS } from "../../../src/runtime/execution/process-runtime";
 import { listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
 import { completeRemoteEffectWorkFromProcessReceipt } from "../../../packages/kernel/work/api/index";
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, workDeliveryBaseRevision, type WorkHandleState } from "../../../src/runtime/control-plane/execution/work-handle-store";
@@ -33,7 +33,6 @@ import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './
 import { callRhWorkSemanticOperation } from './work-semantic-operations';
 import { callRhWorkPlanAcceptStepOperation, callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
-import { ensureScheduledControllerBindingForWork } from '../../../src/runtime/root/scheduled-controller-composition';
 export { runFacadeRepair };
 import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDraftPlanContractAsync, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
 import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
@@ -46,7 +45,7 @@ import { ensureRepositoryProjectOnboarding, type RepositoryProjectOnboardingResu
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from "../../../src/runtime/control-plane/execution/retained-work-resume";
 import { currentPermissionSnapshotVersion } from "../../../src/runtime/control-plane/execution/validation";
 import { callExecutionTool } from "./execution-tools";
-import { controllerSessionPrincipalId, getControllerSession, getRetainedControllerSession, mintControllerSessionAuthority, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence, type ControllerTerminalizationAuthority, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
+import { getControllerSession, getRetainedControllerSession, bindControllerRoundSuccessorWork, reconcileControllerRoundAfterAbandonedRelease, reconcileControllerRoundAfterTerminalWork, getControllerRoundRelay, type ControllerRoundRelayRecord } from "../../../packages/kernel/controller/api/index";
 import { normalizeRhWorkInputCompatibility } from './work-input-compatibility';
 import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';
 import { callRhWorkWorkflowOperation } from './work-workflow-operations';
@@ -57,14 +56,7 @@ import { callRhWorkDelegationOperation } from './work-delegation-operation';
 export { recoverControllerRoundAfterVerifiedProviderRepair } from './work-controller-recovery-operations';
 import {
   assertFacadeControllerRoundAuthority,
-  assertSessionlessFacadeControllerAuthority,
   authenticatedFacadeControllerIdentity,
-  bindFacadeControllerOwnership,
-  currentFacadeTerminalizationAuthority,
-  currentTerminalCleanupAuthority,
-  dispatchedChatgptRelayAuthorizesStaleControllerRecovery,
-  runtimeIdentitySnapshot,
-  sessionlessFacadeControllerAuthorityMatches,
 } from './controller-authority-adapter';
 // Bounded internal compatibility export while remaining runtime-gateway callers migrate to the dedicated owner.
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';
@@ -118,29 +110,6 @@ export function materializeFacadeWorkPlacement(
       return workspace;
     },
   );
-}
-
-export function claimNewFacadeWork(
-  ctx: MultiRepositoryMcpToolContext,
-  repository: ReturnType<typeof selected>,
-  workId: string,
-  args: Record<string, unknown>,
-) {
-  const identity = authenticatedFacadeControllerIdentity(ctx, args);
-  const authority = mintControllerSessionAuthority();
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const session = resumeControllerSession(store, {
-    workId,
-    controllerId: identity.controllerId,
-    controllerType: identity.controllerType,
-    sessionId: identity.sessionId,
-    authorityDigest: authority.authorityDigest,
-    principalId: identity.principalId,
-    controllerInstanceId: identity.controllerInstanceId,
-    leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-  });
-  if (session.controllerType !== 'human') ensureScheduledControllerBindingForWork(store, { workId, session, args });
-  return { session, controllerAuthorityId: authority.authorityId };
 }
 
 export function bindFacadeExecutionSession(
@@ -702,7 +671,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (operation === 'review') {
             const workId = String(args.work_id ?? '').trim();
             try {
-              if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
               // Route malformed review input through the canonical Workloop
               // validator before repository/WorkHandle preparation. A frozen
               // review carrier must report decision/rationale errors even
@@ -846,31 +814,9 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               && args.cleanup !== false,
             );
             if (terminalCleanupOnly && existingWork) {
-              // Terminal resource cleanup is not semantic terminalization. Never
-              // reacquire/reopen Controller ownership merely to settle an outcome
-              // that is already durable. Active ownership/rounds still fence the
-              // request, then the canonical Work finalizer consumes explicit retention
-              // provenance and performs the physical cleanup transaction.
-              const owner = getControllerSession(store, workId);
-              if (owner) {
-                try {
-                  currentTerminalCleanupAuthority(ctx, store, workId, args);
-                } catch (error) {
-                  return result(buildFacadeResult({
-                    status: 'blocked',
-                    summary: error instanceof Error ? error.message : `Work ${workId} terminal cleanup authority check failed.`,
-                    data: { workId, terminalizationApplied: false, cleanupOnly: true },
-                  }) as unknown as Record<string, unknown>, true);
-                }
-              }
-              const relay = getControllerRoundRelay(store, workId);
-              if (relay && !['goal_complete', 'handed_off', 'failed'].includes(relay.status)) {
-                return result(buildFacadeResult({
-                  status: 'blocked',
-                  summary: `WORK_TERMINAL_CLEANUP_ACTIVE_ROUND: ${workId}:${relay.status}.`,
-                  data: { workId, terminalizationApplied: false, cleanupOnly: true, relayStatus: relay.status },
-                }) as unknown as Record<string, unknown>, true);
-              }
+              // Terminal resource cleanup is mechanical resource work. Existing
+              // ControllerSession/ControllerRound records are provenance only and
+              // cannot fence cleanup of an already-semantic-terminal Work.
               try {
                 const physical = await finalizeFacadeWorkHandle(
                   ctx,
@@ -930,73 +876,13 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 }) as unknown as Record<string, unknown>, true);
               }
             }
-            const observedOwner = workId ? getControllerSession(store, workId) : undefined;
-            const observedRelay = workId ? getControllerRoundRelay(store, workId) : undefined;
-            const activeWorkProcess = workId
-              ? processRuntimeResourceDiagnostics().activeProcessIds
-                  .map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))
-                  .some((process) => Boolean(process && process.workId === workId && isManagedProcessActive(process)))
-              : false;
-            // Maintenance stop is intentionally narrower than ControllerRound recovery.
-            // Once no Controller owns the Work, no Process is active, and the relay is
-            // absent or terminally failed/handed-off, the obsolete round capability must
-            // not make the durable Work immortal. The ControllerSession task lock below
-            // still fences a concurrent fresh claim before Work terminalization.
-            const ownerlessMaintenanceStop = Boolean(
-              workId
-              && !observedOwner
-              && !activeWorkProcess
-              && Boolean(observedRelay)
-              && ['failed', 'handed_off'].includes(observedRelay!.status),
+            // Semantic cancellation is not Controller-owned. Concrete process,
+            // checkout, Git and cleanup owners retain their own resource/effect fences.
+            const facade = runGoalWorkloop(
+              { ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined },
+              'stop',
+              args,
             );
-            if (!ownerlessMaintenanceStop) {
-              try {
-                if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-              } catch (error) {
-                const blocked = buildFacadeResult({
-                  status: 'blocked',
-                  summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
-                  data: { workId, terminalizationApplied: false },
-                });
-                return result(blocked as unknown as Record<string, unknown>, true);
-              }
-            }
-            let terminalizationAuthority: ControllerTerminalizationAuthority | undefined;
-            if (!ownerlessMaintenanceStop) {
-              try {
-                terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
-              } catch (error) {
-                const blocked = buildFacadeResult({
-                  status: 'blocked',
-                  summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`,
-                  data: { workId, terminalizationApplied: false },
-                });
-                return result(blocked as unknown as Record<string, unknown>, true);
-              }
-            }
-  
-            const fenced = withControllerSessionTerminalizationFence(
-              store,
-              {
-                workId,
-                actor: `rh-work-stop:${terminalizationAuthority?.controllerId ?? String(args.requested_by ?? 'explicit')}`,
-                authority: terminalizationAuthority,
-              },
-              () => runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'stop', args),
-            );
-            if (!fenced.allowed) {
-              const blocked = buildFacadeResult({
-                status: 'blocked',
-                summary: `WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fenced.reason}`,
-                data: {
-                  workId,
-                  terminalizationApplied: false,
-                  currentClaimGeneration: fenced.owner?.claimGeneration,
-                },
-              });
-              return result(blocked as unknown as Record<string, unknown>, true);
-            }
-            const facade = fenced.value;
             if (facade.status !== 'ok') {
               return result(facade as unknown as Record<string, unknown>, true);
             }
@@ -1061,15 +947,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
   
           if (operation === 'finalize') {
             const workId = String(args.work_id ?? '').trim();
-            const workBeforeFinalize = workId ? getWorkContract(store, workId) : undefined;
-            try {
-              if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-            } catch (error) {
-              if (workBeforeFinalize?.semanticState !== 'completed') {
-                const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`, data: { workId, lifecycleClosed: false } });
-                return result(blocked as unknown as Record<string, unknown>, true);
-              }
-            }
             const finalizeReconciliation = workId
               ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
               : undefined;
@@ -1082,28 +959,12 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               workBoundProcessEvidenceIds: finalizeReconciliation?.workBoundProcessEvidenceIds,
             };
             let before = workId ? getWorkContract(store, workId) : undefined;
-            let terminalizationAuthority: ControllerTerminalizationAuthority | undefined;
-            // Finalize may commit, merge, clean resources, and complete the Work.
-            // It therefore shares the same exact-claim authority as stop. Transport
-            // or Runtime recovery remains an explicit controller_claim operation;
-            // terminalization itself must never rebind an unrelated controller scope.
-            if (before && !['completed', 'failed', 'cancelled'].includes(before.status)) {
-              try {
-                terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
-              } catch (error) {
-                if (before.semanticState !== 'completed') {
-                  const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`, data: { workId, terminalizationApplied: false, lifecycleClosed: false } });
-                  return result(blocked as unknown as Record<string, unknown>, true);
-                }
-              }
-            }
+            // Finalize is mechanical delivery/integration/cleanup compatibility.
+            // ControllerSession ownership is not its authority; each concrete
+            // repository/effect/resource operation retains its own fence.
             if (before && !before.completionReceipt && args.reconcile_historical_delivery === true) {
               try {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
-                const owner = getControllerSession(store, workId);
-                if (!owner || (controllerSessionPrincipalId(owner)) !== identity.principalId) {
-                  throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
-                }
                 const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
                 const explicitTargetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
                   ? args.target_branch.trim()
@@ -1145,14 +1006,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                   rationale: String(args.reconcile_rationale ?? ''),
                   cleanupOwnershipProof: String(args.reconcile_cleanup_proof ?? ''),
                 });
-                const released = releaseObservedControllerSession(store, {
-                  workId,
-                  actor: `direct-edit-reconciliation:${identity.principalId}`,
-                  owner,
-                });
-                if (!released.allowed) {
-                  throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_RELEASE_FENCED: ${workId}:${released.reason}`);
-                }
                 before = getWorkContract(store, workId);
               } catch (error) {
                 const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Historical Work delivery reconciliation failed.', data: { workId, lifecycleClosed: false } });
@@ -1230,35 +1083,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 return result(blocked as unknown as Record<string, unknown>, true);
               }
             }
-            const semanticWork = getWorkContract(store, workId);
-            let facade;
-            if (semanticWork && !['completed', 'failed', 'cancelled'].includes(semanticWork.status)) {
-              try {
-                const authority = terminalizationAuthority ?? currentFacadeTerminalizationAuthority(ctx, store, workId, args);
-                const fenced = withControllerSessionTerminalizationFence(
-                  store,
-                  {
-                    workId,
-                    actor: `rh-work-finalize:${authority.controllerId}:${authority.controllerInstanceId}`,
-                    authority,
-                  },
-                  () => runGoalWorkloop(semanticFinalizeContext, 'finalize', args),
-                );
-                if (!fenced.allowed) {
-                  throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fenced.reason}`);
-                }
-                facade = fenced.value;
-              } catch (error) {
-                const blocked = buildFacadeResult({
-                  status: 'blocked',
-                  summary: error instanceof Error ? error.message : `Work ${workId} semantic finalization authority check failed.`,
-                  data: { workId, terminalizationApplied: false, lifecycleClosed: false },
-                });
-                return result(blocked as unknown as Record<string, unknown>, true);
-              }
-            } else {
-              facade = runGoalWorkloop(semanticFinalizeContext, 'finalize', args);
-            }
+            const facade = runGoalWorkloop(semanticFinalizeContext, 'finalize', args);
             let completed = getWorkContract(store, workId);
             const postSemanticCleanupPending = Boolean(
               completed?.completionReceipt
@@ -1318,7 +1143,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
             return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
           }
   
-          let resumedControllerSession: ReturnType<typeof bindFacadeControllerOwnership> | undefined;
           let cancelledWorkReauthorized = false;
           let reconstructedCancelledCheckout = false;
           let reconstructedRunningCheckout = false;
@@ -1330,7 +1154,6 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (operation === 'continue') {
             try {
               const workId = String(args.work_id ?? '').trim();
-              if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
               let work = getWorkContract(store, workId);
               if (work?.status === 'cancelled') {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
@@ -1349,14 +1172,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               }
               if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
                 const identity = authenticatedFacadeControllerIdentity(ctx, args);
-                // Continue uses the same Kernel rebind authority as terminalization.
-                // MCP transport identity is replaceable; principal/controller and
-                // canonical Runtime ownership remain fenced by the ControllerSession.
-                resumedControllerSession = bindFacadeControllerOwnership(ctx, store, workId, identity, {
-                  allowClaimIfMissing: true,
-                  leaseMs: 3_600_000,
-                  relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined,
-                });
+                // WorkHandle session/principal fields are replaceable provenance.
+                // Ordinary continue does not claim or lease the semantic Work.
                 rebindRepositoryWorkHandleControllerIdentity({
                   controllerHome: ctx.controllerHome,
                   repositoryId: repository.repoId,
@@ -1379,8 +1196,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
                 if (reconstructedRunningCheckout) {
                   const refreshedRepository = getRepository(repository.repoId, ctx.controllerHome, { includeRemoved: true });
                   if (!refreshedRepository) throw new Error(`WORK_CONTINUE_REPOSITORY_MISSING: ${workId}`);
-                  // A recovered managed checkout is a new Controller-owned
-                  // registry record. Reconcile and run the Workloop against
+                  // A recovered managed checkout is a new managed registry
+                  // record. Reconcile and run the Workloop against
                   // that exact checkout; retaining the pre-recovery
                   // repository snapshot would observe canonical/main and
                   // falsely report that a committed candidate has no source
@@ -1523,13 +1340,8 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               }
               const handle = ensureFacadeWorkHandle(ctx, repository, facadeWorkId, args);
               if (handle) facadeData.executionHandle = { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state };
-              if (facadeData.workContractCreated === true && !terminalSuccessorAdmission) {
-                const claimed = claimNewFacadeWork(ctx, repository, facadeWorkId, args);
-                facadeData.controllerSession = claimed.session;
-                facadeData.controllerAuthorityId = claimed.controllerAuthorityId;
-                facadeData.controllerAuthorityCarrier = 'controller_authority_id_or_session_id_compat';
-                facadeData.ownershipClaimed = true;
-              }
+              // Ordinary Work creation does not mint ControllerSession ownership.
+              // Explicit unattended continuation claims its own round separately.
               if (terminalSuccessorAdmission) {
                 const currentRelay = getControllerRoundRelay(store, terminalSuccessorAdmission.predecessorWorkId);
                 let boundRelay: ControllerRoundRelayRecord;
@@ -1558,19 +1370,17 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
-          const response = resumedControllerSession
+          const response = cancelledWorkReauthorized || reconstructedRunningCheckout
             ? {
                 ...facade,
                 ...(cancelledWorkReauthorized
                   ? {
                       status: 'ok' as const,
-                      summary: `Explicit current-user reauthorization resumed ${resumedControllerSession.workId}; implementation may continue on the exact Work identity.`,
+                      summary: `Explicit current-user reauthorization resumed ${String(args.work_id ?? '').trim()}; implementation may continue on the exact Work identity.`,
                     }
-                  : { summary: `Controller ownership resumed for ${resumedControllerSession.workId}. ${facade.summary}` }),
+                  : {}),
                 data: {
                   ...facadeData,
-                  ownershipResumed: true,
-                  controllerSession: resumedControllerSession,
                   ...(reconstructedRunningCheckout ? { reconstructedRunningCheckout: true } : {}),
                   ...(cancelledWorkReauthorized ? {
                     cancelledWorkReauthorized: true,

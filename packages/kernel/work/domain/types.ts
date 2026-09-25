@@ -17,7 +17,7 @@ export interface EvidenceRef {
 }
 export interface WorkExecutionConcurrencyProjection {
   schemaVersion: 1;
-  /** Projection only. Process Runtime leases and Controller ownership remain execution authority. */
+  /** Projection only. Concrete Process/resource owners remain execution authority. */
   status: 'waiting' | 'invalid';
   source: 'work_compatibility' | 'resource_lease' | 'scheduler_capacity';
   attemptId?: string;
@@ -31,7 +31,6 @@ export interface WorkExecutionConcurrencyProjection {
   wakeTrigger:
     | { kind: 'work_terminal'; workId: string }
     | { kind: 'resource_release'; resourceKeys: string[] }
-    | { kind: 'controller_release'; workId: string }
     | { kind: 'scheduler_capacity'; capacityKey: string }
     | { kind: 'work_contract_change'; workId: string };
   recordedAt: string;

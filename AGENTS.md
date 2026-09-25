@@ -97,6 +97,15 @@ For Kernel V2 and other architecture migrations, optimize for one coherent deliv
 - Keep Kernel V2 source development on the designated integration/main branch until the integrated candidate is complete. A clean current mainline checkout is the default source-development placement; do not create an isolated branch/worktree merely because a Plan or Work exists. Do not activate a partially migrated slice as the Runtime baseline merely because its local checks pass; baseline activation is a separate candidate-level decision after architecture review and validation.
 - Forge-core additions should solve reusable system capabilities or preserve a Kernel invariant. Do not expand Forge with project-specific one-off machinery when an adapter/plugin or existing general primitive is the correct owner.
 
+### Verification & Test Value Discipline
+
+- Implementation is architecture- and behavior-first, not test-first. A failing historical test is evidence to inspect, not an instruction to preserve the old implementation. When a test conflicts with the current accepted architecture/authority model, decide the intended source contract first; update or delete the stale test instead of bending production code back toward retired semantics.
+- Keep tests only when a failure would indicate a realistic product or mechanical-safety defect that static contracts cannot prove cheaply. High-value examples include stale-CAS no-write guarantees, non-idempotent effect dedupe/outcome-unknown reconciliation, authorization boundaries, concrete Process/Git/worktree/resource ownership, crash/restart recovery, Runtime/Recovery reconnect, release/rollback integrity, and real end-to-end continuation behavior.
+- Delete tests whose only purpose is to assert retired implementation shape, internal field presence, legacy lifecycle/phase ordering, obsolete error strings, deprecated Controller/Work ownership gates, or compatibility behavior that the current architecture explicitly removes. Do not keep such tests merely for coverage or historical symmetry.
+- Prefer the cheapest authoritative proof for each invariant: TypeScript/compiler contracts -> architecture/import/AST fences -> focused behavior/E2E scenario -> broader regression suite. Do not duplicate a structural invariant with an expensive Runtime test when a maintained architecture fence already proves it.
+- Do not add unit tests by default during architecture refactors. Add a focused test only when it protects a concrete regression class that cannot be covered more directly by a compiler/architecture fence or an existing end-to-end behavior check.
+- Inner-loop verification must stay narrow. Run only checks that can change the next implementation decision. Broad suites are candidate-level evidence, not a per-edit ritual. A green obsolete test suite is not delivery evidence; a failing obsolete test is not a blocker once its retired contract is deliberately removed.
+
 ## Operating Rules
 
 - Default to end-to-end execution and minimize avoidable human intervention. Continue reversible, policy-allowed implementation, verification, cleanup, and delivery; stop only at a genuine user-only identity/legal/financial/strong-confirmation/irreversible boundary.
@@ -116,7 +125,7 @@ For Kernel V2 and other architecture migrations, optimize for one coherent deliv
 
 ## Required Checks
 
-For affected Forge-core changes, select focused checks from the registered Process Runtime surfaces. At architecture/runtime-boundary candidate points include at least:
+For affected Forge-core changes, select the smallest verification set that proves the changed architecture and real safety boundaries. At architecture/runtime-boundary candidate points normally include:
 
 ```bash
 bun run check:type
@@ -124,10 +133,9 @@ bun run check:repository-hygiene
 bun run check:runtime-architecture
 bun run check:architecture-sync
 bun run check:bootstrap-files
-bun run test
 ```
 
-`bun run check:main` is the candidate-level governed gate after focused failures are resolved. Full-suite testing remains explicit through `bun run test:full`; do not substitute a huge suite for targeted diagnosis.
+Add focused behavior/E2E tests only for the concrete risk being changed. `bun run test` is not a mandatory inner-loop or candidate prerequisite by itself; run it only when its curated cases materially cover the candidate. `bun run check:main` remains the candidate-level governed gate, but obsolete tests/contracts must be deleted or removed from that gate rather than forcing production code to preserve retired architecture. Full-suite testing remains explicit through `bun run test:full`; do not substitute a huge suite for targeted diagnosis.
 
 <!-- BEGIN ARCHITECTURE CONTRACT -->
 ## Architecture Contract

@@ -318,7 +318,7 @@ describe('connected assistant learning loops', () => {
       },
       now: time(5 + 24 * 60 + 5),
     });
-    expect(outcome.sourceRoundId).toBe(`${second.relay.relayScopeId}:${second.relay.roundCount}`);
+    expect(outcome.sourceRoundId).toBe(`work:${fx.workId}:r1`);
     const experience = recordControllerExperience({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,

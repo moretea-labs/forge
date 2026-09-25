@@ -1879,6 +1879,59 @@ forbidBetween(
   /'failed'|'ready'|'blocked'|'running'/,
   'semantic Work state must expose only open/completed/cancelled; execution vocabulary is not a semantic state',
 );
+// Controller de-authority: ordinary Work/capability execution is fenced by
+// semantic CAS plus concrete target/resource/effect owners, never by a
+// Work-wide ControllerSession lease. Explicit autonomous-continuation round
+// operations retain their narrow dispatch/effect authority until Slice 4.
+forbid(
+  'packages/kernel/work/domain/state-machine.ts',
+  /WORK_PHASE_EVIDENCE_|WORK_COMPLETION_PHASE_/,
+  'legacy phase evidence must not regain semantic Work authority',
+);
+for (const path of [
+  'adapters/mcp/runtime-gateway/work-workflow-operations.ts',
+  'src/runtime/workflows/runtime.ts',
+]) {
+  forbid(path, /assertFacadeControllerRoundAuthority|getControllerSession|getControllerRoundRelay|controllerSessionAuthorityMatches|WORKFLOW_CONTROLLER_AUTHORITY|WORKFLOW_CONTROLLER_NOT_OWNER/, 'ordinary Workflow execution must not depend on Work-wide Controller authority');
+}
+forbid(
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
+  /claimNewFacadeWork|mintControllerSessionAuthority|resumeControllerSession|bindFacadeControllerOwnership|currentFacadeTerminalizationAuthority|currentTerminalCleanupAuthority|withControllerSessionTerminalizationFence/,
+  'ordinary Work start/continue/review/stop/finalize must not mint or require Work-wide Controller authority',
+);
+for (const path of [
+  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/work/domain/execution-concurrency.ts',
+  'src/runtime/control-plane/concurrency/work-execution-concurrency.ts',
+  'src/runtime/execution/process-runtime/types.ts',
+]) {
+  forbid(path, /controller_release/, 'Work/Process concurrency must wake on concrete Work/resource/scheduler facts, not Controller ownership release');
+}
+for (const path of [
+  'src/runtime/control-plane/execution/work-execution-support.ts',
+  'src/runtime/control-plane/execution/work-operation-service.ts',
+  'src/runtime/control-plane/execution/work-finalization-service.ts',
+  'src/runtime/control-plane/execution/work-terminal-cleanup.ts',
+  'src/runtime/control-plane/execution/work-preparation-service.ts',
+]) {
+  forbid(path, /assertWorkControllerOwnership|releasePreparedWorkOwnership|claimPreparedWorkOwnership|claimHeadAdoptionOwnership|withControllerSessionTerminalizationFence|getControllerSession|claimControllerSession|resumeControllerSession|releaseControllerSessionWithAuthority|releaseObservedControllerSession|controllerClaimed/, 'ordinary Work preparation/execution/finalization/cleanup must not use ControllerSession as authority');
+}
+forbid(
+  'src/runtime/recovery/maintenance-executor.ts',
+  /withControllerSessionTerminalizationFence|listControllerSessions|getControllerSession|controllerWorkIds|controller_session/,
+  'stale Work maintenance must re-check concrete Work/source/resource facts instead of using ControllerSession as lifecycle authority',
+);
+for (const path of [
+  'adapters/mcp/runtime-gateway/work-learning-operations.ts',
+  'src/runtime/control-plane/persistence/experience-store.ts',
+]) {
+  forbid(path, /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/, 'advisory learning writes must use Work provenance and evidence, not Controller ownership');
+}
+forbid(
+  'src/cli/commands/brain-assistant.ts',
+  /authority-env|BRAIN_CONTROLLER_AUTHORITY_REQUIRED|BRAIN_AUTHORITY_ENV_INVALID/,
+  'advisory experience CLI must not require a Controller capability',
+);
 for (const path of [
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',

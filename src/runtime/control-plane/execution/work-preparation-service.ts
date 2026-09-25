@@ -9,7 +9,6 @@ import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { activateWorkContract, appendWorkEvidence, failWorkContract, getWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
-import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
 import { assertExecutionIdentity, executionIdentityFromCoordinates } from './execution-identity';
@@ -72,64 +71,6 @@ function workPrepareFingerprint(input: {
   needsDependencies: boolean;
 }): string {
   return createHash('sha256').update(JSON.stringify({ schemaVersion: 1, operation: 'work_prepare', ...input })).digest('hex');
-}
-
-function claimPreparedWorkOwnership(
-  ctx: McpExecutionContext,
-  session: ExecutionSessionContext,
-  handle: WorkHandleState,
-  args: Record<string, unknown>,
-): void {
-  const workIdValue = handle.workContractId ?? handle.workId;
-  const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
-    ? args.controller_id.trim()
-    : session.principalId;
-  claimControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, {
-    workId: workIdValue,
-    controllerId,
-    controllerType: 'chatgpt',
-    sessionId: session.sessionId,
-    principalId: session.principalId,
-    controllerInstanceId: session.controllerInstanceId,
-    leaseMs: 3_600_000,
-  });
-}
-
-function claimHeadAdoptionOwnership(
-  ctx: McpExecutionContext,
-  session: ExecutionSessionContext,
-  handle: WorkHandleState,
-  args: Record<string, unknown>,
-): void {
-  const workIdValue = handle.workContractId ?? handle.workId;
-  const controllerId = normalizedRequiredString(args, 'controller_id') ?? session.principalId;
-  if (controllerId !== session.principalId) {
-    throw new Error('WORK_CONTROLLER_IDENTITY_MISMATCH: controller_id must match the authenticated principal');
-  }
-  const options = { controllerHome: ctx.controllerHome, repoId: handle.repositoryId };
-  const current = getControllerSession(options, workIdValue);
-  const input = {
-    workId: workIdValue,
-    controllerId,
-    controllerType: current?.controllerType ?? 'chatgpt' as const,
-    sessionId: session.sessionId,
-    principalId: session.principalId,
-    controllerInstanceId: session.controllerInstanceId,
-    expectedClaimGeneration: current?.claimGeneration ?? 0,
-    leaseMs: 3_600_000,
-  };
-  const claimed = current
-    ? resumeControllerSession(options, input)
-    : claimControllerSession(options, input);
-  if (
-    claimed.controllerId !== controllerId
-    || claimed.sessionId !== session.sessionId
-    || claimed.principalId !== session.principalId
-    || claimed.controllerInstanceId !== session.controllerInstanceId
-    || (claimed.claimGeneration ?? 0) < 1
-  ) {
-    throw new Error('WORK_HEAD_ADOPTION_OWNERSHIP_FENCE_MISMATCH');
-  }
 }
 
 function adoptExistingWorkHead(
@@ -218,8 +159,6 @@ function adoptExistingWorkHead(
     outOfScope: 'WORK_HEAD_ADOPTION_PATH_OUT_OF_SCOPE',
   });
 
-  claimHeadAdoptionOwnership(ctx, session, handle, args);
-
   const reviewedAt = new Date().toISOString();
   const reconciliationId = `RECNC-${createHash('sha256').update([
     handle.repositoryId, handle.workId, previousHead, candidateHead, handle.checkoutId, handle.branch,
@@ -238,7 +177,7 @@ function adoptExistingWorkHead(
     reviewedAt,
     unrecoverableStages: [],
     cleanupOwnershipProof: `No cleanup was performed; managed checkout ${handle.checkoutId} remains owned by Work finalizer.`,
-    rationale: 'Adopted an exact clean successor commit after repository, checkout, worktree, branch, controller ownership, ancestry, and WorkContract path-scope verification. This reconciliation is not completion evidence.',
+    rationale: 'Adopted an exact clean successor commit after repository, checkout, worktree, branch, ancestry, principal, and WorkContract path-scope verification. This reconciliation is not completion evidence.',
     outcome: 'accepted_equivalence',
   };
 
@@ -289,7 +228,6 @@ function adoptExistingWorkHead(
     reused: true,
     adopted: true,
     adoption: { previousHead, candidateHead, changedPaths, reconciliationId },
-    controllerClaimed: true,
   };
 }
 
@@ -333,8 +271,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
     if (adopted) return adopted;
     validateWorkHandle(ctx.controllerHome, existing, identityFor(ctx, args), 'cheap', 'inspect');
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: existing.repositoryId, activeCheckoutId: existing.checkoutId, activeWorkId: existing.workId, permissionSnapshotVersion: existing.permissionSnapshotVersion });
-    claimPreparedWorkOwnership(ctx, session, existing, args);
-    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true, controllerClaimed: true };
+    return { session: requireSession(ctx, args), work: compactHandle(existing), reused: true };
   }
 
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
@@ -389,7 +326,6 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
           reused: true,
           terminal: true,
           workContractStatus: existingContract.status,
-          controllerClaimed: false,
         };
       }
       if (existingContract.status === 'open' || existingContract.status === 'failed') {
@@ -410,8 +346,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         source: 'gpt_risk_delegate',
       });
       const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: existingHandle.checkoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
-      claimPreparedWorkOwnership(ctx, nextSession, existingHandle, args);
-      return { session: nextSession, work: compactHandle(existingHandle), reused: true, isolation: existingHandle.managedWorktree ? 'isolated' : 'current', controllerClaimed: true };
+      return { session: nextSession, work: compactHandle(existingHandle), reused: true, isolation: existingHandle.managedWorktree ? 'isolated' : 'current' };
     }
 
     let contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, createdWorkId);
@@ -479,8 +414,7 @@ export function prepareWork(ctx: McpExecutionContext, args: Record<string, unkno
         { phase: 'implementation', summary: 'Repository Work preparation completed and execution ownership is active.', worktreeRef: checkout.canonicalRoot },
       );
       const nextSession = updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), { activeRepositoryId: repository.repoId, activeCheckoutId: checkout.activeCheckoutId, activeWorkId: createdWorkId, permissionSnapshotVersion: policy.revision, goalDelegation: delegation, lastValidatedAt: new Date().toISOString() });
-      claimPreparedWorkOwnership(ctx, nextSession, handle, args);
-      return { session: nextSession, work: compactHandle(handle), reused: requestReused, isolation: workspace.mode, controllerClaimed: true };
+      return { session: nextSession, work: compactHandle(handle), reused: requestReused, isolation: workspace.mode };
     } catch (error) {
       failWorkContract(
         { controllerHome: ctx.controllerHome, repoId: repository.repoId },

@@ -85,24 +85,10 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (contract.status === 'completed' && !contract.completionReceipt) {
     throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
   }
-  const currentPhaseIndex = phaseIndex(contract.phase);
-  for (const phase of WORK_PHASES) {
-    const checkpoint = contract.phaseEvidence?.[phase];
-    if (!checkpoint) throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
-    const index = phaseIndex(phase);
-    const historicalCancellationEvidence = contract.status === 'cancelled'
-      && contract.phase === 'cleanup'
-      && ['blocked', 'failed'].includes(checkpoint.state);
-    if (index < currentPhaseIndex && !['satisfied', 'skipped'].includes(checkpoint.state) && !historicalCancellationEvidence) {
-      throw new Error(`WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: ${phase}`);
-    }
-    if (index === currentPhaseIndex && checkpoint.state === 'pending') {
-      throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
-    }
-    if (index > currentPhaseIndex && checkpoint.state !== 'pending') {
-      throw new Error(`WORK_PHASE_EVIDENCE_FUTURE_NOT_PENDING: ${phase}`);
-    }
-  }
+  // Legacy phase/evidence checkpoints are compatibility projections, not
+  // semantic Work authority. Current semantic rows already bypass this path;
+  // legacy migration must not resurrect phase progression as a completion or
+  // admission gate.
   for (const review of contract.implementationReviews ?? []) validateImplementationReviewRecord(review);
   if (contract.completionReceipt) {
     const receipt = contract.completionReceipt;
@@ -158,16 +144,8 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (!receipt.operation.trim() || !receipt.target.id.trim()) throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_TARGET_REQUIRED');
     }
     if (contract.status !== 'completed') throw new Error('WORK_COMPLETION_RECEIPT_REQUIRES_COMPLETED_WORK');
-    for (const phase of WORK_PHASES) {
-      if (!['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state)) {
-        throw new Error(`WORK_COMPLETION_PHASE_NOT_SATISFIED: ${phase}`);
-      }
-    }
-    for (const phase of ['delivery', 'cleanup'] as WorkPhase[]) {
-      if (contract.phaseEvidence[phase].receiptId !== receipt.receiptId) {
-        throw new Error(`WORK_COMPLETION_PHASE_RECEIPT_MISMATCH: ${phase}`);
-      }
-    }
+    // Completion receipts remain mechanical evidence. They do not need a
+    // matching legacy phase checkpoint to be valid.
   }
   const outcome = contract.completionOutcome;
   if (!outcome) return contract;

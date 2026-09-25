@@ -29,7 +29,6 @@ export {
   inspectCleanupOnlyMergedHead,
   resetFinalizationStagesForRequest,
 } from '../../../src/runtime/control-plane/execution/work-finalization-service';
-export { releasePreparedWorkOwnership } from '../../../src/runtime/control-plane/execution/work-execution-support';
 export { selectDefaultWorkValidationChecks } from '../../../src/runtime/control-plane/execution/work-operation-service';
 export type {
   DirectCanonicalTargetAdvanceInspection,

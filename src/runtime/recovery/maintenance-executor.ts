@@ -9,7 +9,6 @@ import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { cancelWorkContract, getWorkContract, readWorkContractStore, updateWorkContract } from '../../../packages/kernel/work/api/index';
-import { getControllerSession, listControllerSessions, withControllerSessionTerminalizationFence } from '../../../packages/kernel/controller/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
@@ -895,7 +894,6 @@ function normalizedOptions(options: RuntimeMaintenanceOptions = {}): Required<Ru
 interface RuntimeMaintenanceAuthoritySnapshot {
   contracts: WorkContract[];
   workById: Map<string, WorkContract>;
-  controllerWorkIds: Set<string>;
   planByWorkId: Map<string, string>;
   activeRequirementStateById: Map<string, string>;
   scheduleByWorkId: Map<string, string>;
@@ -915,7 +913,6 @@ function buildRuntimeMaintenanceAuthoritySnapshot(
 ): RuntimeMaintenanceAuthoritySnapshot {
   const contracts = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
   const workById = new Map(contracts.map((contract) => [contract.workId, contract]));
-  const controllerWorkIds = new Set(listControllerSessions({ controllerHome, repoId: repository.repoId }).map((session) => session.workId));
   const planByWorkId = new Map<string, string>();
   for (const plan of listPlanContracts({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 })) {
     for (const step of plan.steps) if (step.workId) planByWorkId.set(step.workId, plan.planId);
@@ -938,12 +935,11 @@ function buildRuntimeMaintenanceAuthoritySnapshot(
   for (const process of listRecoverableProcessRecords(controllerHome, repository.repoId)) {
     if (process.workId && isManagedProcessActive(process) && !processByWorkId.has(process.workId)) processByWorkId.set(process.workId, process.processId);
   }
-  return { contracts, workById, controllerWorkIds, planByWorkId, activeRequirementStateById, scheduleByWorkId, processByWorkId };
+  return { contracts, workById, planByWorkId, activeRequirementStateById, scheduleByWorkId, processByWorkId };
 }
 
 function activeWorkAuthorityRefs(contract: WorkContract, snapshot: RuntimeMaintenanceAuthoritySnapshot): string[] {
   const refs: string[] = [];
-  if (snapshot.controllerWorkIds.has(contract.workId)) refs.push('controller_session');
   const planId = snapshot.planByWorkId.get(contract.workId);
   if (planId) refs.push(`plan:${planId}`);
   if (contract.requirementId) {
@@ -973,7 +969,7 @@ function scanStaleWorkContractCandidates(
     })
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
     .filter(({ contract }) => {
-      // A live Plan/Requirement/Schedule/Controller/Process reference is lifecycle authority,
+      // A live Plan/Requirement/Schedule/Process reference is retained migration authority,
       // not maintenance debt. The authority inventory was read once for this status pass.
       return activeWorkAuthorityRefs(contract, snapshot).length === 0;
     })
@@ -1056,33 +1052,27 @@ export function applyStaleWorkContractMaintenanceCandidate(
     return { ...candidate, applied: false, result: 'already_terminal' };
   }
 
-  // The stale scan is discovery only. Re-evaluate every non-Controller authority
-  // while holding the canonical ControllerSession lock, then perform the Work
-  // transition before releasing it. A newer controller_claim therefore either
-  // wins the lock first and fences this mutation, or starts only after an already
-  // completed maintenance terminalization; there is no check-then-cancel gap.
-  const fenced = withControllerSessionTerminalizationFence(
-    { controllerHome, repoId: repository.repoId },
-    { workId: work.workId, actor: `runtime-maintenance-terminalize:${work.workId}` },
-    () => {
-      const current = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
-      if (!current || isTerminalWorkContractStatus(current.status)) {
-        return { ...candidate, applied: false, result: 'already_terminal' };
-      }
-      const authorityRefs = activeWorkAuthorityRefs(current, buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome));
-      if (authorityRefs.length > 0) {
-        return {
-          ...candidate,
-          applied: false,
-          result: `work_authority_became_active:${authorityRefs.join(',')}`,
-        };
-      }
-      // Discovery and mutation are separated by an arbitrary Controller/MCP delay.
-      // Re-probe the live worktree while the canonical ControllerSession fence is
-      // held so neither a newer Controller claim nor a late source write can be
-      // raced by stale maintenance terminalization.
-      const source = inspectStaleWorkRepositorySource(repository, controllerHome, current);
-      if (!source.safeToCancel) {
+  // The stale scan is discovery only. Re-read the exact Work and every
+  // non-Controller authority immediately before mutation. WorkContract writes are
+  // serialized by the canonical Work store writer; ControllerSession ownership is
+  // continuation state and cannot fence maintenance of semantic Work.
+  const current = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
+  if (!current || isTerminalWorkContractStatus(current.status)) {
+    return { ...candidate, applied: false, result: 'already_terminal' };
+  }
+  const authorityRefs = activeWorkAuthorityRefs(current, buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome));
+  if (authorityRefs.length > 0) {
+    return {
+      ...candidate,
+      applied: false,
+      result: `work_authority_became_active:${authorityRefs.join(',')}`,
+    };
+  }
+  // Discovery and mutation are separated by an arbitrary Runtime delay.
+  // Re-probe the live worktree immediately before mutation; concrete Git/worktree
+  // state is the relevant safety authority, not a Controller claim.
+  const source = inspectStaleWorkRepositorySource(repository, controllerHome, current);
+  if (!source.safeToCancel) {
         return {
           ...candidate,
           path: source.path ?? candidate.path,
@@ -1094,11 +1084,11 @@ export function applyStaleWorkContractMaintenanceCandidate(
           result: `work_source_preserved:${source.state}`,
         };
       }
-      if (isLegacyImplicitRemoteEffectPlacement(current)) {
+  if (isLegacyImplicitRemoteEffectPlacement(current)) {
         return detachLegacyRemoteEffectPlacement(repository, controllerHome, current, candidate);
       }
-      const semanticReady = staleWorkSemanticTerminalizationReady(current);
-      if (!semanticReady) {
+  const semanticReady = staleWorkSemanticTerminalizationReady(current);
+  if (!semanticReady) {
         return {
           ...candidate,
           path: source.path ?? candidate.path,
@@ -1110,7 +1100,7 @@ export function applyStaleWorkContractMaintenanceCandidate(
           result: 'work_semantic_completion_required',
         };
       }
-      cancelWorkContract(
+  cancelWorkContract(
         { controllerHome, repoId: repository.repoId },
         current.workId,
         {
@@ -1118,27 +1108,16 @@ export function applyStaleWorkContractMaintenanceCandidate(
           evidenceRefs: current.evidenceRefs,
         },
       );
-      return {
-        ...candidate,
-        path: source.path ?? candidate.path,
-        safe: true,
-        reason: staleWorkCandidateReason(source, true),
-        sourceState: source.state,
-        disposition: undefined,
-        applied: true,
-        result: 'work_contract_cancelled_evidence_retained',
-      };
-    },
-  );
-  if (!fenced.allowed) {
-    const generation = fenced.owner?.claimGeneration;
-    return {
-      ...candidate,
-      applied: false,
-      result: `work_terminalization_fenced:${fenced.reason}${typeof generation === 'number' ? `:claim_generation=${generation}` : ''}`,
-    };
-  }
-  return fenced.value;
+  return {
+    ...candidate,
+    path: source.path ?? candidate.path,
+    safe: true,
+    reason: staleWorkCandidateReason(source, true),
+    sourceState: source.state,
+    disposition: undefined,
+    applied: true,
+    result: 'work_contract_cancelled_evidence_retained',
+  };
 }
 
 function scanStaleEditSessionCandidates(

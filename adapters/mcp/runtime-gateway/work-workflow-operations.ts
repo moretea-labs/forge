@@ -1,6 +1,5 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
-import { getControllerRoundRelay, getControllerSession } from '../../../packages/kernel/controller/api/index';
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
@@ -10,15 +9,14 @@ import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '..
 import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { assertFacadeControllerRoundAuthority } from './controller-authority-adapter';
 import { result } from './result-adapter';
 
 type RepositorySelection = Parameters<typeof selectRepositoryCheckout>[0];
 
 /**
- * Dedicated rh_work Workflow domain dispatch. This adapter validates the exact
- * Work/Controller authority required by Workflow execution, but it does not own
- * Work lifecycle transitions, Plan/Requirement state, verification, or finalization.
+ * Dedicated rh_work Workflow domain dispatch. Workflow execution is fenced by
+ * its typed Work/target/effect identities rather than Work-wide Controller ownership;
+ * this adapter does not own Work lifecycle transitions or semantic completion.
  */
 export async function callRhWorkWorkflowOperation(
   ctx: MultiRepositoryMcpToolContext,
@@ -35,13 +33,6 @@ export async function callRhWorkWorkflowOperation(
     if (!workId || !workflowId || !runId) throw new Error('WORKFLOW_FACADE_IDENTITY_REQUIRED');
     const work = getWorkContract(store, workId);
     if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-    assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-    const owner = getControllerSession(store, workId);
-    const relay = getControllerRoundRelay(store, workId);
-    if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
-    const authorityId = relay?.authorityId?.trim()
-      || (typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '');
-    if (!authorityId) throw new Error('WORKFLOW_CONTROLLER_AUTHORITY_REQUIRED');
 
     const workRepository = selectRepositoryCheckout(repository, work.checkoutId);
     const executionIdentity = executionIdentityForRepository(workRepository, { workId });
@@ -58,7 +49,6 @@ export async function callRhWorkWorkflowOperation(
       repository: workRepository,
       executionIdentity,
       workId,
-      controller: { controllerId: owner.controllerId, authorityId },
       runId,
       registryScope,
       workflowId,

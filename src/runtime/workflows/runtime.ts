@@ -1,6 +1,5 @@
 import { withControllerLock, withControllerLockAsync } from '../../cli/repositories/locks';
-import { getWorkContract, isTerminalWorkContractStatus } from '../../../packages/kernel/work/api/index';
-import { getControllerSession, getControllerRoundRelay, controllerSessionAuthorityMatches } from '../../../packages/kernel/controller/api/index';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { createHash } from 'crypto';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -56,7 +55,8 @@ export interface ExecuteRegisteredWorkflowInput {
   repository: RepositoryRecord;
   executionIdentity: ResolvedExecutionIdentity;
   workId: string;
-  controller: { controllerId: string; authorityId: string };
+  /** Legacy provenance only. Workflow execution authority comes from typed Work/target/effect identities, not Controller ownership. */
+  controller?: { controllerId: string; authorityId: string };
   runId: string;
   registryScope: WorkflowRegistryScope;
   workflowId: string;
@@ -64,20 +64,16 @@ export interface ExecuteRegisteredWorkflowInput {
   timeoutMs?: number;
 }
 
-function assertWorkflowController(input: ExecuteRegisteredWorkflowInput, reconciliation = false): void {
+function assertWorkflowExecutionScope(input: ExecuteRegisteredWorkflowInput, reconciliation = false): void {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const work = getWorkContract(store, input.workId);
-  if (!work || isTerminalWorkContractStatus(work.status) || work.supersededBy
-    || (!reconciliation && !['open', 'running'].includes(work.status))) throw new Error('WORKFLOW_WORK_NOT_EXECUTABLE');
+  if (!work || work.supersededBy || (!reconciliation && semanticWorkState(work) !== 'open')) {
+    throw new Error('WORKFLOW_WORK_NOT_EXECUTABLE');
+  }
   if (work.repoId !== input.executionIdentity.repositoryId || work.checkoutId !== input.executionIdentity.checkoutId
     || input.executionIdentity.workId !== work.workId) throw new Error('WORKFLOW_EXECUTION_IDENTITY_MISMATCH');
   if (input.registryScope.kind === 'project' && (work.scopeRef?.kind !== 'project' || work.scopeRef.id !== input.registryScope.projectId)
     && work.engineeringContext?.projectContractReceipt?.projectId !== input.registryScope.projectId) throw new Error('WORKFLOW_PROJECT_MISMATCH');
-  const owner = getControllerSession(store, input.workId);
-  if (!input.controller || !owner || owner.controllerId !== input.controller.controllerId) throw new Error('WORKFLOW_CONTROLLER_NOT_OWNER');
-  const relay = getControllerRoundRelay(store, input.workId);
-  if (relay ? relay.status !== 'claimed' || relay.authorityId !== input.controller.authorityId || relay.claimGeneration !== owner.claimGeneration
-    : !controllerSessionAuthorityMatches(owner, input.controller.authorityId)) throw new Error('WORKFLOW_CONTROLLER_AUTHORITY_STALE');
   if (!reconciliation && work.requirementId) {
     const requirement = readRequirement({ controllerHome: input.controllerHome }, work.requirementId)?.value;
     if (!requirement || !['planned', 'active'].includes(requirement.state)) throw new Error('WORKFLOW_REQUIREMENT_NOT_ACTIVE');
@@ -152,7 +148,7 @@ async function completedCommandResult(
 
 /** Hold the existing Work resource lock across read, dispatch and checkpoint, including distinct run IDs. */
 export async function executeRegisteredWorkflow(input: ExecuteRegisteredWorkflowInput, dependencies: WorkflowRuntimeExecutionDependencies = {}): Promise<WorkflowRunResult> {
-  assertWorkflowController(input);
+  assertWorkflowExecutionScope(input);
   return withControllerLockAsync(input.controllerHome, { scope: 'task', repoId: input.repository.repoId, taskId: `workflow:${input.workId}` },
     `workflow:${input.runId}`, () => executeRegisteredWorkflowLocked(input, dependencies), undefined, 0);
 }
@@ -163,7 +159,7 @@ async function executeRegisteredWorkflowLocked(
 ): Promise<WorkflowRunResult> {
   if (!input.workId.trim()) throw new Error('WORKFLOW_RUNTIME_WORK_ID_REQUIRED');
   if (!input.runId.trim()) throw new Error('WORKFLOW_RUNTIME_RUN_ID_REQUIRED');
-  assertWorkflowController(input);
+  assertWorkflowExecutionScope(input);
   const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
   if (!registry) throw new Error(`WORKFLOW_REGISTRY_ENTRY_REQUIRED: ${input.workflowId}`);
   if (registry.value.status !== 'active') throw new Error(`WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE: ${input.workflowId}`);
@@ -242,7 +238,7 @@ async function executeRegisteredWorkflowLocked(
       if (JSON.stringify(canonicalOutput) !== JSON.stringify(output)) throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
     },
     executeCapability: async ({ step, arguments: args }) => {
-      assertWorkflowController(input);
+      assertWorkflowExecutionScope(input);
       const binding = capabilityBinding(registry.value.bindings, step.capabilityId);
       try {
         const submitted = await submitPluginAction(input.controllerHome, input.repository, {
@@ -266,7 +262,7 @@ async function executeRegisteredWorkflowLocked(
       }
     },
     executeScript: async ({ step, script, arguments: args }) => {
-      assertWorkflowController(input);
+      assertWorkflowExecutionScope(input);
       try {
         const process = await executeCommand({
           controllerHome: input.controllerHome,
@@ -320,7 +316,7 @@ export async function reconcileRegisteredWorkflow(
   input: ExecuteRegisteredWorkflowInput & { reconciliationRequestId?: string },
   dependencies: WorkflowRuntimeExecutionDependencies = {},
 ): Promise<WorkflowRunRecord> {
-  assertWorkflowController(input, true);
+  assertWorkflowExecutionScope(input, true);
   return withControllerLockAsync(
     input.controllerHome,
     { scope: 'task', repoId: input.repository.repoId, taskId: `workflow:${input.workId}` },
@@ -335,7 +331,7 @@ async function reconcileRegisteredWorkflowLocked(
   input: ExecuteRegisteredWorkflowInput & { reconciliationRequestId?: string },
   dependencies: WorkflowRuntimeExecutionDependencies = {},
 ): Promise<WorkflowRunRecord> {
-  assertWorkflowController(input, true);
+  assertWorkflowExecutionScope(input, true);
   const stored = readWorkflowRun(input.controllerHome, input.workId, input.runId);
   if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required')) throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
   const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
@@ -447,13 +443,13 @@ export async function observeAndReconcileRegisteredWorkflow(
   dependencies: WorkflowRuntimeExecutionDependencies = {},
 ): Promise<WorkflowRunRecord> {
   if (!input.reconciliationRequestId.trim()) throw new Error('WORKFLOW_RECONCILIATION_REQUEST_ID_REQUIRED');
-  assertWorkflowController(input, true);
+  assertWorkflowExecutionScope(input, true);
   return withControllerLockAsync(
     input.controllerHome,
     { scope: 'task', repoId: input.repository.repoId, taskId: `workflow:${input.workId}` },
     `workflow-reconcile-observe:${input.runId}`,
     async () => {
-      assertWorkflowController(input, true);
+      assertWorkflowExecutionScope(input, true);
       const stored = readWorkflowRun(input.controllerHome, input.workId, input.runId);
       if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required')) throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
       const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);

@@ -9,7 +9,6 @@ import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWork
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
-import { withControllerSessionTerminalizationFence } from '../../../../packages/kernel/controller/api/index';
 import type { VerificationRecord } from '../facade/types';
 import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, reconcileApprovedWorkImplementationReviewProjection, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
@@ -39,7 +38,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, realpathSync } from 'fs';
 import { basename, resolve } from 'path';
-import { assertWorkControllerOwnership, compactHandle, contractFor, gitChangedPaths, gitCommit, gitHead, gitMergeBase, gitRevision, identityFor, reconcileTerminalCleanup, releasePreparedWorkOwnership, requireSession, selectWorkFinalizationTarget, terminalCleanupOutcome, workForSession, workReturnCheckoutId } from './work-execution-support';
+import { compactHandle, contractFor, gitChangedPaths, gitCommit, gitHead, gitMergeBase, gitRevision, identityFor, reconcileTerminalCleanup, requireSession, selectWorkFinalizationTarget, terminalCleanupOutcome, workForSession, workReturnCheckoutId } from './work-execution-support';
 import { gitIsAncestor } from './direct-canonical-work-reconciliation';
 
 export interface WorkTargetAdvanceInspection {
@@ -1573,40 +1572,16 @@ function completeFinalizedWorkContract(input: {
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
   args: Record<string, unknown>;
-  terminalizationOwner: ReturnType<typeof assertWorkControllerOwnership>;
   outcome: 'completed_changed' | 'completed_no_change';
 }): CompletionReceipt {
   const receipt = completionReceiptForFinalizedWork(input.ctx, input.handle, input.contract, input.args);
-  const ownerPrincipal = input.terminalizationOwner.principalId?.trim() || input.terminalizationOwner.controllerId;
-  const ownerInstanceId = input.terminalizationOwner.controllerInstanceId?.trim() || '';
-  const ownerClaimGeneration = input.terminalizationOwner.claimGeneration;
-  if (!ownerInstanceId || typeof ownerClaimGeneration !== 'number' || ownerClaimGeneration < 1) {
-    throw new Error(`WORK_CONTROLLER_TERMINALIZATION_AUTHORITY_INVALID: ${input.contract.workId}`);
-  }
-  const fencedCompletion = withControllerSessionTerminalizationFence(
+  completeWorkWithReceipt(
     { controllerHome: input.ctx.controllerHome, repoId: input.handle.repositoryId },
-    {
-      workId: input.contract.workId,
-      actor: `work-finalize-completion:${input.terminalizationOwner.controllerId}:${ownerInstanceId}`,
-      authority: {
-        controllerId: input.terminalizationOwner.controllerId,
-        controllerType: input.terminalizationOwner.controllerType,
-        principalId: ownerPrincipal,
-        controllerInstanceId: ownerInstanceId,
-        claimGeneration: ownerClaimGeneration,
-      },
-    },
-    () => completeWorkWithReceipt(
-      { controllerHome: input.ctx.controllerHome, repoId: input.handle.repositoryId },
-      input.contract.workId,
-      receipt,
-      input.outcome,
-      input.outcome === 'completed_changed' ? 'repository_change' : input.contract.workKind,
-    ),
+    input.contract.workId,
+    receipt,
+    input.outcome,
+    input.outcome === 'completed_changed' ? 'repository_change' : input.contract.workKind,
   );
-  if (!fencedCompletion.allowed) {
-    throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${input.contract.workId}:${fencedCompletion.reason}`);
-  }
   return receipt;
 }
 
@@ -1710,7 +1685,7 @@ async function finalizeWorkInternal(
 ): Promise<Record<string, unknown>> {
   const prepareReviewCandidate = options.prepareReviewCandidate === true;
   const session = requireSession(ctx, args);
-  let current = workForSession(ctx, session, args, { allowClaimedTerminalCleanup: args.cleanup !== false });
+  let current = workForSession(ctx, session, args);
   const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
   let retryStage = requestedFailedFinalizationRetry(current.finalization, requestedWants);
   const retryContract = retryStage ? contractFor(ctx, current) : undefined;
@@ -1735,12 +1710,10 @@ async function finalizeWorkInternal(
   if (terminalOutcome && args.cleanup !== false) {
     return await reconcileTerminalCleanup(ctx, session, current, args, terminalOutcome);
   }
-  const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
   current = reconcileFailedNonLinearTargetAdvanceRepair(ctx, current, args);
   if (retryStage && current.finalization[retryStage] !== 'failed') retryStage = undefined;
   if (terminalOutcome && args.cleanup === false) {
     current = retainTerminalResourcesByRequest(ctx, current, { settlePendingDeliveryStages: true });
-    releasePreparedWorkOwnership(ctx, current);
     updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
       activeWorkId: undefined,
       activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
@@ -1762,8 +1735,7 @@ async function finalizeWorkInternal(
       && current.finalization.validation === 'failed'
       && current.finalization.worktreeCleanup === 'done'
     ) {
-      releasePreparedWorkOwnership(ctx, current);
-      updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+        updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
         activeWorkId: undefined,
         activeCheckoutId: workReturnCheckoutId(ctx, current, session.activeCheckoutId),
       });
@@ -1793,7 +1765,6 @@ async function finalizeWorkInternal(
       && terminalContract.status !== 'failed'
       && !terminalContract.completionReceipt;
     if (cleanedCompletionRecovery && terminalContract) {
-      const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
       const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
       const target = selectWorkFinalizationTarget(repository, current);
       const durableReview = assertCleanedCompletionImplementationReviewGate({ target, handle: current, contract: terminalContract });
@@ -1809,10 +1780,9 @@ async function finalizeWorkInternal(
           )
         : terminalContract;
       completeFinalizedWorkContract({
-        ctx, handle: current, contract: reconciledContract, args, terminalizationOwner, outcome: 'completed_changed',
+        ctx, handle: current, contract: reconciledContract, args, outcome: 'completed_changed',
       });
-      releasePreparedWorkOwnership(ctx, current);
-      updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+        updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
         activeWorkId: undefined,
         activeCheckoutId: workReturnCheckoutId(ctx, current, session.activeCheckoutId),
       });
@@ -2229,7 +2199,6 @@ async function finalizeWorkInternal(
       summary: `Controller preserved the failed Work outcome while removing its unchanged clean managed worktree and ${deleteBranchRequested ? 'removing' : 'retaining'} the local branch after proving ${failedCleanupProof.currentHead} is contained in ${failedCleanupProof.targetBranch}.`,
       detailLevel: 'summary',
     });
-    releasePreparedWorkOwnership(ctx, current);
     updateExecutionSession(ctx.controllerHome, identity, {
       activeWorkId: undefined,
       activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
@@ -3252,39 +3221,19 @@ async function finalizeWorkInternal(
         });
       }
       if (prevalidatedNoChangeReceipt) {
-        const ownerPrincipal = terminalizationOwner.principalId?.trim() || terminalizationOwner.controllerId;
-        const ownerInstanceId = terminalizationOwner.controllerInstanceId?.trim() || '';
-        const ownerClaimGeneration = terminalizationOwner.claimGeneration;
-        if (!ownerInstanceId || typeof ownerClaimGeneration !== 'number' || ownerClaimGeneration < 1) {
-          throw new Error(`WORK_CONTROLLER_TERMINALIZATION_AUTHORITY_INVALID: ${workId}`);
-        }
-        const fencedCompletion = withControllerSessionTerminalizationFence(
-          { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
-          {
-            workId,
-            actor: `work-finalize-completion:${terminalizationOwner.controllerId}:${ownerInstanceId}`,
-            authority: {
-              controllerId: terminalizationOwner.controllerId, controllerType: terminalizationOwner.controllerType,
-              principalId: ownerPrincipal, controllerInstanceId: ownerInstanceId, claimGeneration: ownerClaimGeneration,
-            },
-          },
-          () => completeWorkWithReceipt(
-            { controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, prevalidatedNoChangeReceipt,
-            'completed_no_change', 'completed_no_change',
-          ),
+        completeWorkWithReceipt(
+          { controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, prevalidatedNoChangeReceipt,
+          'completed_no_change', 'completed_no_change',
         );
-        if (!fencedCompletion.allowed) throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fencedCompletion.reason}`);
       } else {
         completeFinalizedWorkContract({
-          ctx, handle: current, contract: completionContract, args, terminalizationOwner,
+          ctx, handle: current, contract: completionContract, args,
           outcome: requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
         });
       }
     }
-    // Successful WorkContract completion always ends controller ownership.
-    // Physical branch/worktree retention is represented by finalization stages
-    // and completion-receipt warnings; it must not keep a mutation owner live.
-    releasePreparedWorkOwnership(ctx, current);
+    // Work completion and repository resource settlement are independent
+    // from explicit continuation ControllerSession state.
     updateExecutionSession(ctx.controllerHome, identity, {
       activeWorkId: undefined,
       activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,

@@ -16,7 +16,6 @@ import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { listProcessRecords } from '../../execution/process-runtime/store';
 import { listActiveLeases } from '../../resources/leases/store';
 import { claimsConflict } from '../../resources/claims/conflicts';
-import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import {
   isManagedProcessActive,
   type ExecutionConcurrencyWaitProjection,
@@ -276,9 +275,6 @@ function workConcurrencyWakeResolved(input: {
   if (wake.kind === 'work_terminal') {
     const blocking = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, wake.workId);
     return Boolean(blocking && isTerminalWorkContractStatus(blocking.status));
-  }
-  if (wake.kind === 'controller_release') {
-    return !getControllerSession({ controllerHome: input.controllerHome, repoId: input.repoId }, wake.workId);
   }
   const activeLeases = listActiveLeases(input.controllerHome, input.projection.leaseRepoId?.trim() || input.repoId);
   return !input.projection.resourceIntents.some((claim) => activeLeases.some((lease) => claimsConflict(claim, lease)));

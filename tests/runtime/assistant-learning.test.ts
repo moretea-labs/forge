@@ -39,7 +39,7 @@ describe('assistant experience and context', () => {
     expect(() => recordExperience(reopened.store, { ...draft(), statement: 'changed' }, now)).toThrow('IDENTITY_CONFLICT');
     fixture.authorize(false);
     expect(() => recordExperience(fixture.store, draft('new'), now)).toThrow('not-authorized');
-    expect(() => recordExperience(controllerExperienceStore({ controllerHome: home, repoId: 'repo-a' }), draft('no-owner'), now)).toThrow('CONTROLLER_REQUIRED');
+    expect(() => recordExperience(controllerExperienceStore({ controllerHome: home, repoId: 'repo-a' }), draft('no-owner'), now)).toThrow('WORK_IDENTITY_REQUIRED');
   });
 
   test('scope/account isolation, expiry, missing evidence and counterevidence are enforced', () => {
