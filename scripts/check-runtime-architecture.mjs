@@ -1854,6 +1854,31 @@ for (const path of [
 ]) {
   forbid(path, /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/, 'read-only review findings must not gate terminal completion');
 }
+// Work lifecycle collapse: semantic Work completion is one durable
+// expected_revision CAS close. Verify/review/finalize/delivery/cleanup are
+// mechanical facts owned elsewhere; they must never be wired back into the
+// semantic close path as a gate.
+for (const path of [
+  'adapters/mcp/runtime-gateway/work-semantic-operations.ts',
+]) {
+  forbid(path, /transitionWorkContractPhase|requestWorkImplementationReview|recordWorkImplementationReview|finalizeGoalWorkloop|verifyGoalWorkloop|reviewGoalWorkloop/, 'semantic Work completion must not invoke a mechanical lifecycle transition');
+  forbid(path, /implementationReview|completionReceipt|dispatchState|evidenceState|ControllerRound|controllerRound/, 'semantic Work completion must not read mechanical lifecycle or controller authority');
+}
+forbidBetween(
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  'export function reviseWorkSemanticContext(',
+  'export function getWorkContract(',
+  /WORK_IMPLEMENTATION_REVIEW|WORK_COMPLETION_RECEIPT|WORK_VERIFICATION|WORK_CLEANUP|WORK_DELIVERY|WORK_FINALIZE/,
+  'the semantic close must not require review, verification, delivery, cleanup or finalize',
+);
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'WORK_REVISION_CONFLICT:');
+forbidBetween(
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  'export function semanticWorkState(',
+  'export function workSemanticView(',
+  /'failed'|'ready'|'blocked'|'running'/,
+  'semantic Work state must expose only open/completed/cancelled; execution vocabulary is not a semantic state',
+);
 for (const path of [
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',

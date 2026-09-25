@@ -213,11 +213,14 @@ describe('Thin capability substrate', () => {
     expect(isCurrentWorkContract(completedWork)).toBe(false);
     expect(workSemanticView(completedWork).resultRefs).toEqual(['git:commit:12345678', 'doc:summary:complete']);
 
-    // Calling finalizeGoalWorkloop on a semantically completed work immediately succeeds with a receipt
+    // Calling finalizeGoalWorkloop on an already semantically completed work is a
+    // compatibility no-op: it succeeds without inventing a delivery/cleanup
+    // receipt and without re-running the verify/review gates.
     const finalizeResult = finalizeGoalWorkloop({ workStore: store, handoffStore: { controllerHome }, repoId }, { workId });
     expect(finalizeResult.status).toBe('ok');
     expect(finalizeResult.data?.finalStatus).toBe('completed');
-    expect(finalizeResult.data?.completionReceipt).toBeDefined();
+    expect(finalizeResult.data?.completionReceipt).toBeNull();
+    expect(getWorkContract(store, workId)?.completionReceipt).toBeUndefined();
   });
 
 

@@ -138,6 +138,8 @@ export interface WorkContractSummary {
   workId: string;
   repoId: string;
   mode: WorkContract['mode'];
+  /** The one thin authored Work state. `phase`/`status` below are compatibility mechanical projections. */
+  semanticState: SemanticWorkState;
   phase: WorkContract['phase'];
   status: WorkContractStatus;
   objective: string;
@@ -183,13 +185,20 @@ function currentWorkSemanticRevision(work: WorkContract): number {
   return Number.isInteger(revision) && revision > 0 ? revision : 1;
 }
 
+/**
+ * Resolve the one thin semantic Work state. An explicit authored state is
+ * authoritative; a row that predates explicit semantic state derives only its
+ * terminal projection from mechanically recorded completion/cancellation.
+ * Execution/verification/review/delivery/cleanup vocabulary is never a semantic
+ * state: a mechanically blocked or failed Work stays semantically `open` until
+ * an explicit CAS close or cancellation.
+ */
 export function semanticWorkState(work: Pick<WorkContract, 'semanticRevision' | 'semanticState' | 'status'>): SemanticWorkState {
-  if (work.semanticState === 'open' || work.semanticState === 'completed' || work.semanticState === 'cancelled') return work.semanticState;
-  const semanticRevision = Number(work.semanticRevision);
-  if (!Number.isInteger(semanticRevision) || semanticRevision < 1) {
-    if (work.status === 'completed') return 'completed';
-    if (work.status === 'cancelled') return 'cancelled';
+  if (work.semanticState === 'open' || work.semanticState === 'completed' || work.semanticState === 'cancelled') {
+    return work.semanticState;
   }
+  if (work.status === 'completed') return 'completed';
+  if (work.status === 'cancelled') return 'cancelled';
   return 'open';
 }
 
@@ -231,25 +240,6 @@ function initialLifecycleForNewWork(status: WorkContractStatus): Pick<WorkContra
   if (status === 'failed') return { phase: 'implementation', dispatchState: 'terminal', evidenceState: 'failed' };
   if (status === 'cancelled') return { phase: 'implementation', dispatchState: 'terminal', evidenceState: 'none' };
   return { phase: 'implementation', dispatchState: 'not_dispatched', evidenceState: 'none' };
-}
-
-function legacyInferredDispatchState(status: WorkContractStatus): DispatchState {
-  if (status === 'open' || status === 'ready') return 'not_dispatched';
-  if (status === 'running') return 'running';
-  if (status === 'blocked') return 'blocked';
-  return 'terminal';
-}
-
-function legacyInferredPhase(status: WorkContractStatus): WorkContract['phase'] {
-  if (status === 'ready') return 'verification';
-  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 'cleanup';
-  return 'implementation';
-}
-
-function legacyInferredEvidenceState(status: WorkContractStatus): EvidenceState {
-  if (status === 'failed') return 'failed';
-  if (status === 'completed') return 'partial';
-  return 'none';
 }
 
 function initialPhaseEvidenceForNewWork(
@@ -327,11 +317,14 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
   // completion authority. Reopen them at delivery so callers can obtain an
   // exact receipt instead of projecting an unproven success.
   const status = mappedStatus === 'completed' && !legacy.completionReceipt ? 'ready' : mappedStatus;
+  // Phase is a mechanical checkpoint projection only. A legacy row without a
+  // persisted phase is admitted at the neutral first checkpoint; terminal
+  // status never advances phase, and status is never a phase-transition authority.
   const phase = legacy.completionReceipt
     ? 'cleanup'
     : mappedStatus === 'completed'
       ? 'delivery'
-      : legacy.phase ?? legacyInferredPhase(status);
+      : legacy.phase ?? 'implementation';
   const legacyDefaults = legacyPhaseEvidence({
     phase,
     status,
@@ -380,8 +373,8 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
     phaseEvidence,
     risk: legacy.risk ?? 'medium',
     workKind: legacy.workKind ?? 'repository_change',
-    dispatchState: legacy.dispatchState ?? legacyInferredDispatchState(status),
-    evidenceState: legacy.evidenceState ?? legacyInferredEvidenceState(status),
+    dispatchState: legacy.dispatchState ?? 'not_dispatched',
+    evidenceState: legacy.evidenceState ?? 'none',
     suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
     implementationReviews: legacy.implementationReviews ?? [],
     reconciliations: legacy.reconciliations ?? [],
@@ -1159,6 +1152,7 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
     workId: contract.workId,
     repoId: contract.repoId,
     mode: contract.mode,
+    semanticState: semanticWorkState(contract),
     phase: contract.phase,
     status: contract.status,
     objective: contract.objective.slice(0, 240),
