@@ -4196,23 +4196,29 @@ export async function prepareConfiguredRuntimeReleaseSession(
         detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: truncated=${inventory.truncated}; invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
       };
     }
-    let resumableSourceFrozen: ReleaseSession | undefined;
+    let resumableMatchingSession: ReleaseSession | undefined;
     for (const existing of [...inventory.sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
       if (existing.phase === 'failed' || existing.phase === 'rolled_back' || existing.phase === 'known_good') continue;
+      const preparationReusablePhase = existing.phase === 'source_frozen'
+        || existing.phase === 'built'
+        || existing.phase === 'static_verified'
+        || existing.phase === 'candidate_booted'
+        || existing.phase === 'candidate_verified'
+        || existing.phase === 'cutover_eligible';
       if (
-        existing.phase === 'source_frozen'
+        preparationReusablePhase
         && existing.sourceRevision === sourceRevision
         && sameStableReleaseSessionIdentity(existing.stableRelease, stableRelease)
       ) {
-        if (resumableSourceFrozen) {
+        if (resumableMatchingSession) {
           return {
             ok: false as const,
             attempted: false,
             noOp: true,
-            detail: `RELEASE_SESSION_MULTIPLE_ACTIVE: ${resumableSourceFrozen.sessionId}:source_frozen,${existing.sessionId}:source_frozen`,
+            detail: `RELEASE_SESSION_MULTIPLE_ACTIVE: ${resumableMatchingSession.sessionId}:${resumableMatchingSession.phase},${existing.sessionId}:${existing.phase}`,
           };
         }
-        resumableSourceFrozen = existing;
+        resumableMatchingSession = existing;
         continue;
       }
       if (existing.phase === 'cutover_attempting' || existing.phase === 'cutover_committed') {
@@ -4248,9 +4254,21 @@ export async function prepareConfiguredRuntimeReleaseSession(
       if (!superseded.ok) return superseded;
     }
 
+    if (resumableMatchingSession && resumableMatchingSession.phase !== 'source_frozen') {
+      return {
+        ok: true as const,
+        attempted: false,
+        noOp: true,
+        detail: `matching ReleaseSession ${resumableMatchingSession.sessionId} already advanced to ${resumableMatchingSession.phase}; preparation is idempotent and must not supersede it`,
+        releaseSession: resumableMatchingSession,
+      };
+    }
+
     // Candidate B currently costs several GiB because it contains a consistent
     // SQLite snapshot plus an immutable Runtime tree. Preserve the host warning
-    // reserve *after* admitting a conservative 4 GiB candidate budget.
+    // reserve *after* admitting a conservative 4 GiB candidate budget. A retry
+    // that already owns a progressed matching session returns above and needs no
+    // fresh storage admission.
     const candidateRoot = join(dirname(resolve(config.controllerHome)), 'candidate-runtime-lanes');
     assertStorageHeadroom(candidateRoot, {
       operation: 'release_session_prepare',
@@ -4260,8 +4278,8 @@ export async function prepareConfiguredRuntimeReleaseSession(
 
     let session: ReleaseSession;
     let candidateLane: ReturnType<typeof createCandidateExecutionLane>['candidate'];
-    if (resumableSourceFrozen) {
-      session = resumableSourceFrozen;
+    if (resumableMatchingSession) {
+      session = resumableMatchingSession;
       candidateLane = session.candidate;
     } else {
       const nextSessionId = `release-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;

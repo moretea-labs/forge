@@ -376,7 +376,7 @@ function writeReleaseExecutionSurface(releaseRoot: string): {
   processRunnerArtifactIdentity: string;
   checkRunnerArtifactIdentity: string;
 } {
-  const processRunner = '#!/bin/sh\nif [ -f fail-process-runner ]; then exit 71; fi\nexit 0\n';
+  const processRunner = '#!/usr/bin/env bun\nimport { existsSync } from "node:fs";\nif (existsSync("fail-process-runner")) process.exit(71);\nprocess.exit(0);\n';
   const checkRunner = '#!/bin/sh\nif [ -f fail-check-runner ]; then exit 73; fi\nexit 0\n';
   const processRunnerPath = join(releaseRoot, 'process-runner.js');
   const checkRunnerPath = join(releaseRoot, 'forge-check-runner');
@@ -1632,6 +1632,42 @@ test('legacy stage-and-activate ABI only prepares isolated Candidate B and never
       candidate: { controllerHome: candidateHome },
       candidateRelease: { releaseId: 'release-new', sourceCommit: sourceRevision },
     },
+  });
+  expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+    revision: expectedAuthority.revision,
+    active: { releaseId: 'release-baseline', artifactIdentity: baseline.artifactIdentity },
+  });
+
+  let progressed = result.releaseSession!;
+  progressed = advanceReleaseSession({
+    controllerHome: home,
+    sessionId: progressed.sessionId,
+    expectedRevision: progressed.revision,
+    phase: 'static_verified',
+    receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
+  });
+  progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'candidate_booted' });
+  progressed = advanceReleaseSession({
+    controllerHome: home,
+    sessionId: progressed.sessionId,
+    expectedRevision: progressed.revision,
+    phase: 'candidate_verified',
+    receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+  });
+  progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'cutover_eligible' });
+  let repeatedStageCalls = 0;
+  const repeated = await stageAndActivateConfiguredRuntimeRelease(config, {
+    stage: () => {
+      repeatedStageCalls += 1;
+      throw new Error('already-progressed matching ReleaseSession must not rebuild');
+    },
+  }, 'recovery-gateway:stage-request-retry');
+  expect(repeatedStageCalls).toBe(0);
+  expect(repeated).toMatchObject({
+    ok: true,
+    attempted: false,
+    noOp: true,
+    releaseSession: { sessionId: progressed.sessionId, phase: 'cutover_eligible' },
   });
   expect(readRuntimeReleaseAuthority(home)).toMatchObject({
     revision: expectedAuthority.revision,
