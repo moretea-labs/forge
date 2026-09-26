@@ -410,7 +410,15 @@ export class WorkflowSupervisorStore {
     statement(db, 'INSERT OR IGNORE INTO effects(effect_id,task_id,kind,origin_key,source_completion_fingerprint,prompt_text,created_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.effectId, input.taskId, input.kind, input.originKey, input.sourceCompletionFingerprint ?? null, input.prompt, now()));
     const row = statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(input.originKey)) as Record<string, unknown> | undefined;
     if (!row) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_RESERVE_FAILED');
-    return effectFromRow(row);
+    const effect = effectFromRow(row);
+    if (effect.effectId !== input.effectId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_ID_CONFLICT:${input.originKey}:${effect.effectId}:${input.effectId}`);
+    if (effect.taskId !== input.taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${input.originKey}`);
+    if (effect.kind !== input.kind) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${input.originKey}`);
+    if ((effect.sourceCompletionFingerprint ?? '') !== (input.sourceCompletionFingerprint ?? '')) {
+      throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_SOURCE_CONFLICT:${input.originKey}`);
+    }
+    if (effect.prompt !== input.prompt) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_PROMPT_CONFLICT:${input.originKey}`);
+    return effect;
   }
 
   recordEffectDispatchStarted(effectId: string, generation: number, dispatchId: string, evidence: Record<string, unknown> = {}): boolean {

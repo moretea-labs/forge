@@ -98,8 +98,8 @@ function planlessOccurrenceId(workId: string, updatedAt: string): string {
  * - Work receives only a mechanical liveness wake when its own Work, Requirement
  *   and ControllerRound authorities expose no wait/terminal state. Plan and Plan
  *   item state never select, block or progress Work.
- * - ControllerRound remains the provider-effect/idempotency fence.
- * - Workflow Supervisor remains the outer ChatGPT-turn owner when enrolled.
+ * - ControllerRound carries lower-layer claim/resume bookkeeping and the bootstrap-send compatibility mirror.
+ * - Workflow Supervisor owns autonomous outer-turn Effect reservation, dispatch generations, applied/unknown observation, and not-applied retry proof.
  *
  */
 export async function runSchedulerAutonomousContinuationReconciliation(input: {

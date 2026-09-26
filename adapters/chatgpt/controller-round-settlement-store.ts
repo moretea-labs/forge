@@ -1,7 +1,7 @@
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
-// Resource-cleanup evidence only. Provider dispatch authority is ControllerRoundRelayRecord.lifecycleStage/providerDispatchReceiptId.
+// Resource-cleanup evidence only. Autonomous outer-turn dispatch authority is the Workflow Supervisor Effect ledger; ControllerRound fields are lower-layer/bootstrap compatibility mirrors.
 const NAMESPACE = 'chatgpt_controller_round_settlement';
 
 export type ChatgptControllerRoundSettlementStatus =

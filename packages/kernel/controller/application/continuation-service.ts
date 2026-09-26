@@ -215,9 +215,10 @@ export function prepareControllerRoundOccurrence(
 }
 
 /**
- * Canonical trigger-to-Controller continuation path. Schedule/manual occurrences
- * contribute only the exact occurrence identity. ControllerRound owns semantic
- * suppression, provider effect fencing, dispatch attempt, receipt and recovery.
+ * Trigger-to-Controller compatibility path for bootstrap/direct provider delivery.
+ * Schedule/manual occurrences contribute only exact occurrence identity. Autonomous
+ * outer ChatGPT turns are fenced by Workflow Supervisor Effect authority; ControllerRound
+ * retains lower-layer claim/resume facts and mirrors direct bootstrap dispatch receipts.
  */
 export async function resumeControllerRoundOccurrence(
   options: ControllerRoundRelayStoreOptions,
