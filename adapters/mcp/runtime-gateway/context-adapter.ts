@@ -1018,7 +1018,6 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         ? {
             workId: work.workId,
             status: work.status,
-            mode: work.mode,
             objective: work.objective.slice(0, 160),
             continuation: buildWorkContinuationSnapshot(work),
           }
@@ -1035,7 +1034,6 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         relevance: ['ownership', 'conflict', 'release_admission'] as const,
         workId: entry.workId,
         status: entry.status,
-        mode: entry.mode,
       })),
       invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
       activeAttention: attention,
@@ -1105,7 +1103,6 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         relevance: ['ownership', 'conflict', 'release_admission'] as const,
         workId: entry.workId,
         status: entry.status,
-        mode: entry.mode,
       })),
       invalidActiveWork: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
       recentExecutionJobs: recentJobs.map(summarizeWorkListItem),

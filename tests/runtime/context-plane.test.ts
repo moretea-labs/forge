@@ -2,9 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   renderContextPlane,
@@ -24,21 +21,6 @@ function record(input: Partial<ContextRecord> & Pick<ContextRecord, 'contextId' 
     updatedAt: input.updatedAt ?? '2026-09-03T00:00:00.000Z',
     ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
   };
-}
-
-const providers = [
-  { providerId: 'provider-a', kind: 'local_cli' as const, status: 'ready', capabilities: ['code_patch'], directDispatch: true },
-  { providerId: 'provider-b', kind: 'remote_api' as const, status: 'ready', capabilities: ['code_patch'], directDispatch: true },
-];
-
-function routeInput(preferredProviderId?: string) {
-  return {
-    intent: { objective: 'Implement a bounded change', scopeClear: true, mutation: true, taskIntent: 'implementation', ...(preferredProviderId ? { preferredProviderId } : {}) },
-    workspace: {},
-    policy: {},
-    capabilities: { providers },
-    recovery: {},
-  } as const;
 }
 
 describe('Kernel V2 structured Context Plane', () => {
@@ -88,51 +70,11 @@ describe('Kernel V2 structured Context Plane', () => {
       });
       expect(resolution.records).toHaveLength(3);
       expect(resolution.truncated).toBe(true);
-      expect(resolution.routeHints.preferredProviderId).toBe('provider-b');
       expect(resolution.records[0]?.record.contextId).toBe('requirement-provider');
       const rendered = renderContextPlane(resolution);
       expect(rendered).toContain('cannot override AGENTS.md');
       expect(rendered).toContain('[context-budget]');
     } finally { rmSync(home, { recursive: true, force: true }); }
-  });
-
-  test('stored routing preference affects selection but current explicit intent remains authoritative', () => {
-    const home = mkdtempSync(join(tmpdir(), 'forge-v2-context-'));
-    try {
-      writeContextRecord({ controllerHome: home, expectedRevision: null, record: record({
-        contextId: 'prefer-b', value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-b' },
-      }) });
-      const resolution = resolveContextPlane({ controllerHome: home, intent: 'implementation', now: '2026-09-03T01:00:00.000Z' });
-      const fromContext = selectExecutionMode({ scopeClear: true, routePolicyInput: routeInput(), contextRouteHints: resolution.routeHints }).routeDecision;
-      expect(fromContext.selectedProviderId).toBe('provider-b');
-      const explicitWins = selectExecutionMode({ scopeClear: true, routePolicyInput: routeInput('provider-a'), contextRouteHints: resolution.routeHints }).routeDecision;
-      expect(explicitWins.selectedProviderId).toBe('provider-a');
-    } finally { rmSync(home, { recursive: true, force: true }); }
-  });
-
-  test('GoalWorkloop resolves Controller Home preferences on demand before provider routing', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-v2-context-goal-'));
-    try {
-      const controllerHome = join(root, 'controller');
-      writeContextRecord({ controllerHome, expectedRevision: null, record: record({
-        contextId: 'goal-prefer-b', value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-b' },
-      }) });
-      const workStore = { controllerHome, repoId: 'repo-context-goal' };
-      const result = routeWorkStart({
-        workStore,
-        handoffStore: { root: join(root, 'handoff') },
-        repoId: 'repo-context-goal',
-        sourceRevision: 'revision-a',
-      }, {
-        objective: 'Apply a tiny context-routed change.',
-        modeInput: { scopeClear: true, routePolicyInput: routeInput() },
-      });
-      const workId = (result.data as { work?: { workId?: string } }).work?.workId;
-      expect(result.status).toBe('ok');
-      expect(workId).toBeTruthy();
-      expect(getWorkContract(workStore, workId!)?.routeDecision?.selectedProviderId).toBe('provider-b');
-      expect(readControlPlaneRecord(controllerHome, 'work_contract', 'repo-context-goal', 'WORK-any')).toBeUndefined();
-    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   test('missing or malformed Context remains advisory and cannot mutate Work authority', () => {
@@ -143,11 +85,7 @@ describe('Kernel V2 structured Context Plane', () => {
       writeControlPlaneRecord(home, { namespace: 'context_record', scope: 'global:global', key: 'malformed', schemaVersion: 1, value: { schemaVersion: 999, raw: true }, expectedRevision: null });
       const resolution = resolveContextPlane({ controllerHome: home, intent: 'implementation', now: '2026-09-03T01:00:00.000Z' });
       expect(resolution.records).toEqual([]);
-      expect(resolution.routeHints).toEqual({});
       expect(readControlPlaneRecord(home, 'work_contract', 'repo-1', 'WORK-AUTHORITY')?.value).toEqual(workValue);
-      const baseline = selectExecutionMode({ scopeClear: true, routePolicyInput: routeInput() }).routeDecision;
-      expect(baseline.selectedProviderId).toBeNull();
-      expect(baseline.alternatives).toEqual(['provider-a', 'provider-b']);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });

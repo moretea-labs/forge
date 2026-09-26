@@ -81,7 +81,6 @@ function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof se
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    mode: 'goal_workloop',
     workKind: 'repository_change',
     objective: `Execute repository command lifecycle fixture for ${workId}.`,
     acceptanceCriteria: [],
@@ -627,20 +626,9 @@ describe('repository command execution lifecycle', () => {
       checks: [],
       workKind: 'repository_change',
       verifiedEngineeringEvidence: trustedEngineeringEvidence(gitOutput(repoRoot, ['rev-parse', 'HEAD'])),
-      modeInput: {
-        scopeClear: true,
-        mutation: true,
-        // Source-changing Work must carry concrete repository-change evidence;
+      request: { scopeClear: true, mutation: true, // Source-changing Work must carry concrete repository-change evidence;
         // allowed/likely paths are policy/discovery hints and are not ownership proof.
-        expectedFiles: 1,
-        expectedChangedLines: 1,
-        requiresExternalEffect: true,
-        remoteWrite: true,
-        risk: 'remote_write',
-        requiresRecovery: false,
-        requiresWorker: false,
-        requiresApproval: false,
-      },
+        requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write', requiresRecovery: false, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
@@ -672,7 +660,6 @@ describe('repository command execution lifecycle', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Push exactly the delivered revision before terminalization.',
       acceptanceCriteria: ['Only the exact delivery revision reaches origin/main.'],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -732,7 +719,6 @@ describe('repository command execution lifecycle', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Fence post-finalize remote delivery.',
       acceptanceCriteria: ['Terminal Work cannot mutate origin.'],
       constraints: { requireHandoffOnAmbiguity: true },

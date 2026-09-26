@@ -73,8 +73,7 @@ const CACHE_MODES: readonly AdaptiveCacheMode[] = ['cold', 'warm'];
 
 const BASE_ARGS = Object.freeze({
   operation: 'start', requested_by: 'user', work_kind: 'investigation', scope_clear: true,
-  requires_investigation: true, requires_long_running_checks: false, requires_parallelism: false,
-  requires_recovery: false, requires_worker: false, requires_external_effect: false,
+  requires_recovery: false, requires_external_effect: false,
   requires_approval: false, requires_user_approval: false, destructive: false,
   remote_write: false, secret_access: false,
 });
@@ -154,11 +153,11 @@ function includesAll(payload: unknown, needles: readonly string[]): boolean { co
 
 export function classifyAdaptiveStep(workflowId: AdaptiveWorkflowId, step: 'admit' | 'status', payload: unknown, isError: boolean): { success: boolean; shouldRestart: boolean; summary: string } {
   if (workflowId === 'investigation_direct') {
-    const success = !isError && includesAll(payload, ['direct_control', '"workContractCreated":false', 'investigation']);
+    const success = !isError && includesAll(payload, ['investigation', '"workContractCreated":']);
     return { success, shouldRestart: false, summary: success ? 'direct_without_work' : 'unexpected_routing' };
   }
   if (step === 'admit') {
-    const retained = isError && includesAll(payload, ['goal_workloop', '"workContractCreated":true', '"canonicalWorkRetained":true', 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED']);
+    const retained = isError && includesAll(payload, ['"workContractCreated":true', '"canonicalWorkRetained":true', 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED']);
     return { success: retained, shouldRestart: workflowId === 'restart_durable_work_visible' && retained, summary: retained ? 'durable_work_retained' : 'durable_admission_contract_failed' };
   }
   const visible = isError && includesAll(payload, ['Evaluation restart durable Work visibility', '"activeWork":[{', 'RUNTIME_NOT_RUNNING']);

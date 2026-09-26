@@ -118,14 +118,14 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Use typed Git status, diff, branch, commit, integration, and cleanup handlers without routing arbitrary Git text through a facade RPC.',
   },
   {
-    capabilityId: 'workflow.issue_task',
+    capabilityId: 'workflow.durable_work',
     domain: 'controller',
     group: 'issue-task',
     operationClass: 'execute',
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Plan, dispatch, review, verify, retry, and accept durable Issue and Task work through existing typed handlers.',
+    summary: 'Admit, continue, verify, review, finalize, and stop explicitly requested durable Plan/Work through existing typed handlers. Forge stores facts and enforces mechanical fences; the model decides method, checks, review, and completion.',
   },
   {
     capabilityId: 'platform.ios',

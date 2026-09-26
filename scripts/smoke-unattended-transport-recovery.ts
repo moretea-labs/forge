@@ -105,7 +105,6 @@ try {
   createWorkContract({ controllerHome, repoId }, {
     workId,
     repoId,
-    mode: 'goal_workloop',
     objective: 'Continue without manual user wake-ups.',
     acceptanceCriteria: ['The Work resumes from durable authority.'],
     allowedPaths: [],

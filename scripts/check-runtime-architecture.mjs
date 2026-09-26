@@ -550,8 +550,6 @@ const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('repeated_state:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('round_budget_exhausted:')`,
   `packages/kernel/controller/application/continuation-service.ts::error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')`,
-  `src/cli/local-bridge/facade-api.ts::selection.reason.includes('Small')`,
-  `src/cli/local-bridge/facade-api.ts::selection.reason.includes('small')`,
   `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
   `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_PATH_INVALID:\")`,
   `src/cli/local-bridge/server.ts::message.startsWith(\"REPOSITORY_SELF_PROTECTED\")`,
@@ -684,7 +682,6 @@ const required = [
   'src/runtime/execution/workers/worker-entry.ts',
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
-  'src/runtime/control-plane/routing/route-policy.ts',
   'src/runtime/control-plane/routing/workspace-admission.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
   'src/runtime/control-plane/facade/repository-work-admission.ts',
@@ -810,12 +807,6 @@ requireText('src/runtime/execution/process-runtime/check-facade.ts', 'resolveChe
 for (const path of sourceFiles('src/runtime/control-plane')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])(?:\.\.\/)+gateway\//, 'control-plane domain/application code must not depend on Gateway transport');
 }
-requireText('src/runtime/control-plane/routing/route-policy.ts', "export function decideRoute");
-requireText('src/runtime/control-plane/routing/route-policy.ts', 'inputFingerprint');
-requireText('src/runtime/control-plane/routing/route-policy.ts', 'policyVersion');
-requireText('src/runtime/control-plane/routing/route-policy.ts', 'requiresWork: false');
-forbid('src/runtime/control-plane/routing/route-policy.ts', /taskIntent|lastFailureClass|browser_planning|ios_analysis|PREFERRED_CAPABILITY/, 'capability broker must not infer provider strategy from task semantics');
-requireText('src/runtime/control-plane/routing/route-policy.ts', "providerSelection.key === 'multiple'");
 for (const path of [
   'adapters/mcp/tool-mapping/repository-tools.ts',
   'adapters/mcp/tool-mapping/legacy-tool-service.ts',
@@ -823,24 +814,41 @@ for (const path of [
 ]) {
   forbid(path, /assessWorkMode|parseExplicitTaskMode|assess_work_mode|assess_work_request|recommendedMode\s*:/, 'production capability/context surfaces must not expose or infer engineering work modes');
 }
-forbid(
-  'src/runtime/control-plane/routing/route-policy.ts',
-  /durableWorkRequired|coordinationRequired|explicitParallelMode|expectedFiles|expectedChangedLines|requiresInvestigation|requiresLongRunningChecks|requiresParallelism|needsDependencies|requiresIndependentDeliverables|independentTaskCount|agentRequested|explicitMode|lastProviderId|lastFailureClass|routingOrders|defaultProviders|routingKey\(|providerOrder\(|PREFERRED_CAPABILITY|KIND_RANK|protected_path|taskIntent\s*===/,
-  'route policy may expose auth/provider/placement facts but must not carry or infer Work topology, engineering method, or provider choice from task size, method, failure class, path classification, or semantic intent',
-);
-for (const path of [
-  'src/runtime/control-plane/facade/goal-workloop.ts',
-  'src/runtime/control-plane/facade/repository-work-admission.ts',
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
-  'src/runtime/plugins/store.ts',
-]) {
-  forbid(path, /routeDecision\.(?:executionMode|workMode|executionPath)|mode\.mode\s*===|selected\.mode\s*===/, 'legacy route/mode projections must not control production execution');
+// Engineering execution strategy belongs to the model. Forge must not carry a
+// route/mode/driver vocabulary, a task-size or complexity heuristic, or a
+// second router that decides Direct/Work/Goal, worker/provider, verify, review,
+// or completion on the model's behalf.
+requireMissing('src/runtime/control-plane/routing/route-policy.ts');
+requireMissing('src/runtime/control-plane/routing/index.ts');
+for (const path of [...sourceFiles('src'), ...sourceFiles('adapters'), ...sourceFiles('packages')]) {
+  forbid(
+    path,
+    /\bRouteExecutionMode\b|\bRouteWorkMode\b|\bRouteExecutionPath\b|\bExplicitTaskMode\b|\bWorkRouteDecisionSnapshot\b|\bWorkContractDriverPolicy\b|\bExecutionModeSelection\b|\bselectExecutionMode\b|\bmodeInput\b/,
+    'Forge must not model engineering execution modes, work modes, execution paths, drivers, or mode selection',
+  );
+  forbid(
+    path,
+    /['"](?:direct_control|goal_workloop|handoff_only)['"]/,
+    'retired engineering mode tokens must not return as typed Forge vocabulary',
+  );
+  forbid(
+    path,
+    /\bdirect_edit\b\s*\|\s*['"]bounded_work['"]|['"]bounded_work['"]\s*\|\s*['"]quick_agent['"]|['"]quick_agent['"]\s*\|\s*['"]issue_task['"]/,
+    'retired work-mode vocabulary must not return',
+  );
 }
 forbid(
-  'packages/kernel/work/infrastructure/work-contract-store.ts',
-  /defaultDriver\(mode|input\.mode\s*===\s*['"](?:goal_workloop|direct_control|handoff_only)['"]/,
-  'legacy Work mode must not select driver or worktree placement',
+  'packages/kernel/work/domain/types.ts',
+  /\bmode:\s*ExecutionMode\b|\bdriver:\s*WorkContractDriverPolicy\b|routeDecision/,
+  'WorkContract must persist no engineering-mode, driver, or route-decision authority',
 );
+for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
+  forbid(
+    path,
+    /\bisSmallScopedTask\b|\bsmallScopedTask\b|\bdurableWorkRequired\b|\bcoordinationRequired\b|\bexplicitParallelMode\b|\bexpectedFiles\b|\bexpectedChangedLines\b|\brequiresInvestigation\b|\brequiresLongRunningChecks\b|\brequiresParallelism\b|\bindependentTaskCount\b|\bagentRequested\b|\broutingKey\(|\bproviderOrder\(|\bKIND_RANK\b/,
+    'Forge must not infer engineering method, worker choice, or Work topology from task size, complexity, path classification, or semantic intent',
+  );
+}
 forbid(
   'src/runtime/plugins/store.ts',
   /acceptSubmittedWorkContract|localSystemActionRequiresWork/,
@@ -851,7 +859,6 @@ forbid(
   /repositoryChangeIntent|directEditWithinBoundary|maxChangedFiles\s*<|maxChangedLines\s*</,
   'Work-kind classification must not be inferred from predicted scope size or a task-size threshold',
 );
-requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'WORK_KIND_REQUIRED_FOR_EXTERNAL_EFFECT_WITH_PREDICTED_SCOPE');
 forbid(
   'src/runtime/control-plane/facade/goal-workloop.ts',
   /linkedEngineeringBlockerWorkId|work-linked-engineering-blocker-/,
@@ -996,12 +1003,10 @@ forbid(
 );
 requireMissing('src/cli/controller/work-mode.ts');
 forbid('src/runtime/control-plane/facade/types.ts', /repeated_infrastructure_failure|codex_worker_requires_review/, 'Handoff compatibility types may represent only genuine human blockers');
-let routeAuthorityCount = 0;
 for (const path of sourceFiles('src')) {
-  routeAuthorityCount += (text(path).match(/export function decideRoute\s*\(/g) ?? []).length;
+  forbid(path, /export function decideRoute\s*\(/, 'Route Policy was deleted; Forge must not regain an execution-strategy router');
   forbid(path, /requirePlanForGoalWorkloop\s*:\s*true/, 'never restore mandatory Plan gating in production');
 }
-if (routeAuthorityCount !== 1) failures.push(`exactly one decideRoute authority is required; found ${routeAuthorityCount}`);
 forbid(
   'src/runtime/control-plane/facade/goal-workloop.ts',
   /function\s+(?:evaluateWorkCompletionEvidence|evaluateWorkImplementationEvidence|verificationRecordAppliesToCurrentWorkspace)\s*\(/,

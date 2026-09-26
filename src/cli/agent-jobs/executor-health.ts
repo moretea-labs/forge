@@ -1,6 +1,6 @@
 import type { GitHubStatus } from "../github/contracts";
 import type { McpAgentRunnerName } from "../mcp/types";
-import type { ControllerAgent, ControllerTask } from "../controller/types";
+import type { ControllerAgent } from "../controller/types";
 
 export type ExecutorHealthStatus =
   | "available"
@@ -24,7 +24,6 @@ export type ExecutorHealthReason =
   | "unknown";
 
 export type ExecutorHealthFallback =
-  | "use_direct_edit"
   | "enable_local_agent"
   | "run_gh_auth_login"
   | "enable_copilot_coding_agent"
@@ -64,19 +63,6 @@ function normalize(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function isSmallScopedTask(task: Pick<ControllerTask, "allowedPaths"> | undefined): boolean {
-  return Array.isArray(task?.allowedPaths) && task.allowedPaths.length > 0 && task.allowedPaths.length <= 3;
-}
-
-function localUnavailableMessage(base: string, task?: Pick<ControllerTask, "allowedPaths">): string {
-  if (!isSmallScopedTask(task)) return base;
-  return `${base} Use begin_edit_session/apply_patch/run_check instead of retrying unavailable agents.`;
-}
-
-function localUnavailableFallback(task?: Pick<ControllerTask, "allowedPaths">): ExecutorHealthFallback {
-  return isSmallScopedTask(task) ? "use_direct_edit" : "enable_local_agent";
-}
-
 export function executorHealthCode(health: ExecutorHealth): string {
   switch (health.reason) {
     case "local_dev_runner_disabled":
@@ -104,19 +90,15 @@ export function executorHealthCode(health: ExecutorHealth): string {
 export function classifyLocalExecutorHealth(
   agent: Exclude<ControllerAgent, "github-copilot">,
   policy: LocalExecutorPolicy,
-  task?: Pick<ControllerTask, "allowedPaths">,
 ): ExecutorHealth | null {
   if (!policy.agentRunner) {
     return {
       agent,
       status: "disabled",
       reason: "local_dev_runner_disabled",
-      message: localUnavailableMessage(
-        `Local ${agent} runs are disabled because the dev runner is not enabled.`,
-        task,
-      ),
+      message: `Local ${agent} runs are disabled because the dev runner is not enabled.`,
       remediation: "Enable the controller dev runner before dispatching local Codex or Claude runs.",
-      fallback: localUnavailableFallback(task),
+      fallback: "enable_local_agent",
     };
   }
   if (!policy.allowedAgents.includes(agent)) {
@@ -124,12 +106,9 @@ export function classifyLocalExecutorHealth(
       agent,
       status: "disabled",
       reason: "local_agent_disabled",
-      message: localUnavailableMessage(
-        `Local agent is not enabled: ${agent}.`,
-        task,
-      ),
+      message: `Local agent is not enabled: ${agent}.`,
       remediation: `Enable ${agent} in the controller dev-runner allowedAgents list before retrying.`,
-      fallback: localUnavailableFallback(task),
+      fallback: "enable_local_agent",
     };
   }
   return null;
@@ -137,7 +116,6 @@ export function classifyLocalExecutorHealth(
 
 export function classifyGitHubCopilotPreflight(
   status: GitHubStatus,
-  task?: Pick<ControllerTask, "allowedPaths">,
 ): ExecutorHealth | null {
   if (!status.available) {
     return {
@@ -146,7 +124,7 @@ export function classifyGitHubCopilotPreflight(
       reason: "github_cli_unavailable",
       message: "GitHub CLI (gh) is unavailable, so GitHub Copilot cloud sessions cannot start.",
       remediation: "Install GitHub CLI and ensure `gh --version` works in this repository environment.",
-      fallback: isSmallScopedTask(task) ? "use_direct_edit" : "install_github_cli",
+      fallback: "install_github_cli",
     };
   }
   if (!status.authenticated) {
@@ -175,7 +153,6 @@ export function classifyGitHubCopilotPreflight(
 export function classifyExecutorFailure(
   agent: ControllerAgent,
   message: string,
-  task?: Pick<ControllerTask, "allowedPaths">,
 ): ExecutorHealth | null {
   const text = normalize(message);
   if (!text) return null;
@@ -193,7 +170,7 @@ export function classifyExecutorFailure(
         reason: "copilot_cca_disabled",
         message: "GitHub Copilot cloud agent is not enabled for this account or repository.",
         remediation: "Enable GitHub Copilot Coding Agent / CCA for the account and repository before retrying cloud sessions.",
-        fallback: isSmallScopedTask(task) ? "use_direct_edit" : "enable_copilot_coding_agent",
+        fallback: "enable_copilot_coding_agent",
       };
     }
     return null;
@@ -207,7 +184,7 @@ export function classifyExecutorFailure(
         reason: "codex_insufficient_balance",
         message: "Codex execution is unavailable because the configured API account has insufficient balance.",
         remediation: "Restore API balance or correct the Codex base URL/account configuration before retrying.",
-        fallback: isSmallScopedTask(task) ? "use_direct_edit" : "fix_codex_api_balance_or_base_url",
+        fallback: "fix_codex_api_balance_or_base_url",
       };
     }
     if (text.includes("usage limit")) {
@@ -217,7 +194,7 @@ export function classifyExecutorFailure(
         reason: "codex_usage_limit",
         message: "Codex execution is unavailable because the configured account has reached a usage limit.",
         remediation: "Raise or wait for the Codex usage limit, or correct the API account/base URL configuration before retrying.",
-        fallback: isSmallScopedTask(task) ? "use_direct_edit" : "fix_codex_api_balance_or_base_url",
+        fallback: "fix_codex_api_balance_or_base_url",
       };
     }
     if (
@@ -232,7 +209,7 @@ export function classifyExecutorFailure(
         reason: "codex_auth_required",
         message: "Codex execution is unavailable because authentication is required.",
         remediation: "Authenticate the Codex executor or correct the configured credentials/base URL before retrying.",
-        fallback: isSmallScopedTask(task) ? "use_direct_edit" : "authenticate_codex",
+        fallback: "authenticate_codex",
       };
     }
   }
@@ -243,7 +220,7 @@ export function classifyExecutorFailure(
     reason: "unknown",
     message: `${agent} execution failed for an unclassified reason.`,
     remediation: "Inspect the bounded run error and executor configuration before retrying.",
-    fallback: isSmallScopedTask(task) ? "use_direct_edit" : "inspect_executor_configuration",
+    fallback: "inspect_executor_configuration",
   };
 }
 

@@ -31,7 +31,6 @@ function fixture(suffix: string) {
     repoId,
     checkoutId: `checkout-${suffix}`,
     baseRevision: 'revision-atomicity',
-    mode: 'goal_workloop',
     objective: 'Prove WorkContract read-modify-write authority is atomic.',
     acceptanceCriteria: ['Preserve compatible concurrent mutations.'],
     allowedPaths: ['src/**'],
@@ -239,7 +238,6 @@ test('persists the exact historical v3 review-gap migration once without making 
   createWorkContract(options, {
     workId: malformedId,
     repoId: fx.repoId,
-    mode: 'goal_workloop',
     objective: 'Malformed current-schema fixture.',
     acceptanceCriteria: [],
     allowedPaths: [],

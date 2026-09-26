@@ -63,8 +63,7 @@ function draft(): WorkflowAssetDraft {
 
 async function installedRuntime(controllerHome: string, root: string, assetDraft: WorkflowAssetDraft) {
   const store = { controllerHome, repoId: 'repo-workflow-test' };
-  createWorkContract(store, { workId: 'work-workflow-test', repoId: store.repoId, checkoutId: 'checkout-workflow-test', mode: 'direct_control',
-    objective: 'workflow authority fixture', acceptanceCriteria: ['safe execution'], constraints: {}, allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'user' });
+  createWorkContract(store, { workId: 'work-workflow-test', repoId: store.repoId, checkoutId: 'checkout-workflow-test', objective: 'workflow authority fixture', acceptanceCriteria: ['safe execution'], constraints: {}, allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'user' });
   const written = writeWorkflowAssetContent({ kind: 'controller', controllerHome }, assetDraft);
   const installed = registerWorkflowAsset({
     controllerHome,

@@ -109,7 +109,6 @@ function workInput(workId: string, repoId = 'repo-test') {
   return {
     workId,
     repoId,
-    mode: 'direct_control' as const,
     objective: `Execute ${workId}`,
     acceptanceCriteria: ['Work remains bounded.'],
     constraints: { requireHandoffOnAmbiguity: true },

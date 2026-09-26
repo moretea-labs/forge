@@ -794,7 +794,6 @@ function postFinalizeAttributionFixture() {
     checkoutId: repository.activeCheckoutId,
     principalId,
     controllerInstanceId: 'runtime-post-finalize',
-    mode: 'goal_workloop',
     objective: 'Exercise post-finalize readonly attribution.',
     acceptanceCriteria: ['readonly observation remains attributable after lifecycle close'],
     allowedPaths: [],

@@ -47,7 +47,6 @@ function fixture(requirementId?: string, workKind: 'repository_change' | 'remote
     repoId,
     checkoutId,
     baseRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(),
-    mode: 'direct_control',
     objective: 'Complete a standalone Direct Edit through WorkContract authority.',
     acceptanceCriteria: [],
     allowedPaths: ['src/**'],

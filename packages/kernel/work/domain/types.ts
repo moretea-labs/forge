@@ -1,12 +1,10 @@
 import type { ExecutionPlacement, ScopeRef } from '../../identity/api/index';
 import type { ProcessCheckReceiptEvidence } from './check-receipt';
-import type { WorkAccessMode, WorkRouteDecisionSnapshot } from './execution-snapshot';
+import type { WorkAccessMode } from './execution-snapshot';
 import type { RepositoryCompletionReceipt } from './repository-completion-receipt';
 import type { WorkImplementationReviewRecord } from './implementation-review';
 import type { EngineeringContextReceipt } from './engineering-contracts';
 
-/** Work-persisted orchestration metadata is Kernel-owned; facade is a consumer. */
-export type ExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
 export type FacadeDetailLevel = 'summary' | 'detail' | 'raw';
 export interface EvidenceRef {
   evidenceId?: string;
@@ -312,12 +310,6 @@ export interface WorkContractConstraints {
   remoteDeliveryRequired?: boolean;
 }
 
-export interface WorkContractDriverPolicy {
-  preferred: 'direct_edit' | 'isolated_worktree' | 'external_controller' | 'handoff_only';
-  allowWorker: boolean;
-  allowDirectEdit: boolean;
-}
-
 export interface WorktreePolicy {
   required: boolean;
   reason?: string;
@@ -404,9 +396,6 @@ export interface WorkContract {
   /** Authoritative repository baseline captured at Work admission. Absent means legacy/unknown, never implicitly unborn. */
   repositoryBaseState?: 'revision' | 'unborn';
   workspaceFingerprint?: string;
-  routeDecisionFingerprint?: string;
-  routeDecision?: WorkRouteDecisionSnapshot;
-  mode: ExecutionMode;
   objective: string;
   /** Independent authored-context revision. Mechanical Work writes never use the SQLite row revision as semantic CAS. */
   semanticRevision?: number;
@@ -482,7 +471,6 @@ export interface WorkContract {
   allowedPaths: string[];
   forbiddenPaths: string[];
   checks: string[];
-  driver: WorkContractDriverPolicy;
   worktreePolicy: WorktreePolicy;
   evidencePolicy: EvidencePolicy;
   approvalPolicy: ApprovalPolicy;

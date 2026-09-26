@@ -309,7 +309,6 @@ export function claimedSessionEditBinding(
     checkoutId: repository.activeCheckoutId,
     principalId: caller.principalId.trim(),
     controllerInstanceId: caller.controllerInstanceId,
-    routeDecisionFingerprint: work.routeDecisionFingerprint,
   };
 }
 

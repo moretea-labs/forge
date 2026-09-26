@@ -192,7 +192,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Retire a historically retained branch after preservation is durable.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -253,7 +252,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Reconcile a branch deletion that completed before its final cleanup receipt write.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -312,7 +310,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Already settled cleaned Work must not be reprocessed.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -359,7 +356,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Explicitly retained cancelled Work must not be reclaimed by periodic cleanup.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -406,7 +402,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Later valid terminal Work must still be cleaned.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -449,7 +444,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: malformedWorkId,
       repoId: fx.repository.repoId,
-      mode: 'goal_workloop',
       objective: 'Malformed historical Work must not stall terminal cleanup.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -504,7 +498,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Cancelled Work should close its managed Git resources.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -545,7 +538,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Failed implementation evidence must survive cancellation cleanup.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -606,7 +598,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId,
       repoId: fx.repository.repoId,
-      mode: 'goal_workloop',
       objective: 'Completed WorkContract must remain sufficient physical cleanup authority when its WorkHandle is missing.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -660,7 +651,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Semantic cancellation must not authorize branch mutation or cleanup.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -689,7 +679,6 @@ describe('terminal Work cleanup', () => {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
       checkoutId: fx.workspace.checkoutId!,
-      mode: 'direct_control',
       objective: 'Semantic completion must not imply filesystem cleanup.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -714,7 +703,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: fx.handle.workId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Active Work remains owned.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -1180,7 +1168,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: otherWorkId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Cancelled auxiliary cleanup ownership must not retain the checkout.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -1217,7 +1204,6 @@ describe('terminal Work cleanup', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId: otherWorkId,
       repoId: fx.repository.repoId,
-      mode: 'direct_control',
       objective: 'Retain the already integrated checkout without further mutation.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },

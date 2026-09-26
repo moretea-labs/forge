@@ -32,7 +32,6 @@ function fixture(workId: string) {
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    mode: 'goal_workloop',
     objective: 'Reconcile an ambiguous ChatGPT provider send without replay.',
     acceptanceCriteria: [],
     allowedPaths: ['**/*'],

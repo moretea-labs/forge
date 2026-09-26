@@ -747,7 +747,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(created.status).toBe('ok');
     createWorkContract(store, {
       workId: 'work-active-scope', repoId: repository.repoId, planId, planStepId: 'stage', planSourceRevision: sourceRevision,
-      mode: 'goal_workloop', objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
+      objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
       allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
 
@@ -885,7 +885,6 @@ describe('rh_work verification registry', () => {
       repoId: repository.repoId,
       checkoutId: candidateCheckout!.checkoutId,
       baseRevision: sourceRevision,
-      mode: 'goal_workloop',
       objective: 'Verify a check introduced only by the candidate checkout.',
       acceptanceCriteria: ['Candidate check is resolved from the Work checkout.'],
       allowedPaths: ['package.json'],

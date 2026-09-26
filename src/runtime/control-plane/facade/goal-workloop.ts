@@ -68,19 +68,17 @@ import { buildWorkContinuationSnapshot } from './work-continuation';
 import type {
   CapabilityRisk,
   EvidenceRef,
-  ExecutionModeSelectionInput,
   FacadeResult,
   PlanContract,
   PolicyDecision,
   SuggestedNextAction,
   VerificationRecord,
   WorkContract,
+  WorkStartFacts,
   WorkKind,
   WorkRisk,
 } from './types';
-import { selectExecutionMode } from './types';
 import { resolveWorkspaceAdmissionConstraint } from '../routing/workspace-admission';
-import { resolveContextPlane, type ContextScope } from '../../context/context-plane';
 
 export type GoalWorkloopOperation = 'start' | 'continue' | 'verify' | 'review' | 'finalize' | 'stop';
 
@@ -124,7 +122,8 @@ export interface GoalWorkloopStartInput {
   forbiddenPaths?: string[];
   checks?: string[];
   constraints?: WorkContract['constraints'];
-  modeInput: ExecutionModeSelectionInput;
+  /** Concrete mechanical request facts. This capability is itself the explicit durable-Work choice. */
+  request: WorkStartFacts;
   requestedBy?: WorkContract['requestedBy'];
   /** Stable durable admission identity for system-originated Work such as recurrent incident repair. */
   requestId?: string;
@@ -293,9 +292,9 @@ function handoffIdFor(prefix: string): string {
 
 function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
   if (input.workKind === 'read_only_review') return 'readonly';
-  const risk = input.modeInput.risk;
-  if (input.modeInput.secretAccess === true || input.modeInput.destructive === true) return 'destructive';
-  if (input.modeInput.remoteWrite === true) return 'high';
+  const risk = input.request.risk;
+  if (input.request.secretAccess === true || input.request.destructive === true) return 'destructive';
+  if (input.request.remoteWrite === true) return 'high';
   if (risk === 'readonly') return 'readonly';
   if (risk === 'destructive' || risk === 'destructive_remote' || risk === 'raw_secret_config') return 'destructive';
   if (risk === 'remote_write') return 'high';
@@ -306,20 +305,12 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
 
 function resolvedWorkKindFor(input: GoalWorkloopStartInput): WorkKind {
   if (input.workKind) return input.workKind;
-  const typedRecoverableReadOnlyReview = input.modeInput.mutation === false
-    && input.modeInput.requiresInvestigation === true
-    && input.modeInput.requiresRecovery === true;
-  if (typedRecoverableReadOnlyReview) return 'read_only_review';
-  if (input.modeInput.requiresExternalEffect === true) {
-    // Predicted scope size is model strategy, never Work-kind classification
-    // authority. allowed_paths and discovery hints do not prove repository
-    // mutation either, so an ambiguous "external effect + predicted scope" input
-    // fails closed instead of letting Forge guess between a pure effect and an
-    // implementation-plus-publish Work. The caller declares work_kind to decide.
-    const predictedScopeSupplied = (input.modeInput.expectedFiles ?? 0) > 0
-      || (input.modeInput.expectedChangedLines ?? 0) > 0;
-    if (predictedScopeSupplied) throw new Error('WORK_KIND_REQUIRED_FOR_EXTERNAL_EFFECT_WITH_PREDICTED_SCOPE');
-    return input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect';
+  if (input.request.requiresExternalEffect === true) {
+    // Mechanical effect classification only: a remote effect differs from a local
+    // effect in receipt identity. Predicted scope size is model strategy and is
+    // never consulted; callers declare `work_kind` when a repository change is
+    // also involved.
+    return input.request.remoteWrite === true ? 'remote_effect' : 'local_effect';
   }
   return 'repository_change';
 }
@@ -421,22 +412,17 @@ export function routeWorkStart(
       const normalized = value.trim().replace(/\\/g, '/');
       return normalized === '*' || normalized === '**' || normalized === '**/*';
     });
-  const typedReadOnlyReviewRequested = requestedWorkKind === undefined
-    && (
-      explicitSourceMutationFence
-      || (
-        (input.modeInput.mutation === false || (input.modeInput.mutation === undefined && input.modeInput.risk === 'readonly'))
-        && input.modeInput.requiresInvestigation === true
-        && input.modeInput.requiresRecovery === true
-      )
-    );
+  // A read-only review is an explicit `work_kind`, or an explicit source-mutation
+  // fence that proves no repository path may change. Forge never infers it from
+  // caller hints about investigation depth or recovery needs.
+  const typedReadOnlyReviewRequested = requestedWorkKind === undefined && explicitSourceMutationFence;
   const effectiveWorkKind = requestedWorkKind ?? (typedReadOnlyReviewRequested ? 'read_only_review' : undefined);
   const readOnlyReviewRequested = effectiveWorkKind === 'read_only_review';
   const readOnlyMutationConflict = readOnlyReviewRequested && (
-    input.modeInput.mutation === true
-    || input.modeInput.requiresExternalEffect === true
-    || input.modeInput.remoteWrite === true
-    || input.modeInput.destructive === true
+    input.request.mutation === true
+    || input.request.requiresExternalEffect === true
+    || input.request.remoteWrite === true
+    || input.request.destructive === true
   );
   if (readOnlyMutationConflict) {
     return buildFacadeResult({
@@ -445,77 +431,47 @@ export function routeWorkStart(
       data: { executionStarted: false, workContractCreated: false, workKind: effectiveWorkKind },
     });
   }
-  const contextScopes: ContextScope[] = [];
-  if (input.requirementId?.trim()) contextScopes.push({ schemaVersion: 1, kind: 'requirement', id: input.requirementId.trim() });
-  if (input.planId?.trim()) contextScopes.push({ schemaVersion: 1, kind: 'plan', id: input.planId.trim() });
-  if (input.relatedWorkId?.trim()) contextScopes.push({ schemaVersion: 1, kind: 'work', id: input.relatedWorkId.trim() });
-  const resolvedContext = ctx.workStore.controllerHome
-    ? resolveContextPlane({
-        controllerHome: ctx.workStore.controllerHome,
-        scopes: contextScopes,
-        intent: 'implementation',
-        now: nowIso(ctx),
-      })
-    : undefined;
   // A terminal continuation is not a new semantic request. Its durable predecessor
   // and Plan lineage already define the goal scope, while the successor Plan step
-  // becomes the Work objective later in startGoalWorkloop. Do not force the external
-  // Controller to duplicate semantic text merely to satisfy generic route selection.
-  // This fallback is routing context only and never becomes successor Work authority.
+  // becomes the Work objective later in startGoalWorkloop.
   const routeObjective = input.objective.trim()
     || (input.workRelation === 'continue' && relatedLifecycleSource?.status === 'completed'
       ? relatedLifecycleSource.objective.trim()
       : '');
-  const effectiveModeInput: ExecutionModeSelectionInput = {
-    ...input.modeInput,
-    contextRouteHints: input.modeInput.contextRouteHints ?? resolvedContext?.routeHints,
+  const effectiveRequest: WorkStartFacts = {
+    ...input.request,
     objective: routeObjective,
-    knownPaths: input.allowedPaths,
-    workspacePlacement: placementConstraint.workspaceMode,
-    directMainProhibited: placementConstraint.directMainProhibited,
-    workspaceDirty: ctx.workspaceDirty ?? input.modeInput.workspaceDirty,
-    mutation: readOnlyReviewRequested ? false : input.modeInput.mutation ?? input.modeInput.risk !== 'readonly',
-    risk: readOnlyReviewRequested ? 'readonly' : input.modeInput.risk,
+    workspaceDirty: ctx.workspaceDirty ?? input.request.workspaceDirty,
+    mutation: readOnlyReviewRequested ? false : input.request.mutation ?? input.request.risk !== 'readonly',
+    risk: readOnlyReviewRequested ? 'readonly' : input.request.risk,
     approvalConfirmed: input.approvalConfirmed === true,
     requiresUserApproval: input.approvalConfirmed === true
       ? false
-      : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
+      : input.request.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
-  // Compatibility mode tokens are accepted by older clients but never choose
-  // whether rh_work creates Work. Invoking this path is already the explicit
-  // model/user decision to use durable Work.
-  const applyForcedMode = (selected: ReturnType<typeof selectExecutionMode>) => ({
-    ...selected,
-    mode: 'goal_workloop' as const,
-    createWorkContract: true,
-    createHandoff: false,
-    requiresWork: true,
-  });
   const evaluateAccessPolicy = () => evaluatePolicyGate({
     capabilityId: 'controller.goal_workloop',
-    risk: effectiveModeInput.risk
-      ?? (input.modeInput.secretAccess === true ? 'raw_secret_config'
-        : input.modeInput.destructive === true ? 'destructive'
-          : input.modeInput.remoteWrite === true ? 'remote_write'
-            : input.modeInput.requiresApproval === true || input.modeInput.requiresUserApproval === true ? 'workspace_write'
+    risk: effectiveRequest.risk
+      ?? (input.request.secretAccess === true ? 'raw_secret_config'
+        : input.request.destructive === true ? 'destructive'
+          : input.request.remoteWrite === true ? 'remote_write'
+            : input.request.requiresApproval === true || input.request.requiresUserApproval === true ? 'workspace_write'
               : 'workspace_write'),
     accessMode: input.constraints?.accessMode,
     approvalConfirmed: input.approvalConfirmed === true,
     dryRun: input.dryRun === true,
   });
+  // Missing mechanical admission fields are reported to the caller verbatim.
+  // Forge does not translate them into an engineering-mode recommendation.
+  const missingContractFields: string[] = [];
+  if (!input.request.scopeClear) missingContractFields.push('scopeSummary', 'acceptanceCriteria', 'allowedPaths');
+  if (input.objective.trim().length === 0) missingContractFields.push('objective');
 
-  const selectedMode = selectExecutionMode(effectiveModeInput);
   const policy = evaluateAccessPolicy();
-  const mode = applyForcedMode(selectedMode);
   const approvalRequired = policy.decision === 'approval_required';
 
-  // Route/provider policy is not execution-depth authority. Existing Work,
-  // Requirement and Plan references are semantic/provenance context; concrete
-  // workspace conflicts affect placement only.
-
-  // Policy approval decisions stop before Work creation. Ordinary host-managed local work
-  // reaches this point only after the same Route Policy has been replayed with the Access
-  // Policy's explicit allowed decision as authorization evidence.
+  // Policy approval decisions stop before Work creation. Ordinary host-managed
+  // local work reaches this point only after the Access Policy authorized it.
   const blockForHandoff =
     policy.decision === 'denied'
     || policy.decision === 'approval_required';
@@ -526,20 +482,19 @@ export function routeWorkStart(
       repoId: ctx.repoId,
       title: 'Work blocked pending decision',
       severity: policy.decision === 'denied' ? 'blocked' : 'needs_review',
-      creationReason: !input.modeInput.scopeClear
+      creationReason: !input.request.scopeClear
         ? 'invalid_objective'
         : approvalRequired
-          ? (input.modeInput.destructive ? 'destructive_action_requires_confirmation' : 'policy_approval_required')
+          ? (input.request.destructive ? 'destructive_action_requires_confirmation' : 'policy_approval_required')
           : 'missing_authorization',
       reason: policy.reason,
       summary: `Execution blocked by access policy: ${policy.reason}`,
       currentState: {
         repoId: ctx.repoId,
-        mode: 'handoff_only',
         statusSummary: 'waiting for ChatGPT or user decision; no execution started',
-        blockedBy: mode.missingContractFields,
+        blockedBy: missingContractFields,
       },
-      attemptedActions: ['route_execution_mode'],
+      attemptedActions: ['work_start'],
       evidenceRefs: [],
       blockingDecision: approvalRequired
         ? 'Approve side effects or restate a safer objective.'
@@ -552,21 +507,16 @@ export function routeWorkStart(
             operation: 'start',
             label: 'Approve and start work',
             summary: 'Create the work contract with the original scope and explicit approval.',
-            risk: input.modeInput.destructive ? 'destructive' : 'workspace_write',
+            risk: input.request.destructive ? 'destructive' : 'workspace_write',
             payload: {
               objective: input.objective,
               acceptanceCriteria: input.acceptanceCriteria,
               allowedPaths: input.allowedPaths,
               forbiddenPaths: input.forbiddenPaths,
               checkIds: input.checks,
-              expectedFiles: input.modeInput.expectedFiles,
-              expectedChangedLines: input.modeInput.expectedChangedLines,
-              scopeClear: input.modeInput.scopeClear,
-              requiresInvestigation: input.modeInput.requiresInvestigation,
-              requiresLongRunningChecks: input.modeInput.requiresLongRunningChecks,
-              requiresWorker: input.modeInput.requiresWorker,
-              requiresApproval: input.modeInput.requiresApproval === true || input.modeInput.requiresUserApproval === true,
-              destructive: input.modeInput.destructive === true,
+              scopeClear: input.request.scopeClear,
+              requiresApproval: input.request.requiresApproval === true || input.request.requiresUserApproval === true,
+              destructive: input.request.destructive === true,
               accessMode: input.constraints?.accessMode,
               workspaceMode: placementConstraint.workspaceMode,
               requireWorktree: placementConstraint.requireWorktree,
@@ -588,9 +538,8 @@ export function routeWorkStart(
 
     return buildFacadeResult({
       status: policy.decision === 'denied' ? 'blocked' : approvalRequired ? 'approval_required' : 'blocked',
-      summary: `Handoff-only: no WorkContract created and no execution started. ${mode.reason}`,
+      summary: 'Blocked: no WorkContract created and no execution started until the policy decision is resolved.',
       data: {
-        mode,
         policy,
         workContractCreated: false,
         handoffId: handoff.id,
@@ -620,16 +569,15 @@ export function routeWorkStart(
   return startGoalWorkloop(ctx, {
     ...input,
     constraints: canonicalConstraints,
-    modeInput: effectiveModeInput,
+    request: effectiveRequest,
     workKind: effectiveWorkKind,
-  }, policy, mode.routeDecision);
+  }, policy);
 }
 
 export function startGoalWorkloop(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
   policy?: PolicyDecision,
-  routeDecision = selectExecutionMode({ ...input.modeInput, objective: input.objective, knownPaths: input.allowedPaths }).routeDecision,
 ): FacadeResult {
   const placementResolution = resolveWorkspaceAdmissionConstraint(input.constraints);
   if (placementResolution.ok === false) {
@@ -653,7 +601,6 @@ export function startGoalWorkloop(
       { ...ctx, semanticAdmissionLocked: true },
       input,
       policy,
-      routeDecision,
     ));
   }
   const at = nowIso(ctx);
@@ -694,7 +641,7 @@ export function startGoalWorkloop(
     });
   }
   const engineeringMutation = resolvedWorkKind === 'repository_change'
-    && (input.modeInput.mutation ?? input.modeInput.risk !== 'readonly');
+    && (input.request.mutation ?? input.request.risk !== 'readonly');
   const engineeringAdmission = evaluateEngineeringAdmission({
     profile: engineeringProfile,
     receipt: engineeringContext,
@@ -949,7 +896,7 @@ export function startGoalWorkloop(
     ? [...new Set(ctx.workspaceChangedPaths.map((path) => path.trim()).filter(Boolean))].sort()
     : undefined;
   const dirtyWorkspaceOwnershipConflict = repositoryWorkspaceParticipant
-    && input.modeInput.workspaceDirty === true
+    && input.request.workspaceDirty === true
     && (
       !trustedDirtyPaths
       || trustedDirtyPaths.length === 0
@@ -980,8 +927,8 @@ export function startGoalWorkloop(
     normalized.suggestedNextActions,
   );
   const remoteDeliveryRequired = resolvedWorkKind === 'repository_change'
-    && input.modeInput.requiresExternalEffect === true
-    && input.modeInput.remoteWrite === true;
+    && input.request.requiresExternalEffect === true
+    && input.request.remoteWrite === true;
   const effectiveConstraints: WorkContract['constraints'] = {
     ...canonicalConstraints,
     ...(needsWorktree ? { workspaceMode: 'isolated' as const, requireWorktree: true } : {}),
@@ -1011,9 +958,6 @@ export function startGoalWorkloop(
     baseRevision: ctx.sourceRevision,
     repositoryBaseState: ctx.sourceBaseState ?? (ctx.sourceRevision ? 'revision' : undefined),
     workspaceFingerprint: needsWorktree ? undefined : ctx.workspaceFingerprint,
-    routeDecisionFingerprint: routeDecision.inputFingerprint,
-    routeDecision,
-    mode: 'goal_workloop',
     objective: effectiveObjective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
     constraints: effectiveConstraints,
@@ -1034,7 +978,7 @@ export function startGoalWorkloop(
     planRevision: plan ? currentPlanSemanticRevision(plan) : undefined,
     planStepId: resolvedPlanStepId,
     planSourceRevision: resolvedPlanStepId ? plan?.sourceRevision : undefined,
-    scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
+    scopeSummary: input.request.scopeClear ? 'scope declared at start' : 'scope incomplete',
     scopeEvidence: {
       initialLikelyPaths: [...new Set(input.initialLikelyPaths ?? effectiveAllowedPaths)].slice(0, 100),
       inspectedPaths: [],
@@ -1044,11 +988,6 @@ export function startGoalWorkloop(
     allowedPaths: effectiveAllowedPaths,
     forbiddenPaths: effectiveForbiddenPaths,
     checks: normalized.validCheckIds,
-    driver: {
-      preferred: input.modeInput.requiresWorker === true ? 'external_controller' : needsWorktree ? 'isolated_worktree' : 'direct_edit',
-      allowWorker: false,
-      allowDirectEdit: input.modeInput.requiresWorker !== true && !needsWorktree,
-    },
     worktreePolicy: {
       required: needsWorktree,
       reason: worktreeReason,
@@ -1060,8 +999,8 @@ export function startGoalWorkloop(
       maxEvidenceRefs: 20,
     },
     approvalPolicy: {
-      required: input.modeInput.requiresApproval === true || input.modeInput.requiresUserApproval === true,
-      reasons: input.modeInput.requiresApproval || input.modeInput.requiresUserApproval ? ['approval requested at start'] : [],
+      required: input.request.requiresApproval === true || input.request.requiresUserApproval === true,
+      reasons: input.request.requiresApproval || input.request.requiresUserApproval ? ['approval requested at start'] : [],
       confirmed: input.approvalConfirmed === true,
     },
     recoveryPolicy: {
@@ -2253,18 +2192,10 @@ export function runGoalWorkloop(
         initialLikelyPaths: Array.isArray(args.initial_likely_paths) ? args.initial_likely_paths.map(String) : undefined,
         forbiddenPaths: Array.isArray(args.forbidden_paths) ? args.forbidden_paths.map(String) : undefined,
         checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
-        modeInput: {
+        request: {
           objective: typeof args.objective === 'string' ? args.objective : undefined,
-          expectedFiles: typeof args.expected_files === 'number' ? args.expected_files : undefined,
-          expectedChangedLines: typeof args.expected_changed_lines === 'number' ? args.expected_changed_lines : undefined,
           scopeClear: args.scope_clear === undefined ? true : args.scope_clear === true,
-          requiresInvestigation: args.requires_investigation === true,
-          requiresLongRunningChecks: args.requires_long_running_checks === true,
-          requiresParallelism: args.requires_parallelism === true,
-          explicitMode: args.mode === 'plan' || args.mode === 'scale' ? args.mode : undefined,
-          needsDependencies: args.needs_dependencies === true,
           requiresRecovery: args.requires_recovery === true,
-          requiresWorker: args.requires_worker === true,
           requiresExternalEffect: args.requires_external_effect === true,
           requiresApproval: args.requires_approval === true,
           requiresUserApproval: args.requires_user_approval === true,

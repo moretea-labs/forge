@@ -187,7 +187,6 @@ describe('Thin capability substrate', () => {
     createWorkContract(store, {
       workId,
       repoId,
-      mode: 'direct_control',
       objective: 'Implement thin feature.',
       acceptanceCriteria: ['Must be thin and clean'],
       allowedPaths: [], forbiddenPaths: [], checks: [],

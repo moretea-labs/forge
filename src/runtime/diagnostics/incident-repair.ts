@@ -437,10 +437,7 @@ function registerRecurringForgeRepair(input: {
       initialLikelyPaths: [],
       forbiddenPaths: ['node_modules/**', '_ops/**'],
       constraints: { workspaceMode: 'auto', requireHandoffOnAmbiguity: true },
-      modeInput: {
-        scopeClear: false, mutation: true, requiresInvestigation: true,
-        requiresRecovery: true, risk: 'workspace_write',
-      },
+      request: { scopeClear: false, mutation: true, requiresRecovery: true, risk: 'workspace_write' },
       requestedBy: 'system',
       requestId,
       relatedWorkId: predecessor?.workId,

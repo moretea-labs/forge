@@ -143,7 +143,6 @@ function durableBinding(controllerInstanceId: string, overrides: Partial<EditSes
     checkoutId: 'checkout-runtime-continuity',
     principalId: 'principal-runtime-continuity',
     controllerInstanceId,
-    routeDecisionFingerprint: 'route-runtime-continuity',
     ...overrides,
   };
 }

@@ -1,5 +1,4 @@
 import type { AccessMode } from '../governance/access-policy';
-import type { RouteDecision } from '../routing/route-policy';
 import { createWorkContract, executionPlacementForWork, getWorkContract, updateWorkContract, type WorkContractStoreOptions } from '../../../../packages/kernel/work/api/index';
 import { executionPlacement, readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import type { WorkContract } from './types';
@@ -39,7 +38,6 @@ export function admitPreparedRepositoryWorkContract(
     workId: input.workId,
     repoId: input.repoId,
     executionPlacement: repositoryExecutionPlacement(store, input.repoId),
-    mode: input.isolated ? 'goal_workloop' : 'direct_control',
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria,
     allowedPaths: input.allowedPaths,
@@ -71,7 +69,6 @@ export interface DirectEditWorkAdmissionInput {
   controllerInstanceId?: string;
   baseRevision?: string;
   workspaceFingerprint: string;
-  routeDecision: RouteDecision;
   objective: string;
   issueId?: string;
   taskId?: string;
@@ -82,9 +79,8 @@ export interface DirectEditWorkAdmissionInput {
 
 /**
  * Canonical compatibility admission for an Edit Session bound to Direct Work.
- * The caller may supply a legacy Route Policy snapshot as provenance only.
- * Direct-edit admission is selected explicitly by this capability boundary; route
- * mode tokens never authorize or reject the operation.
+ * Direct-edit admission is selected explicitly by this capability boundary;
+ * no route/mode token authorizes or rejects the operation.
  */
 export function admitDirectEditWorkContract(
   store: WorkContractStoreOptions,
@@ -99,9 +95,6 @@ export function admitDirectEditWorkContract(
     controllerInstanceId: input.controllerInstanceId,
     baseRevision: input.baseRevision,
     workspaceFingerprint: input.workspaceFingerprint,
-    routeDecisionFingerprint: input.routeDecision.inputFingerprint,
-    routeDecision: input.routeDecision,
-    mode: 'direct_control',
     objective: input.objective,
     acceptanceCriteria: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
@@ -158,6 +151,5 @@ export function materializeRepositoryWorkPlacement(
     }),
     baseRevision: workspace.baseRevision ?? contract.baseRevision,
     worktreeRef: workspace.root,
-    driver: { ...contract.driver, preferred: 'isolated_worktree', allowDirectEdit: false },
   });
 }

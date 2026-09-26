@@ -250,7 +250,7 @@ describe('Stage7C upstream engineering authority', () => {
     const started = routeWorkStart(context, {
       objective: 'Exercise same-root design re-entry.',
       acceptanceCriteria: ['Design supersession is explicit.'],
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, remoteWrite: true, risk: 'remote_write' },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true, remoteWrite: true, risk: 'remote_write' },
       verifiedEngineeringEvidence: baseEvidence,
     });
     expect(started.status).toBe('ok');
@@ -346,7 +346,7 @@ describe('Stage7C upstream engineering authority', () => {
     const started = routeWorkStart(context, {
       objective: 'Own the primary semantic scope.',
       acceptanceCriteria: ['Primary scope remains unchanged.'],
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, remoteWrite: true, risk: 'remote_write' },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true, remoteWrite: true, risk: 'remote_write' },
       verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a'),
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
@@ -374,7 +374,7 @@ describe('Stage7C upstream engineering authority', () => {
     const owningWork = routeWorkStart(context, {
       objective: 'Resolve the unrelated external dependency blocker.',
       acceptanceCriteria: ['Bounded blocker evidence or a precise wake condition is recorded.'],
-      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
       workKind: 'investigation',
       relatedWorkId: workId,
       workRelation: 'parallel',

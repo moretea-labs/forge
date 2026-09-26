@@ -171,7 +171,6 @@ describe('direct canonical Work target advancement reconciliation', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId,
       repoId: fx.repository.repoId,
-      mode: 'goal_workloop',
       objective: 'post-cleanup retry regression',
       acceptanceCriteria: ['reconcile exact delivered candidate'],
       allowedPaths: ['target.txt'],

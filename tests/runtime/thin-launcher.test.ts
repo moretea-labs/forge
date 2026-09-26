@@ -56,7 +56,6 @@ function launcherFixture() {
   createWorkContract(store, {
     workId,
     repoId,
-    mode: 'goal_workloop',
     objective: 'Exercise the external Controller launcher.',
     acceptanceCriteria: ['launcher result is observable'],
     allowedPaths: [],

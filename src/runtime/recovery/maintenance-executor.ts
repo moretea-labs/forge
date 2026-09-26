@@ -534,9 +534,8 @@ function resolveStaleWorkDeliveryTarget(
 
 function isLegacyImplicitRemoteEffectPlacement(contract: WorkContract): boolean {
   if (contract.workKind !== 'remote_effect' || contract.worktreePolicy.required !== true || !contract.worktreeRef || !contract.checkoutId) return false;
-  if (contract.routeDecision?.requiresIsolation === true) return false;
   const reason = contract.worktreePolicy.reason?.trim() ?? '';
-  if (/Typed placement|Route Policy requires isolated execution/i.test(reason)) return false;
+  if (/Typed placement/i.test(reason)) return false;
   return true;
 }
 
@@ -999,12 +998,11 @@ function detachLegacyRemoteEffectPlacement(
     return { ...candidate, safe: false, reason: inspection?.detail ?? 'Legacy remote_effect placement is no longer eligible for resource detachment.', sourceState: 'source_state_unknown', disposition: 'source_preservation_required', applied: false, result: 'legacy_remote_effect_placement_preserved' };
   }
   const store = { controllerHome, repoId: repository.repoId };
-  const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, driver: current.driver, worktreePolicy: current.worktreePolicy };
+  const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, worktreePolicy: current.worktreePolicy };
   updateWorkContract(store, current.workId, {
     checkoutId: inspection.canonicalCheckoutId,
     worktreeRef: undefined,
     constraints: { ...current.constraints, workspaceMode: 'auto', requireWorktree: false },
-    driver: { ...current.driver, preferred: 'direct_edit', allowDirectEdit: true },
     worktreePolicy: { required: false, reason: 'Legacy pure remote_effect repository placement detached by explicit runtime maintenance; external-effect execution has no repository source authority.' },
   });
   try {

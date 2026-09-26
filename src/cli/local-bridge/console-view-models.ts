@@ -12,14 +12,6 @@ export interface SuggestedActionViewModel {
   primary?: boolean;
 }
 
-export interface ModePreviewViewModel {
-  mode: 'direct_control' | 'goal_workloop' | 'handoff_only';
-  label: string;
-  explanation: string;
-  createWorkContract: boolean;
-  createHandoff: boolean;
-}
-
 export interface VerificationViewModel {
   label: string;
   tone: PlainStatusTone;
@@ -104,8 +96,6 @@ export interface WorkSummaryViewModel {
   updatedAt: string;
   title: string;
   objective: string;
-  modeLabel: string;
-  mode: ModePreviewViewModel['mode'];
   accessMode: 'request' | 'full_access';
   accessModeLabel: string;
   statusLabel: string;
@@ -280,7 +270,6 @@ export interface CommandCenterViewModel {
   /** Assistant/plugin capabilities available to the controller (not the primary workflow). */
   pluginSummary: PluginSummaryViewModel;
   plugins: PluginCardViewModel[];
-  modePreviewDefault: ModePreviewViewModel;
   warnings: string[];
   /** Setup guidance when no usable repository is selected. */
   setupGuide?: {

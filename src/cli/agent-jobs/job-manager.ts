@@ -1105,7 +1105,7 @@ function attachExecutorFailureHealth(meta: AgentJobMeta, stdoutTail?: string, st
   }
   if (meta.executorHealth) return meta;
   const message = executorFailureMessage(meta, stdoutTail, stderrTail);
-  const health = classifyExecutorFailure(meta.agent, message, { allowedPaths: meta.allowedPaths ?? [] });
+  const health = classifyExecutorFailure(meta.agent, message);
   if (health) meta.executorHealth = health;
   return meta;
 }

@@ -84,8 +84,10 @@ function resolveRepositoryWorkHandlePlacement(input: {
 }
 
 /**
- * Canonical compatibility repair for a goal-workloop Work whose durable
- * WorkContract exists but whose WorkHandle has not yet been materialized.
+ * Canonical repair for a durable Work whose WorkContract exists but whose
+ * WorkHandle has not yet been materialized. Handle ownership follows the
+ * Work's declared kind and concrete checkout placement; no routing/mode token
+ * authorizes or rejects it.
  * Transport layers provide only the authenticated Controller identity.
  */
 export function ensureRepositoryWorkHandle(input: {
@@ -105,7 +107,7 @@ export function ensureRepositoryWorkHandle(input: {
     || contract?.workKind === 'completed_no_change'
     || contract?.workKind === 'reconciliation'
     || (input.allowEffectWork === true && (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect'));
-  if (!contract || !supportedKind || contract.mode !== 'goal_workloop' || !contract.checkoutId) {
+  if (!contract || !supportedKind || !contract.checkoutId) {
     return undefined;
   }
   // Callers may already be scoped to the Work checkout. Re-read the unselected
@@ -163,7 +165,7 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   const existing = readWorkHandle(input.controllerHome, input.repositoryId, input.workId);
   if (!existing || existing.managedWorktree) return existing;
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repositoryId }, input.workId);
-  if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) return existing;
+  if (!contract || contract.workKind !== 'repository_change' || !contract.checkoutId) return existing;
   if (contract.checkoutId !== existing.checkoutId) throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
   const placement = resolveRepositoryWorkHandlePlacement({ controllerHome: input.controllerHome, repositoryId: input.repositoryId, checkoutId: contract.checkoutId, worktreeRef: contract.worktreeRef });
   if (!placement.managedWorktree) return existing;

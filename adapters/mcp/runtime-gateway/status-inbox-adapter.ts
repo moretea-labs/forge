@@ -250,7 +250,6 @@ export async function callStatusInboxAdapter(
         const activeWorkSnapshot = activeWorkProjection.contracts.map((entry) => ({
           workId: entry.workId,
           status: entry.status,
-          mode: entry.mode,
           objective: entry.objective.slice(0, 160),
           semantics: buildWorkContinuationSnapshot(entry).semantics,
           nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,

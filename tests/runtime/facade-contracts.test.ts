@@ -13,7 +13,6 @@ import {
   type FacadeResult,
   type HandoffItem,
   isTerminalHandoffStatus,
-  selectExecutionMode,
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
@@ -136,100 +135,6 @@ describe('handoff and facade contracts', () => {
     expect(isTerminalHandoffStatus('expired')).toBe(true);
   });
 
-  test('selects contract-free direct control for small supervised mutation', () => {
-    expect(
-      selectExecutionMode({
-        expectedFiles: 2,
-        expectedChangedLines: 80,
-        scopeClear: true,
-        requiresRecovery: false,
-        requiresWorker: false,
-        requiresExternalEffect: false,
-        requiresApproval: false,
-      }),
-    ).toMatchObject({ mode: 'direct_control', missingContractFields: [], createWorkContract: false, requiresWork: false });
-  });
-
-  test('routes unconfirmed approval-gated work to handoff', () => {
-    expect(
-      selectExecutionMode({
-        objective: 'Apply a bounded policy fix',
-        expectedFiles: 1,
-        expectedChangedLines: 40,
-        scopeClear: true,
-        requiresRecovery: false,
-        requiresWorker: false,
-        requiresExternalEffect: false,
-        requiresApproval: true,
-      }),
-    ).toMatchObject({ mode: 'handoff_only', createHandoff: true, createWorkContract: false });
-  });
-
-  test('keeps small objective-only work direct instead of forcing handoff for missing scope fields', () => {
-    expect(
-      selectExecutionMode({
-        objective: 'Fix the bounded router regression',
-        expectedFiles: 1,
-        expectedChangedLines: 40,
-        scopeClear: false,
-        requiresRecovery: false,
-        requiresWorker: false,
-        requiresExternalEffect: false,
-        requiresApproval: false,
-      }),
-    ).toMatchObject({ mode: 'direct_control', createWorkContract: false, createHandoff: false });
-  });
-
-  test('requires explicit user approval for architecture strategy conflicts', () => {
-    expect(
-      selectExecutionMode({
-        objective: 'Change the default execution strategy',
-        expectedFiles: 1,
-        expectedChangedLines: 40,
-        scopeClear: true,
-        requiresUserApproval: true,
-      }),
-    ).toMatchObject({ mode: 'handoff_only', createHandoff: true, createWorkContract: false });
-  });
-
-  test('selects handoff only when the request is underspecified', () => {
-    expect(
-      selectExecutionMode({
-        scopeClear: false,
-        requiresRecovery: false,
-        requiresWorker: false,
-        requiresExternalEffect: false,
-        requiresApproval: false,
-      }),
-    ).toMatchObject({ mode: 'handoff_only', createHandoff: true, createWorkContract: false });
-  });
-
-  test('keeps long-running checks direct unless continuity is explicitly required', () => {
-    expect(
-      selectExecutionMode({
-        scopeClear: true,
-        expectedFiles: 12,
-        expectedChangedLines: 800,
-        requiresLongRunningChecks: true,
-        requiresRecovery: false,
-        requiresWorker: false,
-        requiresExternalEffect: false,
-        requiresApproval: false,
-      }),
-    ).toMatchObject({ mode: 'direct_control', createWorkContract: false });
-  });
-
-  test('selects handoff only for high-risk work needing approval', () => {
-    expect(
-      selectExecutionMode({
-        scopeClear: true,
-        destructive: true,
-        requiresUserApproval: true,
-        requiresApproval: true,
-      }),
-    ).toMatchObject({ mode: 'handoff_only', createHandoff: true });
-  });
-
   test('supports bounded facade results with evidence refs and suggested actions', () => {
     const result: FacadeResult<{ pendingHandoffs: number }> = {
       schemaVersion: 1,
@@ -331,7 +236,6 @@ describe('handoff and facade contracts', () => {
       currentState: {
         repoId: 'repo_test',
         taskId: 'T1',
-        mode: 'goal_workloop',
         statusSummary: 'waiting for ChatGPT decision',
         checks: [{ checkId: 'package:check:type', ok: false }],
       },

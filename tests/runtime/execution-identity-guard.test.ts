@@ -939,7 +939,6 @@ describe('repository Work delivery target authority', () => {
       repoId: fx.repoA.repoId,
       checkoutId: fx.repoA.activeCheckoutId,
       baseRevision: fx.headA,
-      mode: 'goal_workloop',
       objective: 'Preserve non-default source delivery branch.',
       acceptanceCriteria: ['Delivery target remains exact.'],
       allowedPaths: [],

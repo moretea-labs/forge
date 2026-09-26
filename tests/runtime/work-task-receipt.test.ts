@@ -74,7 +74,6 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
   createWorkContract({ controllerHome, repoId }, {
     workId,
     repoId,
-    mode: 'goal_workloop',
     objective: 'Implement the verified Task.',
     acceptanceCriteria: [],
     constraints: { requireHandoffOnAmbiguity: true },

@@ -2,7 +2,6 @@ import type { CredentialReference } from '../../../packages/kernel/identity/api/
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { listControlPlaneRecords, readControlPlaneRecord, writeControlPlaneRecord, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
 import { assertControlPlaneMetadataPayload } from '../control-plane/persistence/metadata-payload-policy';
-import type { RouteContextHints } from '../control-plane/routing/route-policy';
 
 export const CONTEXT_RECORD_NAMESPACE = 'context_record';
 export const MAX_CONTEXT_RECORDS = 1_000;
@@ -42,7 +41,6 @@ export interface ContextRecord {
 export interface ContextResolution {
   schemaVersion: 1;
   records: Array<{ record: ContextRecord; storeRevision: number; rank: number }>;
-  routeHints: RouteContextHints;
   estimatedTokens: number;
   bytes: number;
   truncated: boolean;
@@ -184,13 +182,7 @@ export function resolveContextPlane(input: {
     estimatedTokens += nextTokens;
   }
 
-  const preference = selected.map((entry) => entry.record.value).find((value) => value.type === 'routing_preference') as Extract<ContextValue, { type: 'routing_preference' }> | undefined;
-  const routeHints: RouteContextHints = preference ? {
-    preferredProviderId: preference.preferredProviderId,
-    ...(preference.allowedProviderIds ? { allowedProviderIds: preference.allowedProviderIds } : {}),
-    ...(preference.forbiddenProviderIds ? { forbiddenProviderIds: preference.forbiddenProviderIds } : {}),
-  } : {};
-  return { schemaVersion: 1, records: selected, routeHints, estimatedTokens, bytes, truncated };
+  return { schemaVersion: 1, records: selected, estimatedTokens, bytes, truncated };
 }
 
 export function renderContextPlane(resolution: ContextResolution): string {

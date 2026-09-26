@@ -75,7 +75,6 @@ test('reconciles an explicitly named generic run_check Process into the exact Wo
     repoId,
     checkoutId,
     baseRevision: head,
-    mode: 'direct_control',
     objective: 'Reconcile a completed check from the exact active checkout.',
     acceptanceCriteria: ['The exact device check is recorded as current Work evidence.'],
     allowedPaths: [],

@@ -34,7 +34,6 @@ function createRunningWork(controllerHome: string, input: { workId: string; plan
   return createWorkContract({ controllerHome, repoId: 'repo-a' }, {
     workId: input.workId,
     repoId: 'repo-a',
-    mode: 'goal_workloop',
     objective: 'Execute ' + input.workId,
     acceptanceCriteria: ['Work continues until an explicit semantic stop.'],
     allowedPaths: [],

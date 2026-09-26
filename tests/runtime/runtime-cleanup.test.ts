@@ -217,7 +217,7 @@ describe('runtime cleanup', () => {
     const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-active-work' });
     createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
       workId: 'WORK-NAMESPACE-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
-      mode: 'goal_workloop', objective: 'protect namespace while Work is active',
+      objective: 'protect namespace while Work is active',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'system', status: 'ready',
     });
@@ -328,7 +328,7 @@ describe('runtime cleanup', () => {
     const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'edit-session-retention' });
     createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
       workId: 'WORK-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
-      mode: 'goal_workloop', objective: 'protect terminal edit-session evidence while Work remains active',
+      objective: 'protect terminal edit-session evidence while Work remains active',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'system', status: 'ready',
     });

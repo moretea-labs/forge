@@ -31,7 +31,6 @@ describe('Work v3 lifecycle authority', () => {
     const created = createWorkContract(store, {
       workId,
       repoId: 'repo-work-semantic-authority',
-      mode: 'direct_control',
       objective: 'Original semantic objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -91,7 +90,6 @@ describe('Work v3 lifecycle authority', () => {
     createWorkContract(store, {
       workId,
       repoId: 'repo-zero-write',
-      mode: 'direct_control',
       objective: 'Initial objective.',
       acceptanceCriteria: [],
       allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -172,7 +170,6 @@ describe('Work v3 lifecycle authority', () => {
     createWorkContract(store, {
       workId,
       repoId: 'repo-work-v3-authority',
-      mode: 'goal_workloop',
       objective: 'Prove lifecycle authority is explicit after legacy migration.',
       acceptanceCriteria: ['Legacy inference cannot remain a steady-state mutation authority.'],
       allowedPaths: [],

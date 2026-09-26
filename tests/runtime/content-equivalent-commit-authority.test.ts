@@ -49,7 +49,6 @@ function fixture() {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
     baseRevision: sourceRevision,
-    mode: 'direct_control',
     objective: 'Prove content-equivalent commit authority transfer is atomic.',
     acceptanceCriteria: ['No partial post-commit authority persists on failure.'],
     allowedPaths: ['example.ts'],

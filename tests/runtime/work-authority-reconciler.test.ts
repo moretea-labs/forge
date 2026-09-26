@@ -22,7 +22,6 @@ function work(controllerHome: string, workId: string, updatedAt: string, extra: 
   return createWorkContract({ controllerHome, repoId: 'repo-a' }, {
     workId,
     repoId: 'repo-a',
-    mode: 'goal_workloop',
     objective: `Execute ${workId}`,
     acceptanceCriteria: ['Only live authority remains current.'],
     allowedPaths: [],

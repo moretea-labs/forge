@@ -11,7 +11,7 @@
     "regressionRisks": ["Work is lost after reconnect or raw stdio bypasses controller authentication."]
   },
   "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
-    { "id": "admit", "tool": "rh_work", "arguments": { "operation": "start", "objective": "Evaluation restart durable Work visibility", "requested_by": "user", "work_kind": "investigation", "scope_clear": true, "requires_investigation": true, "requires_long_running_checks": false, "requires_parallelism": false, "needs_dependencies": true, "requires_recovery": false, "requires_worker": false, "requires_external_effect": false, "requires_approval": false, "requires_user_approval": false, "destructive": false, "remote_write": false, "secret_access": false }, "expectedOutcome": "error" },
+    { "id": "admit", "tool": "rh_work", "arguments": { "operation": "start", "objective": "Evaluation restart durable Work visibility", "requested_by": "user", "work_kind": "investigation", "scope_clear": true, "needs_dependencies": true, "requires_recovery": false, "requires_external_effect": false, "requires_approval": false, "requires_user_approval": false, "destructive": false, "remote_write": false, "secret_access": false }, "expectedOutcome": "error" },
     { "id": "status-after-restart", "tool": "rh_status", "restartBefore": true, "arguments": {}, "expectedOutcome": "error" }
   ] },
   "validators": [

@@ -67,7 +67,7 @@ export type { WorkContractStoreLocation, WorkContractStoreOptions } from '../por
 
 export type CreateWorkContractInput = Omit<
   WorkContract,
-  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'phaseEvidence' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'implementationReviews' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
+  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'phaseEvidence' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'implementationReviews' | 'reconciliations' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
 > & {
   risk?: WorkRisk;
   status?: WorkContractStatus;
@@ -85,7 +85,6 @@ export type CreateWorkContractInput = Omit<
   policyDecisions?: PolicyDecision[];
   checkRefs?: VerificationRecord[];
   reconciliations?: WorkReconciliationRecord[];
-  driver?: WorkContract['driver'];
   worktreePolicy?: WorkContract['worktreePolicy'];
   evidencePolicy?: WorkContract['evidencePolicy'];
   approvalPolicy?: WorkContract['approvalPolicy'];
@@ -137,7 +136,6 @@ interface WorkSemanticRevisionStore {
 export interface WorkContractSummary {
   workId: string;
   repoId: string;
-  mode: WorkContract['mode'];
   /** The one thin authored Work state. `phase`/`status` below are compatibility mechanical projections. */
   semanticState: SemanticWorkState;
   phase: WorkContract['phase'];
@@ -378,9 +376,6 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
     suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
     implementationReviews: legacy.implementationReviews ?? [],
     reconciliations: legacy.reconciliations ?? [],
-    driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
-      ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
-      : legacy.driver,
   });
 }
 
@@ -558,12 +553,6 @@ function assertCanonicalWorkAdmissionAllowed(
   return assertWorkAdmissionPolicyAllows(policy, input);
 }
 
-function defaultDriver(): WorkContract['driver'] {
-  // Legacy projection only. Execution method/provider choice is model-owned;
-  // capability eligibility and concrete placement are enforced at dispatch time.
-  return { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true };
-}
-
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
   if (options.controllerHome) {
     assertCanonicalWorkAdmissionAllowed(options, { operation: 'create', workId: input.workId });
@@ -594,9 +583,6 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       baseRevision: input.baseRevision,
       repositoryBaseState: input.repositoryBaseState,
       workspaceFingerprint: input.workspaceFingerprint,
-      routeDecisionFingerprint: input.routeDecisionFingerprint,
-      routeDecision: input.routeDecision,
-      mode: input.mode,
       objective: input.objective.slice(0, 2_000),
       semanticRevision: 1,
       semanticUpdatedAt: input.updatedAt ?? at,
@@ -644,7 +630,6 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
       forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
       checks: (input.checks ?? []).slice(0, 30),
-      driver: input.driver ?? defaultDriver(),
       worktreePolicy: input.worktreePolicy ?? {
         required: input.constraints?.requireWorktree === true || input.constraints?.workspaceMode === 'isolated',
         reason: input.constraints?.requireWorktree === true || input.constraints?.workspaceMode === 'isolated'
@@ -782,7 +767,6 @@ export function acceptSubmittedWorkContract(
       repoId: input.repoId,
       principalId: input.principalId,
       controllerInstanceId: input.controllerInstanceId,
-      mode: input.mode ?? 'direct_control',
       lifecycleRole: 'execution_child',
       parentWorkId,
       objective: (input.objective ?? `Typed operation ${input.operation.name}`).slice(0, 2_000),
@@ -797,7 +781,6 @@ export function acceptSubmittedWorkContract(
       status: 'open',
       requestId,
       submittedOperation: input.operation,
-      driver: { preferred: 'external_controller', allowWorker: false, allowDirectEdit: input.operation.mode === 'readonly' || input.operation.mode === 'mutating' },
       suggestedNextActions: [{
         label: 'Claim controller ownership',
         tool: 'rh_work',
@@ -1149,7 +1132,6 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
   return {
     workId: contract.workId,
     repoId: contract.repoId,
-    mode: contract.mode,
     semanticState: semanticWorkState(contract),
     phase: contract.phase,
     status: contract.status,
@@ -1969,7 +1951,6 @@ export interface AcceptSubmittedWorkInput {
   semanticKey: string;
   operation: SubmittedWorkOperation;
   objective?: string;
-  mode?: WorkContract['mode'];
   requestedBy?: WorkContract['requestedBy'];
   principalId?: string;
   controllerInstanceId?: string;

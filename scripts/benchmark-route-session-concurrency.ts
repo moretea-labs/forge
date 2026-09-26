@@ -244,11 +244,9 @@ async function semanticAdmissionWorker(): Promise<void> {
         : `Own independent semantic admission requirement ${index}`,
       requirementId,
       requestedBy: 'chatgpt',
-      modeInput: {
+      request: {
         scopeClear: true,
         mutation: true,
-        expectedFiles: 4,
-        expectedChangedLines: 200,
         requiresRecovery: true,
         risk: 'local_repo_write',
       },
@@ -443,7 +441,6 @@ async function main(): Promise<void> {
         createWorkContract({ controllerHome, repoId: first.repository.repoId }, {
           workId: `BENCH-WORK-${index}`,
           repoId: first.repository.repoId,
-          mode: 'direct_control',
           objective: 'Measure durable Work preparation.',
           acceptanceCriteria: ['Prepared'],
           allowedPaths: [],

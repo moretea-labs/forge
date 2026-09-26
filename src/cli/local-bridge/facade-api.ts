@@ -40,11 +40,9 @@ import {
   normalizeCheckIds,
   routeWorkStart,
   runSelfHealingLoop,
-  selectExecutionMode,
   stopGoalWorkloop,
   summarizeHandoffItem,
   summarizeWorkContract,
-  type ExecutionModeSelectionInput,
   type FacadeResult,
   type HandoffItem,
   type SuggestedNextAction,
@@ -81,7 +79,6 @@ import type {
   ConnectorFreshnessViewModel,
   ConsoleErrorViewModel,
   HandoffCardViewModel,
-  ModePreviewViewModel,
   PlainStatusTone,
   PluginActionViewModel,
   AccessStateViewModel,
@@ -103,34 +100,6 @@ export type ConsoleFacadeContext = {
 
 function store(ctx: ConsoleFacadeContext) {
   return { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId };
-}
-
-function plainMode(mode: ModePreviewViewModel['mode']): ModePreviewViewModel {
-  if (mode === 'direct_control') {
-    return {
-      mode,
-      label: '直接执行',
-      explanation: '小范围、目标清晰的改动；适合由 ChatGPT 直接监督完成。',
-      createWorkContract: false,
-      createHandoff: false,
-    };
-  }
-  if (mode === 'handoff_only') {
-    return {
-      mode,
-      label: '需要你先决定',
-      explanation: '目标不清、风险较高或缺少授权；执行前需要你的判断。',
-      createWorkContract: false,
-      createHandoff: true,
-    };
-  }
-  return {
-    mode: 'goal_workloop',
-    label: '可恢复的后台任务',
-    explanation: '多步骤或需要恢复/隔离的任务；会创建工作项并支持继续、验证与收尾。',
-    createWorkContract: true,
-    createHandoff: false,
-  };
 }
 
 function mapSuggested(actions: SuggestedNextAction[] = []): SuggestedActionViewModel[] {
@@ -355,7 +324,6 @@ export function mapWorkSummary(
   opts: { controllerHome?: string; repoId?: string } = {},
 ): WorkSummaryViewModel {
   const status = workStatusLabel(work.status);
-  const mode = plainMode(work.mode === 'direct_control' || work.mode === 'handoff_only' ? work.mode : 'goal_workloop');
   const verification = latestVerification(work);
   const suggested = mapSuggested(work.suggestedNextActions);
   const nextAction = suggested[0]?.label
@@ -390,8 +358,6 @@ export function mapWorkSummary(
     updatedAt: work.updatedAt,
     title: work.objective.slice(0, 160) || '未命名任务',
     objective: work.objective,
-    modeLabel: mode.label,
-    mode: mode.mode,
     accessMode: work.constraints.accessMode ?? 'full_access',
     accessModeLabel: accessModeDescriptor(work.constraints.accessMode ?? 'full_access').shortLabel,
     statusLabel: status.label,
@@ -440,11 +406,9 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
     const payload = approvalAction?.payload ?? {};
     const objective = typeof payload.objective === 'string' ? payload.objective.trim() : '';
     const allowedPaths = Array.isArray(payload.allowedPaths) ? payload.allowedPaths.map(String).filter(Boolean) : [];
-    const expectedFiles = typeof payload.expectedFiles === 'number' ? payload.expectedFiles : undefined;
     const scopeSummary = allowedPaths.length
       ? `允许修改：${allowedPaths.slice(0, 4).join('、')}${allowedPaths.length > 4 ? ' 等' : ''}`
       : '修改范围仍受原任务描述和仓库策略限制';
-    const estimate = expectedFiles === undefined ? '' : `；预计涉及约 ${expectedFiles} 个文件`;
     return {
       type: 'approval',
       typeLabel: destructive ? '高风险操作审批' : '执行授权',
@@ -456,7 +420,7 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
         ? '此操作包含高风险或潜在不可逆副作用，系统不能替你默认同意。'
         : '当前安全策略要求显式授权；缩小范围或改为只读预览后可避免本次审批。',
       impact: approvalAction?.operation === 'start'
-        ? `批准后会创建正式任务。${scopeSummary}${estimate}。`
+        ? `批准后会创建正式任务。${scopeSummary}。`
         : '当前审批没有保存可安全重放的具体动作，因此不能自动续跑。',
       afterApproval: canApproveAndContinue
         ? '系统会记录批准、立即创建任务并打开任务详情；接下来会明确显示继续、委派、验证或收尾动作，不代表任务已经完成。'
@@ -536,18 +500,6 @@ export function mapHandoffCard(item: HandoffItem): HandoffCardViewModel {
       workId: item.workId,
       creationReason: item.creationReason,
     },
-  };
-}
-
-export function previewExecutionMode(input: ExecutionModeSelectionInput & { objective?: string }): ModePreviewViewModel {
-  const selection = selectExecutionMode(input);
-  return {
-    ...plainMode(selection.mode),
-    createWorkContract: selection.createWorkContract,
-    createHandoff: selection.createHandoff,
-    explanation: selection.reason.includes('Small') || selection.reason.includes('small')
-      ? plainMode(selection.mode).explanation
-      : plainMode(selection.mode).explanation,
   };
 }
 
@@ -1011,7 +963,6 @@ export async function buildCommandCenter(
     handoffs,
     pluginSummary,
     plugins,
-    modePreviewDefault: plainMode('direct_control'),
     // Only surface confirmed warnings — never "maybe missing" when ChatGPT snapshot is unobserved.
     warnings: banner ? [banner] : [],
     setupGuide: needsSetup
@@ -1058,12 +1009,7 @@ export function startConsoleWork(
     acceptanceCriteria?: string[];
     allowedPaths?: string[];
     forbiddenPaths?: string[];
-    expectedFiles?: number;
-    expectedChangedLines?: number;
     scopeClear?: boolean;
-    requiresInvestigation?: boolean;
-    requiresLongRunningChecks?: boolean;
-    requiresWorker?: boolean;
     requiresApproval?: boolean;
     destructive?: boolean;
     accessMode?: AccessMode;
@@ -1099,14 +1045,9 @@ export function startConsoleWork(
             ...(input.directMainProhibited !== undefined ? { directMainProhibited: input.directMainProhibited } : {}),
           }
         : undefined,
-      modeInput: {
+      request: {
         objective: input.objective,
-        expectedFiles: input.expectedFiles,
-        expectedChangedLines: input.expectedChangedLines,
         scopeClear: input.scopeClear !== false,
-        requiresInvestigation: input.requiresInvestigation === true,
-        requiresLongRunningChecks: input.requiresLongRunningChecks === true,
-        requiresWorker: input.requiresWorker === true,
         requiresApproval: input.requiresApproval === true,
         destructive: input.destructive === true,
       },
@@ -1277,12 +1218,7 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
     acceptanceCriteria: strings(payload.acceptanceCriteria),
     allowedPaths: strings(payload.allowedPaths),
     forbiddenPaths: strings(payload.forbiddenPaths),
-    expectedFiles: typeof payload.expectedFiles === 'number' ? payload.expectedFiles : undefined,
-    expectedChangedLines: typeof payload.expectedChangedLines === 'number' ? payload.expectedChangedLines : undefined,
     scopeClear: payload.scopeClear !== false,
-    requiresInvestigation: payload.requiresInvestigation === true,
-    requiresLongRunningChecks: payload.requiresLongRunningChecks === true,
-    requiresWorker: payload.requiresWorker === true,
     requiresApproval: payload.requiresApproval === true,
     destructive: payload.destructive === true,
     accessMode: isAccessMode(payload.accessMode) ? payload.accessMode : undefined,

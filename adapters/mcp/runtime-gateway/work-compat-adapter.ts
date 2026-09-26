@@ -138,7 +138,6 @@ function summarizeSubmittedWorkContract(contract: NonNullable<ReturnType<typeof 
     requestId: contract.requestId,
     deduplicated: undefined,
     nextAction: continuation.nextSafeAction,
-    mode: contract.mode,
     objective: contract.objective,
     updatedAt: contract.updatedAt,
     resourceClaims: operation?.resourceClaims ?? [],
@@ -169,7 +168,6 @@ function summarizeWorkContractListItem(contract: NonNullable<ReturnType<typeof g
   return {
     workId: contract.workId,
     kind: 'work_contract',
-    mode: contract.mode,
     objective: contract.objective,
     status: contract.status,
     phase: terminal ? 'completed' : contract.status === 'running' ? 'running' : 'attention',

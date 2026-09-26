@@ -117,7 +117,6 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(staleStore, {
       workId: 'work-owner',
       repoId: 'repo-a',
-      mode: 'goal_workloop',
       objective: 'recover one stalled ControllerRound without splitting relay and owner authority',
       acceptanceCriteria: ['stale owner is fenced before round capability rotation'],
       allowedPaths: [],
@@ -171,7 +170,6 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(store, {
       workId: 'work-owner',
       repoId: 'repo-a',
-      mode: 'goal_workloop',
       objective: 'terminal work must not revive',
       acceptanceCriteria: ['terminal ownership is fenced'],
       allowedPaths: [],
@@ -224,7 +222,6 @@ describe('controller Work ownership fencing', () => {
     createWorkContract(store, {
       workId: 'work-owner',
       repoId: 'repo-a',
-      mode: 'goal_workloop',
       objective: 'preserve exact ControllerRound authority across Runtime rotation',
       acceptanceCriteria: ['only the replaceable Work owner binding moves to the new Runtime'],
       allowedPaths: [],
@@ -313,7 +310,7 @@ describe('controller Work ownership fencing', () => {
     const home = controllerHome();
     const store = { controllerHome: home, repoId: 'repo-a' };
     createWorkContract(store, {
-      workId: 'work-owner', repoId: 'repo-a', mode: 'goal_workloop', objective: 'preserve authority on recovery failure',
+      workId: 'work-owner', repoId: 'repo-a', objective: 'preserve authority on recovery failure',
       acceptanceCriteria: ['failed recovery does not rotate durable authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
@@ -349,7 +346,7 @@ describe('controller Work ownership fencing', () => {
     const home = controllerHome();
     const store = { controllerHome: home, repoId: 'repo-a' };
     createWorkContract(store, {
-      workId: 'work-owner', repoId: 'repo-a', mode: 'goal_workloop', objective: 'recover direct controller authority',
+      workId: 'work-owner', repoId: 'repo-a', objective: 'recover direct controller authority',
       acceptanceCriteria: ['same semantic owner survives transport loss'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });

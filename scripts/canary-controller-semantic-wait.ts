@@ -57,7 +57,6 @@ try {
     repoId: repository.repoId,
     requirementId,
     checkoutId: repository.activeCheckoutId,
-    mode: 'goal_workloop',
     objective: 'Prove semantic wait admission before provider dispatch.',
     acceptanceCriteria: ['Unchanged semantic state stays quiescent.', 'One meaningful state change wakes one successor.'],
     allowedPaths: [],

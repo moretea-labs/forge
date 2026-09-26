@@ -7,8 +7,8 @@ function trial(candidateIndex: number, active: number): AdaptiveTrial {
 
 describe('supplemental adaptive workflow', () => {
   test('classifies Direct, durable admission, and restart visibility from public payloads', () => {
-    expect(classifyAdaptiveStep('investigation_direct','admit',{data:{mode:{mode:'direct_control'},workContractCreated:false},summary:'investigation'},false).success).toBe(true);
-    expect(classifyAdaptiveStep('dependency_durable_admission','admit',{data:{mode:{mode:'goal_workloop'},workContractCreated:true,canonicalWorkRetained:true},summary:'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED'},true).success).toBe(true);
+    expect(classifyAdaptiveStep('investigation_direct','admit',{data:{workContractCreated:false},summary:'investigation'},false).success).toBe(true);
+    expect(classifyAdaptiveStep('dependency_durable_admission','admit',{data:{workContractCreated:true,canonicalWorkRetained:true},summary:'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED'},true).success).toBe(true);
     expect(classifyAdaptiveStep('restart_durable_work_visible','status',{data:{activeWork:[{objective:'Evaluation restart durable Work visibility'}]},summary:'RUNTIME_NOT_RUNNING'},true).success).toBe(true);
   });
 

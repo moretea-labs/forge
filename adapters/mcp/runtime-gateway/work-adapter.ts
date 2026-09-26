@@ -57,9 +57,8 @@ export { recoverControllerRoundAfterVerifiedProviderRepair } from './work-contro
 
 const LEGACY_START_COMPATIBILITY_KEYS = new Set([
   'related_work_id', 'work_relation', 'requested_by', 'superseded_by',
-  'expected_files', 'expected_changed_lines', 'mode', 'work_kind', 'scope_clear',
-  'requires_investigation', 'requires_long_running_checks', 'requires_parallelism',
-  'needs_dependencies', 'requires_recovery', 'requires_worker', 'requires_external_effect',
+  'work_kind', 'scope_clear',
+  'needs_dependencies', 'requires_recovery', 'requires_external_effect',
   'requires_approval', 'requires_user_approval', 'destructive', 'remote_write', 'secret_access',
   'check_ids', 'check_id', 'reconcile_process_ids', 'acceptance_criteria', 'allowed_paths',
   'initial_likely_paths', 'engineering_preconditions', 'engineering_blocker',

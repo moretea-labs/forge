@@ -43,7 +43,6 @@ function work(input: {
     workId: input.workId,
     repoId: input.repoId,
     checkoutId: `checkout-${input.workId}`,
-    mode: 'goal_workloop',
     objective: `Exercise concurrency semantics for ${input.workId}.`,
     acceptanceCriteria: ['Concurrency semantics are deterministic.'],
     constraints: { requireHandoffOnAmbiguity: true, workspaceMode: isolated ? 'isolated' : 'auto', requireWorktree: isolated },
@@ -171,16 +170,7 @@ describe('Work execution concurrency', () => {
       constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
       workKind: 'repository_change',
       workRelation: 'new_goal',
-      modeInput: {
-        scopeClear: true,
-        mutation: true,
-        expectedFiles: 1,
-        expectedChangedLines: 20,
-        requiresInvestigation: true,
-        requiresRecovery: true,
-        requiresParallelism: true,
-        risk: 'local_repo_write',
-      },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
     });
     expect(started.status).toBe('ok');
     expect(started.data).toMatchObject({ workContractCreated: true });
@@ -203,16 +193,7 @@ describe('Work execution concurrency', () => {
       workKind: 'repository_change',
       relatedWorkId: malformed.workId,
       workRelation: 'parallel',
-      modeInput: {
-        scopeClear: true,
-        mutation: true,
-        expectedFiles: 1,
-        expectedChangedLines: 20,
-        requiresInvestigation: true,
-        requiresRecovery: true,
-        requiresParallelism: true,
-        risk: 'local_repo_write',
-      },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
     });
     expect(exactInvalid.status).toBe('blocked');
     expect(exactInvalid.summary).toContain('WORK_RELATED_CONTRACT_INVALID');

@@ -77,7 +77,6 @@ import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/r
 import { acceptVerifiedTaskFromControllerWork } from '../../../src/runtime/control-plane/execution/work-task-receipt';
 import { getWorkContract } from '../../../packages/kernel/work/api';
 import { admitDirectEditWorkContract } from '../../../src/runtime/control-plane/facade/repository-work-admission';
-import { decideRoute } from '../../../src/runtime/control-plane/routing/route-policy';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import {
   getControllerTimeline,
@@ -735,10 +734,7 @@ function taskExecutorHealth(
   githubRepo?: string,
 ): ExecutorHealth | null {
   if (agent === "github-copilot") {
-    return classifyGitHubCopilotPreflight(
-      getGitHubStatus(ctx.repoRoot, githubRepo),
-      task,
-    );
+    return classifyGitHubCopilotPreflight(getGitHubStatus(ctx.repoRoot, githubRepo));
   }
   return classifyLocalExecutorHealth(
     agent,
@@ -746,7 +742,6 @@ function taskExecutorHealth(
       agentRunner: ctx.policy.execution.agentRunner,
       allowedAgents: ctx.policy.execution.allowedAgents,
     },
-    task,
   );
 }
 
@@ -1573,18 +1568,12 @@ export function buildMcpToolDefinitions(
       {
         name: "controller_context",
         description:
-          "Return one compact controller start-work context: Git status, current Issue focus, active Runs and Jobs, recommended execution mode, and available checks.",
+          "Return one compact controller start-work context: Git status, current Issue focus, active Runs and Jobs, and available checks.",
         inputSchema: {
           type: "object",
           properties: {
             description: { type: "string" },
-            mode: { type: "string", enum: ["direct", "plan", "debug", "review", "release", "scale", "-direct", "-plan", "-debug", "-review", "-release", "-scale"] },
             known_paths: { type: "array", items: { type: "string" } },
-            expected_files: { type: "number" },
-            expected_changed_lines: { type: "number" },
-            requires_investigation: { type: "boolean" },
-            requires_parallelism: { type: "boolean" },
-            requires_long_running_checks: { type: "boolean" },
             needs_dependencies: { type: "boolean" },
             risk: { type: "string", enum: ["readonly", "low", "medium", "high", "destructive"] },
           },
@@ -4418,17 +4407,6 @@ export async function callMcpTool(
         const checks = stringList(args.checks);
         const git = gitSnapshot(ctx.repoRoot);
         const workspaceIdentity = createHash("sha256").update(JSON.stringify(git)).digest("hex");
-        const routeDecision = decideRoute({
-          intent: {
-            objective: purpose,
-            scopeClear: allowedPaths.length > 0,
-            mutation: true,
-          },
-          workspace: { knownPaths: allowedPaths, checkoutId: identity.checkoutId, fingerprint: workspaceIdentity },
-          policy: { risk: "local_repo_write", approvalConfirmed: true },
-          capabilities: {},
-          recovery: {},
-        });
         const requestedWorkId = typeof args.work_id === "string" ? args.work_id.trim() : "";
         const workId = requestedWorkId || `work-direct-${createHash("sha256").update(`${repoId}\0${purpose}\0${Date.now()}`).digest("hex").slice(0, 16)}`;
         const workStore = { controllerHome, repoId };
@@ -4443,7 +4421,6 @@ export async function callMcpTool(
             controllerInstanceId: identity.controllerInstanceId,
             baseRevision: git.head ?? undefined,
             workspaceFingerprint: workspaceIdentity,
-            routeDecision,
             objective: purpose,
             issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
             taskId: typeof args.task_id === "string" ? args.task_id : undefined,
@@ -4475,7 +4452,6 @@ export async function callMcpTool(
             checkoutId: identity.checkoutId,
             principalId: identity.principalId,
             controllerInstanceId: identity.controllerInstanceId,
-            routeDecisionFingerprint: routeDecision.inputFingerprint,
           },
         });
         audit(
@@ -4514,7 +4490,6 @@ export async function callMcpTool(
                 checkoutId: identity.checkoutId,
                 principalId: identity.principalId,
                 controllerInstanceId: identity.controllerInstanceId,
-                routeDecisionFingerprint: current.routeDecisionFingerprint,
               },
             },
           );
@@ -4634,7 +4609,6 @@ export async function callMcpTool(
               checkoutId: identity.checkoutId,
               principalId: identity.principalId,
               controllerInstanceId: identity.controllerInstanceId,
-              routeDecisionFingerprint: current.routeDecisionFingerprint,
             },
           },
         );

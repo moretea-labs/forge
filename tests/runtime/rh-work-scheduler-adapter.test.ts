@@ -45,7 +45,6 @@ function fixture() {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
     baseRevision: git(repoRoot, 'rev-parse', 'HEAD'),
-    mode: 'goal_workloop',
     objective: 'Exercise the rh_work Scheduler transport boundary.',
     acceptanceCriteria: ['Schedule transport preserves Scheduler authority.'],
     allowedPaths: [],

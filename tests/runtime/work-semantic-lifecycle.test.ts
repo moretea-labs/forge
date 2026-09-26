@@ -28,7 +28,6 @@ function createOpenWork(options: { controllerHome: string; repoId: string }, wor
   createWorkContract(options, {
     workId,
     repoId: options.repoId,
-    mode: 'goal_workloop',
     workKind: 'repository_change',
     objective: 'Keep semantic Work thin.',
     acceptanceCriteria: ['Semantic state is the only Work state'],
@@ -86,7 +85,6 @@ describe('thin semantic Work lifecycle', () => {
     createWorkContract(options, {
       workId: 'work-semantic-close',
       repoId: options.repoId,
-      mode: 'goal_workloop',
       workKind: 'remote_effect',
       objective: 'Record one durable external outcome.',
       acceptanceCriteria: ['Outcome is recorded'],

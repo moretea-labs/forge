@@ -303,7 +303,6 @@ describe('runtime maintenance executor', () => {
     createWorkContract({ controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
       workId,
       repoId,
-      mode: 'goal_workloop',
       objective: `stale managed ${source} work`,
       acceptanceCriteria: ['preserve unique source'],
       allowedPaths: ['**'],
@@ -357,12 +356,11 @@ describe('runtime maintenance executor', () => {
     const registeredWorktree = checkout.canonicalRoot;
     const workId = 'work-legacy-remote-effect-placement';
     createWorkContract({ controllerHome, repoId: registered.repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
-      workId, repoId: registered.repoId, mode: 'goal_workloop', workKind: 'remote_effect',
+      workId, repoId: registered.repoId, workKind: 'remote_effect',
       objective: 'continue an external browser task without repository mutation',
       acceptanceCriteria: ['remote receipt exists'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'isolated', requireWorktree: true, requireHandoffOnAmbiguity: true },
       requestedBy: 'user', status: 'running', checkoutId: checkout.checkoutId, worktreeRef: registeredWorktree, baseRevision,
-      driver: { preferred: 'isolated_worktree', allowWorker: false, allowDirectEdit: false },
       worktreePolicy: { required: true, reason: 'legacy placement inherited from unrelated repository state' },
     });
     if (dirty) writeFileSync(join(registeredWorktree, 'unexpected.txt'), 'must preserve\n');
@@ -436,7 +434,6 @@ describe('runtime maintenance executor', () => {
         workId,
         repoId,
         checkoutId,
-        mode: 'direct_control',
         objective: 'Characterize stale Edit Session maintenance.',
         acceptanceCriteria: [],
         allowedPaths: ['src/**'],
@@ -485,8 +482,7 @@ describe('runtime maintenance executor', () => {
     writeFileSync(join(retainedWorktree, 'preserved.txt'), 'implementation in progress\n');
 
     createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained' }, {
-      workId: 'work-retained-migrated', repoId: 'repo-retained', mode: 'goal_workloop',
-      objective: 'Preserved implementation that must remain reviewable after Controller Home migration.',
+      workId: 'work-retained-migrated', repoId: 'repo-retained', objective: 'Preserved implementation that must remain reviewable after Controller Home migration.',
       acceptanceCriteria: ['preserve implementation'], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user', status: 'cancelled',
       checkoutId: 'checkout-retained', worktreeRef: retainedWorktree,
@@ -527,8 +523,7 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
 
     createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained-root' }, {
-      workId: 'work-retained-repository-root', repoId: 'repo-retained-root', mode: 'goal_workloop',
-      objective: 'Historical terminal Work whose legacy worktreeRef was the repository root.',
+      workId: 'work-retained-repository-root', repoId: 'repo-retained-root', objective: 'Historical terminal Work whose legacy worktreeRef was the repository root.',
       acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user', status: 'cancelled',
       checkoutId: 'checkout-retained-root', worktreeRef: oldRepositoryRoot,
@@ -560,8 +555,7 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
 
     createWorkContract({ controllerHome: sourceHome, repoId: 'repo-empty-managed-residue' }, {
-      workId: 'work-empty-managed-residue', repoId: 'repo-empty-managed-residue', mode: 'goal_workloop',
-      objective: 'Historical Work whose managed directory is already empty and detached from Git.',
+      workId: 'work-empty-managed-residue', repoId: 'repo-empty-managed-residue', objective: 'Historical Work whose managed directory is already empty and detached from Git.',
       acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user', status: 'cancelled',
       checkoutId: 'checkout-empty-residue', worktreeRef: emptyManagedResidue,
@@ -592,7 +586,7 @@ describe('runtime maintenance executor', () => {
     mkdirSync(join(root, '.forge', 'managed-worktrees', 'current-controller', 'repo-owned'), { recursive: true });
     execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/owned', worktree, 'HEAD'], { cwd: repoRoot });
     createWorkContract({ controllerHome, repoId: 'repo-owned' }, {
-      workId: 'work-owned-current', repoId: 'repo-owned', mode: 'goal_workloop', objective: 'Current owned worktree',
+      workId: 'work-owned-current', repoId: 'repo-owned', objective: 'Current owned worktree',
       acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'user', status: 'running', checkoutId: 'checkout-owned', worktreeRef: worktree,
     });
@@ -770,7 +764,6 @@ describe('runtime maintenance executor', () => {
     const work = createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
       workId: 'work-stale-ready',
       repoId: repository.repoId,
-      mode: 'goal_workloop',
       objective: 'legacy ready work',
       acceptanceCriteria: ['historical'],
       allowedPaths: [],
@@ -1048,7 +1041,7 @@ describe('runtime maintenance executor', () => {
     const oldAt = '2026-01-01T00:00:00.000Z';
     const store = { controllerHome, repoId: repository.repoId, now: () => oldAt };
     createWorkContract(store, {
-      workId: 'work-stale-then-claimed', repoId: repository.repoId, mode: 'goal_workloop', objective: 'stale before controller reclaim',
+      workId: 'work-stale-then-claimed', repoId: repository.repoId, objective: 'stale before controller reclaim',
       acceptanceCriteria: ['preserve late authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
     });
@@ -1093,7 +1086,7 @@ describe('runtime maintenance executor', () => {
     const repository = { repoId: 'repo-plan-owned-work', canonicalRoot: repoRoot };
     const oldAt = '2026-01-01T00:00:00.000Z';
     createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
-      workId: 'work-plan-owned', repoId: repository.repoId, mode: 'goal_workloop', objective: 'authoritative old work',
+      workId: 'work-plan-owned', repoId: repository.repoId, objective: 'authoritative old work',
       planId: 'PLAN-owned', planStepId: 'step-a', planSourceRevision: 'revision-a',
       acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
@@ -1120,7 +1113,7 @@ describe('runtime maintenance executor', () => {
     const oldAt = '2026-01-01T00:00:00.000Z';
     const store = { controllerHome, repoId: repository.repoId, now: () => oldAt };
     createWorkContract(store, {
-      workId: 'work-controller-owned', repoId: repository.repoId, mode: 'goal_workloop', objective: 'controller-owned old work',
+      workId: 'work-controller-owned', repoId: repository.repoId, objective: 'controller-owned old work',
       acceptanceCriteria: ['preserve ownership'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
     });

@@ -187,7 +187,6 @@ describe('Goal authority convergence', () => {
       planId,
       planStepId: 'step-a',
       planSourceRevision: 'rev-a',
-      mode: 'goal_workloop',
       workKind: 'completed_no_change',
       objective: 'Advance source A to B.',
       acceptanceCriteria: ['Controller reviews the exact delivered result.'],

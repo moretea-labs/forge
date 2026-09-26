@@ -104,7 +104,7 @@ describe('bounded Work candidate extension authority', () => {
       initialLikelyPaths: ['src/base.ts'],
       forbiddenPaths: [],
       checks: [],
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true },
       requestedBy: 'chatgpt',
       workKind: 'repository_change',
     });
@@ -792,8 +792,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-liveness' });
     const workId = 'WORK-CONTROLLER-LIVENESS';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Verify continuation liveness semantics.', acceptanceCriteria: ['Idle leases do not masquerade as execution.'],
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Verify continuation liveness semantics.', acceptanceCriteria: ['Idle leases do not masquerade as execution.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
@@ -954,7 +953,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Keep advancing without asking the user to type continue.',
       acceptanceCriteria: ['The next ControllerRound is dispatched from current source.'],
       allowedPaths: ['**/*'],
@@ -1070,8 +1068,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-pending-release-retry' });
     const workId = 'WORK-SOURCE-ROUND-PENDING-RELEASE';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Resume an interrupted continue after durable semantic closure.', acceptanceCriteria: [],
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Resume an interrupted continue after durable semantic closure.', acceptanceCriteria: [],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
@@ -1134,8 +1131,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-close-wait' });
     const workId = 'WORK-SOURCE-ROUND-CLOSE-WAIT';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Close a source ControllerRound without dispatching a successor.', acceptanceCriteria: ['Wait is durable after source reconciliation.'],
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Close a source ControllerRound without dispatching a successor.', acceptanceCriteria: ['Wait is durable after source reconciliation.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
     });
@@ -1174,8 +1170,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-known-failure' });
     const workId = 'WORK-SOURCE-ROUND-KNOWN-FAILURE';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Known provider failure must remain fail-closed.', acceptanceCriteria: [],
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Known provider failure must remain fail-closed.', acceptanceCriteria: [],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
@@ -1211,7 +1206,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Keep typed provider delivery uncertainty across the source round boundary.',
       acceptanceCriteria: [],
       allowedPaths: ['**/*'],
@@ -1268,8 +1262,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-provider-recovery' });
     const workId = 'WORK-RELAY-PROVIDER-RECOVERY';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Recover the same semantic round only after exact provider repair evidence.',
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Recover the same semantic round only after exact provider repair evidence.',
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
@@ -1381,8 +1374,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-unknown-dispatch' });
     const workId = 'WORK-RELAY-UNKNOWN-DISPATCH';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Confirm provider delivery only when the exact controller actually claims the Work.',
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Confirm provider delivery only when the exact controller actually claims the Work.',
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
@@ -1418,8 +1410,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-assistant-context-evidence' });
     const workId = 'WORK-ASSISTANT-CONTEXT-EVIDENCE';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Retain exact assistant context usage evidence for the claimed round.',
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Retain exact assistant context usage evidence for the claimed round.',
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
@@ -1485,7 +1476,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: `${'Collect bounded evidence without losing the decisive semantic contract. '.repeat(10)}ROUND4_EXPLICITLY_WAITS_AFTER_EXTERNAL_EVALUATOR_BOUNDARY`,
       acceptanceCriteria: [
         'ChatGPT explicitly decides completion.',
@@ -1616,7 +1606,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Run one bounded scheduled health probe and remain persistent for the next occurrence.',
       acceptanceCriteria: ['A successful no-op occurrence returns the relay to waiting without terminalizing Work.'],
       allowedPaths: ['**/*'],
@@ -1688,7 +1677,6 @@ describe('scheduled external Controller wake', () => {
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       requirementId,
-      mode: 'goal_workloop',
       objective: 'Run bounded periodic maintenance whose mechanical Work state may remain unchanged between occurrences.',
       acceptanceCriteria: ['A later explicit occurrence gets a fresh relay budget without weakening same-chain fencing.'],
       allowedPaths: ['**/*'],
@@ -1818,7 +1806,6 @@ describe('scheduled external Controller wake', () => {
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       requirementId,
-      mode: 'goal_workloop',
       objective: 'Represent real Requirement progress after the Supervisor repeated-state guard fired.',
       acceptanceCriteria: ['The Requirement-wide fingerprint changes without weakening same-state suppression.'],
       allowedPaths: ['**/*'],
@@ -1848,8 +1835,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-fresh-failure-budget' });
     const workId = 'WORK-RELAY-FRESH-FAILURE-BUDGET';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Keep a failed ControllerRound fenced until an explicit legal resume or recovery contract is used.',
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Keep a failed ControllerRound fenced until an explicit legal resume or recovery contract is used.',
       acceptanceCriteria: ['A later external occurrence cannot reset or bypass a failed lineage.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
@@ -1889,7 +1875,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Continue across a crash between controller lease release and relay dispatch transition.',
       acceptanceCriteria: ['A durable continue_immediately disposition remains recoverable after lease release.'],
       allowedPaths: ['**/*'],
@@ -1959,7 +1944,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Recover a controller round when Runtime stalls after marking launcher dispatch in progress.',
       acceptanceCriteria: ['Recovery reuses the already-budgeted controller round.'],
       allowedPaths: ['**/*'],
@@ -2009,7 +1993,6 @@ describe('scheduled external Controller wake', () => {
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
         requirementId,
-        mode: 'goal_workloop',
         objective: `Requirement relay Work ${index + 1}.`,
         acceptanceCriteria: ['Preserve Requirement-wide active execution fencing.'],
         allowedPaths: ['**/*'],
@@ -2066,7 +2049,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Keep relay ownership coherent when the controller claims before launcher dispatch completion is recorded.',
       acceptanceCriteria: ['A live controller claim is stronger evidence than the transient dispatching state.'],
       allowedPaths: ['**/*'],
@@ -2125,7 +2107,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Continue one claimed ChatGPT round across a canonical Runtime restart.',
       acceptanceCriteria: ['Only the exact live same-principal controller lease can migrate the relay claim.'],
       allowedPaths: ['**/*'],
@@ -2285,7 +2266,6 @@ describe('scheduled external Controller wake', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Finalize physical Work before the controller records semantic completion.',
       acceptanceCriteria: ['The same claimed controller round can still record goal_complete.'],
       allowedPaths: ['**/*'],
@@ -2536,7 +2516,7 @@ describe('scheduled external Controller wake', () => {
     writeFileSync(join(repoRoot, 'README.md'), 'scope\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-stop-scope' });
     const workId = 'WORK-SCHEDULE-STOP-SCOPE';
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue only this Work.', acceptanceCriteria: ['bounded continuation'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
+    const work = createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Continue only this Work.', acceptanceCriteria: ['bounded continuation'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
     const records = join(executionJobRoot(controllerHome, repository.repoId), 'records');
     mkdirSync(records, { recursive: true });
     const oldAt = new Date(Date.parse(work.createdAt) - 86_400_000).toISOString();
@@ -2626,7 +2606,7 @@ describe('scheduled external Controller wake', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-wake' }), workId = 'WORK-SCHEDULE-WAKE';
     const fakeController = join(repoRoot, 'fake-controller.sh');
     writeFileSync(fakeController, '#!/bin/sh\nsleep 2\n'); chmodSync(fakeController, 0o755);
-    createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
+    createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
     const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: fakeController } }, stopConditions: [] });
     const failedWake = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
     expect(failedWake).toMatchObject({ status: 'skipped', decision: 'operation_blocked' });

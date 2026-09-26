@@ -47,7 +47,6 @@ test('keeps superseded Work as durable history while removing it from the curren
   const make = (workId: string) => createWorkContract(options, {
     workId,
     repoId: options.repoId,
-    mode: 'goal_workloop',
     objective: `Deliver ${workId}`,
     acceptanceCriteria: [],
     allowedPaths: [],
@@ -125,7 +124,6 @@ test('historical cancelled Work evidence cannot reopen a reviewed Requirement ou
     workId: 'work-historical-cancelled',
     repoId: 'repo-reviewed',
     requirementId: 'req-reviewed',
-    mode: 'goal_workloop',
     objective: 'Historical attempt retained for evidence.',
     acceptanceCriteria: [],
     allowedPaths: [],

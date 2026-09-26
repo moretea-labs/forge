@@ -786,7 +786,6 @@ describe('ChatGPT Work conversation binding', () => {
     const workInput = {
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop' as const,
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt' as const, status: 'running' as const,
@@ -842,7 +841,6 @@ describe('ChatGPT Work conversation binding', () => {
     const workInput = {
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop' as const,
       acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt' as const, status: 'running' as const,
@@ -897,7 +895,7 @@ describe('ChatGPT Work conversation binding', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId: 'WORK-PLACEMENT-MISMATCH', repoId: repository.repoId,
       executionPlacement: executionPlacement({ forgeInstanceId: 'forge-wsl', repositoryId: repository.repoId }),
-      mode: 'goal_workloop', objective: 'Stay on the WSL Forge instance.', acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      objective: 'Stay on the WSL Forge instance.', acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
     let dispatches = 0;
@@ -957,7 +955,6 @@ describe('ChatGPT Work conversation binding', () => {
     const workInput = {
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop' as const,
       acceptanceCriteria: ['Keep provider outcome separate from conversation resource identity.'],
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
@@ -1091,8 +1088,7 @@ describe('ChatGPT Work conversation binding', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-bound-supervisor' });
     const store = { controllerHome, repoId: repository.repoId };
     createWorkContract(store, {
-      workId: 'WORK-BOUND-SUPERVISOR', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Continue the exact bound conversation through Workflow Supervisor.', acceptanceCriteria: ['Do not re-enter Browser delivery.'],
+      workId: 'WORK-BOUND-SUPERVISOR', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Continue the exact bound conversation through Workflow Supervisor.', acceptanceCriteria: ['Do not re-enter Browser delivery.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
     });
@@ -1135,8 +1131,7 @@ describe('ChatGPT Work conversation binding', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-fresh-transport' });
     const store = { controllerHome, repoId: repository.repoId };
     createWorkContract(store, {
-      workId: 'WORK-FRESH-TRANSPORT', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Isolate ControllerRound transport conversations.', acceptanceCriteria: ['Use a fresh transport conversation without changing Work authority.'],
+      workId: 'WORK-FRESH-TRANSPORT', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: 'Isolate ControllerRound transport conversations.', acceptanceCriteria: ['Use a fresh transport conversation without changing Work authority.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt', status: 'running',
     });
@@ -1292,7 +1287,6 @@ describe('ChatGPT Work conversation binding', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Resume when the bounded Handoff is resolved.',
       acceptanceCriteria: ['Only the exact Work continuation schedule may wake.'],
       allowedPaths: ['**/*'],
@@ -1511,7 +1505,6 @@ describe('controller relay repeated-state rearm', () => {
     const workInput = {
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop' as const,
       acceptanceCriteria: ['Keep the relay fenced while allowing changed durable state to continue.'],
       allowedPaths: ['**/*'],
       forbiddenPaths: [],
@@ -1634,7 +1627,6 @@ describe('provider dispatch outcome-unknown fence', () => {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Fence ambiguous provider dispatch.',
       acceptanceCriteria: ['Never replay a possibly committed provider prompt automatically.'],
       allowedPaths: ['**/*'],

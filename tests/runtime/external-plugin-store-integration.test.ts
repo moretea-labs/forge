@@ -173,7 +173,7 @@ describe('controller-scoped plugin Work attribution', () => {
     }, {
       objective: 'Own one controller-scoped typed plugin observation from the business repository.',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      modeInput: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: true, requiresWorker: false, requiresApproval: false },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: true, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
@@ -246,10 +246,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
       objective,
       acceptanceCriteria: ['A durable typed local plugin effect receipt exists.'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      modeInput: {
-        scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: false,
-        risk: 'workspace_write', requiresRecovery: true, requiresWorker: false, requiresApproval: false,
-      },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: false, risk: 'workspace_write', requiresRecovery: true, requiresApproval: false },
     });
     const first = startLocalEffect('Own one controller-scoped plugin mutation.');
     const firstWorkId = String((first.data as { work?: { workId?: string } }).work?.workId ?? '');
@@ -360,10 +357,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
       objective: 'Produce an evidence-backed external investigation result.',
       acceptanceCriteria: ['Candidate filtering is complete.', 'A ranked result or evidence-backed no-candidate result exists.'],
       allowedPaths: [], forbiddenPaths: [], checks: [], workKind: 'local_effect',
-      modeInput: {
-        scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: false,
-        risk: 'workspace_write', requiresRecovery: true, requiresWorker: false, requiresApproval: false,
-      },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: false, risk: 'workspace_write', requiresRecovery: true, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
@@ -760,10 +754,7 @@ describe('Resend first-party plugin', () => {
       objective: 'Send one remote-effect acceptance email.',
       acceptanceCriteria: ['The typed remote email action succeeds.'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
-      modeInput: {
-        scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write',
-        requiresRecovery: false, requiresWorker: false, requiresApproval: false,
-      },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write', requiresRecovery: false, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
@@ -846,7 +837,7 @@ describe('Resend first-party plugin', () => {
       workStore: { controllerHome, repoId: repository.repoId }, handoffStore: { controllerHome, repoId: repository.repoId }, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
     }, {
       objective: 'Perform a two-step remote effect and finalize it semantically after confirmation.', acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      modeInput: { scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write', requiresRecovery: false, requiresWorker: false, requiresApproval: false },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write', requiresRecovery: false, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     const intermediate = await submitAssistantPluginAction(controllerHome, repository, {
@@ -891,7 +882,7 @@ describe('Resend first-party plugin', () => {
       workStore: { controllerHome, repoId: repository.repoId }, handoffStore: { controllerHome, repoId: repository.repoId }, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
     }, {
       objective: 'Repository-only Work must not be completed by a remote receipt.', acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
-      modeInput: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresWorker: false, requiresApproval: false },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     await expect(submitAssistantPluginAction(controllerHome, repository, {

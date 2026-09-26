@@ -7,7 +7,6 @@ import {
   admitPreparedRepositoryWorkContract,
   materializeRepositoryWorkPlacement,
 } from '../../src/runtime/control-plane/facade/repository-work-admission';
-import { decideRoute } from '../../src/runtime/control-plane/routing/route-policy';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 
 const roots: string[] = [];
@@ -37,7 +36,6 @@ describe('repository Work admission authority', () => {
       requestedBy: 'chatgpt',
       requestId: 'request-prepared-isolated',
     });
-    expect(work.mode).toBe('goal_workloop');
     expect(work.constraints).toMatchObject({ workspaceMode: 'isolated', requireWorktree: true, directMainProhibited: true });
     expect(work.worktreePolicy.required).toBe(true);
     expect(work.executionPlacement).toMatchObject({ forgeInstanceId: 'forge-prepared', repositoryId: location.repoId });
@@ -68,23 +66,14 @@ describe('repository Work admission authority', () => {
       checkoutId: 'checkout-isolated',
       baseRevision: 'abc123',
       worktreeRef: '/tmp/forge-isolated-worktree',
-      driver: { preferred: 'isolated_worktree', allowDirectEdit: false },
       executionPlacement: { forgeInstanceId: 'forge-materialized', repositoryId: location.repoId, checkoutId: 'checkout-isolated' },
     });
   });
 
 
-  test('admits bounded Direct Edit explicitly while retaining the route snapshot as provenance only', () => {
+  test('admits bounded Direct Edit explicitly through the capability boundary', () => {
     const location = store('repo-direct-admission');
     ensureForgeInstanceIdentity({ controllerHome: location.controllerHome, preferredInstanceId: 'forge-direct' });
-    const routeDecision = decideRoute({
-      intent: { objective: 'Edit one bounded file.', scopeClear: true, mutation: true },
-      workspace: { knownPaths: ['src/a.ts'], placement: 'current' },
-      policy: { risk: 'local_repo_write', approvalConfirmed: true },
-      capabilities: {},
-      recovery: {},
-    });
-    expect(routeDecision).toMatchObject({ executionMode: 'direct_control', requiresIsolation: false });
     const work = admitDirectEditWorkContract(location, {
       workId: 'work-direct-admission',
       repoId: location.repoId,
@@ -93,44 +82,15 @@ describe('repository Work admission authority', () => {
       controllerInstanceId: 'controller-a',
       baseRevision: 'abc123',
       workspaceFingerprint: 'workspace-fingerprint',
-      routeDecision,
       objective: 'Edit one bounded file.',
       allowedPaths: ['src/a.ts'],
       checks: ['package:check:type'],
       requestedBy: 'chatgpt',
     });
     expect(work).toMatchObject({
-      mode: 'direct_control',
       checkoutId: 'checkout-current',
       constraints: { workspaceMode: 'current', requireWorktree: false },
-      routeDecisionFingerprint: routeDecision.inputFingerprint,
       executionPlacement: { forgeInstanceId: 'forge-direct', repositoryId: location.repoId, checkoutId: 'checkout-current' },
-    });
-  });
-
-  test('direct Edit admission is selected by the explicit capability rather than route mode tokens', () => {
-    const location = store('repo-direct-route-conflict');
-    const routeDecision = decideRoute({
-      intent: { objective: 'Edit one file but observe an isolated placement constraint.', scopeClear: true, mutation: true },
-      workspace: { knownPaths: ['src/a.ts'], placement: 'isolated', directMainProhibited: true },
-      policy: { risk: 'local_repo_write', approvalConfirmed: true },
-      capabilities: {},
-      recovery: {},
-    });
-    expect(routeDecision).toMatchObject({ requiresIsolation: true });
-    const work = admitDirectEditWorkContract(location, {
-      workId: 'work-direct-route-conflict',
-      repoId: location.repoId,
-      workspaceFingerprint: 'workspace-fingerprint',
-      routeDecision,
-      objective: 'Edit one file but require isolation.',
-      allowedPaths: ['src/a.ts'],
-      checks: [],
-      requestedBy: 'chatgpt',
-    });
-    expect(work).toMatchObject({
-      mode: 'direct_control',
-      routeDecisionFingerprint: routeDecision.inputFingerprint,
     });
   });
 });

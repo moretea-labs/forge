@@ -70,7 +70,6 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
   createWorkContract({ controllerHome, repoId, now: () => now }, {
     workId,
     repoId,
-    mode: 'direct_control',
     objective: 'Converge validation from durable Process receipts.',
     acceptanceCriteria: ['Validation outcome is persisted exactly once.'],
     allowedPaths: [],
@@ -583,7 +582,6 @@ describe('workspace-bound validation identity', () => {
     createWorkContract({ root }, {
       workId,
       repoId: 'repo-legacy-review-phase',
-      mode: 'goal_workloop',
       objective: 'Continue an in-flight Work across a Runtime schema upgrade.',
       acceptanceCriteria: ['Durable Work remains readable after adding the review phase.'],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -622,7 +620,6 @@ describe('workspace-bound validation identity', () => {
     createWorkContract({ root }, {
       workId,
       repoId: 'repo-legacy-pending-review-phase',
-      mode: 'goal_workloop',
       objective: 'Read a Work that persisted legacy review evidence before first-class review existed.',
       acceptanceCriteria: ['Only legacy-inferred pending review evidence is compatibility-upgraded.'],
       constraints: { requireHandoffOnAmbiguity: true },

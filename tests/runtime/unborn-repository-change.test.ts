@@ -37,7 +37,7 @@ describe('repository-change Work with an unborn Git baseline', () => {
     };
     const started = routeWorkStart(initialContext, {
       objective: 'Create the initial application files in a fresh repository.',
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId;
     expect(workId).toBeTruthy();
@@ -111,7 +111,7 @@ describe('repository-change Work with an unborn Git baseline', () => {
     };
     const started = routeWorkStart(context, {
       objective: 'Legacy-style repository change without authoritative source identity.',
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId;
     expect(workId).toBeTruthy();

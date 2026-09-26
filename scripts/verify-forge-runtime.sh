@@ -11,7 +11,6 @@ command -v bun >/dev/null 2>&1 || {
 
 TEST_FILES=(
   "tests/runtime/facade-contracts.test.ts"
-  "tests/runtime/route-policy.test.ts"
   "tests/runtime/forge-runtime-service.test.ts"
   "tests/cli/local-bridge.test.ts"
   "tests/runtime/thin-harness-gateway-routing.test.ts"

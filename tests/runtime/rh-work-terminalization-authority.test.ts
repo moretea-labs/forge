@@ -150,7 +150,6 @@ function createReadyWork(controllerHome: string, repoId: string, workId: string)
   createWorkContract({ controllerHome, repoId }, {
     workId,
     repoId,
-    mode: 'goal_workloop',
     objective: 'terminalization authority regression',
     acceptanceCriteria: ['preserve current controller authority'],
     allowedPaths: [],
@@ -281,7 +280,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision: sourceRevision,
-      mode: 'goal_workloop',
       objective: 'Keep verification authority separate from infrastructure observation order.',
       acceptanceCriteria: ['The exact successful verification remains authoritative.'],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -482,7 +480,6 @@ describe('rh_work terminalization authority', () => {
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
       workId,
       repoId: fx.repository.repoId,
-      mode: 'goal_workloop',
       objective: 'Reconcile already-delivered source evidence.',
       acceptanceCriteria: ['Existing source remains unchanged.'],
       allowedPaths: [],
@@ -523,7 +520,6 @@ describe('rh_work terminalization authority', () => {
       repoId: fx.repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'Prove isolated no-change Work retains canonical delivery authority.',
       acceptanceCriteria: ['No-change Work can finalize through its owned WorkHandle.'],
       allowedPaths: [],
@@ -582,7 +578,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Reconcile a legacy false-negative managed WorkHandle.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -647,7 +642,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Keep a direct canonical WorkHandle direct.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -704,7 +698,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Align a Direct canonical Work before its first safe-patch mutation.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -801,7 +794,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Align a Direct canonical Work before its first repository command mutation.',
       acceptanceCriteria: [],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -879,7 +871,6 @@ describe('rh_work terminalization authority', () => {
         principalId: caller.principalId,
         controllerInstanceId: caller.controllerInstanceId,
         baseRevision,
-        mode: 'goal_workloop',
         objective: `Exercise durable canonical writer ownership for ${suffix}.`,
         acceptanceCriteria: [],
         constraints: { requireHandoffOnAmbiguity: true },
@@ -978,7 +969,6 @@ describe('rh_work terminalization authority', () => {
           principalId: caller.principalId,
           controllerInstanceId: caller.controllerInstanceId,
           baseRevision,
-          mode: 'goal_workloop',
           objective: `Exercise ${terminalize ? 'terminal' : 'nonterminal'} failed canonical ownership.`,
           acceptanceCriteria: [],
           constraints: { requireHandoffOnAmbiguity: true },
@@ -1051,7 +1041,7 @@ describe('rh_work terminalization authority', () => {
       createWorkContract(store, {
         workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
         principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, baseRevision,
-        mode: 'goal_workloop', objective: 'Fail closed before ambiguous Direct canonical mutation.', acceptanceCriteria: [],
+        objective: 'Fail closed before ambiguous Direct canonical mutation.', acceptanceCriteria: [],
         constraints: { requireHandoffOnAmbiguity: true }, allowedPaths: ['src/**'], forbiddenPaths: [], checks: [],
         requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'implementation',
       });
@@ -1135,7 +1125,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Recover the same running Work after a zero-delta checkout disappears.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -1253,7 +1242,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Deliver an exact committed candidate after a temporary target blocker clears.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -1395,7 +1383,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Recover an exact committed candidate after its validation process disappeared.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -1499,7 +1486,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Preserve dirty source when an active Work checkout is archived.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -1689,7 +1675,6 @@ describe('rh_work terminalization authority', () => {
         requirementId: input.linkedRequirementId,
         ...('parentWorkId' in input && input.parentWorkId ? { parentWorkId: input.parentWorkId } : {}),
         ...('predecessorWorkId' in input && input.predecessorWorkId ? { predecessorWorkId: input.predecessorWorkId } : {}),
-        mode: 'goal_workloop',
         objective: `durable authority regression for ${input.workId}`,
         acceptanceCriteria: ['preserve exact durable semantic authority'],
         allowedPaths: [],
@@ -1769,7 +1754,6 @@ describe('rh_work terminalization authority', () => {
     createWorkContract(store, {
       workId,
       repoId: fx.repository.repoId,
-      mode: 'goal_workloop',
       objective: 'Resume a durable external effect without fabricating repository implementation.',
       acceptanceCriteria: ['remote effect remains externally owned'],
       allowedPaths: [],
@@ -2322,7 +2306,6 @@ describe('rh_work terminalization authority', () => {
         workId,
         repoId: fx.repository.repoId,
         requirementId,
-        mode: 'goal_workloop',
         objective,
         acceptanceCriteria: ['Keep exact task lineage isolated.'],
         allowedPaths: [],
@@ -3458,7 +3441,6 @@ describe('rh_work terminalization authority', () => {
       principalId,
       controllerInstanceId: runtimeInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Prove frozen ControllerRound review transport keeps one authority.',
       acceptanceCriteria: ['Exact verified candidate is explicitly reviewed through the frozen carrier.'],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -3744,7 +3726,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId!,
       controllerInstanceId: caller.controllerInstanceId!,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Release the terminalization owner before retrying resource cleanup.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -4222,7 +4203,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId!,
       controllerInstanceId: caller.controllerInstanceId!,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Preserve terminal outcome while cleaning managed resources.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -4315,7 +4295,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId!,
       controllerInstanceId: caller.controllerInstanceId!,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Do not clean terminal resources while a ControllerRound is still active.',
       acceptanceCriteria: [],
       constraints: { requireWorktree: true, directMainProhibited: true },
@@ -4424,7 +4403,6 @@ describe('rh_work terminalization authority', () => {
     createWorkContract(store, {
       workId,
       repoId: fx.repository.repoId,
-      mode: 'goal_workloop',
       objective: 'deliver only the canary sub-part',
       acceptanceCriteria: ['canary Work completion receipt exists'],
       allowedPaths: [],
@@ -4515,7 +4493,7 @@ describe('rh_work terminalization authority', () => {
       outcomeStatement: 'Continue a completed Requirement-only Work through the exact ControllerRound relay without introducing a Plan.',
     });
     createWorkContract(store, {
-      workId: predecessorWorkId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      workId: predecessorWorkId, repoId: fx.repository.repoId, requirementId, workKind: 'completed_no_change',
       objective: 'finish the Requirement predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: targetRevision,
     });
@@ -4589,7 +4567,7 @@ describe('rh_work terminalization authority', () => {
         outcomeStatement: 'Continue one completed Requirement Work without duplicating controller authority.',
       });
       createWorkContract(store, {
-        workId, repoId: fx.repository.repoId, requirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+        workId, repoId: fx.repository.repoId, requirementId, workKind: 'completed_no_change',
         objective: 'complete predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: targetRevision,
       });
@@ -4651,7 +4629,7 @@ describe('rh_work terminalization authority', () => {
       outcomeStatement: 'Continue from a provider dispatch failure after the predecessor is independently completed.',
     });
     createWorkContract(failedStore, {
-      workId: failedWorkId, repoId: failed.repository.repoId, requirementId: failedRequirementId, mode: 'goal_workloop', workKind: 'completed_no_change',
+      workId: failedWorkId, repoId: failed.repository.repoId, requirementId: failedRequirementId, workKind: 'completed_no_change',
       objective: 'complete failed-dispatch predecessor', acceptanceCriteria: ['predecessor delivered'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running', baseRevision: failedTargetRevision,
     });
@@ -4743,7 +4721,6 @@ describe('rh_work terminalization authority', () => {
       repoId: fx.repository.repoId,
       checkoutId: workspace.checkoutId!,
       worktreeRef: workspace.root,
-      mode: 'goal_workloop',
       objective: 'Review an exact durable repository Process as a local effect result.',
       acceptanceCriteria: [criterion],
       allowedPaths: [],
@@ -4859,7 +4836,6 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       controllerInstanceId: caller.controllerInstanceId,
       baseRevision,
-      mode: 'goal_workloop',
       objective: 'Review only the Work-owned dirty delta after an independent canonical target advance.',
       acceptanceCriteria: ['Review changed-path identity excludes target-only commits.'],
       constraints: { requireHandoffOnAmbiguity: true },
@@ -4973,7 +4949,6 @@ describe('rh_work terminalization authority', () => {
       repoId: repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'Complete a local effect and cleanup its isolated worktree.',
       acceptanceCriteria: ['A durable local effect receipt is reviewed.'],
       allowedPaths: [],
@@ -5163,7 +5138,6 @@ describe('rh_work terminalization authority', () => {
       repoId: repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'Review and deliver only an exact immutable managed Work candidate.',
       acceptanceCriteria: ['Review sourceRevision is the exact delivery candidate and post-review target advancement cannot rewrite it.'],
       allowedPaths: ['src/index.ts'],
@@ -5328,7 +5302,6 @@ describe('rh_work terminalization authority', () => {
       repoId: canonicalRepository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'Adopt a clean committed successor for an isolated repository-scoped Work.',
       acceptanceCriteria: ['The exact clean descendant is delivered.'],
       allowedPaths: [],
@@ -5488,7 +5461,6 @@ describe('rh_work terminalization authority', () => {
       repoId: repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'An initially effect-only Work discovered a real source repair.',
       acceptanceCriteria: ['The source repair is integrated before cleanup.'],
       allowedPaths: ['src/index.ts'],
@@ -5601,7 +5573,6 @@ describe('rh_work terminalization authority', () => {
       repoId: repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'Deliver an already-validated revision to a Git remote.',
       acceptanceCriteria: ['The exact governed git push succeeds.'],
       allowedPaths: [],
@@ -5697,7 +5668,7 @@ describe('rh_work terminalization authority', () => {
     const now = new Date().toISOString();
     createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: expectedHead,
-      mode: 'goal_workloop', objective: 'Keep cleanup authority bound to the exact Work revision.',
+      objective: 'Keep cleanup authority bound to the exact Work revision.',
       acceptanceCriteria: ['Cleanup cannot adopt a later same-named branch HEAD.'], allowedPaths: ['src/**'], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'cleanup', worktreeRef: workspace.root,
     });
@@ -5740,7 +5711,7 @@ describe('rh_work terminalization authority', () => {
     const now = new Date().toISOString();
     createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop', objective: 'Prove no-change target before cleanup.', acceptanceCriteria: ['No source delta is delivered only to the intended target.'],
+      objective: 'Prove no-change target before cleanup.', acceptanceCriteria: ['No source delta is delivered only to the intended target.'],
       allowedPaths: [], forbiddenPaths: ['**'], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
       workKind: 'investigation', status: 'running', phase: 'verification', worktreeRef: workspace.root,
     });
@@ -5790,7 +5761,6 @@ describe('rh_work terminalization authority', () => {
       repoId: repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: base,
-      mode: 'goal_workloop',
       objective: 'Keep the exact no-change workspace until implementation review authorizes delivery cleanup.',
       acceptanceCriteria: ['No-change physical cleanup happens only after exact implementation review approval.'],
       allowedPaths: [],
@@ -5902,7 +5872,7 @@ describe('rh_work terminalization authority', () => {
     const base = workspace.baseRevision!;
     const now = new Date().toISOString();
     createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: base, mode: 'goal_workloop', objective: 'Recover an already-cleaned no-change delivery.',
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: base, objective: 'Recover an already-cleaned no-change delivery.',
       acceptanceCriteria: ['Existing no-change evidence terminalizes the same Work.'], allowedPaths: [], forbiddenPaths: ['**'], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'investigation', status: 'running', phase: 'delivery', worktreeRef: workspace.root,
     });
@@ -5944,8 +5914,7 @@ describe('rh_work terminalization authority', () => {
     const base = workspace.baseRevision!;
     const now = new Date().toISOString();
     createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: base, mode: 'goal_workloop',
-      objective: 'Complete a source-free local effect without inventing repository implementation review.',
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: base, objective: 'Complete a source-free local effect without inventing repository implementation review.',
       acceptanceCriteria: ['Local effect evidence terminalizes without changing WorkKind.'], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'local_effect', status: 'running', phase: 'implementation', worktreeRef: workspace.root,
       evidenceRefs: [{ evidenceId, title: 'typed local effect', summary: 'Durable local effect receipt.', detailLevel: 'summary' }],
@@ -6025,8 +5994,7 @@ describe('rh_work terminalization authority', () => {
 
     createWorkContract(store, {
       workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
-      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
-      objective: 'Preserve one lifecycle authority when finalization discovers stale validation identity.',
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, objective: 'Preserve one lifecycle authority when finalization discovers stale validation identity.',
       acceptanceCriteria: ['Retryable finalization validation failure re-arms verification without terminal Handle divergence.'],
       allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
       requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
@@ -6105,8 +6073,7 @@ describe('rh_work terminalization authority', () => {
 
     createWorkContract(store, {
       workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
-      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
-      objective: 'Recover semantic completion after reviewed changed delivery cleanup already succeeded.',
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, objective: 'Recover semantic completion after reviewed changed delivery cleanup already succeeded.',
       acceptanceCriteria: ['The exact reviewed changed candidate is terminalized without replaying Git mutation.'],
       allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
       requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
@@ -6215,8 +6182,7 @@ describe('rh_work terminalization authority', () => {
 
     createWorkContract(store, {
       workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
-      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
-      objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
       acceptanceCriteria: ['The target-relative empty reviewed candidate is terminalized without replaying Git mutation.'],
       allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
       requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
@@ -6312,8 +6278,7 @@ describe('rh_work terminalization authority', () => {
 
     createWorkContract(store, {
       workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
-      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
-      objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
       acceptanceCriteria: ['The target-relative empty reviewed candidate is terminalized without replaying Git mutation.'],
       allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
       requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
@@ -6385,7 +6350,7 @@ describe('rh_work terminalization authority', () => {
     const oldStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, now: () => '2026-01-01T00:00:00.000Z' };
     createWorkContract(oldStore, {
       workId: staleWorkId, repoId: fx.repository.repoId, checkoutId: stale.checkoutId!, baseRevision: stale.baseRevision ?? undefined,
-      mode: 'goal_workloop', objective: 'Unrelated stale cleanup candidate.', acceptanceCriteria: ['Remain untouched by exact repair.'],
+      objective: 'Unrelated stale cleanup candidate.', acceptanceCriteria: ['Remain untouched by exact repair.'],
       allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'investigation', status: 'ready', worktreeRef: stale.root,
     });
     transitionWorkContractPhase(oldStore, staleWorkId, { phase: 'verification', status: 'blocked', state: 'satisfied', summary: 'Implementation accepted.' });
@@ -6410,7 +6375,6 @@ describe('rh_work terminalization authority', () => {
       workId,
       repoId: fx.repository.repoId,
       checkoutId: expectedCheckoutId,
-      mode: 'goal_workloop',
       objective: 'Preserve exact Work checkout attribution.',
       acceptanceCriteria: ['Mismatch diagnostics identify the retry target.'],
       allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -6442,7 +6406,6 @@ describe('rh_work terminalization authority', () => {
       workId,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      mode: 'goal_workloop',
       workKind: 'repository_change',
       objective: 'Use explicit Work attribution while concrete repository fences own mutation safety.',
       acceptanceCriteria: ['Repository mutation does not depend on a general ControllerSession mutex.'],
@@ -6507,7 +6470,7 @@ describe('rh_work terminalization authority', () => {
       workId, repoId: fx.repository.repoId, checkoutId: workspace.checkoutId!,
       principalId, controllerInstanceId: runtimeInstanceId,
       baseRevision: sourceRevision, repositoryBaseState: 'revision', planId, planStepId: stepId, planSourceRevision: sourceRevision,
-      mode: 'goal_workloop', workKind: 'repository_change', objective: 'certify already integrated behavior', acceptanceCriteria: ['same semantic contract'],
+      workKind: 'repository_change', objective: 'certify already integrated behavior', acceptanceCriteria: ['same semantic contract'],
       allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], constraints: { requireWorktree: true, directMainProhibited: true, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
       status: 'running', phase: 'implementation', evidenceState: 'none', worktreeRef: workspace.root,
       scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
@@ -6603,7 +6566,6 @@ describe('rh_work terminalization authority', () => {
       repoId: repository.repoId,
       checkoutId: workspace.checkoutId!,
       baseRevision: workspace.baseRevision ?? undefined,
-      mode: 'goal_workloop',
       objective: 'Finalize an exact reviewed dirty candidate through a Forge-owned representation-only commit.',
       acceptanceCriteria: ['The reviewed bytes survive commit, merge, and cleanup under one Work authority.'],
       allowedPaths: ['src/index.ts'],

@@ -126,12 +126,7 @@ describe('access-aware work routing', () => {
     writeRepositoryAccessPolicy(home, 'repo-test', 'request');
     const result = routeWorkStart(ctx, {
       objective: 'Update several local repository files',
-      modeInput: {
-        objective: 'Update several local repository files',
-        scopeClear: true,
-        expectedFiles: 4,
-        requiresApproval: true,
-      },
+      request: { objective: 'Update several local repository files', scopeClear: true, requiresApproval: true },
       requestedBy: 'user',
     });
 
@@ -149,11 +144,7 @@ describe('access-aware work routing', () => {
 
     const result = routeWorkStart(ctx, {
       objective: 'Update several local repository files',
-      modeInput: {
-        objective: 'Update several local repository files',
-        scopeClear: true,
-        expectedFiles: 4,
-      },
+      request: { objective: 'Update several local repository files', scopeClear: true },
       requestedBy: 'user',
     });
 
@@ -170,12 +161,7 @@ describe('access-aware work routing', () => {
 
     const result = routeWorkStart(ctx, {
       objective: 'Update several local repository files',
-      modeInput: {
-        objective: 'Update several local repository files',
-        scopeClear: true,
-        expectedFiles: 4,
-        requiresApproval: true,
-      },
+      request: { objective: 'Update several local repository files', scopeClear: true, requiresApproval: true },
       requestedBy: 'user',
     });
 
@@ -222,7 +208,6 @@ describe('access-aware work routing', () => {
     const before = getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)!;
     expect(before.constraints.accessMode).toBe('full_access');
     expect(before.worktreePolicy.required).toBe(false);
-    expect(before.driver.preferred).toBe('direct_edit');
 
     writeRepositoryAccessPolicy(home, 'repo-test', 'request');
     const after = getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)!;

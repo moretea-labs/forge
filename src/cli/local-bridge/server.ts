@@ -98,7 +98,6 @@ import {
   listConsoleHandoffs,
   listConsoleWork,
   mapRepositoryCard,
-  previewExecutionMode,
   repairConsole,
   resolveConsoleHandoff,
   setConsoleAccessPolicy,
@@ -1388,28 +1387,6 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/mode-preview", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const modePreview = previewExecutionMode({
-        objective: queryString(body.objective) ?? "",
-        expectedFiles: typeof body.expectedFiles === "number" ? body.expectedFiles : undefined,
-        expectedChangedLines: typeof body.expectedChangedLines === "number" ? body.expectedChangedLines : undefined,
-        scopeClear: body.scopeClear !== false,
-        requiresInvestigation: body.requiresInvestigation === true,
-        requiresLongRunningChecks: body.requiresLongRunningChecks === true,
-        requiresWorker: body.requiresWorker === true,
-        requiresApproval: body.requiresApproval === true,
-        destructive: body.destructive === true,
-      });
-      response.json({ modePreview });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
   app.get("/api/console/inbox", (request, response) => {
     try {
       const status = queryString(request.query.status) === "all" ? "all"
@@ -1529,12 +1506,7 @@ export async function startLocalBridgeServer(
         acceptanceCriteria: Array.isArray(body.acceptanceCriteria) ? body.acceptanceCriteria.map(String) : undefined,
         allowedPaths: Array.isArray(body.allowedPaths) ? body.allowedPaths.map(String) : undefined,
         forbiddenPaths: Array.isArray(body.forbiddenPaths) ? body.forbiddenPaths.map(String) : undefined,
-        expectedFiles: typeof body.expectedFiles === "number" ? body.expectedFiles : undefined,
-        expectedChangedLines: typeof body.expectedChangedLines === "number" ? body.expectedChangedLines : undefined,
         scopeClear: body.scopeClear !== false,
-        requiresInvestigation: body.requiresInvestigation === true,
-        requiresLongRunningChecks: body.requiresLongRunningChecks === true,
-        requiresWorker: body.requiresWorker === true,
         requiresApproval: body.requiresApproval === true,
         destructive: body.destructive === true,
         accessMode: body.accessMode === 'full_access' ? 'full_access' : body.accessMode === 'request' ? 'request' : undefined,

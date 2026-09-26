@@ -64,7 +64,6 @@ export async function callRhWorkSemanticOperation(
       const created = createWorkContract(store, {
         workId,
         repoId: store.repoId ?? '',
-        mode: 'goal_workloop',
         objective,
         acceptanceCriteria: [],
         constraints: { requireHandoffOnAmbiguity: true },

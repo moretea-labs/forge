@@ -42,13 +42,7 @@ describe('recoverable read-only review lifecycle', () => {
       objective: 'READ-ONLY Clean Review R1 for frozen Avela snapshot. Architecture/concurrency review only. No edits.',
       acceptanceCriteria: ['Frozen source remains unchanged', 'Bounded review paths are inspected', 'No correctness finding remains'],
       workKind: 'read_only_review',
-      modeInput: {
-        scopeClear: true,
-        mutation: false,
-        requiresInvestigation: true,
-        requiresRecovery: true,
-        risk: 'readonly',
-      },
+      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId;
     expect(workId).toBeTruthy();
@@ -92,7 +86,7 @@ describe('recoverable read-only review lifecycle', () => {
     const started = routeWorkStart(context, {
       objective: 'READ-ONLY architecture review with no edits.',
       workKind: 'read_only_review',
-      modeInput: { scopeClear: true, mutation: false, requiresInvestigation: true, requiresRecovery: true, risk: 'readonly' },
+      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
     // Findings are durable observations, not a completion gate: continue records
@@ -125,7 +119,7 @@ describe('recoverable read-only review lifecycle', () => {
     const started = routeWorkStart(context, {
       objective: 'READ-ONLY frozen source review.',
       workKind: 'read_only_review',
-      modeInput: { scopeClear: true, mutation: false, requiresInvestigation: true, requiresRecovery: true, risk: 'readonly' },
+      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
     expect(continueGoalWorkloop(context, { workId, inspectedPaths: ['src/a.ts'], reviewFindings: [] }).status).toBe('ok');
@@ -143,7 +137,7 @@ describe('recoverable read-only review lifecycle', () => {
     const original = routeWorkStart(context, {
       objective: 'Persist recoverable READ-ONLY Clean Review round 1. No edits.',
       workKind: 'read_only_review',
-      modeInput: { scopeClear: true, mutation: false, requiresInvestigation: true, requiresRecovery: true, risk: 'readonly' },
+      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
     });
     const originalId = (original.data as { work?: { workId?: string } }).work?.workId!;
     const stopped = stopGoalWorkloop(context, { workId: originalId, reason: 'Relay recovery requires a replacement review Work.' });
@@ -156,7 +150,7 @@ describe('recoverable read-only review lifecycle', () => {
       objective: 'READ-ONLY Clean Review R1 replacement. No edits.',
       relatedWorkId: originalId,
       workRelation: 'new_goal',
-      modeInput: { scopeClear: true, requiresInvestigation: true, requiresRecovery: true },
+      request: { scopeClear: true, requiresRecovery: true },
     });
     const replacementId = (replacement.data as { work?: { workId?: string } }).work?.workId;
     expect(replacementId).toBeTruthy();
@@ -169,7 +163,7 @@ describe('recoverable read-only review lifecycle', () => {
     const started = routeWorkStart(context, {
       objective: 'READ-ONLY review whose findings must remain authoritative.',
       workKind: 'read_only_review',
-      modeInput: { scopeClear: true, mutation: false, requiresInvestigation: true, requiresRecovery: true, risk: 'readonly' },
+      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
     continueGoalWorkloop(context, {
@@ -210,7 +204,7 @@ describe('recoverable read-only review lifecycle', () => {
       objective: 'Inspect the exact source and produce architecture evidence without edits.',
       allowedPaths: [],
       forbiddenPaths: ['**'],
-      modeInput: { scopeClear: true, requiresInvestigation: true, requiresRecovery: true },
+      request: { scopeClear: true, requiresRecovery: true },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId;
     expect(started.status).toBe('ok');
@@ -228,7 +222,7 @@ describe('recoverable read-only review lifecycle', () => {
     const started = routeWorkStart(context, {
       objective: 'Apply a repository change.',
       workKind: 'repository_change',
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, expectedFiles: 1, expectedChangedLines: 10 },
+      request: { scopeClear: true, mutation: true, requiresRecovery: true },
     });
     const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
     const blocked = continueGoalWorkloop(context, { workId });

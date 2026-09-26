@@ -119,7 +119,6 @@ function createProjectionWork(
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
-    mode: 'goal_workloop',
     objective: `Project ${workId} through bounded Runtime facade reads.`,
     acceptanceCriteria: ['Runtime facade reads remain available.'],
     constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
@@ -408,10 +407,7 @@ describe('runtime source isolation', () => {
       objective: 'Build the non-Forge iOS fixture through the typed plugin action.',
       acceptanceCriteria: ['The lightweight iOS build reaches xcodebuild.'],
       allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      modeInput: {
-        scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false,
-        requiresRecovery: false, requiresWorker: false, requiresApproval: false,
-      },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresApproval: false },
     });
     const workId = String((startedWork.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
@@ -1172,10 +1168,7 @@ printf '{"ok":true}\\n'
       objective: 'Keep one bounded Work available for fast summary projection.',
       acceptanceCriteria: ['Summary projection remains bounded.'],
       allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      modeInput: {
-        scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false,
-        requiresRecovery: false, requiresWorker: false, requiresApproval: false,
-      },
+      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresApproval: false },
     });
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();

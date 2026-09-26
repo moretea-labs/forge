@@ -29,7 +29,6 @@ describe('assistant context for Controller Work', () => {
         workId: 'work-unbound-assistant-context',
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
-        mode: 'goal_workloop',
         objective: 'Continue a durable Work without optional Project knowledge.',
         acceptanceCriteria: [],
         constraints: { workspaceMode: 'current', requireWorktree: false },

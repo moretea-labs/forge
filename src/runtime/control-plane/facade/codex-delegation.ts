@@ -26,7 +26,6 @@ export interface CodexContextPack {
   workContractState?: {
     workId: string;
     status: WorkContract['status'];
-    mode: WorkContract['mode'];
   };
   policyDecision?: string;
   expectedOutputFormat: {
@@ -114,7 +113,7 @@ export function buildCodexContextPack(input: CodexDelegationInput & { repoId: st
     forbiddenPaths: (input.forbiddenPaths ?? work?.forbiddenPaths ?? ['.env', '_ops/secrets', '**/*secret*', '**/*token*']).slice(0, 50),
     currentEvidenceRefs: (input.evidenceRefs ?? work?.evidenceRefs ?? []).slice(0, 10),
     workContractState: work
-      ? { workId: work.workId, status: work.status, mode: work.mode }
+      ? { workId: work.workId, status: work.status }
       : undefined,
     policyDecision: input.policyDecision,
     expectedOutputFormat: {

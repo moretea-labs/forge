@@ -86,7 +86,6 @@ export interface EditSessionBinding {
   checkoutId?: string;
   principalId?: string;
   controllerInstanceId?: string;
-  routeDecisionFingerprint?: string;
 }
 
 export interface EditSession {
@@ -99,7 +98,6 @@ export interface EditSession {
   checkoutId?: string;
   principalId?: string;
   controllerInstanceId?: string;
-  routeDecisionFingerprint?: string;
   workspaceFingerprint?: string;
   assurance?: EditSessionAssurance;
   purpose: string;
@@ -293,8 +291,7 @@ export function assertEditSessionDurableBinding(
     session.workId
     || session.repoId
     || session.checkoutId
-    || session.principalId
-    || session.routeDecisionFingerprint,
+    || session.principalId,
   );
   if (options.requireBoundIdentity === true && hasDurableIdentity && !binding) {
     throw new Error('EDIT_SESSION_IDENTITY_MISMATCH: binding');
@@ -305,7 +302,6 @@ export function assertEditSessionDurableBinding(
     ['repoId', session.repoId, binding.repoId],
     ['checkoutId', session.checkoutId, binding.checkoutId],
     ['principalId', session.principalId, binding.principalId],
-    ['routeDecisionFingerprint', session.routeDecisionFingerprint, binding.routeDecisionFingerprint],
   ];
   for (const [field, expected, observed] of pairs) {
     if (expected && expected !== observed) throw new Error(`EDIT_SESSION_IDENTITY_MISMATCH: ${String(field)}`);
@@ -404,7 +400,6 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     checkoutId: value.checkoutId,
     principalId: value.principalId,
     controllerInstanceId: value.controllerInstanceId,
-    routeDecisionFingerprint: value.routeDecisionFingerprint,
     workspaceFingerprint: value.workspaceFingerprint,
     assurance: value.assurance,
     purpose: value.purpose ?? 'Direct edit',
@@ -1206,7 +1201,6 @@ export function beginEditSession(repoRoot: string, input: {
     checkoutId: input.binding?.checkoutId?.trim() || undefined,
     principalId: input.binding?.principalId?.trim() || undefined,
     controllerInstanceId: input.binding?.controllerInstanceId?.trim() || undefined,
-    routeDecisionFingerprint: input.binding?.routeDecisionFingerprint?.trim() || undefined,
     workspaceFingerprint: workspaceFingerprint(repoRoot),
     purpose,
     status: 'open',

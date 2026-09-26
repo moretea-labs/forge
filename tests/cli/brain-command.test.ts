@@ -68,7 +68,7 @@ describe('brain terminal workflow promotion', () => {
       const repository = registerRepository({ path: repo, controllerHome, displayName: 'Brain modern fixture' });
       const workId = 'work-brain-nonterminal';
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, mode: 'goal_workloop', objective: 'Not terminal yet', acceptanceCriteria: [],
+        workId, repoId: repository.repoId, objective: 'Not terminal yet', acceptanceCriteria: [],
         allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
         scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-brain-modern' },
       });
@@ -99,7 +99,7 @@ describe('brain terminal workflow promotion', () => {
       const workId = 'work-brain-terminal';
       const store = { controllerHome, repoId: repository.repoId };
       createWorkContract(store, {
-        workId, repoId: repository.repoId, mode: 'goal_workloop', objective: 'Produce one durable learning result', acceptanceCriteria: ['terminal evidence exists'],
+        workId, repoId: repository.repoId, objective: 'Produce one durable learning result', acceptanceCriteria: ['terminal evidence exists'],
         allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
         workKind: 'local_effect', scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-brain-modern' },
       });

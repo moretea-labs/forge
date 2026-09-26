@@ -291,7 +291,6 @@ describe("repository MCP command tools", () => {
         workId,
         repoId: repository.repoId,
         checkoutId: "checkout-work-owned",
-        mode: "goal_workloop",
         objective: "active bound Work must not fall back to canonical mutation",
         acceptanceCriteria: ["explicit Work attribution is required"],
         allowedPaths: [],
@@ -366,7 +365,6 @@ describe("repository MCP command tools", () => {
         workId,
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
-        mode: "goal_workloop",
         objective: "process execution remains resumable after transport loss",
         acceptanceCriteria: ["stable request id exists before spawn"],
         allowedPaths: ["tracked.txt"],
@@ -436,7 +434,6 @@ describe("repository MCP command tools", () => {
         workId,
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
-        mode: "goal_workloop",
         objective: "Commit only Work-owned staged source.",
         acceptanceCriteria: [],
         allowedPaths: ["tracked.txt"],
@@ -500,7 +497,6 @@ describe("repository MCP command tools", () => {
         workId,
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
-        mode: "goal_workloop",
         objective: "terminal session attribution must fail closed",
         acceptanceCriteria: ["no mutation after terminalization"],
         allowedPaths: [],
@@ -561,8 +557,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
       const workId = "WORK-PATCH-SCOPE";
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
-        objective: "Only mutate the Work-owned source subtree.", acceptanceCriteria: [],
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, objective: "Only mutate the Work-owned source subtree.", acceptanceCriteria: [],
         allowedPaths: ["src/**"], forbiddenPaths: ["src/secret/**"], checks: [],
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
       });
@@ -623,8 +618,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
       const workId = "WORK-EFFECT-SOURCE-PROMOTION";
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
-        workKind: "remote_effect", objective: "Perform a remote effect, then legitimately repair source under the same Work.",
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "remote_effect", objective: "Perform a remote effect, then legitimately repair source under the same Work.",
         acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
       });
@@ -674,8 +668,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
       const workId = "WORK-EFFECT-COMMAND-PROMOTION";
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
-        workKind: "local_effect", objective: "Acquire repository authority before a local effect starts mutating source.",
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Acquire repository authority before a local effect starts mutating source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
       });
@@ -716,8 +709,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
       const workId = "WORK-EFFECT-COMMAND-NO-SOURCE-DELTA";
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
-        workKind: "local_effect", objective: "Run a local effect from repository context without changing repository source.",
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Run a local effect from repository context without changing repository source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
       });
@@ -759,8 +751,7 @@ describe("repository MCP command tools", () => {
       const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
       const workId = "WORK-EFFECT-RUNNING-NO-DELTA";
       createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
-        workKind: "local_effect", objective: "Run a conservative write-risk Process without changing repository source.",
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: "local_effect", objective: "Run a conservative write-risk Process without changing repository source.",
         acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
         constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
       });
@@ -807,7 +798,6 @@ describe("repository MCP command tools", () => {
         workId,
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
-        mode: "goal_workloop",
         objective: "preserve post-finalize read-only observation without reviving Work authority",
         acceptanceCriteria: ["terminal Work is context only"],
         allowedPaths: ["work-edit.txt"],
@@ -883,7 +873,6 @@ describe("repository MCP command tools", () => {
         workId: unrelatedWorkId,
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,
-        mode: "goal_workloop",
         objective: "Keep verifying an unrelated stabilization goal.",
         acceptanceCriteria: ["verification continues independently"],
         allowedPaths: [],
