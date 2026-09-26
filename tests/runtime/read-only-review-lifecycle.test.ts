@@ -8,7 +8,13 @@ import {
   routeWorkStart,
   stopGoalWorkloop,
 } from '../../src/runtime/control-plane/facade/goal-workloop';
-import { getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import {
+  getWorkContract,
+  recordWorkCompletionReceipt,
+  reviseWorkSemanticContext,
+  semanticWorkState,
+  workSemanticView,
+} from '../../src/runtime/control-plane/facade/work-contract-store';
 import { runGoalWorkloop as runGoalWorkloopWithAccess } from '../../src/runtime/control-plane/facade/goal-workloop-access';
 
 const roots: string[] = [];
@@ -33,6 +39,19 @@ function reviewContext(prefix: string) {
     workspaceFingerprint: 'workspace-clean-r1',
     workspaceChangedPaths: [] as string[],
   };
+}
+
+/**
+ * Delivery/effect receipts never terminalize Work (enforced by
+ * `check:runtime-architecture`). Semantic completion is always an explicit
+ * model/user CAS revision through work_complete.
+ */
+function completeSemanticWork(store: { root?: string }, workId: string) {
+  const current = getWorkContract(store, workId)!;
+  return reviseWorkSemanticContext(store, workId, {
+    expectedRevision: workSemanticView(current).revision,
+    state: 'completed',
+  });
 }
 
 describe('recoverable read-only review lifecycle', () => {
@@ -69,15 +88,23 @@ describe('recoverable read-only review lifecycle', () => {
 
     const finalized = finalizeGoalWorkloop(context, { workId: workId! });
     expect(finalized.status).toBe('ok');
-    const completed = getWorkContract(context.workStore, workId!)!;
+    expect((finalized.data as { deliverySettled?: boolean }).deliverySettled).toBe(true);
+    const delivered = getWorkContract(context.workStore, workId!)!;
+    // Finalize records exact no-change delivery evidence only; semantic completion
+    // stays an explicit model/user decision.
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered.completionReceipt).toMatchObject({
+      source: 'read_only_review',
+      baseRevision: context.sourceRevision,
+      sourceRevision: context.sourceRevision,
+      findingCount: 0,
+    });
+    const completed = completeSemanticWork(context.workStore, workId!);
     expect(completed.status).toBe('completed');
     expect(completed.workKind).toBe('read_only_review');
     expect(completed.completionOutcome).toBe('completed_no_change');
     expect(completed.completionReceipt).toMatchObject({
       source: 'read_only_review',
-      baseRevision: context.sourceRevision,
-      sourceRevision: context.sourceRevision,
-      findingCount: 0,
     });
   });
 
@@ -107,7 +134,12 @@ describe('recoverable read-only review lifecycle', () => {
 
     const finalized = finalizeGoalWorkloop(context, { workId });
     expect(finalized.status).toBe('ok');
-    const completed = getWorkContract(context.workStore, workId)!;
+    const delivered = getWorkContract(context.workStore, workId)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered.readOnlyReviewEvidence?.findings).toEqual([
+      'HIGH: two-tier cache invalidation can certify stale data under a new revision',
+    ]);
+    const completed = completeSemanticWork(context.workStore, workId);
     expect(completed.status).toBe('completed');
     expect(completed.readOnlyReviewEvidence?.findings).toEqual([
       'HIGH: two-tier cache invalidation can certify stale data under a new revision',
@@ -193,7 +225,11 @@ describe('recoverable read-only review lifecycle', () => {
       'completed_no_change',
       'read_only_review',
     );
-    expect(completed.status).toBe('completed');
+    // The receipt carries the no-change delivery fact; it never terminalizes Work.
+    expect(semanticWorkState(completed)).toBe('open');
+    const closed = completeSemanticWork(context.workStore, workId);
+    expect(closed.status).toBe('completed');
+    expect(closed.completionReceipt?.source).toBe('read_only_review');
     expect(getWorkContract(context.workStore, workId)?.readOnlyReviewEvidence?.findings)
       .toEqual(['HIGH: correctness finding']);
   });
@@ -263,7 +299,9 @@ describe('public rh_work read-only review adapter', () => {
 
     const finalized = runGoalWorkloopWithAccess(context, 'finalize', { work_id: workId });
     expect(finalized.status).toBe('ok');
-    const completed = getWorkContract(context.workStore, workId!)!;
+    const delivered = getWorkContract(context.workStore, workId!)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    const completed = completeSemanticWork(context.workStore, workId!);
     expect(completed.status).toBe('completed');
     expect(completed.workKind).toBe('read_only_review');
     expect(completed.completionOutcome).toBe('completed_no_change');
