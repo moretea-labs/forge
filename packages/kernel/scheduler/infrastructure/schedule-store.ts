@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import {
   createHandoffItem,
@@ -44,24 +44,45 @@ export interface ScheduleOccurrenceHandoffInput {
   evidenceRefs?: Array<{ title: string; summary?: string; detailLevel?: 'summary' | 'detail' | 'raw' }>;
 }
 
-function schedulesRoot(controllerHome: string, repoId: string): string {
+function schedulesRoot(controllerHome: string): string {
+  return join(controllerSystemRoot(controllerHome), 'schedules');
+}
+function legacySchedulesRoot(controllerHome: string, repoId: string): string {
   return join(repositoryControllerRoot(controllerHome, repoId), 'schedules');
 }
-function schedulePath(controllerHome: string, repoId: string, scheduleId: string): string {
-  return join(schedulesRoot(controllerHome, repoId), 'records', `${scheduleId}.json`);
+function schedulePath(controllerHome: string, _repoId: string, scheduleId: string): string {
+  return join(schedulesRoot(controllerHome), 'records', `${scheduleId}.json`);
 }
-function occurrencePath(controllerHome: string, repoId: string, occurrenceId: string): string {
-  return join(schedulesRoot(controllerHome, repoId), 'occurrences', `${occurrenceId}.json`);
+function legacySchedulePath(controllerHome: string, repoId: string, scheduleId: string): string {
+  return join(legacySchedulesRoot(controllerHome, repoId), 'records', `${scheduleId}.json`);
 }
-
-function decisionPath(controllerHome: string, repoId: string, decisionId: string): string {
-  return join(schedulesRoot(controllerHome, repoId), 'decisions', `${decisionId}.json`);
+function occurrencePath(controllerHome: string, _repoId: string, occurrenceId: string): string {
+  return join(schedulesRoot(controllerHome), 'occurrences', `${occurrenceId}.json`);
+}
+function legacyOccurrencePath(controllerHome: string, repoId: string, occurrenceId: string): string {
+  return join(legacySchedulesRoot(controllerHome, repoId), 'occurrences', `${occurrenceId}.json`);
+}
+function decisionPath(controllerHome: string, _repoId: string, decisionId: string): string {
+  return join(schedulesRoot(controllerHome), 'decisions', `${decisionId}.json`);
+}
+function legacyDecisionPath(controllerHome: string, repoId: string, decisionId: string): string {
+  return join(legacySchedulesRoot(controllerHome, repoId), 'decisions', `${decisionId}.json`);
 }
 function occurrenceIndexPath(controllerHome: string, repoId: string): string {
-  return join(schedulesRoot(controllerHome, repoId), 'indexes', 'occurrences.json');
+  const key = createHash('sha256').update(repoId).digest('hex').slice(0, 24);
+  return join(schedulesRoot(controllerHome), 'indexes', 'occurrences', `${key}.json`);
 }
-function requestPath(controllerHome: string, repoId: string, requestId: string): string {
-  return join(schedulesRoot(controllerHome, repoId), 'indexes', 'requests', `${createHash('sha256').update(requestId).digest('hex')}.json`);
+function requestTargetKey(input: Pick<RepositorySchedule, 'repoId' | 'scopeRef' | 'executionPlacement' | 'action'>): string {
+  return createHash('sha256').update(JSON.stringify(canonical({
+    scopeRef: input.scopeRef,
+    executionPlacement: input.executionPlacement,
+    repoId: input.repoId,
+    actionTarget: input.action.target,
+    operation: input.action.operation,
+  }))).digest('hex');
+}
+function requestPath(controllerHome: string, targetKey: string, requestId: string): string {
+  return join(schedulesRoot(controllerHome), 'indexes', 'requests', targetKey, `${createHash('sha256').update(requestId).digest('hex')}.json`);
 }
 
 export const SCHEDULE_OCCURRENCE_RECENT_LIMIT = 5_000;
@@ -132,8 +153,9 @@ export function createSchedule(controllerHome: string, input: CreateScheduleInpu
   const requestId = input.requestId.trim();
   if (!requestId) throw new Error('SCHEDULE_REQUEST_ID_REQUIRED');
   const semanticKey = scheduleSemanticKey(input);
-  return withControllerLock(controllerHome, { scope: 'task', repoId: input.repoId, taskId: `schedule-request-${createHash('sha256').update(requestId).digest('hex').slice(0, 16)}` }, `create-schedule:${requestId}`, () => {
-    const requestRecordPath = requestPath(controllerHome, input.repoId, requestId);
+  const targetKey = requestTargetKey(input);
+  return withControllerLock(controllerHome, { scope: 'global', resource: `schedule-request:${targetKey}:${createHash('sha256').update(requestId).digest('hex').slice(0, 16)}` }, `create-schedule:${requestId}`, () => {
+    const requestRecordPath = requestPath(controllerHome, targetKey, requestId);
     if (existsSync(requestRecordPath)) {
       const record = readJsonFile<ScheduleRequestRecord>(requestRecordPath);
       if (record.semanticKey !== semanticKey) throw new Error(`SCHEDULE_REQUEST_ID_CONFLICT: ${requestId}`);
@@ -158,8 +180,18 @@ export function createSchedule(controllerHome: string, input: CreateScheduleInpu
 }
 
 export function getSchedule(controllerHome: string, repoId: string, scheduleId: string): RepositorySchedule {
-  const schedule = readJsonFile<RepositorySchedule>(schedulePath(controllerHome, repoId, scheduleId));
-  // Hydrate schedules written before requestId/revision became mandatory.
+  const canonicalPath = schedulePath(controllerHome, repoId, scheduleId);
+  const legacyPath = legacySchedulePath(controllerHome, repoId, scheduleId);
+  const canonicalSchedule = existsSync(canonicalPath) ? readJsonFile<RepositorySchedule>(canonicalPath) : undefined;
+  const legacySchedule = existsSync(legacyPath) ? readJsonFile<RepositorySchedule>(legacyPath) : undefined;
+  if (canonicalSchedule && legacySchedule && JSON.stringify(canonicalSchedule) !== JSON.stringify(legacySchedule)) {
+    const canonicalRevision = Number.isFinite(canonicalSchedule.revision) ? canonicalSchedule.revision : 1;
+    const legacyRevision = Number.isFinite(legacySchedule.revision) ? legacySchedule.revision : 1;
+    if (canonicalRevision <= legacyRevision) throw new Error(`SCHEDULE_ID_COLLISION: ${scheduleId}`);
+  }
+  const schedule = canonicalSchedule ?? legacySchedule;
+  if (!schedule) throw new Error(`SCHEDULE_NOT_FOUND: ${scheduleId}`);
+  if (schedule.repoId !== repoId) throw new Error(`SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH: ${scheduleId}`);
   return {
     ...schedule,
     revision: Number.isFinite(schedule.revision) ? schedule.revision : 1,
@@ -195,7 +227,7 @@ function persistScheduleRevision(
  * writers fail closed instead of overwriting a newer decision.
  */
 export function saveSchedule(controllerHome: string, schedule: RepositorySchedule): RepositorySchedule {
-  return withControllerLock(controllerHome, { scope: 'task', repoId: schedule.repoId, taskId: `schedule-${schedule.scheduleId}` }, `save-schedule:${schedule.scheduleId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${schedule.scheduleId}` }, `save-schedule:${schedule.scheduleId}`, () => {
     const current = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
     if (schedule.revision !== current.revision) {
       throw new Error(`SCHEDULE_REVISION_CONFLICT: ${schedule.scheduleId}:expected=${schedule.revision}:actual=${current.revision}`);
@@ -216,7 +248,7 @@ export function updateSchedule(
   scheduleId: string,
   update: (current: RepositorySchedule) => ScheduleMutableUpdate,
 ): RepositorySchedule {
-  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${scheduleId}` }, `update-schedule:${scheduleId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${scheduleId}` }, `update-schedule:${scheduleId}`, () => {
     const current = getSchedule(controllerHome, repoId, scheduleId);
     const changes = update(current);
     return persistScheduleRevision(controllerHome, current, { ...current, ...changes });
@@ -224,23 +256,34 @@ export function updateSchedule(
 }
 
 export function listSchedules(controllerHome: string, repoId: string): RepositorySchedule[] {
-  const root = join(schedulesRoot(controllerHome, repoId), 'records');
-  try {
-    return readdirSync(root).filter((name) => name.endsWith('.json'))
-      .map((name) => getSchedule(controllerHome, repoId, name.slice(0, -'.json'.length)))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  } catch { return []; }
+  const ids = new Set<string>();
+  for (const root of [join(schedulesRoot(controllerHome), 'records'), join(legacySchedulesRoot(controllerHome, repoId), 'records')]) {
+    try {
+      for (const name of readdirSync(root)) if (name.endsWith('.json')) ids.add(name.slice(0, -'.json'.length));
+    } catch { /* missing storage root is empty */ }
+  }
+  return [...ids]
+    .flatMap((scheduleId) => {
+      try {
+        const schedule = getSchedule(controllerHome, repoId, scheduleId);
+        return schedule.repoId === repoId ? [schedule] : [];
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith('SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH:')) return [];
+        throw error;
+      }
+    })
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export function deleteSchedule(controllerHome: string, repoId: string, scheduleId: string): RepositorySchedule {
-  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${scheduleId}` }, `delete-schedule:${scheduleId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${scheduleId}` }, `delete-schedule:${scheduleId}`, () => {
     const current = getSchedule(controllerHome, repoId, scheduleId);
     if (current.enabled) throw new Error(`SCHEDULE_DELETE_REQUIRES_PAUSED: ${scheduleId}`);
     if (listActiveOccurrences(controllerHome, repoId, scheduleId).length > 0) {
       throw new Error(`SCHEDULE_DELETE_ACTIVE_OCCURRENCE: ${scheduleId}`);
     }
     rmSync(schedulePath(controllerHome, repoId, scheduleId), { force: true });
-    const requestRecordPath = requestPath(controllerHome, repoId, current.requestId);
+    const requestRecordPath = requestPath(controllerHome, requestTargetKey(current), current.requestId);
     if (existsSync(requestRecordPath)) {
       const record = readJsonFile<ScheduleRequestRecord>(requestRecordPath);
       if (record.scheduleId === scheduleId) rmSync(requestRecordPath, { force: true });
@@ -259,7 +302,7 @@ export function deleteSchedule(controllerHome: string, repoId: string, scheduleI
 }
 
 export function saveOccurrence(controllerHome: string, occurrence: ScheduleOccurrence): ScheduleOccurrence {
-  const next = withControllerLock(controllerHome, { scope: 'task', repoId: occurrence.repoId, taskId: `schedule-${occurrence.scheduleId}` }, `save-occurrence:${occurrence.occurrenceId}`, () => {
+  const next = withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${occurrence.scheduleId}` }, `save-occurrence:${occurrence.occurrenceId}`, () => {
     const existingPath = occurrencePath(controllerHome, occurrence.repoId, occurrence.occurrenceId);
     const previous = existsSync(existingPath) ? readJsonFile<ScheduleOccurrence>(existingPath) : undefined;
     const expectedRevision = previous?.revision ?? 0;
@@ -277,8 +320,13 @@ export function saveOccurrence(controllerHome: string, occurrence: ScheduleOccur
 }
 
 export function getOccurrence(controllerHome: string, repoId: string, occurrenceId: string): ScheduleOccurrence | undefined {
-  const path = occurrencePath(controllerHome, repoId, occurrenceId);
-  return existsSync(path) ? readJsonFile<ScheduleOccurrence>(path) : undefined;
+  const canonicalPath = occurrencePath(controllerHome, repoId, occurrenceId);
+  if (existsSync(canonicalPath)) {
+    const occurrence = readJsonFile<ScheduleOccurrence>(canonicalPath);
+    return occurrence.repoId === repoId ? occurrence : undefined;
+  }
+  const legacyPath = legacyOccurrencePath(controllerHome, repoId, occurrenceId);
+  return existsSync(legacyPath) ? readJsonFile<ScheduleOccurrence>(legacyPath) : undefined;
 }
 
 export function recordScheduleOccurrenceHandoff(
@@ -388,15 +436,17 @@ export function listOccurrences(controllerHome: string, repoId: string, schedule
     });
   if (indexed.length > 0) return indexed;
 
-  const root = join(schedulesRoot(controllerHome, repoId), 'occurrences');
+  const roots = [join(schedulesRoot(controllerHome), 'occurrences'), join(legacySchedulesRoot(controllerHome, repoId), 'occurrences')];
   try {
-    const legacy = readdirSync(root).filter((name) => name.endsWith('.json'))
-      .map((name) => readJsonFile<ScheduleOccurrence>(join(root, name)))
+    const legacy = roots.flatMap((root) => {
+      try { return readdirSync(root).filter((name) => name.endsWith('.json')).map((name) => readJsonFile<ScheduleOccurrence>(join(root, name))); }
+      catch { return []; }
+    })
       .filter((entry) => !scheduleId || entry.scheduleId === scheduleId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, bounded);
     if (legacy.length > 0) {
-      withControllerLock(controllerHome, { scope: 'repository', repoId }, `schedule-index-backfill:${repoId}`, () => {
+      withControllerLock(controllerHome, { scope: 'global', resource: `schedule-index:${repoId}` }, `schedule-index-backfill:${repoId}`, () => {
         for (const occurrence of legacy) upsertOccurrenceIndexUnlocked(controllerHome, occurrence);
       }, 10_000);
     }
@@ -485,7 +535,7 @@ export function cleanupScheduleOccurrenceHistory(
     return true;
   };
 
-  const occurrenceRoot = join(schedulesRoot(controllerHome, repoId), 'occurrences');
+  const occurrenceRoot = join(schedulesRoot(controllerHome), 'occurrences');
   let occurrenceNames: string[] = [];
   try { occurrenceNames = readdirSync(occurrenceRoot).filter((name) => name.endsWith('.json')).sort(); }
   catch { occurrenceNames = []; }
@@ -510,7 +560,7 @@ export function cleanupScheduleOccurrenceHistory(
     }
     if (!canRemove()) break;
     try {
-      withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${occurrence.scheduleId}` }, `cleanup-schedule-occurrence:${occurrence.occurrenceId}`, () => {
+      withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${occurrence.scheduleId}` }, `cleanup-schedule-occurrence:${occurrence.occurrenceId}`, () => {
         if (retainedOccurrenceIds(readOccurrenceIndex(controllerHome, repoId)).has(occurrence.occurrenceId)) {
           skip('indexed_occurrence_recheck');
           return;
@@ -530,7 +580,7 @@ export function cleanupScheduleOccurrenceHistory(
     }
   }
 
-  const decisionRoot = join(schedulesRoot(controllerHome, repoId), 'decisions');
+  const decisionRoot = join(schedulesRoot(controllerHome), 'decisions');
   let decisionNames: string[] = [];
   try { decisionNames = readdirSync(decisionRoot).filter((name) => name.endsWith('.json')).sort(); }
   catch { decisionNames = []; }
@@ -557,7 +607,7 @@ export function cleanupScheduleOccurrenceHistory(
     }
     if (!canRemove()) break;
     try {
-      withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${decision.scheduleId}` }, `cleanup-schedule-decision:${decision.decisionId}`, () => {
+      withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${decision.scheduleId}` }, `cleanup-schedule-decision:${decision.decisionId}`, () => {
         if (retainedOccurrenceIds(readOccurrenceIndex(controllerHome, repoId)).has(decision.occurrenceId)) {
           skip('indexed_decision_recheck');
           return;
@@ -582,7 +632,7 @@ export function cleanupScheduleOccurrenceHistory(
 
 
 export function saveScheduleDecision(controllerHome: string, decision: ScheduleDecision): ScheduleDecision {
-  return withControllerLock(controllerHome, { scope: 'task', repoId: decision.repoId, taskId: `schedule-${decision.scheduleId}` }, `save-schedule-decision:${decision.decisionId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: `schedule:${decision.scheduleId}` }, `save-schedule-decision:${decision.decisionId}`, () => {
     const path = decisionPath(controllerHome, decision.repoId, decision.decisionId);
     if (existsSync(path)) return readJsonFile<ScheduleDecision>(path);
     writeJsonAtomic(path, decision);
@@ -601,8 +651,13 @@ export function saveScheduleDecision(controllerHome: string, decision: ScheduleD
 }
 
 export function getScheduleDecision(controllerHome: string, repoId: string, decisionId: string): ScheduleDecision | undefined {
-  const path = decisionPath(controllerHome, repoId, decisionId);
-  return existsSync(path) ? readJsonFile<ScheduleDecision>(path) : undefined;
+  const canonicalPath = decisionPath(controllerHome, repoId, decisionId);
+  if (existsSync(canonicalPath)) {
+    const decision = readJsonFile<ScheduleDecision>(canonicalPath);
+    return decision.repoId === repoId ? decision : undefined;
+  }
+  const legacyPath = legacyDecisionPath(controllerHome, repoId, decisionId);
+  return existsSync(legacyPath) ? readJsonFile<ScheduleDecision>(legacyPath) : undefined;
 }
 
 
@@ -707,7 +762,7 @@ export function buildScheduleDedupeReport(controllerHome: string, repoId: string
 export function applyScheduleDedupe(controllerHome: string, repoId: string, input: { dryRun?: unknown; confirmAuthorization?: unknown } = {}): ScheduleDedupeApplyResult {
   const dryRun = input.dryRun === true;
   if (!dryRun && input.confirmAuthorization !== true) throw new Error('SCHEDULE_DEDUPE_AUTHORIZATION_REQUIRED: confirm_authorization must be true to pause duplicate schedules');
-  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: 'schedule-dedupe' }, `schedule-dedupe:${repoId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: `schedule-dedupe:${repoId}` }, `schedule-dedupe:${repoId}`, () => {
     const report = buildScheduleDedupeReport(controllerHome, repoId);
     const disabled: ScheduleDedupeApplyResult['disabled'] = [];
     if (!dryRun) {

@@ -22,6 +22,7 @@ import { getControllerSession } from "../../../packages/kernel/controller/api/in
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
+import { getUserRequest, listUserRequests, recordUserRequest, resolveUserRequest, type UserRequest } from '../../../packages/kernel/identity/api/index';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
@@ -638,10 +639,104 @@ export async function callStatusInboxAdapter(
   return undefined;
 }
 
+function summarizeUserRequest(request: UserRequest) {
+  return {
+    requestId: request.requestId,
+    kind: request.kind,
+    title: request.title,
+    summary: request.summary,
+    actionRequired: request.actionRequired,
+    status: request.status,
+    targetScope: request.targetScope,
+    resolution: request.resolution,
+    updatedAt: request.updatedAt,
+  };
+}
+
+function findCanonicalUserRequest(controllerHome: string, args: Record<string, unknown>): UserRequest | undefined {
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  if (requestId) return getUserRequest(controllerHome, requestId);
+  const legacyHandoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
+  if (!legacyHandoffId) return undefined;
+  return listUserRequests(controllerHome, 'all').find((request) => request.presentation?.legacyHandoffId === legacyHandoffId);
+}
+
+function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>, operation: string): CallToolResult {
+  const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 50), 100));
+  if (operation === 'list') {
+    const items = listUserRequests(ctx.controllerHome, 'pending').slice(0, limit);
+    return result(buildFacadeResult({
+      summary: items.length ? `${items.length} pending UserRequest item(s).` : 'No pending UserRequest items.',
+      data: { items: items.map(summarizeUserRequest) },
+      suggestedNextActions: items.slice(0, 1).map((item) => ({ label: `Read ${item.requestId}`, tool: 'rh_inbox', operation: 'get', payload: { request_id: item.requestId }, risk: 'readonly' as const })),
+    }) as unknown as Record<string, unknown>);
+  }
+  if (operation === 'create') {
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    const summary = typeof args.summary === 'string' ? args.summary.trim() : typeof args.reason === 'string' ? args.reason.trim() : '';
+    if (!title || !summary) throw new Error('USER_REQUEST_TITLE_SUMMARY_REQUIRED');
+    const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+    const explicitId = typeof args.request_id === 'string' ? args.request_id.trim() : typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
+    const actionRequired = (typeof args.action_required === 'string' ? args.action_required : 'product_decision') as 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
+    const kind = (typeof args.request_kind === 'string' ? args.request_kind : actionRequired === 'product_decision' ? 'user_decision_request' : 'user_action_request') as 'user_action_request' | 'user_decision_request';
+    const rootCauseKey = typeof args.root_cause_key === 'string' && args.root_cause_key.trim()
+      ? args.root_cause_key.trim()
+      : `rh_inbox:${explicitId || workId || title}:${summary}`;
+    const item = recordUserRequest(ctx.controllerHome, {
+      ...(explicitId ? { requestId: explicitId } : {}),
+      kind,
+      rootCauseKey,
+      title,
+      summary,
+      actionRequired,
+      ...(workId ? { targetScope: { scopeKind: 'work', scopeId: workId, workId } } : {}),
+      presentation: {
+        ...(typeof args.handoff_id === 'string' && args.handoff_id.trim() ? { legacyHandoffId: args.handoff_id.trim() } : {}),
+        ...(typeof args.reason === 'string' ? { reason: args.reason } : {}),
+        ...(typeof args.recommended_decision === 'string' ? { recommendedDecision: args.recommended_decision } : {}),
+        ...(typeof args.recommended_prompt === 'string' ? { recommendedPrompt: args.recommended_prompt } : {}),
+      },
+    });
+    return result(buildFacadeResult({ summary: `Created UserRequest ${item.requestId}.`, data: { item: summarizeUserRequest(item) } }) as unknown as Record<string, unknown>);
+  }
+  const current = findCanonicalUserRequest(ctx.controllerHome, args);
+  if (operation === 'get') {
+    const facade = buildFacadeResult({
+      status: current ? 'ok' : 'not_found',
+      summary: current ? `UserRequest ${current.requestId}.` : 'UserRequest not found.',
+      data: { item: current ? summarizeUserRequest(current) : undefined },
+      suggestedNextActions: current?.status === 'pending' ? [{ label: 'Resolve request', tool: 'rh_inbox', operation: 'resolve', payload: { request_id: current.requestId }, risk: 'workspace_write' }] : [],
+    });
+    return result(facade as unknown as Record<string, unknown>, facade.status === 'not_found');
+  }
+  if (!current) throw new Error('USER_REQUEST_NOT_FOUND');
+  if (operation === 'ack' || operation === 'accept') {
+    return result(buildFacadeResult({
+      summary: `${operation === 'accept' ? 'Accepted' : 'Acknowledged'} UserRequest ${current.requestId}; semantic state remains pending until resolve/dismiss.`,
+      data: { item: summarizeUserRequest(current), compatibilityNoop: true },
+    }) as unknown as Record<string, unknown>);
+  }
+  if (operation === 'resolve' || operation === 'dismiss') {
+    const decision = operation === 'dismiss'
+      ? (typeof args.decision === 'string' && args.decision.trim() ? args.decision.trim() : 'dismissed')
+      : (typeof args.decision === 'string' ? args.decision.trim() : '');
+    if (!decision) throw new Error('USER_REQUEST_DECISION_REQUIRED');
+    const resolved = resolveUserRequest(ctx.controllerHome, {
+      requestId: current.requestId,
+      decision,
+      resolvedBy: typeof args.resolver === 'string' && args.resolver.trim() ? args.resolver.trim() : (ctx.principalId?.trim() || 'mcp-user'),
+    });
+    return result(buildFacadeResult({ summary: `Resolved UserRequest ${resolved.requestId}.`, data: { item: summarizeUserRequest(resolved) } }) as unknown as Record<string, unknown>);
+  }
+  throw new Error(`USER_REQUEST_OPERATION_UNSUPPORTED:${operation}`);
+}
+
 async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<CallToolResult> {
-  const repository = selected(ctx, args);
+  const repository = selectedOptional(ctx, args);
   const operation = String(args.operation ?? 'list');
   if (!allowedFacadeOperations('rh_inbox').includes(operation)) return invalidFacadeOperation('rh_inbox', operation);
+  const canonicalRequestId = typeof args.request_id === 'string' && args.request_id.trim();
+  if (!repository || canonicalRequestId) return callCanonicalUserRequestInbox(ctx, args, operation);
   const app = await runHandoffInboxApplication({
     operation: operation as 'get' | 'list' | 'ack' | 'accept' | 'resolve' | 'dismiss' | 'create',
     store: { controllerHome: ctx.controllerHome, repoId: repository.repoId },

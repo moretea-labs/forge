@@ -25,8 +25,8 @@ function loadStore(controllerHome: string): UserRequestStoreData {
     const record = raw as Record<string, unknown>;
     if (record.schemaVersion !== 1 || !Array.isArray(record.requests)) throw new Error('schemaVersion/requests are invalid');
     return { schemaVersion: 1, requests: record.requests as UserRequest[] };
-  } catch {
-    return { schemaVersion: 1, requests: [] };
+  } catch (error) {
+    throw new Error(`USER_REQUEST_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
