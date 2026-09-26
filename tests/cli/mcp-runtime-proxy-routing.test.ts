@@ -15,6 +15,7 @@ import {
   MAX_CANONICAL_RUNTIME_PROXY_LANES,
   callCanonicalRuntimeToolWithReplay,
   canonicalRuntimeForwardingIdentity,
+  chatgptHostSessionIdFromMcpMeta,
   canonicalRuntimeProxyLaneLimit,
   canonicalRuntimeReleaseHandoffInProgress,
   canonicalRuntimeToolCallFailureIsTransient,
@@ -558,16 +559,21 @@ describe('MCP canonical Runtime proxy routing', () => {
         principalId: ' oauth-client:fixture ',
         sessionId: ' session-a ',
         controllerType: 'chatgpt',
+        hostConversationSessionId: ' host-session-a ',
       },
     })).toEqual({
       principalId: 'oauth-client:fixture',
       sessionId: 'session-a',
       controllerType: 'chatgpt',
+      hostConversationSessionId: 'host-session-a',
     });
     expect(canonicalRuntimeForwardingIdentity({
       forgeRuntimeForwarding: { principalId: 'fixture', sessionId: 'session-b', controllerType: 'root' },
     })).toEqual({ principalId: 'fixture', sessionId: 'session-b' });
     expect(canonicalRuntimeForwardingIdentity({ forgeRuntimeForwarding: 'invalid' })).toEqual({});
+    expect(chatgptHostSessionIdFromMcpMeta({ 'openai/session': ' chat-session-1 ' })).toBe('chat-session-1');
+    expect(chatgptHostSessionIdFromMcpMeta({ 'openai/session': 42 })).toBeUndefined();
+    expect(chatgptHostSessionIdFromMcpMeta({})).toBeUndefined();
   });
 
   test('gracefully drains an in-flight Runtime request before closing sessions and forcing residual connections', async () => {

@@ -176,6 +176,8 @@ export interface McpToolContext {
   principalId?: string;
   /** Authenticated transport controller/provider type. */
   controllerType?: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human';
+  /** Host-provided ChatGPT session correlation. Never authorization and never a canonical conversation URL. */
+  hostConversationSessionId?: string;
   controllerInstanceId?: string;
   /** Bound repository identity for session cache keys. */
   repoId?: string;

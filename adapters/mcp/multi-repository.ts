@@ -32,6 +32,8 @@ export interface McpServerOptions {
   sessionId?: string;
   principalId?: string;
   controllerType?: McpToolContext['controllerType'];
+  /** Request-scoped host conversation correlation, for example ChatGPT _meta["openai/session"]. */
+  hostConversationSessionId?: string;
   controllerInstanceId?: string;
   /** Canonical Runtime source authority. Internal Runtime MCP only; never an execution repository. */
   runtimeSourceRoot?: string;
@@ -372,6 +374,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
     sessionId: opts.sessionId,
     principalId: opts.principalId,
     controllerType: opts.controllerType,
+    hostConversationSessionId: opts.hostConversationSessionId,
     controllerInstanceId: opts.controllerInstanceId,
     runtimeSourceRoot: opts.runtimeSourceRoot,
   };

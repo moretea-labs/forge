@@ -416,6 +416,7 @@ interface CanonicalRuntimeForwardingIdentity {
   principalId?: string;
   sessionId?: string;
   controllerType?: ForwardedControllerType;
+  hostConversationSessionId?: string;
 }
 
 function boundedForwardedIdentity(value: unknown): string | undefined {
@@ -424,18 +425,26 @@ function boundedForwardedIdentity(value: unknown): string | undefined {
   return normalized ? normalized.slice(0, 512) : undefined;
 }
 
+/** ChatGPT supplies this as an anonymized same-conversation correlation fact. It is not an auth token or URL. */
+export function chatgptHostSessionIdFromMcpMeta(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined;
+  return boundedForwardedIdentity((meta as Record<string, unknown>)['openai/session']);
+}
+
 export function canonicalRuntimeForwardingIdentity(meta: unknown): CanonicalRuntimeForwardingIdentity {
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {};
   const envelope = (meta as Record<string, unknown>)[CANONICAL_RUNTIME_FORWARD_META_KEY];
   if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return {};
   const record = envelope as Record<string, unknown>;
   const controllerType = boundedForwardedIdentity(record.controllerType);
+  const hostConversationSessionId = boundedForwardedIdentity(record.hostConversationSessionId);
   return {
     principalId: boundedForwardedIdentity(record.principalId),
     sessionId: boundedForwardedIdentity(record.sessionId),
     ...(controllerType && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(controllerType)
       ? { controllerType: controllerType as ForwardedControllerType }
       : {}),
+    ...(hostConversationSessionId ? { hostConversationSessionId } : {}),
   };
 }
 
@@ -445,18 +454,27 @@ function canonicalRuntimeForwardingMeta(ctx: MultiRepositoryMcpToolContext): Rec
       ...(ctx.principalId?.trim() ? { principalId: ctx.principalId.trim() } : {}),
       ...(ctx.sessionId?.trim() ? { sessionId: ctx.sessionId.trim() } : {}),
       ...(ctx.controllerType ? { controllerType: ctx.controllerType } : {}),
+      ...(ctx.hostConversationSessionId?.trim() ? { hostConversationSessionId: ctx.hostConversationSessionId.trim() } : {}),
     },
   };
 }
 
 function canonicalRuntimeRequestContext(baseContext: ServerToolContext, meta: unknown): ServerToolContext {
-  if (!isMultiRepositoryContext(baseContext) || !baseContext.runtimeSourceRoot) return baseContext;
+  if (!isMultiRepositoryContext(baseContext)) return baseContext;
+  // Host metadata is request-scoped correlation only. The public Gateway carries
+  // it through its private forwarding envelope so Canonical Runtime does not lose
+  // the ChatGPT conversation scope during the proxy hop.
+  const hostConversationSessionId = chatgptHostSessionIdFromMcpMeta(meta);
+  if (!baseContext.runtimeSourceRoot) {
+    return hostConversationSessionId ? { ...baseContext, hostConversationSessionId } : baseContext;
+  }
   const forwarded = canonicalRuntimeForwardingIdentity(meta);
   return {
     ...baseContext,
     ...(forwarded.principalId ? { principalId: forwarded.principalId } : {}),
     ...(forwarded.sessionId ? { sessionId: forwarded.sessionId } : {}),
     ...(forwarded.controllerType ? { controllerType: forwarded.controllerType } : {}),
+    ...(forwarded.hostConversationSessionId ? { hostConversationSessionId: forwarded.hostConversationSessionId } : {}),
   };
 }
 
