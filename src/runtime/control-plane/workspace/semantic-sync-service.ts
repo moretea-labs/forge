@@ -18,6 +18,7 @@ import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/
 import type { WorkContract } from '../../../../packages/kernel/work/api/index';
 import { semanticScopeRefForWork } from '../../../../packages/kernel/work/api/index';
 import type { PlanContract } from '../facade/types';
+import { SEMANTIC_SCOPE_KEY } from '../../../cli/repositories/controller-home';
 import type { Requirement } from '../persistence/requirement-store';
 import {
   ControlPlaneConflictError,
@@ -311,9 +312,18 @@ function localRecordWithinTransaction(database: SqliteDatabase, input: { kind: S
   if (input.kind === 'workspace') return readControlPlaneRecordWithinTransaction(database, WORKSPACE_SEMANTIC_NAMESPACE, CONTROLLER_SCOPE, input.id);
   if (input.kind === 'project') return readControlPlaneRecordWithinTransaction(database, PROJECT_SEMANTIC_NAMESPACE, input.workspaceId, input.id);
   if (input.kind === 'requirement') return readControlPlaneRecordWithinTransaction(database, 'requirement', CONTROLLER_SCOPE, input.id);
-  if (!input.repositoryId) return undefined;
-  if (input.kind === 'plan') return readControlPlaneRecordWithinTransaction(database, 'plan_contract', input.repositoryId, input.id);
-  if (input.kind === 'work') return readControlPlaneRecordWithinTransaction(database, 'work_contract', input.repositoryId, input.id);
+  if (input.kind === 'plan') {
+    const semantic = readControlPlaneRecordWithinTransaction(database, 'plan_contract', SEMANTIC_SCOPE_KEY, input.id);
+    return semantic ?? (input.repositoryId
+      ? readControlPlaneRecordWithinTransaction(database, 'plan_contract', input.repositoryId, input.id)
+      : undefined);
+  }
+  if (input.kind === 'work') {
+    const semantic = readControlPlaneRecordWithinTransaction(database, 'work_contract', SEMANTIC_SCOPE_KEY, input.id);
+    return semantic ?? (input.repositoryId
+      ? readControlPlaneRecordWithinTransaction(database, 'work_contract', input.repositoryId, input.id)
+      : undefined);
+  }
   return undefined;
 }
 

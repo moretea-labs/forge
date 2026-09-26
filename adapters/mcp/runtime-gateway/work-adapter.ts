@@ -9,6 +9,7 @@ import { selected } from "./shared-adapter";
 import { controllerReadinessEvidence, invalidFacadeOperation, repositoryRevisionContains } from "./status-inbox-adapter";
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
 import { getRepository, repositoryCheckoutLifecycle, selectRepositoryCheckout } from "../../../src/cli/repositories/registry";
+import { SEMANTIC_SCOPE_KEY } from '../../../src/cli/repositories/controller-home';
 import { repositoryGitStatus } from "../../../src/cli/repositories/structured-git";
 import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS } from "../../../src/runtime/execution/process-runtime";
 import { listWorkBoundRepositoryRemoteEffectProcessEvidence } from "../../../src/runtime/control-plane/execution/work-process-evidence";
@@ -570,7 +571,13 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               }
               targetScope = explicitRepoId;
             } else {
-              const matches = findControlPlaneRecordsByKey<unknown>(ctx.controllerHome, {
+              const canonicalSemantic = readControlPlaneRecord<unknown>(
+                ctx.controllerHome,
+                stableSemanticSpec.namespace,
+                SEMANTIC_SCOPE_KEY,
+                stableSemanticSpec.id,
+              );
+              const matches = canonicalSemantic ? [{ ...canonicalSemantic, scope: SEMANTIC_SCOPE_KEY }] : findControlPlaneRecordsByKey<unknown>(ctx.controllerHome, {
                 namespace: stableSemanticSpec.namespace,
                 key: stableSemanticSpec.id,
                 limit: 2,
@@ -593,7 +600,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               }
               targetScope = matches[0]!.scope;
             }
-            const semanticStore = { controllerHome: ctx.controllerHome, repoId: targetScope };
+            const semanticStore = { controllerHome: ctx.controllerHome, scopeKey: targetScope };
             const semanticResult = stableSemanticSpec.kind === 'work'
               ? await callRhWorkSemanticOperation(semanticStore, operation, args)
               : await callRhWorkPlanOperation(semanticStore, operation, args);
@@ -604,6 +611,15 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           // lives in work-plan-operations; the adapter only delegates.
           const repositoryOptionalPlanResult = await callRhWorkPlanCreateWithoutRepository(ctx, operation, args);
           if (repositoryOptionalPlanResult) return repositoryOptionalPlanResult;
+
+          if (operation === 'start' && !usesLegacyStartCompatibility(args)) {
+            const semanticWorkStart = await callRhWorkSemanticOperation(
+              { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
+              operation,
+              args,
+            );
+            if (semanticWorkStart) return semanticWorkStart;
+          }
 
           let repository = selected(ctx, args);
           const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
@@ -630,7 +646,7 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (requirementOperationResult) return requirementOperationResult;
           const planOperationResult = await callRhWorkPlanOperation(store, operation, args);
           if (planOperationResult) return planOperationResult;
-          const workSemanticOperationResult = operation === 'start' && usesLegacyStartCompatibility(args)
+          const workSemanticOperationResult = operation === 'start'
             ? undefined
             : await callRhWorkSemanticOperation(store, operation, args);
           if (workSemanticOperationResult) return workSemanticOperationResult;

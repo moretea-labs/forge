@@ -18,7 +18,8 @@ function semanticWorkId(store: WorkContractStoreOptions, args: Record<string, un
   if (explicit) return explicit;
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
   if (requestId) {
-    const digest = createHash('sha256').update(`${store.repoId}\0${requestId}`).digest('hex').slice(0, 12);
+    const scopeKey = store.scopeKey?.trim() || store.repoId?.trim() || 'semantic';
+    const digest = createHash('sha256').update(`${scopeKey}\0${requestId}`).digest('hex').slice(0, 12);
     return `work-semantic-${digest}`;
   }
   return `work-semantic-${randomUUID().slice(0, 12)}`;
@@ -67,7 +68,8 @@ export async function callRhWorkSemanticOperation(
         objective,
         acceptanceCriteria: [],
         constraints: { requireHandoffOnAmbiguity: true },
-        workKind: 'repository_change',
+        // Compatibility projection only. Semantic Work has no repository/execution kind.
+        workKind: 'investigation',
         lifecycleRole: 'primary',
         requestedBy: 'chatgpt',
         allowedPaths: [],
