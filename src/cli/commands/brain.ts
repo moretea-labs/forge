@@ -14,7 +14,7 @@ import { configuredBrainRoot } from './brain-root';
 import { addBrainAssistantCommands } from './brain-assistant';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
-import { getWorkContract, validateWorkSemantics } from '../../../packages/kernel/work/api/index';
+import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 
 export type BrainLifecycle = 'always-sync' | 'archive-only' | 'never-sync';
 export type BrainCategory = 'decisions' | 'runbooks' | 'patterns' | 'references';
@@ -561,38 +561,36 @@ function modernBrainPromotionSource(repoRoot: string, opts: BrainPromoteOptions,
     return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
   }
   const workScope = `${work.scopeRef.kind}:${work.scopeRef.id}`;
-  if (work.status !== 'completed' || !work.completionReceipt) {
-    issue(issues, 'error', `Brain promotion requires a completed Work with a durable completion receipt: ${workId}`);
+  if (semanticWorkState(work) !== 'completed') {
+    issue(issues, 'error', `Brain promotion requires a semantically completed Work: ${workId}`);
     return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope };
   }
-  try {
-    validateWorkSemantics(work);
-  } catch (error) {
-    issue(issues, 'error', `Work completion evidence is invalid for Brain promotion: ${error instanceof Error ? error.message : String(error)}`);
-    return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: work.completionReceipt.receiptId, workScope };
-  }
   const receipt = work.completionReceipt;
-  const repositoryDetails = ('targetRevision' in receipt)
+  const semanticResultRefs = [...new Set((work.semanticResultRefs ?? []).map((value) => value.trim()).filter(Boolean))];
+  const repositoryDetails = receipt && 'targetRevision' in receipt
     ? [`- Target revision: ${receipt.targetRevision}`, `- Changed paths: ${receipt.changedPaths.length}`]
     : [];
+  const legacyReceiptDetails = receipt
+    ? [`- Legacy completion receipt: ${receipt.receiptId}`, `- Legacy completion source: ${receipt.source}`]
+    : ['- Legacy completion receipt: none (not required for semantic completion)'];
   const section = [
     `## Source: work:${work.workId}`,
     '',
     `- Objective: ${work.objective}`,
     `- Completion outcome: ${work.completionOutcome ?? 'completed'}`,
-    `- Completion receipt: ${receipt.receiptId}`,
-    `- Completion authority: ${receipt.source}`,
+    `- Semantic result refs: ${semanticResultRefs.length ? semanticResultRefs.join(', ') : '(none recorded)'}`,
     `- Work scope: ${workScope}`,
+    ...legacyReceiptDetails,
     ...repositoryDetails,
     '',
     'This entry is promoted from validated durable Work metadata. Raw process logs, credentials, and chat history are not copied into Brain.',
     '',
   ].join('\n');
   return {
-    sources: [`work:${work.workId}`, `completion:${receipt.receiptId}`],
-    sections: [section], relatedPlan: work.planId ?? '', terminalAt: receipt.recordedAt,
+    sources: [`work:${work.workId}`, ...semanticResultRefs, ...(receipt ? [`completion:${receipt.receiptId}`] : [])],
+    sections: [section], relatedPlan: work.planId ?? '', terminalAt: work.semanticUpdatedAt ?? work.updatedAt,
     outcome: work.completionOutcome ?? 'completed', sourceWork: work.workId,
-    completionReceipt: receipt.receiptId, workScope,
+    completionReceipt: receipt?.receiptId ?? '', workScope,
   };
 }
 
