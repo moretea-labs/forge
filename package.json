@@ -122,6 +122,8 @@
     "check:type": "bun x tsc --noEmit && bun x tsc -p supervisor/tsconfig.json",
     "workflow-supervisor": "bun supervisor/entry.ts",
     "smoke:workflow-supervisor": "bun scripts/smoke-workflow-supervisor.ts",
+    "smoke:workflow-supervisor-process-restart": "bun scripts/smoke-workflow-supervisor-process-restart.ts",
+    "smoke:user-request-continuation-restart": "bun scripts/smoke-user-request-continuation-restart.ts",
     "check:runtime-architecture": "node scripts/check-runtime-architecture.mjs",
     "check:repository-hygiene": "node scripts/check-repository-hygiene.mjs",
     "check:generated-authority": "node scripts/sync-generated-authority.mjs --check",
