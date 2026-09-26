@@ -509,6 +509,12 @@ export async function runWorkChatgptContinuation(
             localAlias: binding?.localAlias ?? input.title,
           });
     }
+    if (binding && (delivery.status === 'dispatch_confirmed' || delivery.status === 'outcome_unknown')) {
+      // Exact conversation identity is enough to hand observation to the canonical
+      // Supervisor. outcome_unknown stays ambiguous: Supervisor observes the same
+      // turn and never authorizes replay of the possibly committed provider send.
+      try { await (dependencies.enrollWorkflowSupervisor ?? ensureWorkflowSupervisorEnrollmentForWork)(store, input.workId); } catch {}
+    }
     if (delivery.status !== 'dispatch_confirmed') {
       // Only a proven provider failure is safe to settle immediately. An
       // outcome-unknown send remains fenced for exact ControllerRound claim
@@ -542,12 +548,6 @@ export async function runWorkChatgptContinuation(
         ...(tabCleanup?.error ? { tabCleanupError: tabCleanup.error } : {}),
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
-    }
-    // A confirmed Work-bound delivery may establish the exact conversation that
-    // hands outer-turn ownership to Workflow Supervisor. Enrollment is idempotent
-    // and must never rewrite the already-confirmed provider fact into failure.
-    if (binding) {
-      try { await ensureWorkflowSupervisorEnrollmentForWork(store, input.workId); } catch {}
     }
     return {
       status: 'dispatched',
