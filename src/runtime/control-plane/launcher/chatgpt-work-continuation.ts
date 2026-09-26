@@ -199,18 +199,18 @@ function resolveChatgptProviderDeliveryHost(
   return { bridgeRuntime, host };
 }
 
-export function stableChatgptWorkBrowserSessionId(repoId: string, workId: string): string {
-  const digest = createHash('sha256').update(`${repoId}\n${workId}`).digest('hex').slice(0, 20);
+export function stableChatgptWorkBrowserSessionId(_repoId: string, workId: string): string {
+  const digest = createHash('sha256').update(`work\n${workId}`).digest('hex').slice(0, 20);
   return `forge-chatgpt-work-${digest}`;
 }
 
-export function stableChatgptWorkBridgeSessionId(repoId: string, workId: string): string {
-  const digest = createHash('sha256').update(`${repoId}\nbridge\n${workId}`).digest('hex').slice(0, 20);
+export function stableChatgptWorkBridgeSessionId(_repoId: string, workId: string): string {
+  const digest = createHash('sha256').update(`bridge\n${workId}`).digest('hex').slice(0, 20);
   return `forge-chatgpt-bridge-${digest}`;
 }
 
-export function stableStandaloneChatgptBrowserSessionId(repoId: string, scopeId: string): string {
-  const digest = createHash('sha256').update(`${repoId}\nstandalone\n${scopeId}`).digest('hex').slice(0, 20);
+export function stableStandaloneChatgptBrowserSessionId(_repoId: string, scopeId: string): string {
+  const digest = createHash('sha256').update(`standalone\n${scopeId}`).digest('hex').slice(0, 20);
   return `forge-chatgpt-standalone-${digest}`;
 }
 
@@ -409,8 +409,8 @@ export async function runWorkChatgptContinuation(
 
   try {
     const work = getWorkContract(store, input.workId);
-    if (!work || work.repoId !== input.repoId) {
-      throw new Error(`CHATGPT_WORK_CONTRACT_NOT_FOUND: ${input.repoId}:${input.workId}`);
+    if (!work) {
+      throw new Error(`CHATGPT_WORK_CONTRACT_NOT_FOUND: ${input.workId}`);
     }
     const targetForgeInstanceId = work.executionPlacement?.forgeInstanceId?.trim();
     if (targetForgeInstanceId) {

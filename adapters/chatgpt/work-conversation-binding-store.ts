@@ -1,3 +1,4 @@
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { parseCanonicalChatgptConversationIdentity } from './conversation-identity';
@@ -6,15 +7,14 @@ const NAMESPACE = 'chatgpt_work_conversation_binding';
 
 export interface ChatgptWorkConversationBinding {
   schemaVersion: 1;
-  repoId: string;
+  /** Optional repository provenance only. */
+  repoId?: string;
   workId: string;
-  /** Stable opaque ControllerBinding adapterRef exposed to Kernel. */
   bindingId: string;
   conversationUrl: string;
   conversationId: string;
   localAlias: string;
   latestBrowserSessionId?: string;
-  /** Explicit controller-scoped Browser grants reusable by scheduled delivery. */
   authorizationGrantRefs?: string[];
   createdAt: string;
   updatedAt: string;
@@ -23,11 +23,15 @@ export interface ChatgptWorkConversationBinding {
 
 export interface ChatgptWorkBindingStoreOptions {
   controllerHome: string;
-  repoId: string;
+  repoId?: string;
   now?: () => string;
 }
 
-export function chatgptControllerBindingId(repoId: string, workId: string): string {
+export function chatgptControllerBindingId(_repoId: string | undefined, workId: string): string {
+  return `chatgpt:${workId}`;
+}
+
+function legacyBindingId(repoId: string, workId: string): string {
   return `chatgpt:${repoId}:${workId}`;
 }
 
@@ -50,21 +54,52 @@ export function hasChatgptConversationIdentity(value: string): boolean {
     parseChatgptConversationIdentity(value);
     return true;
   } catch (error) {
-    // ChatGPT root and Project URLs are valid launch seeds, but they are not
-    // durable conversation identities. Persist only the /c/<id> URL observed
-    // after the browser confirms submission.
     if (error instanceof Error && error.message === 'CHATGPT_WORK_CONVERSATION_ID_MISSING') return false;
     throw error;
   }
 }
 
-function record(options: ChatgptWorkBindingStoreOptions, workId: string) {
+function canonicalRecord(options: ChatgptWorkBindingStoreOptions, workId: string) {
   return readControlPlaneRecord<ChatgptWorkConversationBinding>(
     options.controllerHome,
     NAMESPACE,
-    options.repoId,
+    FORGE_INSTANCE_SCOPE_KEY,
     workId,
   );
+}
+
+function legacyRecord(options: ChatgptWorkBindingStoreOptions, workId: string) {
+  const repoId = options.repoId?.trim();
+  if (!repoId) return undefined;
+  return readControlPlaneRecord<ChatgptWorkConversationBinding>(
+    options.controllerHome,
+    NAMESPACE,
+    repoId,
+    workId,
+  );
+}
+
+function record(options: ChatgptWorkBindingStoreOptions, workId: string) {
+  const canonical = canonicalRecord(options, workId);
+  const legacy = legacyRecord(options, workId);
+  if (canonical && legacy) {
+    if (canonical.value.conversationId !== legacy.value.conversationId
+      || canonical.value.workId !== legacy.value.workId) {
+      throw new Error(`CHATGPT_WORK_BINDING_COLLISION: ${workId}`);
+    }
+  }
+  return canonical ?? legacy;
+}
+
+function canonicalizeBinding(
+  options: ChatgptWorkBindingStoreOptions,
+  value: ChatgptWorkConversationBinding,
+): ChatgptWorkConversationBinding {
+  return {
+    ...value,
+    bindingId: chatgptControllerBindingId(undefined, value.workId),
+    ...(options.repoId?.trim() ? { repoId: options.repoId.trim() } : {}),
+  };
 }
 
 export function getChatgptWorkConversationBinding(
@@ -72,7 +107,24 @@ export function getChatgptWorkConversationBinding(
   workId: string,
 ): ChatgptWorkConversationBinding | undefined {
   const value = record(options, workId)?.value;
-  return value ? { ...value, bindingId: value.bindingId || chatgptControllerBindingId(options.repoId, workId) } : undefined;
+  return value ? canonicalizeBinding(options, value) : undefined;
+}
+
+function writeBinding(
+  options: ChatgptWorkBindingStoreOptions,
+  binding: ChatgptWorkConversationBinding,
+  action: string,
+  expectedRevision: number | null,
+): void {
+  writeControlPlaneRecord(options.controllerHome, {
+    namespace: NAMESPACE,
+    scope: FORGE_INSTANCE_SCOPE_KEY,
+    key: binding.workId,
+    schemaVersion: 1,
+    value: binding,
+    action,
+    expectedRevision,
+  });
 }
 
 export function rebindChatgptWorkConversation(
@@ -91,7 +143,7 @@ export function rebindChatgptWorkConversation(
   const identity = parseChatgptConversationIdentity(input.conversationUrl);
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `chatgpt-work-binding-${input.workId}` },
+    { scope: 'global', resource: `chatgpt-work-binding:${input.workId}` },
     `chatgpt-work-rebind:${input.workId}`,
     () => {
       const existing = record(options, input.workId);
@@ -102,9 +154,9 @@ export function rebindChatgptWorkConversation(
       const now = nowIso(options);
       const binding: ChatgptWorkConversationBinding = {
         schemaVersion: 1,
-        repoId: options.repoId,
+        ...(options.repoId?.trim() ? { repoId: options.repoId.trim() } : {}),
         workId: input.workId,
-        bindingId: chatgptControllerBindingId(options.repoId, input.workId),
+        bindingId: chatgptControllerBindingId(undefined, input.workId),
         conversationUrl: identity.conversationUrl,
         conversationId: identity.conversationId,
         localAlias: (input.localAlias?.trim() || existing.value.localAlias).slice(0, 180),
@@ -114,15 +166,7 @@ export function rebindChatgptWorkConversation(
         updatedAt: now,
         lastContinuedAt: now,
       };
-      writeControlPlaneRecord(options.controllerHome, {
-        namespace: NAMESPACE,
-        scope: options.repoId,
-        key: input.workId,
-        schemaVersion: 1,
-        value: binding,
-        action: 'chatgpt_work_conversation_rebind',
-        expectedRevision: existing.revision,
-      });
+      writeBinding(options, binding, 'chatgpt_work_conversation_rebind', canonicalRecord(options, input.workId)?.revision ?? null);
       return binding;
     },
   );
@@ -142,7 +186,7 @@ export function bindChatgptWorkConversation(
   const identity = parseChatgptConversationIdentity(input.conversationUrl);
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `chatgpt-work-binding-${input.workId}` },
+    { scope: 'global', resource: `chatgpt-work-binding:${input.workId}` },
     `chatgpt-work-binding:${input.workId}`,
     () => {
       const existing = record(options, input.workId);
@@ -152,12 +196,12 @@ export function bindChatgptWorkConversation(
       const now = nowIso(options);
       const localAlias = input.localAlias?.trim()
         || existing?.value.localAlias
-        || `Forge · ${options.repoId} · ${input.workId} · ${identity.conversationId.slice(0, 8)}`;
+        || `Forge · ${input.workId} · ${identity.conversationId.slice(0, 8)}`;
       const binding: ChatgptWorkConversationBinding = {
         schemaVersion: 1,
-        repoId: options.repoId,
+        ...(options.repoId?.trim() ? { repoId: options.repoId.trim() } : {}),
         workId: input.workId,
-        bindingId: chatgptControllerBindingId(options.repoId, input.workId),
+        bindingId: chatgptControllerBindingId(undefined, input.workId),
         conversationUrl: identity.conversationUrl,
         conversationId: identity.conversationId,
         localAlias: localAlias.slice(0, 180),
@@ -167,15 +211,7 @@ export function bindChatgptWorkConversation(
         updatedAt: now,
         lastContinuedAt: now,
       };
-      writeControlPlaneRecord(options.controllerHome, {
-        namespace: NAMESPACE,
-        scope: options.repoId,
-        key: input.workId,
-        schemaVersion: 1,
-        value: binding,
-        action: existing ? 'chatgpt_work_conversation_continue' : 'chatgpt_work_conversation_bind',
-        expectedRevision: existing?.revision ?? null,
-      });
+      writeBinding(options, binding, existing ? 'chatgpt_work_conversation_continue' : 'chatgpt_work_conversation_bind', canonicalRecord(options, input.workId)?.revision ?? null);
       return binding;
     },
   );
