@@ -1,14 +1,23 @@
 import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../../packages/plugin-runtime/external/index';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import type { ProcessHandle } from '../execution/process-runtime/types';
-import { startManagedPluginAction, waitManagedPluginAction } from './lightweight-action';
+import {
+  startManagedControllerPluginAction,
+  startManagedPluginAction,
+  waitManagedControllerPluginAction,
+  waitManagedPluginAction,
+} from './lightweight-action';
 import {
   executeAssistantPluginDirectNonPersistent,
   executeAssistantPluginReadDirect,
+  executeControllerPluginDirectNonPersistent,
+  executeControllerPluginReadDirect,
   getAssistantPluginManifest,
+  getControllerPluginManifest,
   isDirectNonPersistentPluginAction,
   isDirectPluginReadAction,
   submitAssistantPluginAction,
+  submitControllerPluginAction,
 } from './store';
 import type {
   AssistantPluginActionDescriptor,
@@ -58,17 +67,21 @@ export type AssistantPluginActionApplicationResult =
  */
 export async function executeAssistantPluginActionApplication(input: {
   controllerHome: string;
-  repository: RepositoryRecord;
+  scope: { kind: 'controller' } | { kind: 'repository'; repository: RepositoryRecord };
   request: AssistantPluginActionRequest;
   interactiveWaitMs?: number;
   wait?: boolean;
   waitMs?: number;
 }): Promise<AssistantPluginActionApplicationResult> {
-  const manifest = getAssistantPluginManifest(input.controllerHome, input.repository, input.request.pluginId);
+  const manifest = input.scope.kind === 'controller'
+    ? getControllerPluginManifest(input.controllerHome, input.request.pluginId)
+    : getAssistantPluginManifest(input.controllerHome, input.scope.repository, input.request.pluginId);
   const action = manifest.actions.find((entry) => entry.actionId === input.request.actionId);
 
   if (action && isDirectPluginReadAction(action)) {
-    const direct = await executeAssistantPluginReadDirect(input.controllerHome, input.repository, input.request);
+    const direct = input.scope.kind === 'controller'
+      ? await executeControllerPluginReadDirect(input.controllerHome, input.request)
+      : await executeAssistantPluginReadDirect(input.controllerHome, input.scope.repository, input.request);
     return {
       kind: 'direct_read',
       manifest: direct.manifest,
@@ -82,7 +95,9 @@ export async function executeAssistantPluginActionApplication(input: {
     if (!isDirectNonPersistentPluginAction(action)) {
       throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_CONTRACT_INVALID: ${input.request.pluginId}/${input.request.actionId}`);
     }
-    const direct = await executeAssistantPluginDirectNonPersistent(input.controllerHome, input.repository, input.request);
+    const direct = input.scope.kind === 'controller'
+      ? await executeControllerPluginDirectNonPersistent(input.controllerHome, input.request)
+      : await executeAssistantPluginDirectNonPersistent(input.controllerHome, input.scope.repository, input.request);
     return {
       kind: 'direct_non_persistent',
       manifest: direct.manifest,
@@ -96,21 +111,35 @@ export async function executeAssistantPluginActionApplication(input: {
       ? input.request.timeoutMs!
       : action.defaultTimeoutMs;
     const timeoutMs = Math.min(Math.max(1_000, Math.trunc(requestedTimeoutMs)), MAX_PLUGIN_ACTION_TIMEOUT_MS);
-    let { handle } = await startManagedPluginAction({
-      controllerHome: input.controllerHome,
-      repository: input.repository,
-      request: input.request,
-      interactiveWaitMs: input.interactiveWaitMs,
-      timeoutMs,
-    });
+    let { handle } = input.scope.kind === 'controller'
+      ? await startManagedControllerPluginAction({
+          controllerHome: input.controllerHome,
+          request: input.request,
+          interactiveWaitMs: input.interactiveWaitMs,
+          timeoutMs,
+        })
+      : await startManagedPluginAction({
+          controllerHome: input.controllerHome,
+          repository: input.scope.repository,
+          request: input.request,
+          interactiveWaitMs: input.interactiveWaitMs,
+          timeoutMs,
+        });
     if (!handle.completed && input.wait === true) {
-      handle = await waitManagedPluginAction(
-        input.controllerHome,
-        input.repository.repoId,
-        handle.processId,
-        Math.max(1, input.waitMs ?? 15_000),
-        input.request.signal,
-      );
+      handle = input.scope.kind === 'controller'
+        ? await waitManagedControllerPluginAction(
+            input.controllerHome,
+            handle.processId,
+            Math.max(1, input.waitMs ?? 15_000),
+            input.request.signal,
+          )
+        : await waitManagedPluginAction(
+            input.controllerHome,
+            input.scope.repository.repoId,
+            handle.processId,
+            Math.max(1, input.waitMs ?? 15_000),
+            input.request.signal,
+          );
     }
     if (!handle.completed) {
       return {
@@ -137,6 +166,8 @@ export async function executeAssistantPluginActionApplication(input: {
 
   return {
     kind: 'submitted',
-    submitted: await submitAssistantPluginAction(input.controllerHome, input.repository, input.request),
+    submitted: input.scope.kind === 'controller'
+      ? await submitControllerPluginAction(input.controllerHome, input.request)
+      : await submitAssistantPluginAction(input.controllerHome, input.scope.repository, input.request),
   };
 }

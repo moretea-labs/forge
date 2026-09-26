@@ -1,11 +1,13 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../../src/cli/repositories/controller-home';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { buildWorkspaceAuthStatus, prepareWorkspaceAuthLogin, summarizePluginForLowInterception } from '../../../src/runtime/safe-tooling';
 import {
   assistantPluginScope,
-  controllerPluginRepository,
   getAssistantPluginManifest,
+  getControllerPluginManifest,
   listAssistantPluginManifests,
+  listControllerPluginManifests,
 } from '../../../src/runtime/plugins/store';
 import { executeAssistantPluginActionApplication } from '../../../src/runtime/plugins/action-application';
 import { mcpPluginExecutionOrigin } from '../../../src/runtime/plugins/execution-origin';
@@ -13,16 +15,58 @@ import type { AssistantPluginManifest } from '../../../src/runtime/plugins/types
 import { result, resultWithPluginArtifactImages } from './result-adapter';
 import { selected } from './shared-adapter';
 
-function pluginRepository(
+type PluginTransportScope =
+  | { kind: 'controller' }
+  | { kind: 'repository'; repository: ReturnType<typeof selected> };
+
+function explicitRepositoryContextRequested(args: Record<string, unknown>): boolean {
+  return (typeof args.repo_id === 'string' && Boolean(args.repo_id.trim()))
+    || (typeof args.checkout_id === 'string' && Boolean(args.checkout_id.trim()));
+}
+
+function pluginTransportScope(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
   pluginId: string,
-) {
+): PluginTransportScope {
   const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
-  if (explicitRepoId === '__controller__') return controllerPluginRepository(ctx.controllerHome);
-  return assistantPluginScope(pluginId, ctx.controllerHome) === 'controller'
-    ? controllerPluginRepository(ctx.controllerHome)
-    : selected(ctx, args);
+  if (explicitRepoId === '__controller__') {
+    throw new Error('PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED: controller-scoped plugins no longer use a synthetic repository id');
+  }
+  const scope = assistantPluginScope(pluginId, ctx.controllerHome);
+  if (scope === 'controller') return { kind: 'controller' };
+  if (scope === 'controller_with_repository_overlay') {
+    return explicitRepositoryContextRequested(args)
+      ? { kind: 'repository', repository: selected(ctx, args) }
+      : { kind: 'controller' };
+  }
+  return { kind: 'repository', repository: selected(ctx, args) };
+}
+
+function pluginManifestForScope(
+  ctx: MultiRepositoryMcpToolContext,
+  scope: PluginTransportScope,
+  pluginId: string,
+): AssistantPluginManifest {
+  return scope.kind === 'controller'
+    ? getControllerPluginManifest(ctx.controllerHome, pluginId)
+    : getAssistantPluginManifest(ctx.controllerHome, scope.repository, pluginId);
+}
+
+function pluginScopeLabel(scope: PluginTransportScope): 'controller' | 'repository' {
+  return scope.kind;
+}
+
+function detailArgumentsForScope(
+  scope: PluginTransportScope,
+  pluginId: string,
+  actionId?: string,
+): Record<string, unknown> {
+  return {
+    ...(scope.kind === 'repository' ? { repo_id: scope.repository.repoId } : {}),
+    capability_id: actionId ? `plugin.${pluginId}.${actionId}` : `plugin.${pluginId}`,
+    detail_level: 'detail',
+  };
 }
 
 function summarizePlugin(manifest: AssistantPluginManifest): Record<string, unknown> {
@@ -95,20 +139,17 @@ export async function callPluginAdapter(
 ): Promise<CallToolResult | undefined> {
   switch (name) {
     case 'list_plugins': {
-      const controllerRepository = controllerPluginRepository(ctx.controllerHome);
-      const controllerPlugins = listAssistantPluginManifests(ctx.controllerHome, controllerRepository, {
+      const controllerPlugins = listControllerPluginManifests(ctx.controllerHome, {
         forceRefresh: true,
       }).map(summarizePlugin);
       let repositoryPlugins: ReturnType<typeof summarizePlugin>[] = [];
       let repositoryId: string | undefined;
-      try {
+      if (explicitRepositoryContextRequested(args)) {
         const repository = selected(ctx, args);
         repositoryId = repository.repoId;
         repositoryPlugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
           forceRefresh: true,
         }).map(summarizePlugin);
-      } catch (error) {
-        if (typeof args.repo_id === 'string' && args.repo_id.trim()) throw error;
       }
       return result({
         scope: repositoryPlugins.length > 0 ? 'combined' : 'controller',
@@ -119,16 +160,16 @@ export async function callPluginAdapter(
     }
     case 'get_plugin': {
       const pluginId = String(args.plugin_id ?? '').trim();
-      const repository = pluginRepository(ctx, args, pluginId);
+      const scope = pluginTransportScope(ctx, args, pluginId);
       return result({
-        scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
-        plugin: summarizePlugin(getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)),
+        scope: pluginScopeLabel(scope),
+        plugin: summarizePlugin(pluginManifestForScope(ctx, scope, pluginId)),
       });
     }
     case 'plugin_action_execute': {
       const pluginId = String(args.plugin_id ?? '').trim();
       const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-      const repository = pluginRepository(ctx, args, pluginId);
+      const scope = pluginTransportScope(ctx, args, pluginId);
       const workRepository = workId ? selected(ctx, args) : undefined;
       const actionId = String(args.action_id ?? '').trim();
       const requestId = String(args.request_id ?? '').trim();
@@ -150,7 +191,9 @@ export async function callPluginAdapter(
       };
       const application = await executeAssistantPluginActionApplication({
         controllerHome: ctx.controllerHome,
-        repository,
+        scope: scope.kind === 'controller'
+          ? { kind: 'controller' }
+          : { kind: 'repository', repository: scope.repository },
         request,
         interactiveWaitMs: args.apply_mode === 'async' ? 0 : (typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : 750),
         wait: args.apply_mode === 'async' ? false : args.wait === true,
@@ -168,7 +211,7 @@ export async function callPluginAdapter(
             risk: application.action.risk,
             confirmation: application.action.confirmation,
           },
-          scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
+          scope: pluginScopeLabel(scope),
           requestId: application.receipt.requestId,
           observationReceiptId: application.receipt.receiptId,
           evidenceRef: application.receipt.receiptId,
@@ -177,14 +220,17 @@ export async function callPluginAdapter(
           detail: {
             tool: 'rh_context',
             arguments: {
-              ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-              capability_id: `plugin.${pluginId}.${actionId}`,
-              detail_level: 'detail',
+              ...detailArgumentsForScope(scope, pluginId, actionId),
             },
           },
           next: 'Continue with the returned bounded result. The compact observationReceiptId/evidenceRef may support model-selected learning without creating Work or effect replay state; use rh_context capability detail only when the typed action schema/policy is needed.',
         };
-        return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, application.result);
+        return resultWithPluginArtifactImages(
+          value,
+          ctx.controllerHome,
+          scope.kind === 'repository' ? scope.repository.repoId : FORGE_INSTANCE_SCOPE_KEY,
+          application.result,
+        );
       }
 
       if (application.kind === 'direct_non_persistent') {
@@ -200,15 +246,13 @@ export async function callPluginAdapter(
             risk: application.action.risk,
             confirmation: application.action.confirmation,
           },
-          scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
+          scope: pluginScopeLabel(scope),
           requestId,
           result: application.result,
           detail: {
             tool: 'rh_context',
             arguments: {
-              ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-              capability_id: `plugin.${pluginId}.${actionId}`,
-              detail_level: 'detail',
+              ...detailArgumentsForScope(scope, pluginId, actionId),
             },
           },
           next: 'This protected action completed inline without durable replay state. Use the returned result only for the immediate next protected action.',
@@ -228,7 +272,7 @@ export async function callPluginAdapter(
             confirmation: application.action.confirmation,
             requiredConfirmationText: application.action.requiredConfirmationText,
           } : { actionId },
-          scope: 'repository',
+          scope: pluginScopeLabel(scope),
           requestId,
           process: application.process,
           resultRef: { kind: 'process_logs', processId: application.process.processId },
@@ -267,7 +311,7 @@ export async function callPluginAdapter(
           confirmation: submitted.action.confirmation,
           requiredConfirmationText: submitted.action.requiredConfirmationText,
         },
-        scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
+        scope: pluginScopeLabel(scope),
         receiptId: submitted.receipt.receiptId,
         requestId: submitted.receipt.requestId,
         ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
@@ -276,14 +320,17 @@ export async function callPluginAdapter(
         detail: {
           tool: 'rh_context',
           arguments: {
-            ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-            capability_id: `plugin.${pluginId}.${actionId}`,
-            detail_level: 'detail',
+            ...detailArgumentsForScope(scope, pluginId, actionId),
           },
         },
         next: 'Continue with the returned bounded plugin result; use rh_context capability detail only when the typed action schema/policy is needed.',
       };
-      return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, compactResult);
+      return resultWithPluginArtifactImages(
+        value,
+        ctx.controllerHome,
+        scope.kind === 'repository' ? scope.repository.repoId : FORGE_INSTANCE_SCOPE_KEY,
+        compactResult,
+      );
     }
     case 'workspace_auth_status': {
       const repository = selected(ctx, args);
@@ -299,8 +346,8 @@ export async function callPluginAdapter(
     }
     case 'toolchain_plugin_summary': {
       const pluginId = String(args.plugin_id ?? '').trim();
-      const repository = pluginRepository(ctx, args, pluginId);
-      const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, pluginId);
+      const scope = pluginTransportScope(ctx, args, pluginId);
+      const manifest = pluginManifestForScope(ctx, scope, pluginId);
       return result({
         plugin: summarizePluginForLowInterception(manifest),
         nonOpaque: true,

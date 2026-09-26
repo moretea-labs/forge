@@ -16,6 +16,7 @@ import { readRepositoryPluginConfig, writeRepositoryPluginConfig } from './confi
 import { buildQueryString, encodeBase64Url, stableMockId } from './google-shared';
 
 const APP_STORE_CONNECT_PLUGIN_ID = 'app_store_connect';
+const CONTROLLER_PLUGIN_CONFIG_SCOPE = 'controller:global';
 const API_BASE_URL = 'https://api.appstoreconnect.apple.com';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const PRIVATE_KEY_READ_MAX_ATTEMPTS = 4;
@@ -107,7 +108,7 @@ function repositoryConfig(repoRoot: string, controllerHome?: string, repoId?: st
 
 function loadConfig(repoRoot: string, controllerHome?: string, repoId?: string): AppStoreConnectPluginConfig {
   const global = controllerHome ? readConfigFile(globalConfigPath(controllerHome)) : undefined;
-  if (repoId === CONTROLLER_SCOPE_REPO_ID) return normalizeConfig(global ?? {});
+  if (repoId === CONTROLLER_SCOPE_REPO_ID || repoId === CONTROLLER_PLUGIN_CONFIG_SCOPE) return normalizeConfig(global ?? {});
   const local = repositoryConfig(repoRoot, controllerHome, repoId);
   return normalizeConfig({ ...(global ?? {}), ...(local ?? {}) });
 }
@@ -123,7 +124,7 @@ function saveConfig(
   repoId?: string,
 ): AppStoreConnectPluginConfig {
   const cleanPatch = definedPatch(patch);
-  if (controllerHome && repoId === CONTROLLER_SCOPE_REPO_ID) {
+  if (controllerHome && repoId === CONTROLLER_PLUGIN_CONFIG_SCOPE) {
     const path = globalConfigPath(controllerHome);
     const next = normalizeConfig({ ...(readConfigFile(path) ?? {}), ...cleanPatch });
     mkdirSync(dirname(path), { recursive: true });
@@ -131,6 +132,7 @@ function saveConfig(
     return next;
   }
 
+  if (repoId === CONTROLLER_SCOPE_REPO_ID) throw new Error('APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED');
   if (!controllerHome || !repoId) throw new Error('APP_STORE_CONNECT_CONTROLLER_CONTEXT_REQUIRED');
   // Repository state is an overlay only. Do not materialize inherited global
   // credential references into every repository just because configure ran.

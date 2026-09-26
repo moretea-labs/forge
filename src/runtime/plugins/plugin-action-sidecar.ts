@@ -2,14 +2,14 @@
 import { createHash } from 'crypto';
 import { readFileSync, rmSync, writeFileSync } from 'fs';
 import { getRepository } from '../../cli/repositories/registry';
-import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import type { AssistantPluginActionRequest } from './types';
-import { controllerPluginRepository, submitAssistantPluginAction } from './store';
+import { submitAssistantPluginAction, submitControllerPluginAction } from './store';
 
 interface Envelope {
   schemaVersion: 1;
   controllerHome: string;
-  repoId: string;
+  repoId?: string;
+  scope?: { kind: 'controller' } | { kind: 'repository'; repoId: string };
   request: Omit<AssistantPluginActionRequest, 'signal'>;
 }
 
@@ -31,14 +31,15 @@ export async function runPluginActionSidecar(argv = process.argv.slice(2)): Prom
     }
     const envelope = JSON.parse(bytes) as Envelope;
     if (envelope.schemaVersion !== 1) throw new Error('PLUGIN_ACTION_REQUEST_VERSION_UNSUPPORTED');
-    const repository = envelope.repoId === CONTROLLER_SCOPE_REPO_ID
-      ? controllerPluginRepository(envelope.controllerHome)
-      : getRepository(envelope.repoId, envelope.controllerHome);
-    const submitted = await submitAssistantPluginAction(
-      envelope.controllerHome,
-      repository,
-      envelope.request,
-    );
+    const controllerScoped = envelope.scope?.kind === 'controller';
+    const repoId = envelope.scope?.kind === 'repository' ? envelope.scope.repoId : envelope.repoId;
+    const submitted = controllerScoped
+      ? await submitControllerPluginAction(envelope.controllerHome, envelope.request)
+      : await submitAssistantPluginAction(
+          envelope.controllerHome,
+          getRepository(repoId ?? '', envelope.controllerHome),
+          envelope.request,
+        );
     writeFileSync(1, `${JSON.stringify({
       ok: true,
       requestId: submitted.receipt.requestId,

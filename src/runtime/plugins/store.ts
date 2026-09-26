@@ -71,65 +71,191 @@ function now(): string {
   return new Date().toISOString();
 }
 
-export function controllerPluginRepository(controllerHome: string): RepositoryRecord {
-  const root = controllerSystemRoot(controllerHome);
-  const timestamp = now();
+const CONTROLLER_PLUGIN_CACHE_SCOPE = 'controller';
+const CONTROLLER_PLUGIN_GRANT_SCOPE = 'controller:global';
+const CONTROLLER_PLUGIN_SCOPE_KEY = FORGE_INSTANCE_SCOPE_KEY;
+
+interface PluginActionScopeContext {
+  kind: 'controller' | 'repository';
+  scopeKey: string;
+  grantRepoId: string;
+  root: string;
+  checkoutId?: string;
+  repository?: RepositoryRecord;
+}
+
+function repositoryPluginActionScope(repository: RepositoryRecord): PluginActionScopeContext {
   return {
-    schemaVersion: 1,
-    repoId: CONTROLLER_SCOPE_REPO_ID,
-    displayName: 'Controller local system',
-    canonicalRoot: root,
-    localRoot: root,
-    activeCheckoutId: 'controller',
-    checkouts: [],
-    defaultBranch: 'none',
-    repositoryType: 'local-git',
-    enabled: true,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    lastSeenAt: timestamp,
-    configurationPath: join(root, 'local-system', 'targets.json'),
-    stateStorageStrategy: 'controller-home',
+    kind: 'repository',
+    scopeKey: repository.repoId,
+    grantRepoId: repository.repoId,
+    root: repository.canonicalRoot,
+    checkoutId: repository.activeCheckoutId,
+    repository,
   };
 }
 
-/**
- * Controller-scoped product facade. The synthetic RepositoryRecord remains an
- * internal storage/projection compatibility shape only; callers need no repo.
- */
+function controllerPluginActionScope(controllerHome: string): PluginActionScopeContext {
+  return {
+    kind: 'controller',
+    scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
+    grantRepoId: CONTROLLER_PLUGIN_GRANT_SCOPE,
+    root: controllerSystemRoot(controllerHome),
+  };
+}
+
+function pluginActionExecutionFields(scope: PluginActionScopeContext): { repoId: string; repoRoot: string } {
+  // Adapter fields are a compatibility projection. controller:global identifies
+  // the Grant/config domain; it is not a Repository Registry identity.
+  return { repoId: scope.grantRepoId, repoRoot: scope.root };
+}
+
+function controllerPluginsRoot(controllerHome: string): string {
+  return join(controllerSystemRoot(controllerHome), 'plugins');
+}
+
+function controllerManifestPath(controllerHome: string, pluginId: string): string {
+  return join(controllerPluginsRoot(controllerHome), 'manifests', `${sanitizeFileComponent(pluginId)}.json`);
+}
+
+function controllerIndexPath(controllerHome: string): string {
+  return join(controllerPluginsRoot(controllerHome), 'index.json');
+}
+
+function adapterMatchesController(adapter: AssistantPluginAdapter): boolean {
+  const scope = adapter.scope ?? 'repository';
+  return scope === 'controller' || scope === 'controller_with_repository_overlay';
+}
+
+function adapterMatchesRepository(adapter: AssistantPluginAdapter, _repository: RepositoryRecord): boolean {
+  const scope = adapter.scope ?? 'repository';
+  return scope === 'repository' || scope === 'controller_with_repository_overlay';
+}
+
+function computeControllerManifest(
+  controllerHome: string,
+  pluginId: string,
+  resolvedAdapter?: AssistantPluginAdapter,
+): AssistantPluginManifest {
+  const adapter = resolvedAdapter ?? resolvePluginAdapter(controllerHome, pluginId);
+  if (!adapter || !adapterMatchesController(adapter)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
+  const previous = readControllerStoredPluginManifest(controllerHome, pluginId);
+  const root = controllerSystemRoot(controllerHome);
+  const built = adapter.buildManifest(previous?.revision ?? 0, previous?.updatedAt, root, {
+    controllerHome,
+    repoId: CONTROLLER_PLUGIN_GRANT_SCOPE,
+    repoRoot: root,
+    controllerScoped: true,
+  });
+  const changed = !previous || fingerprintManifest(previous) !== fingerprintManifest(built);
+  return {
+    ...built,
+    revision: previous ? (changed ? previous.revision + 1 : previous.revision) : 1,
+    updatedAt: changed ? now() : previous?.updatedAt ?? built.updatedAt,
+  };
+}
+
 export function readControllerStoredPluginManifest(controllerHome: string, pluginId: string): AssistantPluginManifest | undefined {
-  return readStoredAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+  try {
+    const canonicalPath = controllerManifestPath(controllerHome, pluginId);
+    if (existsSync(canonicalPath)) return readJsonFile<AssistantPluginManifest>(canonicalPath);
+    const legacyPath = join(legacyControllerPluginsRoot(controllerHome), 'manifests', `${sanitizeFileComponent(pluginId)}.json`);
+    return existsSync(legacyPath) ? readJsonFile<AssistantPluginManifest>(legacyPath) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function listControllerPluginIds(controllerHome: string): string[] {
+  return listPluginAdapters(controllerHome).filter(adapterMatchesController).map((adapter) => adapter.pluginId).sort();
 }
 
 export function listControllerPluginManifests(
   controllerHome: string,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
-  return listAssistantPluginManifests(controllerHome, controllerPluginRepository(controllerHome), options);
+  const preferStored = options.preferStored === true && options.forceRefresh !== true;
+  const fallbackToLive = options.fallbackToLive !== false || !preferStored;
+  const cacheKey = listCacheKey(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, preferStored, fallbackToLive);
+  if (options.forceRefresh !== true) {
+    const cached = readPluginManifestCache(pluginManifestListCache, cacheKey, preferStored ? PLUGIN_MANIFEST_STORED_CACHE_TTL_MS : PLUGIN_MANIFEST_LIVE_CACHE_TTL_MS);
+    if (cached) return cached;
+  }
+  const manifests = listControllerPluginIds(controllerHome).map((pluginId) => {
+    if (preferStored) {
+      const stored = readControllerStoredPluginManifest(controllerHome, pluginId);
+      if (stored) return stored;
+      if (!fallbackToLive) return undefined;
+    }
+    return computeControllerManifest(controllerHome, pluginId);
+  }).filter((manifest): manifest is AssistantPluginManifest => Boolean(manifest)).sort((left, right) => left.pluginId.localeCompare(right.pluginId));
+  primePluginManifestItemCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, manifests, preferStored);
+  return writePluginManifestCache(pluginManifestListCache, cacheKey, manifests);
+}
+
+function getControllerPluginManifestForExecution(
+  controllerHome: string,
+  pluginId: string,
+  adapter: AssistantPluginAdapter,
+): { manifest: AssistantPluginManifest; providerIdentityPrevalidated: boolean } {
+  const cacheKey = itemCacheKey(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, pluginId, false);
+  const cached = readPluginManifestCache(pluginManifestItemCache, cacheKey);
+  const wrap = (manifest: AssistantPluginManifest) => ({
+    manifest,
+    providerIdentityPrevalidated: manifest.enabled && manifest.health.probed && manifest.health.ready,
+  });
+  if (cached) return wrap(cached);
+  return wrap(writePluginManifestCache(pluginManifestItemCache, cacheKey, computeControllerManifest(controllerHome, pluginId, adapter)));
 }
 
 export function getControllerPluginManifest(controllerHome: string, pluginId: string): AssistantPluginManifest {
-  return getAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+  const adapter = resolvePluginAdapter(controllerHome, pluginId);
+  if (!adapter || !adapterMatchesController(adapter)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
+  return getControllerPluginManifestForExecution(controllerHome, pluginId, adapter).manifest;
+}
+
+function writeControllerRegistry(controllerHome: string, manifests: AssistantPluginManifest[]): AssistantPluginRegistryIndex {
+  const index: AssistantPluginRegistryIndex = {
+    schemaVersion: 1,
+    updatedAt: now(),
+    plugins: manifests.map((manifest) => ({
+      ...pluginIndexEntry(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, manifest),
+      manifestPath: controllerManifestPath(controllerHome, manifest.pluginId),
+    })).sort((left, right) => left.pluginId.localeCompare(right.pluginId)),
+  };
+  writeJsonAtomic(controllerIndexPath(controllerHome), index);
+  return index;
 }
 
 export function syncControllerPluginRegistry(controllerHome: string) {
   reconcileFirstPartyExternalPluginRegistrations(controllerHome);
-  return syncAssistantPluginRegistry(controllerHome, controllerPluginRepository(controllerHome));
+  invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE);
+  const manifests = listControllerPluginManifests(controllerHome, { forceRefresh: true });
+  for (const manifest of manifests) writeJsonAtomic(controllerManifestPath(controllerHome, manifest.pluginId), manifest);
+  return { manifests, index: writeControllerRegistry(controllerHome, manifests) };
 }
 
 export function syncControllerPluginManifest(controllerHome: string, pluginId: string) {
   reconcileFirstPartyExternalPluginRegistration(controllerHome, pluginId);
-  return syncAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+  invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, pluginId);
+  const manifest = computeControllerManifest(controllerHome, pluginId);
+  writeJsonAtomic(controllerManifestPath(controllerHome, pluginId), manifest);
+  cacheAssistantPluginManifest(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, manifest, false);
+  cacheAssistantPluginManifest(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, manifest, true);
+  const manifests = listControllerPluginIds(controllerHome).map((candidate) => candidate === pluginId
+    ? manifest
+    : readControllerStoredPluginManifest(controllerHome, candidate) ?? cachedManifestForRepository(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, candidate))
+    .filter((entry): entry is AssistantPluginManifest => Boolean(entry)).sort((left, right) => left.pluginId.localeCompare(right.pluginId));
+  return { manifest, index: writeControllerRegistry(controllerHome, manifests) };
 }
 
 export function removeControllerPluginManifestProjection(controllerHome: string, pluginId: string) {
-  return removeAssistantPluginManifestProjection(controllerHome, controllerPluginRepository(controllerHome), pluginId);
-}
-
-function adapterMatchesRepository(adapter: AssistantPluginAdapter, repository: RepositoryRecord): boolean {
-  const scope = adapter.scope ?? 'repository';
-  if (scope === 'controller_with_repository_overlay') return true;
-  return repository.repoId === CONTROLLER_SCOPE_REPO_ID ? scope === 'controller' : scope === 'repository';
+  invalidateAssistantPluginManifestCache(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, pluginId);
+  rmSync(controllerManifestPath(controllerHome, pluginId), { force: true });
+  const current = readJsonFile<AssistantPluginRegistryIndex>(controllerIndexPath(controllerHome), { schemaVersion: 1, updatedAt: now(), plugins: [] });
+  const next = { ...current, updatedAt: now(), plugins: current.plugins.filter((entry) => entry.pluginId !== pluginId) };
+  writeJsonAtomic(controllerIndexPath(controllerHome), next);
+  return next;
 }
 
 function cloneCacheValue<T>(value: T): T {
@@ -219,10 +345,6 @@ function invalidateAssistantPluginManifestCache(
 export function clearAssistantPluginManifestCacheForTest(): void {
   pluginManifestListCache.clear();
   pluginManifestItemCache.clear();
-}
-
-function pluginScopeKey(repository: Pick<RepositoryRecord, 'repoId'>): string {
-  return repository.repoId === CONTROLLER_SCOPE_REPO_ID ? FORGE_INSTANCE_SCOPE_KEY : repository.repoId;
 }
 
 function pluginsRoot(controllerHome: string, repoId: string): string {
@@ -360,7 +482,7 @@ function computeManifest(
     controllerHome,
     repoId: repository.repoId,
     repoRoot: repository.canonicalRoot,
-    controllerScoped: repository.repoId === CONTROLLER_SCOPE_REPO_ID,
+    controllerScoped: false,
   });
   const changed = !previous || fingerprintManifest(previous) !== fingerprintManifest(built);
   return {
@@ -382,42 +504,46 @@ function writeRegistry(controllerHome: string, repoId: string, manifests: Assist
   return index;
 }
 
+function claimsForPluginActionScope(
+  action: AssistantPluginActionDescriptor,
+  scope: PluginActionScopeContext,
+  trustedPluginId: string,
+): ResourceClaimSpec[] {
+  const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
+  if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
+  return action.resourceClaims.map((claim) => ({
+    resourceKey: claim.resource === 'remote' || claim.resource === 'provider-state'
+      ? `provider-state:${pluginId}`
+      : scope.kind === 'controller'
+        ? `controller-system:${claim.resource}`
+        : claim.resource === 'workspace'
+          ? `workspace:${scope.checkoutId}`
+          : claim.resource === 'git-refs'
+            ? `git-refs:${scope.scopeKey}`
+            : `repo-state:${scope.scopeKey}`,
+    mode: claim.mode,
+  }));
+}
+
 export function claimsForAssistantPluginAction(
   action: AssistantPluginActionDescriptor,
   repository: RepositoryRecord,
   trustedPluginId: string,
 ): ResourceClaimSpec[] {
-  const controllerScoped = repository.repoId === CONTROLLER_SCOPE_REPO_ID;
-  const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
-  if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
-  return action.resourceClaims.map((claim) => ({
-    resourceKey: claim.resource === 'remote' || claim.resource === 'provider-state'
-      // The manifest/plugin id was resolved from the trusted registration; a
-      // provider never supplies arbitrary resource-key text.
-      ? `provider-state:${pluginId}`
-      : controllerScoped
-        ? `controller-system:${claim.resource}`
-        : claim.resource === 'workspace'
-          ? `workspace:${repository.activeCheckoutId}`
-          : claim.resource === 'git-refs'
-            ? `git-refs:${repository.repoId}`
-            : `repo-state:${repository.repoId}`,
-    mode: claim.mode,
-  }));
+  return claimsForPluginActionScope(action, repositoryPluginActionScope(repository), trustedPluginId);
 }
 
 async function withAssistantPluginResourceLeases<T>(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   action: AssistantPluginActionDescriptor,
   request: AssistantPluginActionRequest,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const controllerScoped = repository.repoId === CONTROLLER_SCOPE_REPO_ID;
-  const executionScopeKey = pluginScopeKey(repository);
-  const claims = claimsForAssistantPluginAction(action, repository, request.pluginId).map((claim) => ({
+  const claims = claimsForPluginActionScope(action, scope, request.pluginId).map((claim) => ({
     ...claim,
-    ...(controllerScoped ? {} : { repoId: repository.repoId, checkoutId: repository.activeCheckoutId }),
+    repoId: scope.scopeKey,
+    ...(scope.checkoutId ? { checkoutId: scope.checkoutId } : {}),
   }));
   if (claims.length === 0) return operation();
 
@@ -428,7 +554,7 @@ async function withAssistantPluginResourceLeases<T>(
   // second same-owner lease and then failing exact release with LEASE_SET_MISMATCH.
   const ownerJobId = `plugin:${request.requestId}:${randomUUID()}`;
   const timeoutMs = Math.max(5_000, Math.min(10 * 60_000, request.timeoutMs ?? action.defaultTimeoutMs));
-  const acquisition = acquireExecutionLeases(controllerHome, executionScopeKey, ownerJobId, claims, {
+  const acquisition = acquireExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, claims, {
     ttlMs: timeoutMs + 60_000,
     // This lease exists only to fence concurrent invocations of one external
     // effect. It is not Scheduler/recovery authority, so derived projection,
@@ -437,9 +563,9 @@ async function withAssistantPluginResourceLeases<T>(
     // the bounded invocation and expire if its process dies.
     visibility: 'ephemeral',
     ownerIdentity: {
-      repositoryId: executionScopeKey,
-      checkoutId: controllerScoped ? FORGE_INSTANCE_SCOPE_KEY : repository.activeCheckoutId,
-      worktreeId: controllerScoped ? FORGE_INSTANCE_SCOPE_KEY : repository.activeCheckoutId,
+      repositoryId: scope.scopeKey,
+      checkoutId: scope.checkoutId ?? CONTROLLER_PLUGIN_SCOPE_KEY,
+      worktreeId: scope.checkoutId ?? CONTROLLER_PLUGIN_SCOPE_KEY,
       branch: 'workflow-plugin-action',
       principalId: request.origin.actor?.trim() || 'workflow-plugin-action',
       controllerInstanceId: process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
@@ -480,14 +606,14 @@ async function withAssistantPluginResourceLeases<T>(
     throw error;
   } finally {
     if (!retainForReconciliation) {
-      releaseExactExecutionLeases(controllerHome, executionScopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
+      releaseExactExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
     }
   }
 }
 
-function semanticKey(repository: RepositoryRecord, pluginId: string, actionId: string, args: Record<string, unknown>): string {
+function semanticKey(scope: PluginActionScopeContext, pluginId: string, actionId: string, args: Record<string, unknown>): string {
   const digest = createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex').slice(0, 20);
-  return `plugin-action:${pluginScopeKey(repository)}:${pluginId}:${actionId}:${digest}`;
+  return `plugin-action:${scope.scopeKey}:${pluginId}:${actionId}:${digest}`;
 }
 
 function validatePrimitive(type: string, value: unknown): boolean {
@@ -608,7 +734,7 @@ function authorizationTargetMatches(
 
 async function resolveAutomatedWriteAuthorization(input: {
   controllerHome: string;
-  repository: RepositoryRecord;
+  scope: PluginActionScopeContext;
   adapter: AssistantPluginAdapter;
   manifest: AssistantPluginManifest;
   action: AssistantPluginActionDescriptor;
@@ -636,8 +762,7 @@ async function resolveAutomatedWriteAuthorization(input: {
   }
   const targetContext = await input.adapter.resolveAuthorizationContext({
     controllerHome: input.controllerHome,
-    repoId: input.repository.repoId,
-    repoRoot: input.repository.canonicalRoot,
+    ...pluginActionExecutionFields(input.scope),
     pluginId: input.manifest.pluginId,
     actionId: input.action.actionId,
     requestId: input.requestId,
@@ -656,7 +781,7 @@ async function resolveAutomatedWriteAuthorization(input: {
   const grant = refs
     .map((ref) => findActivePluginCapabilityAuthorizationById(input.controllerHome, ref))
     .find((candidate) => candidate
-      && candidate.repoId === input.repository.repoId
+      && candidate.repoId === input.scope.grantRepoId
       && candidate.pluginId === input.manifest.pluginId
       && candidate.capabilityId === capabilityId
       && authorizationTargetMatches(candidate.target, targetContext.target)
@@ -875,9 +1000,9 @@ export function isDirectNonPersistentPluginAction(action: AssistantPluginActionD
     && (action.confirmation === 'authorization' || action.confirmation === 'none');
 }
 
-export async function executeAssistantPluginDirectNonPersistent(
+async function executePluginDirectNonPersistentInScope(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   request: AssistantPluginActionRequest,
 ): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown> }> {
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
@@ -885,7 +1010,9 @@ export async function executeAssistantPluginDirectNonPersistent(
   if (PLUGIN_ADAPTERS.get(request.pluginId) !== adapter) {
     throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_FIRST_PARTY_REQUIRED: ${request.pluginId}/${request.actionId}`);
   }
-  const manifestLookup = getAssistantPluginManifestForExecution(controllerHome, repository, request.pluginId, adapter);
+  const manifestLookup = scope.kind === 'controller'
+    ? getControllerPluginManifestForExecution(controllerHome, request.pluginId, adapter)
+    : getAssistantPluginManifestForExecution(controllerHome, scope.repository!, request.pluginId, adapter);
   const manifest = manifestLookup.manifest;
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
@@ -908,7 +1035,7 @@ export async function executeAssistantPluginDirectNonPersistent(
   if (requiresAutomatedWriteAuthorization(request.origin)) {
     await resolveAutomatedWriteAuthorization({
       controllerHome,
-      repository,
+      scope,
       adapter,
       manifest,
       action,
@@ -920,8 +1047,7 @@ export async function executeAssistantPluginDirectNonPersistent(
   }
   const result = await adapter.executeAction({
     controllerHome,
-    repoId: repository.repoId,
-    repoRoot: repository.canonicalRoot,
+    ...pluginActionExecutionFields(scope),
     pluginId: request.pluginId,
     actionId: request.actionId,
     requestId: request.requestId,
@@ -935,12 +1061,29 @@ export async function executeAssistantPluginDirectNonPersistent(
   return { manifest, action, result };
 }
 
-export async function executeAssistantPluginReadDirect(
+export function executeAssistantPluginDirectNonPersistent(
   controllerHome: string,
   repository: RepositoryRecord,
   request: AssistantPluginActionRequest,
+) {
+  return executePluginDirectNonPersistentInScope(controllerHome, repositoryPluginActionScope(repository), request);
+}
+
+export function executeControllerPluginDirectNonPersistent(
+  controllerHome: string,
+  request: AssistantPluginActionRequest,
+) {
+  return executePluginDirectNonPersistentInScope(controllerHome, controllerPluginActionScope(controllerHome), request);
+}
+
+async function executePluginReadDirectInScope(
+  controllerHome: string,
+  scope: PluginActionScopeContext,
+  request: AssistantPluginActionRequest,
 ): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown>; receipt: PluginActionReceipt }> {
-  const manifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
+  const manifest = scope.kind === 'controller'
+    ? getControllerPluginManifest(controllerHome, request.pluginId)
+    : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
     throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
@@ -950,10 +1093,9 @@ export async function executeAssistantPluginReadDirect(
   }
   const normalizedArgs = validateActionArguments(action, request.args ?? {});
   enforceConfirmation(action, { ...request, args: normalizedArgs });
-  const result = await executeAssistantPluginAction({
+  const result = await executePluginActionInScope(scope, {
     controllerHome,
-    repoId: repository.repoId,
-    repoRoot: repository.canonicalRoot,
+    ...pluginActionExecutionFields(scope),
     pluginId: request.pluginId,
     actionId: request.actionId,
     requestId: request.requestId,
@@ -962,7 +1104,7 @@ export async function executeAssistantPluginReadDirect(
   });
   const createdAt = new Date().toISOString();
   const resultDigest = createHash('sha256').update(JSON.stringify(result)).digest('hex');
-  const observationSemanticKey = semanticKey(repository, request.pluginId, request.actionId, normalizedArgs);
+  const observationSemanticKey = semanticKey(scope, request.pluginId, request.actionId, normalizedArgs);
   const observationActor = request.origin?.actor?.trim() ?? '';
   // Observation evidence is content-addressed so repeated identical reads do not create
   // an unbounded receipt trail. This remains provenance only, never replay/effect state.
@@ -973,7 +1115,8 @@ export async function executeAssistantPluginReadDirect(
     schemaVersion: 1,
     receiptId,
     requestId: request.requestId,
-    repoId: repository.repoId,
+    scopeKey: scope.scopeKey,
+    ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
     pluginId: request.pluginId,
     actionId: request.actionId,
     semanticKey: observationSemanticKey,
@@ -985,15 +1128,33 @@ export async function executeAssistantPluginReadDirect(
   };
   // Direct reads stay on the inline fast path. Persist only a compact observation
   // receipt, never provider result content and never request replay state.
-  writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
+  writeJsonAtomic(pluginActionReceiptPath(controllerHome, scope.scopeKey, receiptId), receipt);
   return { manifest, action, result, receipt };
+}
+
+export function executeAssistantPluginReadDirect(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  request: AssistantPluginActionRequest,
+) {
+  return executePluginReadDirectInScope(controllerHome, repositoryPluginActionScope(repository), request);
+}
+
+export function executeControllerPluginReadDirect(
+  controllerHome: string,
+  request: AssistantPluginActionRequest,
+) {
+  return executePluginReadDirectInScope(controllerHome, controllerPluginActionScope(controllerHome), request);
 }
 
 export interface PluginActionReceipt {
   schemaVersion: 1;
   receiptId: string;
   requestId: string;
-  repoId: string;
+  /** Canonical plugin-action receipt scope: `instance` for controller plugins, repository id otherwise. */
+  scopeKey: string;
+  /** Repository provenance only; absent for controller-scoped plugin actions. */
+  repoId?: string;
   /** Work authority repository when it differs from controller/provider receipt scope. */
   workRepoId?: string;
   pluginId: string;
@@ -1016,17 +1177,18 @@ export interface PluginActionReceipt {
 
 interface PluginActionRequestIndex {
   requestId: string;
-  repoId: string;
+  scopeKey: string;
+  repoId?: string;
   workRepoId?: string;
   receiptId: string;
   semanticKey: string;
   createdAt: string;
 }
 
-function pluginActionReceiptRoot(controllerHome: string, repoId: string): string {
-  const root = repoId === CONTROLLER_SCOPE_REPO_ID
+function pluginActionReceiptRoot(controllerHome: string, scopeKey: string): string {
+  const root = scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY
     ? join(controllerSystemRoot(controllerHome), 'plugin-action-receipts')
-    : join(repositoryControllerRoot(controllerHome, repoId), 'plugin-action-receipts');
+    : join(repositoryControllerRoot(controllerHome, scopeKey), 'plugin-action-receipts');
   mkdirSync(root, { recursive: true });
   return root;
 }
@@ -1042,18 +1204,31 @@ function pluginActionRequestPath(controllerHome: string, requestId: string): str
   return join(root, `${hash}.json`);
 }
 
-function pluginActionReceiptPath(controllerHome: string, repoId: string, receiptId: string): string {
-  return join(pluginActionReceiptRoot(controllerHome, repoId), `${sanitizeFileComponent(receiptId)}.json`);
+function pluginActionReceiptPath(controllerHome: string, scopeKey: string, receiptId: string): string {
+  return join(pluginActionReceiptRoot(controllerHome, scopeKey), `${sanitizeFileComponent(receiptId)}.json`);
 }
 
-function readPluginActionReceipt(controllerHome: string, repoId: string, receiptId: string): PluginActionReceipt | undefined {
-  const path = pluginActionReceiptPath(controllerHome, repoId, receiptId);
-  if (existsSync(path)) return readJsonFile<PluginActionReceipt>(path);
-  if (repoId === CONTROLLER_SCOPE_REPO_ID) {
+function normalizePluginActionReceipt(receipt: PluginActionReceipt): PluginActionReceipt {
+  const scopeKey = receipt.scopeKey?.trim()
+    || (receipt.repoId === CONTROLLER_SCOPE_REPO_ID ? CONTROLLER_PLUGIN_SCOPE_KEY : receipt.repoId?.trim())
+    || '';
+  if (!scopeKey) throw new Error('PLUGIN_RECEIPT_SCOPE_CORRUPT');
+  return {
+    ...receipt,
+    scopeKey,
+    ...(scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY ? { repoId: undefined } : { repoId: receipt.repoId ?? scopeKey }),
+  };
+}
+
+function readPluginActionReceipt(controllerHome: string, scopeKey: string, receiptId: string): PluginActionReceipt | undefined {
+  const path = pluginActionReceiptPath(controllerHome, scopeKey, receiptId);
+  if (existsSync(path)) return normalizePluginActionReceipt(readJsonFile<PluginActionReceipt>(path));
+  if (scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY || scopeKey === CONTROLLER_SCOPE_REPO_ID) {
     const legacyPath = legacyControllerPluginActionReceiptPath(controllerHome, receiptId);
-    if (existsSync(legacyPath)) return readJsonFile<PluginActionReceipt>(legacyPath);
+    if (existsSync(legacyPath)) return normalizePluginActionReceipt(readJsonFile<PluginActionReceipt>(legacyPath));
   }
   return undefined;
+}
 }
 
 export function findPluginActionReceipt(
@@ -1063,7 +1238,9 @@ export function findPluginActionReceipt(
   const home = ensureControllerHome(controllerHome);
   // Controller-scoped plugins (for example Local System) live under system/, not
   // repositories/. They are first-class evidence producers and must be searched too.
-  const controllerReceipt = readPluginActionReceipt(home, CONTROLLER_SCOPE_REPO_ID, receiptId);
+  const controllerReceipt = readPluginActionReceipt(home, CONTROLLER_PLUGIN_SCOPE_KEY, receiptId)
+    // One-way read compatibility for pre-cutover controller receipts only.
+    ?? readPluginActionReceipt(home, CONTROLLER_SCOPE_REPO_ID, receiptId);
   if (controllerReceipt) return controllerReceipt;
   const repositoriesRoot = join(home, 'repositories');
   try {
@@ -1083,7 +1260,9 @@ export function readPluginActionReceiptForRequest(controllerHome: string, reques
   if (!existsSync(path)) return undefined;
   const index = readJsonFile<PluginActionRequestIndex>(path);
   if (index.requestId !== requestId) throw new Error('PLUGIN_RECEIPT_REQUEST_MISMATCH');
-  const receipt = readPluginActionReceipt(controllerHome, index.repoId, index.receiptId);
+  const scopeKey = index.scopeKey?.trim() || index.repoId?.trim();
+  if (!scopeKey) throw new Error('PLUGIN_RECEIPT_REQUEST_SCOPE_CORRUPT');
+  const receipt = readPluginActionReceipt(controllerHome, scopeKey, index.receiptId);
   if (!receipt || receipt.requestId !== requestId || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
   return receipt;
 }
@@ -1095,18 +1274,20 @@ export function compatibilityPluginJobFromReceipt(
   return compatibilityJobFromReceipt(receipt, checkoutId);
 }
 
-function workAttributionRepoId(repository: RepositoryRecord, request: AssistantPluginActionRequest): string {
+function workAttributionRepoId(scope: PluginActionScopeContext, request: AssistantPluginActionRequest): string {
   const explicit = request.workRepoId?.trim();
   if (!request.workId?.trim()) {
     if (explicit) throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_WITHOUT_WORK: ${explicit}`);
-    return repository.repoId;
+    return scope.repository?.repoId ?? '';
   }
-  return explicit || repository.repoId;
+  if (explicit) return explicit;
+  if (scope.repository) return scope.repository.repoId;
+  throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_REQUIRED: controller-scoped action ${request.pluginId}/${request.actionId} must name the Work repository explicitly`);
 }
 
 function remoteEffectWorkForPluginAction(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   action: AssistantPluginActionDescriptor,
   request: AssistantPluginActionRequest,
   receiptId?: string,
@@ -1116,7 +1297,7 @@ function remoteEffectWorkForPluginAction(
   if (action.risk !== 'remote_write') {
     throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_REQUIRES_REMOTE_WRITE: ${action.actionId}`);
   }
-  const workRepoId = workAttributionRepoId(repository, request);
+  const workRepoId = workAttributionRepoId(scope, request);
   const work = getWorkContract({ controllerHome, repoId: workRepoId }, workId);
   if (!work) throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_NOT_FOUND: ${workId}`);
   if (work.workKind !== 'remote_effect') {
@@ -1138,13 +1319,13 @@ function remoteEffectWorkForPluginAction(
 
 function attributedWorkForPluginAction(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   action: AssistantPluginActionDescriptor,
   request: AssistantPluginActionRequest,
 ): WorkContract | undefined {
   const workId = request.workId?.trim();
   if (!workId || action.risk === 'remote_write') return undefined;
-  const workRepoId = workAttributionRepoId(repository, request);
+  const workRepoId = workAttributionRepoId(scope, request);
   const work = getWorkContract({ controllerHome, repoId: workRepoId }, workId);
   if (!work) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workRepoId}:${workId}`);
   if (isTerminalWorkContractStatus(work.status)) {
@@ -1155,14 +1336,14 @@ function attributedWorkForPluginAction(
 
 function bindLocalEffectReceiptToAttributedWork(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   action: AssistantPluginActionDescriptor,
   request: AssistantPluginActionRequest,
   receipt: PluginActionReceipt,
   work?: WorkContract,
 ): WorkContract | undefined {
   if (!request.workId || receipt.status !== 'succeeded') return work;
-  const workRepoId = workAttributionRepoId(repository, request);
+  const workRepoId = workAttributionRepoId(scope, request);
   const attributed = work ?? getWorkContract({ controllerHome, repoId: workRepoId }, request.workId.trim());
   if (!attributed) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workRepoId}:${request.workId.trim()}`);
   if (attributed.workKind !== 'local_effect' || action.readOnly || action.risk === 'readonly') return attributed;
@@ -1191,6 +1372,7 @@ export function recordRemoteEffectWorkActionReceipt(
     .map((evidence) => {
       if (!evidence.evidenceId) return undefined;
       return readPluginActionReceipt(controllerHome, repoId, evidence.evidenceId)
+        ?? readPluginActionReceipt(controllerHome, CONTROLLER_PLUGIN_SCOPE_KEY, evidence.evidenceId)
         ?? readPluginActionReceipt(controllerHome, CONTROLLER_SCOPE_REPO_ID, evidence.evidenceId);
     })
     .find((candidate) => candidate?.workId === workId && candidate.status === 'succeeded');
@@ -1220,17 +1402,17 @@ export function recordRemoteEffectWorkActionReceipt(
 
 function bindRemoteEffectReceiptToWork(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   action: AssistantPluginActionDescriptor,
   request: AssistantPluginActionRequest,
   receipt: PluginActionReceipt,
 ): WorkContract | undefined {
   if (!request.workId) return undefined;
-  if (receipt.status !== 'succeeded') return remoteEffectWorkForPluginAction(controllerHome, repository, action, request);
-  const work = remoteEffectWorkForPluginAction(controllerHome, repository, action, request, receipt.receiptId);
+  if (receipt.status !== 'succeeded') return remoteEffectWorkForPluginAction(controllerHome, scope, action, request);
+  const work = remoteEffectWorkForPluginAction(controllerHome, scope, action, request, receipt.receiptId);
   if (!work) return undefined;
   if (work.completionReceipt?.source === 'remote_effect') return work;
-  const workRepoId = workAttributionRepoId(repository, request);
+  const workRepoId = workAttributionRepoId(scope, request);
   let updated = work;
   if (!work.evidenceRefs.some((evidence) => evidence.evidenceId === receipt.receiptId)) {
     updated = appendWorkEvidence({ controllerHome, repoId: workRepoId }, work.workId, {
@@ -1267,7 +1449,7 @@ function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: s
     schemaVersion: 1,
     revision: 1,
     jobId: receipt.receiptId,
-    repoId: receipt.repoId,
+    repoId: receipt.repoId ?? receipt.scopeKey,
     checkoutId,
     type: 'plugin-action',
     status: receipt.effectOutcome === 'outcome_unknown'
@@ -1299,9 +1481,9 @@ function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: s
  * Deterministic plugin action path: validate → authorize/confirm → invoke adapter → receipt.
  * Does not create ExecutionJobs or call a model.
  */
-export async function submitAssistantPluginAction(
+async function submitPluginAction(
   controllerHome: string,
-  repository: RepositoryRecord,
+  scope: PluginActionScopeContext,
   request: AssistantPluginActionRequest,
 ): Promise<{
   manifest: AssistantPluginManifest;
@@ -1315,7 +1497,9 @@ export async function submitAssistantPluginAction(
 }> {
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
-  const manifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
+  const manifest = scope.kind === 'controller'
+    ? getControllerPluginManifest(controllerHome, request.pluginId)
+    : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
     throw new Error(`PLUGIN_DISABLED: ${request.pluginId} is disabled`);
@@ -1326,36 +1510,38 @@ export async function submitAssistantPluginAction(
   const normalizedArgs = validateActionArguments(action, request.args ?? {});
   enforceConfirmation(action, { ...request, args: normalizedArgs });
 
-  const key = semanticKey(repository, request.pluginId, request.actionId, normalizedArgs);
+  const key = semanticKey(scope, request.pluginId, request.actionId, normalizedArgs);
   const requestPath = pluginActionRequestPath(controllerHome, request.requestId);
   if (existsSync(requestPath)) {
     const index = readJsonFile<PluginActionRequestIndex>(requestPath);
     if (index.semanticKey !== key) {
       throw new Error(`REQUEST_ID_CONFLICT: ${request.requestId} already belongs to ${index.semanticKey}`);
     }
-    if (index.repoId !== repository.repoId) {
-      throw new Error(`REQUEST_ID_REPO_CONFLICT: ${request.requestId} already belongs to repository ${index.repoId}`);
+    const existingScopeKey = index.scopeKey?.trim() || index.repoId?.trim();
+    if (!existingScopeKey) throw new Error(`PLUGIN_RECEIPT_REQUEST_SCOPE_CORRUPT: ${request.requestId}`);
+    if (existingScopeKey !== scope.scopeKey) {
+      throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${request.requestId} already belongs to ${existingScopeKey}`);
     }
-    const existing = readPluginActionReceipt(controllerHome, index.repoId, index.receiptId);
+    const existing = readPluginActionReceipt(controllerHome, existingScopeKey, index.receiptId);
     if (!existing) {
       throw new Error(`PLUGIN_RECEIPT_LOST: ${request.requestId}`);
     }
     if (request.workId && existing.workId !== request.workId) {
       throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_CONFLICT: ${request.requestId} already belongs to Work ${existing.workId ?? 'none'}`);
     }
-    const requestedWorkRepoId = request.workId ? workAttributionRepoId(repository, request) : undefined;
-    if (requestedWorkRepoId && (index.workRepoId ?? index.repoId) !== requestedWorkRepoId) {
-      throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT: ${request.requestId} already belongs to Work repository ${index.workRepoId ?? index.repoId}`);
+    const requestedWorkRepoId = request.workId ? workAttributionRepoId(scope, request) : undefined;
+    if (requestedWorkRepoId && index.workRepoId !== requestedWorkRepoId) {
+      throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT: ${request.requestId} already belongs to Work repository ${index.workRepoId ?? 'none'}`);
     }
     if (request.workId && action.risk === 'remote_write') {
-      bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, existing);
+      bindRemoteEffectReceiptToWork(controllerHome, scope, action, request, existing);
     } else if (request.workId) {
-      bindLocalEffectReceiptToAttributedWork(controllerHome, repository, action, request, existing);
+      bindLocalEffectReceiptToAttributedWork(controllerHome, scope, action, request, existing);
     }
     return {
       manifest,
       action,
-      job: compatibilityJobFromReceipt(existing, repository.activeCheckoutId),
+      job: compatibilityJobFromReceipt(existing, scope.checkoutId ?? CONTROLLER_PLUGIN_SCOPE_KEY),
       deduplicated: true,
       result: existing.result,
       receipt: existing,
@@ -1373,7 +1559,7 @@ export async function submitAssistantPluginAction(
   if (requiresAutomatedWriteAuthorization(request.origin)) {
     activeAuthorizationGrant = await resolveAutomatedWriteAuthorization({
       controllerHome,
-      repository,
+      scope,
       adapter,
       manifest,
       action,
@@ -1394,30 +1580,32 @@ export async function submitAssistantPluginAction(
     }
   }
   const boundRemoteWork = action.risk === 'remote_write'
-    ? remoteEffectWorkForPluginAction(controllerHome, repository, action, request)
+    ? remoteEffectWorkForPluginAction(controllerHome, scope, action, request)
     : undefined;
   // Capability execution never creates semantic Work implicitly. Existing Work
   // attribution is opt-in through work_id; otherwise the plugin receipt is the
   // durable effect record.
   const attributedWork = action.risk !== 'remote_write'
-    ? attributedWorkForPluginAction(controllerHome, repository, action, request)
+    ? attributedWorkForPluginAction(controllerHome, scope, action, request)
     : undefined;
-  appendRuntimeEvent(controllerHome, {
-    repoId: repository.repoId,
-    entityType: 'plugin',
-    entityId: manifest.pluginId,
-    eventType: 'plugin_action_requested',
-    requestId: request.requestId,
-    revision: manifest.revision,
-    data: {
-      actionId: action.actionId,
-      receiptId,
-      risk: action.risk,
-      confirmation: action.confirmation,
-      capabilityId,
-      authorizationReuseSupported: action.confirmation === 'authorization' && Boolean(adapter.resolveAuthorizationContext),
-    },
-  });
+  if (scope.repository) {
+    appendRuntimeEvent(controllerHome, {
+      repoId: scope.repository.repoId,
+      entityType: 'plugin',
+      entityId: manifest.pluginId,
+      eventType: 'plugin_action_requested',
+      requestId: request.requestId,
+      revision: manifest.revision,
+      data: {
+        actionId: action.actionId,
+        receiptId,
+        risk: action.risk,
+        confirmation: action.confirmation,
+        capabilityId,
+        authorizationReuseSupported: action.confirmation === 'authorization' && Boolean(adapter.resolveAuthorizationContext),
+      },
+    });
+  }
 
   try {
     if (action.confirmation === 'authorization'
@@ -1425,8 +1613,7 @@ export async function submitAssistantPluginAction(
       && originMayEstablishCapabilityAuthorization(request.origin)) {
       authorizationContext = await adapter.resolveAuthorizationContext({
         controllerHome,
-        repoId: repository.repoId,
-        repoRoot: repository.canonicalRoot,
+        ...pluginActionExecutionFields(scope),
         pluginId: request.pluginId,
         actionId: request.actionId,
         requestId: request.requestId,
@@ -1446,7 +1633,7 @@ export async function submitAssistantPluginAction(
         try {
           activeAuthorizationGrant = findActivePluginCapabilityAuthorization(controllerHome, {
             ownerScope: pluginCapabilityAuthorizationOwnerScope(request.origin),
-            repoId: repository.repoId,
+            repoId: scope.grantRepoId,
             pluginId: request.pluginId,
             capabilityId,
             target: authorizationContext.target,
@@ -1473,13 +1660,12 @@ export async function submitAssistantPluginAction(
 
     const result = await withAssistantPluginResourceLeases(
       controllerHome,
-      repository,
+      scope,
       action,
       request,
-      () => executeAssistantPluginAction({
+      () => executePluginActionInScope(scope, {
         controllerHome,
-        repoId: repository.repoId,
-        repoRoot: repository.canonicalRoot,
+        ...pluginActionExecutionFields(scope),
         pluginId: request.pluginId,
         actionId: request.actionId,
         requestId: request.requestId,
@@ -1507,8 +1693,7 @@ export async function submitAssistantPluginAction(
       && adapter.resolveAuthorizationContext) {
       authorizationContext = await adapter.resolveAuthorizationContext({
         controllerHome,
-        repoId: repository.repoId,
-        repoRoot: repository.canonicalRoot,
+        ...pluginActionExecutionFields(scope),
         pluginId: request.pluginId,
         actionId: request.actionId,
         requestId: request.requestId,
@@ -1527,7 +1712,7 @@ export async function submitAssistantPluginAction(
       try {
         const grant = recordPluginCapabilityAuthorization(controllerHome, {
           ownerScope: pluginCapabilityAuthorizationOwnerScope(request.origin),
-          repoId: repository.repoId,
+          repoId: scope.grantRepoId,
           pluginId: request.pluginId,
           capabilityId,
           target: authorizationContext.target,
@@ -1570,8 +1755,9 @@ export async function submitAssistantPluginAction(
       schemaVersion: 1,
       receiptId,
       requestId: request.requestId,
-      repoId: repository.repoId,
-      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
+      scopeKey: scope.scopeKey,
+      ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
+      ...(request.workId ? { workRepoId: workAttributionRepoId(scope, request) } : {}),
       pluginId: request.pluginId,
       actionId: request.actionId,
       semanticKey: key,
@@ -1586,25 +1772,28 @@ export async function submitAssistantPluginAction(
       authorization,
       result: resultWithLineage,
     };
-    writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
+    writeJsonAtomic(pluginActionReceiptPath(controllerHome, scope.scopeKey, receiptId), receipt);
     writeJsonAtomic(requestPath, {
       requestId: request.requestId,
-      repoId: repository.repoId,
-      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
+      scopeKey: scope.scopeKey,
+      ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
+      ...(request.workId ? { workRepoId: workAttributionRepoId(scope, request) } : {}),
       receiptId,
       semanticKey: key,
       createdAt,
     } satisfies PluginActionRequestIndex);
     if (boundRemoteWork) {
-      bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, receipt);
+      bindRemoteEffectReceiptToWork(controllerHome, scope, action, request, receipt);
     } else if (attributedWork) {
-      bindLocalEffectReceiptToAttributedWork(controllerHome, repository, action, request, receipt, attributedWork);
+      bindLocalEffectReceiptToAttributedWork(controllerHome, scope, action, request, receipt, attributedWork);
     }
-    const nextManifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
+    const nextManifest = scope.kind === 'controller'
+      ? getControllerPluginManifest(controllerHome, request.pluginId)
+      : getAssistantPluginManifest(controllerHome, scope.repository!, request.pluginId);
     return {
       manifest: nextManifest,
       action,
-      job: compatibilityJobFromReceipt(receipt, repository.activeCheckoutId),
+      job: compatibilityJobFromReceipt(receipt, scope.checkoutId ?? CONTROLLER_PLUGIN_SCOPE_KEY),
       deduplicated: false,
       result: resultWithLineage,
       receipt,
@@ -1624,7 +1813,7 @@ export async function submitAssistantPluginAction(
       ? { outcome: 'outcome_unknown', error: { code, message } }
       : undefined;
     if (boundRemoteWork) {
-      appendWorkEvidence({ controllerHome, repoId: workAttributionRepoId(repository, request) }, boundRemoteWork.workId, {
+      appendWorkEvidence({ controllerHome, repoId: workAttributionRepoId(scope, request) }, boundRemoteWork.workId, {
         title: outcomeUnknown ? 'typed remote plugin effect outcome unknown' : 'typed remote plugin effect failed',
         summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
         detailLevel: 'summary',
@@ -1634,8 +1823,9 @@ export async function submitAssistantPluginAction(
       schemaVersion: 1,
       receiptId,
       requestId: request.requestId,
-      repoId: repository.repoId,
-      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
+      scopeKey: scope.scopeKey,
+      ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
+      ...(request.workId ? { workRepoId: workAttributionRepoId(scope, request) } : {}),
       pluginId: request.pluginId,
       actionId: request.actionId,
       semanticKey: key,
@@ -1652,11 +1842,12 @@ export async function submitAssistantPluginAction(
       ...(outcomeResult ? { result: outcomeResult } : {}),
       error: { code, message },
     };
-    writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
+    writeJsonAtomic(pluginActionReceiptPath(controllerHome, scope.scopeKey, receiptId), receipt);
     writeJsonAtomic(requestPath, {
       requestId: request.requestId,
-      repoId: repository.repoId,
-      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
+      scopeKey: scope.scopeKey,
+      ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
+      ...(request.workId ? { workRepoId: workAttributionRepoId(scope, request) } : {}),
       receiptId,
       semanticKey: key,
       createdAt,
@@ -1665,7 +1856,7 @@ export async function submitAssistantPluginAction(
       return {
         manifest,
         action,
-        job: compatibilityJobFromReceipt(receipt, repository.activeCheckoutId),
+        job: compatibilityJobFromReceipt(receipt, scope.checkoutId ?? CONTROLLER_PLUGIN_SCOPE_KEY),
         deduplicated: false,
         result: outcomeResult,
         receipt,
@@ -1677,28 +1868,30 @@ export async function submitAssistantPluginAction(
   }
 }
 
-export async function executeControllerScopedPluginAction(
-  input: Omit<AssistantPluginActionExecutionInput, 'repoId' | 'repoRoot'>,
-): Promise<Record<string, unknown>> {
-  const repository = controllerPluginRepository(input.controllerHome);
-  return executeAssistantPluginAction({
-    ...input,
-    repoId: repository.repoId,
-    repoRoot: repository.canonicalRoot,
-  });
+export function submitAssistantPluginAction(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  request: AssistantPluginActionRequest,
+) {
+  return submitPluginAction(controllerHome, repositoryPluginActionScope(repository), request);
 }
 
-export async function executeAssistantPluginAction(
+export function submitControllerPluginAction(
+  controllerHome: string,
+  request: AssistantPluginActionRequest,
+) {
+  return submitPluginAction(controllerHome, controllerPluginActionScope(controllerHome), request);
+}
+
+async function executePluginActionInScope(
+  scope: PluginActionScopeContext,
   input: AssistantPluginActionExecutionInput,
 ): Promise<Record<string, unknown>> {
   const adapter = resolvePluginAdapter(input.controllerHome, input.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${input.pluginId}`);
-  const repository = {
-    repoId: input.repoId,
-    canonicalRoot: input.repoRoot,
-    activeCheckoutId: 'active',
-  } as RepositoryRecord;
-  const manifestLookup = getAssistantPluginManifestForExecution(input.controllerHome, repository, input.pluginId, adapter);
+  const manifestLookup = scope.kind === 'controller'
+    ? getControllerPluginManifestForExecution(input.controllerHome, input.pluginId, adapter)
+    : getAssistantPluginManifestForExecution(input.controllerHome, scope.repository!, input.pluginId, adapter);
   const manifest = manifestLookup.manifest;
   const action = actionForManifest(manifest, input.actionId);
   if (action.executionMode === 'direct_non_persistent') {
@@ -1708,7 +1901,7 @@ export async function executeAssistantPluginAction(
   if (requiresAutomatedWriteAuthorization(input.origin)) {
     await resolveAutomatedWriteAuthorization({
       controllerHome: input.controllerHome,
-      repository,
+      scope,
       adapter,
       manifest,
       action,
@@ -1722,38 +1915,53 @@ export async function executeAssistantPluginAction(
   try {
     const result = await adapter.executeAction({
       ...input,
+      ...pluginActionExecutionFields(scope),
       args: normalizedArgs,
       providerIdentityPrevalidated: manifestLookup.providerIdentityPrevalidated,
     });
     for (const affectedPluginId of adapter.affectedPluginIdsAfterAction?.(input.actionId, result) ?? []) {
       if (!affectedPluginId || affectedPluginId === input.pluginId) continue;
-      invalidateAssistantPluginManifestCache(input.controllerHome, repository.repoId, affectedPluginId);
       const affectedAdapter = resolvePluginAdapter(input.controllerHome, affectedPluginId);
-      if (affectedAdapter && adapterMatchesRepository(affectedAdapter, repository)) {
-        syncAssistantPluginManifest(input.controllerHome, repository, affectedPluginId);
+      if (scope.kind === 'controller') {
+        invalidateAssistantPluginManifestCache(input.controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, affectedPluginId);
+        if (affectedAdapter && adapterMatchesController(affectedAdapter)) {
+          syncControllerPluginManifest(input.controllerHome, affectedPluginId);
+        } else {
+          removeControllerPluginManifestProjection(input.controllerHome, affectedPluginId);
+        }
       } else {
-        rmSync(manifestPath(input.controllerHome, repository.repoId, affectedPluginId), { force: true });
+        const repository = scope.repository!;
+        invalidateAssistantPluginManifestCache(input.controllerHome, repository.repoId, affectedPluginId);
+        if (affectedAdapter && adapterMatchesRepository(affectedAdapter, repository)) {
+          syncAssistantPluginManifest(input.controllerHome, repository, affectedPluginId);
+        } else {
+          rmSync(manifestPath(input.controllerHome, repository.repoId, affectedPluginId), { force: true });
+        }
       }
     }
     const refreshManifest = adapter.shouldRefreshManifestAfterAction?.(input.actionId) ?? true;
     const nextManifest = refreshManifest
-      ? syncAssistantPluginManifest(input.controllerHome, repository, input.pluginId).manifest
+      ? scope.kind === 'controller'
+        ? syncControllerPluginManifest(input.controllerHome, input.pluginId).manifest
+        : syncAssistantPluginManifest(input.controllerHome, scope.repository!, input.pluginId).manifest
       : manifest;
-    appendRuntimeEvent(input.controllerHome, {
-      repoId: input.repoId,
-      entityType: 'plugin',
-      entityId: input.pluginId,
-      eventType: 'plugin_action_succeeded',
-      requestId: input.requestId,
-      revision: nextManifest.revision,
-      data: {
-        actionId: input.actionId,
-        jobId: input.jobId,
-        resultKeys: Object.keys(result).slice(0, 20),
-        lifecycleState: nextManifest.lifecycle.state,
-        healthState: nextManifest.health.state,
-      },
-    });
+    if (scope.repository) {
+      appendRuntimeEvent(input.controllerHome, {
+        repoId: scope.repository.repoId,
+        entityType: 'plugin',
+        entityId: input.pluginId,
+        eventType: 'plugin_action_succeeded',
+        requestId: input.requestId,
+        revision: nextManifest.revision,
+        data: {
+          actionId: input.actionId,
+          jobId: input.jobId,
+          resultKeys: Object.keys(result).slice(0, 20),
+          lifecycleState: nextManifest.lifecycle.state,
+          healthState: nextManifest.health.state,
+        },
+      });
+    }
     return {
       schemaVersion: 1,
       plugin: {
@@ -1781,25 +1989,49 @@ export async function executeAssistantPluginAction(
         actionId: input.actionId,
       },
     });
-    const refreshed = syncAssistantPluginManifest(input.controllerHome, repository, input.pluginId);
-    const nextManifest = refreshed.manifest;
-    appendRuntimeEvent(input.controllerHome, {
-      repoId: input.repoId,
-      entityType: 'plugin',
-      entityId: input.pluginId,
-      eventType: 'plugin_action_failed',
-      requestId: input.requestId,
-      revision: nextManifest.revision,
-      data: {
-        actionId: input.actionId,
-        jobId: input.jobId,
-        code: pluginError.code,
-        retryable: pluginError.retryable,
-      },
-    });
+    const nextManifest = scope.kind === 'controller'
+      ? syncControllerPluginManifest(input.controllerHome, input.pluginId).manifest
+      : syncAssistantPluginManifest(input.controllerHome, scope.repository!, input.pluginId).manifest;
+    if (scope.repository) {
+      appendRuntimeEvent(input.controllerHome, {
+        repoId: scope.repository.repoId,
+        entityType: 'plugin',
+        entityId: input.pluginId,
+        eventType: 'plugin_action_failed',
+        requestId: input.requestId,
+        revision: nextManifest.revision,
+        data: {
+          actionId: input.actionId,
+          jobId: input.jobId,
+          code: pluginError.code,
+          retryable: pluginError.retryable,
+        },
+      });
+    }
     throw new AssistantPluginError(pluginError.code, pluginError.message.replace(/^[^:]+:\s*/, ''), {
       retryable: pluginError.retryable,
       details: pluginError.details,
     });
   }
+}
+
+export function executeControllerScopedPluginAction(
+  input: Omit<AssistantPluginActionExecutionInput, 'repoId' | 'repoRoot'>,
+): Promise<Record<string, unknown>> {
+  const scope = controllerPluginActionScope(input.controllerHome);
+  return executePluginActionInScope(scope, {
+    ...input,
+    ...pluginActionExecutionFields(scope),
+  });
+}
+
+export function executeAssistantPluginAction(
+  input: AssistantPluginActionExecutionInput,
+): Promise<Record<string, unknown>> {
+  const repository = {
+    repoId: input.repoId,
+    canonicalRoot: input.repoRoot,
+    activeCheckoutId: 'active',
+  } as RepositoryRecord;
+  return executePluginActionInScope(repositoryPluginActionScope(repository), input);
 }

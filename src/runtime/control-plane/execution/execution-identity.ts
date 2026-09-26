@@ -25,12 +25,15 @@ export type ExecutionIdentityErrorCode =
   | 'REPOSITORY_NOT_EXECUTABLE'
   | 'LEGACY_WORK_IDENTITY_AMBIGUOUS'
   | 'LEGACY_WORK_IDENTITY_REJECTED'
-  | 'WORKSPACE_SCOPE_MISMATCH';
+  | 'WORKSPACE_SCOPE_MISMATCH'
+  | 'FORGE_INSTANCE_SCOPE_MISMATCH';
 
 export interface ResolvedExecutionIdentity {
   readonly schemaVersion: 1;
-  readonly authority?: 'repository' | 'ephemeral_workspace';
+  readonly authority?: 'repository' | 'ephemeral_workspace' | 'forge_instance';
+  /** Legacy storage coordinate. For forge_instance authority this is the reserved Process scope key `instance`, not a Repository id. */
   readonly repositoryId: string;
+  /** Legacy storage coordinate. For forge_instance authority this is `instance`, not a checkout. */
   readonly checkoutId: string;
   readonly canonicalRoot: string;
   readonly workId?: string;
@@ -253,7 +256,7 @@ export function executionIdentityFromCoordinates(input: {
   branch?: string;
   expectedHead?: string;
   allowArchived?: boolean;
-  authority?: 'repository' | 'ephemeral_workspace';
+  authority?: 'repository' | 'ephemeral_workspace' | 'forge_instance';
 }): ResolvedExecutionIdentity {
   if (!input.repositoryId.trim() || !input.checkoutId.trim() || !input.canonicalRoot.trim()) {
     fail('EXECUTION_IDENTITY_REQUIRED', 'repositoryId, checkoutId, and canonicalRoot are required');
@@ -329,6 +332,23 @@ export function assertExecutionIdentity(input: {
       repoId: identity.repositoryId,
       workId: identity.workId,
     });
+  }
+
+  if (identity.authority === 'forge_instance') {
+    const instanceRoot = realpathOrFail(identity.canonicalRoot, 'WORKTREE_MISSING', 'ForgeInstance execution root');
+    const requestedCwd = isAbsolute(input.cwd) ? input.cwd : resolve(instanceRoot, input.cwd);
+    const resolvedCwd = realpathOrFail(requestedCwd, 'WORKTREE_MISSING', 'process cwd');
+    if (!statSync(resolvedCwd).isDirectory()) {
+      fail('FORGE_INSTANCE_SCOPE_MISMATCH', 'process cwd is not a directory', { actual: resolvedCwd });
+    }
+    const cwdRelative = relative(instanceRoot, resolvedCwd);
+    if (cwdRelative === '..' || cwdRelative.startsWith('../') || cwdRelative.startsWith('..\\')) {
+      fail('FORGE_INSTANCE_SCOPE_MISMATCH', 'process cwd escapes ForgeInstance execution root', {
+        expected: instanceRoot,
+        actual: resolvedCwd,
+      });
+    }
+    return Object.freeze({ ...identity, canonicalRoot: instanceRoot, resolvedCwd });
   }
 
   if (identity.authority === 'ephemeral_workspace') {

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import type { CallToolResult as SdkCallToolResult } from "@modelcontextprotocol/client";
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../src/cli/repositories/controller-home';
+import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, repositoryControllerRoot } from '../../../src/cli/repositories/controller-home';
 import { redactMcpText } from '../redaction';
 
 /** Transport-only MCP result envelope. No lifecycle or domain mutation belongs here. */
@@ -34,7 +34,8 @@ export function boundedPluginArtifactImageContent(
     ...(nestedResult && Array.isArray(nestedResult.artifactCandidates) ? nestedResult.artifactCandidates : []),
   ];
   if (candidates.length === 0) return [];
-  const allowedRoots = repoId === CONTROLLER_SCOPE_REPO_ID
+  const instanceScoped = repoId === FORGE_INSTANCE_SCOPE_KEY || repoId === CONTROLLER_SCOPE_REPO_ID;
+  const allowedRoots = instanceScoped
     ? [resolve(controllerSystemRoot(controllerHome)), resolve(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID))]
     : [resolve(repositoryControllerRoot(controllerHome, repoId))];
   const images: McpImageContent[] = [];
