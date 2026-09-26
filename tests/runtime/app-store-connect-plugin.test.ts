@@ -3,7 +3,7 @@ import { generateKeyPairSync } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../src/cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import {
   buildAppStoreConnectPluginManifest,
@@ -12,6 +12,7 @@ import {
 } from '../../src/runtime/plugins/app-store-connect-adapter';
 
 const roots: string[] = [];
+const CONTROLLER_PLUGIN_CONFIG_SCOPE = 'controller:global';
 afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -99,7 +100,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
         team_id: 'TEAMGLOBAL',
       }),
       controllerHome,
-      repoId: CONTROLLER_SCOPE_REPO_ID,
+      repoId: CONTROLLER_PLUGIN_CONFIG_SCOPE,
       repoRoot: controllerSystemRoot(controllerHome),
     };
     await executeAppStoreConnectPluginAction(controllerInput);
@@ -266,7 +267,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
         private_key_path: privateKeyPath,
       }),
       controllerHome,
-      repoId: CONTROLLER_SCOPE_REPO_ID,
+      repoId: CONTROLLER_PLUGIN_CONFIG_SCOPE,
       repoRoot: controllerSystemRoot(controllerHome),
     });
 
@@ -281,7 +282,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     await executeAppStoreConnectPluginAction({
       ...input(repoRoot, 'configure', { enabled: true, provider: 'mock', team_id: 'GLOBAL', default_locale: 'en-US' }),
       controllerHome,
-      repoId: CONTROLLER_SCOPE_REPO_ID,
+      repoId: CONTROLLER_PLUGIN_CONFIG_SCOPE,
       repoRoot: controllerSystemRoot(controllerHome),
     });
 

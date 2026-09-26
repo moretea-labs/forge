@@ -20,7 +20,6 @@ import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RESPO
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { chatgptAutomationDeliveryFailure, chatgptComposerRetainsPrompt, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
-import { controllerPluginRepository } from '../../src/runtime/plugins/store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { ensureForgeInstanceIdentity, executionPlacement } from '../../packages/kernel/identity/api/index';
@@ -68,6 +67,7 @@ import { createSchedule, listOccurrences } from '../../src/runtime/workflow/sche
 import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
 
 const roots: string[] = [];
+const CONTROLLER_PLUGIN_CONFIG_SCOPE = 'controller:global';
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
 describe('ChatGPT Browser controller authority', () => {
@@ -76,8 +76,7 @@ describe('ChatGPT Browser controller authority', () => {
     roots.push(root);
     const controllerHome = join(root, 'controller');
     ensureControllerHome(controllerHome);
-    const repository = controllerPluginRepository(controllerHome);
-    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: CONTROLLER_PLUGIN_CONFIG_SCOPE }, 'browser');
     mkdirSync(dirname(configPath), { recursive: true });
     const persisted = `${JSON.stringify({ schemaVersion: 2, enabled: true }, null, 2)}\n`;
     writeFileSync(configPath, persisted, 'utf8');
@@ -91,8 +90,7 @@ describe('ChatGPT Browser controller authority', () => {
     roots.push(root);
     const controllerHome = join(root, 'controller');
     ensureControllerHome(controllerHome);
-    const repository = controllerPluginRepository(controllerHome);
-    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, 'browser');
+    const configPath = repositoryPluginConfigPath({ controllerHome, repoId: CONTROLLER_PLUGIN_CONFIG_SCOPE }, 'browser');
     mkdirSync(dirname(configPath), { recursive: true });
     const persisted = `${JSON.stringify({ schemaVersion: 2, enabled: false }, null, 2)}\n`;
     writeFileSync(configPath, persisted, 'utf8');
@@ -1178,8 +1176,8 @@ describe('ChatGPT Work conversation binding', () => {
     expect(browserRuntime).toContain("surface: 'schedule', actor: 'chatgpt-work-continuation'");
     expect(browserRuntime).toContain("origin.surface === 'chatgpt-action' && CHATGPT_BROWSER_AUTHORIZATION_ACTIONS.has(actionId)");
     expect(browserRuntime).toContain(".filter((action) => !action.readOnly && action.confirmation === 'authorization')");
-    expect(browserRuntime).toContain('submitAssistantPluginAction(');
-    expect(browserRuntime).toContain('controllerPluginRepository(controllerHome)');
+    expect(browserRuntime).toContain('submitControllerPluginAction(');
+    expect(browserRuntime).not.toContain(['controllerPlugin', 'Repository('].join(''));
     expect(browserRuntime).toContain('authorizationGrantRefs: [...(context?.authorizationGrantRefs ?? [])]');
     const pluginStore = readFileSync(join(process.cwd(), 'src/runtime/plugins/store.ts'), 'utf8');
     const lateCreateSessionAuthorizationTarget = pluginStore.indexOf("if (action.actionId === 'create_session'");

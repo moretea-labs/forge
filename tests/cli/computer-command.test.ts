@@ -13,7 +13,7 @@ import {
 import { withOfficialPluginLifecycleLock } from '../../src/cli/commands/plugin';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
-import { controllerPluginRepository, readStoredAssistantPluginManifest } from '../../src/runtime/plugins/store';
+import { readControllerStoredPluginManifest } from '../../src/runtime/plugins/store';
 
 const roots: string[] = [];
 
@@ -146,22 +146,19 @@ describe('Computer product facade', () => {
       capabilities: [],
       actions: [],
     });
-    const repository = controllerPluginRepository(home);
-    expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeUndefined();
-    expect(readStoredAssistantPluginManifest(home, repository, 'unrelated_provider')).toBeUndefined();
+    expect(readControllerStoredPluginManifest(home, 'desktop_operator')).toBeUndefined();
+    expect(readControllerStoredPluginManifest(home, 'unrelated_provider')).toBeUndefined();
     runComputerDoctor({ controllerHome: home, platform: 'darwin' });
-    expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeDefined();
-    expect(readStoredAssistantPluginManifest(home, repository, 'unrelated_provider')).toBeUndefined();
+    expect(readControllerStoredPluginManifest(home, 'desktop_operator')).toBeDefined();
+    expect(readControllerStoredPluginManifest(home, 'unrelated_provider')).toBeUndefined();
   });
 
   test('doctor skips a stale foreign provider instead of blocking on its transport', () => {
     const home = controllerHome();
     registerProvider(home);
-    const repository = controllerPluginRepository(home);
-
     const report = runComputerDoctor({ controllerHome: home, platform: 'win32' });
 
-    expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeUndefined();
+    expect(readControllerStoredPluginManifest(home, 'desktop_operator')).toBeUndefined();
     expect(report.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'provider-platform', state: 'warn' }),
     ]));

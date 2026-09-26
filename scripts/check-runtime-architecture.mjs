@@ -2193,6 +2193,40 @@ requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'credentialReference
 forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 'tunnel binding match must not masquerade as Forge semantic identity');
 
 // C0 Computer capability boundary: Browser and Desktop remain separate providers.
+// Controller-scoped plugins are owned by the serving ForgeInstance. A synthetic
+// RepositoryRecord must not reappear as a canonical execution or manifest path.
+const controllerRepoCallPattern = new RegExp(['controllerPlugin', 'Repository\\s*\\('].join(''));
+const legacyControllerRepoPattern = new RegExp(['CONTROLLER_SCOPE_REPO_ID|__controller__|controllerPlugin', 'Repository'].join(''));
+for (const path of productionTypeScriptFiles()) {
+  forbid(path, controllerRepoCallPattern, 'production controller-plugin paths must not recreate a fake controller RepositoryRecord');
+}
+requireText('src/runtime/plugins/store.ts', 'const CONTROLLER_PLUGIN_SCOPE_KEY = FORGE_INSTANCE_SCOPE_KEY');
+forbidBetween(
+  'src/runtime/plugins/store.ts',
+  'function controllerPluginActionScope',
+  'function pluginActionExecutionFields',
+  legacyControllerRepoPattern,
+  'the canonical controller action scope must use the ForgeInstance scope, not the legacy controller repository sentinel',
+);
+for (const [start, end, description] of [
+  ['export function listControllerPluginManifests(', 'function getControllerPluginManifestForExecution', 'controller manifest listing'],
+  ['export function getControllerPluginManifest(', 'function writeControllerRegistry', 'controller manifest lookup'],
+  ['export function submitControllerPluginAction(', 'async function executePluginActionInScope', 'controller action submission'],
+  ['export function executeControllerScopedPluginAction(', 'export function executeAssistantPluginAction', 'controller action execution'],
+]) {
+  forbidBetween(
+    'src/runtime/plugins/store.ts',
+    start,
+    end,
+    legacyControllerRepoPattern,
+    `${description} must not depend on the legacy controller repository sentinel`,
+  );
+}
+// Legacy controller coordinates remain read-only migration/compatibility inputs
+// or explicit rejection paths; they are not allowed to become new write paths.
+requireText('src/runtime/plugins/store.ts', 'One-way read compatibility for pre-cutover controller receipts only.');
+requireText('adapters/mcp/runtime-gateway/plugin-adapter.ts', 'PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED');
+requireText('src/runtime/plugins/app-store-connect-adapter.ts', 'APP_STORE_CONNECT_LEGACY_CONTROLLER_SCOPE_WRITE_RETIRED');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
 requireText('packages/protocols/computer/contract.ts', 'ComputerRuntimeProviderCapabilityId');
 requireText('packages/plugin-runtime/computer/provider.ts', 'ComputerRuntimeProviderCapabilityId');
@@ -2223,7 +2257,7 @@ requireText('src/cli/commands/computer.ts', 'readControllerStoredPluginManifest'
 requireText('src/cli/commands/computer.ts', 'syncControllerPluginManifest');
 requireText('src/cli/commands/computer.ts', 'removeControllerPluginManifestProjection');
 requireText('src/cli/commands/computer.ts', 'withOfficialPluginLifecycleLock');
-forbid('src/cli/commands/computer.ts', /controllerPluginRepository\(|syncAssistantPluginRegistry|getAssistantPluginManifest\(/, 'Computer status/doctor must use Controller-scoped stored/targeted provider APIs rather than a fake repository or global execution-style manifest lookup');
+forbid('src/cli/commands/computer.ts', new RegExp(`${controllerRepoCallPattern.source}|syncAssistantPluginRegistry|getAssistantPluginManifest\\s*\\(`), 'Computer status/doctor must use Controller-scoped stored/targeted provider APIs rather than a fake repository or global execution-style manifest lookup');
 requireText('src/cli/commands/plugin.ts', 'external-plugin:${pluginId}');
 requireText('src/runtime/plugins/store.ts', 'export function readControllerStoredPluginManifest');
 requireText('src/runtime/plugins/store.ts', 'export function syncControllerPluginManifest');

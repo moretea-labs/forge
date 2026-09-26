@@ -25,10 +25,12 @@ import {
   resolveLightweightPluginActionRuntimeInvocation,
   startLightweightPluginAction,
   waitLightweightPluginAction,
+  startManagedControllerPluginAction,
+  waitManagedControllerPluginAction,
   startManagedPluginAction,
   waitManagedPluginAction,
 } from '../../src/runtime/plugins/lightweight-action';
-import { controllerPluginRepository, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
@@ -509,7 +511,6 @@ printf '{"ok":true}\\n'
 
     const previousReleasePath = process.env.FORGE_RELEASE_PATH;
     process.env.FORGE_RELEASE_PATH = releaseRoot;
-    const repository = controllerPluginRepository(controllerHome);
     const request = {
       pluginId: 'controller-fixture',
       actionId: 'slow-effect',
@@ -518,9 +519,8 @@ printf '{"ok":true}\\n'
       origin: { surface: 'mcp' as const, actor: 'test' },
     };
     try {
-      const first = await startManagedPluginAction({
+      const first = await startManagedControllerPluginAction({
         controllerHome,
-        repository,
         request,
         interactiveWaitMs: 0,
         timeoutMs: 10_000,
@@ -528,9 +528,8 @@ printf '{"ok":true}\\n'
       expect(first.handle.completed).not.toBe(true);
       expect(first.handle.route).toBe('managed');
 
-      const second = await startManagedPluginAction({
+      const second = await startManagedControllerPluginAction({
         controllerHome,
-        repository,
         request,
         interactiveWaitMs: 0,
         timeoutMs: 10_000,
@@ -538,17 +537,15 @@ printf '{"ok":true}\\n'
       expect(second.handle.processId).toBe(first.handle.processId);
       expect(second.handle.deduplicated).toBe(true);
 
-      await expect(startManagedPluginAction({
+      await expect(startManagedControllerPluginAction({
         controllerHome,
-        repository,
         request: { ...request, args: { value: 2 } },
         interactiveWaitMs: 0,
         timeoutMs: 10_000,
       })).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
 
-      const completed = await waitManagedPluginAction(
+      const completed = await waitManagedControllerPluginAction(
         controllerHome,
-        repository.repoId,
         first.handle.processId,
         10_000,
       );
@@ -556,9 +553,8 @@ printf '{"ok":true}\\n'
       expect(completed.ok).toBe(true);
       expect(completed.processId).toBe(first.handle.processId);
 
-      await expect(startManagedPluginAction({
+      await expect(startManagedControllerPluginAction({
         controllerHome,
-        repository,
         request: { ...request, args: { value: 3 } },
         interactiveWaitMs: 0,
         timeoutMs: 10_000,
@@ -1382,7 +1378,7 @@ printf '{"ok":true}\\n'
     expect(data.capabilitySearch?.matches?.find((entry) => entry.capabilityId === 'plugin.browser')?.descriptor?.exposedVia).toBe('plugin_action_execute');
   });
 
-  test('plugin facade addresses controller scope through the stable synthetic repo identity', async () => {
+  test('plugin facade addresses controller scope through the ForgeInstance scope', async () => {
     const business = tempRoot('forge-plugin-controller-scope-');
     const controllerHome = tempRoot('forge-home-plugin-controller-scope-');
     initGitRepo(business, 'plugin-controller-scope');
@@ -1390,12 +1386,14 @@ printf '{"ok":true}\\n'
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Plugin Controller Scope' });
     const ctx = mcpContext(controllerHome, repository);
 
-    const controllerScoped = structured(await callRuntimeTool(ctx, 'get_plugin', {
-      repo_id: '__controller__',
-      plugin_id: 'browser',
-    }));
+    const controllerScoped = structured(await callRuntimeTool(ctx, 'get_plugin', { plugin_id: 'browser' }));
     expect(controllerScoped.scope).toBe('controller');
     expect((controllerScoped.plugin as { pluginId?: string }).pluginId).toBe('browser');
+
+    await expect(callRuntimeTool(ctx, 'get_plugin', {
+      repo_id: '__controller__',
+      plugin_id: 'browser',
+    })).rejects.toThrow('PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED');
 
     const repositoryScoped = structured(await callRuntimeTool(ctx, 'get_plugin', {
       repo_id: repository.repoId,

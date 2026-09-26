@@ -13,6 +13,7 @@ import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugin
 import { callProtectedComputerAdapter, executeProtectedConsoleUnlockInvocation, executeProtectedConsoleUnlockPreparation } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 
 interface ProviderFixture {
   controllerHome: string;
@@ -287,7 +288,7 @@ function actionInput(
 ): AssistantPluginActionExecutionInput {
   return {
     controllerHome,
-    repoId: '__controller__',
+    repoId: FORGE_INSTANCE_SCOPE_KEY,
     repoRoot: controllerHome,
     pluginId: 'computer',
     actionId,

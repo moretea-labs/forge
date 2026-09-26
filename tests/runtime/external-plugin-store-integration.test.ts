@@ -30,13 +30,14 @@ import {
 import {
   assistantPluginScope,
   clearAssistantPluginManifestCacheForTest,
-  controllerPluginRepository,
-  executeAssistantPluginAction,
+  executeControllerScopedPluginAction,
+  getControllerPluginManifest,
   recordRemoteEffectWorkActionReceipt,
-  getAssistantPluginManifest,
-  listAssistantPluginManifests,
+  listControllerPluginManifests,
+  submitControllerPluginAction,
   submitAssistantPluginAction,
 } from '../../src/runtime/plugins/store';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/cli/repositories/controller-home';
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -67,7 +68,7 @@ function fixture(enabled = true, exposure?: 'product' | 'provider', includeSlowM
       ...(includeSlowMutation ? [{ actionId: 'desktop_mutate_slow', title: 'Slow mutation', description: 'Slow resource-claimed mutation fixture.', readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, defaultTimeoutMs: 2_000, cancellable: true, idempotent: false, scopes: ['desktop.observe'], resourceClaims: [{ resource: 'provider-state' as const, mode: 'write' as const }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }] : []),
     ],
   });
-  return { controllerHome, socketPath, repository: controllerPluginRepository(controllerHome) };
+  return { controllerHome, socketPath };
 }
 
 async function startExternalProviderFixture(root: string, socketPath: string, logPath: string, driftPath?: string): Promise<void> {
@@ -126,7 +127,7 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
 
 describe('plugin action resource replay fencing', () => {
   test('concurrent same-request replay contends instead of executing the non-idempotent action twice', async () => {
-    const { controllerHome, socketPath, repository } = fixture(true, undefined, true);
+    const { controllerHome, socketPath } = fixture(true, undefined, true);
     const logPath = join(controllerHome, 'provider-replay.log');
     await startExternalProviderFixture(controllerHome, socketPath, logPath);
 
@@ -137,14 +138,14 @@ describe('plugin action resource replay fencing', () => {
       args: {},
       origin: { surface: 'mcp' as const, actor: 'test' },
     };
-    const first = submitAssistantPluginAction(controllerHome, repository, request);
+    const first = submitControllerPluginAction(controllerHome, request);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await expect(submitAssistantPluginAction(controllerHome, repository, request))
+    await expect(submitControllerPluginAction(controllerHome, request))
       .rejects.toThrow('PLUGIN_RESOURCE_CONTENTION');
     const completed = await first;
     expect(completed.receipt.status).toBe('succeeded');
 
-    const replayed = await submitAssistantPluginAction(controllerHome, repository, request);
+    const replayed = await submitControllerPluginAction(controllerHome, request);
     expect(replayed.deduplicated).toBe(true);
     expect(replayed.receipt.receiptId).toBe(completed.receipt.receiptId);
     const executes = readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute');
@@ -154,7 +155,7 @@ describe('plugin action resource replay fencing', () => {
 
 describe('controller-scoped plugin Work attribution', () => {
   test('keeps provider receipts controller-scoped while fencing Work in the caller repository', async () => {
-    const { controllerHome, socketPath, repository: providerRepository } = fixture();
+    const { controllerHome, socketPath } = fixture();
     const logPath = join(controllerHome, 'provider-attribution.log');
     await startExternalProviderFixture(controllerHome, socketPath, logPath);
 
@@ -178,19 +179,19 @@ describe('controller-scoped plugin Work attribution', () => {
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
 
-    const submitted = await submitAssistantPluginAction(controllerHome, providerRepository, {
+    const submitted = await submitControllerPluginAction(controllerHome, {
       pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'controller-scope-work-attribution',
       workId, workRepoId: businessRepository.repoId, args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
     expect(submitted.receipt).toMatchObject({
-      status: 'succeeded', repoId: providerRepository.repoId, workRepoId: businessRepository.repoId, workId,
+      status: 'succeeded', scopeKey: FORGE_INSTANCE_SCOPE_KEY, workRepoId: businessRepository.repoId, workId,
     });
     expect(getWorkContract({ controllerHome, repoId: businessRepository.repoId }, workId)).toMatchObject({ status: 'running' });
-    expect(getWorkContract({ controllerHome, repoId: providerRepository.repoId }, workId)).toBeUndefined();
+    expect(getWorkContract({ controllerHome, repoId: FORGE_INSTANCE_SCOPE_KEY }, workId)).toBeUndefined();
 
-    await expect(submitAssistantPluginAction(controllerHome, providerRepository, {
+    await expect(submitControllerPluginAction(controllerHome, {
       pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'controller-scope-work-attribution',
-      workId, workRepoId: providerRepository.repoId, args: {}, origin: { surface: 'mcp', actor: 'test' },
+      workId, workRepoId: 'repo-conflict', args: {}, origin: { surface: 'mcp', actor: 'test' },
     })).rejects.toThrow('WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT');
   });
 });
@@ -235,7 +236,6 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     expect(spawnSync('git', ['add', '.'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
     expect(spawnSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge@example.test', 'commit', '-m', 'init'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
     const businessRepository = registerRepository({ path: businessRoot, controllerHome, displayName: 'local-effect-plugin-work' });
-    const providerRepository = controllerPluginRepository(controllerHome);
     const context = {
       workStore: { controllerHome, repoId: businessRepository.repoId },
       handoffStore: { controllerHome, repoId: businessRepository.repoId },
@@ -256,7 +256,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     expect(unrelatedWorkId).toBeTruthy();
     expect(firstWorkId).not.toBe(unrelatedWorkId);
 
-    const readonly = await submitAssistantPluginAction(controllerHome, providerRepository, {
+    const readonly = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'local-effect-readonly-observation',
       workId: firstWorkId, workRepoId: businessRepository.repoId, args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
@@ -270,7 +270,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
       transport: { kind: 'unix_socket_jsonl' as const, socketPath: join(controllerHome, 'receipt-fixture.sock') },
       permissions: [], capabilities: [], actions: [],
     };
-    const mutated = await submitAssistantPluginAction(controllerHome, providerRepository, {
+    const mutated = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'local-effect-mutating-receipt',
       workId: firstWorkId, workRepoId: businessRepository.repoId,
       args: { registration, expected_revision: 0 }, confirmAuthorization: Boolean(1), confirmationText: 'install receipt fixture',
@@ -328,7 +328,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
       status: 'completed', semanticState: 'completed', workKind: 'local_effect', completionOutcome: 'completed_local',
     });
 
-    const replayed = await submitAssistantPluginAction(controllerHome, providerRepository, {
+    const replayed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'local-effect-mutating-receipt',
       workId: firstWorkId, workRepoId: businessRepository.repoId,
       args: { registration, expected_revision: 0 }, confirmAuthorization: Boolean(1), confirmationText: 'install receipt fixture',
@@ -390,7 +390,6 @@ describe('plugin management external registration lifecycle', () => {
     const socketPath = join(controllerHome, 'provider.sock');
     const logPath = join(controllerHome, 'provider.log');
     await startExternalProviderFixture(controllerHome, socketPath, logPath);
-    const repository = controllerPluginRepository(controllerHome);
     const registration = {
       pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator', provider: 'local-macos',
       pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller' as const, enabled: true,
@@ -400,59 +399,59 @@ describe('plugin management external registration lifecycle', () => {
       actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly' as const, confirmation: 'none' as const, defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
     };
 
-    const manager = getAssistantPluginManifest(controllerHome, repository, 'plugin_management');
+    const manager = getControllerPluginManifest(controllerHome, 'plugin_management');
     expect(manager.health).toMatchObject({ state: 'ready', ready: true });
     expect(manager.actions.map((action) => action.actionId)).toEqual(expect.arrayContaining([
       'preview_registration', 'install_registration', 'list_registrations', 'get_registration', 'disable_registration', 'remove_registration',
     ]));
 
-    const preview = await submitAssistantPluginAction(controllerHome, repository, {
+    const preview = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'preview_registration', requestId: 'plugin-management-preview', args: { registration }, origin: { surface: 'mcp', actor: 'test' },
     });
     expect((preview.result!.result as Record<string, unknown>).preview).toMatchObject({ pluginId: 'desktop_operator', currentRevision: 0, nextRevision: 1, wouldChange: true });
 
-    const installed = await submitAssistantPluginAction(controllerHome, repository, {
+    const installed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-install', args: { registration, expected_revision: 0 },
       confirmAuthorization: true, confirmationText: 'install external registration', origin: { surface: 'mcp', actor: 'test' },
     });
     expect((installed.result!.result as Record<string, unknown>).registration).toMatchObject({ pluginId: 'desktop_operator', revision: 1, enabled: true });
 
-    const listed = await submitAssistantPluginAction(controllerHome, repository, {
+    const listed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
     expect(((listed.result!.result as Record<string, unknown>).registrations as Array<{ pluginId: string }>).map((entry) => entry.pluginId)).toContain('desktop_operator');
-    const externalManifest = getAssistantPluginManifest(controllerHome, repository, 'desktop_operator');
+    const externalManifest = getControllerPluginManifest(controllerHome, 'desktop_operator');
     expect(externalManifest.health).toMatchObject({ state: 'ready', ready: true });
-    const action = await submitAssistantPluginAction(controllerHome, repository, {
+    const action = await submitControllerPluginAction(controllerHome, {
       pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'plugin-management-execute', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
     expect(action.result!.result).toMatchObject({ observed: true });
 
     const updatedRegistration = { ...registration, displayName: 'Forge Desktop Operator Updated' };
-    const updated = await submitAssistantPluginAction(controllerHome, repository, {
+    const updated = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-update', args: { registration: updatedRegistration, expected_revision: 1 },
       confirmAuthorization: true, confirmationText: 'update external registration', origin: { surface: 'mcp', actor: 'test' },
     });
     expect((updated.result!.result as Record<string, unknown>).registration).toMatchObject({ revision: 2, displayName: 'Forge Desktop Operator Updated' });
-    await expect(submitAssistantPluginAction(controllerHome, repository, {
+    await expect(submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'plugin-management-stale-update',
       args: { registration: { ...updatedRegistration, displayName: 'Stale writer' }, expected_revision: 1 },
       confirmAuthorization: true, confirmationText: 'stale update', origin: { surface: 'mcp', actor: 'test' },
     })).rejects.toThrow('EXTERNAL_PLUGIN_REGISTRATION_REVISION_CONFLICT');
 
-    const disabled = await submitAssistantPluginAction(controllerHome, repository, {
+    const disabled = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'disable_registration', requestId: 'plugin-management-disable', args: { plugin_id: 'desktop_operator', expected_revision: 2 },
       confirmAuthorization: true, confirmationText: 'disable external registration', origin: { surface: 'mcp', actor: 'test' },
     });
     expect((disabled.result!.result as Record<string, unknown>).registration).toMatchObject({ revision: 3, enabled: false });
-    expect(getAssistantPluginManifest(controllerHome, repository, 'desktop_operator').enabled).toBe(false);
+    expect(getControllerPluginManifest(controllerHome, 'desktop_operator').enabled).toBe(false);
 
-    const removed = await submitAssistantPluginAction(controllerHome, repository, {
+    const removed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'remove_registration', requestId: 'plugin-management-remove', args: { plugin_id: 'desktop_operator', expected_revision: 3 },
       confirmAuthorization: true, confirmationText: 'remove-external-plugin-registration', origin: { surface: 'mcp', actor: 'test' },
     });
     expect((removed.result!.result as Record<string, unknown>).removed).toMatchObject({ pluginId: 'desktop_operator', revision: 3 });
-    const after = await submitAssistantPluginAction(controllerHome, repository, {
+    const after = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list-after-remove', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
     expect((after.result!.result as Record<string, unknown>).registrations).toEqual([]);
@@ -464,7 +463,7 @@ describe('plugin capability authorization management', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-capability-management-'));
     roots.push(controllerHome);
     const base = {
-      repoId: 'repo-test', pluginId: 'ios', capabilityId: 'ios-physical-device',
+      pluginId: 'ios', capabilityId: 'ios-physical-device',
       target: { kind: 'ios-physical-device', id: 'CORE-DEVICE-1', identityFingerprint: 'fingerprint-1' }, scopes: ['ios.device'],
     };
     const owned = recordPluginCapabilityAuthorization(controllerHome, {
@@ -473,13 +472,12 @@ describe('plugin capability authorization management', () => {
     recordPluginCapabilityAuthorization(controllerHome, {
       ...base, ownerScope: 'mcp:principal:other-user', target: { ...base.target, id: 'CORE-DEVICE-2' }, riskCeiling: 'workspace_write',
     });
-    const repository = controllerPluginRepository(controllerHome);
-    const listed = await submitAssistantPluginAction(controllerHome, repository, {
+    const listed = await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'list_capability_authorizations', requestId: 'capability-list', args: {},
       origin: { surface: 'mcp', actor: 'principal:test-user' },
     });
     expect(((listed.result?.result as { authorizations: Array<{ grantId: string }> }).authorizations).map((entry) => entry.grantId)).toEqual([owned.grantId]);
-    await submitAssistantPluginAction(controllerHome, repository, {
+    await submitControllerPluginAction(controllerHome, {
       pluginId: 'plugin_management', actionId: 'revoke_capability_authorization', requestId: 'capability-revoke',
       args: { grant_id: owned.grantId, reason: 'user revoked test grant' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
     });
@@ -507,7 +505,7 @@ describe('external plugin reusable authorization targets', () => {
     const adapter = createExternalPluginAdapter(registration, {
       call: async (options) => options.method === 'manifest' ? providerManifest : { sessions: [{ interactionId: 'desk_123', bundleIdentifier: 'com.example.Editor', appName: 'Editor' }] },
     });
-    const input = (interactionId: string) => ({ controllerHome: '/tmp/controller', repoId: '__controller__', repoRoot: '/tmp/controller', pluginId: 'desktop_operator', actionId: 'desktop_press', requestId: `desktop-auth-${interactionId}`, args: { interaction_id: interactionId }, origin: { surface: 'mcp', actor: 'principal:test-user' } } as const);
+    const input = (interactionId: string) => ({ controllerHome: '/tmp/controller', repoId: FORGE_INSTANCE_SCOPE_KEY, repoRoot: '/tmp/controller', pluginId: 'desktop_operator', actionId: 'desktop_press', requestId: `desktop-auth-${interactionId}`, args: { interaction_id: interactionId }, origin: { surface: 'mcp', actor: 'principal:test-user' } } as const);
     const resolved = await adapter.resolveAuthorizationContext?.(input('desk_123'));
     expect(resolved?.target).toMatchObject({ kind: 'desktop-application', id: 'com.example.Editor' });
     expect(resolved?.target.identityFingerprint).toHaveLength(64);
@@ -520,12 +518,12 @@ describe('external plugin store integration', () => {
   test('resolves the built-in browser adapter from controller scope for ChatGPT continuation', () => {
     const fx = fixture();
     expect(assistantPluginScope('browser', fx.controllerHome)).toBe('controller_with_repository_overlay');
-    expect(getAssistantPluginManifest(fx.controllerHome, fx.repository, 'browser').pluginId).toBe('browser');
+    expect(getControllerPluginManifest(fx.controllerHome, 'browser').pluginId).toBe('browser');
   });
 
   test('lists trusted external registrations through the existing plugin surface with truthful degraded health', () => {
     const fx = fixture();
-    const manifests = listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
+    const manifests = listControllerPluginManifests(fx.controllerHome, { forceRefresh: true });
     const external = manifests.find((manifest) => manifest.pluginId === 'desktop_operator');
     expect(external).toBeDefined();
     expect(external).toMatchObject({
@@ -540,17 +538,17 @@ describe('external plugin store integration', () => {
 
   test('keeps provider-only registrations exactly addressable but out of the normal product list', () => {
     const fx = fixture(true, 'provider');
-    const manifests = listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
+    const manifests = listControllerPluginManifests(fx.controllerHome, { forceRefresh: true });
     expect(manifests.some((manifest) => manifest.pluginId === 'desktop_operator')).toBe(false);
     expect(manifests.some((manifest) => manifest.pluginId === 'computer')).toBe(true);
     expect(assistantPluginScope('desktop_operator', fx.controllerHome)).toBe('controller');
-    expect(getAssistantPluginManifest(fx.controllerHome, fx.repository, 'desktop_operator').pluginId).toBe('desktop_operator');
+    expect(getControllerPluginManifest(fx.controllerHome, 'desktop_operator').pluginId).toBe('desktop_operator');
   });
 
   test('get uses the same external adapter registration rather than a second manifest authority', () => {
     const fx = fixture();
-    listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
-    const manifest = getAssistantPluginManifest(fx.controllerHome, fx.repository, 'desktop_operator');
+    listControllerPluginManifests(fx.controllerHome, { forceRefresh: true });
+    const manifest = getControllerPluginManifest(fx.controllerHome, 'desktop_operator');
     expect(manifest.authority.sourceOfTruth[0]).toContain('controllerHome:system/plugins/external/registrations/desktop_operator.json');
     expect(manifest.actions.map((action) => action.actionId)).toEqual(['desktop_status']);
   });
@@ -570,28 +568,27 @@ describe('external plugin store integration', () => {
       capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
       actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 1_000, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
     });
-    const repository = controllerPluginRepository(controllerHome);
     const realDateNow = Date.now;
     let fakeNow = realDateNow();
     Date.now = () => fakeNow;
     try {
       clearAssistantPluginManifestCacheForTest();
-      const storedOnly = listAssistantPluginManifests(controllerHome, repository, { preferStored: true, fallbackToLive: false });
+      const storedOnly = listControllerPluginManifests(controllerHome, { preferStored: true, fallbackToLive: false });
       expect(storedOnly).toHaveLength(0);
       expect(existsSync(logPath) ? readFileSync(logPath, 'utf8').trim() : '').toBe('');
 
       clearAssistantPluginManifestCacheForTest();
-      listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+      listControllerPluginManifests(controllerHome, { preferStored: true });
       const initialCalls = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;
       expect(initialCalls).toBeGreaterThan(0);
 
       fakeNow += 6_000;
-      listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+      listControllerPluginManifests(controllerHome, { preferStored: true });
       const afterWallClockExpiry = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;
       expect(afterWallClockExpiry).toBe(initialCalls);
 
       clearAssistantPluginManifestCacheForTest();
-      listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+      listControllerPluginManifests(controllerHome, { preferStored: true });
       const afterExplicitInvalidation = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;
       expect(afterExplicitInvalidation).toBeGreaterThan(initialCalls);
     } finally {
@@ -603,14 +600,10 @@ describe('external plugin store integration', () => {
   test('controller-scoped Computer provider effect is independent of its own derived projection refresh lock', async () => {
     if (process.platform === 'win32') return;
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-projection-lock-'));
-    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-external-projection-repo-'));
-    roots.push(controllerHome, repoRoot);
+    roots.push(controllerHome);
     const socketPath = join(controllerHome, 'desktop.sock');
     const logPath = join(controllerHome, 'provider.log');
     await startExternalProviderFixture(controllerHome, socketPath, logPath);
-    const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' });
-    expect(initialized.status).toBe(0);
-    registerRepository({ path: repoRoot, controllerHome, displayName: 'projection-lock-fixture' });
     installExternalPluginRegistration(controllerHome, {
       pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator',
       provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller', enabled: true,
@@ -624,17 +617,12 @@ describe('external plugin store integration', () => {
         argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
       }],
     });
-    const providerRepository = controllerPluginRepository(controllerHome);
-
     await withControllerLockAsync(
       controllerHome,
-      { scope: 'task', repoId: providerRepository.repoId, taskId: 'projection-refresh' },
+      { scope: 'task', repoId: FORGE_INSTANCE_SCOPE_KEY, taskId: 'projection-refresh' },
       'projection-refresh:test-held',
       async () => {
-        const result = await submitAssistantPluginAction(
-          controllerHome,
-          providerRepository,
-          {
+        const result = await submitControllerPluginAction(controllerHome, {
             pluginId: 'desktop_operator',
             actionId: 'desktop_mutate_slow',
             requestId: 'projection-lock-provider-action',
@@ -653,12 +641,10 @@ describe('external plugin store integration', () => {
 
   test('execute resolves a disabled external registration and fails as disabled rather than plugin-not-found', async () => {
     const fx = fixture(false);
-    const manifest = getAssistantPluginManifest(fx.controllerHome, fx.repository, 'desktop_operator');
+    const manifest = getControllerPluginManifest(fx.controllerHome, 'desktop_operator');
     expect(manifest).toMatchObject({ enabled: false, lifecycle: { state: 'disabled' }, health: { probed: false } });
-    await expect(executeAssistantPluginAction({
+    await expect(executeControllerScopedPluginAction({
       controllerHome: fx.controllerHome,
-      repoId: fx.repository.repoId,
-      repoRoot: fx.repository.canonicalRoot,
       pluginId: 'desktop_operator',
       actionId: 'desktop_status',
       requestId: 'external-store-disabled-1',
@@ -684,13 +670,10 @@ describe('external plugin store integration', () => {
       capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
       actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 1_000, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
     });
-    const repository = controllerPluginRepository(controllerHome);
-    const manifest = getAssistantPluginManifest(controllerHome, repository, 'desktop_operator');
+    const manifest = getControllerPluginManifest(controllerHome, 'desktop_operator');
     expect(manifest.health.ready).toBe(true);
-    const result = await executeAssistantPluginAction({
+    const result = await executeControllerScopedPluginAction({
       controllerHome,
-      repoId: repository.repoId,
-      repoRoot: repository.canonicalRoot,
       pluginId: 'desktop_operator',
       actionId: 'desktop_status',
       requestId: 'external-hotpath-1',
@@ -699,8 +682,8 @@ describe('external plugin store integration', () => {
       timeoutMs: 1_000,
     });
     expect(result.result).toMatchObject({ observed: true });
-    await executeAssistantPluginAction({
-      controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
+    await executeControllerScopedPluginAction({
+      controllerHome, pluginId: 'desktop_operator', actionId: 'desktop_status',
       requestId: 'external-hotpath-2', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
     });
     const realDateNow = Date.now;
@@ -708,8 +691,8 @@ describe('external plugin store integration', () => {
     writeFileSync(driftPath, 'drift');
     Date.now = () => expiredLiveWindow;
     try {
-      await expect(executeAssistantPluginAction({
-        controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
+      await expect(executeControllerScopedPluginAction({
+        controllerHome, pluginId: 'desktop_operator', actionId: 'desktop_status',
         requestId: 'external-hotpath-drift', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
       })).rejects.toThrow('EXTERNAL_PLUGIN_VERSION_MISMATCH');
     } finally {
@@ -725,7 +708,7 @@ describe('external plugin store integration', () => {
       transport: { kind: 'unix_socket_jsonl', socketPath: fx.socketPath, healthTimeoutMs: 100 },
       permissions: [], capabilities: [], actions: [],
     });
-    const manifests = listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
+    const manifests = listControllerPluginManifests(fx.controllerHome, { forceRefresh: true });
     const localSystem = manifests.find((manifest) => manifest.pluginId === 'local_system');
     expect(localSystem?.displayName).toBe('Local System Assistant');
     expect(manifests.filter((manifest) => manifest.pluginId === 'local_system')).toHaveLength(1);
