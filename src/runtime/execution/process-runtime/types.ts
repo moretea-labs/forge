@@ -185,6 +185,8 @@ export interface ManagedProcessRecord {
   processId: string;
   repoId: string;
   checkoutId?: string;
+  /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
+  principalId?: string;
   /** Optional facade WorkContract that owns this command. */
   workId?: string;
   /** Immutable pre-spawn authority required for post-terminal Work reconciliation. */
@@ -287,6 +289,8 @@ export interface SpawnManagedProcessInput {
   controllerHome: string;
   repoId: string;
   checkoutId?: string;
+  /** Authenticated principal recorded for principal-bound attachment. */
+  principalId?: string;
   /** Immutable resolved execution identity — required; validated immediately before spawn. */
   executionIdentity: ResolvedExecutionIdentity;
   workId?: string;

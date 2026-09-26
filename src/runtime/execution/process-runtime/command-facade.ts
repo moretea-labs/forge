@@ -8,7 +8,10 @@
  * - Durable: explicit Work/external/release boundaries only.
  */
 
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import {
+  commandExecutionScopeKey,
+  type RepositoryCommandScopeTarget,
+} from '../../../cli/repositories/command-scope';
 import { classifyRepositoryCommand, fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../../cli/repositories/command-classifier';
 import {
   executeRepositoryCommandAsync,
@@ -38,10 +41,12 @@ import {
   cancelLightweightProcess,
   getLightweightProcessHandle,
   isLightweightProcessId,
+  lightweightProcessScopeKey,
   readLightweightProcessLogs,
   startLightweightRepositoryCommand,
   waitForLightweightProcess,
 } from './lightweight-managed';
+import { isForgeInstanceProcessScopeKey, processScopeKeyForHandle } from './process-scope';
 
 export type RepositoryCommandRoute =
   | 'process_direct'
@@ -51,7 +56,8 @@ export type RepositoryCommandRoute =
 
 export interface RepositoryCommandProcessInput {
   controllerHome: string;
-  repository: RepositoryRecord;
+  /** Repository identity is optional: an arbitrary workspace target carries a workspace scope key. */
+  repository: RepositoryCommandScopeTarget;
   command: string | readonly string[];
   cwd?: string;
   timeoutMs?: number;
@@ -64,6 +70,8 @@ export interface RepositoryCommandProcessInput {
   requestId?: string;
   workId?: string;
   commandId?: string;
+  /** Authenticated principal recorded with the process handle for principal-bound attachment. */
+  principalId?: string;
   signal?: AbortSignal;
   /** Explicit unregistered local workspace authority; never inferred from cwd. */
   allowNonGitWorkspace?: boolean;
@@ -353,9 +361,9 @@ export async function executeRepositoryCommandViaProcessRuntime(
     throw new Error('EXECUTION_IDENTITY_REQUIRED: repository command process path requires an immutable executionIdentity');
   }
   const executionIdentity = input.executionIdentity;
-  if (executionIdentity.repositoryId !== input.repository.repoId) {
+  if (executionIdentity.repositoryId !== commandExecutionScopeKey(input.repository)) {
     throw new Error(
-      `EXECUTION_IDENTITY_MISMATCH: repository ${input.repository.repoId} differs from identity ${executionIdentity.repositoryId}`,
+      `EXECUTION_IDENTITY_MISMATCH: repository ${commandExecutionScopeKey(input.repository)} differs from identity ${executionIdentity.repositoryId}`,
     );
   }
   if (executionIdentity.checkoutId !== input.repository.activeCheckoutId) {
@@ -381,7 +389,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       controllerHome: input.controllerHome,
       identity: executionIdentity,
       cwd,
-      requestedRepoId: input.repository.repoId,
+      requestedRepoId: commandExecutionScopeKey(input.repository),
       requestedCheckoutId: input.repository.activeCheckoutId,
     });
     const directInput = {
@@ -417,6 +425,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
         maxOutputBytes: input.maxOutputBytes,
         workId: input.workId,
         commandId: input.commandId ?? input.requestId,
+        ...(input.principalId ? { principalId: input.principalId } : {}),
         deferStart: deferLongPreparation,
         reuseActiveEquivalent: deferLongPreparation,
         onCompleted: (result) => {
@@ -530,6 +539,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
     executionIdentity,
+    ...(input.principalId ? { principalId: input.principalId } : {}),
     workId: input.workId,
     commandId: input.commandId,
     command: toProcessCommand(input.command, cwd),
@@ -567,40 +577,85 @@ export async function executeRepositoryCommandViaProcessRuntime(
   };
 }
 
-export function getRepositoryCommandProcess(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
-  return isLightweightProcessId(processId)
-    ? getLightweightProcessHandle(controllerHome, repoId, processId)
-    : getProcessHandle(controllerHome, repoId, processId);
+/**
+ * Resolve the canonical Process scope of one process handle.
+ *
+ * Explicit placement stays authoritative and is validated by the lane itself.
+ * When the caller omits it, this Runtime's own lightweight memory or the
+ * instance-level handle index supplies the recorded scope, so attachment never
+ * requires replaying the original placement inputs or scanning repositories.
+ */
+function resolveCommandProcessScopeKey(
+  controllerHome: string,
+  repoId: string | undefined,
+  processId: string,
+): string | undefined {
+  const explicit = repoId?.trim();
+  if (explicit) return explicit;
+  if (isLightweightProcessId(processId)) {
+    const inMemory = lightweightProcessScopeKey(processId);
+    if (inMemory) return inMemory;
+  }
+  return processScopeKeyForHandle(controllerHome, processId);
 }
 
-export function waitRepositoryCommandProcess(
+export function getRepositoryCommandProcess(
   controllerHome: string,
-  repoId: string,
+  repoId: string | undefined,
+  processId: string,
+): ProcessHandle | undefined {
+  const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
+  if (!scopeKey) return undefined;
+  if (!isLightweightProcessId(processId)) {
+    // Instance-scoped commands are lightweight handles; repository-scoped
+    // durable processes keep their existing store.
+    return isForgeInstanceProcessScopeKey(scopeKey)
+      ? undefined
+      : getProcessHandle(controllerHome, scopeKey, processId);
+  }
+  return getLightweightProcessHandle(controllerHome, scopeKey, processId);
+}
+
+export async function waitRepositoryCommandProcess(
+  controllerHome: string,
+  repoId: string | undefined,
   processId: string,
   options?: Parameters<typeof waitForProcess>[3],
 ): Promise<ProcessHandle> {
-  return isLightweightProcessId(processId)
-    ? waitForLightweightProcess(controllerHome, repoId, processId, options)
-    : waitForProcess(controllerHome, repoId, processId, options);
+  const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
+  if (!scopeKey) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+  if (!isLightweightProcessId(processId)) {
+    if (isForgeInstanceProcessScopeKey(scopeKey)) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    return waitForProcess(controllerHome, scopeKey, processId, options);
+  }
+  return waitForLightweightProcess(controllerHome, scopeKey, processId, options);
 }
 
-export function cancelRepositoryCommandProcess(
+export async function cancelRepositoryCommandProcess(
   controllerHome: string,
-  repoId: string,
+  repoId: string | undefined,
   processId: string,
 ): Promise<ProcessHandle> {
-  return isLightweightProcessId(processId)
-    ? cancelLightweightProcess(controllerHome, repoId, processId)
-    : cancelProcess(controllerHome, repoId, processId);
+  const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
+  if (!scopeKey) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+  if (!isLightweightProcessId(processId)) {
+    if (isForgeInstanceProcessScopeKey(scopeKey)) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    return cancelProcess(controllerHome, scopeKey, processId);
+  }
+  return cancelLightweightProcess(controllerHome, scopeKey, processId);
 }
 
 export function readRepositoryCommandProcessLogs(
   controllerHome: string,
-  repoId: string,
+  repoId: string | undefined,
   processId: string,
   maxBytes?: number,
 ) {
-  return isLightweightProcessId(processId)
-    ? readLightweightProcessLogs(controllerHome, repoId, processId, maxBytes)
-    : readProcessLogs(controllerHome, repoId, processId, maxBytes);
+  const scopeKey = resolveCommandProcessScopeKey(controllerHome, repoId, processId);
+  if (!scopeKey) return undefined;
+  if (!isLightweightProcessId(processId)) {
+    if (isForgeInstanceProcessScopeKey(scopeKey)) return undefined;
+    return readProcessLogs(controllerHome, scopeKey, processId, maxBytes);
+  }
+  return readLightweightProcessLogs(controllerHome, scopeKey, processId, maxBytes);
 }

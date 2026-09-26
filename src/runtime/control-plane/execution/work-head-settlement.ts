@@ -1,3 +1,4 @@
+import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../cli/repositories/command-scope';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { ResolvedExecutionIdentity } from './execution-identity';
@@ -30,7 +31,7 @@ export interface WorkHeadSettlementResult {
  */
 export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
   controllerHome: string;
-  repository: RepositoryRecord;
+  repository: RepositoryCommandScopeTarget;
   executionIdentity: ResolvedExecutionIdentity;
   workId?: string;
   ok?: boolean;
@@ -42,7 +43,7 @@ export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
   if (input.ok !== true || input.cancelled === true || input.timedOut === true) {
     return { settled: false, reason: 'command_not_successful' };
   }
-  const originalHandle = readWorkHandle(input.controllerHome, input.repository.repoId, workId);
+  const originalHandle = readWorkHandle(input.controllerHome, commandExecutionScopeKey(input.repository), workId);
   if (!originalHandle) return { settled: false, reason: 'work_handle_missing' };
   const sameStaticExecutionIdentity = (handle: typeof originalHandle): boolean => (
     handle.repositoryId === input.executionIdentity.repositoryId
@@ -54,7 +55,9 @@ export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
   if (originalHandle.state === 'merged' || originalHandle.state === 'cleaned' || originalHandle.state === 'failed_terminal_cleanup') {
     return { settled: false, reason: 'terminal_handle' };
   }
-  const status = repositoryGitStatus(input.repository);
+  // A Work head settlement only runs for a Work-bound (repository) command, so
+  // the scope target is a registered repository record at this point.
+  const status = repositoryGitStatus(input.repository as RepositoryRecord);
   if (!status.branch || status.branch !== originalHandle.branch) {
     return { settled: false, reason: 'branch_changed', previousHead: originalHandle.expectedHead, currentHead: status.head ?? undefined };
   }
@@ -79,7 +82,7 @@ export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
 
   // One concurrent lifecycle write is allowed to win the first CAS. Re-read the
   // exact Work authority and converge only when identity/branch are unchanged.
-  const refreshedHandle = readWorkHandle(input.controllerHome, input.repository.repoId, workId);
+  const refreshedHandle = readWorkHandle(input.controllerHome, commandExecutionScopeKey(input.repository), workId);
   if (!refreshedHandle) return { settled: false, reason: 'work_handle_missing', previousHead: originalHandle.expectedHead, currentHead };
   if (!sameStaticExecutionIdentity(refreshedHandle)) {
     return { settled: false, reason: 'identity_mismatch', previousHead: refreshedHandle.expectedHead, currentHead };

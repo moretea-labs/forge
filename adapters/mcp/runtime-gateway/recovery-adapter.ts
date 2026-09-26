@@ -1,6 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
+import { listRepositories } from '../../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
 import { cachedGitIdentity } from '../../../src/cli/repository/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
@@ -31,57 +32,63 @@ import {
   runtimeSourceSnapshotStatus,
 } from './status-inbox-adapter';
 import { result } from './result-adapter';
-import { selected } from './shared-adapter';
+import { selected, selectedOptional } from './shared-adapter';
 
 async function capabilityRecoveryInput(
   ctx: MultiRepositoryMcpToolContext,
-  repository: ReturnType<typeof selected>,
+  repository: ReturnType<typeof selected> | undefined,
   args: Record<string, unknown>,
 ) {
   const readiness = await controllerReadinessEvidence(ctx, repository);
-  const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
-  const localBridge = loadMcpRuntimeState(repository.canonicalRoot)?.localController;
-  const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
-  const contextProjectionSourceRevision = String(
-    runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision,
-  );
-  const contextGitIdentity = cachedGitIdentity(repository.canonicalRoot);
-  const contextSourceIdentity = {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    canonicalRoot: repository.canonicalRoot,
-    head: contextGitIdentity.head,
-    branch: contextGitIdentity.branch,
-    workingTreeFingerprint: contextGitIdentity.workingTreeFingerprint,
-    runtimeGeneration: runtimeSnapshot.projection.metadata?.producerGeneration,
-    sourceRevision: contextProjectionSourceRevision,
-    variant: 'summary' as const,
-    toolset: ctx.toolset,
-    profile: ctx.policy.profile,
-  };
-  const contextProjection = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
-    sourceIdentity: contextSourceIdentity,
-  });
-  const contextProjectionStale = controllerContextProjectionNeedsRefresh(
-    contextProjection,
-    contextProjectionSourceRevision,
-    contextSourceIdentity,
-  );
+  const runtimeSnapshot = repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined;
+  const localBridge = repository ? loadMcpRuntimeState(repository.canonicalRoot)?.localController : undefined;
+  const inferredLocalBridge = repository ? inferLocalControllerProcess(repository.canonicalRoot) : undefined;
+  const contextProjectionSourceRevision = runtimeSnapshot
+    ? String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision)
+    : undefined;
+  const contextGitIdentity = repository ? cachedGitIdentity(repository.canonicalRoot) : undefined;
+  const contextSourceIdentity = repository && contextProjectionSourceRevision !== undefined
+    ? {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        canonicalRoot: repository.canonicalRoot,
+        head: contextGitIdentity?.head,
+        branch: contextGitIdentity?.branch,
+        workingTreeFingerprint: contextGitIdentity?.workingTreeFingerprint,
+        runtimeGeneration: runtimeSnapshot?.projection.metadata?.producerGeneration,
+        sourceRevision: contextProjectionSourceRevision,
+        variant: 'summary' as const,
+        toolset: ctx.toolset,
+        profile: ctx.policy.profile,
+      }
+    : undefined;
+  const contextProjection = repository && contextSourceIdentity
+    ? readControllerContextProjection(ctx.controllerHome, repository.repoId, { sourceIdentity: contextSourceIdentity })
+    : undefined;
+  const contextProjectionStale = repository && contextProjectionSourceRevision !== undefined && contextSourceIdentity
+    ? controllerContextProjectionNeedsRefresh(
+        contextProjection,
+        contextProjectionSourceRevision,
+        contextSourceIdentity,
+      )
+    : undefined;
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
   const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
   let runtimeStorageReady: boolean | undefined;
   let runtimeStorageWarnings: string[] = [];
-  try {
-    const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-    runtimeStorageReady = runtimeStorage.readyForExecution;
-    runtimeStorageWarnings = runtimeStorage.warnings;
-  } catch (error) {
-    runtimeStorageReady = false;
-    runtimeStorageWarnings = [error instanceof Error ? error.message : String(error)];
+  if (repository) {
+    try {
+      const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
+      runtimeStorageReady = runtimeStorage.readyForExecution;
+      runtimeStorageWarnings = runtimeStorage.warnings;
+    } catch (error) {
+      runtimeStorageReady = false;
+      runtimeStorageWarnings = [error instanceof Error ? error.message : String(error)];
+    }
   }
-  const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true });
-  const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 30);
-  const executionJobs = listExecutionJobs(ctx.controllerHome, repository.repoId, 30);
+  const plugins = repository ? listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true }) : [];
+  const localJobs = repository ? listLocalBridgeJobSnapshots(repository.canonicalRoot, 30) : [];
+  const executionJobs = repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 30) : [];
   return {
     generatedAt: new Date().toISOString(),
     daemonStatus: readiness.daemon.status,
@@ -97,8 +104,9 @@ async function capabilityRecoveryInput(
     runtimeHealth: readiness.health,
     runtimeOperationalView: readiness.operationalView,
     connectorHealthy: undefined,
-    runtimeProjectionStale: runtimeSnapshot.stale,
-    runtimeProjectionPersisted: runtimeSnapshot.persisted,
+    ...(runtimeSnapshot
+      ? { runtimeProjectionStale: runtimeSnapshot.stale, runtimeProjectionPersisted: runtimeSnapshot.persisted }
+      : {}),
     runtimeSourceCoherence: {
       ready: !runtimeSource.restartRequired,
       code: runtimeSource.code,
@@ -107,14 +115,13 @@ async function capabilityRecoveryInput(
         ? formatRuntimeSourceDriftMessage(runtimeSource)
         : 'Runtime source snapshot matches the current Controller Runtime source.',
     },
-    contextProjectionStale,
+    ...(contextProjectionStale === undefined ? {} : { contextProjectionStale }),
     commandPreviewAvailable: args.command_preview_available === undefined ? true : args.command_preview_available === true,
     commandExecuteAvailable: args.command_execute_available === undefined ? true : args.command_execute_available === true,
     issueToolsAvailable: args.issue_tools_available === undefined ? true : args.issue_tools_available === true,
     jobToolsAvailable: args.job_tools_available === undefined ? true : args.job_tools_available === true,
-    checksAvailable: listControllerChecks(repository.canonicalRoot).length > 0,
-    runtimeStorageReady,
-    runtimeStorageWarnings,
+    ...(repository ? { checksAvailable: listControllerChecks(repository.canonicalRoot).length > 0 } : {}),
+    ...(runtimeStorageReady === undefined ? {} : { runtimeStorageReady, runtimeStorageWarnings }),
     pluginStates: plugins.map((plugin) => ({
       pluginId: plugin.pluginId,
       enabled: plugin.enabled,
@@ -136,7 +143,7 @@ async function capabilityRecoveryInput(
 
 async function capabilityRecoverySnapshot(
   ctx: MultiRepositoryMcpToolContext,
-  repository: ReturnType<typeof selected>,
+  repository: ReturnType<typeof selected> | undefined,
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   return buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args)) as unknown as Record<string, unknown>;
@@ -149,7 +156,7 @@ export async function callRecoveryAdapter(
 ): Promise<CallToolResult | undefined> {
   switch (name) {
     case 'capability_recovery_probe': {
-      const repository = selected(ctx, args);
+      const repository = selectedOptional(ctx, args);
       const snapshot = await buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args));
       const blockingCapabilityCount = snapshot.capabilities
         .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
@@ -158,11 +165,14 @@ export async function callRecoveryAdapter(
       return result({
         ready,
         reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+        // Instance-level diagnostics stay honest about missing repository context
+        // instead of silently attributing repository-scoped facts to the host.
+        repositoryContext: repository ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId } : null,
         diagnostics: {
           capabilityCount: snapshot.capabilities.length,
           blockingCapabilityCount,
           platformBlocked: snapshot.platformBlocked === true,
-          recentAuditCount: listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length,
+          recentAuditCount: repository ? listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length : 0,
         },
         externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
         observedAt: snapshot.generatedAt,
@@ -171,7 +181,7 @@ export async function callRecoveryAdapter(
       });
     }
     case 'capability_recovery_plan': {
-      const repository = selected(ctx, args);
+      const repository = selectedOptional(ctx, args);
       const snapshot = await buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args));
       const blockingCapabilityCount = snapshot.capabilities
         .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
@@ -180,6 +190,7 @@ export async function callRecoveryAdapter(
       return result({
         ready,
         reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
+        repositoryContext: repository ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId } : null,
         diagnostics: {
           capabilityCount: snapshot.capabilities.length,
           blockingCapabilityCount,

@@ -1,7 +1,12 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, readdirSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { OwnedResource, RecordOwnedResourceInput } from '../domain/owned-resource';
+import {
+  ownedResourceLocator,
+  type OwnedResource,
+  type RecordOwnedResourceInput,
+} from '../domain/owned-resource';
+import { ensureForgeInstanceIdentity } from './identity-store';
 
 function resourcesDir(controllerHome: string): string {
   const dir = resolve(controllerHome, 'owned-resources');
@@ -36,11 +41,23 @@ function writeResourceFile(controllerHome: string, resource: OwnedResource): voi
 export function recordOwnedResource(controllerHome: string, input: RecordOwnedResourceInput): OwnedResource {
   const now = new Date().toISOString();
   const resourceId = input.resourceId || `res-${randomUUID()}`;
+  // Cleanup authority is target-safe: ownership is pinned to the ForgeInstance
+  // that created/adopted the resource, and the locator fingerprint follows the
+  // resource kind so a recycled path/id cannot be reclaimed as the same resource.
+  const ownerForgeInstanceId = input.ownerForgeInstanceId?.trim()
+    || ensureForgeInstanceIdentity({ controllerHome }).instanceId;
+  const locator = input.locator ?? ownedResourceLocator(input.kind, input.targetRef);
+  const identityFingerprint = input.identityFingerprint?.trim()
+    || createHash('sha256').update(`${ownerForgeInstanceId}\0${locator.kind}\0${locator.value}`).digest('hex');
   const resource: OwnedResource = {
     schemaVersion: 1,
     resourceId,
     kind: input.kind,
     targetRef: input.targetRef,
+    ownerForgeInstanceId,
+    locator,
+    identityFingerprint,
+    cleanupCapable: input.cleanupCapable ?? true,
     provenance: {
       creator: input.creator,
       createdAt: now,

@@ -38,6 +38,11 @@ export const DEFAULT_CONTROLLER_TOOL_NAMES = [
   'plugin_action_execute',
 
   // Managed Process Runtime lifecycle (attach / poll / cancel — never re-exec).
+  // process_exec is the canonical host-local command lane: the Forge instance is
+  // the target, cwd is an execution argument, and it is authorized by one
+  // explicit `process:exec` canonical Grant. repository_command_execute stays as
+  // translation-only compatibility over the repository target.
+  'process_exec',
   'process_get',
   'process_wait',
   'process_logs',

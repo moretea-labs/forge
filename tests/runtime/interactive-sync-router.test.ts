@@ -43,7 +43,7 @@ describe('interactive sync routing policy', () => {
 
   test('stable connector surface stays identical to the bounded default surface', () => {
     expect(STABLE_CONTROLLER_TOOL_NAMES).toEqual(DEFAULT_CONTROLLER_TOOL_NAMES);
-    expect(STABLE_CONTROLLER_TOOL_NAMES).toHaveLength(19);
+    expect(STABLE_CONTROLLER_TOOL_NAMES).toHaveLength(20);
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
     expect(STABLE_CONTROLLER_TOOL_NAMES).toContain('plugin_action_execute');
     const stableNames = new Set<string>(STABLE_CONTROLLER_TOOL_NAMES);

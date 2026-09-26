@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
 import { listControlPlaneRecords, mutateControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
@@ -227,7 +227,7 @@ export function resolveWorkDeliveryTargetBranch(
 }
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
-  return join(repositoryControllerRoot(controllerHome, handle.repositoryId), 'work-handles', `${sanitizeFileComponent(handle.workId)}.json`);
+  return join(scopedOperationRoot(controllerHome, handle.repositoryId), 'work-handles', `${sanitizeFileComponent(handle.workId)}.json`);
 }
 
 function now(): string {

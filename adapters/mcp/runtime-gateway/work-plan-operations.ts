@@ -1,4 +1,5 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import {
   admitPlanContractAsync,
   createPlanSemanticContext,
@@ -15,6 +16,8 @@ import {
   type PlanContractStoreOptions,
 } from '../../../src/runtime/control-plane/facade';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRepositories } from '../../../src/cli/repositories/registry';
+import { SEMANTIC_SCOPE_KEY } from '../../../src/cli/repositories/controller-home';
 import { result } from './result-adapter';
 
 const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set([
@@ -123,8 +126,36 @@ function planObligationDispositionsFromArgs(value: unknown) {
 
 export interface RhWorkPlanCreateContext {
   controllerHome: string;
-  repoId: string;
+  /** Node-local placement provenance; absent when the Plan belongs to the ForgeInstance. */
+  repoId?: string;
   checks: readonly CheckDefinitionLike[];
+}
+
+/**
+ * A Plan is authored semantic context: it can belong to the ForgeInstance with
+ * no repository and no source revision. When no repository target is available
+ * or explicitly requested, create it in the semantic scope; otherwise return
+ * undefined so the normal repository-bound path stays authoritative.
+ */
+export async function callRhWorkPlanCreateWithoutRepository(
+  ctx: MultiRepositoryMcpToolContext,
+  operation: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
+  if (operation !== 'plan_create') return undefined;
+  const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
+  if (explicitRepoId || ctx.explicitRepository) return undefined;
+  const enabled = listRepositories(ctx.controllerHome).filter((record) => record.enabled && !record.removedAt);
+  // Zero repositories means "ForgeInstance-scoped Plan". One means the sole
+  // repository stays authoritative; several keep the explicit disambiguation
+  // error instead of silently creating an unscoped Plan.
+  if (enabled.length !== 0) return undefined;
+  return callRhWorkPlanCreateOperation(
+    { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
+    operation,
+    args,
+    { controllerHome: ctx.controllerHome, checks: [] },
+  );
 }
 
 export async function callRhWorkPlanCreateOperation(

@@ -39,10 +39,16 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
   'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work',
   'repository_list', 'repository_get', 'repository_register', 'repository_command_execute',
   'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
-  'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
+  'process_exec', 'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
 ] as const;
-const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'dd63d1b1c507f243';
+// Thin Forge Slice 2 (execution-target-scope-cutover): the stable surface gains
+// the canonical `process_exec` host-local command capability, and process
+// attachment is addressed by the process handle. `repo_id` stays accepted
+// (validated against the recorded target) but is no longer a required schema
+// field for process_get/process_wait/process_logs/process_cancel. Both frozen
+// fingerprints move with that intentional ABI change.
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8af6294a1fb9d8c9';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '2c4df86686345c39';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

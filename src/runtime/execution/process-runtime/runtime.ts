@@ -31,6 +31,8 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput } from '../../../effects/process-runner';
 import { getRepository, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { recordProcessHandleIndexEntry } from './handle-index';
+import { processScopeExecutionTarget, processScopeFromKey } from './process-scope';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../shared/process-environment';
@@ -1224,6 +1226,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     processId,
     repoId: input.repoId,
     checkoutId: input.checkoutId,
+    ...(input.principalId ? { principalId: input.principalId } : {}),
     workId: input.workId,
     executionIdentity: input.executionIdentity,
     commandId: input.commandId?.trim() || processId,
@@ -1253,6 +1256,16 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     logPath: stdoutPath,
   };
   createProcessRecord(record);
+  // Instance-level locator so attachment resolves the target from the handle
+  // instead of replaying placement inputs or scanning repository partitions.
+  recordProcessHandleIndexEntry(input.controllerHome, {
+    processId,
+    lane: 'managed',
+    target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(input.repoId)),
+    principalId: input.principalId,
+    workId: input.workId,
+    commandId: record.commandId,
+  });
 
   if (input.signal?.aborted) {
     completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {

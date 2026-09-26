@@ -6,7 +6,10 @@ export { FORGE_VERSION } from '../../version';
 /** Product identity exposed by every Forge runtime surface. */
 export const FORGE_TOOL_SURFACE = FORGE_PRODUCT_ID;
 /** Payload schema for MCP health/config records; this is not a product/component version. */
-export const FORGE_MCP_SCHEMA_VERSION = 10;
+// 11: Thin Forge Slice 2 added the canonical `process_exec` host-local command
+// capability and made process attachment handle-addressed (`repo_id` optional).
+// A served-schema change must be visible to connector freshness checks.
+export const FORGE_MCP_SCHEMA_VERSION = 11;
 
 type ToolSurfaceDefinition = {
   name: string;

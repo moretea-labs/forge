@@ -4,7 +4,8 @@ import { runProcess } from '../../../src/effects/process-runner';
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToolSurfaceStatus } from "../toolset";
 import { result } from "./result-adapter";
-import { selected } from "./shared-adapter";
+import { selected, selectedOptional } from "./shared-adapter";
+import { SEMANTIC_SCOPE_KEY } from "../../../src/cli/repositories/controller-home";
 import type { ExecutionJob } from '../../../src/runtime/execution/jobs/types';
 import { getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { formatRuntimeSourceDriftMessage, readRuntimeGeneration } from "../../../src/runtime/control-plane/runtime-generation";
@@ -195,21 +196,35 @@ export async function callStatusInboxAdapter(
   ports: StatusInboxAdapterPorts,
 ): Promise<CallToolResult | undefined> {
   if (name === 'rh_status') {
-      const repository = selected(ctx, args);
+      const repository = selectedOptional(ctx, args);
       const operation = String(args.operation ?? 'get');
       if (!allowedFacadeOperations('rh_status').includes(operation)) {
         return invalidFacadeOperation('rh_status', operation);
       }
-      const store = {
-        controllerHome: ctx.controllerHome,
-        repoId: repository.repoId,
-        revisionContains: (ancestorRevision: string, descendantRevision: string) =>
-          repositoryRevisionContains(repository.canonicalRoot, ancestorRevision, descendantRevision),
-      };
+      // Instance-level status stays available with zero (or several) registered
+      // repositories: only the repository-derived sections need a target.
+      const store = repository
+        ? {
+            controllerHome: ctx.controllerHome,
+            repoId: repository.repoId,
+            revisionContains: (ancestorRevision: string, descendantRevision: string) =>
+              repositoryRevisionContains(repository.canonicalRoot, ancestorRevision, descendantRevision),
+          }
+        : undefined;
       if (operation === 'repair') {
+        if (!repository) {
+          return result(buildFacadeResult({
+            status: 'blocked',
+            summary: 'REPOSITORY_CONTEXT_REQUIRED_FOR_REPAIR: rh_status repair needs an explicit repository target.',
+            data: { operation, repositoryContext: null },
+          }) as unknown as Record<string, unknown>, true);
+        }
         return await ports.repair(ctx, repository, args);
       }
-      const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
+      const requestedDetailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
+      // Repository detail needs a repository; the instance-level summary remains
+      // available and reports the downgrade explicitly instead of failing.
+      const detailLevel = repository ? requestedDetailLevel : 'summary';
       if (detailLevel === 'summary') {
         const startedAt = performance.now();
         let summaryTimingMark = startedAt;
@@ -224,8 +239,8 @@ export async function callStatusInboxAdapter(
         // Summary answers only whether this repository can work now. Reuse one
         // porcelain-v2 sample for branch/HEAD/dirty and avoid the full Git
         // status/diff-stat, access-policy, and inventory construction paths.
-        const repositoryIdentity = cachedGitIdentity(repository.canonicalRoot);
-        const repositoryIdentityAgeMs = Math.max(0, Date.now() - repositoryIdentity.sampledAt);
+        const repositoryIdentity = repository ? cachedGitIdentity(repository.canonicalRoot) : undefined;
+        const repositoryIdentityAgeMs = repositoryIdentity ? Math.max(0, Date.now() - repositoryIdentity.sampledAt) : undefined;
         markSummaryPhase('git');
         const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);
         const runtimeSource = runtimeSourceSnapshotStatus(
@@ -246,7 +261,9 @@ export async function callStatusInboxAdapter(
             : 'RUNTIME_SOURCE_SNAPSHOT_STALE');
         const runtimeReadiness = observation.snapshot?.readiness;
         const releaseDiagnostic = runtimeReadiness?.diagnostics.releaseCoherence;
-        const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 3 });
+        const activeWorkProjection = repository && store
+          ? readActiveWorkCandidates({ ...store, limit: 3 })
+          : { contracts: [], invalid: [] };
         const activeWorkSnapshot = activeWorkProjection.contracts.map((entry) => ({
           workId: entry.workId,
           status: entry.status,
@@ -254,8 +271,13 @@ export async function callStatusInboxAdapter(
           semantics: buildWorkContinuationSnapshot(entry).semantics,
           nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
         }));
-        const activePlanSnapshot = listPlanContracts({ ...store, status: 'active', limit: 3 }).map(summarizePlanContract);
-        const pendingHandoffAttention = listHandoffAttentionItems(store, 100);
+        // Plans are authored semantic context: without a repository target the
+        // instance-level semantic scope carries them.
+        const activePlanSnapshot = (repository && store
+          ? listPlanContracts({ ...store, status: 'active', limit: 3 })
+          : listPlanContracts({ controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY, status: 'active', limit: 3 })
+        ).map(summarizePlanContract);
+        const pendingHandoffAttention = store ? listHandoffAttentionItems(store, 100) : [];
         const pendingHandoffSnapshot = pendingHandoffAttention.slice(0, 4);
         const pendingHandoffCount = pendingHandoffAttention.length;
         markSummaryPhase('controller_state');
@@ -265,7 +287,10 @@ export async function callStatusInboxAdapter(
           summary: ready ? 'Controller and MCP tool surface are ready for bounded work.' : 'Controller or MCP tool surface needs attention before work.',
           data: {
             operation,
-            repoId: repository.repoId,
+            ...(repository ? { repoId: repository.repoId } : {}),
+            /** Null means this answer is ForgeInstance-scoped, not repository-scoped. */
+            repositoryContext: repository ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId } : null,
+            requestedDetailLevel,
             readiness: {
               ready,
               readyFor: 'bounded_execution',
@@ -307,21 +332,23 @@ export async function callStatusInboxAdapter(
               },
               observedAt: observation.observedAt,
             },
-            repositoryState: {
-              branch: repositoryIdentity.branch,
-              head: repositoryIdentity.head,
-              dirty: repositoryIdentity.dirty,
-              observedAt: new Date(repositoryIdentity.sampledAt).toISOString(),
-              observationAgeMs: repositoryIdentityAgeMs,
-              observationMaxAgeMs: GIT_IDENTITY_SAMPLE_TTL_MS,
-              observationPolicy: 'bounded_sample_with_mutation_invalidation',
-              sourceSnapshotAgeMs: runtimeGeneration?.source.observedAt
-                ? Math.max(0, Date.now() - Date.parse(runtimeGeneration.source.observedAt))
-                : undefined,
-              sourceSnapshotStale,
-              sourceSnapshotReasons: runtimeSource.reasons,
-              runtimeSourceDirty: runtimeSource.current?.dirty === true,
-            },
+            repositoryState: repositoryIdentity
+              ? {
+                  branch: repositoryIdentity.branch,
+                  head: repositoryIdentity.head,
+                  dirty: repositoryIdentity.dirty,
+                  observedAt: new Date(repositoryIdentity.sampledAt).toISOString(),
+                  observationAgeMs: repositoryIdentityAgeMs,
+                  observationMaxAgeMs: GIT_IDENTITY_SAMPLE_TTL_MS,
+                  observationPolicy: 'bounded_sample_with_mutation_invalidation',
+                  sourceSnapshotAgeMs: runtimeGeneration?.source.observedAt
+                    ? Math.max(0, Date.now() - Date.parse(runtimeGeneration.source.observedAt))
+                    : undefined,
+                  sourceSnapshotStale,
+                  sourceSnapshotReasons: runtimeSource.reasons,
+                  runtimeSourceDirty: runtimeSource.current?.dirty === true,
+                }
+              : null,
             toolArchitecture: {
               facadeTools: [...preferredFacadeTools],
               domainSchemaLoading: 'status_summary_runtime_snapshot',
@@ -374,6 +401,15 @@ export async function callStatusInboxAdapter(
         };
         (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
         return result(payload, facade.status !== 'ok');
+      }
+      // Detail is repository-derived; without a repository target the requested
+      // detail level was already downgraded to the instance-level summary above.
+      if (!repository || !store) {
+        return result(buildFacadeResult({
+          status: 'blocked',
+          summary: 'REPOSITORY_CONTEXT_REQUIRED_FOR_DETAIL: rh_status detail needs an explicit repository target.',
+          data: { operation, repositoryContext: null },
+        }) as unknown as Record<string, unknown>, true);
       }
       const detailTimingStartedAt = performance.now();
       let detailTimingMark = detailTimingStartedAt;

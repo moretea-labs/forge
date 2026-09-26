@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
@@ -36,6 +36,8 @@ import {
 export interface PlanContractStoreLocation {
   controllerHome?: string;
   repoId?: string;
+  /** Portable semantic scope key (for example the ForgeInstance semantic scope). Takes precedence over repoId. */
+  scopeKey?: string;
   root?: string;
 }
 
@@ -47,7 +49,8 @@ export interface PlanContractStoreOptions extends PlanContractStoreLocation {
 
 export interface CreatePlanContractInput {
   planId: string;
-  repoId: string;
+  /** Optional node-local placement provenance; absent for a ForgeInstance-scoped Plan. */
+  repoId?: string;
   requirementId?: string;
   scopeKey: string;
   sourceRevision: string;
@@ -78,7 +81,8 @@ export type AdmitPlanContractResult = PlanAdmissionResolution;
 export interface PlanContractSummary {
   planId: string;
   revision: number;
-  repoId: string;
+  /** Node-local placement provenance; absent for a ForgeInstance-scoped Plan. */
+  repoId?: string;
   requirementId?: string;
   scopeKey: string;
   sourceRevision: string;
@@ -163,7 +167,8 @@ export interface RevisePlanSemanticInput {
 
 export interface CreatePlanSemanticInput {
   planId: string;
-  repoId: string;
+  /** Optional node-local placement provenance; absent for a ForgeInstance-scoped Plan. */
+  repoId?: string;
   requirementId?: string;
   requirementBasisRevision?: number;
   scopeKey?: string;
@@ -323,10 +328,10 @@ function updatePlanContract(
     writePlanContractStore(options, { schemaVersion: 1, updatedAt: next.updatedAt, contracts });
     return next;
   };
-  if (!options.controllerHome || !options.repoId) return apply();
+  if (!options.controllerHome || !planContractStoreScopeKey(options)) return apply();
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `plan-${sanitizeFileComponent(planId)}` },
+    { scope: 'task', repoId: requirePlanContractStoreScopeKey(options), taskId: `plan-${sanitizeFileComponent(planId)}` },
     'plan-contract-store',
     apply,
     15_000,
@@ -349,10 +354,10 @@ export function planContractRoot(location: PlanContractStoreLocation): string {
     mkdirSync(location.root, { recursive: true });
     return location.root;
   }
-  if (!location.controllerHome || !location.repoId) {
-    throw new Error('plan contract store requires either root or controllerHome + repoId');
+  if (!location.controllerHome || !planContractStoreScopeKey(location)) {
+    throw new Error('plan contract store requires either root or controllerHome + repoId/scopeKey');
   }
-  const root = join(repositoryControllerRoot(location.controllerHome, location.repoId), 'plan-contracts');
+  const root = join(scopedOperationRoot(location.controllerHome, requirePlanContractStoreScopeKey(location)), 'plan-contracts');
   mkdirSync(root, { recursive: true });
   return root;
 }
@@ -385,7 +390,7 @@ export function listPlanRevisionRecords(
       .sort((left, right) => right.revision - left.revision);
   }
   return listControlPlaneRecords<PlanRevisionRecord>(options.controllerHome, {
-    namespace: 'plan_revision', scope: options.repoId, limit: 5_000,
+    namespace: 'plan_revision', scope: requirePlanContractStoreScopeKey(options), limit: 5_000,
   }).map((record) => record.value)
     .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
     .sort((left, right) => right.revision - left.revision);
@@ -414,7 +419,7 @@ export function listPlanSemanticRevisionRecords(options: PlanContractStoreOption
       .sort((left, right) => right.revision - left.revision);
   }
   return listControlPlaneRecords<PlanSemanticRevisionRecord>(options.controllerHome, {
-    namespace: 'plan_semantic_revision', scope: options.repoId, limit: 5_000,
+    namespace: 'plan_semantic_revision', scope: requirePlanContractStoreScopeKey(options), limit: 5_000,
   }).map((record) => record.value)
     .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
     .map((record) => ({
@@ -467,8 +472,21 @@ function assertRevisionScopeAuthority(current: PlanContract, allPlans: readonly 
 export function emptyPlanContractStore(updatedAt: string): PlanContractStore {
   return { schemaVersion: 1, updatedAt, contracts: [] };
 }
-function sqliteBacked(options: PlanContractStoreOptions): options is PlanContractStoreOptions & { controllerHome: string; repoId: string } {
-  return Boolean(!options.root && options.controllerHome?.trim() && options.repoId?.trim());
+/** Canonical Plan store scope key: an explicit portable scope, else repository placement. */
+export function planContractStoreScopeKey(options: PlanContractStoreLocation): string | undefined {
+  return options.scopeKey?.trim() || options.repoId?.trim() || undefined;
+}
+
+function requirePlanContractStoreScopeKey(options: PlanContractStoreLocation): string {
+  const key = planContractStoreScopeKey(options);
+  if (!key) throw new Error('PLAN_STORE_SCOPE_REQUIRED: controllerHome requires repoId or scopeKey');
+  return key;
+}
+
+type ControlPlanePlanStoreOptions = PlanContractStoreOptions & { controllerHome: string };
+
+function sqliteBacked(options: PlanContractStoreOptions): options is ControlPlanePlanStoreOptions {
+  return Boolean(!options.root && options.controllerHome?.trim() && planContractStoreScopeKey(options));
 }
 
 export function readPlanContractStore(options: PlanContractStoreOptions): PlanContractStore {
@@ -477,7 +495,7 @@ export function readPlanContractStore(options: PlanContractStoreOptions): PlanCo
   }
   const records = listControlPlaneRecords<PlanContract>(options.controllerHome, {
     namespace: 'plan_contract',
-    scope: options.repoId,
+    scope: requirePlanContractStoreScopeKey(options),
     limit: 5_000,
   });
   if (records.length > 0) {
@@ -494,10 +512,10 @@ export function readPlanContractStore(options: PlanContractStoreOptions): PlanCo
   if (legacy.contracts.length > 0) {
     withControlPlaneTransaction(options.controllerHome, (database) => {
       for (const contract of legacy.contracts) {
-        if (readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, contract.planId)) continue;
+        if (readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', requirePlanContractStoreScopeKey(options), contract.planId)) continue;
         writeControlPlaneRecordWithinTransaction(database, {
           namespace: 'plan_contract',
-          scope: options.repoId,
+          scope: requirePlanContractStoreScopeKey(options),
           key: contract.planId,
           schemaVersion: 1,
           value: contract,
@@ -520,7 +538,7 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
       const current = readControlPlaneRecordWithinTransaction<PlanContract>(
         database,
         'plan_contract',
-        options.repoId,
+        requirePlanContractStoreScopeKey(options),
         contract.planId,
       );
       // SQLite is authoritative per Plan row. A sibling Plan appearing in an
@@ -528,7 +546,7 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
       if (current && JSON.stringify(current.value) === JSON.stringify(contract)) continue;
       writeControlPlaneRecordWithinTransaction(database, {
         namespace: 'plan_contract',
-        scope: options.repoId,
+        scope: requirePlanContractStoreScopeKey(options),
         key: contract.planId,
         schemaVersion: 1,
         value: contract,
@@ -903,20 +921,20 @@ export function revisePlanSemanticContext(
 
     if (sqliteBacked(options)) {
       return withControlPlaneTransaction(options.controllerHome, (database) => {
-        const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, planId);
+        const currentRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', requirePlanContractStoreScopeKey(options), planId);
         if (!currentRecord) throw new Error(`plan contract not found: ${planId}`);
         const at = nowIso(options);
         const { previous, next } = applyRevision(currentRecord.value, at);
         const semanticRevisionKey = `${planId}:r${previous.revision}`;
-        if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', options.repoId, semanticRevisionKey)) {
+        if (!readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(database, 'plan_semantic_revision', requirePlanContractStoreScopeKey(options), semanticRevisionKey)) {
           writeControlPlaneRecordWithinTransaction(database, {
-            namespace: 'plan_semantic_revision', scope: options.repoId, key: semanticRevisionKey, schemaVersion: 1,
+            namespace: 'plan_semantic_revision', scope: requirePlanContractStoreScopeKey(options), key: semanticRevisionKey, schemaVersion: 1,
             value: { schemaVersion: 1, ...previous, recordedAt: at },
             action: 'plan_semantic_revision_archived', expectedRevision: null,
           });
         }
         return writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'plan_contract', scope: options.repoId, key: planId, schemaVersion: 1,
+          namespace: 'plan_contract', scope: requirePlanContractStoreScopeKey(options), key: planId, schemaVersion: 1,
           value: next, action: 'plan_semantic_revised', expectedRevision: currentRecord.revision,
         }).value;
       });
@@ -963,4 +981,3 @@ export function summarizePlanContract(plan: PlanContract): PlanContractSummary {
     updatedAt: plan.updatedAt,
   };
 }
-

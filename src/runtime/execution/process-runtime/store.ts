@@ -20,6 +20,7 @@ import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../.
 import { mutateControlPlaneRecord, readOrImportControlPlaneRecord } from '../../control-plane/persistence/sqlite-store';
 import { isSensitiveOutputKey, redactSensitiveText } from '../../evidence/sensitive-output';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
+import { isRepositoryProcessScopeKey, legacyWorkspaceScopeRoot, processScopeRoot } from './process-scope';
 import {
   isManagedProcessActive,
   isManagedProcessTerminal,
@@ -31,7 +32,12 @@ import {
 } from './types';
 
 function processesRoot(controllerHome: string, repoId: string): string {
-  const root = ensureRepositoryControllerLayout(controllerHome, repoId);
+  // Repository scopes keep the established per-repository layout. Instance and
+  // workspace scopes own sibling partitions so a non-repository process never
+  // needs a synthetic repository identity or repository storage.
+  const root = isRepositoryProcessScopeKey(repoId)
+    ? ensureRepositoryControllerLayout(controllerHome, repoId)
+    : processScopeRoot(controllerHome, repoId);
   const dir = join(root, 'processes');
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, 'logs'), { recursive: true });
@@ -523,7 +529,13 @@ export function getProcessRecord(
   repoId: string,
   processId: string,
 ): ManagedProcessRecord | undefined {
-  return readProcessRecord(processPath(controllerHome, repoId, processId));
+  const current = readProcessRecord(processPath(controllerHome, repoId, processId));
+  if (current) return current;
+  // Bounded migration read: workspace processes written before the workspace
+  // partition existed are still attachable instead of being reported missing.
+  const legacyRoot = legacyWorkspaceScopeRoot(controllerHome, repoId);
+  if (!legacyRoot) return undefined;
+  return readProcessRecord(join(legacyRoot, 'processes', `${processId}.json`));
 }
 
 /**

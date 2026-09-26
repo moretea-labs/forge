@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../controller/runtime-config';
-import { repositoryControllerRoot } from './controller-home';
+import { scopedOperationRoot } from './controller-home';
 import {
   classifyRepositoryCommand,
   type RepositoryCommandAuthorization,
@@ -13,6 +13,8 @@ import {
 import {
   assertCommandPathOperandsStayInRepository,
   assertRepositoryCommandInputAllowed,
+  commandExecutionScopeKey,
+  type RepositoryCommandScopeTarget,
   type RepositoryCommandExternalPathUsage,
   resolveRepositoryCommandCwd,
 } from './command-scope';
@@ -77,11 +79,13 @@ export interface ExecuteRepositoryCommandInput {
   snapshotFingerprintTimeoutMs?: number;
 }
 
+export type { RepositoryCommandScopeTarget as RepositoryCommandExecutionTarget };
+
 
 export interface RepositoryCommandExecution {
   status: 'preview' | 'approval_required' | 'executed';
   repoId: string;
-  checkoutId: string;
+  checkoutId?: string;
   cwd: string;
   command: RepositoryCommandValue;
   classification: RepositoryCommandClassification;
@@ -170,7 +174,7 @@ function boundedSnapshotFingerprintPaths(
 }
 
 function approvalToken(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   relativeCwd: string,
   command: RepositoryCommandValue,
   classification: RepositoryCommandClassification,
@@ -179,7 +183,7 @@ function approvalToken(
 ): string {
   return createHash('sha256').update(JSON.stringify({
     version: 2,
-    repoId: repository.repoId,
+    repoId: commandExecutionScopeKey(repository),
     checkoutId: repository.activeCheckoutId,
     cwd: relativeCwd,
     command,
@@ -190,7 +194,7 @@ function approvalToken(
 }
 
 function finalizePreparedExecution(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
   controllerHome: string | undefined,
   root: string,
@@ -213,7 +217,7 @@ function finalizePreparedExecution(
 } {
   const commandForPersistence = commandValue(command);
   const token = approvalToken(repository, relativeCwd, commandForPersistence, classification, before, externalPathUsages);
-  const permission = controllerHome ? readRepositoryAccessPolicy(controllerHome, repository.repoId) : undefined;
+  const permission = controllerHome ? readRepositoryAccessPolicy(controllerHome, commandExecutionScopeKey(repository)) : undefined;
   const isGit = command.kind === 'argv'
     ? command.executable?.split(/[\\/]/).at(-1)?.toLowerCase() === 'git'
     : /^\s*git\s+/i.test(command.shellCommand!);
@@ -226,8 +230,8 @@ function finalizePreparedExecution(
     controllerHome,
     accessMode: permission?.mode ?? 'request',
     risk,
-    repositoryId: repository.repoId,
-    currentRepositoryId: repository.repoId,
+    repositoryId: commandExecutionScopeKey(repository),
+    currentRepositoryId: commandExecutionScopeKey(repository),
     permissionSnapshotVersion: permission?.revision ?? 1,
     approvalToken: token,
     command: commandForPersistence,
@@ -237,14 +241,14 @@ function finalizePreparedExecution(
     ...(input.workId ? { workId: input.workId, boundWorkId: input.workId } : {}),
   }) : undefined);
   const resolved = controllerHome && input.approvalRequestId
-    ? assertResolvedAuthorization({ controllerHome, repositoryId: repository.repoId, approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, workId: input.workId, permissionSnapshotVersion: permission?.revision ?? 1, command: commandForPersistence })
+    ? assertResolvedAuthorization({ controllerHome, repositoryId: commandExecutionScopeKey(repository), approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, workId: input.workId, permissionSnapshotVersion: permission?.revision ?? 1, command: commandForPersistence })
     : undefined;
   const effectiveDecision: AuthorizationDecision | undefined = resolved
     ? { decision: 'allow', source: 'user_confirmation', reason: 'Resolved approval request matches the exact command and current permission snapshot.' }
     : delegated;
   const execution: RepositoryCommandExecution = {
     status: input.dryRun === true ? 'preview' : 'approval_required',
-    repoId: repository.repoId,
+    repoId: commandExecutionScopeKey(repository),
     checkoutId: repository.activeCheckoutId,
     cwd: relativeCwd,
     command: commandForPersistence,
@@ -277,7 +281,7 @@ function finalizePreparedExecution(
 }
 
 function prepareRepositoryCommandExecution(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
   controllerHome?: string,
 ): {
@@ -298,7 +302,7 @@ function prepareRepositoryCommandExecution(
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants, {
     controllerHome,
-    repositoryId: repository.repoId,
+    repositoryId: commandExecutionScopeKey(repository),
   });
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
   const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : repositorySnapshot(root));
@@ -317,7 +321,7 @@ function prepareRepositoryCommandExecution(
 }
 
 async function prepareRepositoryCommandExecutionAsync(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
   controllerHome?: string,
   mode: 'standard' | 'readonly_direct' = 'standard',
@@ -339,7 +343,7 @@ async function prepareRepositoryCommandExecutionAsync(
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants, {
     controllerHome,
-    repositoryId: repository.repoId,
+    repositoryId: commandExecutionScopeKey(repository),
   });
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
   if (mode === 'readonly_direct' && classification.risk !== 'readonly') {
@@ -373,7 +377,7 @@ async function prepareRepositoryCommandExecutionAsync(
 }
 
 export function previewRepositoryCommandExecution(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
   controllerHome?: string,
 ): PreparedRepositoryCommandExecution {
@@ -387,7 +391,7 @@ export function previewRepositoryCommandExecution(
 
 /** Async preview — preferred on Fast Path to avoid blocking Gateway with sync git snapshots. */
 export async function previewRepositoryCommandExecutionAsync(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
   controllerHome?: string,
 ): Promise<PreparedRepositoryCommandExecution> {
@@ -401,10 +405,12 @@ export async function previewRepositoryCommandExecutionAsync(
 
 function auditCommand(
   controllerHome: string,
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   execution: RepositoryCommandExecution,
 ): void {
-  const path = join(repositoryControllerRoot(controllerHome, repository.repoId), 'audit', 'commands.jsonl');
+  // A workspace target has no repository semantics; its command audit belongs to
+  // the workspace partition, not a synthetic repository partition.
+  const path = join(scopedOperationRoot(controllerHome, commandExecutionScopeKey(repository)), 'audit', 'commands.jsonl');
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -416,7 +422,7 @@ function auditCommand(
 
 export function executeRepositoryCommand(
   controllerHome: string,
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
 ): RepositoryCommandExecution {
   const prepared = prepareRepositoryCommandExecution(repository, input, controllerHome);
@@ -499,7 +505,7 @@ export function executeRepositoryCommand(
  * mutation snapshot or Controller write state, Process records, Leases, Jobs or receipts.
  */
 export async function executeRepositoryReadOnlyCommandDirect(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
 ): Promise<RepositoryCommandExecution> {
   const prepared = await prepareRepositoryCommandExecutionAsync(
@@ -564,7 +570,7 @@ export async function executeRepositoryReadOnlyCommandDirect(
 
 export async function executeRepositoryCommandAsync(
   controllerHome: string,
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
   hooks: RepositoryCommandAsyncHooks = {},
 ): Promise<RepositoryCommandExecution> {

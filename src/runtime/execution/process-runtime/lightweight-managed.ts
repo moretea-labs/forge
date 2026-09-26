@@ -19,8 +19,7 @@ import {
   releaseControllerCheckSubscription,
   runControllerCheckAsync,
 } from '../../../cli/controller/check-runner';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../cli/repositories/command-scope';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   defaultProcessIdentityProbe,
@@ -30,6 +29,17 @@ import {
 } from '../../shared/process-identity';
 import { terminateProcessTree } from '../../shared/process-tree';
 import { runBoundedProcess } from '../thin-harness/async-process';
+import { recordProcessHandleIndexEntry } from './handle-index';
+import {
+  FORGE_INSTANCE_PROCESS_SCOPE_KEY,
+  isWorkspaceProcessScopeKey,
+  legacyWorkspaceScopeRoot,
+  normalizeProcessScopeKey,
+  processScopeExecutionTarget,
+  processScopeFromKey,
+  processScopeKey,
+  processScopeRoot,
+} from './process-scope';
 import { PROCESS_LOG_TAIL_BYTES, type ProcessHandle, type ProcessLogSlice, type WaitProcessOptions } from './types';
 
 const EMPTY_EFFECTS = {
@@ -66,7 +76,12 @@ interface LightweightExitObservation {
 interface LightweightEntry {
   processId: string;
   controllerHome: string;
-  repoId: string;
+  /** Canonical Process scope partition key (`repo_*` repository id, or the ForgeInstance scope key). */
+  scopeKey: string;
+  /** Repository placement when this handle targets a repository; absent for ForgeInstance targets. */
+  repoId?: string;
+  /** Owning principal recorded from the invoking MCP/Runtime context. */
+  principalId?: string;
   workId?: string;
   commandId: string;
   requestFingerprint: string;
@@ -101,7 +116,9 @@ export function hasActiveLightweightProcesses(controllerHome: string): boolean {
 
 interface LightweightRunningReceipt {
   schemaVersion: 1;
-  repoId: string;
+  /** Canonical scope partition key. Legacy receipts carry only `repoId`. */
+  scopeKey?: string;
+  repoId?: string;
   processId: string;
   commandId?: string;
   requestFingerprint?: string;
@@ -113,7 +130,9 @@ interface LightweightRunningReceipt {
 
 interface LightweightTerminalReceipt {
   schemaVersion: 1;
-  repoId: string;
+  /** Canonical scope partition key. Legacy receipts carry only `repoId`. */
+  scopeKey?: string;
+  repoId?: string;
   processId: string;
   commandId?: string;
   requestFingerprint?: string;
@@ -121,20 +140,44 @@ interface LightweightTerminalReceipt {
   handle: ProcessHandle;
 }
 
-function runningReceiptRoot(controllerHome: string, repoId: string): string {
-  return join(repositoryControllerRoot(controllerHome, repoId), 'process-runtime', 'lightweight-running');
+function runningReceiptRoot(controllerHome: string, scopeKey: string): string {
+  return join(processScopeRoot(controllerHome, scopeKey), 'process-runtime', 'lightweight-running');
 }
 
-function runningReceiptPath(controllerHome: string, repoId: string, processId: string): string {
-  return join(runningReceiptRoot(controllerHome, repoId), `${sanitizeFileComponent(processId)}.json`);
+function runningReceiptPath(controllerHome: string, scopeKey: string, processId: string): string {
+  return join(runningReceiptRoot(controllerHome, scopeKey), `${sanitizeFileComponent(processId)}.json`);
 }
 
-function terminalReceiptRoot(controllerHome: string, repoId: string): string {
-  return join(repositoryControllerRoot(controllerHome, repoId), 'process-runtime', 'lightweight-terminal');
+function terminalReceiptRoot(controllerHome: string, scopeKey: string): string {
+  return join(processScopeRoot(controllerHome, scopeKey), 'process-runtime', 'lightweight-terminal');
 }
 
-function terminalReceiptPath(controllerHome: string, repoId: string, processId: string): string {
-  return join(terminalReceiptRoot(controllerHome, repoId), `${sanitizeFileComponent(processId)}.json`);
+function terminalReceiptPath(controllerHome: string, scopeKey: string, processId: string): string {
+  return join(terminalReceiptRoot(controllerHome, scopeKey), `${sanitizeFileComponent(processId)}.json`);
+}
+
+/**
+ * Bounded migration read: a workspace-scoped receipt written before the
+ * workspace partition existed still resolves, instead of reporting a running
+ * command as missing. Repository scopes never take this path.
+ */
+function existingReceiptPath(
+  controllerHome: string,
+  scopeKey: string,
+  processId: string,
+  build: (controllerHome: string, scopeKey: string, processId: string) => string,
+): string {
+  const current = build(controllerHome, scopeKey, processId);
+  if (existsSync(current) || !isWorkspaceProcessScopeKey(scopeKey)) return current;
+  const legacyRoot = legacyWorkspaceScopeRoot(controllerHome, scopeKey);
+  if (!legacyRoot) return current;
+  const legacy = join(
+    legacyRoot,
+    'process-runtime',
+    build === runningReceiptPath ? 'lightweight-running' : 'lightweight-terminal',
+    `${sanitizeFileComponent(processId)}.json`,
+  );
+  return existsSync(legacy) ? legacy : current;
 }
 
 function boundedAppend(current: string, chunk: string, maxBytes: number): string {
@@ -169,8 +212,8 @@ function captureProcessIdentity(pid: number): ExpectedProcessIdentity | undefine
   return { pid, processStartTime, executableFingerprint: executableFingerprint(command) };
 }
 
-function removeRunningReceipt(controllerHome: string, repoId: string, processId: string): void {
-  try { rmSync(runningReceiptPath(controllerHome, repoId, processId), { force: true }); } catch { /* best effort */ }
+function removeRunningReceipt(controllerHome: string, scopeKey: string, processId: string): void {
+  try { rmSync(runningReceiptPath(controllerHome, scopeKey, processId), { force: true }); } catch { /* best effort */ }
 }
 
 function persistRunningReceipt(entry: LightweightEntry, force = false): void {
@@ -182,12 +225,13 @@ function persistRunningReceipt(entry: LightweightEntry, force = false): void {
   if (!force && entry.runningReceiptUpdatedAtMs !== undefined
     && now - entry.runningReceiptUpdatedAtMs < RUNNING_RECEIPT_PERSIST_INTERVAL_MS) return;
   try {
-    const root = runningReceiptRoot(entry.controllerHome, entry.repoId);
+    const root = runningReceiptRoot(entry.controllerHome, entry.scopeKey);
     mkdirSync(root, { recursive: true, mode: 0o700 });
-    const path = runningReceiptPath(entry.controllerHome, entry.repoId, entry.processId);
+    const path = runningReceiptPath(entry.controllerHome, entry.scopeKey, entry.processId);
     const receipt: LightweightRunningReceipt = {
       schemaVersion: 1,
-      repoId: entry.repoId,
+      scopeKey: entry.scopeKey,
+      ...(entry.repoId ? { repoId: entry.repoId } : {}),
       processId: entry.processId,
       commandId: entry.commandId,
       requestFingerprint: entry.requestFingerprint,
@@ -204,12 +248,12 @@ function persistRunningReceipt(entry: LightweightEntry, force = false): void {
   }
 }
 
-function readRunningReceipt(controllerHome: string, repoId: string, processId: string): LightweightRunningReceipt | undefined {
-  const path = runningReceiptPath(controllerHome, repoId, processId);
+function readRunningReceipt(controllerHome: string, scopeKey: string, processId: string): LightweightRunningReceipt | undefined {
+  const path = existingReceiptPath(controllerHome, scopeKey, processId, runningReceiptPath);
   if (!existsSync(path)) return undefined;
   try {
     const receipt = readJsonFile<LightweightRunningReceipt>(path);
-    if (receipt.schemaVersion !== 1 || receipt.repoId !== repoId || receipt.processId !== processId) return undefined;
+    if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || receipt.processId !== processId) return undefined;
     if (receipt.handle?.processId !== processId || receipt.handle.completed) return undefined;
     return receipt;
   } catch {
@@ -261,18 +305,19 @@ function pruneTerminalReceipts(root: string, keepPath: string): void {
 
 function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry): void {
   if (!entry.result || !entry.finishedAtMs) return;
-  const existing = readTerminalReceipt(controllerHome, entry.repoId, entry.processId);
+  const existing = readTerminalReceipt(controllerHome, entry.scopeKey, entry.processId);
   if (existing) {
-    removeRunningReceipt(controllerHome, entry.repoId, entry.processId);
+    removeRunningReceipt(controllerHome, entry.scopeKey, entry.processId);
     return;
   }
   try {
-    const root = terminalReceiptRoot(controllerHome, entry.repoId);
+    const root = terminalReceiptRoot(controllerHome, entry.scopeKey);
     mkdirSync(root, { recursive: true, mode: 0o700 });
-    const path = terminalReceiptPath(controllerHome, entry.repoId, entry.processId);
+    const path = terminalReceiptPath(controllerHome, entry.scopeKey, entry.processId);
     const receipt: LightweightTerminalReceipt = {
       schemaVersion: 1,
-      repoId: entry.repoId,
+      scopeKey: entry.scopeKey,
+      ...(entry.repoId ? { repoId: entry.repoId } : {}),
       processId: entry.processId,
       commandId: entry.commandId,
       requestFingerprint: entry.requestFingerprint,
@@ -281,19 +326,19 @@ function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry)
     };
     writeJsonAtomic(path, receipt);
     try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
-    removeRunningReceipt(controllerHome, entry.repoId, entry.processId);
+    removeRunningReceipt(controllerHome, entry.scopeKey, entry.processId);
     pruneTerminalReceipts(root, path);
   } catch {
     // A receipt failure must never turn a completed local command into a failure.
   }
 }
 
-function readTerminalReceipt(controllerHome: string, repoId: string, processId: string): LightweightTerminalReceipt | undefined {
-  const path = terminalReceiptPath(controllerHome, repoId, processId);
+function readTerminalReceipt(controllerHome: string, scopeKey: string, processId: string): LightweightTerminalReceipt | undefined {
+  const path = existingReceiptPath(controllerHome, scopeKey, processId, terminalReceiptPath);
   if (!existsSync(path)) return undefined;
   try {
     const receipt = readJsonFile<LightweightTerminalReceipt>(path);
-    if (receipt.schemaVersion !== 1 || receipt.repoId !== repoId || receipt.processId !== processId) return undefined;
+    if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || receipt.processId !== processId) return undefined;
     if (!receipt.handle?.completed || receipt.handle.processId !== processId) return undefined;
     const finishedAtMs = Date.parse(receipt.finishedAt);
     if (!Number.isFinite(finishedAtMs) || Date.now() - finishedAtMs > TERMINAL_RECEIPT_RETENTION_MS) {
@@ -323,24 +368,24 @@ function recoveredRequestMetrics(): LightweightCommandMetrics {
  */
 function findPersistedHandleForCommand(
   controllerHome: string,
-  repoId: string,
+  scopeKey: string,
   commandId: string,
   requestFingerprint: string,
 ): ProcessHandle | undefined {
-  const roots = [terminalReceiptRoot(controllerHome, repoId), runningReceiptRoot(controllerHome, repoId)];
+  const roots = [terminalReceiptRoot(controllerHome, scopeKey), runningReceiptRoot(controllerHome, scopeKey)];
   for (const root of roots) {
     if (!existsSync(root)) continue;
     for (const file of readdirSync(root)) {
       if (!file.endsWith('.json')) continue;
       try {
         const receipt = readJsonFile<LightweightRunningReceipt | LightweightTerminalReceipt>(join(root, file));
-        if (receipt.schemaVersion !== 1 || receipt.repoId !== repoId || !receipt.processId) continue;
+        if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || !receipt.processId) continue;
         const persistedCommandId = receipt.commandId ?? receipt.handle?.commandId;
         if (persistedCommandId !== commandId) continue;
         if (!receipt.requestFingerprint || receipt.requestFingerprint !== requestFingerprint) {
           throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${commandId} cannot be safely replayed after Runtime restart`);
         }
-        return getLightweightProcessHandle(controllerHome, repoId, receipt.processId);
+        return getLightweightProcessHandle(controllerHome, scopeKey, receipt.processId);
       } catch (error) {
         if (error instanceof Error && error.message.startsWith('PROCESS_REQUEST_CONFLICT:')) throw error;
         // A corrupt or concurrently pruned receipt is not an execution result.
@@ -399,18 +444,21 @@ function persistRecoveredTerminalReceipt(
   receipt: LightweightRunningReceipt,
   handle: ProcessHandle,
 ): ProcessHandle {
-  const existing = readTerminalReceipt(controllerHome, receipt.repoId, receipt.processId);
+  const scopeKey = receipt.scopeKey ?? receipt.repoId;
+  if (!scopeKey) return handle;
+  const existing = readTerminalReceipt(controllerHome, scopeKey, receipt.processId);
   if (existing) {
-    removeRunningReceipt(controllerHome, receipt.repoId, receipt.processId);
+    removeRunningReceipt(controllerHome, scopeKey, receipt.processId);
     return existing.handle;
   }
   try {
-    const root = terminalReceiptRoot(controllerHome, receipt.repoId);
+    const root = terminalReceiptRoot(controllerHome, scopeKey);
     mkdirSync(root, { recursive: true, mode: 0o700 });
-    const path = terminalReceiptPath(controllerHome, receipt.repoId, receipt.processId);
+    const path = terminalReceiptPath(controllerHome, scopeKey, receipt.processId);
     const terminal: LightweightTerminalReceipt = {
       schemaVersion: 1,
-      repoId: receipt.repoId,
+      scopeKey,
+      ...(receipt.repoId ? { repoId: receipt.repoId } : {}),
       processId: receipt.processId,
       commandId: receipt.commandId,
       requestFingerprint: receipt.requestFingerprint,
@@ -419,7 +467,7 @@ function persistRecoveredTerminalReceipt(
     };
     writeJsonAtomic(path, terminal);
     try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
-    removeRunningReceipt(controllerHome, receipt.repoId, receipt.processId);
+    removeRunningReceipt(controllerHome, scopeKey, receipt.processId);
     pruneTerminalReceipts(root, path);
   } catch {
     // Recovery evidence persistence must not trigger command re-execution or unsafe signalling.
@@ -555,13 +603,16 @@ function entryHandle(entry: LightweightEntry): ProcessHandle {
 
 export interface StartLightweightCommandInput {
   controllerHome: string;
-  repository: RepositoryRecord;
+  /** Repository identity is optional: an arbitrary workspace target carries a workspace scope key. */
+  repository: RepositoryCommandScopeTarget;
   execution: ExecuteRepositoryCommandInput;
   interactiveWaitMs: number;
   timeoutMs: number;
   maxOutputBytes?: number;
   workId?: string;
   commandId?: string;
+  /** Authenticated principal recorded with the handle for principal-bound attachment. */
+  principalId?: string;
   /** Start repository preparation on the next event-loop turn so the caller can receive a handle first. */
   deferStart?: boolean;
   /** Reuse an equivalent active local build/test even when a later caller has a different request id. */
@@ -588,10 +639,15 @@ export interface StartLightweightCheckInput {
   timeoutMs: number;
   workId?: string;
   commandId?: string;
+  /** Authenticated principal recorded with the handle for principal-bound attachment. */
+  principalId?: string;
 }
 
 export interface StartLightweightInternalProcessInput {
-  repoId: string;
+  /** Canonical Process scope key. Defaults to `repoId` for repository-scoped internal processes. */
+  scopeKey?: string;
+  /** Repository placement when this process targets a repository; absent for ForgeInstance targets. */
+  repoId?: string;
   executable: string;
   args: readonly string[];
   cwd: string;
@@ -603,15 +659,21 @@ export interface StartLightweightInternalProcessInput {
   workId?: string;
   commandId?: string;
   signal?: AbortSignal;
+  /** Authenticated principal recorded with the handle for principal-bound attachment. */
+  principalId?: string;
 }
 
 export async function startLightweightRepositoryCommand(
   input: StartLightweightCommandInput,
 ): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
   sweep();
+  // Repository targets keep their repository partition; an arbitrary workspace
+  // target is scoped by its workspace id instead of a synthetic repository id.
+  const scope = processScopeFromKey(commandExecutionScopeKey(input.repository));
+  const scopeKey = processScopeKey(scope);
   const stableCommandId = input.commandId?.trim();
   const requestFingerprint = JSON.stringify({
-    repoId: input.repository.repoId,
+    repoId: commandExecutionScopeKey(input.repository),
     command: input.execution.command,
     cwd: input.execution.cwd ?? '.',
     timeoutMs: input.timeoutMs,
@@ -620,7 +682,7 @@ export async function startLightweightRepositoryCommand(
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
       entry.controllerHome === input.controllerHome
-      && entry.repoId === input.repository.repoId
+      && entry.scopeKey === scopeKey
       && entry.commandId === stableCommandId
     ));
     if (existing) {
@@ -643,7 +705,7 @@ export async function startLightweightRepositoryCommand(
     }
     const recovered = findPersistedHandleForCommand(
       input.controllerHome,
-      input.repository.repoId,
+      scopeKey,
       stableCommandId,
       requestFingerprint,
     );
@@ -651,7 +713,7 @@ export async function startLightweightRepositoryCommand(
   }
   if (input.reuseActiveEquivalent) {
     const existing = [...entries.values()].find((entry) => (
-      entry.repoId === input.repository.repoId
+      entry.scopeKey === scopeKey
       && entry.requestFingerprint === requestFingerprint
       && entry.result === undefined
     ));
@@ -675,7 +737,9 @@ export async function startLightweightRepositoryCommand(
   const entry: LightweightEntry = {
     processId,
     controllerHome: input.controllerHome,
-    repoId: input.repository.repoId,
+    scopeKey,
+    ...(scope.kind === 'repository' ? { repoId: commandExecutionScopeKey(input.repository) } : {}),
+    ...(input.principalId ? { principalId: input.principalId } : {}),
     workId: input.workId,
     commandId: stableCommandId || processId,
     requestFingerprint,
@@ -780,6 +844,16 @@ export async function startLightweightRepositoryCommand(
       })
     : startExecution();
   entries.set(processId, entry);
+  // Instance-level locator: a lightweight handle must be attachable from the
+  // returned processId alone, including after Runtime memory loss.
+  recordProcessHandleIndexEntry(input.controllerHome, {
+    processId,
+    lane: 'lightweight',
+    target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(entry.scopeKey)),
+    principalId: entry.principalId,
+    workId: entry.workId,
+    commandId: entry.commandId,
+  });
   persistRunningReceipt(entry, true);
 
   if (entry.interactiveWaitMs > 0) {
@@ -811,18 +885,31 @@ export async function startLightweightInternalProcess(
   input: StartLightweightInternalProcessInput,
 ): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
   sweep();
+  const repoId = input.repoId?.trim() || undefined;
+  const scopeKey = normalizeProcessScopeKey(input.scopeKey?.trim() || repoId || '');
+  const scope = processScopeFromKey(scopeKey);
   const stableCommandId = input.commandId?.trim();
+  // Retry identity is commandId + fingerprint(scope target, action, principal).
+  // An instance-scope request id is never a naked global namespace: a different
+  // principal presenting the same request id fails closed as a request conflict
+  // instead of attaching to another principal's process.
+  const principalId = input.principalId?.trim() || null;
   const requestFingerprint = JSON.stringify({
-    repoId: input.repoId,
+    scopeKey,
+    repoId: repoId ?? null,
     executable: input.executable,
     args: input.args,
     cwd: input.cwd,
     timeoutMs: input.timeoutMs,
+    // Only a principal-bound lane (the ForgeInstance host command lane) adds the
+    // principal to retry identity, so existing repository/plugin fingerprints
+    // keep their historical value instead of failing closed after an upgrade.
+    ...(principalId ? { principalId } : {}),
   });
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
       entry.controllerHome === input.controllerHome
-      && entry.repoId === input.repoId
+      && entry.scopeKey === scopeKey
       && entry.commandId === stableCommandId
     ));
     if (existing) {
@@ -845,7 +932,7 @@ export async function startLightweightInternalProcess(
     }
     const recovered = findPersistedHandleForCommand(
       input.controllerHome,
-      input.repoId,
+      scopeKey,
       stableCommandId,
       requestFingerprint,
     );
@@ -858,7 +945,9 @@ export async function startLightweightInternalProcess(
   const entry: LightweightEntry = {
     processId,
     controllerHome: input.controllerHome,
-    repoId: input.repoId,
+    scopeKey,
+    ...(repoId ? { repoId } : {}),
+    ...(input.principalId?.trim() ? { principalId: input.principalId.trim() } : {}),
     workId: input.workId,
     commandId: stableCommandId || processId,
     requestFingerprint,
@@ -906,6 +995,14 @@ export async function startLightweightInternalProcess(
     return result;
   });
   entries.set(processId, entry);
+  recordProcessHandleIndexEntry(entry.controllerHome, {
+    processId,
+    lane: 'lightweight',
+    target: processScopeExecutionTarget(entry.controllerHome, processScopeFromKey(entry.scopeKey)),
+    principalId: entry.principalId,
+    workId: entry.workId,
+    commandId: entry.commandId,
+  });
   persistRunningReceipt(entry, true);
 
   if (entry.interactiveWaitMs > 0) {
@@ -933,6 +1030,68 @@ export async function startLightweightInternalProcess(
   };
 }
 
+export interface StartLightweightHostCommandInput {
+  controllerHome: string;
+  /** Typed argv command; `command[0]` is the executable. */
+  command?: readonly string[];
+  /** Explicit broad host-shell form. Authorized by the same host process grant as argv. */
+  shellCommand?: string;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  interactiveWaitMs: number;
+  timeoutMs: number;
+  maxOutputBytes?: number;
+  workId?: string;
+  commandId?: string;
+  signal?: AbortSignal;
+  principalId?: string;
+}
+
+/** Platform shell used for the explicit `shell_command` form. Mirrors the Process Runner convention. */
+export function hostShellInvocation(shellCommand: string): readonly string[] {
+  const command = shellCommand.trim();
+  if (!command) throw new Error('HOST_COMMAND_SHELL_STRING_REQUIRED');
+  return process.platform === 'win32'
+    ? ['cmd.exe', '/c', command]
+    : ['/bin/bash', '-lc', command];
+}
+
+function hostCommandArgv(input: StartLightweightHostCommandInput): readonly string[] {
+  const shellCommand = input.shellCommand?.trim();
+  if (shellCommand) return hostShellInvocation(shellCommand);
+  const argv = (input.command ?? []).map((entry) => String(entry));
+  if (argv.length === 0 || !argv[0]) throw new Error('HOST_COMMAND_ARGV_REQUIRED');
+  return argv;
+}
+
+/**
+ * Mode-free host-local command lane. The target is the ForgeInstance, `cwd` is
+ * an execution argument, and no repository registration or checkout identity is
+ * required. Authorization is the caller's responsibility: this lane performs no
+ * command parsing and never becomes a path sandbox.
+ */
+export async function startLightweightHostCommand(
+  input: StartLightweightHostCommandInput,
+): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
+  const argv = hostCommandArgv(input);
+  const executable = argv[0]!;
+  return startLightweightInternalProcess({
+    controllerHome: input.controllerHome,
+    scopeKey: FORGE_INSTANCE_PROCESS_SCOPE_KEY,
+    executable,
+    args: argv.slice(1),
+    cwd: input.cwd,
+    env: input.env,
+    interactiveWaitMs: input.interactiveWaitMs,
+    timeoutMs: input.timeoutMs,
+    maxOutputBytes: input.maxOutputBytes,
+    workId: input.workId,
+    commandId: input.commandId,
+    signal: input.signal,
+    principalId: input.principalId,
+  });
+}
+
 export async function startLightweightControllerCheck(
   input: StartLightweightCheckInput,
 ): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
@@ -947,7 +1106,7 @@ export async function startLightweightControllerCheck(
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
       entry.controllerHome === input.controllerHome
-      && entry.repoId === input.repoId
+      && entry.scopeKey === input.repoId
       && entry.commandId === stableCommandId
     ));
     if (existing) {
@@ -982,7 +1141,9 @@ export async function startLightweightControllerCheck(
   const entry: LightweightEntry = {
     processId,
     controllerHome: input.controllerHome,
+    scopeKey: input.repoId,
     repoId: input.repoId,
+    ...(input.principalId ? { principalId: input.principalId } : {}),
     workId: input.workId,
     commandId: stableCommandId || processId,
     requestFingerprint,
@@ -1031,6 +1192,14 @@ export async function startLightweightControllerCheck(
     return result;
   });
   entries.set(processId, entry);
+  recordProcessHandleIndexEntry(entry.controllerHome, {
+    processId,
+    lane: 'lightweight',
+    target: processScopeExecutionTarget(entry.controllerHome, processScopeFromKey(entry.scopeKey)),
+    principalId: entry.principalId,
+    workId: entry.workId,
+    commandId: entry.commandId,
+  });
   persistRunningReceipt(entry, true);
 
   if (entry.interactiveWaitMs > 0) {
@@ -1058,10 +1227,10 @@ export async function startLightweightControllerCheck(
   };
 }
 
-function requireEntry(repoId: string, processId: string): LightweightEntry {
+function requireEntry(scopeKey: string, processId: string): LightweightEntry {
   const entry = entries.get(processId);
   if (!entry) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-  if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
+  if (entry.scopeKey !== scopeKey) throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
   return entry;
 }
 
@@ -1069,17 +1238,27 @@ export function isLightweightProcessId(processId: string): boolean {
   return processId.startsWith('lightweight:');
 }
 
+/** Repository placement of a lightweight handle this Runtime still owns in memory. */
+export function lightweightProcessRepositoryId(processId: string): string | undefined {
+  return entries.get(processId)?.repoId;
+}
+
+/** Canonical Process scope key of a lightweight handle this Runtime still owns in memory. */
+export function lightweightProcessScopeKey(processId: string): string | undefined {
+  return entries.get(processId)?.scopeKey;
+}
+
 /** Test seam for proving terminal receipt recovery across Runtime-memory loss. */
 export function clearLightweightProcessMemoryForTest(): void {
   entries.clear();
 }
 
-export function getLightweightProcessHandle(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
+export function getLightweightProcessHandle(controllerHome: string, scopeKey: string, processId: string): ProcessHandle | undefined {
   const entry = entries.get(processId);
-  if (entry?.repoId === repoId) return entryHandle(entry);
-  const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+  if (entry?.scopeKey === scopeKey) return entryHandle(entry);
+  const terminal = readTerminalReceipt(controllerHome, scopeKey, processId);
   if (terminal) return terminal.handle;
-  const running = readRunningReceipt(controllerHome, repoId, processId);
+  const running = readRunningReceipt(controllerHome, scopeKey, processId);
   if (!running) return undefined;
   if (running.exitObservation) {
     return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
@@ -1094,20 +1273,20 @@ export function getLightweightProcessHandle(controllerHome: string, repoId: stri
 
 export async function waitForLightweightProcess(
   controllerHome: string,
-  repoId: string,
+  scopeKey: string,
   processId: string,
   options: WaitProcessOptions = {},
 ): Promise<ProcessHandle> {
   const entry = entries.get(processId);
   if (!entry) {
-    const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+    const terminal = readTerminalReceipt(controllerHome, scopeKey, processId);
     if (terminal) return terminal.handle;
-    let running = readRunningReceipt(controllerHome, repoId, processId);
+    let running = readRunningReceipt(controllerHome, scopeKey, processId);
     if (!running) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
     const timeoutMs = Math.max(1, options.timeoutMs ?? 15_000);
     const deadline = Date.now() + timeoutMs;
     while (true) {
-      const recoveredTerminal = readTerminalReceipt(controllerHome, repoId, processId);
+      const recoveredTerminal = readTerminalReceipt(controllerHome, scopeKey, processId);
       if (recoveredTerminal) return recoveredTerminal.handle;
       if (running.exitObservation) {
         return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
@@ -1124,10 +1303,10 @@ export async function waitForLightweightProcess(
         const timer = setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now())));
         timer.unref?.();
       });
-      running = readRunningReceipt(controllerHome, repoId, processId) ?? running;
+      running = readRunningReceipt(controllerHome, scopeKey, processId) ?? running;
     }
   }
-  if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
+  if (entry.scopeKey !== scopeKey) throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
   if (entry.result) return entryHandle(entry);
   const timeoutMs = Math.max(1, options.timeoutMs ?? 15_000);
   await Promise.race([
@@ -1151,12 +1330,12 @@ export async function cancelAllLightweightProcesses(controllerHome: string): Pro
   return active.length;
 }
 
-export async function cancelLightweightProcess(controllerHome: string, repoId: string, processId: string): Promise<ProcessHandle> {
+export async function cancelLightweightProcess(controllerHome: string, scopeKey: string, processId: string): Promise<ProcessHandle> {
   const entry = entries.get(processId);
   if (!entry) {
-    const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+    const terminal = readTerminalReceipt(controllerHome, scopeKey, processId);
     if (terminal) return terminal.handle;
-    const running = readRunningReceipt(controllerHome, repoId, processId);
+    const running = readRunningReceipt(controllerHome, scopeKey, processId);
     if (!running) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
     if (running.exitObservation) {
       return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
@@ -1171,7 +1350,7 @@ export async function cancelLightweightProcess(controllerHome: string, repoId: s
     await terminateProcessTree(pid, { gracePeriodMs: 200, killAfterMs: 1_000, pollIntervalMs: 25 });
     return persistRecoveredTerminalReceipt(controllerHome, running, cancelledRecoveredHandle(running));
   }
-  if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
+  if (entry.scopeKey !== scopeKey) throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
   if (!entry.result) {
     entry.abort.abort();
     await entry.promise;
@@ -1181,13 +1360,13 @@ export async function cancelLightweightProcess(controllerHome: string, repoId: s
 
 export function readLightweightProcessLogs(
   controllerHome: string,
-  repoId: string,
+  scopeKey: string,
   processId: string,
   maxBytes = 32 * 1024,
 ): ProcessLogSlice | undefined {
   const entry = entries.get(processId);
   if (!entry) {
-    const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+    const terminal = readTerminalReceipt(controllerHome, scopeKey, processId);
     if (terminal) {
       const stdout = capProcessOutput(terminal.handle.stdout ?? '', maxBytes);
       const stderr = capProcessOutput(terminal.handle.stderr ?? '', maxBytes);
@@ -1201,7 +1380,7 @@ export function readLightweightProcessLogs(
           || Buffer.byteLength(terminal.handle.stderr ?? '', 'utf8') > maxBytes,
       };
     }
-    const running = readRunningReceipt(controllerHome, repoId, processId);
+    const running = readRunningReceipt(controllerHome, scopeKey, processId);
     if (!running) return undefined;
     const stdout = capProcessOutput(running.handle.stdoutTail ?? '', maxBytes);
     const stderr = capProcessOutput(running.handle.stderrTail ?? '', maxBytes);
@@ -1215,7 +1394,7 @@ export function readLightweightProcessLogs(
         || Buffer.byteLength(running.handle.stderrTail ?? '', 'utf8') > maxBytes,
     };
   }
-  if (entry.repoId !== repoId) return undefined;
+  if (entry.scopeKey !== scopeKey) return undefined;
   const rawStdout = entry.result?.stdout ?? entry.stdout;
   const rawStderr = entry.result?.stderr ?? entry.stderr;
   const visibleStdout = visibleOutput(rawStdout, maxBytes);

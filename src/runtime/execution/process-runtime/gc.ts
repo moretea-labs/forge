@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { isRepositoryProcessScopeKey, processScopeRoot } from './process-scope';
 import { getProcessRecord, listActiveProcessIds } from './store';
 import { reconcileStaleManagedProcessForMaintenance, releaseProcessLeasesOnce } from './runtime';
 import { isManagedProcessActive, type ProcessRuntimeStatus } from './types';
@@ -52,7 +53,12 @@ export interface ProcessGcResult {
 }
 
 function processesDir(controllerHome: string, repoId: string): string {
-  return join(ensureRepositoryControllerLayout(controllerHome, repoId), 'processes');
+  // Repository scopes keep their per-repository layout; instance and workspace
+  // scopes own sibling partitions so their process records are still collected.
+  const root = isRepositoryProcessScopeKey(repoId)
+    ? ensureRepositoryControllerLayout(controllerHome, repoId)
+    : processScopeRoot(controllerHome, repoId);
+  return join(root, 'processes');
 }
 
 function logDir(controllerHome: string, repoId: string): string {

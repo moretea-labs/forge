@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { appendFileSync, mkdirSync, realpathSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
-import { repositoryControllerRoot } from './controller-home';
+import { scopedOperationRoot } from './controller-home';
 import { classifyRepositoryCommand, type RepositoryCommandAuthorization, type RepositoryCommandClassification } from './command-classifier';
 import { resolveRepositoryCommandCwd } from './command-scope';
 import type { RepositoryRecord } from './types';
@@ -209,7 +209,7 @@ function snapshotChanged(before: RepositoryGitSnapshot, after: RepositoryGitSnap
 }
 
 function auditExecution(controllerHome: string, repository: RepositoryRecord, execution: RepositoryGitExecution): void {
-  const path = join(repositoryControllerRoot(controllerHome, repository.repoId), 'audit', 'git-commands.jsonl');
+  const path = join(scopedOperationRoot(controllerHome, repository.repoId), 'audit', 'git-commands.jsonl');
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, `${JSON.stringify({
     timestamp: new Date().toISOString(),

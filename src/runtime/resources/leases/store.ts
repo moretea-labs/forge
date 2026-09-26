@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
 import { ControllerLockContentionError, withControllerLock } from '../../../cli/repositories/locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
@@ -19,7 +19,9 @@ import type {
 } from './types';
 
 function leaseRoot(controllerHome: string, repoId: string): string {
-  return join(repositoryControllerRoot(controllerHome, repoId), 'leases');
+  // Repository scopes keep their layout; a workspace scope owns its leases in
+  // the workspace partition instead of a synthetic repository partition.
+  return join(scopedOperationRoot(controllerHome, repoId), 'leases');
 }
 function activeRoot(controllerHome: string, repoId: string): string { return join(leaseRoot(controllerHome, repoId), 'active'); }
 function leasePath(controllerHome: string, repoId: string, leaseId: string): string { return join(activeRoot(controllerHome, repoId), `${leaseId}.json`); }

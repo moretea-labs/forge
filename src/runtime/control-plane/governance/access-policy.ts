@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
+import { isWorkspaceScopeKey, workspaceScopeRoot } from '../../../cli/repositories/controller-home';
 
 export const ACCESS_MODES = ['request', 'full_access'] as const;
 export type AccessMode = (typeof ACCESS_MODES)[number];
@@ -75,7 +76,23 @@ export function normalizeAccessMode(value: unknown, fallback: AccessMode = 'full
 }
 
 export function repositoryAccessPolicyPath(controllerHome: string, repoId: string): string {
-  return join(resolve(controllerHome), 'repositories', repoId, 'controller', 'access-policy.json');
+  // A workspace scope keeps its own access policy in the workspace partition
+  // instead of a synthetic repository partition. Repository/controller scopes
+  // keep their established location.
+  return isWorkspaceScopeKey(repoId)
+    ? join(workspaceScopeRoot(controllerHome, repoId), 'controller', 'access-policy.json')
+    : join(resolve(controllerHome), 'repositories', repoId, 'controller', 'access-policy.json');
+}
+
+/**
+ * Bounded migration read: a workspace policy written to the legacy repository
+ * location still applies until it is rewritten in the workspace partition.
+ */
+function readableAccessPolicyPath(controllerHome: string, repoId: string): string {
+  const current = repositoryAccessPolicyPath(controllerHome, repoId);
+  if (existsSync(current) || !isWorkspaceScopeKey(repoId)) return current;
+  const legacy = join(resolve(controllerHome), 'repositories', repoId, 'controller', 'access-policy.json');
+  return existsSync(legacy) ? legacy : current;
 }
 
 function defaultPolicy(repoId: string): RepositoryAccessPolicy {
@@ -90,7 +107,7 @@ function defaultPolicy(repoId: string): RepositoryAccessPolicy {
 }
 
 export function readRepositoryAccessPolicy(controllerHome: string, repoId: string): RepositoryAccessPolicy {
-  const path = repositoryAccessPolicyPath(controllerHome, repoId);
+  const path = readableAccessPolicyPath(controllerHome, repoId);
   if (!existsSync(path)) return defaultPolicy(repoId);
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<RepositoryAccessPolicy>;

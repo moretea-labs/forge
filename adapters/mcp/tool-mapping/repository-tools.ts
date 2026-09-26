@@ -1,6 +1,7 @@
 import { bindRepositoryEntities } from '../../../src/cli/repositories/entity-migration';
 import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../../src/cli/repositories/local-project-onboarding';
 import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/ephemeral-workspace';
+import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
 import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract } from '../../../packages/kernel/work/api';
@@ -305,8 +306,8 @@ export function claimedSessionEditBinding(
   if (!work) return undefined;
   return {
     workId,
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
+  repoId: repository.repoId,
+  checkoutId: repository.activeCheckoutId,
     principalId: caller.principalId.trim(),
     controllerInstanceId: caller.controllerInstanceId,
   };
@@ -400,7 +401,10 @@ function resolveRepositoryCommandTarget(
   repoIdValue: string,
   caller?: RepositoryToolCallerContext,
 ): {
-  repository: ReturnType<typeof resolveRepositorySelection>;
+  /** Present only for a repository target; absent for an arbitrary workspace. */
+  repository?: ReturnType<typeof resolveRepositorySelection>;
+  /** Typed command target used for scope, cwd, policy, audit and approval storage. */
+  commandTarget: RepositoryCommandScopeTarget;
   executionIdentity: ResolvedExecutionIdentity;
   workspace?: { workspaceId: string; root: string; registered: false };
   historicalWorkContext?: HistoricalReadOnlyWorkContext;
@@ -413,7 +417,7 @@ function resolveRepositoryCommandTarget(
     }
     const target = resolveEphemeralWorkspaceTarget(workspaceRoot, controllerHome);
     return {
-      repository: target.repository,
+      commandTarget: target.commandTarget,
       executionIdentity: {
         schemaVersion: 1,
         authority: 'ephemeral_workspace',
@@ -440,6 +444,7 @@ function resolveRepositoryCommandTarget(
   if (historicalWorkContext) {
     return {
       repository: selectedRepository,
+      commandTarget: selectedRepository,
       executionIdentity: {
         schemaVersion: 1,
         authority: 'repository',
@@ -458,6 +463,7 @@ function resolveRepositoryCommandTarget(
     : undefined;
   return {
     repository,
+    commandTarget: repository,
     executionIdentity: {
       schemaVersion: 1,
       authority: 'repository',
@@ -589,7 +595,10 @@ function compactProcessCommandPayload(input: {
   route?: string;
   reasons: string[];
   decision?: unknown;
-  repoId: string;
+  /** Repository id for a repository target; absent for an arbitrary workspace target. */
+  repoId?: string;
+  /** Workspace scope id when the target is an arbitrary workspace. */
+  scopeId?: string;
   checkoutId?: string;
   workspace?: { workspaceId: string; root: string; registered: false };
   historicalWorkContext?: HistoricalReadOnlyWorkContext;
@@ -698,8 +707,8 @@ function compactProcessCommandPayload(input: {
 
 function emptyRepositoryMigration(repository: ReturnType<typeof registerRepository>) {
   return {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
+  repoId: repository.repoId,
+  checkoutId: repository.activeCheckoutId,
     scanned: 0,
     updated: 0,
     unresolved: 0,
@@ -889,8 +898,8 @@ export async function callRepositoryTool(
           : readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
         return result({
           status: status ?? {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
+  repoId: repository.repoId,
+  checkoutId: repository.activeCheckoutId,
             sampleSource: 'daemon-sample',
             sampled: false,
             observedAt: null,
@@ -937,8 +946,8 @@ export async function callRepositoryTool(
           allowSoleRepository: true,
         });
         return result({
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
+  repoId: repository.repoId,
+  checkoutId: repository.activeCheckoutId,
           plan: buildSafePatchPlan(repository, { operations: args.operations, chunkSize: args.chunk_size }),
         });
       }
@@ -1046,8 +1055,8 @@ export async function callRepositoryTool(
           errorMessage: firstFailure?.message,
         });
         const payload = {
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
+  repoId: repository.repoId,
+  checkoutId: repository.activeCheckoutId,
           ...applied as unknown as Record<string, unknown>,
           phase: digest.phase,
           statusLabel: digest.statusLabel,
@@ -1062,12 +1071,12 @@ export async function callRepositoryTool(
       }
       case 'repository_command_preview': {
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-        const { repository } = target;
+        const { commandTarget } = target;
         const execution = withControllerLock(
           controllerHome,
-          { scope: 'repository', repoId: repository.repoId },
+          { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
           'mcp:repository_command_preview',
-          () => executeRepositoryCommand(controllerHome, repository, {
+          () => executeRepositoryCommand(controllerHome, commandTarget, {
             command: args.command as string | string[],
             cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
             dryRun: true,
@@ -1075,18 +1084,30 @@ export async function callRepositoryTool(
           }),
           60_000,
         );
+        // Repository targets keep repoId/checkoutId. An arbitrary workspace target
+        // reports its workspace scope id and never a repository id.
+        const { repoId: _previewRepoId, checkoutId: _previewCheckoutId, ...workspacePreviewFields } = execution as unknown as Record<string, unknown>;
         return result({
-          ...execution as unknown as Record<string, unknown>,
+          ...(commandTarget.repoId ? execution as unknown as Record<string, unknown> : workspacePreviewFields),
+          ...(commandTarget.repoId ? {} : { scopeId: commandExecutionScopeKey(commandTarget) }),
           ...(target.workspace ? { workspace: target.workspace } : {}),
         });
       }
       case 'repository_command_execute': {
         const explorationGuidance = fragmentedRepositoryExplorationGuidance(args.command);
         let target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-        let { repository, executionIdentity, historicalWorkContext } = target;
+        let { repository, commandTarget, executionIdentity, historicalWorkContext } = target;
+        // Repository targets keep their established identity fields. An arbitrary
+        // workspace target reports a workspace scope id and never a repository id.
+        const commandScopeKey = commandExecutionScopeKey(commandTarget);
+        const scopeFields: Record<string, unknown> = repository
+          ? { repoId: commandScopeKey, checkoutId: commandTarget.activeCheckoutId }
+          : { scopeId: commandScopeKey };
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-        if (!explicitWorkId) assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
-        const deliveryWorkId = rawDefaultBranchMergeCommand(repository, args.command)
+        // Repository-semantic checks apply only when a repository target exists;
+        // an arbitrary workspace has no bound session, default branch, or Work.
+        if (repository && !explicitWorkId) assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
+        const deliveryWorkId = repository && rawDefaultBranchMergeCommand(repository, args.command)
           ? executionIdentity.workId
           : undefined;
         if (deliveryWorkId) {
@@ -1121,7 +1142,7 @@ export async function callRepositoryTool(
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
           workId: executionIdentity.workId,
-          defaultBranch: repository.defaultBranch,
+          defaultBranch: commandTarget.defaultBranch,
           timeoutMs,
         });
         const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
@@ -1134,7 +1155,7 @@ export async function callRepositoryTool(
           );
         }
         let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
-        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
+        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
         if (
           (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
           && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
@@ -1142,11 +1163,11 @@ export async function callRepositoryTool(
           if (executionIdentity.workId) {
             mutationAuthority = withControllerLock(
               controllerHome,
-              { scope: 'repository', repoId: repository.repoId },
+              { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
               'mcp:repository_command_execute:mutation-authority',
               () => ensureRepositoryMutationWorkHandle({
                 controllerHome,
-                repository,
+                repository: repository!,
                 workId: executionIdentity.workId!,
                 principalId: caller?.principalId ?? '',
                 sessionId: caller?.sessionId,
@@ -1157,23 +1178,23 @@ export async function callRepositoryTool(
             // Pre-mutation reconciliation may advance expectedHead. Re-resolve
             // immutable execution identity after that durable CAS and before spawn.
             target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-            ({ repository, executionIdentity, historicalWorkContext } = target);
+            ({ repository, commandTarget, executionIdentity, historicalWorkContext } = target);
           } else {
             withControllerLock(
               controllerHome,
-              { scope: 'repository', repoId: repository.repoId },
+              { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
               'mcp:repository_command_execute:unattributed-mutation-authority',
               () => assertCanonicalRepositoryMutationWorkHandleAvailable({
                 controllerHome,
-                repositoryId: repository.repoId,
-                checkoutId: repository.activeCheckoutId,
+                repositoryId: commandExecutionScopeKey(commandTarget),
+                checkoutId: commandTarget.activeCheckoutId ?? '',
               }),
               60_000,
             );
           }
         }
-        if (executionIdentity.workId && (rawCommitScope.kind === 'staged_index' || rawCommitScope.kind === 'explicit_paths')) {
-          const work = getWorkContract({ controllerHome, repoId: repository.repoId }, executionIdentity.workId);
+        if (repository && executionIdentity.workId && (rawCommitScope.kind === 'staged_index' || rawCommitScope.kind === 'explicit_paths')) {
+          const work = getWorkContract({ controllerHome, repoId: commandExecutionScopeKey(commandTarget) }, executionIdentity.workId);
           if (!work) throw new Error(`WORK_NOT_FOUND: ${executionIdentity.workId}`);
           const commitScope = resolveRepositoryGitCommitScope(repository, {
             paths: rawCommitScope.kind === 'explicit_paths' ? rawCommitScope.paths : undefined,
@@ -1222,8 +1243,7 @@ export async function callRepositoryTool(
                 path: routeClass.reason,
                 route: 'reject',
                 status: 'rejected',
-                repoId: repository.repoId,
-                checkoutId: repository.activeCheckoutId,
+                ...scopeFields,
                 workspace: target.workspace,
                 message: routeClass.reason === 'standalone_recovery_lifecycle_required'
                   ? 'Canonical Runtime and connector lifecycle operations must be submitted to the standalone Forge Recovery owner, not executed as a child of repository Process Runtime.'
@@ -1244,8 +1264,7 @@ export async function callRepositoryTool(
                 accepted: false,
                 mode: 'durable',
                 path: 'ephemeral_workspace_promotion_required',
-                repoId: repository.repoId,
-                checkoutId: repository.activeCheckoutId,
+                ...scopeFields,
                 workspace: target.workspace,
                 message: 'Ephemeral workspaces must be registered before durable remote effects so Process identity and reconciliation have a stable repository authority.',
                 suggestedOperation: 'repository_register',
@@ -1254,7 +1273,7 @@ export async function callRepositoryTool(
             if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable') {
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
-                repository,
+                repository: commandTarget,
                 command: args.command as string | string[],
                 cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
                 timeoutMs,
@@ -1267,8 +1286,9 @@ export async function callRepositoryTool(
                 workId: executionIdentity.workId,
                 executionIdentity,
                 allowNonGitWorkspace: target.workspace !== undefined,
+                principalId: caller?.principalId ?? undefined,
               });
-              if (mutationAuthority && (processResult.route === 'process_direct' || processResult.route === 'process_managed')) {
+              if (repository && mutationAuthority && (processResult.route === 'process_direct' || processResult.route === 'process_managed')) {
                 const processHandle = processResult.process;
                 const postStatus = repositoryGitStatus(repository);
                 const expectedHead = mutationAuthority.handle.expectedHead;
@@ -1277,7 +1297,7 @@ export async function callRepositoryTool(
                 if (mutationObserved) {
                   withControllerLock(
                     controllerHome,
-                    { scope: 'repository', repoId: repository.repoId },
+                    { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
                     'mcp:repository_command_execute:mutation-started',
                     () => markRepositoryMutationStarted({
                       controllerHome,
@@ -1308,8 +1328,7 @@ export async function callRepositoryTool(
                     mode: processResult.route,
                     path: processResult.reason ?? routeClass.reason,
                     route: processResult.route,
-                    repoId: repository.repoId,
-                    checkoutId: repository.activeCheckoutId,
+                    ...scopeFields,
                     workspace: target.workspace,
                     status: processResult.executionStatus,
                     policyDecision: processResult.policyDecision ?? 'approval_required',
@@ -1336,8 +1355,7 @@ export async function callRepositoryTool(
                   route: processResult.route,
                   reasons: [processResult.reason ?? routeClass.reason, ...routingDecision.reasons],
                   decision: detailLevel === 'detail' ? routingDecision : undefined,
-                  repoId: repository.repoId,
-                  checkoutId: repository.activeCheckoutId,
+                  ...scopeFields,
                   workspace: target.workspace,
                   historicalWorkContext,
                   processId: handle?.processId,
@@ -1400,8 +1418,7 @@ export async function callRepositoryTool(
             accepted: false,
             mode: 'durable',
             path: 'ephemeral_workspace_promotion_required',
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
+            ...scopeFields,
             workspace: target.workspace,
             message: 'Ephemeral workspaces support bounded local Direct/Managed execution only. Register the directory before durable, remote, release, or resumable Work.',
             suggestedOperation: 'repository_register',
@@ -1415,13 +1432,13 @@ export async function callRepositoryTool(
           try {
             const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
               forceDurable: false,
-              defaultBranch: repository.defaultBranch,
+              defaultBranch: commandTarget.defaultBranch,
               timeoutMs,
             });
             if (routeClass.route === 'process_direct') {
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
-                repository,
+                repository: commandTarget,
                 command: args.command as string | string[],
                 cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
                 timeoutMs,
@@ -1429,6 +1446,7 @@ export async function callRepositoryTool(
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
                 workId: executionIdentity.workId,
                 executionIdentity,
+                principalId: caller?.principalId ?? undefined,
               });
               if (processResult.route === 'process_direct') {
                 const execRecord = processResult.process as unknown as Record<string, unknown> | undefined;
@@ -1442,8 +1460,7 @@ export async function callRepositoryTool(
                     mode: 'durable',
                     reasons: ['durable_worker_inline_process_direct', routeClass.reason, ...routingDecision.reasons],
                   }),
-                  repoId: repository.repoId,
-                  checkoutId: repository.activeCheckoutId,
+                  ...scopeFields,
                   ok,
                   processId: typeof execRecord?.processId === 'string' ? execRecord.processId : undefined,
                   status: typeof execRecord?.status === 'string' ? execRecord.status : undefined,
@@ -1510,8 +1527,8 @@ export async function callRepositoryTool(
         const batch = await executeRepositoryBatch(
           { controllerHome, repository },
           {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
             mode: args.mode === 'fast' || args.mode === 'durable' || args.mode === 'auto' ? args.mode : 'auto',
             steps,
             stopOnError: args.stop_on_error !== false,
@@ -1535,8 +1552,8 @@ export async function callRepositoryTool(
         const lanes = await executeLightweightLanes(
           { controllerHome, repository },
           {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
             readLanes: Array.isArray(args.read_lanes)
               ? args.read_lanes
                 .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)

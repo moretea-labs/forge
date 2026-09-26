@@ -31,7 +31,7 @@ import { applyRuntimeMaintenance, buildRuntimeMaintenanceStatus } from "../../..
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
 import { callRhWorkSemanticOperation } from './work-semantic-operations';
-import { callRhWorkPlanCreateOperation, callRhWorkPlanOperation } from './work-plan-operations';
+import { callRhWorkPlanCreateOperation, callRhWorkPlanCreateWithoutRepository, callRhWorkPlanOperation } from './work-plan-operations';
 import { runFacadeRepair } from './work-repair-adapter';
 export { runFacadeRepair };
 import { buildFacadeResult, getHandoffItem, runGoalWorkloop, runSelfHealingLoop, buildWorkContinuationSnapshot, withPrimaryWorkAdmissionLockAsync, repairDraftPlanContractAsync, summarizePlanContract, summarizeWorkContract } from "../../../src/runtime/control-plane/facade";
@@ -599,6 +599,11 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
               : await callRhWorkPlanOperation(semanticStore, operation, args);
             if (semanticResult) return semanticResult;
           }
+
+          // Plan orchestration (including the repository-optional semantic scope)
+          // lives in work-plan-operations; the adapter only delegates.
+          const repositoryOptionalPlanResult = await callRhWorkPlanCreateWithoutRepository(ctx, operation, args);
+          if (repositoryOptionalPlanResult) return repositoryOptionalPlanResult;
 
           let repository = selected(ctx, args);
           const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };

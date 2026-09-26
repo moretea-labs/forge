@@ -309,7 +309,8 @@ export interface PlanRevisionDraft {
  * never own active scope, Work, scheduling, or admission authority. */
 export interface PlanRevisionRecord {
   schemaVersion: 1;
-  repoId: string;
+  /** Node-local placement provenance; absent for a ForgeInstance-scoped Plan. */
+  repoId?: string;
   planId: string;
   revision: number;
   requirementId?: string;
@@ -343,7 +344,8 @@ export interface PlanContract {
   semanticUpdatedAt?: string;
   /** Thin model-authored working memory. Once present, legacy steps/status cannot rewrite semantic Plan content. */
   semanticContext?: PlanSemanticContext;
-  repoId: string;
+  /** @deprecated Node-local placement compatibility field; absent for a ForgeInstance-scoped Plan. */
+  repoId?: string;
   /** Stable Requirement owner. Legacy plans may omit this until portfolio migration. */
   requirementId?: string;
   scopeKey: string;

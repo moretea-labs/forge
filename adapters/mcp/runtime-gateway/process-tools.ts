@@ -11,14 +11,17 @@ import type { McpToolDefinition, CallToolResult } from '../../../packages/protoc
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import {
   cancelRepositoryCommandProcess,
+  executeHostCommand,
   getRepositoryCommandProcess,
   readRepositoryCommandProcessLogs,
   waitRepositoryCommandProcess,
 } from '../../../src/runtime/execution/process-runtime';
 import { redactSensitiveText, redactSensitiveValue } from '../../../src/runtime/evidence/sensitive-output';
 import { getProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
+import { forgeInstanceIdFor, readProcessHandleIndexEntry } from '../../../src/runtime/execution/process-runtime/handle-index';
+import { isForgeInstanceProcessScopeKey, isRepositoryProcessScopeKey, processScopeKeyForHandle } from '../../../src/runtime/execution/process-runtime/process-scope';
 import { reconcileTerminalWorkVerifications } from '../../../src/runtime/control-plane/execution/work-verification-service';
-import { selected } from './shared-adapter';
+import { selected, stringList } from './shared-adapter';
 
 function definition(
   name: string,
@@ -43,7 +46,7 @@ function definition(
 
 const repoIdProp = {
   type: 'string',
-  description: 'Repository or ephemeral workspace scope id returned by the originating command. Process must belong to this scope.',
+  description: 'Optional repository or ephemeral workspace scope id returned by the originating command. When omitted, the process handle resolves its own recorded execution target.',
 };
 const processIdProp = {
   type: 'string',
@@ -51,6 +54,23 @@ const processIdProp = {
 };
 
 export const processToolDefinitions: McpToolDefinition[] = [
+  definition(
+    'process_exec',
+    'Execute one command on the Forge instance itself: cwd is an execution argument and no repository, checkout, or Work is required. Requires an explicit broad `process:exec` canonical Grant for this ForgeInstance; Forge does not parse the command to prove path safety. Returns a process handle; attach with process_get/process_wait/process_logs/process_cancel using the handle only.',
+    {
+      command: { type: 'array', items: { type: 'string' }, maxItems: 512, description: 'Typed argv command; command[0] is the executable. Mutually exclusive with shell_command.' },
+      shell_command: { type: 'string', maxLength: 32_000, description: 'Explicit broad shell form. Mutually exclusive with command. Never parsed for path safety.' },
+      cwd: { type: 'string', description: 'Absolute working directory for this execution. Never inferred from an active checkout.' },
+      timeout_ms: { type: 'number' },
+      interactive_wait_ms: { type: 'number' },
+      max_output_bytes: { type: 'number' },
+      request_id: { type: 'string', description: 'Stable invocation id. A retry with the same id attaches to the existing process instead of re-executing.' },
+      work_id: { type: 'string', description: 'Optional Work provenance; Work is never required to run a host command.' },
+    },
+    ['cwd'],
+    false,
+    true,
+  ),
   definition(
     'run_check',
     'Run one focused repository check, or launch one resource-compatible check wave, through Process Runtime. Use check_id for the existing single-check behavior or check_ids for a batch; do not send both. Batch mode validates the existing check-scheduling resource model and starts every check in one compatible wave concurrently without waiting for completion or creating a second scheduler. Cross-wave, invalid, release, and multi-phase batches fail closed. Long ordinary checks return managed handles; attach only at a real dependency boundary.',
@@ -77,7 +97,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
       repo_id: repoIdProp,
       process_id: processIdProp,
     },
-    ['repo_id', 'process_id'],
+    ['process_id'],
     true,
   ),
   definition(
@@ -88,7 +108,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
       process_id: processIdProp,
       timeout_ms: { type: 'number', description: 'Max wait milliseconds (default 15000).' },
     },
-    ['repo_id', 'process_id'],
+    ['process_id'],
     true,
   ),
   definition(
@@ -99,7 +119,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
       process_id: processIdProp,
       max_bytes: { type: 'number', description: 'Max tail bytes per stream (default 32KiB).' },
     },
-    ['repo_id', 'process_id'],
+    ['process_id'],
     true,
   ),
   definition(
@@ -109,7 +129,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
       repo_id: repoIdProp,
       process_id: processIdProp,
     },
-    ['repo_id', 'process_id'],
+    ['process_id'],
     false,
     true,
   ),
@@ -192,21 +212,58 @@ function failure(error: unknown): CallToolResult {
 function requireRepoAndProcess(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
-): { repoId: string; processId: string } {
+): { repoId?: string; processId: string; handle: NonNullable<ReturnType<typeof getRepositoryCommandProcess>> } {
   const repoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
   const processId = typeof args.process_id === 'string' ? args.process_id.trim() : '';
-  if (!repoId) throw new Error('REPOSITORY_ID_REQUIRED: repo_id is required for process tools');
   if (!processId) throw new Error('PROCESS_ID_REQUIRED: process_id is required for process tools');
+  assertProcessHandleAccess(ctx, processId);
 
-  // The Process handle is the scope authority. Ephemeral workspace targets are
-  // intentionally not registered in Repository Registry, so requiring a live
-  // repository record here would make their returned managed handles impossible
-  // to resume. Exact repo/workspace scope + process id still fails closed.
-  const handle = getRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
+  // The Process handle is the scope authority. An explicit repo_id is validated
+  // against the handle's recorded target; when it is omitted the handle index
+  // resolves the target so attachment never needs placement replay. Ephemeral
+  // workspace targets are intentionally not registered in Repository Registry,
+  // so requiring a live repository record here would make their returned
+  // managed handles impossible to resume.
+  const recordedScopeKey = processScopeKeyForHandle(ctx.controllerHome, processId);
+  // A ForgeInstance-scoped handle keeps its instance target even when a client
+  // always sends repo_id; the index remains the target authority.
+  const effectiveScopeKey = recordedScopeKey && isForgeInstanceProcessScopeKey(recordedScopeKey)
+    ? recordedScopeKey
+    : (repoId || recordedScopeKey);
+  const handle = getRepositoryCommandProcess(ctx.controllerHome, effectiveScopeKey, processId);
   if (!handle) {
-    throw new Error(`PROCESS_NOT_FOUND: process ${processId} is not registered under repo ${repoId}`);
+    throw new Error(repoId
+      ? `PROCESS_NOT_FOUND: process ${processId} is not registered under repo ${repoId}`
+      : `PROCESS_NOT_FOUND: ${processId}`);
   }
-  return { repoId, processId };
+  const resolvedScopeKey = recordedScopeKey && isForgeInstanceProcessScopeKey(recordedScopeKey) ? recordedScopeKey : (repoId || recordedScopeKey);
+  const resolvedRepoId = resolvedScopeKey && isRepositoryProcessScopeKey(resolvedScopeKey) ? resolvedScopeKey : undefined;
+  return { repoId: resolvedRepoId || undefined, processId, handle };
+}
+
+/**
+ * A process handle id locates a record; it never authorizes attachment by
+ * itself. Instance-level handles are principal-bound and ForgeInstance-bound,
+ * and a recorded repository principal is enforced when the caller presents one.
+ */
+function assertProcessHandleAccess(ctx: MultiRepositoryMcpToolContext, processId: string): void {
+  const entry = readProcessHandleIndexEntry(ctx.controllerHome, processId);
+  if (!entry) return;
+  const caller = ctx.principalId?.trim();
+  const recorded = entry.principalId?.trim();
+  if (entry.target.scope === 'forge_instance') {
+    const servingInstance = forgeInstanceIdFor(ctx.controllerHome);
+    if (entry.target.forgeInstanceId && servingInstance && entry.target.forgeInstanceId !== servingInstance) {
+      throw new Error(`PROCESS_HANDLE_INSTANCE_MISMATCH: process ${processId} belongs to ForgeInstance ${entry.target.forgeInstanceId}`);
+    }
+    if (!recorded) throw new Error(`PROCESS_HANDLE_PRINCIPAL_UNBOUND: process ${processId} has no recorded principal`);
+    if (!caller) throw new Error(`PROCESS_HANDLE_PRINCIPAL_REQUIRED: process ${processId} requires an authenticated principal`);
+    if (recorded !== caller) throw new Error(`PROCESS_HANDLE_PRINCIPAL_MISMATCH: process ${processId} is owned by another principal`);
+    return;
+  }
+  if (recorded && caller && recorded !== caller) {
+    throw new Error(`PROCESS_HANDLE_PRINCIPAL_MISMATCH: process ${processId} is owned by another principal`);
+  }
 }
 
 function handleToPayload(handle: NonNullable<ReturnType<typeof getRepositoryCommandProcess>>): Record<string, unknown> {
@@ -244,20 +301,22 @@ export async function callProcessTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
+  if (name === 'process_exec') return callProcessExecTool(ctx, args);
   // run_check shares this module's public schema, but its execution authority is
   // the Gateway check facade in router.ts. Only attachment/lifecycle operations
   // consume an existing process_id here.
   if (!processAttachmentToolNames.has(name)) return undefined;
   try {
-    const { repoId, processId } = requireRepoAndProcess(ctx, args);
+    const { repoId, processId, handle: attachedHandle } = requireRepoAndProcess(ctx, args);
+    const scopePayload = repoId ? { repoId } : {};
     switch (name) {
       case 'process_get': {
-        const handle = getRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
-        if (!handle) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-        const workVerificationReconciliation = reconcileAttachedWorkVerification(ctx, repoId, processId, handle);
+        const workVerificationReconciliation = repoId
+          ? reconcileAttachedWorkVerification(ctx, repoId, processId, attachedHandle)
+          : undefined;
         return result({
-          repoId,
-          process: handleToPayload(handle),
+          ...scopePayload,
+          process: handleToPayload(attachedHandle),
           ...(workVerificationReconciliation ? { workVerificationReconciliation } : {}),
         });
       }
@@ -273,9 +332,11 @@ export async function callProcessTool(
         const handle = await waitRepositoryCommandProcess(ctx.controllerHome, repoId, processId, {
           timeoutMs: Math.min(requestedWaitMs, attachBudgetMs),
         });
-        const workVerificationReconciliation = reconcileAttachedWorkVerification(ctx, repoId, processId, handle);
+        const workVerificationReconciliation = repoId
+          ? reconcileAttachedWorkVerification(ctx, repoId, processId, handle)
+          : undefined;
         return result({
-          repoId,
+          ...scopePayload,
           process: handleToPayload(handle),
           ...(workVerificationReconciliation ? { workVerificationReconciliation } : {}),
           synchronization: handle.completed === true ? 'terminal_result_available' : 'continue_independent_work',
@@ -292,7 +353,7 @@ export async function callProcessTool(
         const logs = readRepositoryCommandProcessLogs(ctx.controllerHome, repoId, processId, maxBytes);
         if (!logs) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
         return result({
-          repoId,
+          ...scopePayload,
           processId,
           stdout: logs.stdout,
           stderr: logs.stderr,
@@ -305,7 +366,7 @@ export async function callProcessTool(
       case 'process_cancel': {
         const handle = await cancelRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
         return result({
-          repoId,
+          ...scopePayload,
           process: handleToPayload(handle),
           cancelled: handle.cancelled === true || handle.status === 'cancelled' || handle.status === 'completed_unknown',
         });
@@ -313,6 +374,58 @@ export async function callProcessTool(
       default:
         return undefined;
     }
+  } catch (error) {
+    return failure(error);
+  }
+}
+
+/**
+ * `process_exec` — the canonical host-local command lane.
+ *
+ * Repo-less by construction: the Forge instance is the target and `cwd` is an
+ * execution argument. Authorization is one explicit canonical `process:exec`
+ * Grant for this instance, enforced in the lane before any spawn.
+ */
+async function callProcessExecTool(
+  ctx: MultiRepositoryMcpToolContext,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  try {
+    const command = stringList(args.command);
+    const shellCommand = typeof args.shell_command === 'string' && args.shell_command.trim()
+      ? args.shell_command
+      : undefined;
+    if (command.length > 0 && shellCommand) {
+      throw new Error('HOST_COMMAND_AMBIGUOUS: provide exactly one of command or shell_command');
+    }
+    if (command.length === 0 && !shellCommand) {
+      throw new Error('HOST_COMMAND_REQUIRED: provide command (argv) or shell_command');
+    }
+    const cwd = typeof args.cwd === 'string' ? args.cwd : '';
+    const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+    const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+    const executed = await executeHostCommand({
+      controllerHome: ctx.controllerHome,
+      principalId: ctx.principalId ?? '',
+      ...(command.length > 0 ? { command } : {}),
+      ...(shellCommand ? { shellCommand } : {}),
+      cwd,
+      ...(typeof args.timeout_ms === 'number' ? { timeoutMs: args.timeout_ms } : {}),
+      ...(typeof args.interactive_wait_ms === 'number' ? { interactiveWaitMs: args.interactive_wait_ms } : {}),
+      ...(typeof args.max_output_bytes === 'number' ? { maxOutputBytes: args.max_output_bytes } : {}),
+      ...(requestId ? { commandId: requestId } : {}),
+      ...(workId ? { workId } : {}),
+    });
+    return result({
+      process: handleToPayload(executed.handle),
+      target: {
+        scope: 'forge_instance',
+        forgeInstanceId: executed.target.forgeInstanceId,
+        cwd: executed.target.cwd,
+      },
+      authorization: { capability: 'process:exec', grantId: executed.target.grantId },
+      executionMetrics: executed.metrics,
+    });
   } catch (error) {
     return failure(error);
   }

@@ -33,11 +33,34 @@ function nearestExistingPath(candidate: string): string | undefined {
   return current;
 }
 
+/**
+ * Minimal command execution target. Repository identity stays optional: an
+ * arbitrary workspace target carries only its scope key and root, so command
+ * policy/audit/cwd checks need no fabricated repository record.
+ */
+export interface RepositoryCommandScopeTarget {
+  canonicalRoot: string;
+  /** Registered repository id (`RepositoryRecord.repoId`); absent for an arbitrary workspace target. */
+  repoId?: string;
+  /** Workspace scope key; present only when the target is not a repository. */
+  workspaceScopeKey?: string;
+  activeCheckoutId?: string;
+  defaultBranch?: string;
+  enabled?: boolean;
+}
+
+/** Canonical scope key for command policy/audit/approval storage. */
+export function commandExecutionScopeKey(target: RepositoryCommandScopeTarget): string {
+  const key = target.repoId?.trim() || target.workspaceScopeKey?.trim();
+  if (!key) throw new Error('COMMAND_TARGET_SCOPE_REQUIRED: command target requires a repository id or workspace scope key');
+  return key;
+}
+
 export function resolveRepositoryCommandCwd(
-  repository: RepositoryRecord,
+  repository: RepositoryCommandScopeTarget,
   requestedCwd: string | undefined,
 ): { root: string; cwd: string; relativeCwd: string } {
-  if (!repository.enabled) throw new Error(`REPOSITORY_DISABLED: ${repository.repoId}`);
+  if (repository.enabled === false) throw new Error(`REPOSITORY_DISABLED: ${commandExecutionScopeKey(repository)}`);
   const root = realpathSync(repository.canonicalRoot);
   const raw = requestedCwd?.trim() || '.';
   if (raw.includes('\0')) throw new Error('COMMAND_SCOPE_DENIED: cwd contains a null byte');

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join, relative, resolve } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { isWorkspaceScopeKey, repositoryControllerRoot, scopedOperationRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import type { AccessMode } from './access-policy';
 
@@ -81,13 +81,30 @@ export interface AuthorizationContext {
 }
 
 function requestRoot(controllerHome: string, repoId: string): string {
-  const root = join(repositoryControllerRoot(controllerHome, repoId), 'controller', 'approval-requests');
+  const root = join(scopedOperationRoot(controllerHome, repoId), 'controller', 'approval-requests');
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return root;
 }
 
 function requestPath(controllerHome: string, repoId: string, requestId: string): string {
   return join(requestRoot(controllerHome, repoId), `${sanitizeFileComponent(requestId)}.json`);
+}
+
+/**
+ * Bounded migration read: an approval issued for a workspace scope before the
+ * workspace partition existed is still resolvable instead of failing closed as
+ * a missing request.
+ */
+function readableRequestPath(controllerHome: string, repoId: string, requestId: string): string {
+  const current = requestPath(controllerHome, repoId, requestId);
+  if (existsSync(current) || !isWorkspaceScopeKey(repoId)) return current;
+  const legacy = join(
+    repositoryControllerRoot(controllerHome, repoId),
+    'controller',
+    'approval-requests',
+    `${sanitizeFileComponent(requestId)}.json`,
+  );
+  return existsSync(legacy) ? legacy : current;
 }
 
 function scopeMatches(context: AuthorizationContext): boolean {
@@ -163,7 +180,7 @@ export function createGoalDelegation(input: Omit<GoalDelegation, 'schemaVersion'
 }
 
 export function readAuthorizationRequest(controllerHome: string, repositoryId: string, approvalRequestId: string): AuthorizationRequestRecord {
-  const path = requestPath(controllerHome, repositoryId, approvalRequestId);
+  const path = readableRequestPath(controllerHome, repositoryId, approvalRequestId);
   if (!existsSync(path)) throw new Error(`APPROVAL_REQUEST_NOT_FOUND: ${approvalRequestId}`);
   const request = readJsonFile<AuthorizationRequestRecord>(path);
   if (request.repositoryId !== repositoryId || request.approvalRequestId !== approvalRequestId) throw new Error('APPROVAL_REQUEST_IDENTITY_MISMATCH');

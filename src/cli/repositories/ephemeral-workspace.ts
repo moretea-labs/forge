@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync, realpathSync, statSync } from 'fs';
-import { isAbsolute, join } from 'path';
-import type { RepositoryRecord } from './types';
+import { isAbsolute } from 'path';
+import type { RepositoryCommandScopeTarget } from './command-scope';
 
 export interface EphemeralWorkspaceCoordinates {
   workspaceId: string;
@@ -10,7 +10,11 @@ export interface EphemeralWorkspaceCoordinates {
 }
 
 export interface EphemeralWorkspaceTarget extends EphemeralWorkspaceCoordinates {
-  repository: RepositoryRecord;
+  /**
+   * Typed command target for an arbitrary workspace: it carries the workspace
+   * scope key and root, and no repository identity at all.
+   */
+  commandTarget: RepositoryCommandScopeTarget;
 }
 
 export function ephemeralWorkspaceCoordinates(rootInput: string): EphemeralWorkspaceCoordinates {
@@ -29,34 +33,20 @@ export function ephemeralWorkspaceCoordinates(rootInput: string): EphemeralWorks
   };
 }
 
-export function resolveEphemeralWorkspaceTarget(rootInput: string, controllerHome: string): EphemeralWorkspaceTarget {
+/**
+ * `controllerHome` is retained for call-site compatibility; an arbitrary
+ * workspace owns no controller-scoped repository record.
+ */
+export function resolveEphemeralWorkspaceTarget(rootInput: string, _controllerHome?: string): EphemeralWorkspaceTarget {
   const coordinates = ephemeralWorkspaceCoordinates(rootInput);
-  const now = new Date().toISOString();
-  const repository: RepositoryRecord = {
-    schemaVersion: 1,
-    repoId: coordinates.workspaceId,
-    displayName: `Ephemeral Workspace (${coordinates.canonicalRoot.split(/[\\/]/).at(-1) || 'root'})`,
-    localRoot: coordinates.canonicalRoot,
-    canonicalRoot: coordinates.canonicalRoot,
-    activeCheckoutId: coordinates.checkoutId,
-    checkouts: [{
-      checkoutId: coordinates.checkoutId,
-      localRoot: coordinates.canonicalRoot,
+  return {
+    ...coordinates,
+    commandTarget: {
       canonicalRoot: coordinates.canonicalRoot,
-      worktree: false,
-      branch: null,
-      createdAt: now,
-      updatedAt: now,
-      lastSeenAt: now,
-      lifecycle: 'active',
-    }],
-    repositoryType: 'unknown',
-    enabled: true,
-    createdAt: now,
-    updatedAt: now,
-    lastSeenAt: now,
-    configurationPath: join(controllerHome, 'ephemeral-workspaces', `${coordinates.workspaceId}.json`),
-    stateStorageStrategy: 'controller-home',
+      workspaceScopeKey: coordinates.workspaceId,
+      // The workspace's own checkout coordinate, never a repository checkout id.
+      activeCheckoutId: coordinates.checkoutId,
+      enabled: true,
+    },
   };
-  return { ...coordinates, repository };
 }

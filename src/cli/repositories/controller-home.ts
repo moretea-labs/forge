@@ -283,6 +283,48 @@ export function repositoryControllerRoot(controllerHome: string, repoId: string)
     : join(resolveControllerHome(durableHome), 'repositories', repoId);
 }
 
+/** Reserved prefix for arbitrary workspace scopes; registered repository ids are `repo_*`. */
+export const WORKSPACE_SCOPE_PREFIX = 'workspace_';
+
+/**
+ * Reserved scope key for portable semantic facts (Requirement/Plan/Work) that
+ * belong to the ForgeInstance rather than to one repository. Repository and
+ * project placement stays optional provenance on those records.
+ */
+export const SEMANTIC_SCOPE_KEY = 'semantic';
+
+export function isWorkspaceScopeKey(scopeKey: string): boolean {
+  return scopeKey.trim().startsWith(WORKSPACE_SCOPE_PREFIX);
+}
+
+export function isSemanticScopeKey(scopeKey: string): boolean {
+  return scopeKey.trim() === SEMANTIC_SCOPE_KEY;
+}
+
+/**
+ * Controller-Home root for an arbitrary workspace scope. A workspace has no
+ * repository semantics, so its operation facts own a sibling partition instead
+ * of a repository partition.
+ */
+export function workspaceScopeRoot(controllerHome: string, scopeKey: string): string {
+  const key = scopeKey.trim();
+  if (!isWorkspaceScopeKey(key)) throw new Error(`WORKSPACE_SCOPE_KEY_REQUIRED: ${scopeKey}`);
+  return join(resolveControllerHome(durableControllerHome(controllerHome)), 'workspaces', key);
+}
+
+/**
+ * Controller-Home root for one operation scope key. Repository scopes (including
+ * the controller-system sentinel) keep their established root; workspace scopes
+ * own the workspace partition.
+ */
+export function scopedOperationRoot(controllerHome: string, scopeKey: string): string {
+  return isWorkspaceScopeKey(scopeKey)
+    ? workspaceScopeRoot(controllerHome, scopeKey)
+    : isSemanticScopeKey(scopeKey)
+      ? join(resolveControllerHome(durableControllerHome(controllerHome)), SEMANTIC_SCOPE_KEY)
+      : repositoryControllerRoot(controllerHome, scopeKey);
+}
+
 export function ensureRepositoryControllerLayout(controllerHome: string, repoId: string): string {
   const root = repositoryControllerRoot(controllerHome, repoId);
   for (const child of [
