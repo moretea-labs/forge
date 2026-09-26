@@ -3,6 +3,7 @@ import { getRepository } from '../../cli/repositories/registry';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
   beginControllerRoundRelayAfterRelease,
+  controllerRoundBlockerClass,
   controllerRoundProviderEffectId,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
@@ -271,10 +272,16 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }
-    if (!workflowSupervisorLowerLayerReadyForWork(store, relay.originWorkId).ready) {
+    const lowerLayerReady = workflowSupervisorLowerLayerReadyForWork(store, relay.originWorkId).ready;
+    const outcomeUnknownEffectAwaitingObservation = relay.status === 'blocked'
+      && controllerRoundBlockerClass(relay) === 'provider_dispatch_outcome_unknown'
+      && (relay.providerDispatchAttempt ?? 0) > 0
+      && Boolean(relay.providerDispatchEffectId?.trim());
+    if (!lowerLayerReady && !outcomeUnknownEffectAwaitingObservation) {
       // A blocked/paused lower layer must not make the native adapter rescan
-      // the full Controller record set every second. The next Scheduler or
-      // Controller transition is still observed within this bounded TTL.
+      // the full Controller record set every second. The sole blocked exception
+      // is an already-started outcome-unknown provider effect: Supervisor must
+      // keep observing that exact effect so it can reconcile, never resend it.
       lowerLayerNotReadyUntilByTask.set(task.taskId, nowMs + LOWER_LAYER_NOT_READY_CACHE_MS);
       return false;
     }

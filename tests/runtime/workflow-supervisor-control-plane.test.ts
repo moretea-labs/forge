@@ -658,6 +658,12 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
   const effect = control.reserveEnrollment(taskId, providerDispatchEffectId);
   expect(effect.effectId).toBe(providerDispatchEffectId);
+  const began = control.browserBeginEffect({
+    conversationId, conversationUrl, effectId: providerDispatchEffectId,
+    dispatchId: 'dispatch-late-provider-confirmation', dispatchGeneration: 1,
+    evidence: { surface: 'test', latest_user_text: 'before late confirmation', latest_assistant_response: '' },
+  });
+  expect(began).toEqual({ started: true, mode: 'send', generation: 1 });
 
   const blocked = finishControllerRoundRelayDispatch(fx.store, {
     workId, ok: false, outcomeUnknown: true, providerDispatchEffectId,
@@ -669,6 +675,15 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
     providerDispatchEffectId,
     authorityId: initial.authorityId,
   });
+  expect(control.browserTasks()).toEqual([
+    expect.objectContaining({ taskId, conversationId, conversationUrl }),
+  ]);
+  expect(control.browserPoll({ conversationId, conversationUrl }).command).toMatchObject({
+    mode: 'reconcile',
+    effectId: providerDispatchEffectId,
+    dispatchGeneration: 1,
+  });
+  expect(supervisorStore.latestEffectDispatch(providerDispatchEffectId)?.generation).toBe(1);
 
   control.browserObserveEffect({
     conversationId, conversationUrl, effectId: providerDispatchEffectId,

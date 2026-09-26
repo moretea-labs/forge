@@ -375,11 +375,15 @@ export async function runSchedulerControllerRoundRecovery(input: {
           continue;
         }
         if (boundary.status === 'conversation_pending') {
-          const providerDispatchNeverStarted = record.lastError === 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
-            && (record.providerDispatchAttempt ?? 0) === 0
+          // Whether provider dispatch ever began is a durable effect fact. lastError
+          // is diagnostic history and may be overwritten by a later recovery pass;
+          // using it as replay authority can permanently misclassify a proven
+          // pre-provider interruption as a possibly committed send.
+          const providerDispatchNeverStarted = (record.providerDispatchAttempt ?? 0) === 0
             && !record.providerDispatchEffectId
             && !record.providerDispatchStartedAt
-            && !record.providerDispatchReceiptId;
+            && !record.providerDispatchReceiptId
+            && !record.dispatchedAt;
           if (!providerDispatchNeverStarted) {
             // Once provider dispatch may have started, exact conversation identity
             // is the replay fence. Never manufacture a replacement conversation

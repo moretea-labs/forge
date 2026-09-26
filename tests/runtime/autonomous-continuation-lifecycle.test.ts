@@ -1287,7 +1287,23 @@ describe('autonomous continuation lifecycle', () => {
     });
     expect(opened.status).toBe('dispatching');
     expect(opened.providerDispatchAttempt ?? 0).toBe(0);
-    const recoveryAt = Date.parse(opened.updatedAt) + 61_000;
+    const diagnosticFailureAt = Date.parse(opened.updatedAt) + 1_000;
+    const diagnosticFailure = finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      error: 'WORKFLOW_SUPERVISOR_EXACT_WORK_CONVERSATION_REQUIRED',
+      recovery: true,
+      nowMs: diagnosticFailureAt,
+    })!;
+    expect(diagnosticFailure).toMatchObject({
+      status: 'dispatching',
+      lastError: 'WORKFLOW_SUPERVISOR_EXACT_WORK_CONVERSATION_REQUIRED',
+    });
+    expect(diagnosticFailure.providerDispatchAttempt ?? 0).toBe(0);
+    expect(diagnosticFailure.providerDispatchEffectId).toBeUndefined();
+    expect(diagnosticFailure.providerDispatchStartedAt).toBeUndefined();
+    expect(diagnosticFailure.providerDispatchReceiptId).toBeUndefined();
+    const recoveryAt = Date.parse(diagnosticFailure.nextRecoveryAt!);
     const observed: Array<Record<string, unknown>> = [];
 
     const result = await runSchedulerControllerRoundRecovery({
