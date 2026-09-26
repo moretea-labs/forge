@@ -480,7 +480,24 @@ export class WorkflowSupervisorStore {
       const existing = statement(db, 'SELECT completion_fingerprint FROM completions WHERE completion_fingerprint = ?', (s) => s.get(input.completionFingerprint));
       if (!existing) statement(db, 'INSERT INTO completions VALUES (?,?,?,?,?,?,?,?)', (s) => s.run(input.completionFingerprint, input.taskId, input.sourceEffectId, input.action, input.responseSha256, input.controlBlockSha256, json(input.proposal), input.committedAt));
       statement(db, 'INSERT OR IGNORE INTO events(task_id,event_key,kind,effect_id,completion_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)', (s) => s.run(input.taskId, `completion:${input.completionFingerprint}`, 'assistant_completion', input.sourceEffectId, input.completionFingerprint, json(input.proposal), input.committedAt));
-      const successorEffect = successor ? this.reserveEffectWithin(db, { taskId: input.taskId, effectId: successor.effectId, kind: successor.kind, originKey: `completion:${input.completionFingerprint}`, sourceCompletionFingerprint: input.completionFingerprint, prompt: successor.prompt }) : undefined;
+      let successorEffect: WorkflowSupervisorEffect | undefined;
+      if (successor) {
+        const originKey = `completion:${input.completionFingerprint}`;
+        const priorSuccessorRow = existing
+          ? statement(db, 'SELECT * FROM effects WHERE origin_key = ?', (s) => s.get(originKey)) as Record<string, unknown> | undefined
+          : undefined;
+        if (priorSuccessorRow) {
+          const priorSuccessor = effectFromRow(priorSuccessorRow);
+          if (priorSuccessor.taskId !== input.taskId) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_TASK_CONFLICT:${originKey}`);
+          if (priorSuccessor.kind !== successor.kind) throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_KIND_CONFLICT:${originKey}`);
+          if ((priorSuccessor.sourceCompletionFingerprint ?? '') !== input.completionFingerprint) {
+            throw new Error(`WORKFLOW_SUPERVISOR_EFFECT_SOURCE_CONFLICT:${originKey}`);
+          }
+          successorEffect = priorSuccessor;
+        } else {
+          successorEffect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: successor.effectId, kind: successor.kind, originKey, sourceCompletionFingerprint: input.completionFingerprint, prompt: successor.prompt });
+        }
+      }
       return { completion: input, ...(successorEffect ? { successorEffect } : {}), deduplicated: Boolean(existing) };
     });
   }
