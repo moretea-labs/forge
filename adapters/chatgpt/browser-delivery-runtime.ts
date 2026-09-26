@@ -749,8 +749,14 @@ export async function navigateWorkConversation(
       const opened = await controllerBrowserAction(controllerHome, workId, 'create_session', {
         session_id: sessionId,
         url,
-        browser_mode: 'managed_persistent',
-        native_attach_mode: 'disabled',
+        // Replacement must follow the Controller Browser configuration. A
+        // user-owned Chrome profile may already be live and logged in; forcing
+        // a managed context here launches a second Chromium against that
+        // profile and fails with "profile is already in use". The configured
+        // attach-preferred provider can create a Forge-owned tab in the live
+        // browser while preserving the exact session identity.
+        browser_mode: 'attach_preferred',
+        native_attach_mode: 'auto',
         cdp_attach_fallback: 'fail_closed',
         wait_until: 'domcontentloaded',
         timeout_ms: timeoutMs ?? 60_000,
