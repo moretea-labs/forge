@@ -1277,7 +1277,7 @@ export function claimControllerRoundSession(
     const repeatedStateFingerprint = controllerRoundBlockerClass(lockedRelay.value) === 'repeated_state'
       ? (() => {
           const work = getWorkContract(options, input.workId);
-          if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_CONTROLLER_CLAIM_TERMINAL: ${input.workId}:${work?.status ?? 'missing'}`);
+          if (!work) throw new Error(`WORK_CONTROLLER_CONTEXT_MISSING: ${input.workId}`);
           return mechanicalStateFingerprint(options, work, lockedRelay.value.requirementId, lockedRelay.value.relayScopeId, lockedRelay.value.handoffId);
         })()
       : undefined;

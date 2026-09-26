@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
+import { FORGE_INSTANCE_SCOPE_KEY, repositoryControllerRoot } from '../../../../src/cli/repositories/controller-home';
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import {
   peekExecutionSession,
@@ -10,15 +10,18 @@ import { readJsonFile } from '../../../../src/runtime/shared/json-files';
 import {
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
-  readOrImportControlPlaneRecord,
   writeControlPlaneRecord,
   writeControlPlaneRecordWithinTransaction,
   type SqliteDatabase,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
-import { getWorkContract, isTerminalWorkContractStatus } from '../../work/api/index';
 import { type ControllerSession, type ControllerSessionStore, type ControllerType } from '../domain/types';
 
-export interface ControllerSessionStoreOptions { controllerHome: string; repoId: string; now?: () => string; }
+export interface ControllerSessionStoreOptions {
+  controllerHome: string;
+  /** Legacy repository provenance/migration hint only; canonical ControllerSession state is ForgeInstance-scoped. */
+  repoId: string;
+  now?: () => string;
+}
 
 const SESSION_STORE_NAMESPACE = 'controller_session_claim_store';
 const SESSION_STORE_KEY = 'index';
@@ -52,21 +55,68 @@ function path(options: ControllerSessionStoreOptions): string {
 
 function now(options: ControllerSessionStoreOptions): string { return options.now?.() ?? new Date().toISOString(); }
 
+function legacyStore(options: ControllerSessionStoreOptions): ControllerSessionStore {
+  const sqlite = readControlPlaneRecord<ControllerSessionStore>(
+    options.controllerHome,
+    SESSION_STORE_NAMESPACE,
+    options.repoId,
+    SESSION_STORE_KEY,
+  )?.value;
+  if (sqlite) return sqlite;
+  return readJsonFile<ControllerSessionStore>(path(options), {
+    schemaVersion: 1,
+    updatedAt: now(options),
+    sessions: [],
+  });
+}
+
+function mergeSessionStores(
+  canonical: ControllerSessionStore,
+  legacy: ControllerSessionStore,
+): ControllerSessionStore {
+  const sessions = new Map(canonical.sessions.map((session) => [session.workId, session]));
+  for (const candidate of legacy.sessions) {
+    const existing = sessions.get(candidate.workId);
+    if (!existing) {
+      sessions.set(candidate.workId, candidate);
+      continue;
+    }
+    if (JSON.stringify(existing) === JSON.stringify(candidate)) continue;
+    const existingGeneration = existing.claimGeneration ?? 0;
+    const candidateGeneration = candidate.claimGeneration ?? 0;
+    const existingClaimedAt = Date.parse(existing.claimedAt);
+    const candidateClaimedAt = Date.parse(candidate.claimedAt);
+    if (existingGeneration > candidateGeneration
+      || (existingGeneration === candidateGeneration
+        && Number.isFinite(existingClaimedAt)
+        && Number.isFinite(candidateClaimedAt)
+        && existingClaimedAt > candidateClaimedAt)) {
+      // Canonical state has advanced since the read-only legacy snapshot.
+      continue;
+    }
+    throw new Error(`CONTROLLER_SESSION_ID_COLLISION: ${candidate.workId}`);
+  }
+  return {
+    schemaVersion: 1,
+    updatedAt: canonical.updatedAt >= legacy.updatedAt ? canonical.updatedAt : legacy.updatedAt,
+    sessions: [...sessions.values()],
+  };
+}
+
 function read(options: ControllerSessionStoreOptions): ControllerSessionStore {
-  const legacyPath = path(options);
-  return readOrImportControlPlaneRecord<ControllerSessionStore>(options.controllerHome, {
-    namespace: SESSION_STORE_NAMESPACE,
-    scope: options.repoId,
-    key: SESSION_STORE_KEY,
-    schemaVersion: SESSION_STORE_SCHEMA_VERSION,
-    readLegacy: () => readJsonFile<ControllerSessionStore>(legacyPath, { schemaVersion: 1, updatedAt: now(options), sessions: [] }),
-  })?.value ?? { schemaVersion: 1, updatedAt: now(options), sessions: [] };
+  const canonical = readControlPlaneRecord<ControllerSessionStore>(
+    options.controllerHome,
+    SESSION_STORE_NAMESPACE,
+    FORGE_INSTANCE_SCOPE_KEY,
+    SESSION_STORE_KEY,
+  )?.value ?? { schemaVersion: 1 as const, updatedAt: now(options), sessions: [] };
+  return mergeSessionStores(canonical, legacyStore(options));
 }
 
 function write(options: ControllerSessionStoreOptions, store: ControllerSessionStore): void {
   writeControlPlaneRecord(options.controllerHome, {
     namespace: SESSION_STORE_NAMESPACE,
-    scope: options.repoId,
+    scope: FORGE_INSTANCE_SCOPE_KEY,
     key: SESSION_STORE_KEY,
     schemaVersion: SESSION_STORE_SCHEMA_VERSION,
     value: store,
@@ -99,7 +149,7 @@ function persistRetainedControllerSession(
 ): void {
   writeControlPlaneRecord(options.controllerHome, {
     namespace: RETAINED_SESSION_NAMESPACE,
-    scope: options.repoId,
+    scope: FORGE_INSTANCE_SCOPE_KEY,
     key: session.workId,
     schemaVersion: 1,
     value: retainedControllerSessionRecord(options, session, releasedAt),
@@ -115,7 +165,7 @@ function persistRetainedControllerSessionWithinTransaction(
 ): void {
   writeControlPlaneRecordWithinTransaction(database, {
     namespace: RETAINED_SESSION_NAMESPACE,
-    scope: options.repoId,
+    scope: FORGE_INSTANCE_SCOPE_KEY,
     key: session.workId,
     schemaVersion: 1,
     value: retainedControllerSessionRecord(options, session, releasedAt),
@@ -128,14 +178,32 @@ export function getRetainedControllerSession(
   options: ControllerSessionStoreOptions,
   workId: string,
 ): ControllerSession | undefined {
-  const retained = readControlPlaneRecord<RetainedControllerSessionRecord>(
+  const canonical = readControlPlaneRecord<RetainedControllerSessionRecord>(
+    options.controllerHome,
+    RETAINED_SESSION_NAMESPACE,
+    FORGE_INSTANCE_SCOPE_KEY,
+    workId,
+  )?.value.session;
+  const legacy = readControlPlaneRecord<RetainedControllerSessionRecord>(
     options.controllerHome,
     RETAINED_SESSION_NAMESPACE,
     options.repoId,
     workId,
   )?.value.session;
-  if (retained) return retained;
-  return read(options).sessions.find((entry) => entry.workId === workId);
+  if (canonical && legacy && JSON.stringify(canonical) !== JSON.stringify(legacy)) {
+    const canonicalGeneration = canonical.claimGeneration ?? 0;
+    const legacyGeneration = legacy.claimGeneration ?? 0;
+    const canonicalClaimedAt = Date.parse(canonical.claimedAt);
+    const legacyClaimedAt = Date.parse(legacy.claimedAt);
+    if (!(canonicalGeneration > legacyGeneration
+      || (canonicalGeneration === legacyGeneration
+        && Number.isFinite(canonicalClaimedAt)
+        && Number.isFinite(legacyClaimedAt)
+        && canonicalClaimedAt > legacyClaimedAt))) {
+      throw new Error(`CONTROLLER_SESSION_ID_COLLISION: ${workId}`);
+    }
+  }
+  return canonical ?? legacy ?? read(options).sessions.find((entry) => entry.workId === workId);
 }
 
 const DEFAULT_CONTROLLER_RECOVERY_GRACE_MS = 5 * 60_000;
@@ -190,17 +258,11 @@ function assertIdentity(input: ControllerSessionClaimInput): void {
   }
 }
 
-function assertWorkClaimable(options: ControllerSessionStoreOptions, workId: string): void {
-  const work = getWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, workId);
-  if (work && isTerminalWorkContractStatus(work.status)) {
-    throw new Error(`WORK_CONTROLLER_CLAIM_TERMINAL: ${work.workId}:${work.status}`);
-  }
-}
-
-/** Validate Work claimability while the canonical ControllerSession lock is held, before opening a SQLite write transaction. */
-export function assertControllerSessionWorkClaimable(options: ControllerSessionStoreOptions, workId: string): void {
-  assertWorkClaimable(options, workId);
-}
+/**
+ * Compatibility no-op. ControllerSession is mechanical dispatch/reattachment
+ * state and does not decide whether semantic Work is open or terminal.
+ */
+export function assertControllerSessionWorkClaimable(_options: ControllerSessionStoreOptions, _workId: string): void {}
 
 function claimedSession(
   options: ControllerSessionStoreOptions,
@@ -277,17 +339,24 @@ function readSessionStoreWithinTransaction(
   options: ControllerSessionStoreOptions,
 ) {
   let current = readControlPlaneRecordWithinTransaction<ControllerSessionStore>(
-    database, SESSION_STORE_NAMESPACE, options.repoId, SESSION_STORE_KEY,
+    database, SESSION_STORE_NAMESPACE, FORGE_INSTANCE_SCOPE_KEY, SESSION_STORE_KEY,
   );
-  if (current) return current;
-  const legacy = readJsonFile<ControllerSessionStore>(path(options), { schemaVersion: 1, updatedAt: now(options), sessions: [] });
+  const legacySqlite = readControlPlaneRecordWithinTransaction<ControllerSessionStore>(
+    database, SESSION_STORE_NAMESPACE, options.repoId, SESSION_STORE_KEY,
+  )?.value;
+  const legacy = legacySqlite ?? readJsonFile<ControllerSessionStore>(path(options), {
+    schemaVersion: 1,
+    updatedAt: now(options),
+    sessions: [],
+  });
+  if (current) return { ...current, value: mergeSessionStores(current.value, legacy) };
   current = writeControlPlaneRecordWithinTransaction(database, {
     namespace: SESSION_STORE_NAMESPACE,
-    scope: options.repoId,
+    scope: FORGE_INSTANCE_SCOPE_KEY,
     key: SESSION_STORE_KEY,
     schemaVersion: SESSION_STORE_SCHEMA_VERSION,
     value: legacy,
-    action: 'legacy_import',
+    action: 'legacy_controller_session_import',
     expectedRevision: null,
   });
   return current;
@@ -303,7 +372,7 @@ function persistClaimWithinTransaction(
   const prepared = preparedClaim(options, storeRecord.value, input, previous);
   writeControlPlaneRecordWithinTransaction(database, {
     namespace: SESSION_STORE_NAMESPACE,
-    scope: options.repoId,
+    scope: FORGE_INSTANCE_SCOPE_KEY,
     key: SESSION_STORE_KEY,
     schemaVersion: SESSION_STORE_SCHEMA_VERSION,
     value: prepared.nextStore,
@@ -468,7 +537,7 @@ export function withControllerSessionTerminalizationFence<T>(
 ): ControllerTerminalizationFenceResult<T> {
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
+    { scope: 'global', resource: 'controller-session-store' },
     input.actor,
     () => {
       const owner = activeSession(read(options), input.workId, optionsNowMs(options));
@@ -501,7 +570,7 @@ export function releaseControllerSessionWithAuthority(
 ): ControllerTerminalizationFenceResult<void> {
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
+    { scope: 'global', resource: 'controller-session-store' },
     input.actor,
     () => {
       const store = read(options);
@@ -543,10 +612,9 @@ export function claimControllerSession(
   assertIdentity(input);
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
+    { scope: 'global', resource: 'controller-session-store' },
     `controller-claim:${input.controllerId}:${input.sessionId}`,
     () => {
-      assertWorkClaimable(options, input.workId);
       const store = read(options);
       const current = activeSession(store, input.workId, optionsNowMs(options));
       const previous = current ?? store.sessions
@@ -611,7 +679,7 @@ export function withControllerSessionMutationLock<T>(
 ): T {
   return withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${workId}` },
+    { scope: 'global', resource: 'controller-session-store' },
     actor,
     operation,
   );
@@ -643,7 +711,6 @@ export function resumeControllerSession(
     input.workId,
     `controller-resume:${input.controllerId}:${input.sessionId}`,
     () => {
-      assertWorkClaimable(options, input.workId);
       const store = read(options);
       const previous = resumableControllerSessionPrevious(options, store, input);
       return persistClaim(options, store, input, previous);
@@ -713,7 +780,7 @@ export function bindControllerSessionToCurrentRuntime(
 export function releaseControllerSession(options: ControllerSessionStoreOptions, workId: string, controllerId: string): void {
   withControllerLock(
     options.controllerHome,
-    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${workId}` },
+    { scope: 'global', resource: 'controller-session-store' },
     `controller-release:${controllerId}`,
     () => {
       const store = read(options);
