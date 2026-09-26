@@ -18,8 +18,8 @@ import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { getWorkContract, recordCancelledWorkCleanupCompleted, semanticWorkState } from '../../../../packages/kernel/work/api/index';
-import { markOwnedResourceCleaned, markOwnedResourceRetained } from '../../../../packages/kernel/identity/api/index';
-import { managedBranchOwnedResourceId, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
+import { assertOwnedResourceCleanupTarget, markOwnedResourceCleaned, markOwnedResourceRetained } from '../../../../packages/kernel/identity/api/index';
+import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
 import { isRepositoryCompletionReceipt, type WorkContract } from '../facade/types';
 import {
   cancelProcess,
@@ -543,6 +543,7 @@ function prepareManagedBranchPreservation(
 }
 
 function applyManagedBranchCleanup(
+  controllerHome: string,
   target: ReturnType<typeof getRepository>,
   current: WorkHandleState,
   targetBranch: string,
@@ -570,6 +571,21 @@ function applyManagedBranchCleanup(
     receipt.branchCleanup.reason = 'Unique commits are not archived.';
     addBlocker(receipt, `BRANCH_UNPRESERVED: ${current.branch}`);
   } else {
+    // Branch deletion requires the canonical OwnedResource witness in addition
+    // to Git relation checks. Repository/ref shape alone is not cleanup authority.
+    try {
+      assertOwnedResourceCleanupTarget(controllerHome, {
+        resourceId: managedBranchOwnedResourceId(current.repositoryId, current.checkoutId),
+        kind: 'git_branch',
+        targetRef: current.branch,
+        locator: managedBranchOwnedResourceLocator(target.canonicalRoot, current.checkoutId, current.branch),
+      });
+    } catch (error) {
+      receipt.branchCleanup.status = 'retained';
+      receipt.branchCleanup.reason = error instanceof Error ? error.message : String(error);
+      addBlocker(receipt, `OWNED_BRANCH_CLEANUP_FENCED: ${receipt.branchCleanup.reason}`);
+      return;
+    }
     // We already proved the exact branch relation against targetBranch above.
     // `git branch -d` instead consults the checkout's current HEAD, which may be
     // an older/stale source checkout and can falsely reject a branch that is
@@ -952,6 +968,19 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   }
 
   if (existsSync(current.worktreePath)) {
+    try {
+      assertOwnedResourceCleanupTarget(input.controllerHome, {
+        resourceId: managedWorkspaceOwnedResourceId(current.repositoryId, current.checkoutId),
+        kind: 'worktree',
+        targetRef: current.worktreePath,
+      });
+    } catch (error) {
+      receipt.worktree.status = 'retained';
+      receipt.worktree.reason = error instanceof Error ? error.message : String(error);
+      addBlocker(receipt, `OWNED_WORKTREE_CLEANUP_FENCED: ${receipt.worktree.reason}`);
+      current = persist(input.controllerHome, current, receipt);
+      return { handle: current, receipt };
+    }
     const removed = git(target.canonicalRoot, ['worktree', 'remove', '--force', current.worktreePath], 60_000);
     if (!removed.ok && existsSync(current.worktreePath)) {
       receipt.worktree.status = 'failed';
@@ -988,6 +1017,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   }
 
   applyManagedBranchCleanup(
+    input.controllerHome,
     target,
     current,
     targetBranch,

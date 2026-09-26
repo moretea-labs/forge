@@ -40,6 +40,8 @@ import { existsSync, realpathSync } from 'fs';
 import { basename, resolve } from 'path';
 import { compactHandle, contractFor, gitChangedPaths, gitCommit, gitHead, gitMergeBase, gitRevision, identityFor, reconcileTerminalCleanup, requireSession, selectWorkFinalizationTarget, terminalCleanupOutcome, workForSession, workReturnCheckoutId } from './work-execution-support';
 import { gitIsAncestor } from './direct-canonical-work-reconciliation';
+import { assertOwnedResourceCleanupTarget, markOwnedResourceCleaned } from '../../../../packages/kernel/identity/api/index';
+import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../execution/managed-workspace';
 
 export interface WorkTargetAdvanceInspection {
   relation: 'candidate_contains_target' | 'target_contains_candidate' | 'diverged_clean' | 'diverged_conflict';
@@ -1251,13 +1253,34 @@ function completionReceiptForFinalizedWork(
   };
 }
 
-function runCleanup(targetRoot: string, worktreePath: string): { ok: boolean; message?: string } {
+function runCleanup(controllerHome: string, targetRoot: string, handle: WorkHandleState): { ok: boolean; message?: string } {
+  const worktreePath = handle.worktreePath;
   if (targetRoot === worktreePath) return { ok: true };
   if (!existsSync(worktreePath)) return { ok: true, message: 'managed worktree already removed' };
+  try {
+    assertOwnedResourceCleanupTarget(controllerHome, {
+      resourceId: managedWorkspaceOwnedResourceId(handle.repositoryId, handle.checkoutId),
+      kind: 'worktree',
+      targetRef: worktreePath,
+    });
+  } catch (error) {
+    return { ok: false, message: `OWNED_WORKTREE_CLEANUP_FENCED: ${error instanceof Error ? error.message : String(error)}` };
+  }
   const status = repositoryGitStatus({ repoId: 'cleanup', activeCheckoutId: 'cleanup', canonicalRoot: worktreePath, localRoot: worktreePath, checkouts: [], schemaVersion: 1, displayName: basename(worktreePath), repositoryType: 'git', enabled: true, createdAt: '', updatedAt: '', lastSeenAt: '', configurationPath: '', stateStorageStrategy: 'controller-home' });
   if (!status.clean) return { ok: false, message: 'managed worktree is dirty; cleanup preserved it' };
   const process = spawnSync('git', ['-C', targetRoot, 'worktree', 'remove', worktreePath], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
-  return process.status === 0 ? { ok: true } : { ok: false, message: String(process.stderr ?? 'git worktree remove failed').trim() };
+  if (process.status !== 0) return { ok: false, message: String(process.stderr ?? 'git worktree remove failed').trim() };
+  markOwnedResourceCleaned(controllerHome, managedWorkspaceOwnedResourceId(handle.repositoryId, handle.checkoutId), 'forge:legacy-work-finalizer');
+  return { ok: true };
+}
+
+function assertFinalizerOwnedBranch(controllerHome: string, targetRoot: string, handle: WorkHandleState): void {
+  assertOwnedResourceCleanupTarget(controllerHome, {
+    resourceId: managedBranchOwnedResourceId(handle.repositoryId, handle.checkoutId),
+    kind: 'git_branch',
+    targetRef: handle.branch,
+    locator: managedBranchOwnedResourceLocator(targetRoot, handle.checkoutId, handle.branch),
+  });
 }
 
 /**
@@ -2113,7 +2136,7 @@ async function finalizeWorkInternal(
         getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
         current,
       );
-      const cleanup = runCleanup(target.canonicalRoot, current.worktreePath);
+      const cleanup = runCleanup(ctx.controllerHome, target.canonicalRoot, current);
       if (!cleanup.ok) {
         throw new Error(`WORK_FAILED_CLEANUP_UNSAFE: ${cleanup.message ?? 'managed worktree cleanup failed'}`);
       }
@@ -2140,6 +2163,11 @@ async function finalizeWorkInternal(
         getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
         current,
       );
+      try {
+        assertFinalizerOwnedBranch(ctx.controllerHome, target.canonicalRoot, current);
+      } catch (error) {
+        throw new Error(`WORK_FAILED_BRANCH_CLEANUP_OWNERSHIP_FENCED: ${error instanceof Error ? error.message : String(error)}`);
+      }
       const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, {
         branch: current.branch,
         force: false,
@@ -2171,6 +2199,7 @@ async function finalizeWorkInternal(
           failurePreserved: true,
         };
       }
+      markOwnedResourceCleaned(ctx.controllerHome, managedBranchOwnedResourceId(current.repositoryId, current.checkoutId), 'forge:legacy-work-finalizer');
       current = transact('failed-branch-cleanup-done', (fresh) => {
         markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:failed-branch`);
         return writeWorkHandle(ctx.controllerHome, {
@@ -2960,11 +2989,17 @@ async function finalizeWorkInternal(
       }
       const steps: ReturnType<typeof repositoryGitFinishWorkflow>['steps'] = [{ name: 'conclude_owned_merge', execution: concluded.commit }];
       if (!deleteAfterWorktreeCleanup && deleteBranchRequested) {
+        try {
+          assertFinalizerOwnedBranch(ctx.controllerHome, target.canonicalRoot, current);
+        } catch (error) {
+          return failStage('merge', `OWNED_BRANCH_CLEANUP_FENCED: ${error instanceof Error ? error.message : String(error)}`);
+        }
         const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
         steps.push({ name: 'delete_feature_branch', execution: deleted.execution });
         if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) {
           return failStage('merge', deleted.execution.stderr || 'WORK_MERGE_BRANCH_CLEANUP_FAILED: owned merge concluded but feature branch deletion failed');
         }
+        markOwnedResourceCleaned(ctx.controllerHome, managedBranchOwnedResourceId(current.repositoryId, current.checkoutId), 'forge:legacy-work-finalizer');
       }
       merged = {
         repoId: target.repoId,
@@ -3152,7 +3187,7 @@ async function finalizeWorkInternal(
         });
       }
       const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
-      const cleanup = runCleanup(target.canonicalRoot, current.worktreePath);
+      const cleanup = runCleanup(ctx.controllerHome, target.canonicalRoot, current);
       if (!cleanup.ok) return failStage('worktreeCleanup', cleanup.message ?? 'worktree cleanup failed');
       current = transact('worktree-cleanup-done', (fresh) => {
         setRepositoryCheckoutLifecycle({ controllerHome: ctx.controllerHome, repoId: fresh.repositoryId, checkoutId: fresh.checkoutId, lifecycle: 'removed', reason: `Work ${fresh.workId} cleanup completed.` });
@@ -3181,9 +3216,15 @@ async function finalizeWorkInternal(
         targetBranch,
       });
     }
+    try {
+      assertFinalizerOwnedBranch(ctx.controllerHome, target.canonicalRoot, current);
+    } catch (error) {
+      return failStage('branchCleanup', `OWNED_BRANCH_CLEANUP_FENCED: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
     if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };
     if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) return failStage('branchCleanup', deleted.execution.stderr || 'feature branch cleanup failed');
+    markOwnedResourceCleaned(ctx.controllerHome, managedBranchOwnedResourceId(current.repositoryId, current.checkoutId), 'forge:legacy-work-finalizer');
     current = transact('branch-cleanup-done', (fresh) => {
       markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:branch`);
       return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, branchCleanup: 'done', failureCode: undefined, lastError: undefined } });

@@ -18,6 +18,7 @@ import { cleanupStaleCodegraphLocators } from '../context/codegraph-cache-bounda
 import { listActiveLeases } from '../resources/leases/store';
 import { cleanupScheduleOccurrenceHistory } from '../../../packages/kernel/scheduler/api/index';
 import { isTerminalWorkContractStatus, readWorkContractStore } from '../../../packages/kernel/work/api/index';
+import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
 import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
@@ -839,6 +840,11 @@ function cleanupOrphanWorktrees(
   const reclaim = emptyReclaimMetrics();
   const skippedByReason: Record<string, number> = {};
   const skip = (reason: string): void => { skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1; };
+  const ownedWorktreesByPath = new Map<string, OwnedResource>();
+  for (const resource of listOwnedResources(controllerHome, { kind: 'worktree', status: 'active' })) {
+    if (resource.cleanupCapable !== true || !resource.targetRef?.trim()) continue;
+    ownedWorktreesByPath.set(canonicalPath(resource.targetRef), resource);
+  }
   const repositoriesRoot = join(controllerHome, 'repositories');
   visitDirectoryEntries(repositoriesRoot, budget, errors, (repoEntry) => {
     if (!repoEntry.isDirectory()) return;
@@ -854,7 +860,25 @@ function cleanupOrphanWorktrees(
         skip(references.referenced.has(canonical) ? 'active_owner' : 'unknown_ownership');
         return;
       }
+      const ownedResource = ownedWorktreesByPath.get(canonical);
+      if (!ownedResource) {
+        skippedActive.push(relativePath);
+        skip('owned_resource_missing');
+        return;
+      }
       try {
+        try {
+          assertOwnedResourceCleanupTarget(controllerHome, {
+            resourceId: ownedResource.resourceId,
+            kind: 'worktree',
+            targetRef: path,
+          });
+        } catch (error) {
+          skippedActive.push(relativePath);
+          skip('owned_resource_identity_mismatch');
+          errors.push(errorText(`owned worktree cleanup fence ${relativePath}`, error));
+          return;
+        }
         if (nowMs - lstatSync(path).mtimeMs < ORPHAN_WORKTREE_TTL_MS) {
           skip('ttl_not_expired');
           return;
@@ -868,6 +892,7 @@ function cleanupOrphanWorktrees(
         const measurement = measureReclaimablePath(path);
         if (removeOrphanWorktreeDirectory(path, errors, relativePath)) {
           removed.push(relativePath);
+          markOwnedResourceCleaned(controllerHome, ownedResource.resourceId, 'forge:runtime-orphan-worktree-cleanup');
           if (measurement.complete) reclaim.reclaimedBytes += measurement.bytes;
           else reclaim.unknownReclaimedByteCount += 1;
         }

@@ -9,6 +9,7 @@ import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { getWorkContract, readWorkContractStore, semanticWorkState, updateWorkContract } from '../../../packages/kernel/work/api/index';
+import { assertOwnedResourceCleanupTarget, markOwnedResourceCleaned } from '../../../packages/kernel/identity/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
@@ -37,6 +38,7 @@ import {
 import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
 import { listRecoverableProcessRecords } from '../execution/process-runtime/store';
 import { isManagedProcessActive } from '../execution/process-runtime/types';
+import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../execution/managed-workspace';
 
 export type RuntimeMaintenanceActionId =
   | 'local_jobs_reconcile'
@@ -998,6 +1000,23 @@ function detachLegacyRemoteEffectPlacement(
     return { ...candidate, safe: false, reason: inspection?.detail ?? 'Legacy remote_effect placement is no longer eligible for resource detachment.', sourceState: 'source_state_unknown', disposition: 'source_preservation_required', applied: false, result: 'legacy_remote_effect_placement_preserved' };
   }
   const store = { controllerHome, repoId: repository.repoId };
+  try {
+    assertOwnedResourceCleanupTarget(controllerHome, {
+      resourceId: managedWorkspaceOwnedResourceId(repository.repoId, inspection.checkoutId),
+      kind: 'worktree',
+      targetRef: inspection.path,
+    });
+  } catch (error) {
+    return {
+      ...candidate,
+      safe: false,
+      reason: `Canonical OwnedResource authority is required before legacy worktree detachment: ${error instanceof Error ? error.message : String(error)}`,
+      sourceState: 'source_state_unknown',
+      disposition: 'source_preservation_required',
+      applied: false,
+      result: 'legacy_remote_effect_owned_resource_required',
+    };
+  }
   const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, worktreePolicy: current.worktreePolicy };
   updateWorkContract(store, current.workId, {
     checkoutId: inspection.canonicalCheckoutId,
@@ -1009,12 +1028,24 @@ function detachLegacyRemoteEffectPlacement(
     setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'removed', reason: `Legacy remote_effect placement detached for ${current.workId}.` });
     const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], { cwd: repository.canonicalRoot, timeoutMs: 60_000, maxOutputBytes: 500_000 });
     if (!removed.ok && existsSync(inspection.path)) throw new Error(`LEGACY_REMOTE_EFFECT_WORKTREE_REMOVE_FAILED: ${removed.stderr || removed.stdout}`);
+    markOwnedResourceCleaned(controllerHome, managedWorkspaceOwnedResourceId(repository.repoId, inspection.checkoutId), 'forge:legacy-remote-effect-detach');
     if (inspection.branch !== inspection.canonicalBranch) {
+      try {
+        assertOwnedResourceCleanupTarget(controllerHome, {
+          resourceId: managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId),
+          kind: 'git_branch',
+          targetRef: inspection.branch,
+          locator: managedBranchOwnedResourceLocator(repository.canonicalRoot, inspection.checkoutId, inspection.branch),
+        });
+      } catch {
+        return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: `legacy_remote_effect_placement_detached_branch_retained:${inspection.branch}` };
+      }
       const deleted = runProcess('git', ['branch', '--delete', inspection.branch], { cwd: repository.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
       if (!deleted.ok) {
         const forced = runProcess('git', ['branch', '--delete', '--force', inspection.branch], { cwd: repository.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
         if (!forced.ok) return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: `legacy_remote_effect_placement_detached_branch_retained:${inspection.branch}` };
       }
+      markOwnedResourceCleaned(controllerHome, managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId), 'forge:legacy-remote-effect-detach');
     }
     return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: 'legacy_remote_effect_placement_detached' };
   } catch (error) {

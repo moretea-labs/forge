@@ -16,7 +16,7 @@ import { resolveGitExecutable } from '../../effects/git-executable';
 import { runProcess } from '../../effects/process-runner';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
-import { recordOwnedResource } from '../../../packages/kernel/identity/api/index';
+import { ensureForgeInstanceIdentity, getOwnedResource, ownedResourceLocatorFingerprint, recordOwnedResource, type OwnedResourceLocator } from '../../../packages/kernel/identity/api/index';
 
 export interface EnsureManagedWorkspaceInput {
   requestId: string;
@@ -74,6 +74,13 @@ export function managedWorkspaceOwnedResourceId(repoId: string, checkoutId: stri
 
 export function managedBranchOwnedResourceId(repoId: string, checkoutId: string): string {
   return `managed-branch:${repoId}:${checkoutId}`;
+}
+
+export function managedBranchOwnedResourceLocator(repositoryRoot: string, checkoutId: string, branch: string): OwnedResourceLocator {
+  return {
+    kind: 'git_ref',
+    value: `${realpathSync(repositoryRoot)}\0${checkoutId.trim()}\0refs/heads/${branch.trim()}`,
+  };
 }
 
 function git(root: string, args: string[], timeoutMs = 30_000): string {
@@ -396,6 +403,10 @@ export function ensureManagedWorkspace(
         throw new Error(`MANAGED_WORKSPACE_REQUEST_CONFLICT: ${requestId}`);
       }
       const branch = manifest?.branch ?? requestedBranch;
+      // Persisted manifests are Forge provenance. Without one, an already-existing
+      // branch/worktree is never adopted as cleanup-owned merely because its name/path matches.
+      let workspaceOwnedByForge = Boolean(manifest);
+      let branchOwnedByForge = Boolean(manifest);
       // Persisted manifests are authoritative evidence; never move an active worktree in place.
       const path = manifest?.path ? resolve(manifest.path) : requestedPath;
       const baseRevision = manifest?.baseRevision ?? git(sourceRoot, ['rev-parse', '--verify', `${requestedBaseRef}^{commit}`]);
@@ -407,8 +418,11 @@ export function ensureManagedWorkspace(
           // A daemon crash may leave stale worktree administration behind even after the directory is gone.
           git(sourceRoot, ['worktree', 'prune', '--expire', 'now'], 120_000);
           git(sourceRoot, ['worktree', 'add', path, branch], 120_000);
+          workspaceOwnedByForge = true;
         } else {
           git(sourceRoot, ['worktree', 'add', '-b', branch, path, baseRevision], 120_000);
+          workspaceOwnedByForge = true;
+          branchOwnedByForge = true;
         }
       }
       if (!repositoryCheckoutRootMatches(repository, path)) {
@@ -436,20 +450,34 @@ export function ensureManagedWorkspace(
       );
       if (!checkout) throw new Error(`MANAGED_WORKSPACE_CHECKOUT_NOT_REGISTERED: ${path}`);
       const selected = selectRepositoryCheckout(record, checkout.checkoutId);
+      const ownerForgeInstanceId = ensureForgeInstanceIdentity({ controllerHome }).instanceId;
+      const workspaceResourceId = managedWorkspaceOwnedResourceId(repository.repoId, checkout.checkoutId);
+      const branchResourceId = managedBranchOwnedResourceId(repository.repoId, checkout.checkoutId);
+      const existingWorkspaceResource = getOwnedResource(controllerHome, workspaceResourceId);
+      const existingBranchResource = getOwnedResource(controllerHome, branchResourceId);
+      if (existingWorkspaceResource?.cleanupCapable === false) workspaceOwnedByForge = false;
+      if (existingBranchResource?.cleanupCapable === false) branchOwnedByForge = false;
       recordOwnedResource(controllerHome, {
-        resourceId: managedWorkspaceOwnedResourceId(repository.repoId, checkout.checkoutId),
+        resourceId: workspaceResourceId,
         kind: 'worktree',
         targetRef: selected.canonicalRoot,
+        cleanupCapable: workspaceOwnedByForge,
         creator: 'forge:managed-workspace',
+        ownerForgeInstanceId,
         associatedWorkId: input.associatedWorkId,
         repoId: repository.repoId,
         retentionIntent: 'temporary',
       });
+      const branchLocator = managedBranchOwnedResourceLocator(repository.canonicalRoot, checkout.checkoutId, branch);
       recordOwnedResource(controllerHome, {
-        resourceId: managedBranchOwnedResourceId(repository.repoId, checkout.checkoutId),
+        resourceId: branchResourceId,
         kind: 'git_branch',
         targetRef: branch,
+        locator: branchLocator,
+        identityFingerprint: ownedResourceLocatorFingerprint(ownerForgeInstanceId, branchLocator),
+        cleanupCapable: branchOwnedByForge,
         creator: 'forge:managed-workspace',
+        ownerForgeInstanceId,
         associatedWorkId: input.associatedWorkId,
         repoId: repository.repoId,
         retentionIntent: 'retain_on_failure',
