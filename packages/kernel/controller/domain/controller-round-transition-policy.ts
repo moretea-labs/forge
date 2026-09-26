@@ -156,7 +156,9 @@ export function decideControllerRoundTransition(
     case 'provider_dispatch_succeeded': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status === 'dispatched') return { kind: 'no_op', current, reason: 'dispatch_already_confirmed' };
-      if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
+      const reconcilesOutcomeUnknown = current.status === 'blocked'
+        && controllerRoundBlockerClass(current) === 'provider_dispatch_outcome_unknown';
+      if (current.status !== 'dispatching' && !reconcilesOutcomeUnknown) return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
       if (current.providerDispatchEffectId && current.providerDispatchEffectId !== event.providerDispatchEffectId) return { kind: 'reject', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_MISMATCH' };
       return accept(current, {
         status: 'dispatched', lifecycleStage: 'dispatch_confirmed', consecutiveFailures: 0, providerDispatchEffectId: event.providerDispatchEffectId,
@@ -165,7 +167,7 @@ export function decideControllerRoundTransition(
         ...(event.bindingId ? { bindingId: event.bindingId } : {}),
         ...(event.providerDispatchReceiptId ? { providerDispatchReceiptId: event.providerDispatchReceiptId } : {}),
         dispatchedAt: event.at, updatedAt: event.at,
-      }, 'controller_round_relay_dispatched');
+      }, reconcilesOutcomeUnknown ? 'controller_round_relay_unknown_dispatch_reconciled' : 'controller_round_relay_dispatched');
     }
     case 'provider_dispatch_outcome_unknown': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };

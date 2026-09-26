@@ -340,7 +340,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       const relay = requirementId
         ? getRequirementControllerRoundRelay(store, requirementId)
         : getControllerRoundRelay(store, workId!);
-      if (!relay || relay.status !== 'dispatching') return;
+      if (!relay) return;
       const boundary = workflowSupervisorBoundaryForWork(store, relay.originWorkId);
       if (boundary.status !== 'outer_turn' || boundary.taskId !== task.taskId || boundary.conversationId !== task.conversationId) return;
       finishControllerRoundRelayDispatch(store, {

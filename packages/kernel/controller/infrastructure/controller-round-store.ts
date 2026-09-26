@@ -1199,10 +1199,18 @@ export function finishControllerRoundRelayDispatch(
   input: { workId: string; ok: boolean; bindingId?: string; providerDispatchEffectId?: string; providerDispatchReceiptId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; waitForUser?: boolean; handoffId?: string; nowMs?: number },
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
-  if (!initial || initial.value.status !== 'dispatching') return initial?.value;
+  const initialCanFinish = Boolean(initial && (
+    initial.value.status === 'dispatching'
+    || (input.ok && initial.value.status === 'blocked' && controllerRoundBlockerClass(initial.value) === 'provider_dispatch_outcome_unknown')
+  ));
+  if (!initial || !initialCanFinish) return initial?.value;
   return relayLock(options, initial.value.relayScopeId, `controller-relay-finish:${input.workId}`, () => {
     const current = readRelayRecord(options, input.workId);
-    if (!current || current.value.status !== 'dispatching') return current?.value;
+    const currentCanFinish = Boolean(current && (
+      current.value.status === 'dispatching'
+      || (input.ok && current.value.status === 'blocked' && controllerRoundBlockerClass(current.value) === 'provider_dispatch_outcome_unknown')
+    ));
+    if (!current || !currentCanFinish) return current?.value;
     const at = typeof input.nowMs === 'number' ? new Date(input.nowMs).toISOString() : nowIso(options);
     const handoffId = bounded(input.handoffId, 200);
     if (input.waitForUser) {

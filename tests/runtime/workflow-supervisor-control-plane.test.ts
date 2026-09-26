@@ -623,6 +623,86 @@ test('browserTasks polls only tasks with pending browser work or an applied effe
   expect(control.browserTasks()).toHaveLength(1);
 });
 
+test('reconciles a late applied Supervisor effect into the same outcome-unknown ControllerRound without replay', () => {
+  const fx = fixture();
+  const requirementId = 'REQ-supervisor-late-provider-confirmation';
+  const workId = 'work-supervisor-late-provider-confirmation';
+  const conversationId = '45454545-6767-8989-0101-232323232323';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  createRequirement({ controllerHome: fx.controllerHome }, {
+    requirementId,
+    title: 'Late provider confirmation',
+    outcomeStatement: 'Reconcile exact applied provider evidence into the original ControllerRound.',
+  });
+  createWorkContract(fx.store, {
+    workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, requirementId, mode: 'goal_workloop',
+    objective: 'Prove an outcome-unknown provider dispatch converges when the same external effect is later observed applied.',
+    acceptanceCriteria: ['same effect and authority become dispatched without replay'], allowedPaths: [], forbiddenPaths: [], checks: [],
+    constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+  });
+  const initial = beginInitialControllerRoundDispatch(fx.store, {
+    workId, requirementId,
+    identity: { controllerId: 'chatgpt-supervisor-test', controllerType: 'chatgpt', principalId: 'chatgpt-supervisor-test', controllerInstanceId: 'runtime-supervisor-test', sessionId: 'session-supervisor-test' },
+  });
+  const providerDispatchEffectId = controllerRoundProviderEffectId(initial);
+  bindChatgptWorkConversation(fx.store, { workId, conversationUrl });
+
+  const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'late-provider-confirmation-supervisor'));
+  const control = new WorkflowSupervisorControlPlane(supervisorStore, {}, forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome));
+  const taskId = `forge:${fx.repository.repoId}:conversation:${conversationId}`;
+  control.registerTask({
+    taskId, conversationId, conversationUrl, objective: 'Reconcile the exact already-applied provider effect.',
+    completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
+    continuationPolicy: { kind: 'forge_goal_outer_turn' },
+    userBlockerPolicy: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, requirement_id: requirementId },
+  });
+  const effect = control.reserveEnrollment(taskId, providerDispatchEffectId);
+  expect(effect.effectId).toBe(providerDispatchEffectId);
+
+  const blocked = finishControllerRoundRelayDispatch(fx.store, {
+    workId, ok: false, outcomeUnknown: true, providerDispatchEffectId,
+    error: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+  });
+  expect(blocked).toMatchObject({
+    status: 'blocked',
+    blockedReason: 'provider_dispatch_outcome_unknown',
+    providerDispatchEffectId,
+    authorityId: initial.authorityId,
+  });
+
+  control.browserObserveEffect({
+    conversationId, conversationUrl, effectId: providerDispatchEffectId,
+    observationId: 'late-provider-applied',
+    outcome: 'applied',
+    evidence: { surface: 'test', exact_user_message: true, reconciliation: true },
+  });
+
+  const reconciled = getRequirementControllerRoundRelay(fx.store, requirementId)!;
+  expect(reconciled).toMatchObject({
+    status: 'dispatched',
+    lifecycleStage: 'dispatch_confirmed',
+    providerDispatchEffectId,
+    authorityId: initial.authorityId,
+    providerDispatchAttempt: blocked?.providerDispatchAttempt,
+  });
+  expect(reconciled.blockedReason).toBeUndefined();
+  expect(reconciled.lastError).toBeUndefined();
+  expect(reconciled.providerDispatchReceiptId).toContain(`workflow-supervisor:${providerDispatchEffectId}:late-provider-applied`);
+
+  control.browserObserveEffect({
+    conversationId, conversationUrl, effectId: providerDispatchEffectId,
+    observationId: 'late-provider-applied-duplicate',
+    outcome: 'applied',
+    evidence: { surface: 'test', exact_user_message: true, reconciliation: true },
+  });
+  expect(getRequirementControllerRoundRelay(fx.store, requirementId)).toMatchObject({
+    status: 'dispatched',
+    providerDispatchEffectId,
+    authorityId: initial.authorityId,
+    providerDispatchAttempt: reconciled.providerDispatchAttempt,
+  });
+});
+
 test('provider recovery is a single exactly-once resume and does not recurse through Scheduler policy', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-browser-exhausted-'));
   roots.push(root);
