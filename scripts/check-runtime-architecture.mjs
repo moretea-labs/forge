@@ -963,8 +963,30 @@ requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts'
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
-requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'review_decision');
-requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'implementation_review_findings');
+// The model-facing rh_work surface is the thin semantic ABI: the schema enum must
+// come from the single operation registry, that registry's model list must not
+// re-advertise legacy engineering lifecycle verbs, and the schema must not
+// hand-write lifecycle-only inputs. Legacy verbs stay reachable only through the
+// bounded server-side compatibility carrier, never as advertised model surface.
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', '[...RH_WORK_MODEL_OPERATIONS]');
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  /review_decision|implementation_review_findings|review_rationale|requiredPlanStepId/,
+  'the model-facing rh_work schema must not hand-write legacy lifecycle review inputs',
+);
+const rhWorkOperationContract = text('src/runtime/control-plane/facade/rh-work-operation-contract.ts');
+const rhWorkModelOperations = (rhWorkOperationContract.match(/RH_WORK_MODEL_OPERATIONS = \[([\s\S]*?)\] as const/) ?? [])[1] ?? '';
+if (!rhWorkModelOperations.trim()) {
+  failures.push('rh_work operation contract must define RH_WORK_MODEL_OPERATIONS as the thin model-facing ABI');
+}
+for (const legacyModelVerb of [
+  'continue', 'verify', 'review', 'finalize', 'stop', 'delegate',
+  'controller_claim', 'controller_release', 'controller_disposition', 'controller_get_owner',
+]) {
+  if (new RegExp(`['"]${legacyModelVerb}['"]`).test(rhWorkModelOperations)) {
+    failures.push(`RH_WORK_MODEL_OPERATIONS must not re-advertise the legacy engineering lifecycle verb: ${legacyModelVerb}`);
+  }
+}
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'review'");
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'implementationReviewContentFingerprint');
 requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");

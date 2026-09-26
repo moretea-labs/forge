@@ -229,7 +229,9 @@ describe("repository MCP command tools", () => {
     const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_apply");
     expect(rhContext?.description).toContain("default repository code-discovery/read path");
     expect(rhContext?.description).toContain("fallback-only");
-    expect(rhWork?.description).toContain("Requirement and Plan are not universal prerequisites");
+    expect(rhWork?.description).toContain("optional durable Requirement/Plan/Work semantic context");
+    expect(rhWork?.description).toContain("Ordinary execution and validation use direct domain capabilities");
+    expect(rhWork?.description).toContain("stay internal");
     expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
     const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {
       const properties = tool?.inputSchema.properties as Record<string, unknown> | undefined;
