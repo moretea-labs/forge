@@ -19,6 +19,7 @@ import {
   executeCapabilityRecoveryAction,
   executeRuntimeMaintenanceAction,
   RecoveryApplicationError,
+  listInstanceRecoveryAuditRecords,
   listRecoveryAuditRecords,
   previewRuntimeStorageRepair,
   applyRuntimeStorageRepair,
@@ -172,7 +173,9 @@ export async function callRecoveryAdapter(
           capabilityCount: snapshot.capabilities.length,
           blockingCapabilityCount,
           platformBlocked: snapshot.platformBlocked === true,
-          recentAuditCount: repository ? listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length : 0,
+          recentAuditCount: repository
+            ? listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length
+            : listInstanceRecoveryAuditRecords(ctx.controllerHome, 10).length,
         },
         externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
         observedAt: snapshot.generatedAt,
@@ -230,7 +233,7 @@ export async function callRecoveryAdapter(
       }) as unknown as Record<string, unknown>);
     }
     case 'capability_recovery_apply': {
-      const repository = selected(ctx, args);
+      const repository = selectedOptional(ctx, args);
       const actionId = String(args.action_id ?? '').trim();
       const reason = typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : 'manual recovery action';
       try {
@@ -249,6 +252,10 @@ export async function callRecoveryAdapter(
       } catch (error) {
         if (error instanceof RecoveryApplicationError && error.code === 'RECOVERY_ACTION_UNKNOWN') {
           return result({ error: { code: error.code, message: error.actionId } }, true);
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith('RECOVERY_REPOSITORY_CONTEXT_REQUIRED:')) {
+          return result({ error: { code: 'RECOVERY_REPOSITORY_CONTEXT_REQUIRED', message } }, true);
         }
         throw error;
       }

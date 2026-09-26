@@ -6,11 +6,11 @@ import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { recoveryActionById } from './actions';
 import { assertRecoveryAuthorized, buildRecoveryAuditRecord } from './audit';
 import { applyRuntimeMaintenance } from './maintenance-executor';
-import { writeRecoveryAuditRecord } from './store';
+import { writeInstanceRecoveryAuditRecord, writeRecoveryAuditRecord } from './store';
 
 export interface CapabilityRecoveryApplicationInput {
   controllerHome: string;
-  repository: RepositoryRecord;
+  repository?: RepositoryRecord;
   actionId: string;
   reason: string;
   confirmAuthorization: boolean;
@@ -22,10 +22,23 @@ export interface CapabilityRecoveryApplicationInput {
 }
 
 export interface CapabilityRecoveryApplicationResult {
-  repoId: string;
+  repoId?: string;
+  scope: 'forge_instance' | 'repository';
   action: NonNullable<ReturnType<typeof recoveryActionById>>;
   audit: ReturnType<typeof writeRecoveryAuditRecord>;
   result: Record<string, unknown>;
+}
+
+const INSTANCE_RECOVERY_ACTION_IDS = new Set([
+  'recovery.stage_and_activate_runtime_release',
+  'recovery.restart_primary_connector',
+  'recovery.probe_again',
+  'recovery.workspace_auth_login_prepare',
+  'recovery.external_filesystem_grant_preview',
+]);
+
+export function recoveryActionScope(actionId: string): 'forge_instance' | 'repository' {
+  return INSTANCE_RECOVERY_ACTION_IDS.has(actionId) ? 'forge_instance' : 'repository';
 }
 
 export class RecoveryApplicationError extends Error {
@@ -84,6 +97,11 @@ export async function executeCapabilityRecoveryAction(
         : undefined,
   );
 
+  const scope = recoveryActionScope(action.id);
+  const repository = scope === 'repository'
+    ? input.repository ?? (() => { throw new Error(`RECOVERY_REPOSITORY_CONTEXT_REQUIRED: ${action.id}`); })()
+    : undefined;
+
   let payload: Record<string, unknown>;
   let affectedPaths: string[] = [];
   switch (action.id) {
@@ -105,20 +123,20 @@ export async function executeCapabilityRecoveryAction(
       payload = { recovery: await input.recoverySnapshot() };
       break;
     case 'recovery.rebuild_projection': {
-      const projection = rebuildRepositoryProjection(input.controllerHome, input.repository.repoId);
+      const projection = rebuildRepositoryProjection(input.controllerHome, repository!.repoId);
       payload = { projection };
       affectedPaths = ['.ai/harness/controller/projections'];
       break;
     }
     case 'recovery.refresh_repository': {
-      const runtimeStorage = ensureRepositoryRuntimeStorage(input.repository, input.controllerHome);
-      const projection = rebuildRepositoryProjection(input.controllerHome, input.repository.repoId);
+      const runtimeStorage = ensureRepositoryRuntimeStorage(repository!, input.controllerHome);
+      const projection = rebuildRepositoryProjection(input.controllerHome, repository!.repoId);
       payload = { runtimeStorage, projection };
       affectedPaths = ['.ai/harness/controller', '.ai/harness/local-bridge'];
       break;
     }
     case 'recovery.cleanup_preview': {
-      payload = previewRuntimeCleanup(input.repository.canonicalRoot, {
+      payload = previewRuntimeCleanup(repository!.canonicalRoot, {
         minAgeMinutes: input.minAgeMinutes,
         includeTempDirs: true,
         includeTerminalLocalJobs: true,
@@ -129,7 +147,7 @@ export async function executeCapabilityRecoveryAction(
       break;
     }
     case 'recovery.cleanup_apply': {
-      payload = applyRuntimeCleanup(input.repository.canonicalRoot, {
+      payload = applyRuntimeCleanup(repository!.canonicalRoot, {
         minAgeMinutes: input.minAgeMinutes,
         includeTempDirs: true,
         includeTerminalLocalJobs: true,
@@ -143,7 +161,7 @@ export async function executeCapabilityRecoveryAction(
     }
     case 'recovery.reconcile_jobs':
     case 'recovery.local_jobs_reconcile': {
-      const maintenance = applyRuntimeMaintenance(input.repository, input.controllerHome, {
+      const maintenance = applyRuntimeMaintenance(repository!, input.controllerHome, {
         actionId: 'local_jobs_reconcile',
         confirmMaintenance: true,
         minAgeMinutes: input.minAgeMinutes ?? 10,
@@ -154,7 +172,7 @@ export async function executeCapabilityRecoveryAction(
       break;
     }
     case 'recovery.local_jobs_quarantine_unreadable': {
-      const maintenance = applyRuntimeMaintenance(input.repository, input.controllerHome, {
+      const maintenance = applyRuntimeMaintenance(repository!, input.controllerHome, {
         actionId: 'quarantine_unreadable_local_jobs',
         confirmMaintenance: true,
         minAgeMinutes: input.minAgeMinutes ?? 0,
@@ -165,7 +183,7 @@ export async function executeCapabilityRecoveryAction(
       break;
     }
     case 'recovery.runtime_storage_finalize_relocation': {
-      const maintenance = applyRuntimeMaintenance(input.repository, input.controllerHome, {
+      const maintenance = applyRuntimeMaintenance(repository!, input.controllerHome, {
         actionId: 'runtime_storage_finalize_relocation',
         confirmMaintenance: true,
         minAgeMinutes: input.minAgeMinutes ?? 0,
@@ -176,7 +194,7 @@ export async function executeCapabilityRecoveryAction(
       break;
     }
     case 'recovery.create_patch_handoff':
-      payload = prepareTransferArtifacts(input.repository, { reason: input.reason }) as unknown as Record<string, unknown>;
+      payload = prepareTransferArtifacts(repository!, { reason: input.reason }) as unknown as Record<string, unknown>;
       affectedPaths = ['.ai/harness/transfers', '.ai/harness/session'];
       break;
     case 'recovery.workspace_auth_login_prepare':
@@ -197,16 +215,15 @@ export async function executeCapabilityRecoveryAction(
       payload = { skipped: true, reason: `No executor is registered for ${action.id}.` };
   }
 
-  const audit = writeRecoveryAuditRecord(
-    input.controllerHome,
-    input.repository.repoId,
-    buildRecoveryAuditRecord({
-      actor: 'capability_recovery_apply',
-      action,
-      result: payload.skipped === true ? 'skipped' : 'succeeded',
-      reason: input.reason,
-      affectedPaths,
-    }),
-  );
-  return { repoId: input.repository.repoId, action, audit, result: payload };
+  const auditRecord = buildRecoveryAuditRecord({
+    actor: 'capability_recovery_apply',
+    action,
+    result: payload.skipped === true ? 'skipped' : 'succeeded',
+    reason: input.reason,
+    affectedPaths,
+  });
+  const audit = repository
+    ? writeRecoveryAuditRecord(input.controllerHome, repository.repoId, auditRecord)
+    : writeInstanceRecoveryAuditRecord(input.controllerHome, auditRecord);
+  return { ...(repository ? { repoId: repository.repoId } : {}), scope, action, audit, result: payload };
 }
