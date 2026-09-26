@@ -1104,7 +1104,7 @@ forbid('packages/kernel/controller/application/controller-service.ts', /export\s
 // and dispatches exclusively through ControllerHost.resume.
 requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface RepositorySchedule');
 requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface ScheduleOccurrence');
-requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/schedule-service.ts', 'createSchedule');
 requireText('packages/kernel/scheduler/api/index.ts', "../application/schedule-service");
@@ -1688,7 +1688,7 @@ forbidBetween(
   /rebuildRepositoryProjection\s*\(/,
   'Projection rebuild must happen outside the Repo Actor mailbox lock',
 );
-requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
 requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'readRepositoryGitStatusSample');

@@ -265,6 +265,7 @@ function pluginGrantFromCanonical(
   const metadata = pluginMetadataFromCanonicalGrant(grant)
     ?? (fallback ? { pluginId: fallback.pluginId, capabilityId: fallback.capabilityId } : undefined);
   if (!metadata || !grant.target) return undefined;
+  if (grant.riskCeiling === 'destructive') return undefined;
   const ownerScope = grant.ownerScope?.trim() || grant.principalId.trim();
   if (!ownerScope) return undefined;
   const target: AssistantPluginAuthorizationTarget = {

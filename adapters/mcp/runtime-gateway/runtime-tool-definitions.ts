@@ -2,6 +2,7 @@ import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-con
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context/types';
 import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
+import { ENGINEERING_DECISION_INPUT_FIELDS } from './engineering-tool-contract';
 
 export const FROZEN_RH_WORK_TOOL_OPERATIONS = [
   'start', 'continue', 'verify', 'review', 'repair', 'finalize', 'stop',
@@ -23,6 +24,36 @@ function definition(name: string, description: string, properties: Record<string
   };
 }
 const repoId = { type: 'string', description: 'Stable repository id.' };
+const engineeringDecisionProperties = Object.fromEntries(
+  ENGINEERING_DECISION_INPUT_FIELDS.map((field) => [field, { type: 'string' }]),
+);
+
+/**
+ * Frozen-client input carriers are accepted by the compatibility parser but
+ * deliberately excluded from the model-facing thin rh_work schema below.
+ */
+export const FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES = {
+  controller_authority_id: { type: 'string' },
+  relay_scope_id: { type: 'string' },
+  assistant_context_digest: { type: 'string' },
+  assistant_context_usage: { type: 'array' },
+  obligation_dispositions: { type: 'array' },
+  work_kind: { type: 'string', enum: ['repository_change', 'completed_no_change', 'read_only_review', 'investigation', 'local_effect', 'remote_effect', 'reconciliation'] },
+  engineering_preconditions: {
+    type: 'object',
+    properties: {
+      context_closure: { type: 'object' },
+      product_dod: { type: 'object' },
+      design_decision: {
+        type: 'object',
+        properties: {
+          decisions: { type: 'object', properties: engineeringDecisionProperties, required: [...ENGINEERING_DECISION_INPUT_FIELDS] },
+        },
+      },
+      independent_critique: { type: 'object' },
+    },
+  },
+} as const;
 export const runtimeToolDefinitions: McpToolDefinition[] = [
   definition('rh_status', 'Preferred ChatGPT facade: bounded controller status, capability readiness, and self-healing diagnose/repair.', {
     repo_id: repoId,

@@ -157,8 +157,10 @@ export function ensureBrowserSessionsMigratedToComputer(repoRoot: string): numbe
 }
 
 /** Move legacy provider files out of the repository and retire the old path after migration. */
-export function ensureBrowserStateInControllerHome(controllerHome: string, repoId: string, repoRoot: string): string {
-  const targetRoot = join(controllerHome, 'repositories', repoId, 'browser');
+export function ensureBrowserStateInControllerHome(controllerHome: string, repoId: string | undefined, repoRoot: string): string {
+  const targetRoot = repoId
+    ? join(controllerHome, 'repositories', repoId, 'browser')
+    : join(controllerHome, 'browser');
   const compatibilityParent = join(repoRoot, '.forge');
   const compatibilityRoot = join(compatibilityParent, 'browser');
   mkdirSync(targetRoot, { recursive: true });

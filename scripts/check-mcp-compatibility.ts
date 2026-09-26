@@ -5,6 +5,7 @@ import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { accessToolDefinitions } from '../src/cli/mcp/access-tools';
 import { repositoryToolDefinitions } from '../src/cli/mcp/repository-tools';
 import { runtimeToolDefinitions } from '../src/runtime/gateway/mcp/runtime-tools';
+import { FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES } from '../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
 import {
@@ -46,9 +47,11 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
 // attachment is addressed by the process handle. `repo_id` stays accepted
 // (validated against the recorded target) but is no longer a required schema
 // field for process_get/process_wait/process_logs/process_cancel. Both frozen
-// fingerprints move with that intentional ABI change.
+// fingerprints move with that intentional ABI change. The thin semantic ABI
+// keeps the frozen transport carriers below while retiring lifecycle-only
+// fields from the model-facing schema.
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8af6294a1fb9d8c9';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '2c4df86686345c39';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'af14f2e1d43d1103';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -156,6 +159,7 @@ if (fullNames.length < defaultNames.length) {
 
 const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
 const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+const frozenCompatibilityProperties = FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES as Record<string, unknown>;
 for (const field of [
   'checkout_id',
   'workflow_id',
@@ -167,18 +171,18 @@ for (const field of [
   'outcome_observation',
   'experience_draft',
 ] as const) {
-  if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+  if (!(field in rhWorkProperties) && !(field in frozenCompatibilityProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
 }
 if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
-if (!('obligation_dispositions' in rhWorkProperties)) failures.push('rh_work native obligation_dispositions schema is missing');
+if (!('obligation_dispositions' in frozenCompatibilityProperties)) failures.push('rh_work frozen compatibility obligation_dispositions schema is missing');
 for (const field of ['controller_authority_id', 'relay_scope_id', 'engineering_preconditions']) {
-  if (!(field in rhWorkProperties)) failures.push(`rh_work native ${field} schema is missing`);
+  if (!(field in frozenCompatibilityProperties)) failures.push(`rh_work frozen compatibility ${field} schema is missing`);
 }
-const workKindSchema = rhWorkProperties.work_kind as { enum?: unknown[] } | undefined;
+const workKindSchema = frozenCompatibilityProperties.work_kind as { enum?: unknown[] } | undefined;
 if (JSON.stringify(workKindSchema?.enum ?? []) !== JSON.stringify(FROZEN_WORK_START_KINDS)) {
   failures.push('rh_work native work_kind enum diverged from frozen start compatibility authority');
 }
-const engineeringPreconditionsSchema = rhWorkProperties.engineering_preconditions as { properties?: Record<string, unknown> } | undefined;
+const engineeringPreconditionsSchema = frozenCompatibilityProperties.engineering_preconditions as { properties?: Record<string, unknown> } | undefined;
 const designDecisionSchema = engineeringPreconditionsSchema?.properties?.design_decision as { properties?: Record<string, unknown> } | undefined;
 const decisionsSchema = designDecisionSchema?.properties?.decisions as { properties?: Record<string, unknown>; required?: unknown[] } | undefined;
 const decisionPropertyKeys = Object.keys(decisionsSchema?.properties ?? {});

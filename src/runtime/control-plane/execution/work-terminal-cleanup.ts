@@ -655,6 +655,7 @@ function reconcileCleanedManagedBranchRetirement(
   current = persist(input.controllerHome, current, receipt);
   if (receipt.blockers.length === 0) {
     applyManagedBranchCleanup(
+      input.controllerHome,
       target,
       current,
       targetBranch,

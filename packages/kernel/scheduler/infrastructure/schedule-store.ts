@@ -27,6 +27,19 @@ interface ScheduleRequestRecord {
   repoId: string;
   createdAt: string;
 }
+
+class ScheduleStoreError extends Error {
+  readonly code: 'SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH';
+  readonly scheduleId: string;
+
+  constructor(scheduleId: string) {
+    super(`SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH: ${scheduleId}`);
+    this.name = 'ScheduleStoreError';
+    this.code = 'SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH';
+    this.scheduleId = scheduleId;
+  }
+}
+
 type CreateScheduleInput = Omit<RepositorySchedule, 'schemaVersion' | 'revision' | 'scheduleId' | 'createdAt' | 'updatedAt' | 'consecutiveFailures'>;
 type ScheduleMutableUpdate = Partial<Omit<RepositorySchedule, 'schemaVersion' | 'revision' | 'scheduleId' | 'repoId' | 'requestId' | 'createdAt' | 'updatedAt'>>;
 
@@ -191,7 +204,7 @@ export function getSchedule(controllerHome: string, repoId: string, scheduleId: 
   }
   const schedule = canonicalSchedule ?? legacySchedule;
   if (!schedule) throw new Error(`SCHEDULE_NOT_FOUND: ${scheduleId}`);
-  if (schedule.repoId !== repoId) throw new Error(`SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH: ${scheduleId}`);
+  if (schedule.repoId !== repoId) throw new ScheduleStoreError(scheduleId);
   return {
     ...schedule,
     revision: Number.isFinite(schedule.revision) ? schedule.revision : 1,
@@ -268,7 +281,7 @@ export function listSchedules(controllerHome: string, repoId: string): Repositor
         const schedule = getSchedule(controllerHome, repoId, scheduleId);
         return schedule.repoId === repoId ? [schedule] : [];
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith('SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH:')) return [];
+        if (error instanceof ScheduleStoreError && error.code === 'SCHEDULE_REPOSITORY_PROVENANCE_MISMATCH') return [];
         throw error;
       }
     })

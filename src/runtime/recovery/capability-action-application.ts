@@ -42,10 +42,10 @@ export function recoveryActionScope(actionId: string): 'forge_instance' | 'repos
 }
 
 export class RecoveryApplicationError extends Error {
-  readonly code: 'RECOVERY_ACTION_UNKNOWN';
+  readonly code: 'RECOVERY_ACTION_UNKNOWN' | 'RECOVERY_REPOSITORY_CONTEXT_REQUIRED';
   readonly actionId: string;
 
-  constructor(code: 'RECOVERY_ACTION_UNKNOWN', actionId: string) {
+  constructor(code: RecoveryApplicationError['code'], actionId: string) {
     super(`${code}: ${actionId}`);
     this.name = 'RecoveryApplicationError';
     this.code = code;
@@ -99,7 +99,7 @@ export async function executeCapabilityRecoveryAction(
 
   const scope = recoveryActionScope(action.id);
   const repository = scope === 'repository'
-    ? input.repository ?? (() => { throw new Error(`RECOVERY_REPOSITORY_CONTEXT_REQUIRED: ${action.id}`); })()
+    ? input.repository ?? (() => { throw new RecoveryApplicationError('RECOVERY_REPOSITORY_CONTEXT_REQUIRED', action.id); })()
     : undefined;
 
   let payload: Record<string, unknown>;

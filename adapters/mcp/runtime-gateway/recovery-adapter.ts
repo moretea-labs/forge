@@ -250,12 +250,11 @@ export async function callRecoveryAdapter(
           recoverySnapshot: () => capabilityRecoverySnapshot(ctx, repository, args),
         }) as unknown as Record<string, unknown>);
       } catch (error) {
-        if (error instanceof RecoveryApplicationError && error.code === 'RECOVERY_ACTION_UNKNOWN') {
+        if (error instanceof RecoveryApplicationError && (
+          error.code === 'RECOVERY_ACTION_UNKNOWN'
+          || error.code === 'RECOVERY_REPOSITORY_CONTEXT_REQUIRED'
+        )) {
           return result({ error: { code: error.code, message: error.actionId } }, true);
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.startsWith('RECOVERY_REPOSITORY_CONTEXT_REQUIRED:')) {
-          return result({ error: { code: 'RECOVERY_REPOSITORY_CONTEXT_REQUIRED', message } }, true);
         }
         throw error;
       }

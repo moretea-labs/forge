@@ -172,7 +172,7 @@ async function runPhase(root: string, phase: string): Promise<void> {
     assert.equal(relay?.authorityId, meta.authorityId);
     const occurrences = listOccurrences(controllerHome, meta.repoId, meta.scheduleId);
     assert.equal(occurrences.length, 1);
-    assert.equal(occurrences[0]?.triggerContext.data?.controllerRoundOccurrenceId, ORIGINAL_OCCURRENCE_ID);
+    assert.equal(occurrences[0]?.triggerContext?.data?.controllerRoundOccurrenceId, ORIGINAL_OCCURRENCE_ID);
     const requests = listUserRequests(controllerHome, 'resolved');
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.resolution?.decision, 'authorization completed');
