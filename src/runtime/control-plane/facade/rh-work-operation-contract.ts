@@ -8,12 +8,7 @@
  */
 export const RH_WORK_OPERATIONS = [
   'start',
-  'continue',
-  'verify',
-  'review',
   'repair',
-  'finalize',
-  'stop',
   'work_get',
   'work_revise',
   'work_complete',
@@ -46,7 +41,19 @@ export const RH_WORK_OPERATIONS = [
   'experience_record',
 ] as const;
 
-export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [] as const;
+/**
+ * Frozen transport compatibility only. These operations drive legacy repository
+ * delivery/check/cleanup mechanics and are not semantic Work lifecycle actions.
+ * Current model-visible rh_work never advertises them; remove them with the
+ * remaining compatibility implementation in the legacy-deletion slice.
+ */
+export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [
+  'continue',
+  'verify',
+  'review',
+  'finalize',
+  'stop',
+] as const;
 
 export const RH_WORK_MODEL_OPERATIONS = [
   'start',

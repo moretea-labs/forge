@@ -416,11 +416,11 @@ export interface WorkContract {
   engineeringContext?: EngineeringContextReceipt;
   /** Actionable concurrency wait projection. Absence means no currently known semantic/resource blocker. */
   executionConcurrency?: WorkExecutionConcurrencyProjection;
-  /** Technical phase; Requirement owns the user lifecycle. */
+  /** Legacy repository-execution phase projection. Never semantic Work authority. */
   phase: WorkPhase;
-  /** Work-owned phase checkpoints. Task/Run/Process records may contribute evidence but cannot write this map directly. */
+  /** Legacy mechanical phase evidence retained for repository delivery compatibility only. */
   phaseEvidence: WorkPhaseEvidenceMap;
-  /** Explicit lifecycle semantics. `status` is retained as a compatibility/read projection, not transition authority. */
+  /** Legacy execution classification. Semantic Work identity/state never depends on this field. */
   workKind: WorkKind;
   /** Primary is an objective-level business execution lane; execution_child is a resumable low-level operation handle owned by a primary Work or standalone caller. */
   lifecycleRole?: 'primary' | 'execution_child';
@@ -434,6 +434,7 @@ export interface WorkContract {
   supersededBy?: string;
   /** Bounded durable reason for the supersession edge. */
   supersessionReason?: string;
+  /** Mechanical/legacy projections; none may advance semanticState. */
   dispatchState: DispatchState;
   evidenceState: EvidenceState;
   completionOutcome?: CompletionOutcome;
