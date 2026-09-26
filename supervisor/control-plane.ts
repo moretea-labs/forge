@@ -5,6 +5,9 @@ import { WorkflowSupervisorStore } from './store';
 import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTurnSettlement, WorkflowSupervisorValidators } from './types';
 
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
+function stableEffectId(originKey: string): string {
+  return validateEffectId(`fx_${sha256(originKey).slice(0, 32)}`);
+}
 const rejectUnconfigured = async (): Promise<WorkflowContractValidation> => ({ valid: false, reason: 'validator_unconfigured' });
 
 export class WorkflowSupervisorControlPlane {
@@ -22,8 +25,9 @@ export class WorkflowSupervisorControlPlane {
     // could never be delivered, so the ControllerRound waited forever instead of
     // surfacing the operator/provider decision that terminal state represents.
     requireNonTerminalTask(this.store, task.taskId);
-    const id = canonicalEffectId ? validateEffectId(canonicalEffectId) : effectId();
-    return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey: `enrollment:${taskId}`, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
+    const originKey = `enrollment:${taskId}`;
+    const id = canonicalEffectId ? validateEffectId(canonicalEffectId) : stableEffectId(originKey);
+    return this.store.reserveEffect({ taskId, effectId: id, kind: 'enrollment', originKey, prompt: renderSupervisorPrompt(task, id, 'enrollment') });
   }
   /** @deprecated Compatibility RPC. Recovery policy no longer lives in Supervisor/Scheduler. */
   reserveSchedulerRecovery(taskId: string, _recoveryKey?: string): WorkflowSupervisorEffect | undefined {
@@ -138,7 +142,7 @@ export class WorkflowSupervisorControlPlane {
     if (!this.browserTaskActiveForExternalEffect(task)) return { state: 'inactive' };
     const sourceEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
     if (!sourceEffect) return { state: 'none' };
-    const recoveryId = effectId();
+    const recoveryId = stableEffectId(`provider-recovery:${sourceEffect.effectId}`);
     const providerFailureCode = input.providerFailureCode?.trim();
     const recoveryReason = providerFailureCode
       ? `Applied Supervisor effect ${sourceEffect.effectId} ended with provider failure ${providerFailureCode} before a committed Supervisor completion. Resume from durable Forge state; the source effect remains applied and must not be replayed.`
@@ -206,9 +210,10 @@ export class WorkflowSupervisorControlPlane {
       if (!settlement.continuationAllowed) {
         throw new Error(`WORKFLOW_SUPERVISOR_LOWER_LAYER_CONTINUATION_BLOCKED:${settlement.reason ?? 'unspecified'}`);
       }
+      const successorOriginKey = `completion:${completionFingerprint}`;
       const nextId = settlement.continuationEffectId
         ? validateEffectId(settlement.continuationEffectId)
-        : effectId();
+        : stableEffectId(successorOriginKey);
       const checkpoint = parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint;
       const prompt = renderSupervisorPrompt(task, nextId, 'continuation', checkpoint, undefined, settlement.continuationContext);
       const withSuccessor = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
@@ -217,7 +222,7 @@ export class WorkflowSupervisorControlPlane {
 
     const validator = parsed.proposal.action === 'DONE' ? this.validators.completionContract : this.validators.userBlockerPolicy;
     const validation = await validator(task, parsed.proposal);
-    const correctionId = validation.valid ? undefined : effectId();
+    const correctionId = validation.valid ? undefined : stableEffectId(`completion:${completionFingerprint}`);
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
       ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
