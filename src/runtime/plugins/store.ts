@@ -1229,7 +1229,6 @@ function readPluginActionReceipt(controllerHome: string, scopeKey: string, recei
   }
   return undefined;
 }
-}
 
 export function findPluginActionReceipt(
   controllerHome: string,
