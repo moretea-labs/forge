@@ -39,8 +39,8 @@ export {
   withRuntimeBrowserSessionExecutionContext as withBrowserSessionAuthorityContext,
 } from '../root/browser-session-composition';
 
-function withContext<T>(controllerHome: string, repoId: string, operation: () => T): T {
-  return withRuntimeBrowserSessionExecutionContext({ controllerHome, repoId }, operation);
+function withContext<T>(controllerHome: string, repoId: string | undefined, operation: () => T): T {
+  return withRuntimeBrowserSessionExecutionContext({ controllerHome, ...(repoId?.trim() ? { repoId: repoId.trim() } : {}) }, operation);
 }
 
 export function ensureLegacyBrowserSessionsImported(controllerHome: string, repoId: string, repoRoot: string): number {

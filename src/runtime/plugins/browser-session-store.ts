@@ -122,6 +122,7 @@ function surfaceInput(
 export function ensureBrowserSessionsMigratedToComputer(repoRoot: string): number {
   const context = requireBrowserSessionExecutionContext();
   const computer = runtimeComputerInteractionTargetAuthority();
+  if (!context.repoId) return 0;
   if (computer.compatibilityMigrationMarker(context.controllerHome, BROWSER_SESSION_COMPUTER_MIGRATION_ID, context.repoId)) {
     cleanupLegacyBrowserSessionJson(context.controllerHome, context.repoId, repoRoot);
     return 0;
@@ -220,7 +221,8 @@ export function saveBrowserSession(repoRoot: string, session: BrowserSessionStat
   if (!existing) {
     existing = computer.upsertSurface(context.controllerHome, surfaceInput(session, {
       aliases: [session.sessionId],
-      repositoryIds: [context.repoId],
+      repositoryIds: context.repoId ? [context.repoId] : [],
+      visibility: context.repoId ? undefined : 'controller',
       includeCompatibility: false,
       reactivate: true,
     })).target;
@@ -233,7 +235,8 @@ export function saveBrowserSession(repoRoot: string, session: BrowserSessionStat
   if (normalized.browser?.sessionResume) normalized.browser.sessionResume.sessionId = canonicalSessionId;
   const saved = computer.upsertSurface(context.controllerHome, surfaceInput(normalized, {
     aliases: [session.sessionId, canonicalSessionId],
-    repositoryIds: [context.repoId],
+    repositoryIds: context.repoId ? [context.repoId] : [],
+    visibility: context.repoId ? undefined : 'controller',
     reactivate: true,
   }));
   return browserSessionFromSurface(saved.target) ?? normalized;
@@ -244,13 +247,15 @@ export function findBrowserSession(repoRoot: string, sessionId?: string): Browse
   const context = requireBrowserSessionExecutionContext();
   ensureBrowserSessionsMigratedToComputer(repoRoot);
   const target = runtimeComputerInteractionTargetAuthority().findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
-  return target ? browserSessionFromSurface(target) : undefined;
+  if (!target || (!context.repoId && target.visibility !== 'controller')) return undefined;
+  return browserSessionFromSurface(target);
 }
 
 export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
   const context = requireBrowserSessionExecutionContext();
   ensureBrowserSessionsMigratedToComputer(repoRoot);
   return runtimeComputerInteractionTargetAuthority().listAllSurfaces(context.controllerHome, { repoId: context.repoId })
+    .filter((target) => Boolean(context.repoId) || target.visibility === 'controller')
     .map(browserSessionFromSurface)
     .filter((session): session is BrowserSessionState => Boolean(session))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.sessionId.localeCompare(right.sessionId));
@@ -261,7 +266,7 @@ export function removeBrowserSession(repoRoot: string, sessionId: string): void 
   ensureBrowserSessionsMigratedToComputer(repoRoot);
   const computer = runtimeComputerInteractionTargetAuthority();
   const target = computer.findSurfaceByAlias(context.controllerHome, sessionId, context.repoId);
-  if (target) computer.tombstoneSurface(context.controllerHome, target.targetId);
+  if (target && (context.repoId || target.visibility === 'controller')) computer.tombstoneSurface(context.controllerHome, target.targetId);
 }
 
 export function loadBrowserSession(repoRoot: string, sessionId?: string): BrowserSessionState | undefined {

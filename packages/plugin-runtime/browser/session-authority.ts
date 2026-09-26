@@ -4,7 +4,8 @@ export const MAX_BROWSER_SESSION_LIST_LIMIT = 200;
 /** State-free Browser execution scope. Durable interaction identity belongs to Computer SurfaceTarget authority. */
 export interface BrowserSessionExecutionContext {
   controllerHome: string;
-  repoId: string;
+  /** Optional repository visibility/migration context; never Browser session authority. */
+  repoId?: string;
 }
 
 /** @deprecated Compatibility alias for frozen callers; this is context, not an authority capability. */
