@@ -48,7 +48,35 @@ export const RH_WORK_OPERATIONS = [
 
 export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [] as const;
 
-export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
+export const RH_WORK_MODEL_OPERATIONS = [
+  'start',
+  'repair',
+  'work_get',
+  'work_revise',
+  'work_complete',
+  'launcher_start',
+  'requirement_create',
+  'requirement_get',
+  'requirement_revise',
+  'requirement_promote_candidate',
+  'plan_create',
+  'plan_get',
+  'plan_revise',
+  'plan_list',
+  'schedule_create',
+  'schedule_list',
+  'schedule_get',
+  'schedule_pause',
+  'schedule_resume',
+  'schedule_delete',
+  'schedule_trigger',
+  'workflow_execute',
+  'workflow_reconcile',
+  'learning_record',
+  'learning_feedback',
+  'outcome_record',
+  'experience_record',
+] as const;
 
 export type RhWorkOperation = (typeof RH_WORK_OPERATIONS)[number];
 

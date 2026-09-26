@@ -729,11 +729,11 @@ export async function callRhWorkControllerOperation(
           },
         );
         if (relay.status === 'blocked') {
-          throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
+          throw new Error(`CHATGPT_CONTINUATION_LAUNCH_BLOCKED:${relay.blockedReason ?? 'transport_not_ready'}`);
         }
         const prompt = [
           renderChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
-          `Controller round: ${relay.relayScopeId}. launcher_start opened this durable round; dispatch success is not semantic completion.`,
+          'Forge continuation transport is active for this Work; provider delivery success is not semantic completion.',
           handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
           continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
         ].filter(Boolean).join('\n');
@@ -765,15 +765,15 @@ export async function callRhWorkControllerOperation(
           throw launchError;
         }
         const updatedBinding = chatgptControllerRoundBinding(relayStore, workId);
-        const completedRelay = finishControllerRoundRelayDispatch(
+        finishControllerRoundRelayDispatch(
           relayStore,
           { workId, ok: true, bindingId: updatedBinding?.bindingId },
         );
         return result(buildFacadeResult({
-          summary: 'ChatGPT continuation dispatched; wake completion remains pending until the new ChatGPT Controller claims the Work, and semantic closure still requires an explicit disposition.',
+          summary: 'ChatGPT continuation dispatched. Provider/session and retry bookkeeping remain internal; semantic Work state is unchanged until an explicit semantic update.',
           data: {
             workId,
-            relay: completedRelay,
+            continuationDispatched: true,
             browserSessionId: dispatched.browserSessionId,
             conversationUrl: dispatched.conversationUrl,
             executionPreferenceVerified: dispatched.executionPreferenceVerified,

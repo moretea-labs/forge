@@ -1,4 +1,4 @@
-import { RH_WORK_OPERATIONS } from './rh-work-operation-contract';
+import { RH_WORK_MODEL_OPERATIONS } from './rh-work-operation-contract';
 import { FACADE_TOOLS, type EvidenceRef, type FacadeTool, type SuggestedNextAction } from './types';
 
 function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['risk'] | undefined {
@@ -45,7 +45,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_status: ['list', 'get', 'repair'],
   rh_inbox: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
   rh_context: ['list', 'get', 'search'],
-  rh_work: RH_WORK_OPERATIONS,
+  rh_work: RH_WORK_MODEL_OPERATIONS,
 };
 
 export interface SuggestedActionValidationOptions {
