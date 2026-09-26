@@ -178,8 +178,13 @@ describe('workflow supervisor Chrome extension conversation identity', () => {
     expect(api.sameIdentity(projectRoute, canonicalRoute)).toBe(false);
   });
 
-  test('accepts Markdown-safe completions while retaining legacy completion read compatibility', () => {
+  test('accepts compact receipts while retaining all legacy completion read formats', () => {
     const api = core();
+    expect(api.isCommittedAssistantResponse('C a1b2c3d')).toBe(true);
+    expect(api.isCommittedAssistantResponse('D 0123456')).toBe(true);
+    expect(api.isCommittedAssistantResponse('C a1b2c3')).toBe(false);
+    expect(api.isCommittedAssistantResponse('status\nC a1b2c3d')).toBe(false);
+    expect(api.isCommittedAssistantResponse('status\nFORGE_WORKFLOW_SUPERVISOR_V1_BEGIN\n{}\nFORGE_WORKFLOW_SUPERVISOR_V1_END')).toBe(true);
     expect(api.isCommittedAssistantResponse('status\n[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]\n{}\n[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]')).toBe(true);
     expect(api.isCommittedAssistantResponse('status\n<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>\n{}\n<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>')).toBe(true);
   });

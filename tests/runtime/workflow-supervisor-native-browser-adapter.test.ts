@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { defaultDispatchPrompt, defaultSnapshot, WorkflowSupervisorNativeBrowserAdapter, type WorkflowSupervisorNativeBrowserDependencies, type WorkflowSupervisorNativePage } from '../../supervisor/native-browser-adapter';
-import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
+import { renderSupervisorReceipt, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import type { MacOsBrowserTabInventoryEntry, MacOsBrowserTabRef } from '../../src/runtime/plugins/browser-macos-bridge';
@@ -205,11 +205,44 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     const h = harness([userTab]); const { effect } = register(h.control, conversationId);
     await h.adapter.runOnce();
     expect(h.created()).toBe(0);
-    expect(userTab.owner).toBe(`forge-workflow-supervisor:${conversationId}`);
+    expect(userTab.owner).toBe(`forge-workflow-supervisor:adopted:${conversationId}`);
     expect(userTab.latestUserText).toBe(effect.prompt);
     expect(h.control.browserPoll({ conversationId, conversationUrl: url }).command).toBeUndefined();
     expect(h.discovery.get().conversations).toEqual([{ conversationId, canonicalUrl: url, title: 'ChatGPT' }]);
     expect(h.errors).toEqual([]);
+  });
+
+  test('releases adopted user tabs but closes Forge-created tabs when browser work becomes terminal', async () => {
+    const adoptedConversationId = '21111111-2222-3333-4444-555555555555';
+    const adoptedUrl = `https://chatgpt.com/c/${adoptedConversationId}`;
+    const userTab = new FakePage({ windowId: 'user-window', tabId: 'user-tab-terminal' }, adoptedUrl);
+    const adopted = harness([userTab]);
+    const adoptedTask = register(adopted.control, adoptedConversationId);
+    await adopted.adapter.runOnce();
+    await adopted.control.observeAssistantTurn({
+      taskId: adoptedTask.taskId,
+      conversationId: adoptedConversationId,
+      responseText: renderSupervisorReceipt(adopted.control.getTask(adoptedTask.taskId)!, adoptedTask.effect.effectId, 'DONE'),
+    });
+    await adopted.adapter.runOnce();
+    expect(userTab.closed).toBe(false);
+    expect(userTab.owner).toBe('');
+
+    const createdConversationId = '31111111-2222-3333-4444-555555555555';
+    const created = harness();
+    const createdTask = register(created.control, createdConversationId);
+    await created.adapter.runOnce();
+    const forgeTab = created.pages.find((page) => page.ref.tabId === 'forge-tab-1')!;
+    expect(forgeTab.owner).toBe(`forge-workflow-supervisor:created:${createdConversationId}`);
+    await created.control.observeAssistantTurn({
+      taskId: createdTask.taskId,
+      conversationId: createdConversationId,
+      responseText: renderSupervisorReceipt(created.control.getTask(createdTask.taskId)!, createdTask.effect.effectId, 'DONE'),
+    });
+    await created.adapter.runOnce();
+    expect(forgeTab.closed).toBe(true);
+    expect(adopted.errors).toEqual([]);
+    expect(created.errors).toEqual([]);
   });
 
   test('keeps the exact owned conversation in the background during an authorized Supervisor send', async () => {
@@ -476,7 +509,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.dispatchAttempts()).toBe(2);
     const replacement = h.pages.find((page) => page.ref.tabId === 'forge-tab-2')!;
     expect(replacement.url).toBe(url);
-    expect(replacement.owner).toBe(`forge-workflow-supervisor:${conversationId}`);
+    expect(replacement.owner).toBe(`forge-workflow-supervisor:created:${conversationId}`);
     expect(replacement.latestUserText).toContain('WORKFLOW_SUPERVISOR_PROVIDER_TRANSPORT_UNAVAILABLE');
     expect(replacement.latestUserText).toContain(`Applied Supervisor effect ${effect.effectId}`);
     expect(h.control.store.effectApplied(effect.effectId)).toBe(true);

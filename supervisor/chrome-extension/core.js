@@ -1,5 +1,6 @@
 (() => {
   const MARKERS = [
+    { start: 'FORGE_WORKFLOW_SUPERVISOR_V1_BEGIN', end: 'FORGE_WORKFLOW_SUPERVISOR_V1_END' },
     { start: '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]', end: '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]' },
     { start: '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>', end: '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>' },
   ];
@@ -21,7 +22,9 @@
   function promptHasEffect(prompt, effectId) { const marker = effectMarker(effectId); return Boolean(marker && String(prompt).includes(marker)); }
   function isCommittedAssistantResponse(text) {
     const value = String(text ?? '').trim();
-    return value.length <= 512 * 1024 && MARKERS.some(({ start, end }) => value.endsWith(end) && value.lastIndexOf(start) >= 0);
+    if (value.length > 512 * 1024) return false;
+    if (/^[CDU] [0-9a-f]{7}$/.test(value)) return true;
+    return MARKERS.some(({ start, end }) => value.endsWith(end) && value.lastIndexOf(start) >= 0);
   }
   function textFingerprint(text) {
     const value = String(text ?? '');

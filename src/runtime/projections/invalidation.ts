@@ -146,7 +146,7 @@ export function updateRepositoryProjectionRefreshRequest(
     sourceRevision?: string;
     nowMs?: number;
   },
-  options: { lock?: boolean } = {},
+  options: { lock?: boolean; supersedeAttempt?: boolean } = {},
 ): ProjectionDirtyMarker | undefined {
   try {
     const fence = assertRuntimeMayWrite('update_active_projection', controllerHome);
@@ -170,7 +170,11 @@ export function updateRepositoryProjectionRefreshRequest(
       ),
     );
 
-    if (current && sameSource) {
+    const supersedeAttempt = options.supersedeAttempt === true
+      && current?.refreshStatus !== undefined
+      && current.refreshStatus !== 'pending';
+
+    if (current && sameSource && !supersedeAttempt) {
       const normalized = normalizeMarker(current);
       const enriched: ProjectionDirtyMarker = {
         ...normalized,
@@ -214,7 +218,7 @@ export function markRepositoryProjectionDirty(
     reason,
     sourceRevision: options.sourceRevision,
     nowMs: options.nowMs,
-  });
+  }, { supersedeAttempt: true });
 }
 
 export function readRepositoryProjectionDirty(controllerHome: string, repoId: string): ProjectionDirtyMarker | undefined {

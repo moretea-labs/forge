@@ -20,7 +20,7 @@ import {
   activateConvergenceWorkAdmission,
   activateExclusiveWorkAdmission,
 } from '../../src/runtime/control-plane/facade/work-admission-policy';
-import { markRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
+import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository, removeRepository } from '../../src/cli/repositories/registry';
@@ -991,6 +991,33 @@ describe('runtime cleanup', () => {
     expect(['repo-a', 'repo-b']).toContain(processGcRepos[0]!);
     expect(validationRepos.sort()).toEqual(['repo-a', 'repo-b']);
     expect(editValidationRepos.sort()).toEqual(['repo-a', 'repo-b']);
+  });
+
+  test('real projection mutation supersedes an in-flight refresh nonce instead of being cleared by it', () => {
+    const home = controllerHome();
+    const repoId = 'repo-projection-inflight-invalidation';
+    const markedAt = new Date().toISOString();
+    const initial = markRepositoryProjectionDirty(home, repoId, 'initial-state-change', { nowMs: Date.parse(markedAt) });
+    expect(initial).toBeTruthy();
+
+    const running = persistRepositoryProjectionDirty(home, repoId, {
+      ...initial!,
+      refreshStatus: 'running',
+      refreshAttempt: 1,
+      refreshUpdatedAt: markedAt,
+      runningStartedAt: markedAt,
+      refreshOwner: { pid: process.pid, acquiredAt: markedAt },
+    });
+    const mutation = markRepositoryProjectionDirty(home, repoId, 'job-state-change');
+
+    expect(mutation).toBeTruthy();
+    expect(mutation?.nonce).not.toBe(running.nonce);
+    expect(mutation).toMatchObject({
+      refreshStatus: 'pending',
+      refreshAttempt: 0,
+      supersedesNonce: running.nonce,
+      reason: 'job-state-change',
+    });
   });
 
   test('refreshes dirty repository projections even when exclusive Work admission disables dispatch', async () => {

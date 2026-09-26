@@ -731,11 +731,6 @@ export function startGoalWorkloop(
   const relatedLifecycleSource = input.relatedWorkId
     ? getWorkContract(ctx.workStore, input.relatedWorkId)
     : undefined;
-  const workspaceOwner = ctx.checkoutId
-    ? activeWorks.find((candidate) => candidate.checkoutId === ctx.checkoutId
-      && candidate.worktreePolicy.required !== true
-      && !candidate.worktreeRef)
-    : undefined;
   const terminalContinuationSource = input.workRelation === 'continue'
     && relatedLifecycleSource
     && isTerminalWorkContractStatus(relatedLifecycleSource.status)
@@ -944,12 +939,12 @@ export function startGoalWorkloop(
   }
 
   // Pure remote effects do not participate in repository workspace ownership.
-  // An unrelated canonical writer, dirty checkout, or repository parallelism must
-  // not manufacture a Git worktree for browser/API work that has no source authority.
-  // Explicit typed isolation remains authoritative for the rare remote effect that
-  // genuinely declares a repository workspace requirement.
+  // Semantic WorkContract state is also not workspace-writer authority: an open Work
+  // may be waiting, reviewing, or otherwise quiescent. Concrete mutation ownership is
+  // fenced later by WorkHandle/Process Lease authority at the mutation boundary.
+  // Admission isolates only for explicit placement, incompatible dirty paths, or an
+  // explicitly parallel Work relation.
   const repositoryWorkspaceParticipant = resolvedWorkKind !== 'remote_effect';
-  const placementConflict = repositoryWorkspaceParticipant && Boolean(workspaceOwner);
   const trustedDirtyPaths = ctx.workspaceChangedPaths
     ? [...new Set(ctx.workspaceChangedPaths.map((path) => path.trim()).filter(Boolean))].sort()
     : undefined;
@@ -965,26 +960,11 @@ export function startGoalWorkloop(
       ))
     );
   const automaticRepositoryIsolation = repositoryWorkspaceParticipant && (
-    placementConflict
-    || dirtyWorkspaceOwnershipConflict
+    dirtyWorkspaceOwnershipConflict
     || requestedRelation === 'parallel'
   );
   const needsWorktree = placementConstraint.requireWorktree
     || automaticRepositoryIsolation;
-  if (!needsWorktree && workspaceOwner && repositoryWorkspaceParticipant) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `WORKSPACE_OWNERSHIP_INVARIANT: unresolved admission reached checkout ${ctx.checkoutId} while active Work ${workspaceOwner.workId} owns it. This is an internal routing invariant, not a normal fallback path.`,
-      data: {
-        executionStarted: false,
-        workContractCreated: false,
-        conflictType: 'workspace_single_writer_invariant',
-        existingWork: summarizeWorkContract(workspaceOwner),
-      },
-      evidenceRefs: workspaceOwner.evidenceRefs,
-      rawAvailable: false,
-    });
-  }
   const requestedWorkId = input.workId?.trim();
   if (requestedWorkId && !/^work-[a-z0-9][a-z0-9-]{0,199}$/i.test(requestedWorkId)) {
     return buildFacadeResult({
@@ -1011,11 +991,9 @@ export function startGoalWorkloop(
     ? 'Typed workspace placement requires isolated execution.'
     : dirtyWorkspaceOwnershipConflict
       ? 'Trusted repository observation found dirty paths outside or ambiguous to the Work path fence; isolated placement prevents unrelated changes from entering Work ownership or verification.'
-      : placementConflict
-        ? 'The selected checkout is already owned by another active Work; this Work requires isolated placement.'
-        : requestedRelation === 'parallel'
-          ? 'Explicit parallel Work relation requires isolated placement.'
-          : 'Current workspace is the stability-first default; isolation remains opt-in.';
+      : requestedRelation === 'parallel'
+        ? 'Explicit parallel Work relation requires isolated placement.'
+        : 'Current workspace is the stability-first default; isolation remains opt-in.';
   const forgeInstanceId = ctx.workStore.controllerHome
     ? readForgeInstanceIdentity(ctx.workStore.controllerHome)?.instanceId
     : undefined;

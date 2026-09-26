@@ -9,8 +9,15 @@ function contractText(task: WorkflowSupervisorTask, key: string): string | undef
 
 function requirementFor(task: WorkflowSupervisorTask, proposal?: WorkflowSupervisorProposal) {
   const controllerHome = contractText(task, 'controller_home');
-  const dynamicRequirementId = proposal?.activeScope?.startsWith('requirement:') ? proposal.activeScope.slice('requirement:'.length).trim() : undefined;
-  const requirementId = contractText(task, 'requirement_id') ?? dynamicRequirementId;
+  const repoId = contractText(task, 'repo_id');
+  const workId = contractText(task, 'work_id');
+  const workRequirementId = controllerHome && repoId && workId
+    ? getWorkContract({ controllerHome, repoId }, workId)?.requirementId
+    : undefined;
+  // activeScope is legacy read compatibility only. New receipts never make model
+  // output authoritative for Requirement identity.
+  const legacyRequirementId = proposal?.activeScope?.startsWith('requirement:') ? proposal.activeScope.slice('requirement:'.length).trim() : undefined;
+  const requirementId = contractText(task, 'requirement_id') ?? workRequirementId ?? legacyRequirementId;
   if (!controllerHome || !requirementId) return undefined;
   return readRequirement({ controllerHome }, requirementId)?.value;
 }

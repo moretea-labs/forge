@@ -162,7 +162,18 @@ export class WorkflowSupervisorControlPlane {
   async observeAssistantTurn(input: WorkflowAssistantObservation): Promise<WorkflowAssistantObservationResult> {
     const task = this.requireTask(input.taskId);
     if (task.conversationId !== input.conversationId) throw new Error('WORKFLOW_SUPERVISOR_CONVERSATION_MISMATCH');
-    const parsed = parseSupervisorCompletion(input.responseText);
+    const responseSha256 = sha256(input.responseText);
+    const expectedEffect = this.store.latestAppliedEffectWithoutCompletion(task.taskId);
+    // A live applied effect always wins: an old compact receipt must never be
+    // allowed to satisfy a newer causal obligation. Only when no effect is
+    // awaiting completion may an exact persisted response hash recover the
+    // original effect context for idempotent duplicate observation.
+    const priorCompletion = expectedEffect ? undefined : this.store.getCompletionByResponseSha256(task.taskId, responseSha256);
+    const expectedEffectId = expectedEffect?.effectId ?? priorCompletion?.sourceEffectId;
+    const parsed = parseSupervisorCompletion(
+      input.responseText,
+      expectedEffectId ? { task, effectId: expectedEffectId } : undefined,
+    );
     const sourceEffect = this.store.getEffect(parsed.proposal.sourceEffectId);
     if (!sourceEffect || sourceEffect.taskId !== task.taskId || !this.store.effectApplied(sourceEffect.effectId)) throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
     const explicitIdentityProtocol = sourceEffect.prompt.includes('conversation_id=') && sourceEffect.prompt.includes('task_id=') && sourceEffect.prompt.includes('supervisor_state');
@@ -178,7 +189,6 @@ export class WorkflowSupervisorControlPlane {
         ? task.continuationPolicy.active_scope.trim()
         : undefined;
     if (expectedScope && parsed.proposal.activeScope && parsed.proposal.activeScope !== expectedScope) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_ACTIVE_SCOPE_MISMATCH');
-    const responseSha256 = sha256(input.responseText);
     const controlBlockSha256 = sha256(parsed.controlBlock);
     const completionFingerprint = sha256(jsonIdentity(task.taskId, task.conversationId, parsed.proposal.sourceEffectId, responseSha256, controlBlockSha256));
     const completion: WorkflowSupervisorCompletion = { completionFingerprint, taskId: task.taskId, sourceEffectId: parsed.proposal.sourceEffectId, action: parsed.proposal.action, responseSha256, controlBlockSha256, proposal: parsed.proposal, committedAt: new Date().toISOString() };
@@ -199,7 +209,8 @@ export class WorkflowSupervisorControlPlane {
       const nextId = settlement.continuationEffectId
         ? validateEffectId(settlement.continuationEffectId)
         : effectId();
-      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', parsed.proposal.checkpoint, undefined, settlement.continuationContext);
+      const checkpoint = parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint;
+      const prompt = renderSupervisorPrompt(task, nextId, 'continuation', checkpoint, undefined, settlement.continuationContext);
       const withSuccessor = this.store.commitCompletion(completion, { effectId: nextId, kind: 'continuation', prompt });
       return { action: 'CONTINUE', completionFingerprint, terminal: false, successorEffect: withSuccessor.successorEffect!, deduplicated: committed.deduplicated || withSuccessor.deduplicated };
     }
@@ -208,7 +219,7 @@ export class WorkflowSupervisorControlPlane {
     const validation = await validator(task, parsed.proposal);
     const correctionId = validation.valid ? undefined : effectId();
     const resolved = this.store.resolveTerminal({ completionFingerprint, taskId: task.taskId, action: parsed.proposal.action, accepted: validation.valid, reason: validation.reason,
-      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}) });
+      ...(correctionId ? { correction: { effectId: correctionId, prompt: renderSupervisorPrompt(task, correctionId, 'correction', parsed.proposal.reason === 'compact_receipt' ? undefined : parsed.proposal.checkpoint, validation.reason, settlement.continuationContext) } } : {}) });
     return { action: parsed.proposal.action, completionFingerprint, terminal: validation.valid, ...(resolved.successorEffect ? { successorEffect: resolved.successorEffect } : {}), validation, deduplicated: committed.deduplicated || resolved.deduplicated };
   }
 

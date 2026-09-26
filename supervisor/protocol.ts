@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import type { WorkflowEffectKind, WorkflowSupervisorProposal, WorkflowSupervisorState, WorkflowSupervisorTask } from './types';
 
-// Assistant output is rendered through Markdown before Browser transports observe it.
-// Angle-bracket sentinels are HTML-like and current ChatGPT can truncate output at
-// that boundary. Emit a Markdown-safe wire envelope while retaining the legacy
-// markers strictly as read compatibility for already-durable conversations.
-export const SUPERVISOR_BLOCK_START = '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]';
-export const SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]';
+// Newly-rendered Supervisor turns use one compact causal receipt because the
+// provider/browser output path can truncate longer machine-shaped payloads. Older
+// block formats remain read-only compatibility for already-durable conversations.
+export const SUPERVISOR_BLOCK_START = 'FORGE_WORKFLOW_SUPERVISOR_V1_BEGIN';
+export const SUPERVISOR_BLOCK_END = 'FORGE_WORKFLOW_SUPERVISOR_V1_END';
+const COMPACT_RECEIPT = /^([CDU]) ([0-9a-f]{7})$/;
+export const LEGACY_BRACKET_SUPERVISOR_BLOCK_START = '[[[FORGE_WORKFLOW_SUPERVISOR_V1]]]';
+export const LEGACY_BRACKET_SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERVISOR_V1]]]';
 export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const LEGACY_SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
@@ -14,6 +16,7 @@ const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
 const SUPERVISOR_BLOCK_MARKERS = [
   { start: SUPERVISOR_BLOCK_START, end: SUPERVISOR_BLOCK_END },
+  { start: LEGACY_BRACKET_SUPERVISOR_BLOCK_START, end: LEGACY_BRACKET_SUPERVISOR_BLOCK_END },
   { start: LEGACY_SUPERVISOR_BLOCK_START, end: LEGACY_SUPERVISOR_BLOCK_END },
 ] as const;
 
@@ -31,6 +34,22 @@ export function validateEffectId(value: string): string {
 
 export function renderEffectMarker(effectId: string): string {
   return `${EFFECT_MARKER_PREFIX}${validateEffectId(effectId)}>>>`;
+}
+
+export function supervisorReceiptChallenge(task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>, effectId: string): string {
+  return createHash('sha256')
+    .update(`${task.taskId}\n${task.conversationId}\n${validateEffectId(effectId)}`)
+    .digest('hex')
+    .slice(0, 7);
+}
+
+export function renderSupervisorReceipt(
+  task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>,
+  effectId: string,
+  action: WorkflowSupervisorProposal['action'],
+): string {
+  const code = action === 'CONTINUE' ? 'C' : action === 'DONE' ? 'D' : 'U';
+  return `${code} ${supervisorReceiptChallenge(task, effectId)}`;
 }
 
 function supervisorBlockEnvelope(responseText: string): { start: number; end: number; startMarker: string; endMarker: string } {
@@ -52,11 +71,36 @@ function supervisorBlockEnvelope(responseText: string): { start: number; end: nu
 
 export function hasCommittedSupervisorEnvelope(responseText: string): boolean {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) return false;
+  if (COMPACT_RECEIPT.test(responseText.trim())) return true;
   try { supervisorBlockEnvelope(responseText); return true; } catch { return false; }
 }
 
-export function parseSupervisorCompletion(responseText: string): { proposal: WorkflowSupervisorProposal; controlBlock: string } {
+export function parseSupervisorCompletion(
+  responseText: string,
+  expected?: { task: Pick<WorkflowSupervisorTask, 'taskId' | 'conversationId'>; effectId: string },
+): { proposal: WorkflowSupervisorProposal; controlBlock: string } {
   if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TOO_LARGE');
+  const compact = COMPACT_RECEIPT.exec(responseText.trim());
+  if (compact) {
+    if (!expected) throw new Error('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CONTEXT_REQUIRED');
+    const challenge = supervisorReceiptChallenge(expected.task, expected.effectId);
+    if (compact[2] !== challenge) throw new Error('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
+    const action = compact[1] === 'C' ? 'CONTINUE' : compact[1] === 'D' ? 'DONE' : 'NEEDS_USER';
+    const supervisorState: WorkflowSupervisorState = action === 'CONTINUE' ? 'running' : action === 'DONE' ? 'done' : 'needs_user';
+    return {
+      proposal: {
+        action,
+        sourceEffectId: validateEffectId(expected.effectId),
+        checkpoint: `receipt:${challenge}`,
+        reason: 'compact_receipt',
+        evidence: [],
+        conversationId: expected.task.conversationId,
+        taskId: expected.task.taskId,
+        supervisorState,
+      },
+      controlBlock: responseText.trim(),
+    };
+  }
   const { start, end, startMarker, endMarker } = supervisorBlockEnvelope(responseText);
   const jsonText = responseText.slice(start + startMarker.length, end).trim();
   let parsed: unknown;
@@ -120,24 +164,16 @@ export function renderSupervisorPrompt(task: WorkflowSupervisorTask, effectId: s
     : typeof task.continuationPolicy.active_scope === 'string' && task.continuationPolicy.active_scope.trim()
       ? task.continuationPolicy.active_scope.trim()
       : undefined;
-  const stateContractLine = 'Set supervisor_state="running" with CONTINUE, "done" with DONE, and "needs_user" with NEEDS_USER.';
-  const visibleStatusContractLine = 'Before the final Supervisor control block, include exactly one standalone user-visible status line matching action: CONTINUE => "🔄 仍在执行，无需你操作"; NEEDS_USER => "⏸ 需要你处理，暂时不要关闭会话"; DONE => "✅ 已完成，可以关闭此会话". Never use "已完成" or "可以关闭此会话" for CONTINUE or NEEDS_USER. This line is presentation only; the action and validated durable Forge state remain completion authority.';
-  const progressContractLine = 'Presentation-only progress: when this round runs long or covers several tool waves, add 1-2 short user-visible sentences at key stage boundaries - a confirmed interim result, the next concrete thing you are working on, or a newly discovered blocker or conclusion. Do not narrate every tool call, do not expose private reasoning or chain-of-thought, and never let these sentences replace the required status line or the control block. They carry no completion authority and never become durable state.';
-  const scopeContractLine = explicitScope
-    ? `The block must echo active_scope=${JSON.stringify(explicitScope)}.`
-    : 'The block must include active_scope using the exact durable Forge relay scope recovered in this turn, for example requirement:<id> or goal:<id>. Never guess a scope.';
+  const challenge = supervisorReceiptChallenge(task, effectId);
+  const receiptContractLine = `Your final assistant response for this Supervisor-controlled turn must be exactly one line and nothing else: CONTINUE => "C ${challenge}"; DONE => "D ${challenge}"; NEEDS_USER => "U ${challenge}". Do not output JSON or echo the effect id, task id, conversation id, scope, checkpoint, reason, or evidence. Forge derives and validates those from durable state.`;
   return [marker, mode,
     ...(kind === 'continuation'
       ? [continuationLine]
       : [`Original objective: ${objective(task)}`, checkpointLine, correctionLine, lowerLayerLine,
         'Preserve the original Requirement, Plan, applicable AGENTS, architecture invariants and verification gates.']),
     actionContractLine,
-    stateContractLine,
-    visibleStatusContractLine,
-    progressContractLine,
-    scopeContractLine,
-    `End this turn with exactly one ${SUPERVISOR_BLOCK_START} JSON block and ${SUPERVISOR_BLOCK_END}.`,
-    `The block must echo conversation_id=${JSON.stringify(task.conversationId)}, task_id=${JSON.stringify(task.taskId)}, and source_effect_id=${JSON.stringify(effectId)}. Do not invent next_prompt content.`].filter(Boolean).join('\n');
+    ...(explicitScope ? [`Durable scope for this turn is ${JSON.stringify(explicitScope)}; do not echo it in the receipt.`] : []),
+    receiptContractLine].filter(Boolean).join('\n');
 }
 
 export function sha256(value: string): string { return createHash('sha256').update(value).digest('hex'); }

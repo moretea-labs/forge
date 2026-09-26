@@ -10,7 +10,7 @@ import { createWorkContract, reviseWorkSemanticContext } from '../../packages/ke
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { forgeWorkflowSupervisorLifecycleHooks, inheritWorkflowSupervisorConversationBinding, workflowSupervisorBoundaryForWork, workflowSupervisorLowerLayerReadyForWork } from '../../src/runtime/root/workflow-supervisor-composition';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
+import { LEGACY_SUPERVISOR_BLOCK_END, LEGACY_SUPERVISOR_BLOCK_START, parseSupervisorCompletion, renderSupervisorPrompt, renderSupervisorReceipt, supervisorReceiptChallenge, SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { reconcileWorkflowSupervisorSocket, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -53,10 +53,14 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_minimal01', 'continuation', 'large checkpoint payload', undefined, lowerLayerContext);
     expect(continuation).toContain('Continue using the context already present in this same conversation.');
     expect(continuation).toContain('Complete one coherent safe work wave');
-    expect(continuation).toContain('source_effect_id="fx_minimal01"');
-    expect(continuation).toContain('conversation_id="11111111-2222-3333-4444-555555555555"');
-    expect(continuation).toContain('task_id="task-minimal-continuation"');
-    expect(continuation).toContain('active_scope="requirement:REQ-minimal-continuation"');
+    const challenge = supervisorReceiptChallenge(task, 'fx_minimal01');
+    expect(continuation).toContain(`CONTINUE => "C ${challenge}"`);
+    expect(continuation).toContain(`DONE => "D ${challenge}"`);
+    expect(continuation).toContain('do not echo it in the receipt');
+    expect(continuation).not.toContain('source_effect_id=');
+    expect(continuation).not.toContain('conversation_id=');
+    expect(continuation).not.toContain('task_id=');
+    expect(continuation).not.toContain('active_scope=');
     expect(continuation).not.toContain('Original objective:');
     expect(continuation).not.toContain(task.objective);
     expect(continuation).not.toContain('large checkpoint payload');
@@ -71,8 +75,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(recovery).toContain(lowerLayerContext);
   });
 
-  test('pins the exact assistant action enum so lower-layer wait is not emitted as an invalid outer action', () => {
-    const prompt = renderSupervisorPrompt({
+  test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
+    const task = {
       taskId: 'task-supervisor-action-contract',
       conversationId: 'abababab-cdcd-efef-1212-343434343434',
       conversationUrl: 'https://chatgpt.com/c/abababab-cdcd-efef-1212-343434343434',
@@ -81,28 +85,60 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       continuationPolicy: {},
       userBlockerPolicy: {},
       createdAt: '2026-01-01T00:00:00.000Z',
-    }, 'fx_12345678', 'recovery');
+    };
+    const effectId = 'fx_12345678';
+    const prompt = renderSupervisorPrompt(task, effectId, 'recovery');
 
     expect(prompt).toContain('"CONTINUE", "DONE", or "NEEDS_USER"');
     expect(prompt).toContain('"WAIT", "RETRY", and every other value are invalid');
     expect(prompt).toContain('Use CONTINUE for any non-terminal state');
-    expect(prompt).toContain('conversation_id="abababab-cdcd-efef-1212-343434343434"');
-    expect(prompt).toContain('task_id="task-supervisor-action-contract"');
-    expect(prompt).toContain('supervisor_state="running"');
-    const parsed = parseSupervisorCompletion(`${SUPERVISOR_BLOCK_START}\n${JSON.stringify({
-      action: 'CONTINUE', conversation_id: 'abababab-cdcd-efef-1212-343434343434', task_id: 'task-supervisor-action-contract',
-      supervisor_state: 'running', active_scope: 'requirement:REQ-protocol', source_effect_id: 'fx_12345678',
-      checkpoint: 'protocol-ready', reason: 'continue', evidence: ['identity-bound'],
-    })}\n${SUPERVISOR_BLOCK_END}`);
-    expect(parsed.proposal).toMatchObject({ conversationId: 'abababab-cdcd-efef-1212-343434343434', taskId: 'task-supervisor-action-contract', supervisorState: 'running', activeScope: 'requirement:REQ-protocol' });
-    expect(prompt).toContain(SUPERVISOR_BLOCK_START);
+    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'CONTINUE'));
+    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'DONE'));
+    expect(prompt).toContain(renderSupervisorReceipt(task, effectId, 'NEEDS_USER'));
+    expect(prompt).not.toContain(SUPERVISOR_BLOCK_START);
     expect(prompt).not.toContain(LEGACY_SUPERVISOR_BLOCK_START);
+    expect(prompt).not.toContain('conversation_id=');
+    expect(prompt).not.toContain('task_id=');
+    expect(prompt).not.toContain('supervisor_state=');
+
+    const compact = parseSupervisorCompletion(renderSupervisorReceipt(task, effectId, 'CONTINUE'), { task, effectId });
+    expect(compact.proposal).toMatchObject({
+      action: 'CONTINUE', sourceEffectId: effectId, conversationId: task.conversationId,
+      taskId: task.taskId, supervisorState: 'running', reason: 'compact_receipt',
+    });
+    expect(() => parseSupervisorCompletion('C 0000000', { task, effectId })).toThrow('WORKFLOW_SUPERVISOR_COMPACT_RECEIPT_CHALLENGE_MISMATCH');
+
     const legacy = parseSupervisorCompletion(`${LEGACY_SUPERVISOR_BLOCK_START}\n${JSON.stringify({
-      action: 'CONTINUE', conversation_id: 'abababab-cdcd-efef-1212-343434343434', task_id: 'task-supervisor-action-contract',
-      supervisor_state: 'running', active_scope: 'requirement:REQ-protocol', source_effect_id: 'fx_12345678',
+      action: 'CONTINUE', conversation_id: task.conversationId, task_id: task.taskId,
+      supervisor_state: 'running', active_scope: 'requirement:REQ-protocol', source_effect_id: effectId,
       checkpoint: 'legacy-readable', reason: 'compatibility', evidence: ['legacy-wire'],
     })}\n${LEGACY_SUPERVISOR_BLOCK_END}`);
     expect(legacy.proposal.checkpoint).toBe('legacy-readable');
+    expect(legacy.proposal.activeScope).toBe('requirement:REQ-protocol');
+  });
+
+  test('deduplicates an exact compact receipt after its source effect is already completed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-compact-dedupe-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const task = control.registerTask({
+      taskId: 'task-compact-dedupe',
+      conversationId: 'cdcdcdcd-1111-2222-3333-444444444444',
+      conversationUrl: 'https://chatgpt.com/c/cdcdcdcd-1111-2222-3333-444444444444',
+      objective: 'Prove duplicate compact receipt observation is idempotent.',
+      completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+    });
+    const enrollment = control.reserveEnrollment(task.taskId);
+    control.observeEffect({ effectId: enrollment.effectId, observationId: 'obs-compact-dedupe', outcome: 'applied' });
+    const receipt = renderSupervisorReceipt(task, enrollment.effectId, 'CONTINUE');
+
+    const first = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText: receipt });
+    const duplicate = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText: receipt });
+
+    expect(first.successorEffect).toBeDefined();
+    expect(duplicate.deduplicated).toBe(true);
+    expect(duplicate.successorEffect?.effectId).toBe(first.successorEffect?.effectId);
   });
 
   test('keeps normal continuation minimal while recovery retains bounded restoration context', () => {
@@ -119,8 +155,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const continuation = renderSupervisorPrompt(task, 'fx_continue_1234', 'continuation', 'checkpoint-sentinel', undefined, 'LOWER_LAYER_SENTINEL');
     expect(continuation).toContain('Complete one coherent safe work wave');
     expect(continuation).not.toContain('checkpoint-sentinel');
-    expect(continuation).toContain('source_effect_id="fx_continue_1234"');
-    expect(continuation).toContain('active_scope="requirement:REQ-minimal-prompt"');
+    expect(continuation).toContain(renderSupervisorReceipt(task, 'fx_continue_1234', 'CONTINUE'));
+    expect(continuation).not.toContain('source_effect_id=');
+    expect(continuation).not.toContain('active_scope=');
     expect(continuation).not.toContain('Original objective:');
     expect(continuation).not.toContain('OBJECTIVE_SENTINEL');
     expect(continuation).not.toContain('LOWER_LAYER_SENTINEL');

@@ -877,7 +877,7 @@ describe('single Route Policy authority', () => {
     expect(getWorkContract(workStore, workId!)?.planId).toBeUndefined();
   });
 
-  test('persists semantic ownership before placement when another durable Work is active', () => {
+  test('does not treat an open semantic Work as shared-checkout writer ownership', () => {
     const root = temp('route-work-admission-');
     let materializationCount = 0;
     const context = {
@@ -901,13 +901,16 @@ describe('single Route Policy authority', () => {
 
     const independent = routeWorkStart(context, { objective: 'Add another independent repository change', modeInput });
     expect(independent.status).toBe('ok');
-    expect(independent.data).toMatchObject({ workContractCreated: true, worktreeRequired: true });
+    expect(independent.data).toMatchObject({ workContractCreated: true, worktreeRequired: false });
     const independentWorkId = (independent.data as { work?: { workId?: string } }).work?.workId;
     expect(independentWorkId).toBeTruthy();
     expect(independentWorkId).not.toBe(firstWorkId);
     const admitted = getWorkContract({ root: join(root, 'work') }, independentWorkId!);
-    expect(admitted).toMatchObject({ worktreePolicy: { required: true } });
-    expect(admitted?.checkoutId).toBeUndefined();
+    expect(admitted).toMatchObject({
+      checkoutId: 'checkout-a',
+      constraints: { workspaceMode: 'auto', requireWorktree: false },
+      worktreePolicy: { required: false },
+    });
     expect(admitted?.worktreeRef).toBeUndefined();
     expect(materializationCount).toBe(0);
 

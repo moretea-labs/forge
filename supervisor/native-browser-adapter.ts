@@ -84,7 +84,18 @@ export interface WorkflowSupervisorNativeBrowserHandle {
 }
 
 function normalize(value: string): string { return value.replace(/\s+/g, ' ').trim(); }
-function ownerMarker(conversationId: string): string { return `${OWNER_PREFIX}${conversationId}`; }
+type WorkflowSupervisorTabOwnership = 'created' | 'adopted' | 'legacy';
+function ownerMarker(conversationId: string, ownership: 'created' | 'adopted' = 'created'): string {
+  return `${OWNER_PREFIX}${ownership}:${conversationId}`;
+}
+function ownerMarkerOwnership(marker: string, conversationId: string): WorkflowSupervisorTabOwnership | undefined {
+  if (marker === ownerMarker(conversationId, 'created')) return 'created';
+  if (marker === ownerMarker(conversationId, 'adopted')) return 'adopted';
+  // Pre-provenance markers could belong to either a Forge-created or user tab.
+  // Keep them recoverable, but never auto-close an ambiguous legacy resource.
+  if (marker === `${OWNER_PREFIX}${conversationId}`) return 'legacy';
+  return undefined;
+}
 function exactConversation(url: string, task: WorkflowSupervisorBrowserTask): boolean {
   try {
     const parsed = parseChatgptConversationIdentity(url);
@@ -438,15 +449,27 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     this.inventory = undefined;
   }
 
+  private async releasePage(conversationId: string, page: WorkflowSupervisorNativePage): Promise<void> {
+    const ownership = ownerMarkerOwnership(await this.deps.readOwner(page), conversationId);
+    if (!ownership) return;
+    const ref = page.tabRef();
+    if (ownership === 'created' && ref) {
+      await this.deps.close(ref);
+      this.invalidateInventory();
+      return;
+    }
+    // Adopted tabs belong to the user. Legacy markers predate ownership
+    // provenance, so they are ambiguous and receive the same conservative
+    // treatment: release the marker but leave the browser resource intact.
+    await this.deps.writeOwner(page, '');
+  }
+
   private async cleanupInactive(tasks: WorkflowSupervisorBrowserTask[]): Promise<void> {
     const active = new Set(tasks.map((task) => task.conversationId));
     for (const [conversationId, page] of [...this.pages]) {
       if (active.has(conversationId)) continue;
-      const ref = page.tabRef();
-      try {
-        if (ref && await this.deps.readOwner(page) === ownerMarker(conversationId)) await this.deps.close(ref);
-      } catch { /* Transport cleanup is best-effort; never reinterpret lifecycle state. */ }
-      this.invalidateInventory();
+      try { await this.releasePage(conversationId, page); }
+      catch { /* Transport cleanup is best-effort; never reinterpret lifecycle state. */ }
       this.pages.delete(conversationId);
       this.observedAssistant.delete(conversationId);
     }
@@ -456,19 +479,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     | { state: 'ready'; page: WorkflowSupervisorNativePage; snapshot?: WorkflowSupervisorNativeSnapshot }
     | { state: 'missing' | 'unproven' }
   > {
-    const marker = ownerMarker(task.conversationId);
     const cached = this.pages.get(task.conversationId);
     if (cached) {
       try {
         const snapshot = await this.deps.snapshot(cached, { includeUserHistory: false, includePageText: false });
-        if (await this.deps.readOwner(cached) === marker && exactConversation(snapshot.url, task)) {
+        const ownership = ownerMarkerOwnership(await this.deps.readOwner(cached), task.conversationId);
+        if (ownership && exactConversation(snapshot.url, task)) {
           return { state: 'ready', page: cached, snapshot };
         }
       } catch { /* Reconstruct from browser evidence below. */ }
       this.pages.delete(task.conversationId);
     }
     const inventory = await this.listInventory();
-    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
+    const matches: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef; ownership: WorkflowSupervisorTabOwnership }> = [];
     const adoptable: Array<{ page: WorkflowSupervisorNativePage; ref: TaggedBrowserTabRef }> = [];
     let exactCandidateInspectionFailed = false;
     for (const candidate of inventory.entries.filter((entry) => exactConversation(entry.url, task))) {
@@ -480,8 +503,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       try {
         const page = await this.deps.reattach(ref);
         const owner = await this.deps.readOwner(page);
-        if (owner === marker) {
-          matches.push({ page, ref });
+        const ownership = ownerMarkerOwnership(owner, task.conversationId);
+        if (ownership) {
+          matches.push({ page, ref, ownership });
         } else if (!owner?.trim()) {
           // A user can close and reopen the exact durable conversation. Its
           // browser attachment is ephemeral, so an unowned exact tab may be
@@ -494,17 +518,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       } catch { exactCandidateInspectionFailed = true; }
     }
     if (matches.length === 0 && adoptable.length > 0) {
+      const adoptedMarker = ownerMarker(task.conversationId, 'adopted');
       for (const candidate of adoptable) {
         try {
-          await this.deps.writeOwner(candidate.page, marker);
-          if (await this.deps.readOwner(candidate.page) === marker) matches.push(candidate);
+          await this.deps.writeOwner(candidate.page, adoptedMarker);
+          if (await this.deps.readOwner(candidate.page) === adoptedMarker) {
+            matches.push({ ...candidate, ownership: 'adopted' });
+            break;
+          }
         } catch { exactCandidateInspectionFailed = true; }
       }
     }
     if (matches.length > 0) {
+      const priority: Record<WorkflowSupervisorTabOwnership, number> = { created: 0, adopted: 1, legacy: 2 };
+      matches.sort((left, right) => priority[left.ownership] - priority[right.ownership]);
       const [selected, ...duplicates] = matches;
-      for (const duplicate of duplicates) await this.deps.close(duplicate.ref).catch(() => undefined);
-      if (duplicates.length > 0) this.invalidateInventory();
+      for (const duplicate of duplicates) await this.releasePage(task.conversationId, duplicate.page).catch(() => undefined);
       this.pages.set(task.conversationId, selected!.page);
       return { state: 'ready', page: selected!.page };
     }
@@ -537,8 +566,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         await this.deps.sleep(100);
       }
       if (!snapshot || !exactConversation(snapshot.url, task)) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_CONVERSATION_NOT_READY');
-      await this.deps.writeOwner(page, ownerMarker(task.conversationId));
-      if (await this.deps.readOwner(page) !== ownerMarker(task.conversationId)) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_OWNER_MARKER_FAILED');
+      const marker = ownerMarker(task.conversationId, 'created');
+      await this.deps.writeOwner(page, marker);
+      if (await this.deps.readOwner(page) !== marker) throw new Error('WORKFLOW_SUPERVISOR_NATIVE_OWNER_MARKER_FAILED');
       return { page, snapshot };
     } catch (error) {
       if (ref) await this.deps.close(ref).catch(() => undefined);
@@ -547,11 +577,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   }
 
   private async retireOwnedPage(task: WorkflowSupervisorBrowserTask, page: WorkflowSupervisorNativePage): Promise<void> {
-    const ref = page.tabRef();
-    try {
-      if (ref && await this.deps.readOwner(page) === ownerMarker(task.conversationId)) await this.deps.close(ref);
-    } finally {
-      this.invalidateInventory();
+    try { await this.releasePage(task.conversationId, page); }
+    finally {
       this.pages.delete(task.conversationId);
       this.observedAssistant.delete(task.conversationId);
     }

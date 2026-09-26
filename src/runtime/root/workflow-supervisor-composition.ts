@@ -127,10 +127,15 @@ async function settleForgeWorkflowSupervisorTurn(
   completion: WorkflowSupervisorCompletion,
 ): Promise<WorkflowSupervisorTurnSettlement> {
   const repoId = workflowSupervisorContractText(task, 'repo_id');
-  const dynamicRequirementId = completion.proposal.activeScope?.startsWith('requirement:') ? completion.proposal.activeScope.slice('requirement:'.length).trim() : undefined;
-  const requirementId = workflowSupervisorContractText(task, 'requirement_id') ?? dynamicRequirementId;
   const workId = workflowSupervisorContractText(task, 'work_id');
   const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+  const workRequirementId = repoId && workId && taskControllerHome === controllerHome
+    ? getWorkContract({ controllerHome, repoId }, workId)?.requirementId
+    : undefined;
+  // Legacy completions may still carry activeScope, but current execution derives
+  // Requirement identity from the task/Work authority whenever possible.
+  const legacyRequirementId = completion.proposal.activeScope?.startsWith('requirement:') ? completion.proposal.activeScope.slice('requirement:'.length).trim() : undefined;
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id') ?? workRequirementId ?? legacyRequirementId;
   if (!repoId || (!requirementId && !workId) || !taskControllerHome) return { continuationAllowed: false, reason: 'WORKFLOW_SUPERVISOR_ACTIVE_WORK_SCOPE_REQUIRED' };
   if (taskControllerHome !== controllerHome) throw new Error('WORKFLOW_SUPERVISOR_CONTROLLER_HOME_MISMATCH');
 
