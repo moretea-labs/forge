@@ -669,6 +669,17 @@ describe('runtime observability', () => {
       expect(findings).toContainEqual(expect.objectContaining({
         jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
       }));
+
+      const projection = rebuildRepositoryProjection(controllerHome, repository.repoId);
+      expect(projection.attention).toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
+      }));
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
+      }));
+      expect(projection.currentAttention).toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
+      }));
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });

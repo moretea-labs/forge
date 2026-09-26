@@ -27,7 +27,7 @@ import type { ProjectionObservation, ProjectionSourceReconciliation } from '../h
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health/evaluator';
 import { isProcessAlive } from '../shared/process-tree';
 import type { TaskLedgerProjection } from '../../cli/controller/task-ledger';
-import { collectWorkLifecycleAttention } from '../control-plane/execution/work-lifecycle-audit';
+import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../control-plane/execution/work-lifecycle-audit';
 
 export interface ProjectionMetadata {
   contentRevision: number;
@@ -247,7 +247,7 @@ function buildRepositoryProjection(
     activeLeases: leases.length,
     currentAttention: [
       ...currentAttentionJobs.map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
-      ...lifecycleAttention,
+      ...lifecycleAttention.filter(workLifecycleAttentionBlocksReadiness),
     ].slice(0, 100),
     attention: [
       ...attentionJobs.map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),

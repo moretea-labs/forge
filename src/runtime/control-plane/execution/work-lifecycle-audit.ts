@@ -16,6 +16,31 @@ export interface WorkLifecycleAttention {
   message: string;
 }
 
+const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set([
+  'work_contract_invalid',
+  'work_active',
+  'active_work_handle_missing',
+  'active_worktree_missing',
+  'terminal_work_cleanup_unsettled',
+  'cleaned_worktree_still_present',
+  'active_checkout_missing',
+  'dirty_linked_worktree_unregistered',
+  'linked_worktree_unregistered',
+  'work_branch_not_integrated',
+]);
+
+/**
+ * Full lifecycle attention is durable audit evidence. Runtime readiness is narrower:
+ * only contradictions that still represent live Work or repository resource ownership
+ * may block current execution. Historical receipt/branch integrity remains visible in
+ * the audit projection without making an unrelated current Runtime unhealthy.
+ */
+export function workLifecycleAttentionBlocksReadiness(
+  finding: Pick<WorkLifecycleAttention, 'status'>,
+): boolean {
+  return CURRENT_READINESS_LIFECYCLE_STATUSES.has(finding.status);
+}
+
 interface LinkedWorktree {
   path: string;
   head?: string;
