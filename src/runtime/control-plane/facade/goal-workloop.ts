@@ -450,7 +450,7 @@ export function routeWorkStart(
       : input.request.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
   const evaluateAccessPolicy = () => evaluatePolicyGate({
-    capabilityId: 'controller.goal_workloop',
+    capabilityId: 'controller.work_contract',
     risk: effectiveRequest.risk
       ?? (input.request.secretAccess === true ? 'raw_secret_config'
         : input.request.destructive === true ? 'destructive'
