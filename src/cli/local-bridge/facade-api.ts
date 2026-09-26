@@ -19,9 +19,10 @@ import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
 import { evaluateActiveRuntimeSourceDrift, readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
 import {
-  controllerPluginRepository,
   getAssistantPluginManifest,
+  getControllerPluginManifest,
   listAssistantPluginManifests,
+  listControllerPluginManifests,
 } from '../../runtime/plugins/store';
 import type { AssistantPluginManifest } from '../../runtime/plugins/types';
 import {
@@ -895,25 +896,28 @@ export function mapPluginCard(manifest: AssistantPluginManifest): PluginCardView
 }
 
 export function listConsolePlugins(ctx: ConsoleFacadeContext): PluginCardViewModel[] {
-  const repositories = [ctx.repository, controllerPluginRepository(ctx.controllerHome)];
   const byPluginId = new Map<string, PluginCardViewModel>();
-  for (const repository of repositories) {
-    for (const manifest of listAssistantPluginManifests(ctx.controllerHome, repository, { preferStored: true })) {
-      if (!byPluginId.has(manifest.pluginId)) byPluginId.set(manifest.pluginId, mapPluginCard(manifest));
-    }
+  const manifests = [
+    ...listAssistantPluginManifests(ctx.controllerHome, ctx.repository, { preferStored: true }),
+    ...listControllerPluginManifests(ctx.controllerHome, { preferStored: true }),
+  ];
+  for (const manifest of manifests) {
+    if (!byPluginId.has(manifest.pluginId)) byPluginId.set(manifest.pluginId, mapPluginCard(manifest));
   }
   return [...byPluginId.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export function getConsolePlugin(ctx: ConsoleFacadeContext, pluginId: string): PluginCardViewModel | null {
-  for (const repository of [ctx.repository, controllerPluginRepository(ctx.controllerHome)]) {
-    try {
-      return mapPluginCard(getAssistantPluginManifest(ctx.controllerHome, repository, pluginId));
-    } catch {
-      // Try the other supported plugin scope before reporting an unknown plugin.
-    }
+  try {
+    return mapPluginCard(getAssistantPluginManifest(ctx.controllerHome, ctx.repository, pluginId));
+  } catch {
+    // Try controller-scoped plugins before reporting an unknown plugin.
   }
-  return null;
+  try {
+    return mapPluginCard(getControllerPluginManifest(ctx.controllerHome, pluginId));
+  } catch {
+    return null;
+  }
 }
 
 export function buildPluginSummary(plugins: PluginCardViewModel[]): PluginSummaryViewModel {

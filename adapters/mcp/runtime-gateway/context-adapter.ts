@@ -15,7 +15,7 @@ import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecor
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context/types";
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
-import { controllerPluginRepository, getAssistantPluginManifest, listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
+import { getAssistantPluginManifest, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView } from "../../../src/runtime/control-plane/facade";
 import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
@@ -720,16 +720,15 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const pluginMatch = /^plugin\.([^.]+)\.(.+)$/.exec(requestedCapabilityId);
       const manifests = pluginMatch ? (() => {
         const pluginId = pluginMatch[1];
-        const targets = [repository];
-        const controllerRepository = controllerPluginRepository(ctx.controllerHome);
-        if (controllerRepository.repoId !== repository.repoId) targets.push(controllerRepository);
-        for (const target of targets) {
-          try {
-            return [getAssistantPluginManifest(ctx.controllerHome, target, pluginId)];
-          } catch (error) {
-            if (error instanceof Error && error.message.startsWith('PLUGIN_NOT_FOUND:')) continue;
-            throw error;
-          }
+        try {
+          return [getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)];
+        } catch (error) {
+          if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
+        }
+        try {
+          return [getControllerPluginManifest(ctx.controllerHome, pluginId)];
+        } catch (error) {
+          if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
         }
         return [];
       })() : [];
@@ -783,10 +782,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         : rhContextLearningRecall(ctx, repository, capabilityIntentQuery);
       const manifestOptions = { preferStored: true };
       const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
-      const controllerRepository = controllerPluginRepository(ctx.controllerHome);
-      const controllerManifests = repository.repoId === controllerRepository.repoId
-        ? []
-        : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, manifestOptions);
+      const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
       const manifests = [...new Map(
         [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
       ).values()];
@@ -873,10 +869,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       ? []
       : (() => {
           const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
-          const controllerRepository = controllerPluginRepository(ctx.controllerHome);
-          const controllerManifests = repository.repoId === controllerRepository.repoId
-            ? []
-            : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, manifestOptions);
+          const controllerManifests = listControllerPluginManifests(ctx.controllerHome, manifestOptions);
           return [...new Map(
             [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
           ).values()];
