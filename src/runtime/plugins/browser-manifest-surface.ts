@@ -651,6 +651,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
   ]);
   return descriptors.map((descriptor) => ({
     ...descriptor,
+    executionMode: 'runtime',
     foregroundEffect: foregroundRequired.has(descriptor.actionId)
       ? 'required'
       : foregroundPossible.has(descriptor.actionId)

@@ -106,6 +106,18 @@ export async function executeAssistantPluginActionApplication(input: {
     };
   }
 
+  if (action?.executionMode === 'runtime') {
+    // Stateful providers may own in-memory resources whose identity is valid only
+    // inside the canonical Runtime process. Keep the normal durable request/effect
+    // receipt path, but do not relocate execution into a short-lived sidecar.
+    return {
+      kind: 'submitted',
+      submitted: input.scope.kind === 'controller'
+        ? await submitControllerPluginAction(input.controllerHome, input.request)
+        : await submitAssistantPluginAction(input.controllerHome, input.scope.repository, input.request),
+    };
+  }
+
   if (action) {
     const requestedTimeoutMs = Number.isFinite(input.request.timeoutMs)
       ? input.request.timeoutMs!
