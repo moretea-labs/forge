@@ -149,6 +149,17 @@ function managedSpec(registration: ExternalPluginRegistration): ManagedPluginPro
   };
 }
 
+function providerActionTimeoutMs(
+  registration: ExternalPluginRegistration,
+  actionId: string,
+  explicitTimeoutMs: number | undefined,
+): number | undefined {
+  if (explicitTimeoutMs !== undefined) return explicitTimeoutMs;
+  if (actionId === 'manifest' || actionId === 'health') return registration.transport.healthTimeoutMs;
+  return registration.actions.find((action) => action.actionId === actionId)?.defaultTimeoutMs
+    ?? registration.transport.actionTimeoutMs;
+}
+
 function probeProvider(
   registration: ExternalPluginRegistration,
   requestId: string,
@@ -185,7 +196,7 @@ async function callProvider(
       requestId,
       method: isProviderMethod ? actionId : 'execute',
       params: isProviderMethod ? undefined : { action: actionId, arguments: args },
-      timeoutMs: timeoutMs ?? (isProviderMethod ? registration.transport.healthTimeoutMs : registration.transport.actionTimeoutMs),
+      timeoutMs: providerActionTimeoutMs(registration, actionId, timeoutMs),
       signal,
     }));
   }
@@ -193,7 +204,7 @@ async function callProvider(
     requestId,
     actionId,
     input: args,
-    timeoutMs: timeoutMs ?? (actionId === 'manifest' || actionId === 'health' ? registration.transport.healthTimeoutMs : registration.transport.actionTimeoutMs),
+    timeoutMs: providerActionTimeoutMs(registration, actionId, timeoutMs),
     signal,
   });
 }

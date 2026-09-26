@@ -5,7 +5,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
-const MAX_TIMEOUT_MS = 120_000;
+export const MAX_PLUGIN_ACTION_TIMEOUT_MS = 10 * 60_000;
 /**
  * How long an already-dispatched request keeps its connection open after the
  * caller stopped waiting. Destroying that socket makes the provider's own write
@@ -214,7 +214,7 @@ export function normalizeExternalUnixJsonlCall(
   const params = options.params ?? {};
   const maxRequestBytes = boundedInteger(options.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, 1_024, 4 * DEFAULT_MAX_REQUEST_BYTES);
   const maxResponseBytes = boundedInteger(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, 1_024, 4 * DEFAULT_MAX_RESPONSE_BYTES);
-  const timeoutMs = boundedInteger(options.timeoutMs, health ? DEFAULT_HEALTH_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, 100, MAX_TIMEOUT_MS);
+  const timeoutMs = boundedInteger(options.timeoutMs, health ? DEFAULT_HEALTH_TIMEOUT_MS : DEFAULT_TIMEOUT_MS, 100, MAX_PLUGIN_ACTION_TIMEOUT_MS);
   const envelope = `${JSON.stringify({ id: options.requestId, method, params })}\n`;
   if (Buffer.byteLength(envelope, 'utf8') > maxRequestBytes) {
     throw transportError('EXTERNAL_PLUGIN_REQUEST_TOO_LARGE', 'External provider request exceeded the bounded input limit.', { retryable: false });

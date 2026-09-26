@@ -78,6 +78,47 @@ function uuWindowObservation(focused: 'terminal' | 'main' | 'descendant'): Recor
 }
 
 describe('external plugin adapter', () => {
+  test('preserves the registered action timeout through managed provider execution and lets an explicit timeout override it', async () => {
+    const base = registration();
+    const observedTimeouts: Array<number | undefined> = [];
+    const managedRegistration = registration({
+      pluginId: 'fixture_provider',
+      providerPluginId: 'fixture_provider',
+      displayName: 'Fixture Provider',
+      provider: 'fixture',
+      transport: {
+        kind: 'managed_cli_json',
+        runtimeExecutable: process.execPath,
+        helperPath: '/tmp/fixture-provider.mjs',
+        healthTimeoutMs: 2_000,
+        actionTimeoutMs: 30_000,
+      },
+      capabilities: [{ ...base.capabilities[0]!, actions: ['long_action'] }],
+      actions: [{ ...base.actions[0]!, actionId: 'long_action', defaultTimeoutMs: 240_000 }],
+    });
+    const adapter = createExternalPluginAdapter(managedRegistration, {
+      managedCall: async (_spec, request) => {
+        observedTimeouts.push(request.timeoutMs);
+        return { ok: true };
+      },
+    });
+
+    const input = {
+      controllerHome: '/tmp/home',
+      repoId: 'repo',
+      repoRoot: '/tmp/repo',
+      pluginId: 'fixture_provider',
+      actionId: 'long_action',
+      args: {},
+      origin: { surface: 'mcp' as const },
+      providerIdentityPrevalidated: true,
+    };
+    await adapter.executeAction({ ...input, requestId: 'managed-default-timeout' });
+    await adapter.executeAction({ ...input, requestId: 'managed-explicit-timeout', timeoutMs: 45_000 });
+
+    expect(observedTimeouts).toEqual([240_000, 45_000]);
+  });
+
   test('derives ready Forge manifest policy from registration while provider proves identity and health', () => {
     const adapter = createExternalPluginAdapter(registration(), {
       now: () => new Date('2026-08-08T01:00:00.000Z'),

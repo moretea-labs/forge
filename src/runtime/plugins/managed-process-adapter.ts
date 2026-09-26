@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { dirname, isAbsolute, resolve } from 'path';
+import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../../packages/plugin-runtime/external/index';
 import { AssistantPluginError } from './errors';
 
 export const MANAGED_PLUGIN_PROTOCOL_VERSION = 1;
@@ -8,7 +9,6 @@ const DEFAULT_MAX_REQUEST_BYTES = 1_048_576;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_MAX_STDERR_CHARS = 8_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const MAX_TIMEOUT_MS = 120_000;
 
 interface ManagedPluginHandshake {
   schemaVersion: 1;
@@ -73,7 +73,7 @@ function managedError(code: string, message: string, options: { retryable?: bool
 function boundedTimeout(spec: ManagedPluginProcessSpec, request: ManagedPluginProcessRequest): number {
   const requested = request.timeoutMs ?? spec.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(requested)) return DEFAULT_TIMEOUT_MS;
-  return Math.min(Math.max(Math.trunc(requested), 50), MAX_TIMEOUT_MS);
+  return Math.min(Math.max(Math.trunc(requested), 50), MAX_PLUGIN_ACTION_TIMEOUT_MS);
 }
 
 function minimalEnvironment(runtimeExecutable: string): NodeJS.ProcessEnv {

@@ -1,3 +1,4 @@
+import { MAX_PLUGIN_ACTION_TIMEOUT_MS } from '../../../packages/plugin-runtime/external/index';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import type { ProcessHandle } from '../execution/process-runtime/types';
 import { startManagedPluginAction, waitManagedPluginAction } from './lightweight-action';
@@ -91,7 +92,10 @@ export async function executeAssistantPluginActionApplication(input: {
   }
 
   if (action) {
-    const timeoutMs = Math.max(1_000, input.request.timeoutMs ?? action.defaultTimeoutMs ?? 10 * 60_000);
+    const requestedTimeoutMs = Number.isFinite(input.request.timeoutMs)
+      ? input.request.timeoutMs!
+      : action.defaultTimeoutMs;
+    const timeoutMs = Math.min(Math.max(1_000, Math.trunc(requestedTimeoutMs)), MAX_PLUGIN_ACTION_TIMEOUT_MS);
     let { handle } = await startManagedPluginAction({
       controllerHome: input.controllerHome,
       repository: input.repository,

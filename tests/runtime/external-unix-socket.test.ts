@@ -12,7 +12,7 @@ import {
   resolveExternalPluginProbeSidecarPath,
 } from '../../src/runtime/plugins/external-unix-socket';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
-import { ExternalUnixJsonlChannel } from '../../packages/plugin-runtime/external/unix-jsonl-transport';
+import { ExternalUnixJsonlChannel, MAX_PLUGIN_ACTION_TIMEOUT_MS, normalizeExternalUnixJsonlCall } from '../../packages/plugin-runtime/external/unix-jsonl-transport';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -95,6 +95,22 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
 }
 
 describe('external local socket / named-pipe provider transport', () => {
+  test('preserves action budgets above 120 seconds while enforcing the shared plugin-action maximum', () => {
+    const socketPath = process.platform === 'win32' ? '\\\\.\\pipe\\forge-timeout-policy' : '/tmp/forge-timeout-policy.sock';
+    expect(normalizeExternalUnixJsonlCall({
+      socketPath,
+      requestId: 'timeout-240s',
+      method: 'execute',
+      timeoutMs: 240_000,
+    }).timeoutMs).toBe(240_000);
+    expect(normalizeExternalUnixJsonlCall({
+      socketPath,
+      requestId: 'timeout-over-max',
+      method: 'execute',
+      timeoutMs: MAX_PLUGIN_ACTION_TIMEOUT_MS * 2,
+    }).timeoutMs).toBe(MAX_PLUGIN_ACTION_TIMEOUT_MS);
+  });
+
   test('executes bounded asynchronous JSONL RPC and returns object results', async () => {
     const { socketPath } = socketFixture();
     await startServer(socketPath);
