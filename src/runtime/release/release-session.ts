@@ -63,6 +63,33 @@ export interface ReleaseSessionTransaction {
   startedAt: string;
 }
 
+/**
+ * Runtime startup migration may persist the exact cutover transaction between
+ * activation and Recovery's post-start receipt. Operation ids and timestamps
+ * are writer-local evidence, so the semantic transaction identity excludes
+ * those fields while retaining every release/authority identity that fences a
+ * different cutover.
+ */
+function sameReleaseSessionTransactionIdentity(
+  left: ReleaseSessionTransaction,
+  right: ReleaseSessionTransaction,
+): boolean {
+  return left.schemaVersion === right.schemaVersion
+    && left.candidateReleaseId === right.candidateReleaseId
+    && left.cutoverAuthorityRevision === right.cutoverAuthorityRevision
+    && left.rollbackRelease.releaseId === right.rollbackRelease.releaseId
+    && left.rollbackRelease.artifactIdentity === right.rollbackRelease.artifactIdentity
+    && left.rollbackRelease.manifestPath === right.rollbackRelease.manifestPath
+    && left.rollbackRelease.manifestSha256 === right.rollbackRelease.manifestSha256
+    && left.rollbackRelease.workerProtocolVersion === right.rollbackRelease.workerProtocolVersion
+    && left.rollbackRelease.publishedAt === right.rollbackRelease.publishedAt
+    && left.rollbackRelease.databaseBackup?.path === right.rollbackRelease.databaseBackup?.path
+    && left.rollbackRelease.databaseBackup?.schemaVersion === right.rollbackRelease.databaseBackup?.schemaVersion
+    && left.rollbackRelease.databaseBackup?.createdAt === right.rollbackRelease.databaseBackup?.createdAt
+    && left.rollbackRelease.databaseBackup?.auditEventCount === right.rollbackRelease.databaseBackup?.auditEventCount
+    && left.rollbackRelease.databaseBackup?.recordCount === right.rollbackRelease.databaseBackup?.recordCount;
+}
+
 export interface ReleaseSession {
   /** Wire/storage schema remains readable by the previous Recovery release. */
   schemaVersion: 1;
@@ -511,8 +538,16 @@ export function recordReleaseSessionTransaction(input: {
 }): ReleaseSession {
   const current = readReleaseSession(input.controllerHome, input.sessionId);
   if (!current) throw new Error('RELEASE_SESSION_MISSING');
-  if (current.revision !== input.expectedRevision) throw new Error('RELEASE_SESSION_REVISION_FENCED');
   if (current.phase !== 'cutover_attempting') throw new Error(`RELEASE_SESSION_TRANSACTION_REQUIRES_CUTOVER_ATTEMPTING: ${current.phase}`);
+  // Runtime startup migration and the Recovery activation writer are two
+  // legitimate physical writers for this one bounded transaction. If the
+  // migration already persisted the exact transaction, accept its durable
+  // result instead of treating the activation's stale local revision as a
+  // competing semantic update. Any different transaction remains fenced.
+  if (current.transaction && sameReleaseSessionTransactionIdentity(current.transaction, input.transaction)) {
+    return current;
+  }
+  if (current.revision !== input.expectedRevision) throw new Error('RELEASE_SESSION_REVISION_FENCED');
   const next = {
     ...current,
     transaction: input.transaction,

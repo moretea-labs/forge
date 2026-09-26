@@ -5,7 +5,8 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { FROZEN_RH_WORK_TOOL_OPERATIONS, runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
+import { RH_WORK_MODEL_OPERATIONS } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES, FROZEN_RH_WORK_TOOL_OPERATIONS, runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
@@ -143,6 +144,25 @@ describe('handoff and facade contracts', () => {
     expect(properties).toHaveProperty('work_state');
     expect(properties).toHaveProperty('work_result_refs');
     expect(properties).toHaveProperty('expected_revision');
+  });
+
+  test('keeps the public rh_work ABI thin while retaining frozen carriers separately', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toEqual([...RH_WORK_MODEL_OPERATIONS]);
+    expect(properties).toHaveProperty('expected_revision');
+    expect(properties).toHaveProperty('work_state');
+    expect(properties).toHaveProperty('work_result_refs');
+    expect(properties).not.toHaveProperty('controller_authority_id');
+    expect(properties).not.toHaveProperty('relay_scope_id');
+    expect(properties).not.toHaveProperty('assistant_context_digest');
+    expect(properties).not.toHaveProperty('obligation_dispositions');
+    expect(properties).not.toHaveProperty('work_kind');
+    expect(properties).not.toHaveProperty('engineering_preconditions');
+    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('controller_authority_id');
+    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('relay_scope_id');
+    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('obligation_dispositions');
+    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('engineering_preconditions');
   });
 
   test('classifies terminal handoff statuses', () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import { RELEASE_SESSION_PHASES, advanceReleaseSession, createReleaseSession, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
@@ -36,6 +36,60 @@ describe('Recovery ReleaseSession', () => {
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'rolled_back', receipts: [{ id: 'rollback', kind: 'rollback', summary: 'Stable A restored' }] });
     expect(readReleaseSession(home, session.sessionId)).toMatchObject({ phase: 'rolled_back', revision: session.revision });
+  });
+
+  test('accepts an identical transaction persisted by Runtime startup migration after the activation CAS snapshot', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-race-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified', receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+    const rollbackRelease = {
+      releaseId: stableRelease.releaseId,
+      artifactIdentity: stableRelease.artifactIdentity,
+      manifestPath: join(home, 'stable', 'manifest.json'),
+      manifestSha256: stableRelease.manifestSha256,
+      workerProtocolVersion: stableRelease.workerProtocolVersion,
+      publishedAt: new Date().toISOString(),
+      databaseBackup: {
+        path: join(home, 'stable', 'controller.sqlite'),
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+      },
+    };
+    const migrationTransaction: ReleaseSessionTransaction = {
+      schemaVersion: 1,
+      operationId: 'reconcile:runtime-startup',
+      candidateReleaseId: candidateRelease.releaseId,
+      cutoverAuthorityRevision: stableRelease.authorityRevision + 1,
+      rollbackRelease,
+      startedAt: new Date().toISOString(),
+    };
+    const migrated = recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      transaction: migrationTransaction,
+    });
+    const activationRetry = recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      transaction: { ...migrationTransaction, operationId: 'recovery-activate-runtime', startedAt: new Date().toISOString() },
+    });
+    expect(activationRetry).toEqual(migrated);
+    expect(activationRetry.revision).toBe(session.revision + 1);
+    expect(() => recordReleaseSessionTransaction({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      transaction: { ...migrationTransaction, candidateReleaseId: 'different-candidate' },
+    })).toThrow('RELEASE_SESSION_REVISION_FENCED');
   });
 
   test('lists durable sessions and exposes Candidate B retirement only from durable phase', () => {
