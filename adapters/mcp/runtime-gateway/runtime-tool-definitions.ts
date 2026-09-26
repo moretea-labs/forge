@@ -263,7 +263,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     wait: { type: 'boolean', description: 'When true, wait for terminal status before returning digest.' },
     wait_ms: { type: 'number' },
   }, ['job_id']),
-  definition('get_artifact', 'Read one bounded Evidence Plane artifact by id. Large content remains bounded.', { artifact_id: { type: 'string' }, repo_id: repoId, max_bytes: { type: 'number' } }, ['artifact_id', 'repo_id']),
+  definition('get_artifact', 'Read one bounded Evidence Plane artifact/evidence handle by opaque id. repo_id is optional and used only to adopt a historical repository-partitioned handle once.', { artifact_id: { type: 'string' }, repo_id: { ...repoId, description: 'Legacy repository hint only. Omit for canonical ForgeInstance output handles.' }, max_bytes: { type: 'number' } }, ['artifact_id']),
   definition('repository_change_verify', 'Composite: verify checkout/SHA, apply bounded patch, run checks, return first failure inline without get_job/get_artifact follow-ups.', {
     repo_id: repoId,
     expected_branch: { type: 'string' },

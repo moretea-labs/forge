@@ -122,11 +122,10 @@ function artifactPointerFor(job: ExecutionJob, artifact: ReturnType<typeof write
     artifactKind: artifact.kind,
     detailPointer: {
       tool: 'get_artifact',
-      repoId: job.repoId,
       artifactId: artifact.artifactId,
       maxBytes: 512 * 1024,
     },
-    next: `Call get_artifact with repo_id=${job.repoId} and artifact_id=${artifact.artifactId}.`,
+    next: `Call get_artifact with artifact_id=${artifact.artifactId}.`,
   };
 }
 

@@ -82,6 +82,13 @@ function matchesCognitiveScope(work: WorkContract, scope: ScopeRef, controllerHo
   return cognitiveScopesForWork(work, controllerHome).some(candidate => candidate.kind === scope.kind && candidate.id === scope.id);
 }
 
+function isLegacyOutputLocatorMiss(error: unknown, kind: 'artifact' | 'evidence'): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return kind === 'artifact'
+    ? message.startsWith('ARTIFACT_LOCATOR_NOT_FOUND:')
+    : message.startsWith('EVIDENCE_LOCATOR_NOT_FOUND:');
+}
+
 export function canonicalWorkflowEvidenceAvailable(input: { controllerHome: string; repoId: string }, ref: string, scope: ScopeRef, sourceWorkId: string): boolean {
   try {
     const source = getWorkContract(input, sourceWorkId);
@@ -89,10 +96,22 @@ export function canonicalWorkflowEvidenceAvailable(input: { controllerHome: stri
     const linked = source.evidenceRefs.find(item => item.evidenceId === ref || item.artifactId === ref);
     if (linked) {
       if (ref.startsWith('ART-')) {
-        const artifact = readExecutionArtifact(input.controllerHome, input.repoId, ref, 16 * 1024);
+        let artifact;
+        try {
+          artifact = readExecutionArtifact(input.controllerHome, ref, 16 * 1024);
+        } catch (error) {
+          if (!isLegacyOutputLocatorMiss(error, 'artifact')) throw error;
+          artifact = readExecutionArtifact(input.controllerHome, ref, 16 * 1024, { legacyRepoId: input.repoId });
+        }
         return !artifact.truncated && artifact.artifact.kind === 'evidence';
       }
-      if (ref.startsWith('EVD-')) return readExecutionEvidence(input.controllerHome, input.repoId, ref).evidenceId === ref;
+      if (ref.startsWith('EVD-')) {
+        try { return readExecutionEvidence(input.controllerHome, ref).evidenceId === ref; }
+        catch (error) {
+          if (!isLegacyOutputLocatorMiss(error, 'evidence')) throw error;
+          return readExecutionEvidence(input.controllerHome, ref, { legacyRepoId: input.repoId }).evidenceId === ref;
+        }
+      }
     }
     if (source.checkRefs.some(check => check.receipt?.receiptId === ref && ['passed', 'failed'].includes(check.receipt.status))) return true;
     if (source.engineeringContext?.blockerDispositions?.some(disposition => disposition.receiptId === ref)) return true;

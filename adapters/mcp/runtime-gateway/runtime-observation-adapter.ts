@@ -1046,9 +1046,10 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
             }
       case 'get_artifact': {
               const artifactId = String(args.artifact_id ?? '').trim();
-              const artifactRepoId = String(args.repo_id ?? '').trim();
+              const legacyArtifactRepoId = String(args.repo_id ?? '').trim() || undefined;
+              const artifactPrincipalId = ctx.principalId?.trim() || '__anonymous__';
               if (artifactId.startsWith('EVD-')) {
-                const evidence = readExecutionEvidence(ctx.controllerHome, artifactRepoId, artifactId);
+                const evidence = readExecutionEvidence(ctx.controllerHome, artifactId, { legacyRepoId: legacyArtifactRepoId, principalId: artifactPrincipalId });
                 return result({
                   referenceType: 'evidence',
                   evidenceId: evidence.evidenceId,
@@ -1069,11 +1070,11 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                     message: `Expected artifactId starting with ART- (got ${artifactId.slice(0, 40)}). evidenceId (EVD-...) is audit metadata; use get_job artifactRefs for content.`,
                   },
                   referenceType: 'unknown',
-                  next: 'Call get_job, read artifactRefs[].artifactId (ART-...), then get_artifact with that id and repo_id.',
+                  next: 'Call get_job, read artifactRefs[].artifactId (ART-...), then get_artifact with that id. repo_id is only a legacy adoption hint.',
                 }, true);
               }
               const maxBytes = typeof args.max_bytes === 'number' ? args.max_bytes : 64 * 1024;
-              const loaded = readExecutionArtifact(ctx.controllerHome, artifactRepoId, artifactId, maxBytes);
+              const loaded = readExecutionArtifact(ctx.controllerHome, artifactId, maxBytes, { legacyRepoId: legacyArtifactRepoId, principalId: artifactPrincipalId });
               // Do not re-attach controller/repository/runtime envelopes here; multi-repo layer already compact.
               return result({
                 referenceType: 'artifact',

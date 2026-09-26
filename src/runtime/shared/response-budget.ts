@@ -222,9 +222,7 @@ export function artifactRef(input: {
     ...(typeof input.byteLength === 'number' ? { byteLength: input.byteLength } : {}),
     ...(input.repoId ? { repoId: input.repoId } : {}),
     ...(input.jobId ? { jobId: input.jobId } : {}),
-    next: input.repoId
-      ? `Call get_artifact with repo_id=${input.repoId} and artifact_id=${input.artifactId}.`
-      : `Call get_artifact with artifact_id=${input.artifactId}.`,
+    next: `Call get_artifact with artifact_id=${input.artifactId}.`,
   };
 }
 

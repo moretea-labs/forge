@@ -1,15 +1,18 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { closeSync, existsSync, mkdirSync, opendirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import type { ExecutionJob } from '../execution/jobs/types';
 import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
+import { deleteOutputHandleIndexEntry, recordOutputHandleIndexEntry, readOutputHandleIndexEntry, type OutputHandleStorage } from './output-handle-index';
 
 export interface ExecutionArtifactRecord {
   schemaVersion: 1;
   artifactId: string;
-  repoId: string;
+  /** Repository provenance only. */
+  repoId?: string;
   jobId: string;
+  principalId?: string;
   kind: 'job-result' | 'job-error' | 'command-output' | 'evidence';
   mediaType: 'application/json' | 'text/plain';
   path: string;
@@ -17,18 +20,123 @@ export interface ExecutionArtifactRecord {
   createdAt: string;
 }
 
-function artifactRoot(controllerHome: string, repoId: string): string {
-  const root = join(repositoryControllerRoot(controllerHome, repoId), 'artifacts');
-  mkdirSync(root, { recursive: true });
+function canonicalArtifactRoot(controllerHome: string): string {
+  const root = join(controllerSystemRoot(controllerHome), 'outputs', 'artifacts');
+  mkdirSync(join(root, 'data'), { recursive: true });
+  mkdirSync(join(root, 'records'), { recursive: true });
   return root;
 }
 
-function artifactDataPath(controllerHome: string, repoId: string, artifactId: string): string {
-  return join(artifactRoot(controllerHome, repoId), 'data', `${sanitizeFileComponent(artifactId)}.json`);
+function legacyArtifactRoot(controllerHome: string, repoId: string): string {
+  return join(repositoryControllerRoot(controllerHome, repoId), 'artifacts');
 }
 
-function metadataPath(controllerHome: string, repoId: string, artifactId: string): string {
-  return join(artifactRoot(controllerHome, repoId), 'records', `${sanitizeFileComponent(artifactId)}.json`);
+function artifactRoot(controllerHome: string, storage: OutputHandleStorage): string {
+  return storage.scope === 'instance'
+    ? canonicalArtifactRoot(controllerHome)
+    : legacyArtifactRoot(controllerHome, storage.repositoryId);
+}
+
+function artifactDataPath(controllerHome: string, storage: OutputHandleStorage, artifactId: string): string {
+  return join(artifactRoot(controllerHome, storage), 'data', `${sanitizeFileComponent(artifactId)}.json`);
+}
+
+function metadataPath(controllerHome: string, storage: OutputHandleStorage, artifactId: string): string {
+  return join(artifactRoot(controllerHome, storage), 'records', `${sanitizeFileComponent(artifactId)}.json`);
+}
+
+function artifactFingerprint(record: ExecutionArtifactRecord, value: unknown): string {
+  return createHash('sha256').update(JSON.stringify({
+    artifactId: record.artifactId,
+    jobId: record.jobId,
+    principalId: record.principalId ?? null,
+    kind: record.kind,
+    mediaType: record.mediaType,
+    createdAt: record.createdAt,
+    value,
+  })).digest('hex');
+}
+
+function registerArtifact(
+  controllerHome: string,
+  record: ExecutionArtifactRecord,
+  value: unknown,
+  storage: OutputHandleStorage,
+): void {
+  recordOutputHandleIndexEntry(controllerHome, {
+    handleId: record.artifactId,
+    kind: 'artifact',
+    storage,
+    repositoryId: record.repoId,
+    principalId: record.principalId,
+    operationId: record.jobId,
+    fingerprint: artifactFingerprint(record, value),
+  });
+}
+
+function loadArtifactAt(
+  controllerHome: string,
+  artifactId: string,
+  storage: OutputHandleStorage,
+): { artifact: ExecutionArtifactRecord; content: unknown; dataPath: string } {
+  const stored = readJsonFile<ExecutionArtifactRecord>(metadataPath(controllerHome, storage, artifactId));
+  if (stored.artifactId !== artifactId) throw new Error('ARTIFACT_IDENTITY_MISMATCH');
+  if (storage.scope === 'legacy_repository' && stored.repoId && stored.repoId !== storage.repositoryId) {
+    throw new Error('ARTIFACT_REPOSITORY_PROVENANCE_MISMATCH');
+  }
+  const path = artifactDataPath(controllerHome, storage, artifactId);
+  const content = readJsonFile<unknown>(path);
+  return {
+    artifact: {
+      ...stored,
+      ...(storage.scope === 'legacy_repository' && !stored.repoId ? { repoId: storage.repositoryId } : {}),
+      path,
+    },
+    content,
+    dataPath: path,
+  };
+}
+
+function resolveArtifact(
+  controllerHome: string,
+  artifactId: string,
+  legacyRepoId?: string,
+): { artifact: ExecutionArtifactRecord; content: unknown; dataPath: string; storage: OutputHandleStorage } {
+  if (legacyRepoId) {
+    const storage: OutputHandleStorage = { scope: 'legacy_repository', repositoryId: legacyRepoId };
+    const loaded = loadArtifactAt(controllerHome, artifactId, storage);
+    registerArtifact(controllerHome, loaded.artifact, loaded.content, storage);
+    return { ...loaded, storage };
+  }
+
+  const indexed = readOutputHandleIndexEntry(controllerHome, artifactId);
+  if (indexed) {
+    if (indexed.kind !== 'artifact') throw new Error(`OUTPUT_HANDLE_KIND_MISMATCH: ${artifactId}`);
+    const loaded = loadArtifactAt(controllerHome, artifactId, indexed.storage);
+    if (artifactFingerprint(loaded.artifact, loaded.content) !== indexed.fingerprint) {
+      throw new Error(`OUTPUT_HANDLE_FINGERPRINT_MISMATCH: ${artifactId}`);
+    }
+    return { ...loaded, storage: indexed.storage };
+  }
+
+  const storage: OutputHandleStorage = { scope: 'instance' };
+  if (!existsSync(metadataPath(controllerHome, storage, artifactId))) {
+    throw new Error(`ARTIFACT_LOCATOR_NOT_FOUND: ${artifactId}; supply repo_id only once when adopting a historical repository artifact`);
+  }
+  const loaded = loadArtifactAt(controllerHome, artifactId, storage);
+  registerArtifact(controllerHome, loaded.artifact, loaded.content, storage);
+  return { ...loaded, storage };
+}
+
+function assertArtifactAccess(record: ExecutionArtifactRecord, principalId?: string): void {
+  // Omitting principalId is reserved for trusted in-process integrity readers.
+  // External adapters must always provide an explicit principal (or anonymous).
+  if (principalId === undefined) return;
+  const owner = record.principalId?.trim();
+  const caller = principalId.trim();
+  if (owner && caller !== owner) {
+    throw new Error('ARTIFACT_ACCESS_DENIED: artifact belongs to another principal');
+  }
 }
 
 export function writeExecutionArtifact(
@@ -38,20 +146,24 @@ export function writeExecutionArtifact(
   value: unknown,
 ): ExecutionArtifactRecord {
   const artifactId = `ART-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const dataPath = artifactDataPath(controllerHome, job.repoId, artifactId);
+  const storage: OutputHandleStorage = { scope: 'instance' };
+  const dataPath = artifactDataPath(controllerHome, storage, artifactId);
   writeJsonAtomic(dataPath, value);
+  const principalId = job.origin.actor?.trim();
   const record: ExecutionArtifactRecord = {
     schemaVersion: 1,
     artifactId,
-    repoId: job.repoId,
+    ...(job.repoId?.trim() ? { repoId: job.repoId.trim() } : {}),
     jobId: job.jobId,
+    ...(principalId ? { principalId } : {}),
     kind,
     mediaType: 'application/json',
     path: dataPath,
     byteLength: statSync(dataPath).size,
     createdAt: new Date().toISOString(),
   };
-  writeJsonAtomic(metadataPath(controllerHome, job.repoId, artifactId), record);
+  writeJsonAtomic(metadataPath(controllerHome, storage, artifactId), record);
+  registerArtifact(controllerHome, record, value, storage);
   return record;
 }
 
@@ -65,9 +177,9 @@ export interface ExecutionArtifactJobCleanupReport {
 }
 
 /**
- * Reclaim only artifacts whose immutable metadata names the exact retired Job.
- * Stored path strings are never followed; metadata/data paths are re-derived
- * from the validated artifact id under this repository's Controller Home.
+ * Reclaim only canonical instance artifacts whose immutable metadata names the
+ * exact retired Job. Historical repository partitions are intentionally
+ * read-only after the output-handle cutover.
  */
 export function cleanupExecutionArtifactsForJob(
   controllerHome: string,
@@ -78,7 +190,8 @@ export function cleanupExecutionArtifactsForJob(
   const report: ExecutionArtifactJobCleanupReport = {
     policyVersion: 'execution-artifact-job-cleanup-v1', inspected: 0, matched: 0, removed: 0, scanTruncated: false, blockers: [],
   };
-  const root = join(repositoryControllerRoot(controllerHome, repoId), 'artifacts');
+  const storage: OutputHandleStorage = { scope: 'instance' };
+  const root = canonicalArtifactRoot(controllerHome);
   const recordsRoot = join(root, 'records');
   if (!existsSync(recordsRoot)) return report;
   const maxScan = Math.max(1, Math.min(Math.trunc(options.maxScan ?? 5_000), 5_000));
@@ -96,7 +209,7 @@ export function cleanupExecutionArtifactsForJob(
         report.blockers.push(`invalid_metadata:${entry.name}`);
         continue;
       }
-      if (record.schemaVersion !== 1 || record.repoId !== repoId || !record.artifactId || !record.jobId) {
+      if (record.schemaVersion !== 1 || !record.artifactId || !record.jobId) {
         report.blockers.push(`identity_mismatch:${entry.name}`);
         continue;
       }
@@ -105,9 +218,23 @@ export function cleanupExecutionArtifactsForJob(
         report.blockers.push(`artifact_key_mismatch:${entry.name}`);
         continue;
       }
-      if (record.jobId !== jobId) continue;
+      if (record.jobId !== jobId || (record.repoId && record.repoId !== repoId)) continue;
       report.matched += 1;
-      removeFile(join(root, 'data', expectedName));
+      const dataPath = artifactDataPath(controllerHome, storage, record.artifactId);
+      let value: unknown;
+      try {
+        value = readJsonFile<unknown>(dataPath);
+      } catch {
+        report.blockers.push(`artifact_data_missing:${record.artifactId}`);
+        continue;
+      }
+      const fingerprint = artifactFingerprint(record, value);
+      deleteOutputHandleIndexEntry(controllerHome, {
+        handleId: record.artifactId,
+        kind: 'artifact',
+        expectedFingerprint: fingerprint,
+      });
+      removeFile(dataPath);
       removeFile(recordPath);
       report.removed += 1;
     }
@@ -120,25 +247,23 @@ export function cleanupExecutionArtifactsForJob(
 
 export function readExecutionArtifact(
   controllerHome: string,
-  repoId: string,
   artifactId: string,
   maxBytes = 512 * 1024,
+  options: { legacyRepoId?: string; principalId?: string } = {},
 ): { artifact: ExecutionArtifactRecord; content: unknown; truncated: boolean } {
-  const artifact = readJsonFile<ExecutionArtifactRecord>(metadataPath(controllerHome, repoId, artifactId));
-  if (artifact.repoId !== repoId || artifact.artifactId !== artifactId) throw new Error('ARTIFACT_IDENTITY_MISMATCH');
+  const resolved = resolveArtifact(controllerHome, artifactId, options.legacyRepoId);
+  assertArtifactAccess(resolved.artifact, options.principalId);
   const bounded = Math.max(1_024, Math.min(maxBytes, 2 * 1024 * 1024));
-  // Derive the path from trusted identifiers. Never follow a path stored in mutable metadata.
-  const dataPath = artifactDataPath(controllerHome, repoId, artifactId);
-  const byteLength = statSync(dataPath).size;
+  const byteLength = statSync(resolved.dataPath).size;
   const length = Math.min(byteLength, bounded);
   const buffer = Buffer.alloc(length);
-  const descriptor = openSync(dataPath, 'r');
+  const descriptor = openSync(resolved.dataPath, 'r');
   try { readSync(descriptor, buffer, 0, length, 0); } finally { closeSync(descriptor); }
   if (byteLength <= bounded) {
-    return { artifact: { ...artifact, path: dataPath, byteLength }, content: JSON.parse(buffer.toString('utf8')), truncated: false };
+    return { artifact: { ...resolved.artifact, byteLength }, content: JSON.parse(buffer.toString('utf8')), truncated: false };
   }
   return {
-    artifact: { ...artifact, path: dataPath, byteLength },
+    artifact: { ...resolved.artifact, byteLength },
     content: {
       preview: buffer.toString('utf8'),
       byteLength,
@@ -154,8 +279,6 @@ export function boundExecutionResult(
   result: Record<string, unknown>,
   kind: ExecutionArtifactRecord['kind'] = 'job-result',
 ): { result: Record<string, unknown>; artifact?: ExecutionArtifactRecord } {
-  // Default success budget stays compact (~16KB). Callers still fetch full
-  // content via get_artifact when externalized.
   const DEFAULT_INLINE_SUCCESS = 16 * 1024;
   const DEFAULT_INLINE_ERROR = 32 * 1024;
   const configured = typeof job.payload.maxOutputBytes === 'number' ? job.payload.maxOutputBytes : DEFAULT_INLINE_SUCCESS;
@@ -175,25 +298,21 @@ export function boundExecutionResult(
         referenceType: 'artifact',
         artifactId: artifact.artifactId,
         artifactKind: artifact.kind,
-        // Keep a short human message, never the full JSON dump.
         message: typeof result.message === 'string'
           ? String(result.message).slice(0, 800)
           : (typeof result.error === 'string' ? String(result.error).slice(0, 800) : 'Job failed; full details externalized.'),
         detailPointer: {
           tool: 'get_artifact',
-          repoId: job.repoId,
           artifactId: artifact.artifactId,
           maxBytes,
         },
-        next: `Call get_artifact with repo_id=${job.repoId} and artifact_id=${artifact.artifactId} (ART-..., not EVD-...).`,
+        next: `Call get_artifact with artifact_id=${artifact.artifactId} (ART-..., not EVD-...).`,
       },
     };
   }
 
-  if (bytes <= maxBytes) {
-    // Prefer inlining compact stdout/stderr when present.
-    return { result };
-  }
+  if (bytes <= maxBytes) return { result };
+
   const artifact = writeExecutionArtifact(controllerHome, job, kind, result);
   return {
     artifact,
@@ -207,11 +326,10 @@ export function boundExecutionResult(
       preview: serialized.slice(0, Math.min(2 * 1024, serialized.length)),
       detailPointer: {
         tool: 'get_artifact',
-        repoId: job.repoId,
         artifactId: artifact.artifactId,
         maxBytes,
       },
-      next: `Call get_artifact with repo_id=${job.repoId} and artifact_id=${artifact.artifactId} (ART-..., not EVD-...).`,
+      next: `Call get_artifact with artifact_id=${artifact.artifactId} (ART-..., not EVD-...).`,
     },
   };
 }
