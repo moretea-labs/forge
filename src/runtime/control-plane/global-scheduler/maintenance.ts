@@ -375,20 +375,29 @@ export async function runSchedulerControllerRoundRecovery(input: {
           continue;
         }
         if (boundary.status === 'conversation_pending') {
-          // Automatic recovery must never manufacture a replacement ChatGPT
-          // conversation while current-conversation enrollment is unresolved.
-          // An explicit launcher may still create a new conversation by design.
-          // Still settle the attempt so the relay cannot sit in `dispatching`
-          // indefinitely without evidence or a bounded retry budget.
-          failed += 1;
-          finishControllerRoundRelayDispatch(store, {
-            workId: record.originWorkId,
-            ok: false,
-            error: 'WORKFLOW_SUPERVISOR_EXACT_WORK_CONVERSATION_REQUIRED',
-            recovery: true,
-            nowMs: input.nowMs,
-          });
-          continue;
+          const providerDispatchNeverStarted = record.lastError === 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
+            && (record.providerDispatchAttempt ?? 0) === 0
+            && !record.providerDispatchEffectId
+            && !record.providerDispatchStartedAt
+            && !record.providerDispatchReceiptId;
+          if (!providerDispatchNeverStarted) {
+            // Once provider dispatch may have started, exact conversation identity
+            // is the replay fence. Never manufacture a replacement conversation
+            // for an ambiguous or possibly committed send.
+            failed += 1;
+            finishControllerRoundRelayDispatch(store, {
+              workId: record.originWorkId,
+              ok: false,
+              error: 'WORKFLOW_SUPERVISOR_EXACT_WORK_CONVERSATION_REQUIRED',
+              recovery: true,
+              nowMs: input.nowMs,
+            });
+            continue;
+          }
+          // A relay interrupted before provider dispatch began has durable proof of
+          // non-application. It is safe to perform the first fresh dispatch here;
+          // beginControllerRoundProviderDispatch below records the effect before
+          // any external send can occur.
         }
         const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
         const predecessorBinding = !binding && record.predecessorWorkId
@@ -416,6 +425,7 @@ export async function runSchedulerControllerRoundRecovery(input: {
           model: 'gpt-5.6',
           reasoning: 'medium',
           tabPolicy: 'auto',
+          transportConversation: deliveryBinding ? 'bound' : 'fresh',
           timeoutMs: 30_000,
         });
         if (result.status === 'failed') {

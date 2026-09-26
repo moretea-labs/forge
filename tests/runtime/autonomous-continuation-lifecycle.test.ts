@@ -9,6 +9,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundProviderDispatch,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   bindControllerRoundSuccessorWork,
@@ -1251,6 +1252,151 @@ describe('autonomous continuation lifecycle', () => {
       blockedReason: 'consecutive_failures:2>=2',
     });
     expect(getControllerRoundRelay(store, workId)?.nextRecoveryAt).toBeUndefined();
+  });
+
+  test('stalled conversation-pending recovery safely performs the first fresh provider dispatch when no provider attempt began', async () => {
+    const root = temp('forge-autonomous-recovery-pre-provider-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-recovery-pre-provider' });
+    const workId = 'WORK-AUTONOMOUS-RECOVERY-PRE-PROVIDER';
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Recover a transport interruption that happened before the first provider send began.',
+      acceptanceCriteria: ['one fresh dispatch occurs only after durable proof that no provider attempt began'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:pre-provider-recovery', controllerType: 'chatgpt',
+        principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-pre-provider-recovery',
+      },
+    });
+    expect(opened.status).toBe('dispatching');
+    expect(opened.providerDispatchAttempt ?? 0).toBe(0);
+    const recoveryAt = Date.parse(opened.updatedAt) + 61_000;
+    const observed: Array<Record<string, unknown>> = [];
+
+    const result = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs: recoveryAt,
+      repositories: [repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => undefined,
+      dispatchPrompt: async (input: any) => {
+        observed.push(input);
+        const binding = bindChatgptWorkConversation(store, {
+          workId,
+          conversationUrl: 'https://chatgpt.com/c/recovered-pre-provider-conversation',
+          latestBrowserSessionId: 'browser-pre-provider-recovery',
+        });
+        return {
+          status: 'dispatched' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: binding.latestBrowserSessionId!,
+          conversationUrl: binding.conversationUrl,
+          conversationId: binding.conversationId,
+          localAlias: binding.localAlias,
+          resumedFromBinding: false,
+          model: 'gpt-5.6',
+          reasoning: 'medium' as const,
+          tabPolicy: 'auto' as const,
+          executionPreferenceVerified: true,
+          providerDeliveryStatus: 'dispatch_confirmed' as const,
+        };
+      },
+    });
+
+    expect(result).toEqual({ claimed: 1, dispatched: 1, failed: 0 });
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      workId,
+      conversationUrl: undefined,
+      transportConversation: 'fresh',
+    });
+    expect(getChatgptWorkConversationBinding(store, workId)?.conversationId).toBe('recovered-pre-provider-conversation');
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'dispatched',
+      providerDispatchAttempt: 1,
+    });
+  });
+
+  test('stalled provider-started recovery becomes outcome-unknown before scheduler can replay it', async () => {
+    const root = temp('forge-autonomous-recovery-provider-started-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-recovery-provider-started' });
+    const workId = 'WORK-AUTONOMOUS-RECOVERY-PROVIDER-STARTED';
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Never replay a provider send after dispatch may have started without an exact conversation identity.',
+      acceptanceCriteria: ['ambiguous provider dispatch remains fenced'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:provider-started-recovery', controllerType: 'chatgpt',
+        principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-provider-started-recovery',
+      },
+      maxFailures: 2,
+    });
+    const started = beginControllerRoundProviderDispatch(store, {
+      workId,
+      authorityId: opened.authorityId!,
+      expectedUpdatedAt: opened.updatedAt,
+    });
+    expect(started).toMatchObject({ status: 'dispatching', providerDispatchAttempt: 1 });
+    const recoveryAt = Date.parse(started.updatedAt) + 61_000;
+    let dispatches = 0;
+
+    const result = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs: recoveryAt,
+      repositories: [repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => undefined,
+      dispatchPrompt: async () => {
+        dispatches += 1;
+        throw new Error('ambiguous provider send must not be replayed');
+      },
+    });
+
+    expect(result).toEqual({ claimed: 0, dispatched: 0, failed: 0 });
+    expect(dispatches).toBe(0);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'blocked',
+      providerDispatchAttempt: 1,
+      blockedReason: 'provider_dispatch_outcome_unknown',
+      lastError: 'CONTROLLER_RELAY_PROVIDER_DISPATCH_STALLED_AFTER_EFFECT_START',
+    });
   });
 
   test('stalled ControllerRound recovery records bounded failure when Supervisor enrollment does not happen', async () => {
