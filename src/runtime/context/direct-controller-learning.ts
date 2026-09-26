@@ -9,10 +9,11 @@ import {
   type MemoryUnit,
 } from '../../../packages/kernel/cognition/api/index';
 import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
+import { FORGE_INSTANCE_SCOPE_KEY } from '../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { cognitionMemoryStore, cognitionReadPort, recordCognitiveUsageObservation, type CognitiveUsageRejectionKind } from '../control-plane/persistence/cognition-store';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';
-import { controllerPluginRepository, findPluginActionReceipt } from '../plugins/store';
+import { findPluginActionReceipt } from '../plugins/store';
 import {
   associateStoredMemories,
   consolidateAffectedMemories,
@@ -86,7 +87,6 @@ function directLearningAuthority(input: {
   principalId?: string;
   sourceId: string;
 }): CognitiveWriteAuthorityPort {
-  const controllerRepoId = controllerPluginRepository(input.controllerHome).repoId;
   const scopeAllowed = (scope: ScopeRef) => input.scopes.some(candidate => sameScope(candidate, scope));
   return {
     assertMemoryWrite(memory: MemoryUnit) {
@@ -110,7 +110,7 @@ function directLearningAuthority(input: {
       if (!receipt) return false;
       if (receipt.repoId === input.repository.repoId || receipt.workRepoId === input.repository.repoId) return true;
       const principal = input.principalId?.trim();
-      return receipt.repoId === controllerRepoId
+      return receipt.scopeKey === FORGE_INSTANCE_SCOPE_KEY
         && Boolean(principal)
         && receipt.origin?.actor === principal;
     },

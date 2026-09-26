@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types';
 import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
-import { controllerPluginRepository, executeControllerScopedPluginAction, getControllerPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { executeControllerScopedPluginAction, getControllerPluginManifest, submitControllerPluginAction } from '../../src/runtime/plugins/store';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   ChatgptProviderDeliveryError,
@@ -102,11 +102,7 @@ async function controllerBrowserAction(
   // reusable controller-scoped Browser grant. Scheduled delivery stays on the
   // low-level executor and must present explicit refs already bound to this Work.
   if (origin.surface === 'chatgpt-action' && CHATGPT_BROWSER_AUTHORIZATION_ACTIONS.has(actionId)) {
-    const submitted = await submitAssistantPluginAction(
-      controllerHome,
-      controllerPluginRepository(controllerHome),
-      actionRequest,
-    );
+    const submitted = await submitControllerPluginAction(controllerHome, actionRequest);
     const grantId = submitted.authorization?.grantId?.trim();
     if (grantId) context?.authorizationGrantRefs.add(grantId);
     if (!submitted.result) throw new Error(`CHATGPT_BROWSER_ACTION_RESULT_INVALID:${actionId}`);
