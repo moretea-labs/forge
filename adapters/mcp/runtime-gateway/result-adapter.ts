@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import type { CallToolResult as SdkCallToolResult } from "@modelcontextprotocol/client";
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { repositoryControllerRoot } from '../../../src/cli/repositories/controller-home';
+import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../src/cli/repositories/controller-home';
 import { redactMcpText } from '../redaction';
 
 /** Transport-only MCP result envelope. No lifecycle or domain mutation belongs here. */
@@ -34,7 +34,9 @@ export function boundedPluginArtifactImageContent(
     ...(nestedResult && Array.isArray(nestedResult.artifactCandidates) ? nestedResult.artifactCandidates : []),
   ];
   if (candidates.length === 0) return [];
-  const allowedRoot = resolve(repositoryControllerRoot(controllerHome, repoId));
+  const allowedRoots = repoId === CONTROLLER_SCOPE_REPO_ID
+    ? [resolve(controllerSystemRoot(controllerHome)), resolve(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID))]
+    : [resolve(repositoryControllerRoot(controllerHome, repoId))];
   const images: McpImageContent[] = [];
   const seenPaths = new Set<string>();
 
@@ -48,8 +50,11 @@ export function boundedPluginArtifactImageContent(
 
     const resolvedPath = resolve(path);
     if (seenPaths.has(resolvedPath)) continue;
-    const rel = relative(allowedRoot, resolvedPath);
-    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+    const contained = allowedRoots.some((allowedRoot) => {
+      const rel = relative(allowedRoot, resolvedPath);
+      return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+    });
+    if (!contained) continue;
     if (!existsSync(resolvedPath)) continue;
 
     try {

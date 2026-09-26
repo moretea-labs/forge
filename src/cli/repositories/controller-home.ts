@@ -253,7 +253,10 @@ export function ensureRepoPreferredControllerHome(repoRoot?: string, explicit?: 
   return ensureControllerHome(resolveRepoPreferredControllerHome(repoRoot, explicit));
 }
 
+/** Legacy adapter-only sentinel. Never use this as a canonical storage or resource scope. */
 export const CONTROLLER_SCOPE_REPO_ID = '__controller__';
+/** Canonical mechanical scope for state owned by the serving ForgeInstance itself. */
+export const FORGE_INSTANCE_SCOPE_KEY = 'forge-instance';
 
 /** Human-editable user Workflow Asset content. Machine workflow state stays in control-plane persistence. */
 export function controllerWorkflowContentRoot(controllerHome: string): string {
@@ -318,11 +321,14 @@ export function workspaceScopeRoot(controllerHome: string, scopeKey: string): st
  * own the workspace partition.
  */
 export function scopedOperationRoot(controllerHome: string, scopeKey: string): string {
-  return isWorkspaceScopeKey(scopeKey)
-    ? workspaceScopeRoot(controllerHome, scopeKey)
-    : isSemanticScopeKey(scopeKey)
-      ? join(resolveControllerHome(durableControllerHome(controllerHome)), SEMANTIC_SCOPE_KEY)
-      : repositoryControllerRoot(controllerHome, scopeKey);
+  const key = scopeKey.trim();
+  return key === FORGE_INSTANCE_SCOPE_KEY
+    ? controllerSystemRoot(controllerHome)
+    : isWorkspaceScopeKey(key)
+      ? workspaceScopeRoot(controllerHome, key)
+      : isSemanticScopeKey(key)
+        ? join(resolveControllerHome(durableControllerHome(controllerHome)), SEMANTIC_SCOPE_KEY)
+        : repositoryControllerRoot(controllerHome, key);
 }
 
 export function ensureRepositoryControllerLayout(controllerHome: string, repoId: string): string {

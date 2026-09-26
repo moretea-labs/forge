@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
@@ -221,8 +221,18 @@ export function clearAssistantPluginManifestCacheForTest(): void {
   pluginManifestItemCache.clear();
 }
 
+function pluginScopeKey(repository: Pick<RepositoryRecord, 'repoId'>): string {
+  return repository.repoId === CONTROLLER_SCOPE_REPO_ID ? FORGE_INSTANCE_SCOPE_KEY : repository.repoId;
+}
+
 function pluginsRoot(controllerHome: string, repoId: string): string {
-  return join(repositoryControllerRoot(controllerHome, repoId), 'plugins');
+  return repoId === CONTROLLER_SCOPE_REPO_ID
+    ? join(controllerSystemRoot(controllerHome), 'plugins')
+    : join(repositoryControllerRoot(controllerHome, repoId), 'plugins');
+}
+
+function legacyControllerPluginsRoot(controllerHome: string): string {
+  return join(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID), 'plugins');
 }
 
 function manifestPath(controllerHome: string, repoId: string, pluginId: string): string {
@@ -267,8 +277,14 @@ function pluginIndexEntry(controllerHome: string, repoId: string, manifest: Assi
 }
 
 function readStoredManifest(controllerHome: string, repoId: string, pluginId: string): AssistantPluginManifest | undefined {
+  const canonicalPath = manifestPath(controllerHome, repoId, pluginId);
   try {
-    return readJsonFile<AssistantPluginManifest>(manifestPath(controllerHome, repoId, pluginId));
+    if (existsSync(canonicalPath)) return readJsonFile<AssistantPluginManifest>(canonicalPath);
+    if (repoId === CONTROLLER_SCOPE_REPO_ID) {
+      const legacyPath = join(legacyControllerPluginsRoot(controllerHome), 'manifests', `${sanitizeFileComponent(pluginId)}.json`);
+      if (existsSync(legacyPath)) return readJsonFile<AssistantPluginManifest>(legacyPath);
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -397,10 +413,11 @@ async function withAssistantPluginResourceLeases<T>(
   request: AssistantPluginActionRequest,
   operation: () => Promise<T>,
 ): Promise<T> {
+  const controllerScoped = repository.repoId === CONTROLLER_SCOPE_REPO_ID;
+  const executionScopeKey = pluginScopeKey(repository);
   const claims = claimsForAssistantPluginAction(action, repository, request.pluginId).map((claim) => ({
     ...claim,
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
+    ...(controllerScoped ? {} : { repoId: repository.repoId, checkoutId: repository.activeCheckoutId }),
   }));
   if (claims.length === 0) return operation();
 
@@ -411,7 +428,7 @@ async function withAssistantPluginResourceLeases<T>(
   // second same-owner lease and then failing exact release with LEASE_SET_MISMATCH.
   const ownerJobId = `plugin:${request.requestId}:${randomUUID()}`;
   const timeoutMs = Math.max(5_000, Math.min(10 * 60_000, request.timeoutMs ?? action.defaultTimeoutMs));
-  const acquisition = acquireExecutionLeases(controllerHome, repository.repoId, ownerJobId, claims, {
+  const acquisition = acquireExecutionLeases(controllerHome, executionScopeKey, ownerJobId, claims, {
     ttlMs: timeoutMs + 60_000,
     // This lease exists only to fence concurrent invocations of one external
     // effect. It is not Scheduler/recovery authority, so derived projection,
@@ -420,9 +437,9 @@ async function withAssistantPluginResourceLeases<T>(
     // the bounded invocation and expire if its process dies.
     visibility: 'ephemeral',
     ownerIdentity: {
-      repositoryId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      worktreeId: repository.activeCheckoutId,
+      repositoryId: executionScopeKey,
+      checkoutId: controllerScoped ? FORGE_INSTANCE_SCOPE_KEY : repository.activeCheckoutId,
+      worktreeId: controllerScoped ? FORGE_INSTANCE_SCOPE_KEY : repository.activeCheckoutId,
       branch: 'workflow-plugin-action',
       principalId: request.origin.actor?.trim() || 'workflow-plugin-action',
       controllerInstanceId: process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
@@ -463,14 +480,14 @@ async function withAssistantPluginResourceLeases<T>(
     throw error;
   } finally {
     if (!retainForReconciliation) {
-      releaseExactExecutionLeases(controllerHome, repository.repoId, ownerJobId, expected, { visibility: 'ephemeral' });
+      releaseExactExecutionLeases(controllerHome, executionScopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
     }
   }
 }
 
 function semanticKey(repository: RepositoryRecord, pluginId: string, actionId: string, args: Record<string, unknown>): string {
   const digest = createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex').slice(0, 20);
-  return `plugin-action:${repository.repoId}:${pluginId}:${actionId}:${digest}`;
+  return `plugin-action:${pluginScopeKey(repository)}:${pluginId}:${actionId}:${digest}`;
 }
 
 function validatePrimitive(type: string, value: unknown): boolean {
@@ -1007,9 +1024,15 @@ interface PluginActionRequestIndex {
 }
 
 function pluginActionReceiptRoot(controllerHome: string, repoId: string): string {
-  const root = join(repositoryControllerRoot(controllerHome, repoId), 'plugin-action-receipts');
+  const root = repoId === CONTROLLER_SCOPE_REPO_ID
+    ? join(controllerSystemRoot(controllerHome), 'plugin-action-receipts')
+    : join(repositoryControllerRoot(controllerHome, repoId), 'plugin-action-receipts');
   mkdirSync(root, { recursive: true });
   return root;
+}
+
+function legacyControllerPluginActionReceiptPath(controllerHome: string, receiptId: string): string {
+  return join(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID), 'plugin-action-receipts', `${sanitizeFileComponent(receiptId)}.json`);
 }
 
 function pluginActionRequestPath(controllerHome: string, requestId: string): string {
@@ -1025,8 +1048,12 @@ function pluginActionReceiptPath(controllerHome: string, repoId: string, receipt
 
 function readPluginActionReceipt(controllerHome: string, repoId: string, receiptId: string): PluginActionReceipt | undefined {
   const path = pluginActionReceiptPath(controllerHome, repoId, receiptId);
-  if (!existsSync(path)) return undefined;
-  return readJsonFile<PluginActionReceipt>(path);
+  if (existsSync(path)) return readJsonFile<PluginActionReceipt>(path);
+  if (repoId === CONTROLLER_SCOPE_REPO_ID) {
+    const legacyPath = legacyControllerPluginActionReceiptPath(controllerHome, receiptId);
+    if (existsSync(legacyPath)) return readJsonFile<PluginActionReceipt>(legacyPath);
+  }
+  return undefined;
 }
 
 export function findPluginActionReceipt(
