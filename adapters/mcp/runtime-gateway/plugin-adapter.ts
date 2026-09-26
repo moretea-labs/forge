@@ -18,6 +18,8 @@ function pluginRepository(
   args: Record<string, unknown>,
   pluginId: string,
 ) {
+  const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
+  if (explicitRepoId === '__controller__') return controllerPluginRepository(ctx.controllerHome);
   return assistantPluginScope(pluginId, ctx.controllerHome) === 'controller'
     ? controllerPluginRepository(ctx.controllerHome)
     : selected(ctx, args);

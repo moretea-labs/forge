@@ -1389,4 +1389,26 @@ printf '{"ok":true}\\n'
     expect(data.capabilitySearch?.matches?.find((entry) => entry.capabilityId === 'plugin.browser')?.descriptor?.exposedVia).toBe('plugin_action_execute');
   });
 
+  test('plugin facade addresses controller scope through the stable synthetic repo identity', async () => {
+    const business = tempRoot('forge-plugin-controller-scope-');
+    const controllerHome = tempRoot('forge-home-plugin-controller-scope-');
+    initGitRepo(business, 'plugin-controller-scope');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Plugin Controller Scope' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    const controllerScoped = structured(await callRuntimeTool(ctx, 'get_plugin', {
+      repo_id: '__controller__',
+      plugin_id: 'browser',
+    }));
+    expect(controllerScoped.scope).toBe('controller');
+    expect((controllerScoped.plugin as { pluginId?: string }).pluginId).toBe('browser');
+
+    const repositoryScoped = structured(await callRuntimeTool(ctx, 'get_plugin', {
+      repo_id: repository.repoId,
+      plugin_id: 'browser',
+    }));
+    expect(repositoryScoped.scope).toBe('repository');
+  });
+
 });
