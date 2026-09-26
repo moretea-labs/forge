@@ -806,6 +806,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('attach with process_wait');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('transport-bounded');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('never as periodic polling');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Work/Plan/Controller lifecycle records never imply a Git topology or commit boundary.');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('never use lifecycle-only subjects such as `Complete work-*`');
   });
 
 
