@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
+import { FROZEN_RH_WORK_TOOL_OPERATIONS, runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
@@ -26,15 +26,17 @@ describe('handoff and facade contracts', () => {
     expect(properties?.include_maintenance?.description).toContain('defaults to false');
   });
 
-  test('keeps controller round disposition in the exposed rh_work schema and facade operation contract', () => {
+  test('keeps controller round ownership and disposition out of the current model-facing rh_work contract', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties).toHaveProperty('checkout_id');
-    expect(properties?.operation?.enum).toContain('controller_disposition');
-    expect(properties).toHaveProperty('disposition');
-    expect(properties).toHaveProperty('enroll_current_conversation');
-    expect(properties).toHaveProperty('relay_scope_id');
-    expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
+    expect(properties?.operation?.enum).not.toContain('controller_disposition');
+    expect(properties).not.toHaveProperty('disposition');
+    expect(properties).not.toHaveProperty('enroll_current_conversation');
+    expect(properties).not.toHaveProperty('relay_scope_id');
+    expect(properties).not.toHaveProperty('controller_authority_id');
+    expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
+    expect(FROZEN_RH_WORK_TOOL_OPERATIONS).toContain('controller_disposition');
   });
 
   test('keeps cognition cadence model-owned without adding another lifecycle', () => {
@@ -64,19 +66,22 @@ describe('handoff and facade contracts', () => {
     expect(properties?.operation?.enum).toContain('learning_record');
   });
 
-  test('derives stable rh_work schema and suggested-action admission from one operation ABI', () => {
+  test('derives the current rh_work schema and suggested-action admission from one thin operation ABI', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toEqual([...allowedFacadeOperations('rh_work')]);
-    expect(properties?.operation?.enum).toContain('review');
+    expect(properties?.operation?.enum).not.toContain('review');
+    expect(properties?.operation?.enum).not.toContain('verify');
+    expect(properties?.operation?.enum).not.toContain('finalize');
     expect(properties?.operation?.enum).toContain('learning_record');
     expect(properties?.operation?.enum).toContain('outcome_record');
     expect(properties?.operation?.enum).toContain('experience_record');
 
-    const review = validateSuggestedNextActions([
+    const retiredReview = validateSuggestedNextActions([
       { label: 'Review implementation', tool: 'rh_work', operation: 'review', risk: 'workspace_write' },
     ]);
-    expect(review.actions).toHaveLength(1);
+    expect(retiredReview.actions).toHaveLength(0);
+    expect(retiredReview.warnings[0]).toContain('unsupported rh_work.review');
 
     const invalid = validateSuggestedNextActions([
       { label: 'Impossible transition', tool: 'rh_work', operation: 'not_in_stable_schema', risk: 'workspace_write' },
@@ -85,13 +90,22 @@ describe('handoff and facade contracts', () => {
     expect(invalid.warnings[0]).toContain('unsupported rh_work.not_in_stable_schema');
   });
 
-  test('keeps direct Work authority recovery discoverable on the frozen rh_work schema', () => {
+  test('keeps frozen lifecycle vocabulary available for server compatibility without advertising its authority fields', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { description?: string; enum?: string[] }> | undefined;
-    expect(properties).toHaveProperty('controller_authority_id');
-    expect(properties?.capability_id?.description).toContain('controller.authority.recover:<workId>');
-    expect(properties?.capability_id?.description).toContain('controller.current_conversation.enroll');
-    expect(properties?.capability_id?.description).toContain('plan.step.retry:<workId>');
+    expect(FROZEN_RH_WORK_TOOL_OPERATIONS).toEqual(expect.arrayContaining([
+      'controller_claim',
+      'controller_release',
+      'controller_disposition',
+      'verify',
+      'review',
+      'finalize',
+      'plan_accept_step',
+    ]));
+    expect(properties).not.toHaveProperty('controller_authority_id');
+    expect(properties).not.toHaveProperty('relay_scope_id');
+    expect(properties).not.toHaveProperty('plan_step_id');
+    expect(properties?.capability_id?.description).toContain('server compatibility only');
   });
 
   test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
@@ -120,12 +134,15 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(5);
   });
 
-  test('exposes effect-only WorkKind semantics without forcing a repository diff', () => {
+  test('keeps execution evidence shape out of semantic Work creation', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
-    expect(properties?.work_kind?.enum).toEqual(expect.arrayContaining(['local_effect', 'remote_effect', 'repository_change', 'read_only_review']));
-    expect((properties as Record<string, unknown>)?.review_findings).toBeTruthy();
-    expect((properties as Record<string, unknown>)?.acceptance_evidence).toBeTruthy();
+    expect(properties).not.toHaveProperty('work_kind');
+    expect(properties).not.toHaveProperty('review_findings');
+    expect(properties).not.toHaveProperty('acceptance_evidence');
+    expect(properties).toHaveProperty('work_state');
+    expect(properties).toHaveProperty('work_result_refs');
+    expect(properties).toHaveProperty('expected_revision');
   });
 
   test('classifies terminal handoff statuses', () => {
@@ -159,21 +176,18 @@ describe('handoff and facade contracts', () => {
     expect(result.suggestedNextActions[0]?.tool).toBe('rh_inbox');
   });
 
-  test('normalizes rh_work suggested action risks instead of trusting caller metadata', () => {
+  test('drops retired lifecycle suggestions instead of normalizing them back into the model workflow', () => {
     const normalized = validateSuggestedNextActions([
       { label: 'Continue', tool: 'rh_work', operation: 'continue', risk: 'readonly' },
       { label: 'Finalize', tool: 'rh_work', operation: 'finalize', risk: 'readonly' },
       { label: 'Read context', tool: 'rh_context', operation: 'get', risk: 'readonly' },
     ]);
 
-    expect(normalized.actions.map((action) => action.risk)).toEqual([
-      'workspace_write',
-      'local_repo_write',
-      'readonly',
-    ]);
+    expect(normalized.actions.map((action) => action.label)).toEqual(['Read context']);
+    expect(normalized.actions.map((action) => action.risk)).toEqual(['readonly']);
     expect(normalized.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining('rh_work.continue risk readonly -> workspace_write'),
-      expect.stringContaining('rh_work.finalize risk readonly -> local_repo_write'),
+      expect.stringContaining('unsupported rh_work.continue'),
+      expect.stringContaining('unsupported rh_work.finalize'),
     ]));
   });
 
@@ -192,7 +206,7 @@ describe('handoff and facade contracts', () => {
     expect(JSON.stringify(facade)).not.toContain('Bearer ');
   });
 
-  test('suggested_next_actions cannot reference nonexistent check or tool', () => {
+  test('suggested_next_actions cannot reference nonexistent tools, checks, or retired Work lifecycle operations', () => {
     const validation = validateSuggestedNextActions(
       [
         {
@@ -202,24 +216,33 @@ describe('handoff and facade contracts', () => {
           risk: 'readonly',
         },
         {
-          label: 'Bad check',
+          label: 'Retired bad check',
           tool: 'rh_work',
           operation: 'verify',
           payload: { check_id: 'package:does-not-exist' },
           risk: 'workspace_write',
         },
         {
-          label: 'Good check',
+          label: 'Retired good check',
           tool: 'rh_work',
           operation: 'verify',
           payload: { check_id: 'package:check:type' },
           risk: 'workspace_write',
         },
+        {
+          label: 'Read context',
+          tool: 'rh_context',
+          operation: 'get',
+          risk: 'readonly',
+        },
       ],
       { validCheckIds: ['package:check:type'] },
     );
-    expect(validation.actions.map((action) => action.label)).toEqual(['Good check']);
-    expect(validation.warnings.length).toBeGreaterThanOrEqual(2);
+    expect(validation.actions.map((action) => action.label)).toEqual(['Read context']);
+    expect(validation.warnings.length).toBeGreaterThanOrEqual(3);
+    expect(validation.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('unsupported rh_work.verify'),
+    ]));
   });
 
   test('represents a handoff item without raw logs', () => {
@@ -271,7 +294,7 @@ describe('handoff and facade contracts', () => {
   test('registers parallel internal capabilities without expanding facade tools', () => {
     const capabilities = listCapabilityDescriptors([]);
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('repository.direct_edit');
-    expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.goal_workloop');
+    expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.goal_workloop');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.self_healing');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.external_controller');
     expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
