@@ -40,7 +40,7 @@ import {
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
-import { recordWorkDeliveryReceipt } from '../execution/work-completion-authority';
+import { hasSettledWorkDeliveryReceipt, recordWorkDeliveryReceipt } from '../execution/work-completion-authority';
 import { effectiveCurrentWorkVerificationRecords, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
 import { currentRequirementSemanticRevision, readRequirement } from '../persistence/requirement-store';
 import {
@@ -1129,6 +1129,21 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           risk: 'readonly',
         },
       ],
+    });
+  }
+
+  if (semanticWorkState(work) === 'open' && hasSettledWorkDeliveryReceipt(work)) {
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Continue: physical delivery is settled for ${work.workId}; semantic Work remains open for explicit Controller judgment.`,
+      data: {
+        work: summarizeWorkContract(work),
+        backgroundCompleted: false,
+        nextStep: 'semantic_decision',
+        deliverySettled: true,
+        semanticWorkState: 'open',
+      },
+      evidenceRefs: work.evidenceRefs.slice(0, 5),
     });
   }
 

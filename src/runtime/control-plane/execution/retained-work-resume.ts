@@ -12,6 +12,7 @@ import { getWorkContract, recordWorkEvidenceState, resumeRetainedCancelledWorkCo
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
 import { findWorkPathScopeViolation } from './work-path-scope';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { hasSettledWorkDeliveryReceipt } from './work-completion-authority';
 
 export interface RetainedWorkResumeIdentity {
   principalId: string;
@@ -413,6 +414,11 @@ export function ensureRunningRepositoryWorkCheckout(
   const work = getWorkContract(store, workId);
   if (!work || ['cancelled', 'completed', 'failed'].includes(work.status)) return { reconstructedCheckout: false };
   if (work.workKind !== 'repository_change' || work.worktreePolicy.required !== true) return { reconstructedCheckout: false };
+  // A settled physical delivery may intentionally outlive its managed checkout
+  // while semantic Work remains open. Do not reconstruct or reject source that
+  // the finalizer has already integrated and cleaned; Controller semantic
+  // judgment is the only remaining authority.
+  if (hasSettledWorkDeliveryReceipt(work)) return { reconstructedCheckout: false };
 
   const recordedCheckoutId = work.checkoutId?.trim();
   const recordedWorktree = work.worktreeRef?.trim();

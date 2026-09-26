@@ -6174,6 +6174,20 @@ describe('rh_work terminalization authority', () => {
     expect(repeated.status).toBe('ok');
     expect(getWorkContract(store, workId)?.completionReceipt).toMatchObject({ sourceRevision: candidate });
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+
+    const continued = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'continue', work_id: workId, requested_by: 'chatgpt',
+    }));
+    expect(continued.status).toBe('ok');
+    expect(continued.data).toMatchObject({
+      nextStep: 'semantic_decision', deliverySettled: true, semanticWorkState: 'open',
+      work: { workId, semanticState: 'open' },
+    });
+    expect(getWorkContract(store, workId)).toMatchObject({
+      semanticState: 'open', completionReceipt: { sourceRevision: candidate },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['branch', '--list', branch], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe('');
   }, 20_000);
 
   test('finalize preserves an exact target-relative empty review after cleanup removed the already-integrated Work checkout', async () => {
