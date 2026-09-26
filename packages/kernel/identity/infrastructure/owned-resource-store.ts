@@ -21,13 +21,28 @@ function resourcePath(controllerHome: string, resourceId: string): string {
   return join(resourcesDir(controllerHome), `${sanitized}.json`);
 }
 
+function validateOwnedResource(value: unknown): OwnedResource {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('record must be an object');
+  const resource = value as OwnedResource;
+  if (resource.schemaVersion !== 1 || !resource.resourceId || !resource.kind || !resource.targetRef) {
+    throw new Error('required resource identity is missing');
+  }
+  if (!resource.provenance?.creator || !resource.provenance.createdAt || !resource.retention?.intent || !resource.status || !resource.updatedAt) {
+    throw new Error('required ownership metadata is missing');
+  }
+  if (resource.cleanupCapable === true
+    && (!resource.ownerForgeInstanceId || !resource.locator?.kind || !resource.locator.value || !resource.identityFingerprint)) {
+    throw new Error('cleanup-capable resource lacks owner/locator/fingerprint');
+  }
+  return resource;
+}
+
 function readResourceFile(filePath: string): OwnedResource | undefined {
+  if (!existsSync(filePath)) return undefined;
   try {
-    if (!existsSync(filePath)) return undefined;
-    const raw = readFileSync(filePath, 'utf8');
-    return JSON.parse(raw) as OwnedResource;
-  } catch {
-    return undefined;
+    return validateOwnedResource(JSON.parse(readFileSync(filePath, 'utf8')));
+  } catch (error) {
+    throw new Error(`OWNED_RESOURCE_STORE_CORRUPT: ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

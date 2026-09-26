@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { scopedOperationRoot } from '../../../cli/repositories/controller-home';
+import { controllerSystemRoot } from '../../../cli/repositories/controller-home';
 import { ControllerLockContentionError, withControllerLock } from '../../../cli/repositories/locks';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { readJsonFile, removeFile, writeJsonAtomic } from '../../shared/json-files';
@@ -18,10 +18,10 @@ import type {
   ExecutionLeaseOwnerIdentity,
 } from './types';
 
-function leaseRoot(controllerHome: string, repoId: string): string {
-  // Repository scopes keep their layout; a workspace scope owns its leases in
-  // the workspace partition instead of a synthetic repository partition.
-  return join(scopedOperationRoot(controllerHome, repoId), 'leases');
+function leaseRoot(controllerHome: string, _repoId: string): string {
+  // Concrete resource leases coordinate across the whole ForgeInstance. repoId
+  // is provenance/filter metadata, never the storage partition.
+  return join(controllerSystemRoot(controllerHome), 'execution-leases');
 }
 function activeRoot(controllerHome: string, repoId: string): string { return join(leaseRoot(controllerHome, repoId), 'active'); }
 function leasePath(controllerHome: string, repoId: string, leaseId: string): string { return join(activeRoot(controllerHome, repoId), `${leaseId}.json`); }
@@ -141,19 +141,28 @@ export function resetLeaseSideEffectMetrics(): void {
   leaseSideEffectMetrics.ephemeralReleases = 0;
 }
 
-export function listActiveLeases(controllerHome: string, repoId: string): ExecutionLease[] {
-  try {
-    const leases: ExecutionLease[] = [];
-    for (const name of readdirSync(activeRoot(controllerHome, repoId)).filter((entry) => entry.endsWith('.json'))) {
-      const path = join(activeRoot(controllerHome, repoId), name);
-      try {
-        const lease = readJsonFile<ExecutionLease>(path);
-        if (expired(lease)) removeFile(path);
-        else leases.push(lease);
-      } catch { removeFile(path); }
+function listAllActiveLeases(controllerHome: string): ExecutionLease[] {
+  const root = activeRoot(controllerHome, '__instance__');
+  if (!existsSync(root)) return [];
+  const leases: ExecutionLease[] = [];
+  for (const name of readdirSync(root).filter((entry) => entry.endsWith('.json'))) {
+    const path = join(root, name);
+    try {
+      const lease = readJsonFile<ExecutionLease>(path);
+      if (!lease?.leaseId || !lease.repoId || !lease.resourceKey || !lease.ownerJobId) {
+        throw new Error('required lease identity is missing');
+      }
+      if (expired(lease)) removeFile(path);
+      else leases.push(lease);
+    } catch (error) {
+      throw new Error(`LEASE_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return leases;
-  } catch { return []; }
+  }
+  return leases;
+}
+
+export function listActiveLeases(controllerHome: string, repoId: string): ExecutionLease[] {
+  return listAllActiveLeases(controllerHome).filter((lease) => lease.repoId === repoId);
 }
 
 export function acquireExecutionLeases(
@@ -188,8 +197,9 @@ export function acquireExecutionLeases(
   const identityDigest = ownerIdentityDigest(ownerIdentity);
 
   try {
-    return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-acquire:${ownerJobId}`, () => {
-    const active = listActiveLeases(controllerHome, repoId).filter((lease) => lease.ownerJobId !== ownerJobId);
+    return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-acquire:${ownerJobId}`, () => {
+    const active = listAllActiveLeases(controllerHome)
+      .filter((lease) => lease.ownerJobId !== ownerJobId || lease.repoId !== repoId);
     const blockers = claims.flatMap((claim) => active
       .filter((lease) => claimsConflict(claim, lease))
       .map((lease) => ({ resourceKey: lease.resourceKey, ownerJobId: lease.ownerJobId, leaseId: lease.leaseId, mode: lease.mode, ownerIdentityDigest: lease.ownerIdentityDigest })));
@@ -302,7 +312,7 @@ export function renewExecutionLeases(
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */
   }
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-renew:${ownerJobId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-renew:${ownerJobId}`, () => {
     const expectedRefs = expectedLeaseMap(expected);
     const timestamp = new Date().toISOString();
     const owned = listActiveLeases(controllerHome, repoId)
@@ -334,7 +344,7 @@ export function releaseExecutionLeases(
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */
   }
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-release:${ownerJobId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-release:${ownerJobId}`, () => {
     const expectedRefs = expectedLeaseMap(expected);
     let releasedCount = 0;
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
@@ -389,7 +399,7 @@ export function releaseExactExecutionLeases(
     if (error instanceof Error && error.message.startsWith('WRITER_FENCED:')) throw error;
     /* unbound legacy */
   }
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `lease-release-exact:${ownerJobId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-release-exact:${ownerJobId}`, () => {
     const expectedRefs = expectedLeaseMap(expected) ?? new Map<string, ExpectedLeaseRef>();
     if (expectedRefs.size !== expected.length) {
       throw new Error(`LEASE_SET_INVALID: ${ownerJobId} contains duplicate lease ids`);
@@ -462,7 +472,7 @@ export function releaseTerminalProcessLeases(
   const normalizedProcessId = processId.trim();
   if (!normalizedProcessId) throw new Error('TERMINAL_PROCESS_ID_REQUIRED');
   const ownerJobId = `process:${normalizedProcessId}`;
-  return withControllerLock(controllerHome, { scope: 'repository', repoId }, `terminal-lease-release:${ownerJobId}`, () => {
+  return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `terminal-lease-release:${ownerJobId}`, () => {
     const expectedRefs = expectedLeaseMap(expected) ?? new Map<string, ExpectedLeaseRef>();
     if (expectedRefs.size !== expected.length) {
       throw new Error(`TERMINAL_PROCESS_LEASE_SET_INVALID: ${normalizedProcessId} contains duplicate lease ids`);
@@ -532,6 +542,7 @@ export function assertFencingToken(
   const path = leasePath(controllerHome, repoId, leaseId);
   if (!existsSync(path)) throw new Error(`LEASE_EXPIRED: ${leaseId}`);
   const lease = readJsonFile<ExecutionLease>(path);
+  if (lease.repoId !== repoId) throw new Error(`LEASE_REPOSITORY_SCOPE_MISMATCH: expected ${repoId}, received ${lease.repoId}`);
   if (expired(lease)) {
     removeFile(path);
     throw new Error(`LEASE_EXPIRED: ${leaseId}`);

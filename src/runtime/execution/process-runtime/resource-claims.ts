@@ -35,8 +35,12 @@ export type ResourceClaimKind =
   | 'heavy_check'
   | 'workspace_write';
 
-function checkoutScope(checkoutId?: string): string {
-  return checkoutId?.trim() || 'active';
+function checkoutScope(checkoutId?: string, repoId?: string): string {
+  const checkout = checkoutId?.trim();
+  if (checkout) return checkout;
+  const repository = repoId?.trim();
+  if (repository) return `repository-${repository.replace(/[^a-zA-Z0-9._-]+/g, '-')}`;
+  throw new Error('RESOURCE_CLAIM_PLACEMENT_REQUIRED');
 }
 
 /**
@@ -44,24 +48,24 @@ function checkoutScope(checkoutId?: string): string {
  * Conflict is expressed via mode (read vs write), not a separate key.
  * Legacy workspace-read:* keys are normalized in claims/conflicts.ts.
  */
-export function claimWorkspaceRead(checkoutId?: string): ResourceClaimSpec {
-  return { resourceKey: `workspace:${checkoutScope(checkoutId)}`, mode: 'read' };
+export function claimWorkspaceRead(checkoutId?: string, repoId?: string): ResourceClaimSpec {
+  return { resourceKey: `workspace:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
 }
 
-export function claimPathRead(path: string, checkoutId?: string): ResourceClaimSpec {
-  if (path === '.') return claimWorkspaceRead(checkoutId);
+export function claimPathRead(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec {
+  if (path === '.') return claimWorkspaceRead(checkoutId, repoId);
   const normalized = normalizeClaimPath(path);
-  if (!normalized) return claimWorkspaceRead(checkoutId);
-  return { resourceKey: `path:${checkoutScope(checkoutId)}:${normalized}`, mode: 'read' };
+  if (!normalized) return claimWorkspaceRead(checkoutId, repoId);
+  return { resourceKey: `path:${checkoutScope(checkoutId, repoId)}:${normalized}`, mode: 'read' };
 }
 
-export function claimPathWrite(path: string, checkoutId?: string): ResourceClaimSpec {
+export function claimPathWrite(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec {
   const normalized = normalizeClaimPath(path);
   if (!normalized) {
     // Unsafe / ambiguous path → escalate to whole-checkout workspace write.
-    return claimWorkspaceWrite(checkoutId);
+    return claimWorkspaceWrite(checkoutId, repoId);
   }
-  return { resourceKey: `path:${checkoutScope(checkoutId)}:${normalized}`, mode: 'write' };
+  return { resourceKey: `path:${checkoutScope(checkoutId, repoId)}:${normalized}`, mode: 'write' };
 }
 
 export function claimBuildCacheRead(repoId: string): ResourceClaimSpec {
@@ -72,12 +76,12 @@ export function claimBuildCacheWrite(repoId: string): ResourceClaimSpec {
   return { resourceKey: `build-cache:${repoId}`, mode: 'write' };
 }
 
-export function claimGitIndexRead(checkoutId?: string): ResourceClaimSpec {
-  return { resourceKey: `git-index:${checkoutScope(checkoutId)}`, mode: 'read' };
+export function claimGitIndexRead(checkoutId?: string, repoId?: string): ResourceClaimSpec {
+  return { resourceKey: `git-index:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
 }
 
-export function claimGitIndex(checkoutId?: string): ResourceClaimSpec {
-  return { resourceKey: `git-index:${checkoutScope(checkoutId)}`, mode: 'exclusive' };
+export function claimGitIndex(checkoutId?: string, repoId?: string): ResourceClaimSpec {
+  return { resourceKey: `git-index:${checkoutScope(checkoutId, repoId)}`, mode: 'exclusive' };
 }
 
 export function claimGitRefsRead(repoId: string): ResourceClaimSpec {
@@ -92,16 +96,12 @@ export function claimIntegration(repoId: string): ResourceClaimSpec {
   return { resourceKey: `integration:${repoId}`, mode: 'exclusive' };
 }
 
-export function claimRelease(repoId: string): ResourceClaimSpec {
-  return { resourceKey: `release:${repoId}`, mode: 'exclusive' };
+export function claimRelease(_repoId: string): ResourceClaimSpec {
+  return { resourceKey: 'release:runtime-authority', mode: 'exclusive' };
 }
 
-export function claimRemoteMutation(repoId: string): ResourceClaimSpec {
-  return { resourceKey: `remote:${repoId}`, mode: 'exclusive' };
-}
-
-export function claimWorkspaceWrite(checkoutId?: string): ResourceClaimSpec {
-  return { resourceKey: `workspace:${checkoutScope(checkoutId)}`, mode: 'write' };
+export function claimWorkspaceWrite(checkoutId?: string, repoId?: string): ResourceClaimSpec {
+  return { resourceKey: `workspace:${checkoutScope(checkoutId, repoId)}`, mode: 'write' };
 }
 
 export function claimHeavyCheck(repoId: string): ResourceClaimSpec {
@@ -158,7 +158,7 @@ function iosSimulatorTestCommandClaims(
   }
   if (!matches) return undefined;
   return normalizeClaims([
-    claimWorkspaceRead(checkoutId),
+    claimWorkspaceRead(checkoutId, repoId),
     claimBuildCacheWrite(repoId),
     claimHostService('ios-simulator-test', 'write'),
   ]);
@@ -182,7 +182,7 @@ function localHttpServerClaims(command: string | readonly string[]): ResourceCla
   return [claimHostService(`tcp-listen:${bind}:${port}`, 'write')];
 }
 
-function loopbackCurlClaims(command: string | readonly string[], repoId: string): ResourceClaimSpec[] | undefined {
+function loopbackCurlClaims(command: string | readonly string[], _repoId: string): ResourceClaimSpec[] | undefined {
   const canonical = normalizeRepositoryCommand(command);
   if (canonical.kind !== 'argv') return undefined;
   const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
@@ -198,7 +198,7 @@ function loopbackCurlClaims(command: string | readonly string[], repoId: string)
       return !['127.0.0.1', 'localhost', '::1'].includes(host);
     } catch { return true; }
   })) return undefined;
-  return [claimNetwork(repoId, 'read')];
+  return [claimHostService('tcp-client:loopback', 'read')];
 }
 
 function simpleViteScript(script: string): boolean {
@@ -236,7 +236,7 @@ function viteServiceClaims(
   if (!vite) return undefined;
   return normalizeClaims([
     claimBuildCacheWrite(repoId),
-    claimHostService(`vite:${checkoutScope(checkoutId)}`, 'write'),
+    claimHostService(`vite:${checkoutScope(checkoutId, repoId)}`, 'write'),
   ]);
 }
 
@@ -331,13 +331,10 @@ function hostOnlyCommandClaims(command: string | readonly string[], repoId: stri
   return undefined;
 }
 
-function claimTemp(checkId: string, repoId: string, scope: 'isolated' | 'shared'): ResourceClaimSpec {
+function claimTemp(checkId: string, repoId: string, scope: 'isolated' | 'shared', checkoutId?: string): ResourceClaimSpec {
   const identity = checkId.replace(/[^a-zA-Z0-9._-]+/g, '-');
-  return { resourceKey: scope === 'shared' ? `temp:${repoId}` : `temp:${repoId}:${identity}`, mode: 'write' };
-}
-
-function claimNetwork(repoId: string, mode: 'read' | 'write'): ResourceClaimSpec {
-  return { resourceKey: `network:${repoId}`, mode };
+  const placement = checkoutScope(checkoutId, repoId);
+  return { resourceKey: scope === 'shared' ? `temp:${placement}:shared` : `temp:${placement}:${identity}`, mode: 'write' };
 }
 
 function staticAnalysisCheckId(checkId: string): boolean {
@@ -356,22 +353,23 @@ function claimsForDeclaredCheckEffects(
 ): ResourceClaimSpec[] {
   const claims: ResourceClaimSpec[] = [];
   const hasDeclaredField = Object.keys(effects).length > 0;
-  if (!hasDeclaredField) return [claimWorkspaceWrite(checkoutId)];
+  if (!hasDeclaredField) return [claimWorkspaceWrite(checkoutId, repoId)];
 
   // Missing read scope is unknown, so custom checks fail closed. An explicit
   // reads: [] means the command does not inspect repository content.
-  if (effects.reads === undefined) claims.push(claimWorkspaceWrite(checkoutId));
-  else for (const path of effects.reads) claims.push(claimPathRead(path, checkoutId));
-  for (const path of effects.writes ?? []) claims.push(claimPathWrite(path, checkoutId));
+  if (effects.reads === undefined) claims.push(claimWorkspaceWrite(checkoutId, repoId));
+  else for (const path of effects.reads) claims.push(claimPathRead(path, checkoutId, repoId));
+  for (const path of effects.writes ?? []) claims.push(claimPathWrite(path, checkoutId, repoId));
 
   if (effects.cache === 'read') claims.push(claimBuildCacheRead(repoId));
   if (effects.cache === 'write') claims.push(claimBuildCacheWrite(repoId));
-  if (effects.temp) claims.push(claimTemp(checkId, repoId, effects.temp));
-  if (effects.git === 'read') claims.push(claimGitIndexRead(checkoutId), claimGitRefsRead(repoId));
-  if (effects.git === 'index') claims.push(claimGitIndex(checkoutId));
+  if (effects.temp) claims.push(claimTemp(checkId, repoId, effects.temp, checkoutId));
+  if (effects.git === 'read') claims.push(claimGitIndexRead(checkoutId, repoId), claimGitRefsRead(repoId));
+  if (effects.git === 'index') claims.push(claimGitIndex(checkoutId, repoId));
   if (effects.git === 'refs') claims.push(claimGitRefs(repoId));
-  if (effects.git === 'write') claims.push(claimWorkspaceWrite(checkoutId), claimGitIndex(checkoutId), claimGitRefs(repoId));
-  if (effects.network) claims.push(claimNetwork(repoId, effects.network));
+  if (effects.git === 'write') claims.push(claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
+  // A generic network bit has no concrete endpoint/provider identity. Checks
+  // that need serialization must name the real shared target in hostServices.
   for (const service of effects.hostServices ?? []) claims.push(claimHostService(service, 'write'));
 
   return normalizeClaims(claims, { readOnly: claims.every((claim) => claim.mode === 'read') });
@@ -495,15 +493,18 @@ export function claimsForRepositoryCommand(
   if (hostClaims) return hostClaims;
 
   if (classification.risk === 'readonly') {
-    return [claimWorkspaceRead(checkoutId)];
+    return [claimWorkspaceRead(checkoutId, repoId)];
   }
   if (classification.risk === 'remote_write') {
-    return [claimRemoteMutation(repoId), claimGitRefs(repoId)];
+    // Raw command text cannot prove the external provider/account target. Keep
+    // the concrete local Git-ref fence; typed domain APIs own remote-effect
+    // identity, idempotency and provider-target serialization.
+    return [claimGitRefs(repoId)];
   }
   if (classification.risk === 'destructive') {
     return [
-      claimWorkspaceWrite(checkoutId),
-      claimGitIndex(checkoutId),
+      claimWorkspaceWrite(checkoutId, repoId),
+      claimGitIndex(checkoutId, repoId),
       claimGitRefs(repoId),
     ];
   }
@@ -512,22 +513,22 @@ export function claimsForRepositoryCommand(
   // while ordinary focused tests are observation unless snapshot-update mode is
   // explicit. Both can share repository source reads without a workspace writer.
   if (isTypedTypeScriptNoEmit(command)) {
-    return [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
+    return [claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId)];
   }
   if (focused) {
-    if (!focusedTestRequestsWorkspaceMutation(command)) return [claimWorkspaceRead(checkoutId)];
-    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId)];
-    for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId));
+    if (!focusedTestRequestsWorkspaceMutation(command)) return [claimWorkspaceRead(checkoutId, repoId)];
+    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId, repoId)];
+    for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
   }
   if (looksLikeBuildOrTest(command)) {
     const paths = extractLikelyPaths(command);
     if (paths.length === 0) {
       // Broad or opaque build/test commands may create arbitrary artifacts.
-      return [claimWorkspaceWrite(checkoutId), claimBuildCacheWrite(repoId)];
+      return [claimWorkspaceWrite(checkoutId, repoId), claimBuildCacheWrite(repoId)];
     }
-    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
-    for (const path of paths.slice(0, 16)) claims.push(claimPathWrite(path, checkoutId));
+    const claims: ResourceClaimSpec[] = [claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId)];
+    for (const path of paths.slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
   }
 
@@ -537,18 +538,18 @@ export function claimsForRepositoryCommand(
   const sub = canonical.kind === 'argv' ? canonical.args?.[0]?.toLowerCase() : undefined;
   if (program === 'git') {
     if (sub === 'add' || sub === 'rm' || sub === 'mv' || sub === 'restore' || sub === 'apply') {
-      return [claimGitIndex(checkoutId), claimWorkspaceWrite(checkoutId)];
+      return [claimGitIndex(checkoutId, repoId), claimWorkspaceWrite(checkoutId, repoId)];
     }
     if (sub === 'commit' || sub === 'merge' || sub === 'rebase' || sub === 'cherry-pick' || sub === 'revert') {
-      return [claimGitIndex(checkoutId), claimGitRefs(repoId), claimWorkspaceWrite(checkoutId)];
+      return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId), claimWorkspaceWrite(checkoutId, repoId)];
     }
     if (sub === 'checkout' || sub === 'switch' || sub === 'branch' || sub === 'tag') {
-      return [claimGitRefs(repoId), claimWorkspaceWrite(checkoutId)];
+      return [claimGitRefs(repoId), claimWorkspaceWrite(checkoutId, repoId)];
     }
   }
 
   // Unknown mutating command — workspace write, not heavy-check exclusive.
-  return [claimWorkspaceWrite(checkoutId)];
+  return [claimWorkspaceWrite(checkoutId, repoId)];
 }
 
 /**
@@ -571,10 +572,10 @@ export function claimsForCheck(
   const baseClaims = effects
     ? claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId)
     : staticAnalysisCheckId(checkId)
-      ? [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)]
+      ? [claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId)]
       : command && command.length > 0
         ? claimsForRepositoryCommand(command, repoId, checkoutId)
-        : [claimWorkspaceWrite(checkoutId)];
+        : [claimWorkspaceWrite(checkoutId, repoId)];
   // Heavy-check is an additional cross-check serialization fence, not a
   // substitute for the resources the check actually reads or writes.
   const liveAuthorityClaims = executionAuthority === 'live_controller_home' ? [claimRelease(repoId)] : [];
