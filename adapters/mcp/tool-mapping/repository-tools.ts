@@ -252,7 +252,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
     workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
   }, ['command'], true),
-  definition('repository_command_execute', 'Execute one repository-scoped command through the thinnest eligible lane: ephemeral for ordinary local work, an in-memory lightweight handle when it outlives the interaction budget, or explicit Durable handling for Work/external/release effects. Lightweight handles have no SQLite, Lease, recovery, or replay membership. Use rh_context for routine code discovery/reading; shell exploration is fallback-only.', {
+  definition('repository_command_execute', 'Compatibility facade for commands whose domain context is a repository/workspace. Repository targeting, Git/source mutation fences, and compatibility response fields live here; Process Runtime owns command execution and process identity. New broad host-local command callers should use process_exec. Use rh_context for routine code discovery/reading; shell exploration is fallback-only.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
@@ -1204,11 +1204,12 @@ export async function callRepositoryTool(
             outOfScope: 'WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE',
           });
         }
-        // repository_command_execute owns its command execution architecture.
-        // Do not send ordinary command text through Thin Harness semantic risk
-        // routing: that creates duplicate regex/classifier policy and turns
-        // unknown CLI shapes into false durable/reject decisions. Only an
-        // explicitly requested durable mode uses the generic durable router.
+        // Compatibility boundary only: this facade owns repository-domain
+        // context (target resolution, Git/source mutation fencing and legacy
+        // response translation), while Unified Process Runtime owns execution,
+        // handles, cancellation and persistence. Do not create another generic
+        // command executor here. Thin Harness is consulted only for an explicit
+        // external durable boundary, not as a second command classifier.
         const routingDecision = forceDurable
           ? routeExecution({
               operation: 'repository_command_execute',

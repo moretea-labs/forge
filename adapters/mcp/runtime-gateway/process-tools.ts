@@ -21,6 +21,9 @@ import { getProcessRecord } from '../../../src/runtime/execution/process-runtime
 import { forgeInstanceIdFor, readProcessHandleIndexEntry } from '../../../src/runtime/execution/process-runtime/handle-index';
 import { isForgeInstanceProcessScopeKey, isRepositoryProcessScopeKey, processScopeKeyForHandle } from '../../../src/runtime/execution/process-runtime/process-scope';
 import { reconcileTerminalWorkVerifications } from '../../../src/runtime/control-plane/execution/work-verification-service';
+import type { WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
+import { findControlPlaneRecordsByKey } from '../../../src/runtime/control-plane/persistence/sqlite-store';
+import { sanitizeFileComponent } from '../../../src/runtime/shared/json-files';
 import { selected, stringList } from './shared-adapter';
 
 function definition(
@@ -60,14 +63,14 @@ export const processToolDefinitions: McpToolDefinition[] = [
     {
       command: { type: 'array', items: { type: 'string' }, maxItems: 512, description: 'Typed argv command; command[0] is the executable. Mutually exclusive with shell_command.' },
       shell_command: { type: 'string', maxLength: 32_000, description: 'Explicit broad shell form. Mutually exclusive with command. Never parsed for path safety.' },
-      cwd: { type: 'string', description: 'Absolute working directory for this execution. Never inferred from an active checkout.' },
+      cwd: { type: 'string', description: 'Optional absolute working directory. With work_id and no cwd, Forge uses that Work handle\'s exact workspace/worktree as a convenience default; this never grants permission and explicit authorized cwd may be elsewhere.' },
       timeout_ms: { type: 'number' },
       interactive_wait_ms: { type: 'number' },
       max_output_bytes: { type: 'number' },
       request_id: { type: 'string', description: 'Stable invocation id. A retry with the same id attaches to the existing process instead of re-executing.' },
       work_id: { type: 'string', description: 'Optional Work provenance; Work is never required to run a host command.' },
     },
-    ['cwd'],
+    [],
     false,
     true,
   ),
@@ -386,6 +389,23 @@ export async function callProcessTool(
  * execution argument. Authorization is one explicit canonical `process:exec`
  * Grant for this instance, enforced in the lane before any spawn.
  */
+function workDefaultCommandCwd(ctx: MultiRepositoryMcpToolContext, workId: string): string | undefined {
+  if (!workId) return undefined;
+  const matches = findControlPlaneRecordsByKey<WorkHandleState>(ctx.controllerHome, {
+    namespace: 'execution_work_handle',
+    key: sanitizeFileComponent(workId),
+    limit: 2,
+  });
+  if (matches.length > 1) {
+    throw new Error(`WORK_EXECUTION_PLACEMENT_AMBIGUOUS: ${workId} resolves to multiple execution handles`);
+  }
+  const handle = matches[0]?.value;
+  if (!handle) return undefined;
+  if (handle.workId !== workId) throw new Error(`WORK_EXECUTION_PLACEMENT_IDENTITY_MISMATCH: ${workId}`);
+  const workspace = handle.worktreePath?.trim();
+  return workspace || undefined;
+}
+
 async function callProcessExecTool(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
@@ -401,9 +421,10 @@ async function callProcessExecTool(
     if (command.length === 0 && !shellCommand) {
       throw new Error('HOST_COMMAND_REQUIRED: provide command (argv) or shell_command');
     }
-    const cwd = typeof args.cwd === 'string' ? args.cwd : '';
     const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
     const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+    const explicitCwd = typeof args.cwd === 'string' ? args.cwd.trim() : '';
+    const cwd = explicitCwd || workDefaultCommandCwd(ctx, workId) || '';
     const executed = await executeHostCommand({
       controllerHome: ctx.controllerHome,
       principalId: ctx.principalId ?? '',
