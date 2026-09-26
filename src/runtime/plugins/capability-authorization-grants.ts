@@ -171,7 +171,10 @@ function validatePersistedGrant(value: unknown, index: number): PluginCapability
     schemaVersion: 1,
     grantId: string('grantId'),
     ownerScope: string('ownerScope'),
-    repoId: string('repoId'),
+    // Pre-canonical plugin grants could omit repoId for controller/account targets.
+    // Normalize that omission once during the one-way migration; authorization
+    // against the canonical Grant store is exact after this point.
+    repoId: typeof record.repoId === 'string' && record.repoId.trim() ? record.repoId.trim() : 'controller:global',
     pluginId: string('pluginId'),
     capabilityId: string('capabilityId'),
     target: normalizeTarget({
@@ -215,14 +218,18 @@ function readLegacyPluginGrantMigrationMarker(controllerHome: string): LegacyPlu
   if (!existsSync(path)) return undefined;
   try {
     const raw = readJsonFile<Record<string, unknown>>(path);
-    return raw?.schemaVersion === 1
-      && typeof raw.migratedAt === 'string'
-      && typeof raw.legacyGrantCount === 'number'
-      && typeof raw.canonicalGrantCount === 'number'
-      ? raw as unknown as LegacyPluginGrantMigrationMarker
-      : undefined;
-  } catch {
-    return undefined;
+    if (raw?.schemaVersion !== 1
+      || typeof raw.migratedAt !== 'string'
+      || typeof raw.legacyGrantCount !== 'number'
+      || typeof raw.canonicalGrantCount !== 'number') {
+      throw new Error('migration marker schema is invalid');
+    }
+    return raw as unknown as LegacyPluginGrantMigrationMarker;
+  } catch (error) {
+    throw new PluginCapabilityAuthorizationGrantError(
+      'PLUGIN_CAPABILITY_GRANT_STORE_CORRUPT',
+      `Plugin capability authorization migration marker is corrupt: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 

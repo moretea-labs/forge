@@ -10,6 +10,7 @@ import type {
   RecordGrantInput,
   RevokeGrantInput,
 } from '../domain/grant';
+import type { ScopeRef } from '../domain/scope';
 
 export const DEFAULT_GRANT_MINUTES = 30 * 24 * 60;
 const MAX_GRANT_MINUTES = 90 * 24 * 60;
@@ -30,6 +31,76 @@ export function canonicalGrantStorePath(controllerHome: string): string {
   return join(resolve(controllerHome), 'system', 'authorization-grants', 'grants.json');
 }
 
+const GRANT_RISKS = new Set(['readonly', 'workspace_write', 'remote_write', 'destructive']);
+const SCOPE_KINDS = new Set(['workspace', 'project', 'requirement', 'plan', 'plan_step', 'work']);
+
+function validateGrantTarget(value: unknown, label: string): GrantTarget | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const target = value as Record<string, unknown>;
+  const kind = typeof target.kind === 'string' ? target.kind.trim() : '';
+  const id = typeof target.id === 'string' ? target.id.trim() : '';
+  if (!kind || !id) throw new Error(`${label}.kind/id are required`);
+  const optionalString = (field: 'repoId' | 'identityFingerprint') => {
+    const current = target[field];
+    if (current === undefined) return undefined;
+    if (typeof current !== 'string' || !current.trim()) throw new Error(`${label}.${field} is invalid`);
+    return current.trim();
+  };
+  let scopeRef: GrantTarget['scopeRef'];
+  if (target.scopeRef !== undefined) {
+    if (!target.scopeRef || typeof target.scopeRef !== 'object' || Array.isArray(target.scopeRef)) throw new Error(`${label}.scopeRef is invalid`);
+    const scope = target.scopeRef as Record<string, unknown>;
+    const scopeKind = typeof scope.kind === 'string' ? scope.kind.trim() : '';
+    const scopeId = typeof scope.id === 'string' ? scope.id.trim() : '';
+    if (scope.schemaVersion !== 1 || !SCOPE_KINDS.has(scopeKind) || !scopeId) throw new Error(`${label}.scopeRef is invalid`);
+    scopeRef = { schemaVersion: 1, kind: scopeKind as ScopeRef['kind'], id: scopeId };
+  }
+  const repoId = optionalString('repoId');
+  const identityFingerprint = optionalString('identityFingerprint');
+  return { kind, id, ...(repoId ? { repoId } : {}), ...(scopeRef ? { scopeRef } : {}), ...(identityFingerprint ? { identityFingerprint } : {}) };
+}
+
+function validatePersistedGrant(value: unknown, index: number): Grant {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`grants[${index}] must be an object`);
+  const row = value as Record<string, unknown>;
+  const requiredString = (field: string) => {
+    const current = row[field];
+    if (typeof current !== 'string' || !current.trim()) throw new Error(`grants[${index}].${field} is invalid`);
+    return current.trim();
+  };
+  if (row.schemaVersion !== 1) throw new Error(`grants[${index}].schemaVersion is invalid`);
+  if (!Array.isArray(row.capabilities) || row.capabilities.some((entry) => typeof entry !== 'string' || !entry.trim())) throw new Error(`grants[${index}].capabilities is invalid`);
+  if (row.scopes !== undefined && (!Array.isArray(row.scopes) || row.scopes.some((entry) => typeof entry !== 'string' || !entry.trim()))) throw new Error(`grants[${index}].scopes is invalid`);
+  if (row.riskCeiling !== undefined && (typeof row.riskCeiling !== 'string' || !GRANT_RISKS.has(row.riskCeiling))) throw new Error(`grants[${index}].riskCeiling is invalid`);
+  const createdAt = requiredString('createdAt');
+  const updatedAt = requiredString('updatedAt');
+  const expiresAt = requiredString('expiresAt');
+  if (![createdAt, updatedAt, expiresAt].every((timestamp) => Number.isFinite(Date.parse(timestamp)))) throw new Error(`grants[${index}] timestamps are invalid`);
+  const revokedAt = row.revokedAt;
+  if (revokedAt !== undefined && (typeof revokedAt !== 'string' || !Number.isFinite(Date.parse(revokedAt)))) throw new Error(`grants[${index}].revokedAt is invalid`);
+  if (row.revokedReason !== undefined && typeof row.revokedReason !== 'string') throw new Error(`grants[${index}].revokedReason is invalid`);
+  if (row.ownerScope !== undefined && (typeof row.ownerScope !== 'string' || !row.ownerScope.trim())) throw new Error(`grants[${index}].ownerScope is invalid`);
+  if (row.constraints !== undefined && (!row.constraints || typeof row.constraints !== 'object' || Array.isArray(row.constraints))) throw new Error(`grants[${index}].constraints is invalid`);
+  const target = validateGrantTarget(row.target, `grants[${index}].target`);
+  return {
+    schemaVersion: 1,
+    grantId: requiredString('grantId'),
+    principalId: requiredString('principalId'),
+    ...(typeof row.ownerScope === 'string' && row.ownerScope.trim() ? { ownerScope: row.ownerScope.trim() } : {}),
+    capabilities: [...new Set((row.capabilities as string[]).map((entry) => entry.trim()))].sort(),
+    ...(target ? { target } : {}),
+    ...(Array.isArray(row.scopes) ? { scopes: [...new Set((row.scopes as string[]).map((entry) => entry.trim()))].sort() } : {}),
+    ...(typeof row.riskCeiling === 'string' ? { riskCeiling: row.riskCeiling as Grant['riskCeiling'] } : {}),
+    ...(row.constraints && typeof row.constraints === 'object' && !Array.isArray(row.constraints) ? { constraints: row.constraints as Record<string, unknown> } : {}),
+    createdAt,
+    updatedAt,
+    expiresAt,
+    ...(typeof revokedAt === 'string' ? { revokedAt } : {}),
+    ...(typeof row.revokedReason === 'string' ? { revokedReason: row.revokedReason } : {}),
+  };
+}
+
 function loadStore(controllerHome: string): GrantStoreData {
   const path = canonicalGrantStorePath(controllerHome);
   if (!existsSync(path)) return { schemaVersion: 1, grants: [] };
@@ -38,9 +109,9 @@ function loadStore(controllerHome: string): GrantStoreData {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('store must be an object');
     const record = raw as Record<string, unknown>;
     if (record.schemaVersion !== 1 || !Array.isArray(record.grants)) throw new Error('schemaVersion/grants are invalid');
-    return { schemaVersion: 1, grants: record.grants as Grant[] };
-  } catch {
-    return { schemaVersion: 1, grants: [] };
+    return { schemaVersion: 1, grants: record.grants.map(validatePersistedGrant) };
+  } catch (error) {
+    throw new Error(`CANONICAL_GRANT_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -55,11 +126,16 @@ function saveStore(controllerHome: string, store: GrantStoreData): void {
 function targetMatches(left?: GrantTarget, right?: GrantTarget): boolean {
   if (!left && !right) return true;
   if (!left || !right) return false;
-  const kindMatch = left.kind === right.kind;
-  const idMatch = left.id === right.id;
-  const repoMatch = !left.repoId || !right.repoId || left.repoId === right.repoId;
-  const fpMatch = !left.identityFingerprint || !right.identityFingerprint || left.identityFingerprint === right.identityFingerprint;
-  return kindMatch && idMatch && repoMatch && fpMatch;
+  const scopeMatch = (!left.scopeRef && !right.scopeRef)
+    || Boolean(left.scopeRef && right.scopeRef
+      && left.scopeRef.schemaVersion === right.scopeRef.schemaVersion
+      && left.scopeRef.kind === right.scopeRef.kind
+      && left.scopeRef.id === right.scopeRef.id);
+  return left.kind === right.kind
+    && left.id === right.id
+    && left.repoId === right.repoId
+    && left.identityFingerprint === right.identityFingerprint
+    && scopeMatch;
 }
 
 function scopesContain(granted: readonly string[] = [], requested: readonly string[] = []): boolean {
@@ -136,7 +212,6 @@ export function revokeCanonicalGrant(controllerHome: string, input: RevokeGrantI
 }
 
 export function findActiveCanonicalGrant(controllerHome: string, query: QueryGrantInput): Grant | undefined {
-  if (query.risk === 'destructive') return undefined;
   const store = loadStore(controllerHome);
   const nowMs = (query.at ?? new Date()).getTime();
   const requestedRiskRank = RISK_RANK[query.risk ?? 'readonly'] ?? 0;

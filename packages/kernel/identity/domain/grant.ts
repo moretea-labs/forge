@@ -1,6 +1,6 @@
 import type { ScopeRef } from './scope';
 
-export type GrantRiskCeiling = 'readonly' | 'workspace_write' | 'remote_write';
+export type GrantRiskCeiling = 'readonly' | 'workspace_write' | 'remote_write' | 'destructive';
 
 export interface GrantTarget {
   kind: string;
