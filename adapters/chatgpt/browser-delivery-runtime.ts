@@ -749,6 +749,9 @@ export async function navigateWorkConversation(
       const opened = await controllerBrowserAction(controllerHome, workId, 'create_session', {
         session_id: sessionId,
         url,
+        browser_mode: 'managed_persistent',
+        native_attach_mode: 'disabled',
+        cdp_attach_fallback: 'fail_closed',
         wait_until: 'domcontentloaded',
         timeout_ms: timeoutMs ?? 60_000,
         retries: 1,

@@ -1462,6 +1462,9 @@ describe('ChatGPT scheduled open_page reconciliation', () => {
     const replacementSource = source.slice(replacementStart, replacementEnd);
     expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'create_session'");
     expect(replacementSource).toContain('session_id: sessionId');
+    expect(replacementSource).toContain("browser_mode: 'managed_persistent'");
+    expect(replacementSource).toContain("native_attach_mode: 'disabled'");
+    expect(replacementSource).toContain("cdp_attach_fallback: 'fail_closed'");
     expect(replacementSource).not.toContain("'list_sessions'");
     expect(replacementSource).toContain("browserMutationOutcomeUnknown(error, 'create_session')");
     expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'verify_state'");
