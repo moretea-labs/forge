@@ -13,7 +13,7 @@ import { acceptReviewedDirectEditWorkReconciliation, recordReviewedDirectEditDel
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
 import { implementationReviewCommittedBaseRevision } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { implementationReviewChangedPathDigest, semanticWorkState } from '../../packages/kernel/work/api/index';
 import { createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
@@ -193,7 +193,7 @@ function approveCurrentDirectEditCandidate(fx: ReturnType<typeof fixture>): void
 }
 
 describe('standalone Direct Edit Work completion', () => {
-  test('commits an exact approved Direct Edit candidate, derives review authority across the commit, and completes the Work', () => {
+  test('commits an exact approved Direct Edit candidate, derives review authority across the commit, and records delivery without completing semantic Work', () => {
     const fx = fixture();
     const changedPaths = ['src/example.ts'];
     approveCurrentDirectEditCandidate(fx);
@@ -223,7 +223,8 @@ describe('standalone Direct Edit Work completion', () => {
     });
     expect(completion.deliveredWorkIds).toEqual([fx.workId]);
     const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
-    expect(work.status).toBe('completed');
+    expect(semanticWorkState(work)).toBe('open');
+    expect(work.status).toBe('running');
     expect(work.completionReceipt).toMatchObject({
       source: 'direct_edit_work',
       workId: fx.workId,
@@ -240,7 +241,7 @@ describe('standalone Direct Edit Work completion', () => {
     });
   });
 
-  test('leaves model-authored Plan progress untouched when a Plan-provenance Direct Edit delivery completes', () => {
+  test('leaves model-authored Plan progress untouched when a Plan-provenance Direct Edit delivery is recorded', () => {
     const fx = fixture();
     const planId = 'plan-direct-edit-delivery';
     const stepId = 'direct-step';
@@ -295,12 +296,14 @@ describe('standalone Direct Edit Work completion', () => {
       fallbackBranch: 'main',
     });
 
-    // Delivery receipts and Work completion never rewrite authored Plan progress.
+    // Mechanical delivery neither completes semantic Work nor rewrites model-authored Plan progress.
     const unchanged = getPlanContract(planStore, planId)!;
-    expect(unchanged.status).toBe('approved');
+    expect(unchanged.status).toBe('draft');
     expect(unchanged.steps[0]).toMatchObject({ status: 'pending' });
     expect(unchanged.steps[0]?.workId).toBeUndefined();
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('completed');
+    const deliveredWork = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(deliveredWork)).toBe('open');
+    expect(deliveredWork.completionReceipt).toBeDefined();
   });
 
   test('blocks a Work-bound selected-path commit before Git mutation when implementation review is missing', () => {
@@ -536,9 +539,10 @@ describe('standalone Direct Edit Work completion', () => {
     expect(result.receipt.changedPaths).toHaveLength(9);
     expect(result.receipt.changedPaths).not.toContain('README.md');
     expect(result.receipt.targetRevision).toBe(targetRevision);
-    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
-    expect(completed.status).toBe('completed');
-    expect(completed.scopeEvidence?.actualChangedPaths).toEqual([...ownedPaths].sort((left, right) => left.localeCompare(right)));
+    const delivered = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered.completionReceipt).toBeDefined();
+    expect(delivered.scopeEvidence?.actualChangedPaths).toEqual([...ownedPaths].sort((left, right) => left.localeCompare(right)));
   });
 
   test('reconciles an exact content-equivalent Direct commit from an advanced durable baseline without absorbing later target-only history', () => {
@@ -656,7 +660,9 @@ describe('standalone Direct Edit Work completion', () => {
     expect(result.receipt.changedPaths).toEqual(reviewedPaths);
     expect(result.reconciliation.observedTargetRevision).toBe(targetRevision);
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(currentTargetHead);
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('completed');
+    const deliveredWork = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(deliveredWork)).toBe('open');
+    expect(deliveredWork.completionReceipt).toBeDefined();
   });
 
   test('rejects advanced-baseline recovery when later target history changes reviewed content', () => {
@@ -875,7 +881,7 @@ describe('standalone Direct Edit Work completion', () => {
     })).toThrow('DIRECT_EDIT_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
   });
 
-  test('closes historically delivered Work even when Requirement completion projection is unavailable', () => {
+  test('records historical delivery without requiring Requirement completion projection', () => {
     const fx = fixture('REQ-direct-edit-missing-record');
     commitExample(fx.repoRoot);
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
@@ -896,12 +902,14 @@ describe('standalone Direct Edit Work completion', () => {
 
     expect(result.reconciliation).toMatchObject({ method: 'owned_path_tree', outcome: 'accepted_equivalence', comparedPaths: ['src/example.ts'] });
     expect(result.receipt).toMatchObject({ source: 'direct_edit_work', reconciliationId: result.reconciliation.reconciliationId, targetRevision });
-    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
-    expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
-    expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
+    const delivered = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered).toMatchObject({ completionOutcome: 'completed_changed' });
+    expect(delivered.completionReceipt).toBeDefined();
+    expect(delivered.evidenceRefs.some((evidence) => (evidence.title ?? '').includes('requirement completion projection'))).toBe(false);
   });
 
-  test('keeps completed Work authoritative without any Plan projection or Plan record dependency', () => {
+  test('keeps delivery evidence independent of any Plan projection or Plan record dependency', () => {
     const fx = fixture();
     const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
@@ -926,11 +934,13 @@ describe('standalone Direct Edit Work completion', () => {
       cleanupOwnershipProof: 'This current-checkout Work owns no managed branch or worktree cleanup.',
     });
 
-    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
-    expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
+    const delivered = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered).toMatchObject({ completionOutcome: 'completed_changed' });
+    expect(delivered.completionReceipt).toBeDefined();
     // Plan provenance is not an execution prerequisite: an absent legacy Plan
-    // record neither blocks completion nor manufactures projection debt.
-    expect(completed?.evidenceRefs.some((evidence) => (evidence.title ?? '').includes('plan step'))).toBe(false);
+    // record neither blocks delivery nor manufactures projection debt.
+    expect(delivered.evidenceRefs.some((evidence) => (evidence.title ?? '').includes('plan step'))).toBe(false);
   });
 
   test('narrowly reconciles an already-delivered effect Work only with exact validation, remote containment, and a clean source tree', () => {
@@ -959,9 +969,12 @@ describe('standalone Direct Edit Work completion', () => {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', targetRevision], { cwd: fx.repoRoot });
     const result = acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision));
     expect(result.receipt).toMatchObject({ source: 'direct_edit_work', targetRevision, changedPaths: ['src/example.ts'] });
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)).toMatchObject({
-      status: 'completed', workKind: 'repository_change', completionOutcome: 'completed_changed',
+    const delivered = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered).toMatchObject({
+      workKind: 'remote_effect', completionOutcome: 'completed_changed',
     });
+    expect(delivered.completionReceipt).toBeDefined();
   });
 
   test('refuses historical effect reconciliation without bound validation receipts or while any source delta remains unresolved', () => {
@@ -1011,7 +1024,9 @@ describe('standalone Direct Edit Work completion', () => {
 
     expect(result.receipt.targetRevision).toBe(targetRevision);
     expect(result.receipt.verifiedAt).toBe('2026-08-25T01:01:00.000Z');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('completed');
+    const delivered = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(semanticWorkState(delivered)).toBe('open');
+    expect(delivered.completionReceipt).toBeDefined();
   });
 
   test('rejects historical verification evidence from the wrong revision or a failed/superseded result', () => {

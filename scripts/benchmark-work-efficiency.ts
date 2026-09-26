@@ -5,8 +5,9 @@
  *
  * Measures end-to-end controller ceremony for a tiny, real repository change
  * against isolated temporary repository/controller state. It compares the
- * streamlined path (verify -> finalize) with the legacy-style ceremony
- * (verify -> continue -> finalize) without mutating the Forge checkout.
+ * Thin Forge path (verify -> settle delivery -> work_complete) with the same
+ * path plus the retired mechanical continue ceremony, without mutating the
+ * Forge checkout.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -17,7 +18,7 @@ import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-reposit
 import { ensureControllerHome } from '../src/cli/repositories/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
-import { getWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract, semanticWorkState } from '../packages/kernel/work/api/index';
 import { waitForProcess } from '../src/runtime/execution/process-runtime';
 import { acquireRuntimeOwnership } from '../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../src/runtime/root/service';
@@ -42,9 +43,12 @@ interface FlowSample {
   verifyReattachMs: number;
   continueMs: number;
   finalizeMs: number;
+  completeMs: number;
   totalMs: number;
   verificationNextStep?: string;
-  finalStatus?: string;
+  deliverySettled: boolean;
+  postFinalizeSemanticState?: string;
+  finalSemanticState?: string;
   cleanupComplete: boolean;
 }
 
@@ -227,13 +231,31 @@ async function runFlow(mode: FlowSample['mode'], sample: number): Promise<FlowSa
       work_id: workId,
     });
     controllerCalls += 1;
-    const finalStatus = String(finalized.value.data?.finalStatus ?? '');
+    const postFinalizeWork = getWorkContract(store, workId);
+    if (!postFinalizeWork) throw new Error('benchmark Work disappeared after finalize');
+    const deliverySettled = finalized.value.data?.deliverySettled === true || Boolean(postFinalizeWork.completionReceipt);
+    const postFinalizeSemanticState = semanticWorkState(postFinalizeWork);
+    const expectedRevision = Number(postFinalizeWork.semanticRevision ?? 1);
+    const completed = await timedCall(fx.ctx, {
+      repo_id: fx.repository.repoId,
+      operation: 'work_complete',
+      work_id: workId,
+      expected_revision: expectedRevision,
+      ...(postFinalizeWork.completionReceipt?.receiptId
+        ? { work_result_refs: [postFinalizeWork.completionReceipt.receiptId] }
+        : {}),
+    });
+    controllerCalls += 1;
+    const finalSemanticState = String(completed.value.data?.work?.state ?? '');
     const cleanupComplete = !existsSync(contract.worktreeRef);
     const totalMs = Math.round((performance.now() - wallStartedAt) * 100) / 100;
     return {
       mode,
       sample,
-      ok: finalStatus === 'completed' && cleanupComplete,
+      ok: deliverySettled
+        && postFinalizeSemanticState === 'open'
+        && finalSemanticState === 'completed'
+        && cleanupComplete,
       controllerCalls,
       processWaits,
       startMs: started.elapsedMs,
@@ -242,9 +264,12 @@ async function runFlow(mode: FlowSample['mode'], sample: number): Promise<FlowSa
       verifyReattachMs: verifyReattach.elapsedMs,
       continueMs,
       finalizeMs: finalized.elapsedMs,
+      completeMs: completed.elapsedMs,
       totalMs,
       verificationNextStep,
-      finalStatus,
+      deliverySettled,
+      postFinalizeSemanticState,
+      finalSemanticState,
       cleanupComplete,
     };
   } finally {
@@ -277,6 +302,7 @@ function summarize(samples: FlowSample[]) {
     },
     continueMs: { p50: percentile(samples.map((sample) => sample.continueMs), 0.5), p95: percentile(samples.map((sample) => sample.continueMs), 0.95) },
     finalizeMs: { p50: percentile(samples.map((sample) => sample.finalizeMs), 0.5), p95: percentile(samples.map((sample) => sample.finalizeMs), 0.95) },
+    completeMs: { p50: percentile(samples.map((sample) => sample.completeMs), 0.5), p95: percentile(samples.map((sample) => sample.completeMs), 0.95) },
   };
 }
 
@@ -305,7 +331,7 @@ async function main(): Promise<void> {
     revision: sourceHeadAfter,
     generatedAt: new Date().toISOString(),
     sampleCount,
-    methodology: 'Real rh_work start + managed Check Process + authoritative reattach + finalize on isolated temporary repositories. Legacy comparison adds only the mechanical continue call.',
+    methodology: 'Real rh_work start + managed Check Process + authoritative reattach + physical delivery finalize + explicit work_complete on isolated temporary repositories. Legacy comparison adds only the retired mechanical continue call.',
     streamlined: streamlinedSummary,
     legacyCeremony: legacySummary,
     productivity: {
@@ -320,7 +346,11 @@ async function main(): Promise<void> {
       sourceCheckoutHeadStable: sourceHeadBefore === sourceHeadAfter,
       streamlinedAllOk: streamlinedSummary.allOk,
       legacyAllOk: legacySummary.allOk,
-      streamlinedDirectsFinalPassToFinalize: streamlined.every((sample) => sample.verificationNextStep === 'finalize'),
+      deliveryAndSemanticCompletionSeparated: [...streamlined, ...legacy].every((sample) =>
+        sample.deliverySettled
+        && sample.postFinalizeSemanticState === 'open'
+        && sample.finalSemanticState === 'completed'),
+      streamlinedSkipsLegacyContinue: streamlined.every((sample) => sample.continueMs === 0),
       oneControllerCallSaved: legacySummary.controllerCalls - streamlinedSummary.controllerCalls === 1,
       cleanupComplete: [...streamlined, ...legacy].every((sample) => sample.cleanupComplete),
     },
