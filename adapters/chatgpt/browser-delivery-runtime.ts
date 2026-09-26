@@ -37,7 +37,9 @@ function withForgePluginMention(prompt: string): string {
   return `${DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION} ${value}`;
 }
 
-const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
+// ChatGPT's composer is a ProseMirror textbox; the historical #prompt-textarea id is no longer stable.
+// Bind delivery to the semantic composer contract used by the live UI so readiness, fill, and Enter fallback share one selector authority.
+const CHATGPT_PROMPT_SELECTOR = '[data-composer-markdown][role="textbox"][contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
 const CHATGPT_USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
 const CHATGPT_ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"]';
