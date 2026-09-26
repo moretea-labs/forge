@@ -750,7 +750,13 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     case 'verify_stable_runtime': return verifyStableRuntime(config);
     case 'verify_external_runtime': {
       const verified = await verifyStableRuntime(config);
-      return { ok: verified.probes.external_mcp_http?.ok === true, external: verified.probes.external_mcp_http, mcp: verified.probes.mcp_initialize };
+      const externalConfigured = Boolean(config.publicMcpUrl);
+      return {
+        ok: externalConfigured ? verified.probes.external_mcp_http?.ok === true : verified.ok,
+        externalConfigured,
+        external: verified.probes.external_mcp_http,
+        mcp: verified.probes.mcp_initialize,
+      };
     }
     case 'attest_known_good': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

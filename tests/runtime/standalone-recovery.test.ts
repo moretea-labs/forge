@@ -1992,6 +1992,24 @@ describe('standalone recovery on canonical Runtime', () => {
       ready: true,
       recoveryWatchdog: { failures: 0, rollbackUsed: false },
     });
+    expect(await dispatchRecoveryTool(config, 'verify_external_runtime', {})).toMatchObject({
+      ok: true,
+      externalConfigured: true,
+      external: { ok: true },
+      mcp: { ok: true },
+    });
+    const withoutPublicMcp = await dispatchRecoveryTool({ ...config, publicMcpUrl: undefined }, 'verify_external_runtime', {}) as {
+      ok: boolean;
+      externalConfigured: boolean;
+      external?: unknown;
+      mcp?: { ok?: boolean };
+    };
+    expect(withoutPublicMcp).toMatchObject({
+      ok: true,
+      externalConfigured: false,
+      mcp: { ok: true },
+    });
+    expect(withoutPublicMcp.external).toBeUndefined();
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('runtime_status');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
