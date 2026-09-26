@@ -173,8 +173,8 @@ export async function routeDurableMcpCall(
       mode: 'reject',
       path: 'reject',
       rejectCode: 'AGENT_RUN_DEPRECATED',
-      message: 'Kernel-managed Agent Runs are retired. Create or resume a WorkContract, claim it, then start the external Controller through rh_work.launcher_start.',
-      migration: ['rh_work.plan_create', 'rh_work.controller_claim', 'rh_work.launcher_start', 'rh_inbox.create'],
+      message: 'Kernel-managed Agent Runs are retired. When durable continuation is actually needed, create or resume the semantic Work and start the external Controller through rh_work.launcher_start; mechanical ControllerRound ownership is internal.',
+      migration: ['rh_work.plan_create', 'rh_work.launcher_start', 'rh_inbox.create'],
     });
   }
 
@@ -227,8 +227,8 @@ export async function routeDurableMcpCall(
         ...(classification.decision ? { decision: classification.decision } : {}),
       },
       rejectCode: 'EXECUTION_JOB_RETIRED',
-      message: 'This operation requires an explicitly claimed external Controller; the Kernel no longer creates ExecutionJobs.',
-      suggestedOperation: 'Create or resume a WorkContract, claim it with controller_claim, then use Process Runtime commands or rh_work.launcher_start.',
+      message: 'This operation requires an explicit external Controller or domain capability; the Kernel no longer creates ExecutionJobs or a Work-ownership phase.',
+      suggestedOperation: 'Create or resume semantic Work only when durable context is useful, then use the direct Process/domain capability or rh_work.launcher_start.',
     });
   }
 

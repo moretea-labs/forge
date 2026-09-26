@@ -488,8 +488,8 @@ export async function callWorkCompatibilityAdapter(ctx: MultiRepositoryMcpToolCo
                 requestId,
                 repoId: repository.repoId,
                 rejectCode: 'EXECUTION_JOB_RETIRED',
-                message: 'Release Gate no longer creates an ExecutionJob. An external Controller must claim the related Work and execute release evidence explicitly.',
-                suggestedOperation: 'rh_work.controller_claim followed by Process Runtime checks and explicit release authorization.',
+                message: 'Release Gate no longer creates an ExecutionJob or a Work-ownership phase. Execute release evidence through the explicit domain capability and keep semantic Work completion separate.',
+                suggestedOperation: 'Use the explicit release/Process Runtime capability with the relevant Work only as provenance when needed.',
               });
             }
       default: return undefined;

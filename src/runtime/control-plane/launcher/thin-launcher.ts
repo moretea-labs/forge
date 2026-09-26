@@ -13,12 +13,6 @@ import {
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
-import {
-  beginControllerRoundRelayAfterRelease,
-  getControllerSession,
-  reconcileControllerRoundAfterAbandonedRelease,
-  releaseControllerSessionWithAuthority,
-} from '../../../../packages/kernel/controller/api/index';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
@@ -29,7 +23,7 @@ export interface ThinLauncherRequest {
   executable?: string;
   args?: string[];
   workId: string;
-  /** Short reservation only prevents duplicate spawns; the external MCP session claims Work with its authenticated identity. */
+  /** Short reservation prevents duplicate spawns and scopes provider bootstrap identity; Work is not a semantic ownership lock. */
   launchReservationMs?: number;
   handoffId?: string;
   /** Saved Forge ChatGPT browser session to continue. */
@@ -53,9 +47,6 @@ export interface ThinLauncherResult {
 }
 
 const LAUNCHER_STARTUP_GRACE_MS = 250;
-const CODEX_WORK_CLAIM_TIMEOUT_MS = 30_000;
-const CODEX_WORK_CLAIM_SETTLEMENT_GRACE_MS = 1_500;
-const CODEX_WORK_CLAIM_POLL_INTERVAL_MS = 100;
 const STARTUP_DIAGNOSTIC_BYTES = 8 * 1024;
 
 function appendStartupDiagnosticTail(current: string, chunk: unknown): string {
@@ -71,18 +62,8 @@ function startupDiagnosticSummary(stdoutTail: string, stderrTail: string): strin
   return value ? `; startup_output=${value}` : '';
 }
 
-interface ExternalControllerClaimExpectation {
-  controllerType: 'codex';
-  controllerId: string;
-  principalId: string;
-  sessionId: string;
-}
-
 export interface ThinLauncherDependencies {
   resolveProviderMcpBootstrap?: typeof resolveProviderMcpBootstrap;
-  claimTimeoutMs?: number;
-  claimSettlementGraceMs?: number;
-  claimPollIntervalMs?: number;
 }
 
 function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -124,8 +105,6 @@ async function awaitExternalControllerStartup(
   stores: { work: WorkContractStoreOptions & { controllerHome: string; repoId: string } },
   workId: string,
   reservationId: string,
-  claimExpectation?: ExternalControllerClaimExpectation,
-  options: { claimTimeoutMs?: number; claimSettlementGraceMs?: number; claimPollIntervalMs?: number } = {},
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let startupSettled = false;
@@ -147,50 +126,25 @@ async function awaitExternalControllerStartup(
       try {
         recordExternalControllerLaunchDiagnostics(stores.work, workId, reservationId, { stdoutTail, stderrTail });
       } catch {
-        // Startup diagnostics are evidence only; preserve the primary ownership/claim outcome.
+        // Startup diagnostics are evidence only; preserve the primary process outcome.
       }
-    };
-    const clearTimer = () => {
-      if (timer) clearTimeout(timer);
-      timer = undefined;
     };
     const releaseFailure = (reason: string) => {
       try {
         releaseExternalControllerLaunchReservation(stores.work, workId, reservationId, reason);
       } catch {
-        // Preserve the primary startup failure if diagnostic persistence itself races or fails.
+        // Preserve the primary startup failure if diagnostic persistence races.
       }
     };
-    const terminateUnclaimedChild = () => {
-      if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-      try { child.kill('SIGTERM'); } catch { /* process may already be exiting */ }
-    };
-    const fail = (error: Error, reason: string, terminate = false) => {
+    const fail = (error: Error, reason: string) => {
       if (startupSettled) return;
       startupSettled = true;
-      clearTimer();
+      if (timer) clearTimeout(timer);
       persistDiagnostics();
       closeStartupPipes();
-      if (terminate) terminateUnclaimedChild();
       releaseFailure(reason);
       const diagnostics = startupDiagnosticSummary(stdoutTail, stderrTail);
       reject(diagnostics ? new Error(`${error.message}${diagnostics}`) : error);
-    };
-    const expectedClaimMatches = (): { matches: boolean; mismatch?: string } => {
-      if (!claimExpectation) return { matches: true };
-      const owner = getControllerSession(stores.work, workId);
-      if (!owner) return { matches: false };
-      const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
-      const matches = owner.controllerType === claimExpectation.controllerType
-        && owner.controllerId === claimExpectation.controllerId
-        && ownerPrincipal === claimExpectation.principalId
-        && owner.sessionId === claimExpectation.sessionId;
-      return matches
-        ? { matches: true }
-        : {
-          matches: false,
-          mismatch: `observed type=${owner.controllerType} controller=${owner.controllerId} principal=${ownerPrincipal} session=${owner.sessionId}`,
-        };
     };
 
     child.once('error', (error) => {
@@ -206,118 +160,22 @@ async function awaitExternalControllerStartup(
           stderrTail,
         });
       } catch {
-        // Exit evidence is best-effort after another authority has already released the reservation.
-      }
-      if (claimExpectation) {
-        try {
-          const owner = getControllerSession(stores.work, workId);
-          const ownerPrincipal = owner ? (owner.principalId?.trim() || owner.controllerId) : '';
-          const ownerInstanceId = owner?.controllerInstanceId?.trim() || '';
-          const exactLaunchedOwner = Boolean(
-            owner
-            && owner.controllerType === claimExpectation.controllerType
-            && owner.controllerId === claimExpectation.controllerId
-            && ownerPrincipal === claimExpectation.principalId
-            && owner.sessionId === claimExpectation.sessionId
-            && ownerInstanceId
-            && typeof owner.claimGeneration === 'number'
-            && owner.claimGeneration >= 1,
-          );
-          if (owner && exactLaunchedOwner) {
-            const released = releaseControllerSessionWithAuthority(stores.work, {
-              workId,
-              actor: `external-controller-exit:${reservationId}`,
-              authority: {
-                controllerId: owner.controllerId,
-                controllerType: owner.controllerType,
-                principalId: ownerPrincipal,
-                controllerInstanceId: ownerInstanceId,
-                claimGeneration: owner.claimGeneration!,
-              },
-            });
-            if (released.allowed) {
-              const relay = beginControllerRoundRelayAfterRelease(stores.work, { workId, releasedSession: owner });
-              if (!relay) reconcileControllerRoundAfterAbandonedRelease(stores.work, { workId, releasedSession: owner });
-            }
-          }
-        } catch {
-          // The launcher may only retire the exact reservation-bound ownership epoch.
-          // A concurrent/new owner or relay transition is authoritative and must win.
-        }
+        // Exit evidence is best-effort after another authority released the reservation.
       }
       if (startupSettled) return;
-      startupSettled = true;
-      clearTimer();
-      closeStartupPipes();
-      const phase = claimExpectation ? 'before exact Work claim became live' : 'during startup grace';
-      reject(new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited ${phase} (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})${startupDiagnosticSummary(stdoutTail, stderrTail)}`));
+      fail(
+        new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited during startup grace (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})`),
+        'startup_exit',
+      );
     });
 
-    if (!claimExpectation) {
-      timer = setTimeout(() => {
-        if (startupSettled) return;
-        startupSettled = true;
-        closeStartupPipes();
-        resolve();
-      }, LAUNCHER_STARTUP_GRACE_MS);
-      return;
-    }
-
-    const claimTimeoutMs = Math.max(100, Math.min(options.claimTimeoutMs ?? CODEX_WORK_CLAIM_TIMEOUT_MS, 60_000));
-    const claimSettlementGraceMs = Math.max(0, Math.min(options.claimSettlementGraceMs ?? CODEX_WORK_CLAIM_SETTLEMENT_GRACE_MS, 5_000));
-    const claimPollIntervalMs = Math.max(10, Math.min(options.claimPollIntervalMs ?? CODEX_WORK_CLAIM_POLL_INTERVAL_MS, 1_000));
-    const claimDeadline = Date.now() + claimTimeoutMs;
-    const claimSettlementDeadline = claimDeadline + claimSettlementGraceMs;
-    const pollClaim = () => {
+    timer = setTimeout(() => {
       if (startupSettled) return;
-      let observation: ReturnType<typeof expectedClaimMatches>;
-      try {
-        observation = expectedClaimMatches();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        fail(new Error(`LAUNCHER_CLAIM_OBSERVATION_FAILED: ${message}`), `claim_observation_failed:${message}`, true);
-        return;
-      }
-      if (observation.mismatch) {
-        fail(
-          new Error(`LAUNCHER_CLAIM_MISMATCH: Work ${workId} expected type=${claimExpectation.controllerType} controller=${claimExpectation.controllerId} principal=${claimExpectation.principalId} session=${claimExpectation.sessionId}; ${observation.mismatch}`),
-          'claim_mismatch',
-          true,
-        );
-        return;
-      }
-      if (observation.matches) {
-        timer = setTimeout(() => {
-          if (startupSettled) return;
-          try {
-            const confirmation = expectedClaimMatches();
-            if (!confirmation.matches || confirmation.mismatch) {
-              fail(new Error(`LAUNCHER_CLAIM_LOST: Codex claim for exact Work ${workId} was not live after startup grace`), 'claim_lost', true);
-              return;
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            fail(new Error(`LAUNCHER_CLAIM_OBSERVATION_FAILED: ${message}`), `claim_observation_failed:${message}`, true);
-            return;
-          }
-          startupSettled = true;
-          timer = undefined;
-          closeStartupPipes();
-          resolve();
-        }, LAUNCHER_STARTUP_GRACE_MS);
-        return;
-      }
-      if (Date.now() >= claimSettlementDeadline) {
-        fail(
-          new Error(`LAUNCHER_CLAIM_TIMEOUT: Codex pid=${String(child.pid ?? 'unknown')} did not claim exact Work ${workId} through Forge MCP within ${claimTimeoutMs}ms plus ${claimSettlementGraceMs}ms settlement grace`),
-          `claim_timeout:${claimTimeoutMs}ms+${claimSettlementGraceMs}ms_settlement`,
-          true,
-        );
-        return;
-      }
-      timer = setTimeout(pollClaim, claimPollIntervalMs);
-    };
-    pollClaim();
+      startupSettled = true;
+      timer = undefined;
+      closeStartupPipes();
+      resolve();
+    }, LAUNCHER_STARTUP_GRACE_MS);
   });
 }
 
@@ -420,7 +278,7 @@ export async function launchSuperController(
       `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
       handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
       request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-      `No Controller ownership was preclaimed for this continued conversation. First call rh_work operation=controller_claim with repo_id=${work.repoId}, work_id=${work.workId}, and controller_type=chatgpt through your authenticated MCP session; do not invent controller_id/session_id. When that exact Work claim succeeds, capture data.controllerAuthorityId from the response as the opaque Work-bound controller capability. Pass that exact value unchanged as controller_authority_id on the following rh_work operation=continue and every later lifecycle call for this Work, including verify, finalize, stop, and controller_release; if the current frozen client schema does not expose controller_authority_id, pass the same opaque value as session_id compatibility carrier. Never use data.session.sessionId as the durable capability because MCP execution sessions may be replaced or invalidated. Treat Forge Work/Plan/evidence as source of truth; do not invent new scope from chat history. If the claim does not succeed, do not mutate. Continue the next safe action, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
+      `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue the original Work without repeating completed effects; use direct capabilities for execution and validation, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
     ].filter(Boolean).join('\n')
     : [
       `Work: ${work.workId}`,
@@ -429,7 +287,7 @@ export async function launchSuperController(
       `Current status: ${work.status}`,
       handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
       request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-      `No Controller ownership was preclaimed for you. First call rh_work operation=controller_claim with repo_id=${work.repoId}, work_id=${work.workId}, and controller_type=${request.controllerType} through your authenticated MCP session; do not invent controller_id/session_id. When that exact Work claim succeeds, capture data.controllerAuthorityId from the response as the opaque Work-bound controller capability. Pass that exact value unchanged as controller_authority_id on the following rh_work operation=continue and every later lifecycle call for this Work, including verify, finalize, stop, and controller_release; if the current frozen client schema does not expose controller_authority_id, pass the same opaque value as session_id compatibility carrier. Never use data.session.sessionId as the durable capability because MCP execution sessions may be replaced or invalidated. If the claim does not succeed, do not mutate the repository: create no patch, command, commit, or test run until ownership is established. Then use the repository MCP facade, record verification evidence, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
+      `Forge maintains provider/session binding, transport recovery, effect dedupe, and retry bookkeeping internally. Continue this exact Work using repository capabilities; pass work_id=${work.workId} when durable source attribution is needed, validate with normal capability evidence, and update semantic Work only when objective/result state changes. Surface genuine human decisions through the existing user-request/inbox path.`,
     ].filter(Boolean).join('\n');
   try {
     const mcpBootstrap = request.controllerType === 'codex'
@@ -448,17 +306,6 @@ export async function launchSuperController(
       stores,
       work.workId,
       reservation.reservationId,
-      mcpBootstrap ? {
-        controllerType: 'codex',
-        controllerId: mcpBootstrap.principalId,
-        principalId: mcpBootstrap.principalId,
-        sessionId: mcpBootstrap.sessionId,
-      } : undefined,
-      {
-        claimTimeoutMs: dependencies.claimTimeoutMs,
-        claimSettlementGraceMs: dependencies.claimSettlementGraceMs,
-        claimPollIntervalMs: dependencies.claimPollIntervalMs,
-      },
     );
     child.unref();
     return { controllerType: request.controllerType, reservationId: reservation.reservationId, pid: child.pid, prompt, executable };

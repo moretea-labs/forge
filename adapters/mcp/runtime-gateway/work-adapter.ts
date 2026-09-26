@@ -54,6 +54,27 @@ import { callRhWorkControllerRecoveryOperation } from './work-controller-recover
 import { callRhWorkPlanRepairOperation } from './work-plan-repair-operations';
 import { callRhWorkDelegationOperation } from './work-delegation-operation';
 export { recoverControllerRoundAfterVerifiedProviderRepair } from './work-controller-recovery-operations';
+
+const LEGACY_START_COMPATIBILITY_KEYS = new Set([
+  'related_work_id', 'work_relation', 'requested_by', 'superseded_by',
+  'expected_files', 'expected_changed_lines', 'mode', 'work_kind', 'scope_clear',
+  'requires_investigation', 'requires_long_running_checks', 'requires_parallelism',
+  'needs_dependencies', 'requires_recovery', 'requires_worker', 'requires_external_effect',
+  'requires_approval', 'requires_user_approval', 'destructive', 'remote_write', 'secret_access',
+  'check_ids', 'check_id', 'reconcile_process_ids', 'acceptance_criteria', 'allowed_paths',
+  'initial_likely_paths', 'engineering_preconditions', 'engineering_blocker',
+  'additional_likely_paths', 'inspected_paths', 'review_findings', 'review_decision',
+  'review_rationale', 'implementation_review_findings', 'acceptance_evidence',
+  'acceptance_failure_decision', 'forbidden_paths', 'constraints', 'simulate_check',
+  'infrastructure_failed', 'check_failed', 'authorize_destructive_cleanup', 'commit',
+  'merge', 'cleanup', 'target_branch', 'delete_branch', 'no_ff', 'completion_outcome',
+  'no_change_evidence', 'reconcile_historical_delivery', 'reconcile_target_revision',
+  'reconcile_compared_paths', 'reconcile_rationale', 'reconcile_cleanup_proof',
+]);
+
+function usesLegacyStartCompatibility(args: Record<string, unknown>): boolean {
+  return [...LEGACY_START_COMPATIBILITY_KEYS].some((key) => args[key] !== undefined);
+}
 import {
   assertFacadeControllerRoundAuthority,
   authenticatedFacadeControllerIdentity,
@@ -605,7 +626,9 @@ export async function callWorkAdapter(ctx: MultiRepositoryMcpToolContext, args: 
           if (requirementOperationResult) return requirementOperationResult;
           const planOperationResult = await callRhWorkPlanOperation(store, operation, args);
           if (planOperationResult) return planOperationResult;
-          const workSemanticOperationResult = await callRhWorkSemanticOperation(store, operation, args);
+          const workSemanticOperationResult = operation === 'start' && usesLegacyStartCompatibility(args)
+            ? undefined
+            : await callRhWorkSemanticOperation(store, operation, args);
           if (workSemanticOperationResult) return workSemanticOperationResult;
   
           const checks = listControllerChecks(repository.canonicalRoot);

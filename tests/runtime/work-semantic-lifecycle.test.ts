@@ -42,6 +42,45 @@ function createOpenWork(options: { controllerHome: string; repoId: string }, wor
 }
 
 describe('thin semantic Work lifecycle', () => {
+
+  test('start creates only semantic Work context and deduplicates the same request', async () => {
+    const options = store();
+    const first = structured(await callRhWorkSemanticOperation(options, 'start', {
+      objective: 'Execute one thin Work without lifecycle ceremony.',
+      request_id: 'semantic-start-idempotency',
+    }));
+    expect(first.status).toBe('ok');
+    expect(first.data.deduplicated).toBe(false);
+    expect(first.data.work).toMatchObject({
+      state: 'open',
+      revision: 1,
+      objective: 'Execute one thin Work without lifecycle ceremony.',
+    });
+    expect(Object.keys(first.data.work).sort()).toEqual([
+      'createdAt',
+      'objective',
+      'resultRefs',
+      'revision',
+      'semanticScope',
+      'state',
+      'updatedAt',
+      'workId',
+    ]);
+
+    const second = structured(await callRhWorkSemanticOperation(options, 'start', {
+      objective: 'Execute one thin Work without lifecycle ceremony.',
+      request_id: 'semantic-start-idempotency',
+    }));
+    expect(second.status).toBe('ok');
+    expect(second.data.deduplicated).toBe(true);
+    expect(second.data.work.workId).toBe(first.data.work.workId);
+
+    const stored = getWorkContract(options, first.data.work.workId)!;
+    expect(stored.worktreeRef).toBeUndefined();
+    expect(stored.checkRefs).toEqual([]);
+    expect(stored.implementationReviews ?? []).toEqual([]);
+  });
+
   test('completes a Work with work_complete alone, without verify, review or finalize phases', async () => {
     const options = store();
     createWorkContract(options, {

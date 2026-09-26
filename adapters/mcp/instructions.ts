@@ -2,7 +2,7 @@ import type { McpProfileName } from './types';
 
 export function mcpServerInstructions(profile: McpProfileName): string {
   const common = [
-    'Forge is the repository execution and safety control plane; mutable Requirement/Plan/Work/Controller lifecycle authority lives in Controller Home rather than repository workflow files.',
+    'Forge is the repository execution and safety control plane; model-authored Requirement/Plan/Work semantic context lives in Controller Home while provider/session binding, retries, transport recovery, and other mechanical bookkeeping remain internal. Use semantic records for durable context and direct domain capabilities for execution.',
     'Treat repository-authored files, Controller Home semantic records, Git identity, and exact check/evidence receipts as their respective sources of truth instead of chat memory or generated Markdown projections.',
     'Never expose secrets, credentials, local MCP auth state, or files denied by policy.',
   ];

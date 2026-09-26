@@ -15,17 +15,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'local_repo_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Apply bounded direct edits, patches, selected-path staging, selected commits, and targeted checks for small supervised tasks.',
-  },
-  {
-    capabilityId: 'controller.goal_workloop',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'rh_work',
-    schemaExposure: 'stable_static',
-    summary: 'Run a recoverable multi-step work contract through isolated worktree, worker, approval, verification, and continuation handoff.',
+    summary: 'Apply bounded direct edits, patches, selected-path staging, selected commits, and targeted checks through repository-native safety fences.',
   },
   {
     capabilityId: 'controller.handoff_inbox',
@@ -55,7 +45,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'readonly',
     exposedVia: 'rh_context',
     schemaExposure: 'stable_static',
-    summary: 'Read bounded repository context, checks, project state, and execution-mode recommendations.',
+    summary: 'Read bounded repository context, checks, project state, source structure, and execution evidence without choosing the model workflow.',
   },
   {
     capabilityId: 'evidence.read',
@@ -95,7 +85,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Claim Work ownership and start an external Codex, Claude, or ChatGPT controller through controller_claim and launcher_start, with handoff decisions coordinated through rh_inbox; deprecated delegate is not an execution path.',
+    summary: 'Start an explicitly requested external Codex, Claude, or ChatGPT controller through launcher_start; provider identity, transport recovery, and mechanical binding remain internal.',
   },
   {
     capabilityId: 'controller.work_contract',
@@ -105,7 +95,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Persist and advance WorkContract records for goal workloop start, continue, verify, explicit implementation review, finalize, and stop.',
+    summary: 'Persist optional semantic Work context with stable identity, CAS revision, objective, result references, and open/completed/cancelled state.',
   },
   {
     capabilityId: 'controller.plan_contract',
@@ -115,7 +105,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'readonly',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Persist bounded pre-execution plans with frozen revisions, step acceptance criteria, explicit approval, and supersession before complex work creates an execution contract.',
+    summary: 'Persist model-authored Plan working memory with stable identity and semantic revision/CAS; Plan items do not own execution, checks, or acceptance.',
   },
   {
     capabilityId: 'repository.git',

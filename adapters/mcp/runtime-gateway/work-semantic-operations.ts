@@ -1,5 +1,7 @@
+import { createHash, randomUUID } from 'crypto';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import {
+  createWorkContract,
   getWorkContract,
   listWorkSemanticRevisionRecords,
   reviseWorkSemanticContext,
@@ -9,7 +11,29 @@ import {
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 
-const RH_WORK_SEMANTIC_OPERATIONS = new Set(['work_get', 'work_revise', 'work_complete']);
+const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'work_get', 'work_revise', 'work_complete']);
+
+function semanticWorkId(store: WorkContractStoreOptions, args: Record<string, unknown>): string {
+  const explicit = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  if (explicit) return explicit;
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  if (requestId) {
+    const digest = createHash('sha256').update(`${store.repoId}\0${requestId}`).digest('hex').slice(0, 12);
+    return `work-semantic-${digest}`;
+  }
+  return `work-semantic-${randomUUID().slice(0, 12)}`;
+}
+
+function semanticCreateMatches(existing: ReturnType<typeof getWorkContract>, args: Record<string, unknown>, requestId: string): boolean {
+  if (!existing) return false;
+  const objective = String(args.objective ?? '').trim();
+  const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+  const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+  return existing.objective === objective
+    && (existing.requirementId ?? '') === requirementId
+    && (existing.planId ?? '') === planId
+    && (existing.requestId ?? '') === requestId;
+}
 
 export async function callRhWorkSemanticOperation(
   store: WorkContractStoreOptions,
@@ -17,7 +41,62 @@ export async function callRhWorkSemanticOperation(
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (!RH_WORK_SEMANTIC_OPERATIONS.has(operation)) return undefined;
-  const workId = String(args.work_id ?? '').trim();
+  const workId = operation === 'start' ? semanticWorkId(store, args) : String(args.work_id ?? '').trim();
+  if (operation === 'start') {
+    const objective = String(args.objective ?? '').trim();
+    if (!objective) return result(buildFacadeResult({
+      status: 'blocked', summary: 'WORK_OBJECTIVE_REQUIRED', data: { workId },
+    }) as unknown as Record<string, unknown>, true);
+    const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+    const existing = getWorkContract(store, workId);
+    if (existing) {
+      if (!semanticCreateMatches(existing, args, requestId)) return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_SEMANTIC_CREATE_CONFLICT: ${workId}`,
+        data: { workId, currentWork: workSemanticView(existing) },
+      }) as unknown as Record<string, unknown>, true);
+      return result(buildFacadeResult({
+        summary: `Work ${workId} already exists; semantic create was deduplicated.`,
+        data: { work: workSemanticView(existing), deduplicated: true },
+      }) as unknown as Record<string, unknown>);
+    }
+    try {
+      const created = createWorkContract(store, {
+        workId,
+        repoId: store.repoId ?? '',
+        mode: 'goal_workloop',
+        objective,
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        workKind: 'repository_change',
+        lifecycleRole: 'primary',
+        requestedBy: 'chatgpt',
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        ...(typeof args.requirement_id === 'string' && args.requirement_id.trim() ? { requirementId: args.requirement_id.trim() } : {}),
+        ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
+        ...(typeof args.plan_id === 'string' && args.plan_id.trim() ? { planId: args.plan_id.trim() } : {}),
+        ...(typeof args.plan_revision === 'number' ? { planRevision: args.plan_revision } : {}),
+        ...(requestId ? { requestId } : {}),
+      });
+      return result(buildFacadeResult({
+        summary: `Work ${workId} created as semantic context.`,
+        data: { work: workSemanticView(created), deduplicated: false },
+      }) as unknown as Record<string, unknown>);
+    } catch (error) {
+      const raced = getWorkContract(store, workId);
+      if (raced && semanticCreateMatches(raced, args, requestId)) return result(buildFacadeResult({
+        summary: `Work ${workId} already exists; semantic create was deduplicated.`,
+        data: { work: workSemanticView(raced), deduplicated: true },
+      }) as unknown as Record<string, unknown>);
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : String(error),
+        data: { workId },
+      }) as unknown as Record<string, unknown>, true);
+    }
+  }
   if (operation === 'work_get') {
     const work = workId ? getWorkContract(store, workId) : undefined;
     if (!work) return result(buildFacadeResult({

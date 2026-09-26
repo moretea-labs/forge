@@ -8,7 +8,7 @@ import type {
 
 export type DelegateTarget = 'codex' | 'grok' | 'claude';
 
-/** @deprecated since 1.4.0; removed no earlier than 2026-12-31. Use controller_claim and handoff_create/read/accept. */
+/** @deprecated since 1.4.0; removed no earlier than 2026-12-31. Use launcher_start for an explicit external controller. */
 
 export interface CodexContextPack {
   schemaVersion: 1;
@@ -108,7 +108,7 @@ export function buildCodexContextPack(input: CodexDelegationInput & { repoId: st
       'Do not push, merge, or perform destructive cleanup.',
       'Do not return raw secrets, tokens, auth config, or full runtime state.',
       'Output must be evidence / handoff / patch proposal / suggested_next_actions only.',
-      'ChatGPT must review before rh_work.finalize.',
+      'ChatGPT remains responsible for semantic review and explicit Work completion.',
     ]).slice(0, 20),
     allowedPaths: (input.allowedPaths ?? work?.allowedPaths ?? []).slice(0, 50),
     forbiddenPaths: (input.forbiddenPaths ?? work?.forbiddenPaths ?? ['.env', '_ops/secrets', '**/*secret*', '**/*token*']).slice(0, 50),
@@ -154,7 +154,7 @@ export function prepareGrokDelegateRequest(
       'Act as a parallel small-brain reviewer/implementer for ChatGPT.',
       'Return only bounded evidence, patch proposal, and suggested next actions.',
       'Do not finalize work, push, or request secrets.',
-      'ChatGPT remains the primary controller and must review before finalize.',
+      'ChatGPT remains responsible for semantic review; Forge does not impose a finalize phase.',
     ],
     directExecutionAvailable: false,
     returnPath: 'evidence_or_handoff_for_chatgpt_review',
@@ -177,7 +177,7 @@ export function delegateToCodexCerebellum(
   });
   return buildFacadeResult({
     status: 'blocked',
-    summary: 'DEPRECATED_DELEGATE: delegate is read-only through 2026-12-31 and will be removed in 1.5.0. Use controller_claim, launcher_start, and rh_inbox.create/accept.',
+    summary: 'DEPRECATED_DELEGATE: delegate is read-only through 2026-12-31 and will be removed in 1.5.0. Use launcher_start for an explicit external controller and the inbox only for genuine human decisions.',
     data: {
       target,
       workId: input.workId,
@@ -189,7 +189,6 @@ export function delegateToCodexCerebellum(
       workerOutputIgnored: input.workerOutput !== undefined,
     },
     suggestedNextActions: input.workId ? [
-      { label: 'Claim controller ownership', tool: 'rh_work', operation: 'controller_claim', payload: { work_id: input.workId }, risk: 'workspace_write' },
       { label: 'Start external controller', tool: 'rh_work', operation: 'launcher_start', payload: { work_id: input.workId, controller_type: target }, risk: 'workspace_write' },
     ] : [],
   });

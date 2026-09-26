@@ -149,16 +149,12 @@ export interface StandaloneChatgptPromptInput {
 
 function workflowToolAttributionInstruction(input: WorkChatgptContinuationInput): string {
   const workId = input.workId;
-  const authorityId = input.controllerAuthorityId?.trim();
   const relayScopeId = input.relayScopeId?.trim();
   const requirementScoped = relayScopeId?.startsWith('requirement:') === true;
   const repositoryAttribution = requirementScoped
-    ? `本轮普通 repository_command_execute 和 repository_safe_patch_apply 必须显式传入实际被本轮语义选择且已成功 claim 的 repository-change Work 的 work_id；如果仍在推进 origin Work，则使用 work_id=${workId}。不得把只读/编排 Supervisor Work 的 work_id 用来归属 child Work 的源码修改，也不得省略 work_id。`
-    : `本轮每一次 repository_command_execute 和 repository_safe_patch_apply 都必须显式传 work_id=${workId}，不得省略。`;
-  if (authorityId && relayScopeId) {
-    return `Forge Workflow 执行契约：精确 Work ${workId}。本次启动的 controller round 已具备 durable controller authority：controller_authority_id=${authorityId}，relay_scope_id=${relayScopeId}。第一次 controller_claim 必须使用这组完全相同的 authority；不得先调用不带 scope 的 controller_claim，也不得等待 claim 响应后再生成另一份 authority。如果当前 client 暴露 controller_authority_id 与 relay_scope_id，controller_claim 时必须同时传入。如果当前 frozen client schema 缺少任一字段，调用 rh_work operation=repair, work_id=${workId}, capability_id=controller.round:controller_claim:${authorityId}:${relayScopeId}；Forge 会把它映射到同一个 fenced claim。claim 成功后，data.controllerAuthorityId 必须等于 ${authorityId}；continue、verify、finalize、stop、controller_release 必须原样沿用同一 durable authority，必要时使用对应 compatibility capability。绝不能把 data.session.sessionId 当作 durable capability，因为 MCP execution session 可能轮换。${repositoryAttribution}如果当前 Work 的既有验证记录因基础设施/no-device 原因失败，但同一精确 Work checkout 已有一个终态通用 run_check Process，先使用 rh_work operation=verify，并传入 check_id 与 reconcile_process_ids=[该精确 process_id]；Forge 会重新验证 Process/checkout/Check execution/结构化结果身份，不接受调用方伪造的通过结论，也不会重复执行同一 Check。唯一例外是 prompt 明确标记为 exact current-source Controller lifecycle invocation 的 repository_command_execute，它必须使用给定 source checkout_id 且不得传 wrapper work_id，因为 CLI 内部 --work-id 与 ControllerRound authority 才是该控制面变更的 fenced authority。`;
-  }
-  return `Forge Workflow 执行契约：首先 claim 精确 Work ${workId}。从成功的 controller_claim 响应中取得 data.controllerAuthorityId；此后该 Work 的每一次 rh_work lifecycle 调用（continue、verify、finalize、stop、controller_release）都必须把它原样作为 controller_authority_id 传入。如果当前 frozen client schema 不暴露 controller_authority_id，则把同一个 opaque value 作为 session_id compatibility carrier。绝不能把 data.session.sessionId 当作 durable capability，因为 MCP execution session 可能在工具调用之间被替换或失效。本轮每一次 repository_command_execute 和 repository_safe_patch_apply 都必须显式传 work_id=${workId}，不得省略；唯一例外是 prompt 明确标记为 exact current-source Controller lifecycle invocation 的 repository_command_execute，它必须使用给定 source checkout_id 且不得传 wrapper work_id，因为 CLI 内部 --work-id 与 ControllerRound authority 才是该控制面变更的 fenced authority。`;
+    ? `源码写操作应归属本轮语义上实际推进的 repository-change Work；如果仍在推进 origin Work，则传 work_id=${workId}。不要把只读/编排 Work 用作源码修改归属。`
+    : `如果源码写操作需要 durable Work 归属，则使用 work_id=${workId}。`;
+  return `Forge continuation context：继续精确 Work ${workId} 的原始目标，不重复已完成工作。Forge 内部维护 provider/session binding、transport recovery、effect dedupe 和机械重试；这些机械状态不属于模型工作流。验证与 review 由模型使用正常 capability/evidence 完成，不是 Forge 生命周期阶段；只有 durable 语义实际变化时才更新 Work/Plan/Requirement。${repositoryAttribution}`;
 }
 
 function controllerRoundAuthorityInputError(input: WorkChatgptContinuationInput): Error | undefined {
