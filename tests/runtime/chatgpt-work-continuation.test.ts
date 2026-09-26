@@ -18,7 +18,7 @@ import {
 } from '../../packages/kernel/controller/api/index';
 import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
-import { chatgptAutomationDeliveryFailure, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptAutomationDeliveryFailure, chatgptComposerRetainsPrompt, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { controllerPluginRepository } from '../../src/runtime/plugins/store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -705,6 +705,10 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationDeliveryFailure('ChatGPT')).toBeUndefined();
     expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT)).toBe('outcome_unknown');
     expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE)).toBe('outcome_unknown');
+    expect(chatgptComposerRetainsPrompt('@forge continue   exact work', '@forge continue exact work')).toBe(true);
+    expect(chatgptComposerRetainsPrompt('', '@forge continue exact work')).toBe(false);
+    expect(chatgptComposerRetainsPrompt('@forge different work', '@forge continue exact work')).toBe(false);
+    expect(chatgptComposerRetainsPrompt(undefined, '@forge continue exact work')).toBe(false);
   });
 
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
@@ -1700,7 +1704,8 @@ describe('provider dispatch outcome-unknown fence', () => {
     const continuation = readFileSync(join(process.cwd(), 'packages/kernel/controller/application/continuation-service.ts'), 'utf8');
     expect(providerDelivery).toContain("CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN");
     expect(browserRuntime).toContain('submitOutcomeUnknown = true');
-    expect(browserRuntime).toContain('submitOutcomeUnknown || hasConversationIdentity');
+    expect(browserRuntime).toContain('submitProvablyNotApplied');
+    expect(browserRuntime).toContain('chatgptComposerRetainsPrompt(finalComposerText, renderedPrompt)');
     expect(browserRuntime).toContain("'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'");
     expect(host).toContain('CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
     expect(continuation).toContain('const outcomeUnknown =');

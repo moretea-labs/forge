@@ -204,6 +204,31 @@ export function chatgptSubmissionAcceptanceObserved(input: {
     && (input.assistantResponseObserved || input.generationInProgress);
 }
 
+export function chatgptComposerRetainsPrompt(
+  composerText: string | undefined,
+  prompt: string,
+): boolean {
+  if (composerText === undefined) return false;
+  const composer = normalizeChatgptOutboundText(composerText);
+  const expected = normalizeChatgptOutboundText(prompt);
+  return Boolean(composer && expected && composer === expected);
+}
+
+async function currentChatgptComposerText(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<string | undefined> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
+    session_id: browserSessionId,
+    selector: CHATGPT_PROMPT_SELECTOR,
+    max_chars: MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs).catch(() => undefined);
+  return typeof result?.text === 'string' ? result.text : undefined;
+}
+
 async function latestChatgptUserMessage(
   controllerHome: string,
   workId: string,
@@ -831,9 +856,48 @@ export async function submitChatgptPrompt(
     observedUrl = resultUrl(sent) ?? observedUrl;
   } catch (error) {
     if (browserMutationOutcomeUnknown(error, 'click')) {
-      // Never replay an outcome-unknown submit: semantic observation below decides
-      // whether the original click committed, preventing duplicate user messages.
+      // Never blind-replay an outcome-unknown submit. First reconcile the exact
+      // provider state. If the same payload is still wholly present in the
+      // composer, no new user message exists, and no conversation identity was
+      // created, the original click is mechanically proven not to have committed.
+      // Only then may the same provider dispatch resume Send once without
+      // refilling the composer or creating a new semantic effect generation.
       submitOutcomeUnknown = true;
+      const latestAfterUnknown = await latestChatgptUserMessage(
+        controllerHome,
+        workId,
+        browserSessionId,
+        timeoutMs,
+      ).catch(() => undefined);
+      if (latestAfterUnknown) {
+        observedUrl = latestAfterUnknown.url ?? observedUrl;
+        observedNewOutbound = chatgptMessageObservationChanged(before, latestAfterUnknown);
+      }
+      const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
+      const composerText = await currentChatgptComposerText(
+        controllerHome,
+        workId,
+        browserSessionId,
+        timeoutMs,
+      );
+      if (
+        !observedNewOutbound
+        && !hasConversationIdentity
+        && chatgptComposerRetainsPrompt(composerText, renderedPrompt)
+      ) {
+        try {
+          const resumed = await controllerBrowserAction(controllerHome, workId, 'click', {
+            session_id: browserSessionId,
+            selector: CHATGPT_SEND_SELECTOR,
+            timeout_ms: timeoutMs ?? 60_000,
+            post_action_wait_ms: 250,
+          }, timeoutMs);
+          observedUrl = resultUrl(resumed) ?? observedUrl;
+          submitOutcomeUnknown = false;
+        } catch (resumeError) {
+          if (!browserMutationOutcomeUnknown(resumeError, 'click')) throw resumeError;
+        }
+      }
     } else if (chatgptSendControlUnavailable(error)) {
       const pressed = await controllerBrowserAction(controllerHome, workId, 'press', {
         session_id: browserSessionId,
@@ -894,12 +958,18 @@ export async function submitChatgptPrompt(
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
   const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
-  // A fresh /c/<id> is provider-side evidence that the send may have committed
-  // even when DOM observation lagged. Keep that ambiguity fenced. Conversely,
-  // a known-success click that never produced either an outbound message or a
-  // conversation identity is a confirmed delivery failure and its ephemeral
-  // Browser resource may be settled by the Work delivery owner.
-  const failureCode = submitOutcomeUnknown || hasConversationIdentity
+  const finalComposerText = submitOutcomeUnknown && !observedNewOutbound && !hasConversationIdentity
+    ? await currentChatgptComposerText(controllerHome, workId, browserSessionId, timeoutMs)
+    : undefined;
+  const submitProvablyNotApplied = submitOutcomeUnknown
+    && !observedNewOutbound
+    && !hasConversationIdentity
+    && chatgptComposerRetainsPrompt(finalComposerText, renderedPrompt);
+  // A fresh /c/<id> or any changed outbound user message is provider-side
+  // evidence that the send may have committed even when DOM observation lagged.
+  // Keep that ambiguity fenced. Conversely, an exact unchanged composer proves
+  // the send did not commit and must not be mislabeled outcome_unknown.
+  const failureCode = (submitOutcomeUnknown && !submitProvablyNotApplied) || hasConversationIdentity || observedNewOutbound
     ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN
     : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED';
   throw new ChatgptProviderDeliveryError(
