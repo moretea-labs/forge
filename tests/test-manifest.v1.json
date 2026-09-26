@@ -413,6 +413,10 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/chatgpt-work-continuation-outcome-unknown.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/check-runner-provenance.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
