@@ -869,12 +869,21 @@ printf '{"ok":true}\\n'
       repo_id: repository.repoId, operation: 'get', detail_level: 'summary',
     }));
     const summary = summaryPayload.data as {
+      readiness?: {
+        readyFor?: string;
+        diagnostics?: { semantics?: { autonomousContinuationReady?: boolean | null; autonomousContinuationBlockers?: string[] | null } };
+      };
       controllerSnapshot?: {
         activeWork?: Array<{ workId?: string }>;
         invalidActiveWorkCount?: number;
         invalidActiveWork?: Array<{ workId?: string; error?: string }>;
       };
     };
+    expect(summary.readiness?.readyFor).toBe('bounded_execution');
+    expect(summary.readiness?.diagnostics?.semantics).toMatchObject({
+      autonomousContinuationReady: null,
+      autonomousContinuationBlockers: null,
+    });
     expect(summary.controllerSnapshot?.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
     expect(summary.controllerSnapshot?.invalidActiveWorkCount).toBe(1);
     expect(summary.controllerSnapshot?.invalidActiveWork?.[0]).toMatchObject({
@@ -891,8 +900,11 @@ printf '{"ok":true}\\n'
       invalidActiveContractCount?: number;
       invalidActiveContracts?: Array<{ workId?: string; error?: string }>;
       readiness?: {
+        readyFor?: string;
         diagnostics?: {
           semantics?: {
+            autonomousContinuationReady?: boolean;
+            autonomousContinuationBlockers?: string[];
             maintenanceHealthy?: boolean | null;
             maintenanceCandidateCount?: number | null;
             maintenanceObservation?: string;
@@ -900,6 +912,9 @@ printf '{"ok":true}\\n'
         };
       };
     };
+    expect(detail.readiness?.readyFor).toBe('bounded_execution');
+    expect(typeof detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe('boolean');
+    expect(Array.isArray(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)).toBe(true);
     expect(detail.activeContractCount).toBe(1);
     expect(detail.invalidActiveContractCount).toBe(1);
     expect(detail.invalidActiveContracts?.[0]).toMatchObject({ workId: malformed.workId });

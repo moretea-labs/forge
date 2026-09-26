@@ -269,6 +269,7 @@ export async function callStatusInboxAdapter(
             repoId: repository.repoId,
             readiness: {
               ready,
+              readyFor: 'bounded_execution',
               reasonCodes: [...new Set(reasonCodes)],
               diagnostics: {
                 runtime: { ready: observation.ready },
@@ -292,6 +293,11 @@ export async function callStatusInboxAdapter(
                 },
                 semantics: {
                   executionReady: observation.ready,
+                  // Summary is intentionally the cheap Runtime snapshot path. It
+                  // reports bounded execution readiness without pretending that the
+                  // full scheduler/worker diagnostics for unattended continuation ran.
+                  autonomousContinuationReady: null,
+                  autonomousContinuationBlockers: null,
                   maintenanceHealthy: null,
                   maintenanceCandidateCount: 0,
                   releaseReady: releaseDiagnostic?.outcome === 'pass',
@@ -436,8 +442,15 @@ export async function callStatusInboxAdapter(
         });
       }
       const toolSurfaceComputed = exposure.expectedToolNames.length > 0 || exposure.actualToolNames.length > 0 || toolSurfaceReady;
+      const autonomousContinuationReady = readiness.ready && toolSurfaceReady && !sourceSnapshotStale;
+      const autonomousContinuationBlockers = [...new Set(
+        readinessReasons
+          .map((reason) => reason.code)
+          .filter((code): code is string => typeof code === 'string' && code.length > 0),
+      )];
       const readinessWithToolSurface = {
         ready: effectiveReady,
+        readyFor: 'bounded_execution' as const,
         reasonCodes: [...new Set(
           readinessReasons
             .map((reason) => reason.code)
@@ -461,6 +474,11 @@ export async function callStatusInboxAdapter(
           },
           semantics: {
             executionReady,
+            // Derived from existing whole-runtime health and the same tool/source
+            // coherence gates already reported here. Per-Work continuation
+            // eligibility remains owned by Controller/Scheduler lifecycle facts.
+            autonomousContinuationReady,
+            autonomousContinuationBlockers,
             maintenanceHealthy,
             maintenanceCandidateCount,
             maintenanceObservation,
@@ -508,7 +526,11 @@ export async function callStatusInboxAdapter(
       const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
       const facade = buildFacadeResult({
         status: effectiveReady ? 'ok' : 'blocked',
-        summary: effectiveReady ? 'Controller and MCP tool surface are ready for bounded work.' : 'Controller or MCP tool surface needs attention before work.',
+        summary: effectiveReady
+          ? autonomousContinuationReady
+            ? 'Controller and MCP tool surface are ready for bounded work and autonomous continuation.'
+            : 'Controller and MCP tool surface are ready for bounded work; autonomous continuation needs attention.'
+          : 'Controller or MCP tool surface needs attention before bounded work.',
         data: {
           operation,
           repoId: repository.repoId,
