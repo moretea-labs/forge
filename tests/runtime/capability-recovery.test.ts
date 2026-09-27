@@ -23,7 +23,7 @@ import { applyEditOperations, beginEditSession, getEditSession } from '../../src
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -260,7 +260,6 @@ describe('authorized recovery actions', () => {
 describe('runtime maintenance executor', () => {
   function advanceWorkToCleanup(store: { controllerHome: string; repoId: string; now?: () => string }, workId: string): void {
     transitionWorkContractPhase(store, workId, { phase: 'verification', status: 'blocked', state: 'satisfied', summary: 'Implementation explicitly accepted before cleanup.' });
-    requestWorkImplementationReview(store, workId, 'Maintenance fixture requires explicit implementation review before delivery.');
     const recordedAt = store.now?.() ?? '2026-01-01T00:00:00.000Z';
     recordWorkImplementationReview(store, workId, {
       schemaVersion: 1, reviewId: `review-${workId}`, workId,
@@ -709,7 +708,7 @@ describe('runtime maintenance executor', () => {
     expect(existsSync(stale)).toBe(false);
   });
 
-  it('detaches a clean legacy remote_effect worktree without terminalizing the external Work', () => {
+  it('refuses to detach a clean legacy remote_effect worktree without OwnedResource proof', () => {
     const { controllerHome, repository, workId, worktree, checkoutId, canonicalCheckoutId } = legacyRemoteEffectWorktreeFixture();
     const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
     expect(scanned.candidates).toContainEqual(expect.objectContaining({
@@ -721,19 +720,19 @@ describe('runtime maintenance executor', () => {
       actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50,
     });
     expect(applied.applied).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract', id: workId, applied: true, result: 'legacy_remote_effect_placement_detached',
+      kind: 'stale_work_contract', id: workId, applied: false, result: 'owned_resource_proof_missing',
     }));
     const retained = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
     expect(retained).toMatchObject({
-      status: 'running', workKind: 'remote_effect', checkoutId: canonicalCheckoutId,
+      semanticState: 'open', workKind: 'remote_effect', checkoutId,
       constraints: { workspaceMode: 'auto', requireWorktree: false },
       worktreePolicy: { required: false },
     });
-    expect(retained?.worktreeRef).toBeUndefined();
-    expect(existsSync(worktree)).toBe(false);
-    expect(execFileSync('git', ['branch', '--list', 'work/legacy-remote-effect'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim()).toBe('');
+    expect(retained?.worktreeRef).toBe(worktree);
+    expect(existsSync(worktree)).toBe(true);
+    expect(execFileSync('git', ['branch', '--list', 'work/legacy-remote-effect'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim()).toContain('work/legacy-remote-effect');
     const registry = getRepository(repository.repoId, controllerHome, { includeRemoved: true });
-    expect(registry.checkouts.find((candidate) => candidate.checkoutId === checkoutId)?.lifecycle).toBe('removed');
+    expect(registry.checkouts.find((candidate) => candidate.checkoutId === checkoutId)?.lifecycle ?? 'active').toBe('active');
   });
 
   it('preserves a dirty legacy remote_effect worktree and leaves placement authority unchanged', () => {
@@ -748,7 +747,7 @@ describe('runtime maintenance executor', () => {
     expect(applied.applied).toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: workId, applied: false, result: 'not_selected' }));
     expect(existsSync(join(worktree, 'unexpected.txt'))).toBe(true);
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
-      status: 'running', checkoutId, worktreeRef: worktree, worktreePolicy: { required: true },
+      semanticState: 'open', checkoutId, worktreeRef: worktree, worktreePolicy: { required: true },
     });
   });
 
@@ -773,7 +772,7 @@ describe('runtime maintenance executor', () => {
       requestedBy: 'chatgpt',
       status: 'ready',
     });
-    expect(work.status).toBe('ready');
+    expect(work.semanticState).toBe('open');
 
     const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
     expect(status.summary.staleWorkContracts).toBe(1);
@@ -797,7 +796,7 @@ describe('runtime maintenance executor', () => {
       result: 'not_selected',
     }));
     const retained = getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready');
-    expect(retained?.status).toBe('ready');
+    expect(retained?.semanticState).toBe('open');
     expect(retained?.phase).not.toBe('cleanup');
     expect(retained?.phaseEvidence.delivery.state).toBe('pending');
     expect(retained?.phaseEvidence.cleanup.state).toBe('pending');
@@ -831,7 +830,7 @@ describe('runtime maintenance executor', () => {
       applied: false,
       result: 'not_selected',
     }));
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
     expect(existsSync(worktree)).toBe(true);
     expect(readFileSync(writtenPath, 'utf8')).toBe('# recent successful write\n');
     expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repository.canonicalRoot, encoding: 'utf8' })).toContain(worktree);
@@ -857,7 +856,7 @@ describe('runtime maintenance executor', () => {
       minAgeMinutes: 1,
       maxCandidates: 50,
     });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
     expect(existsSync(join(worktree, 'unique.txt'))).toBe(true);
   });
 
@@ -968,7 +967,7 @@ describe('runtime maintenance executor', () => {
       result: 'work_semantic_completion_required',
       disposition: 'semantic_completion_required',
     });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
   });
 
   it('never mechanically terminalizes a cleanup-ready stale semantic Work with no source debt', () => {
@@ -1007,7 +1006,7 @@ describe('runtime maintenance executor', () => {
     });
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
       semanticState: 'open',
-      status: 'blocked',
+      status: 'open',
     });
   });
 
@@ -1026,7 +1025,7 @@ describe('runtime maintenance executor', () => {
       sourceState: 'dirty_worktree',
       disposition: 'source_preservation_required',
     });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
     expect(readFileSync(join(worktree, 'late-write.txt'), 'utf8')).toBe('written after maintenance scan\n');
   });
 
@@ -1099,7 +1098,7 @@ describe('runtime maintenance executor', () => {
     expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
     const applied = applyRuntimeMaintenance(repository, controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50 });
     expect(applied.applied).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.status).toBe('ready');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.semanticState).toBe('open');
   });
 
   it('never treats a live Controller lease as semantic Work lifecycle authority', () => {

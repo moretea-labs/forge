@@ -8,7 +8,7 @@ import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { continueGoalWorkloop, finalizeGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
@@ -186,7 +186,7 @@ describe('controller-scoped plugin Work attribution', () => {
     expect(submitted.receipt).toMatchObject({
       status: 'succeeded', scopeKey: FORGE_INSTANCE_SCOPE_KEY, workRepoId: businessRepository.repoId, workId,
     });
-    expect(getWorkContract({ controllerHome, repoId: businessRepository.repoId }, workId)).toMatchObject({ status: 'running' });
+    expect(getWorkContract({ controllerHome, repoId: businessRepository.repoId }, workId)).toMatchObject({ semanticState: 'open' });
     expect(getWorkContract({ controllerHome, repoId: FORGE_INSTANCE_SCOPE_KEY }, workId)).toBeUndefined();
 
     await expect(submitControllerPluginAction(controllerHome, {
@@ -262,7 +262,6 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     });
     expect(readonly.receipt).toMatchObject({ status: 'succeeded', workId: firstWorkId, workRepoId: businessRepository.repoId });
     expect(getWorkContract(context.workStore, firstWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === readonly.receipt.receiptId)).toBe(false);
-    expect(finalizeGoalWorkloop(context, { workId: firstWorkId }).summary).toContain('no concrete delivery/effect receipt');
 
     const registration = {
       pluginId: 'receipt_fixture', providerPluginId: 'receipt_fixture', displayName: 'Receipt Fixture', provider: 'local-test',
@@ -278,19 +277,10 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     });
     expect(mutated.receipt).toMatchObject({ status: 'succeeded', workId: firstWorkId, workRepoId: businessRepository.repoId });
     const bound = getWorkContract(context.workStore, firstWorkId)!;
-    expect(bound).toMatchObject({ status: 'running', semanticState: 'open', workKind: 'local_effect' });
+    expect(bound).toMatchObject({ semanticState: 'open', workKind: 'local_effect' });
     expect(bound.completionReceipt).toBeUndefined();
     expect(bound.evidenceRefs.filter((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toHaveLength(1);
     expect(getWorkContract(context.workStore, unrelatedWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toBe(false);
-    expect(finalizeGoalWorkloop(context, { workId: unrelatedWorkId }).summary).toContain('no concrete delivery/effect receipt');
-
-    const deliveredLocal = finalizeGoalWorkloop(context, { workId: firstWorkId });
-    expect(deliveredLocal).toMatchObject({ status: 'ok', data: { deliverySettled: true } });
-    const deliveredLocalWork = getWorkContract(context.workStore, firstWorkId)!;
-    expect(deliveredLocalWork).toMatchObject({
-      status: 'running', semanticState: 'open', workKind: 'local_effect', completionOutcome: 'completed_local',
-      completionReceipt: { source: 'local_effect' },
-    });
 
     const unknownCriterion = continueGoalWorkloop(context, {
       workId: firstWorkId,
@@ -311,7 +301,8 @@ describe('pre-existing local-effect plugin receipt binding', () => {
         rationale: 'The exact mutating plugin receipt is durable, successful, and attributed to this Work.',
       }],
     });
-    expect(reviewed).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(reviewed.status).toBe('ok');
+    expect(getWorkContract(context.workStore, firstWorkId)?.semanticState).toBe('open');
 
     const beforeSemanticComplete = getWorkContract(context.workStore, firstWorkId)!;
     const semanticComplete = await callRhWorkSemanticOperation(
@@ -325,7 +316,7 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     );
     expect(semanticComplete?.isError).toBeFalsy();
     expect(getWorkContract(context.workStore, firstWorkId)).toMatchObject({
-      status: 'completed', semanticState: 'completed', workKind: 'local_effect', completionOutcome: 'completed_local',
+      status: 'completed', semanticState: 'completed', workKind: 'local_effect',
     });
 
     const replayed = await submitControllerPluginAction(controllerHome, {
@@ -379,7 +370,8 @@ describe('pre-existing local-effect plugin receipt binding', () => {
       workId,
       acceptanceEvidence: [{ criterion: 'A ranked result or evidence-backed no-candidate result exists.', evidenceIds: ['proc-ranked-result'], rationale: 'The same durable process output contains the ranked result.' }],
     });
-    expect(complete).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(complete.status).toBe('ok');
+    expect(getWorkContract(baseContext.workStore, workId)?.semanticState).toBe('open');
   });
 });
 
@@ -742,7 +734,7 @@ describe('Resend first-party plugin', () => {
     const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
     expect(workId).toBeTruthy();
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
-      status: 'running', workKind: 'remote_effect', checks: [],
+      semanticState: 'open', workKind: 'remote_effect', checks: [],
     });
 
     const intermediate = await submitAssistantPluginAction(controllerHome, repository, {
@@ -754,7 +746,7 @@ describe('Resend first-party plugin', () => {
     expect(intermediate.result?.work).toMatchObject({ workId, workKind: 'remote_effect', semanticState: 'open' });
     expect((intermediate.result?.work as { completionOutcome?: string } | undefined)?.completionOutcome).toBeUndefined();
     const afterIntermediate = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
-    expect(afterIntermediate).toMatchObject({ status: 'running', workKind: 'remote_effect' });
+    expect(afterIntermediate).toMatchObject({ semanticState: 'open', workKind: 'remote_effect' });
     expect(afterIntermediate.completionReceipt).toBeUndefined();
     expect(afterIntermediate.evidenceRefs.some((evidence) => evidence.evidenceId === intermediate.receipt.receiptId)).toBe(true);
 
@@ -768,7 +760,7 @@ describe('Resend first-party plugin', () => {
     expect(submitted.result?.work).toMatchObject({ workId, workKind: 'remote_effect', completionOutcome: 'completed_remote', semanticState: 'open' });
     const delivered = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
     expect(delivered).toMatchObject({
-      status: 'running', semanticState: 'open', workKind: 'remote_effect', completionOutcome: 'completed_remote',
+      semanticState: 'open', workKind: 'remote_effect', completionOutcome: 'completed_remote',
       completionReceipt: { source: 'remote_effect', receiptId: submitted.receipt.receiptId, pluginId: 'resend', actionId: 'send_email' },
     });
     expect(delivered.evidenceRefs.some((evidence) => evidence.evidenceId === submitted.receipt.receiptId)).toBe(true);
@@ -781,12 +773,6 @@ describe('Resend first-party plugin', () => {
     expect(semanticComplete?.isError).toBeFalsy();
     const completed = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
     expect(completed).toMatchObject({ status: 'completed', semanticState: 'completed', workKind: 'remote_effect' });
-    const finalized = finalizeGoalWorkloop({
-      workStore: { controllerHome, repoId: repository.repoId },
-      handoffStore: { controllerHome, repoId: repository.repoId },
-      repoId: repository.repoId,
-    }, { workId });
-    expect(finalized).toMatchObject({ status: 'ok', data: { idempotent: true } });
 
     const deduplicated = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-send', workId,
@@ -828,12 +814,12 @@ describe('Resend first-party plugin', () => {
       args: { name: 'explicit-finalize.example.test' }, origin: { surface: 'mcp', actor: 'test' },
     });
     const beforeFinalize = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
-    expect(beforeFinalize.status).toBe('running');
+    expect(beforeFinalize.semanticState).toBe('open');
     expect(beforeFinalize.completionReceipt).toBeUndefined();
 
     const delivered = recordRemoteEffectWorkActionReceipt(controllerHome, repository.repoId, workId);
     expect(delivered).toMatchObject({
-      status: 'running', semanticState: 'open', workKind: 'remote_effect', completionOutcome: 'completed_remote',
+      semanticState: 'open', workKind: 'remote_effect', completionOutcome: 'completed_remote',
       completionReceipt: { source: 'remote_effect', receiptId: intermediate.receipt.receiptId, actionId: 'create_domain' },
     });
     const replayed = recordRemoteEffectWorkActionReceipt(controllerHome, repository.repoId, workId);
@@ -873,7 +859,7 @@ describe('Resend first-party plugin', () => {
       args: { to: ['recipient@example.test'], subject: 'must not send', text: 'guard' },
       confirmAuthorization: true, confirmationText: 'send-resend-email', origin: { surface: 'mcp', actor: 'test' },
     })).rejects.toThrow('WORK_PLUGIN_RECEIPT_BINDING_KIND_MISMATCH');
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('running');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
   });
 
   test('is registered with strongly confirmed delivery and environment-only credentials', () => {

@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { changedPathsFromUnbornBase } from '../../src/runtime/control-plane/execution/work-task-receipt';
 
@@ -74,15 +74,9 @@ describe('repository-change Work with an unborn Git baseline', () => {
     const continued = continueGoalWorkloop(currentContext, { workId: workId! });
     expect(continued.status).toBe('ok');
     expect(continued.summary).not.toContain('no current net source changes');
-    // A repository change now stops at the explicit Controller review phase;
-    // this assertion keeps the unborn-base regression focused on net-change
-    // identity rather than bypassing the normal delivery review fence.
-    expect(getWorkContract(workStore, workId!)).toMatchObject({ phase: 'review', status: 'running' });
-
-    const semanticFinalize = finalizeGoalWorkloop(currentContext, { workId: workId! });
-    expect(semanticFinalize.status).toBe('blocked');
-    expect(semanticFinalize.summary).toContain('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
-    expect(semanticFinalize.summary).not.toContain('no current net source changes');
+    const current = getWorkContract(workStore, workId!)!;
+    expect(current.semanticState).toBe('open');
+    expect(current.phase).not.toBe('review');
   });
 
   test('uses the full target tree as net change from an unborn baseline across successor commits', () => {

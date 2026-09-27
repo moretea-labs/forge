@@ -81,6 +81,7 @@ function harness(
     },
     nowMs: () => nowMs,
     providerIdleGraceMs: 1_000,
+    providerScopeKey: home(),
     sleep: async () => undefined,
     onError: (error) => { errors.push(error instanceof Error ? error.message : String(error)); },
     ...overrides,
@@ -191,6 +192,7 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(snapshot.latestUserText).toBe('effect marker prompt\nlater provider user node');
     expect(snapshot.pageText).toBe('full visible conversation with effect marker');
     expect(snapshot.latestAssistantResponse).toBe('latest assistant response');
+    expect(snapshot.providerFailureText).not.toContain('effect marker prompt');
   });
 
   // Policy since 8a96b43db: a user can close and reopen the exact durable
@@ -629,6 +631,19 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(h.errors).toEqual([]);
   });
 
+  test('treats provider 429 as shared backpressure instead of immediately minting and sending a recovery effect', async () => {
+    const conversationId = '17171717-2828-3939-5050-616161616161';
+    const h = harness();
+    register(h.control, conversationId);
+    await h.adapter.runOnce();
+    const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
+    page.providerFailureText = 'Too many requests';
+    await h.adapter.runOnce();
+    expect(h.dispatchAttempts()).toBe(1);
+    expect(h.control.browserTasks()).toHaveLength(1);
+    expect(h.errors).toEqual([]);
+  });
+
   test('turns explicit provider delivery timeout into bounded unique recovery effects without replaying an applied effect', async () => {
     const conversationId = '18181818-2929-4040-5151-626262626262';
     const h = harness();
@@ -637,9 +652,13 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     const page = h.pages.find((candidate) => candidate.ref.tabId === 'forge-tab-1')!;
     page.providerFailureText = 'Message delivery timed out. Please try again.';
     await h.adapter.runOnce();
+    // Provider failure reserves at most one recovery effect, but shared backpressure
+    // prevents the recovery send from immediately amplifying the failed turn.
+    expect(h.dispatchAttempts()).toBe(1);
+    h.advance(30_000);
     await h.adapter.runOnce();
     await h.adapter.runOnce();
-    // Exactly-once provider resume: one original dispatch plus one bounded resume.
+    // Exactly-once provider resume after cooldown: one original dispatch plus one bounded resume.
     expect(h.dispatchAttempts()).toBe(2);
     const effectIds = h.dispatchedPrompts.map((prompt) => /<<<FORGE_WORKFLOW_EFFECT_V1:([^>]+)>>>/.exec(prompt)?.[1]);
     expect(effectIds.filter(Boolean)).toHaveLength(2);

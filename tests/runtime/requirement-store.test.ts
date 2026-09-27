@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, requestWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';

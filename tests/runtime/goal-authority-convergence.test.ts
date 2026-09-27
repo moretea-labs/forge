@@ -17,7 +17,7 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 
 const homes: string[] = [];
@@ -200,7 +200,6 @@ describe('Goal authority convergence', () => {
     });
     const recordedAt = '2026-09-05T00:00:00.000Z';
     transitionWorkContractPhase({ controllerHome, repoId }, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change delivery verified.' });
-    requestWorkImplementationReview({ controllerHome, repoId }, workId, 'Delivery requires explicit implementation review before completion.');
     recordWorkImplementationReview({ controllerHome, repoId }, workId, {
       schemaVersion: 1,
       reviewId: 'REV-goal-authority',

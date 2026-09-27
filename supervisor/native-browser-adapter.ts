@@ -10,7 +10,7 @@ import {
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from '../src/runtime/plugins/browser-macos-bridge';
-import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_RATE_LIMITED, chatgptProviderBackpressureRemainingMs, chatgptProviderPageFailure, noteChatgptProviderBackpressure } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
 import { hasCommittedSupervisorEnvelope, renderEffectMarker, sha256 } from './protocol';
@@ -63,6 +63,8 @@ export interface WorkflowSupervisorNativeBrowserDependencies {
   dispatchPrompt(page: WorkflowSupervisorNativePage, prompt: string, task: WorkflowSupervisorBrowserTask, options?: { mode?: 'send' | 'resume' }): Promise<{ dispatched: boolean; confirmed?: boolean; reason?: string }>;
   nowMs(): number;
   providerIdleGraceMs: number;
+  /** Shared transient provider-pressure scope. Canonical Runtime passes Controller Home. */
+  providerScopeKey: string;
   sleep(ms: number): Promise<void>;
   setInterval(handler: () => void, ms: number): ReturnType<typeof setInterval>;
   clearInterval(timer: ReturnType<typeof setInterval>): void;
@@ -160,7 +162,9 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       latestAssistantResponse: latestText('[data-message-author-role="assistant"]'),
       ...(composer ? { composerText: String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '') || '') } : {}),
       providerActivityText: latestTurn,
-      providerFailureText: (latestTurn + '\\n' + liveProviderStatus).slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
+      // Failure classification must never inspect chat content. A user discussing
+      // "429" or "Too many requests" is not evidence that the provider failed.
+      providerFailureText: liveProviderStatus.slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
       latestTurnRole: latestRoleNode?.getAttribute?.('data-message-author-role') || undefined,
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')),
     };
@@ -281,6 +285,7 @@ const DEFAULT_DEPENDENCIES: WorkflowSupervisorNativeBrowserDependencies = {
   dispatchPrompt: async (page, prompt, _task, options) => await defaultDispatchPrompt(page, prompt, options),
   nowMs: () => Date.now(),
   providerIdleGraceMs: 60_000,
+  providerScopeKey: 'workflow-supervisor-native',
   sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },
   setInterval: (handler, ms) => setInterval(handler, ms),
   clearInterval: (timer) => clearInterval(timer),
@@ -291,6 +296,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly deps: WorkflowSupervisorNativeBrowserDependencies;
   private readonly pages = new Map<string, WorkflowSupervisorNativePage>();
   private readonly observedAssistant = new Map<string, string>();
+  private readonly providerFailureSeen = new Map<string, string>();
   private timer?: ReturnType<typeof setInterval>;
   private inflight?: Promise<void>;
   private closed = false;
@@ -335,6 +341,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     await this.inflight?.catch(() => undefined);
     this.pages.clear();
     this.observedAssistant.clear();
+    this.providerFailureSeen.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -390,6 +397,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         const providerBusy = snapshot.isGenerating;
         const latestRoleStillUser = snapshot.latestTurnRole === 'user';
         const providerFailureCode = chatgptProviderPageFailure(snapshot.providerFailureText);
+        const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
+        if (!providerFailureCode) {
+          this.providerFailureSeen.delete(task.conversationId);
+        } else if (priorProviderFailure !== providerFailureCode) {
+          noteChatgptProviderBackpressure(this.deps.providerScopeKey, providerFailureCode, this.deps.nowMs());
+          this.providerFailureSeen.set(task.conversationId, providerFailureCode);
+        }
+        let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
+        // 429 is transport backpressure, not authority to mint a semantic recovery
+        // effect. While the shared cooldown is live, observe locally and send nothing.
+        if (providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) continue;
         let recoveryAuthorized = false;
         if (!poll.command) {
           // Provider failure evidence is scoped to the latest turn plus current
@@ -404,7 +422,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             generating: providerFailureCode ? false : providerBusy,
             latestAssistantResponse: snapshot.latestAssistantResponse,
             providerActivityText: snapshot.providerActivityText,
-            providerFailureCode,
+            providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
             observedAtMs: this.deps.nowMs(),
             graceMs: this.deps.providerIdleGraceMs,
           });
@@ -413,6 +431,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
           if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         }
+        providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
+        if (poll.command && providerBackpressureMs > 0) continue;
         // An already-present send command must not steal the composer from a live
         // provider turn. Only the causal recovery observation above authorizes a
         // send while the latest committed role is still the user.
@@ -472,6 +492,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       catch { /* Transport cleanup is best-effort; never reinterpret lifecycle state. */ }
       this.pages.delete(conversationId);
       this.observedAssistant.delete(conversationId);
+      this.providerFailureSeen.delete(conversationId);
     }
   }
 
@@ -581,6 +602,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     finally {
       this.pages.delete(task.conversationId);
       this.observedAssistant.delete(task.conversationId);
+      this.providerFailureSeen.delete(task.conversationId);
     }
   }
 

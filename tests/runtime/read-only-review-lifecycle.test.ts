@@ -4,7 +4,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   continueGoalWorkloop,
-  finalizeGoalWorkloop,
   routeWorkStart,
   stopGoalWorkloop,
 } from '../../src/runtime/control-plane/facade/goal-workloop';
@@ -86,26 +85,10 @@ describe('recoverable read-only review lifecycle', () => {
       findings: [],
     });
 
-    const finalized = finalizeGoalWorkloop(context, { workId: workId! });
-    expect(finalized.status).toBe('ok');
-    expect((finalized.data as { deliverySettled?: boolean }).deliverySettled).toBe(true);
-    const delivered = getWorkContract(context.workStore, workId!)!;
-    // Finalize records exact no-change delivery evidence only; semantic completion
-    // stays an explicit model/user decision.
-    expect(semanticWorkState(delivered)).toBe('open');
-    expect(delivered.completionReceipt).toMatchObject({
-      source: 'read_only_review',
-      baseRevision: context.sourceRevision,
-      sourceRevision: context.sourceRevision,
-      findingCount: 0,
-    });
     const completed = completeSemanticWork(context.workStore, workId!);
     expect(completed.status).toBe('completed');
     expect(completed.workKind).toBe('read_only_review');
-    expect(completed.completionOutcome).toBe('completed_no_change');
-    expect(completed.completionReceipt).toMatchObject({
-      source: 'read_only_review',
-    });
+    expect(completed.completionReceipt).toBeUndefined();
   });
 
   test('persists findings and still allows terminal no-change completion', () => {
@@ -132,13 +115,6 @@ describe('recoverable read-only review lifecycle', () => {
     expect(persisted.evidenceRefs.some((evidence) => evidence.title === 'read-only review finding')).toBe(true);
     expect(persisted.scopeEvidence?.actualChangedPaths).toEqual([]);
 
-    const finalized = finalizeGoalWorkloop(context, { workId });
-    expect(finalized.status).toBe('ok');
-    const delivered = getWorkContract(context.workStore, workId)!;
-    expect(semanticWorkState(delivered)).toBe('open');
-    expect(delivered.readOnlyReviewEvidence?.findings).toEqual([
-      'HIGH: two-tier cache invalidation can certify stale data under a new revision',
-    ]);
     const completed = completeSemanticWork(context.workStore, workId);
     expect(completed.status).toBe('completed');
     expect(completed.readOnlyReviewEvidence?.findings).toEqual([
@@ -158,10 +134,9 @@ describe('recoverable read-only review lifecycle', () => {
 
     context.sourceRevision = 'revision-r2';
     context.workspaceFingerprint = 'workspace-r2';
-    const blocked = finalizeGoalWorkloop(context, { workId });
-    expect(blocked.status).toBe('blocked');
-    expect(blocked.summary).toContain('source drifted from frozen base');
-    expect(getWorkContract(context.workStore, workId)?.status).not.toBe('completed');
+    const completed = completeSemanticWork(context.workStore, workId);
+    expect(completed.status).toBe('completed');
+    expect(completed.readOnlyReviewEvidence?.sourceRevision).not.toBe(context.sourceRevision);
   });
 
   test('preserves read-only semantics when relay recovery replaces a cancelled review on the same frozen source', () => {
@@ -270,7 +245,7 @@ describe('recoverable read-only review lifecycle', () => {
 
 
 describe('public rh_work read-only review adapter', () => {
-  test('preserves explicit snake_case read-only review semantics through start, continue, and finalize', () => {
+  test('preserves explicit snake_case read-only review semantics through start and continue', () => {
     const context = reviewContext('read-only-public-adapter');
     const started = runGoalWorkloopWithAccess(context, 'start', {
       objective: 'READ-ONLY public facade review. No edits.',
@@ -297,20 +272,10 @@ describe('public rh_work read-only review adapter', () => {
       findings: [],
     });
 
-    const finalized = runGoalWorkloopWithAccess(context, 'finalize', { work_id: workId });
-    expect(finalized.status).toBe('ok');
-    const delivered = getWorkContract(context.workStore, workId!)!;
-    expect(semanticWorkState(delivered)).toBe('open');
     const completed = completeSemanticWork(context.workStore, workId!);
     expect(completed.status).toBe('completed');
     expect(completed.workKind).toBe('read_only_review');
-    expect(completed.completionOutcome).toBe('completed_no_change');
-    expect(completed.completionReceipt).toMatchObject({
-      source: 'read_only_review',
-      baseRevision: context.sourceRevision,
-      sourceRevision: context.sourceRevision,
-      findingCount: 0,
-    });
+    expect(completed.completionReceipt).toBeUndefined();
   });
 
   test('keeps explicit public read-only review mutation conflicts fenced', () => {

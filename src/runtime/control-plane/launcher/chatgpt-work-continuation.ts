@@ -7,6 +7,7 @@ import {
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
   DEFAULT_CHATGPT_AUTOMATION_REASONING,
   DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY,
+  dispatchWithChatgptProviderBackpressure,
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
   type ChatgptAutomationTabPolicy,
@@ -271,7 +272,7 @@ export async function runStandaloneChatgptPrompt(
   try {
     const delivery = await withChatgptBrowserActionOrigin(
       { surface: 'chatgpt-action', actor: 'chatgpt-standalone-prompt' },
-      () => host.dispatch({
+      () => dispatchWithChatgptProviderBackpressure(input.controllerHome, () => host.dispatch({
         controllerHome: input.controllerHome,
         repoId: input.repoId,
         repoRoot: input.repoRoot ?? process.cwd(),
@@ -282,7 +283,7 @@ export async function runStandaloneChatgptPrompt(
         model,
         reasoning,
         timeoutMs: input.timeoutMs,
-      }),
+      })),
       authorizationGrantRefs,
     );
     if (delivery.status !== 'dispatch_confirmed') {
@@ -470,7 +471,7 @@ export async function runWorkChatgptContinuation(
     const renderedPrompt = `${workflowToolAttributionInstruction(input)}\n\n${input.prompt}`;
     const delivery = await withChatgptBrowserActionOrigin(
       { surface: input.originSurface ?? 'chatgpt-action', actor: 'chatgpt-work-continuation' },
-      () => host.dispatch({
+      () => dispatchWithChatgptProviderBackpressure(input.controllerHome, () => host.dispatch({
         controllerHome: input.controllerHome,
         repoId: input.repoId,
         repoRoot: input.repoRoot,
@@ -481,7 +482,7 @@ export async function runWorkChatgptContinuation(
         model,
         reasoning,
         timeoutMs: input.timeoutMs,
-      }),
+      })),
       authorizationGrantRefs,
     );
     const observedUrl = delivery.conversationUrl ?? targetUrl;

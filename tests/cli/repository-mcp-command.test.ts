@@ -136,7 +136,7 @@ describe("structured repository git merge commits", () => {
 });
 
 describe("repository MCP command tools", () => {
-  test("routes Controller Home migration only through rh_work repair and requires an exact Work", async () => {
+  test("keeps standalone Recovery capability execution out of the Thin rh_work repair facade", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-recovery-migration-route-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
@@ -157,9 +157,10 @@ describe("repository MCP command tools", () => {
         capability_id: "recovery.migrate_controller_home",
       });
       const payload = JSON.parse(String(response?.content?.[0]?.text ?? "{}"));
-      expect(payload.status).toBe("blocked");
-      expect(payload.summary).toBe("RECOVERY_CONTROLLER_HOME_MIGRATION_WORK_REQUIRED");
-      expect(payload.data).toMatchObject({ executionStarted: false });
+      expect(payload.status).toBe("ok");
+      expect(payload.data).toMatchObject({ operation: "diagnose", dryRun: true, isAcceptanceFailure: false });
+      expect(payload.data?.executionStarted).not.toBe(true);
+      expect(payload.summary).not.toContain("migrate_controller_home");
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
@@ -613,7 +614,7 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("effect Work is promoted and receives a physical WorkHandle before its first governed repository mutation", async () => {
+  test("effect Work receives repository mutation authority without rewriting semantic Work kind", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-source-promotion-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
@@ -651,7 +652,7 @@ describe("repository MCP command tools", () => {
         operations: [{ type: "create", path: "src/promoted.ts", content: "export const promoted = true;\n" }],
       }, caller));
       expect(applied.status).toBe("applied");
-      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("repository_change");
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("remote_effect");
       expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({
         workId, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId,
         sessionId: caller.sessionId, principalId: caller.principalId,
@@ -663,7 +664,7 @@ describe("repository MCP command tools", () => {
     }
   });
 
-  test("effect Work command mutation promotes before Process Runtime executes the command", async () => {
+  test("effect Work command mutation materializes a WorkHandle without rewriting semantic Work kind", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-command-promotion-"));
     const controllerHome = join(workspace, "controller-home");
     const repoRoot = join(workspace, "sample-repo");
@@ -698,8 +699,53 @@ describe("repository MCP command tools", () => {
         expect(process.status).toBe("succeeded");
       } else expect(mutated.ok).toBe(true);
       expect(existsSync(join(repoRoot, "effect-source.txt"))).toBe(true);
-      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("repository_change");
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("local_effect");
       expect(readWorkHandle(controllerHome, repository.repoId, workId)).toBeDefined();
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("Thin Work without legacy checkout binds the concrete repository target only in WorkHandle", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-thin-work-concrete-target-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-THIN-NO-LEGACY-CHECKOUT";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, workKind: "investigation", objective: "Thin semantic Work uses concrete repository target at mutation time.",
+        acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-thin-target", principalId: "principal-thin-target", controllerInstanceId: "runtime-thin-target" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const applied = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "bind concrete mutation target without semantic placement mutation",
+        operations: [{ type: "create", path: "src/thin-target.ts", content: "export const thinTarget = true;\n" }],
+      }, caller));
+      expect(applied.status).toBe("applied");
+      const semantic = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+      expect(semantic?.workKind).toBe("investigation");
+      expect(semantic?.checkoutId).toBeUndefined();
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({
+        workId, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId,
+        sessionId: caller.sessionId, principalId: caller.principalId,
+      });
+      expect(readFileSync(join(repoRoot, "src/thin-target.ts"), "utf8")).toBe("export const thinTarget = true;\n");
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

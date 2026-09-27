@@ -17,7 +17,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { continueGoalWorkloop, routeWorkStart, stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
@@ -2244,7 +2244,6 @@ describe('scheduled external Controller wake', () => {
       state: 'satisfied',
       summary: 'No-change verification is complete for the exact candidate.',
     });
-    requestWorkImplementationReview(store, workId, 'No-change verification completed; Controller review is required before terminal goal disposition.');
     recordWorkImplementationReview(store, workId, {
       schemaVersion: 1,
       reviewId: 'REV-relay-terminal-disposition',

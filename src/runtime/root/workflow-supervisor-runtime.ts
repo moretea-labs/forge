@@ -56,7 +56,7 @@ export async function startWorkflowSupervisorRuntime(
   await once(server, 'listening');
   const nativeBrowser = options.nativeBrowserAdapter === false
     ? undefined
-    : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery);
+    : startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, { providerScopeKey: controllerHome });
   let closing = false;
   return {
     done,

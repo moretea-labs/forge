@@ -2,7 +2,7 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, recordWorkEvidenceState, semanticWorkState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, recordWorkEvidenceState, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { gitIsAncestor, inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
@@ -84,10 +84,9 @@ function resolveRepositoryWorkHandlePlacement(input: {
 }
 
 /**
- * Canonical repair for a durable Work whose WorkContract exists but whose
- * WorkHandle has not yet been materialized. Handle ownership follows the
- * Work's declared kind and concrete checkout placement; no routing/mode token
- * authorizes or rejects it.
+ * Materialize concrete repository-mutation ownership for an optional semantic
+ * Work attribution. Thin Work does not classify execution kind; checkout/CAS
+ * placement and the WorkHandle resource fence own mutation safety.
  * Transport layers provide only the authenticated Controller identity.
  */
 export function ensureRepositoryWorkHandle(input: {
@@ -95,29 +94,35 @@ export function ensureRepositoryWorkHandle(input: {
   repository: RepositoryRecord;
   workId: string;
   identity: RepositoryWorkHandleControllerIdentity;
+  checkoutId?: string;
   allowEffectWork?: boolean;
 }): WorkHandleState | undefined {
   const existing = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
-  if (existing) return existing;
+  if (existing) {
+    if (input.checkoutId?.trim() && existing.checkoutId !== input.checkoutId.trim()) {
+      throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
+    }
+    return existing;
+  }
   const contract = getWorkContract(
     { controllerHome: input.controllerHome, repoId: input.repository.repoId },
     input.workId,
   );
-  const supportedKind = contract?.workKind === 'repository_change'
-    || contract?.workKind === 'completed_no_change'
-    || contract?.workKind === 'reconciliation'
-    || (input.allowEffectWork === true && (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect'));
-  if (!contract || !supportedKind || !contract.checkoutId) {
-    return undefined;
-  }
+  // allowEffectWork is retained only for source compatibility while old
+  // repository callers cut over. workKind is no longer an execution authority.
+  void input.allowEffectWork;
+  const checkoutId = input.checkoutId?.trim() || contract?.checkoutId?.trim();
+  if (!contract || !checkoutId) return undefined;
   // Callers may already be scoped to the Work checkout. Re-read the unselected
   // registry record so WorkHandle source/delivery authority never mistakes an
-  // isolated execution worktree for the canonical source checkout.
+  // isolated execution worktree for the canonical source checkout. Legacy
+  // WorkContract checkout/worktree fields remain migration-era placement hints;
+  // new Thin Work receives its concrete checkout from the repository target.
   const placement = resolveRepositoryWorkHandlePlacement({
     controllerHome: input.controllerHome,
     repositoryId: input.repository.repoId,
-    checkoutId: contract.checkoutId,
-    worktreeRef: contract.worktreeRef,
+    checkoutId,
+    worktreeRef: contract.checkoutId === checkoutId ? contract.worktreeRef : undefined,
   });
   const { registeredRepository, checkout, status, branch, managedWorktree } = placement;
   const sourceCheckoutId = registeredRepository.activeCheckoutId;
@@ -131,7 +136,7 @@ export function ensureRepositoryWorkHandle(input: {
     sessionId: input.identity.sessionId,
     principalId: input.identity.principalId,
     repositoryId: input.repository.repoId,
-    checkoutId: contract.checkoutId,
+    checkoutId,
     worktreePath: checkout.canonicalRoot,
     branch,
     sourceCheckoutId,
@@ -165,7 +170,7 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   const existing = readWorkHandle(input.controllerHome, input.repositoryId, input.workId);
   if (!existing || existing.managedWorktree) return existing;
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repositoryId }, input.workId);
-  if (!contract || contract.workKind !== 'repository_change' || !contract.checkoutId) return existing;
+  if (!contract || !contract.checkoutId) return existing;
   if (contract.checkoutId !== existing.checkoutId) throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
   const placement = resolveRepositoryWorkHandlePlacement({ controllerHome: input.controllerHome, repositoryId: input.repositoryId, checkoutId: contract.checkoutId, worktreeRef: contract.worktreeRef });
   if (!placement.managedWorktree) return existing;
@@ -270,16 +275,12 @@ function alignRepositoryMutationBase(input: {
   freshlyMaterialized: boolean;
 }): WorkHandleState {
   if (input.handle.managedWorktree || input.handle.state !== 'prepared') return input.handle;
-  if (input.contract.phase !== 'implementation') {
-    throw new Error(`WORK_DIRECT_PRE_MUTATION_PHASE_INVALID: ${input.workId}:${input.contract.phase}`);
-  }
-  if (!input.contract.checkoutId) throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_REQUIRED: ${input.workId}`);
 
   const placement = resolveRepositoryWorkHandlePlacement({
     controllerHome: input.controllerHome,
     repositoryId: input.repository.repoId,
-    checkoutId: input.contract.checkoutId,
-    worktreeRef: input.contract.worktreeRef,
+    checkoutId: input.handle.checkoutId,
+    worktreeRef: input.contract.checkoutId === input.handle.checkoutId ? input.contract.worktreeRef : undefined,
   });
   // A managed checkout has its own source lineage and does not participate in
   // shared-canonical target-base alignment.
@@ -323,9 +324,7 @@ export function markRepositoryMutationStarted(input: {
 }): WorkHandleState | undefined {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
-  if (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect') {
-    promoteWorkToRepositoryChange(store, input.workId);
-  }
+  if (!contract) return undefined;
   const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
   const boundWorkId = handle.workContractId ?? handle.workId;
@@ -340,10 +339,9 @@ export function markRepositoryMutationStarted(input: {
 }
 
 /**
- * Upgrades an effect-only Work before the first governed repository mutation
- * and materializes the existing repository delivery authority. Work is not a
- * controller mutex: authenticated caller identity is recorded only as provenance,
- * while checkout/head/CAS/resource fences own mutation safety.
+ * Materializes repository delivery authority for an optional semantic Work.
+ * Work is not a controller mutex or an execution-kind gate: authenticated caller
+ * identity is provenance while checkout/head/CAS/resource fences own mutation safety.
  */
 export function ensureRepositoryMutationWorkHandle(input: {
   controllerHome: string;
@@ -354,7 +352,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
   deferEffectPromotion?: boolean;
 }): { handle: WorkHandleState; promotedFrom?: 'local_effect' | 'remote_effect' } {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
-  let contract = getWorkContract(store, input.workId);
+  const contract = getWorkContract(store, input.workId);
   if (!contract) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
   if (semanticWorkState(contract) !== 'open') {
     throw new Error(`WORK_REPOSITORY_MUTATION_TERMINAL: ${input.workId}`);
@@ -363,14 +361,8 @@ export function ensureRepositoryMutationWorkHandle(input: {
   if (!principalId) throw new Error(`WORK_AUTHENTICATED_PRINCIPAL_REQUIRED: ${input.workId}`);
   const provenanceSessionId = input.sessionId?.trim() || `sessionless:${principalId}`;
 
-  let mutationCheckoutId = contract.checkoutId;
-  if (!mutationCheckoutId) {
-    if (contract.worktreeRef?.trim()) {
-      throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_REQUIRED: ${input.workId}`);
-    }
-    mutationCheckoutId = input.repository.activeCheckoutId;
-    contract = updateWorkContract(store, input.workId, { checkoutId: mutationCheckoutId });
-  }
+  const mutationCheckoutId = contract.checkoutId?.trim() || input.repository.activeCheckoutId;
+  if (!mutationCheckoutId) throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_REQUIRED: ${input.workId}`);
   assertCanonicalRepositoryMutationWorkHandleAvailable({
     controllerHome: input.controllerHome,
     repositoryId: input.repository.repoId,
@@ -378,16 +370,9 @@ export function ensureRepositoryMutationWorkHandle(input: {
     workId: input.workId,
   });
 
-  let promotedFrom: 'local_effect' | 'remote_effect' | undefined;
-  if (contract.workKind === 'local_effect' || contract.workKind === 'remote_effect') {
-    promotedFrom = contract.workKind;
-    if (input.deferEffectPromotion !== true) {
-      contract = promoteWorkToRepositoryChange(store, input.workId);
-    }
-  }
-  if (contract.workKind !== 'repository_change' && input.deferEffectPromotion !== true) {
-    throw new Error(`WORK_REPOSITORY_MUTATION_KIND_INVALID: ${input.workId}:${contract.workKind}`);
-  }
+  // deferEffectPromotion is a compatibility input from the retired Work-kind
+  // lifecycle. Repository mutation is now admitted by the concrete target fence.
+  void input.deferEffectPromotion;
 
   const existingHandle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   let handle = ensureRepositoryWorkHandle({
@@ -395,7 +380,8 @@ export function ensureRepositoryMutationWorkHandle(input: {
     repository: input.repository,
     workId: input.workId,
     identity: { sessionId: provenanceSessionId, principalId },
-    allowEffectWork: input.deferEffectPromotion === true,
+    checkoutId: mutationCheckoutId,
+    allowEffectWork: true,
   });
   if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
   handle = alignRepositoryMutationBase({
@@ -414,7 +400,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
     handle,
   });
   assertManagedRepositoryMutationAuthority({ repository: input.repository, handle });
-  return { handle, ...(promotedFrom ? { promotedFrom } : {}) };
+  return { handle };
 }
 
 /**

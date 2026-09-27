@@ -1482,7 +1482,7 @@ async function persistOpenAiTransportIncidentEvidence(input: {
   const primaryTunnel = configuredPrimaryPublicTunnel(input.config);
   const [openAiApi, connectorActivity, macNetworkExtension, primaryTunnelObservation] = await Promise.all([
     probeOpenAiApiReachability(),
-    probeAutomaticReleaseCutoverReadiness(input.config, { timeoutMs: 1_000 }),
+    probeReleaseCutoverReadiness(input.config, { timeoutMs: 1_000 }),
     observeRecentMacNetworkExtensionChanges(),
     primaryTunnel?.platform === 'openai-secure-tunnel'
       ? observeOpenAiTunnelRuntime(primaryTunnel)
@@ -2843,7 +2843,7 @@ function primaryConnectorHealthEndpoint(config: RecoveryConfig): string | undefi
   }
 }
 
-export async function probeAutomaticReleaseCutoverReadiness(
+export async function probeReleaseCutoverReadiness(
   config: RecoveryConfig,
   options: { transport?: RecoveryHttpTransport; quietMs?: number; timeoutMs?: number } = {},
 ): Promise<AutomaticReleaseCutoverReadiness> {
@@ -2897,7 +2897,7 @@ export async function probeAutomaticReleaseCutoverReadiness(
     }
     if (activeSessions > 0 && (!Number.isFinite(latestActivityAgeMs) || latestActivityAgeMs < quietMs)) {
       const remainingMs = Number.isFinite(latestActivityAgeMs) ? Math.max(0, quietMs - latestActivityAgeMs) : quietMs;
-      return { ready: false, ...evidence, detail: `waiting for ${remainingMs}ms more MCP quiet time before automatic cutover` };
+      return { ready: false, ...evidence, detail: `waiting for ${remainingMs}ms more MCP quiet time before Runtime cutover` };
     }
     return {
       ready: true,
@@ -5317,26 +5317,31 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         || stableAfterPromotion.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
       ) throw new Error('RELEASE_SESSION_STABLE_CHANGED_DURING_PROMOTION');
 
-      if (requestId?.startsWith('recovery-auto-release:')) {
-        const readiness = await probeAutomaticReleaseCutoverReadiness(config);
-        if (!readiness.ready) {
-          audit(config, 'release_session_automatic_cutover_deferred', {
-            sessionId,
-            detail: readiness.detail,
-            activeSessions: readiness.activeSessions,
-            activePosts: readiness.activePosts,
-            activeStreams: readiness.activeStreams,
-            initializing: readiness.initializing,
-            latestActivityAgeMs: readiness.latestActivityAgeMs,
-          });
-          return {
-            ok: true as const,
-            attempted: false,
-            noOp: true,
-            detail: `RELEASE_SESSION_AUTOMATIC_CUTOVER_DEFERRED: ${readiness.detail}`,
-            releaseSession: session,
-          };
-        }
+      // Connector quietness is a cutover invariant, not an automatic-release
+      // policy. Every caller, including explicit/local-recovery ReleaseSession
+      // progression, must prove that no MCP request/stream is active and that
+      // remaining sessions have been idle for the bounded quiet window before
+      // Stable A ownership can move. Otherwise a perfectly valid release switch
+      // can tear down the ChatGPT turn that requested it.
+      const readiness = await probeReleaseCutoverReadiness(config);
+      if (!readiness.ready) {
+        audit(config, 'release_session_cutover_deferred_for_mcp_activity', {
+          sessionId,
+          detail: readiness.detail,
+          activeSessions: readiness.activeSessions,
+          activePosts: readiness.activePosts,
+          activeStreams: readiness.activeStreams,
+          initializing: readiness.initializing,
+          latestActivityAgeMs: readiness.latestActivityAgeMs,
+          requestKind: requestId?.startsWith('recovery-auto-release:') ? 'automatic' : 'explicit',
+        });
+        return {
+          ok: true as const,
+          attempted: false,
+          noOp: true,
+          detail: `RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY: ${readiness.detail}`,
+          releaseSession: session,
+        };
       }
 
       session = advanceReleaseSession({

@@ -34,7 +34,7 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
@@ -592,7 +592,6 @@ describe('runtime observability', () => {
           phase: 'verification', status: 'running', state: 'satisfied',
           summary: 'The exact audit fixture candidate was verified before review.',
         });
-        requestWorkImplementationReview(store, workId, 'The repository completion audit fixture requires explicit review.');
         recordWorkImplementationReview(store, workId, {
           schemaVersion: 1,
           reviewId: `REV-${workId}`,

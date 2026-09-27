@@ -18,17 +18,13 @@ import type { CapabilityRisk, FacadeResult, WorkContractConstraints, WorkKind } 
 
 export {
   continueGoalWorkloop,
-  finalizeGoalWorkloop,
   startGoalWorkloop,
   stopGoalWorkloop,
-  verifyGoalWorkloop,
   type GoalWorkloopContext,
   type GoalWorkloopContinueInput,
-  type GoalWorkloopFinalizeInput,
   type GoalWorkloopOperation,
   type GoalWorkloopStartInput,
   type GoalWorkloopStopInput,
-  type GoalWorkloopVerifyInput,
 } from './goal-workloop';
 
 function booleanValue(record: Record<string, unknown>, camel: string, snake: string): boolean | undefined {

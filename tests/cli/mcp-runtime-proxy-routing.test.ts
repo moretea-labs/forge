@@ -48,7 +48,6 @@ import {
   createWorkContract,
   recordWorkCompletionReceipt,
   recordWorkImplementationReview,
-  requestWorkImplementationReview,
   transitionWorkContractPhase,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
@@ -816,11 +815,6 @@ function postFinalizeAttributionFixture() {
     state: 'satisfied',
     summary: 'No-change fixture verification is complete before implementation review.',
   });
-  requestWorkImplementationReview(
-    { controllerHome, repoId: repository.repoId },
-    workId,
-    'No-change fixture requires explicit Controller implementation review before completion.',
-  );
   const recordedAt = '2026-08-28T00:18:00.000Z';
   recordWorkImplementationReview({ controllerHome, repoId: repository.repoId }, workId, {
     schemaVersion: 1,

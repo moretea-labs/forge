@@ -6,7 +6,6 @@ import { spawnSync } from 'child_process';
 import { bindTaskToWork, createIssue, getIssue, getIssueReadView, planIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { createWorkContract, getWorkContract, recordWorkEvidenceState, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { projectControllerTaskFromWork } from '../../src/runtime/control-plane/facade/work-task-projection';
-import { finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import {
   acceptVerifiedTaskFromControllerWork,
@@ -406,14 +405,7 @@ describe('controller Work Task completion receipt', () => {
       ['valid_pass', fx.expectedHead],
     ]);
 
-    const finalized = finalizeGoalWorkloop({
-      workStore: options,
-      handoffStore: options,
-      repoId: fx.repoId,
-      sourceRevision: fx.expectedHead,
-    }, { workId: fx.workId });
-    expect(finalized.status).toBe('ok');
-    expect((finalized.data as { finalStatus?: string }).finalStatus).toBe('completed');
+    expect(getWorkContract(options, fx.workId)?.semanticState).toBe('completed');
   });
 
   test('does not let a current failure satisfy required finalization evidence', () => {

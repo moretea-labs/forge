@@ -41,7 +41,7 @@ import {
   runtimeStatus,
   verifyStableRuntime,
   verifyConfiguredRuntimeReleaseSessionStaticGates,
-  probeAutomaticReleaseCutoverReadiness,
+  probeReleaseCutoverReadiness,
   watchdogTick,
   type WatchdogState,
   type RecoveryConfig,
@@ -1015,7 +1015,7 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
       );
       observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
       if (decision.required && decision.action === 'cutover') {
-        const gate = await probeAutomaticReleaseCutoverReadiness(config);
+        const gate = await probeReleaseCutoverReadiness(config);
         if (!gate.ready) {
           process.stdout.write(JSON.stringify({
             at: new Date().toISOString(),

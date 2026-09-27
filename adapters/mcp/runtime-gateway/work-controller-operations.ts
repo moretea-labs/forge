@@ -15,7 +15,11 @@ import {
   finishControllerRoundRelayDispatch,
 } from '../../../packages/kernel/controller/api/index';
 import { authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
-import { workflowSupervisorBoundaryForWork } from '../../../src/runtime/root/workflow-supervisor-composition';
+import {
+  bindCurrentWorkflowSupervisorConversationForWork,
+  ensureWorkflowSupervisorEnrollmentForWork,
+  workflowSupervisorBoundaryForWork,
+} from '../../../src/runtime/root/workflow-supervisor-composition';
 
 const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);
 
@@ -41,8 +45,20 @@ export async function callRhWorkControllerOperation(
       const work = getWorkContract(store, workId);
       if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
       const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';
-      const supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
-      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh') {
+      const explicitConversationUrl = typeof args.conversation_url === 'string' && args.conversation_url.trim()
+        ? args.conversation_url.trim()
+        : undefined;
+      let supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
+      let adoptedCurrentConversation = false;
+      if (transportConversation === 'bound' && !explicitConversationUrl && supervisorBoundary.status === 'conversation_pending') {
+        const currentConversation = await bindCurrentWorkflowSupervisorConversationForWork(store, workId);
+        if (currentConversation.status !== 'bound') {
+          throw new Error(currentConversation.reason ?? `WORKFLOW_SUPERVISOR_${currentConversation.status.toUpperCase()}`);
+        }
+        adoptedCurrentConversation = true;
+        supervisorBoundary = workflowSupervisorBoundaryForWork(store, workId);
+      }
+      if (supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh' && !adoptedCurrentConversation) {
         throw new Error(`WORKFLOW_SUPERVISOR_OUTER_TURN_OWNED:${workId}:${supervisorBoundary.conversationId}`);
       }
 
@@ -84,6 +100,20 @@ export async function callRhWorkControllerOperation(
         throw new Error(`CHATGPT_CONTINUATION_LAUNCH_BLOCKED:${relay.blockedReason ?? 'transport_not_ready'}`);
       }
 
+      if (adoptedCurrentConversation) {
+        const supervisorEnrollment = await ensureWorkflowSupervisorEnrollmentForWork(store, workId);
+        return result(buildFacadeResult({
+          summary: 'Current ChatGPT conversation bound and enrolled for unattended continuation. No replacement provider send was issued.',
+          data: {
+            workId,
+            currentConversationBound: true,
+            continuationDispatched: false,
+            supervisorEnrollment,
+            conversationUrl: supervisorBoundary.status === 'outer_turn' ? supervisorBoundary.conversationUrl : undefined,
+          },
+        }) as unknown as Record<string, unknown>);
+      }
+
       const prompt = [
         renderChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
         'Forge continuation transport is active for this Work; provider delivery success is not semantic completion.',
@@ -102,7 +132,7 @@ export async function callRhWorkControllerOperation(
           controllerAuthorityId: relay.authorityId,
           relayScopeId: relay.relayScopeId,
           browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-          conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+          conversationUrl: explicitConversationUrl,
           model: valueForFlag('--model') ?? 'gpt-5.6',
           reasoning: reasoning as 'medium' | 'high' | 'xhigh',
           tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',

@@ -34,7 +34,6 @@ import {
   workSemanticView,
 } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
-import { finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 const roots: string[] = [];
 afterEach(() => {
 });  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -212,14 +211,7 @@ describe('Thin capability substrate', () => {
     expect(isCurrentWorkContract(completedWork)).toBe(false);
     expect(workSemanticView(completedWork).resultRefs).toEqual(['git:commit:12345678', 'doc:summary:complete']);
 
-    // Calling finalizeGoalWorkloop on an already semantically completed work is a
-    // compatibility no-op: it succeeds without inventing a delivery/cleanup
-    // receipt and without re-running the verify/review gates.
-    const finalizeResult = finalizeGoalWorkloop({ workStore: store, handoffStore: { controllerHome }, repoId }, { workId });
-    expect(finalizeResult.status).toBe('ok');
-    expect(finalizeResult.data?.semanticWorkState).toBe('completed');
-    expect(finalizeResult.data?.completionReceipt).toBeNull();
-    expect(getWorkContract(store, workId)?.completionReceipt).toBeUndefined();
+    expect(completedWork.completionReceipt).toBeUndefined();
   });
 
 

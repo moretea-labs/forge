@@ -356,23 +356,11 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   if (contract.status === 'cancelled') throw new Error(`CONTROLLER_WORK_RECEIPT_CONTRACT_CANCELLED: ${input.workId}`);
   const noChange = contract.workKind === 'completed_no_change'
     && contract.evidenceState === 'valid';
-  const stages = handle.finalization;
-  const complete = noChange
-    ? handle.state !== 'failed'
-      && stages.validation === 'done'
-      && stages.commit === 'skipped'
-      && stages.merge === 'skipped'
-      && stages.branchCleanup === 'skipped'
-      && ['skipped', 'done'].includes(stages.worktreeCleanup)
-      && !stages.lastError
-    : handle.state === 'cleaned'
-    && stages.validation === 'done'
-    && stages.commit === 'done'
-    && stages.merge === 'done'
-    && stages.branchCleanup === 'done'
-    && stages.worktreeCleanup === 'done'
-    && !stages.lastError;
-  if (!complete) throw new Error(`CONTROLLER_WORK_RECEIPT_FINALIZATION_INCOMPLETE: ${input.workId}`);
+  if (semanticWorkState(contract) !== 'completed') {
+    throw new Error(`CONTROLLER_WORK_RECEIPT_WORK_NOT_COMPLETED: ${input.workId}`);
+  }
+  // WorkHandle is physical identity evidence only. Legacy validation/commit/merge/
+  // cleanup stage fields never authorize Task acceptance after the Thin cutover.
 
   const targetRevision = commitRevision(input.repoRoot, handle.expectedHead, 'TARGET_REVISION');
   const verifiedRevision = commitRevision(input.repoRoot, task.verification.integratedRevision, 'VERIFIED_REVISION');
@@ -430,9 +418,6 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
 
   // Legacy Task acceptance is a projection of an already-completed semantic
   // Work. It can never close Work or manufacture Work completion evidence.
-  if (semanticWorkState(contract) !== 'completed') {
-    throw new Error(`CONTROLLER_WORK_RECEIPT_WORK_NOT_COMPLETED: ${input.workId}`);
-  }
   const recordedReceipt = contract.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = {

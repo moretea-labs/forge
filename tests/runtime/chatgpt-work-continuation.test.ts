@@ -16,9 +16,9 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../packages/kernel/controller/api/index';
-import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, classifyChatgptProviderFailure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
+import { CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT, CHATGPT_AUTOMATION_RATE_LIMITED, CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT, CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE, ChatgptProviderDeliveryError, chatgptProviderBackoffDelayMs, classifyChatgptProviderFailure, dispatchWithChatgptProviderBackpressure, type ChatgptProviderDeliveryHost } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
-import { chatgptAutomationDeliveryFailure, chatgptComposerRetainsPrompt, chatgptSubmissionAcceptanceObserved, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
+import { chatgptAutomationDeliveryFailure, chatgptComposerRetainsPrompt, chatgptSubmissionAcceptanceObserved, chatgptSubmissionObservationDelayMs, chatgptSubmissionSettlementWaitBudget, ensureControllerChatgptBrowser } from '../../adapters/chatgpt/browser-delivery-runtime';
 import { repositoryPluginConfigPath } from '../../src/runtime/plugins/config-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkSemanticRevisionRecords, readWorkContractStore, recordWorkEvidenceState, reviseWorkSemanticContext, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -274,6 +274,39 @@ describe('ChatGPT provider delivery classification', () => {
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_PERMISSION_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_BRIDGE_DISPATCH_FAILED')).toBe('failed');
+    expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_RATE_LIMITED)).toBe('failed');
+    expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_RATE_LIMITED_AFTER_SUBMIT)).toBe('outcome_unknown');
+  });
+
+  test('serializes ChatGPT provider dispatch within one active Runtime instead of multiplying recovery owners', async () => {
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const first = dispatchWithChatgptProviderBackpressure('/tmp/controller-provider-gate', async () => {
+      order.push('first:start');
+      await firstBlocked;
+      order.push('first:end');
+      return {
+        status: 'dispatch_confirmed',
+        provider: 'controller-browser',
+        browserSessionId: 'browser-1',
+        executionPreferenceVerified: true,
+      };
+    });
+    const second = dispatchWithChatgptProviderBackpressure('/tmp/controller-provider-gate', async () => {
+      order.push('second:start');
+      return {
+        status: 'dispatch_confirmed',
+        provider: 'controller-browser',
+        browserSessionId: 'browser-2',
+        executionPreferenceVerified: true,
+      };
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(order).toEqual(['first:start']);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(['first:start', 'first:end', 'second:start']);
   });
 });
 
@@ -344,12 +377,12 @@ describe('ChatGPT standalone provider routing', () => {
 });
 
 describe('ChatGPT Work conversation binding', () => {
-  test('ChatGPT round prompt keeps other-host Skill wording non-gating without weakening repository constraints', () => {
+  test('ChatGPT round prompt keeps provider mechanics internal without weakening repository constraints', () => {
     const source = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-round-host.ts'), 'utf8');
-    expect(source).toContain('仓库中的工程、验收、安全和权限约束始终有效');
-    expect(source).toContain('其他 Controller host/runtime');
-    expect(source).toContain('不是 ChatGPT 当前 round 的硬 capability gate');
-    expect(source).toContain('不得仅为了满足该 host wording 而 delegate');
+    expect(source).toContain('Provider/session binding、transport recovery、dedupe、retry 和 continuation bookkeeping 由 Forge 内部维护');
+    expect(source).toContain('执行与验证直接使用当前 domain capability');
+    expect(source).toContain('仓库工程、安全、权限和资源 fence 始终有效');
+    expect(source).not.toContain('controller_claim');
   });
 
   test('keeps ChatGPT automation Browser action envelopes compatible with persisted transport policy', () => {
@@ -759,6 +792,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptSubmissionSettlementWaitBudget()).toBe(30_000);
     expect(chatgptSubmissionSettlementWaitBudget(8_000)).toBe(8_000);
     expect(chatgptSubmissionSettlementWaitBudget(60_000)).toBe(30_000);
+    expect([0, 1, 2, 3, 4, 99].map(chatgptSubmissionObservationDelayMs)).toEqual([500, 1_000, 2_000, 3_000, 5_000, 5_000]);
     expect(chatgptSubmissionAcceptanceObserved({
       outboundConfirmed: true,
       hasConversationIdentity: true,
@@ -780,7 +814,12 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationDeliveryFailure('Message delivery timed out. Please try again.')).toBe(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT);
     expect(chatgptAutomationDeliveryFailure('Resume stream unavailable')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
     expect(chatgptAutomationDeliveryFailure('  RESUME\nstream   unavailable  ')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+    expect(chatgptAutomationDeliveryFailure('tokenless_resume_unavailable')).toBe(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE);
+    expect(chatgptAutomationDeliveryFailure('Too many requests')).toBe(CHATGPT_AUTOMATION_RATE_LIMITED);
     expect(chatgptAutomationDeliveryFailure('ChatGPT')).toBeUndefined();
+    expect(chatgptProviderBackoffDelayMs(1, 'provider-test')).toBeGreaterThanOrEqual(1_000);
+    expect(chatgptProviderBackoffDelayMs(8, 'provider-test')).toBeLessThanOrEqual(30_000);
+    expect(chatgptProviderBackoffDelayMs(1, 'provider-test', 'Retry-After: 12s')).toBe(12_000);
     expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_MESSAGE_DELIVERY_TIMED_OUT)).toBe('outcome_unknown');
     expect(classifyChatgptProviderFailure(CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE)).toBe('outcome_unknown');
     expect(chatgptComposerRetainsPrompt('@forge continue   exact work', '@forge continue exact work')).toBe(true);
@@ -957,7 +996,7 @@ describe('ChatGPT Work conversation binding', () => {
       prompt: 'continue',
     });
     expect(result.status).toBe('failed');
-    expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: repo-chatgpt-work:WORK-missing');
+    expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: WORK-missing');
   });
 
   test('rejects a Work targeted at a different Forge instance before provider dispatch', async () => {
@@ -1272,23 +1311,20 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerHost).toContain("originSurface: 'schedule'");
     expect(workBinding).toContain('authorizationGrantRefs?: string[]');
     expect(workBinding).toContain('input.authorizationGrantRefs ?? existing?.value.authorizationGrantRefs ?? []');
-    expect(source).toContain('从成功的 controller_claim 响应中取得 data.controllerAuthorityId');
-    expect(source).toContain('本次启动的 controller round 已具备 durable controller authority：controller_authority_id=');
-    expect(source).toContain('第一次 controller_claim 必须使用这组完全相同的 authority');
-    expect(source).toContain('不得先调用不带 scope 的 controller_claim');
-    expect(source).toContain('capability_id=controller.round:controller_claim:');
-    expect(source).toContain('把同一个 opaque value 作为 session_id compatibility carrier');
-    expect(source).toContain('绝不能把 data.session.sessionId 当作 durable capability');
+    expect(source).toContain('Forge 内部维护 provider/session binding、transport recovery、effect dedupe 和机械重试');
+    expect(source).toContain('这些机械状态不属于模型工作流');
+    expect(source).toContain('验证与 review 由模型使用正常 capability/evidence 完成，不是 Forge 生命周期阶段');
+    expect(source).not.toContain('从成功的 controller_claim 响应中取得 data.controllerAuthorityId');
+    expect(source).toContain('dispatchWithChatgptProviderBackpressure');
     expect(browserRuntime).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(browserRuntime).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(browserRuntime).not.toContain(':has-text(');
     expect(browserRuntime).toContain('waitForChatgptIntelligenceControl'); expect(browserRuntime).toContain('reasoningLabelMatches'); expect(browserRuntime).toContain("'main button, main [role=\"button\"]'"); expect(browserRuntime).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(browserRuntime).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(browserRuntime).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeControllerRoundOccurrence'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
     expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
-    expect(browserRuntime).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute 和 repository_safe_patch_apply');
+    expect(browserRuntime).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('源码写操作应归属本轮语义上实际推进的 repository-change Work');
     expect(source).toContain("relayScopeId?.startsWith('requirement:') === true");
-    expect(source).toContain('实际被本轮语义选择且已成功 claim 的 repository-change Work 的 work_id');
-    expect(source).toContain('不得把只读/编排 Supervisor Work 的 work_id 用来归属 child Work 的源码修改');
-    expect(source).toContain('本轮每一次 repository_command_execute 和 repository_safe_patch_apply 都必须显式传 work_id=${workId}');
+    expect(source).toContain('如果仍在推进 origin Work，则传 work_id=${workId}');
+    expect(source).toContain('不要把只读/编排 Work 用作源码修改归属');
     const maintenance = readFileSync(join(process.cwd(), 'src/runtime/control-plane/global-scheduler/maintenance.ts'), 'utf8');
     expect(maintenance).toContain('exactOriginWork: !dispatchingRecord.requirementId');
     expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated })');
@@ -1315,34 +1351,23 @@ describe('ChatGPT Work conversation binding', () => {
     expect(engine).not.toContain('controllerAuthorityId: relay.authorityId');
     expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
-    const runtimeTools = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
     const controllerOperations = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-controller-operations.ts'), 'utf8');
-    const launcherStartIndex = controllerOperations.indexOf("if (operation === 'launcher_start')");
-    const launcherStart = controllerOperations.slice(launcherStartIndex);
-    expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
-    expect(launcherStart).toContain('await runWorkChatgptContinuation({');
-    expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
-    expect(launcherStart).toContain('relayScopeId: relay.relayScopeId');
-    expect(launcherStart).toContain("const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';");
-    expect(launcherStart).toContain("supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh'");
-    expect(launcherStart).toContain('transportConversation,');
-    expect(launcherStart).not.toContain("error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')");
-    expect(launcherStart).not.toContain("['pending_release', 'dispatching'].includes(existing.status)");
-    expect(launcherStart).toContain('const relay = beginInitialControllerRoundDispatch(');
-    expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched;");
-    expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
-    expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
-    expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
-    const controllerReleaseStart = controllerOperations.indexOf("if (operation === 'controller_release')");
-    const controllerRelease = controllerOperations.slice(controllerReleaseStart, launcherStartIndex);
-    expect(controllerRelease).toContain('await runWorkChatgptContinuation({');
-    expect(controllerRelease).toContain('controllerAuthorityId: relay.authorityId');
-    expect(controllerRelease).toContain('relayScopeId: relay.relayScopeId');
-    expect(controllerRelease).not.toContain('await runStandaloneChatgptPrompt({');
-    expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
-    expect(controllerRelease).toContain('authorizationGrantRefs: binding?.authorizationGrantRefs');
-    expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
-    expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
+    expect(controllerOperations).toContain("if (operation !== 'launcher_start') return undefined;");
+    expect(controllerOperations).toContain("if (controllerType === 'chatgpt')");
+    expect(controllerOperations).toContain('await runWorkChatgptContinuation({');
+    expect(controllerOperations).toContain('controllerAuthorityId: relay.authorityId');
+    expect(controllerOperations).toContain('relayScopeId: relay.relayScopeId');
+    expect(controllerOperations).toContain("const transportConversation = args.transport_conversation === 'fresh' ? 'fresh' : 'bound';");
+    expect(controllerOperations).toContain("transportConversation === 'bound' && !explicitConversationUrl && supervisorBoundary.status === 'conversation_pending'");
+    expect(controllerOperations).toContain('await bindCurrentWorkflowSupervisorConversationForWork(store, workId)');
+    expect(controllerOperations).toContain("if (currentConversation.status !== 'bound')");
+    expect(controllerOperations).toContain("supervisorBoundary.status === 'outer_turn' && transportConversation !== 'fresh' && !adoptedCurrentConversation");
+    expect(controllerOperations).toContain('await ensureWorkflowSupervisorEnrollmentForWork(store, workId)');
+    expect(controllerOperations).toContain('continuationDispatched: false');
+    expect(controllerOperations).toContain('transportConversation,');
+    expect(controllerOperations).toContain('const relay = beginInitialControllerRoundDispatch(');
+    expect(controllerOperations).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
+    expect(controllerOperations.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(controllerOperations.indexOf('const launched = await launchSuperController'));
   });
 
   test('resolving a provider Handoff rearms the same round and triggers only the exact Work repository-event continuation schedule', async () => {

@@ -10,8 +10,6 @@ import {
   buildEngineeringBlockerDispositionReceipt,
   buildEngineeringContextReceipt,
   engineeringWorkProfileForRisk,
-  evaluationPromotionReceiptArchitectureEvidence,
-  appendVerificationRecord,
   appendWorkEvidence,
   appendWorkHandoffRef,
   createWorkContract,
@@ -22,8 +20,6 @@ import {
   readActiveWorkCandidates,
   recordWorkEvidenceState,
   recordWorkScopeEvidence,
-  recordWorkImplementationReview,
-  requestWorkImplementationReview,
   reviseWorkSemanticContext,
   summarizeWorkContract,
   transitionWorkContractPhase,
@@ -38,27 +34,15 @@ import {
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
-import { hasSettledWorkDeliveryReceipt, recordWorkDeliveryReceipt } from '../execution/work-completion-authority';
 import { effectiveCurrentWorkVerificationRecords, evaluateWorkCompletionEvidence, evaluateWorkImplementationEvidence } from '../execution/work-evidence-policy';
+import { hasSettledWorkDeliveryReceipt } from '../execution/work-completion-authority';
 import { currentRequirementSemanticRevision, readRequirement } from '../persistence/requirement-store';
 import {
-  classifyVerificationOutcome,
   normalizeCheckIds,
   reconcileVerificationHistory,
   type CheckDefinitionLike,
 } from './check-normalization';
 import { evaluatePolicyGate } from './policy-gate';
-import {
-  assertImplementationReviewPreDeliveryBoundary,
-  implementationReviewChangedPathDigest,
-  latestImplementationReview,
-  normalizeImplementationReviewChangedPaths,
-  workRequiresImplementationReview,
-  type ImplementationReviewDecision,
-  type ImplementationReviewCandidateIdentity,
-  type WorkImplementationReviewFinding,
-  type WorkImplementationReviewRecord,
-} from '../../../../packages/kernel/work/api/index';
 import { buildFacadeResult } from './facade-result';
 import { validateSuggestedNextActions } from './suggested-actions';
 import { buildWorkContinuationSnapshot } from './work-continuation';
@@ -69,7 +53,6 @@ import type {
   PlanContract,
   PolicyDecision,
   SuggestedNextAction,
-  VerificationRecord,
   WorkContract,
   WorkStartFacts,
   WorkKind,
@@ -77,7 +60,7 @@ import type {
 } from './types';
 import { resolveWorkspaceAdmissionConstraint } from '../routing/workspace-admission';
 
-export type GoalWorkloopOperation = 'start' | 'continue' | 'verify' | 'review' | 'finalize' | 'stop';
+export type GoalWorkloopOperation = 'start' | 'continue' | 'stop';
 
 export interface GoalWorkloopContext {
   workStore: WorkContractStoreOptions;
@@ -172,41 +155,6 @@ export interface GoalWorkloopContinueInput {
   };
 }
 
-export interface GoalWorkloopVerifyInput {
-  workId: string;
-  checkId: string;
-  /** Exact Git revision observed by the authoritative Work-bound verification Process. */
-  sourceRevision?: string;
-  /** Exact dirty-workspace content identity observed by the authoritative check. */
-  workspaceFingerprint?: string;
-  /** Stable semantic check-input identity used for exact evidence reuse. */
-  verificationInputFingerprint?: string;
-  /** Bounded command/invocation audit identity; not part of reusable semantic inputs. */
-  commandFingerprint?: string;
-  /** Persistence-safe Process receipt. Accepted only when its Work/repo/check identity matches this verification. */
-  receipt?: VerificationRecord['receipt'];
-  /** When true, simulate infrastructure failure rather than acceptance fail. */
-  infrastructureFailed?: boolean;
-  /** When true and check is valid, record acceptance failure. */
-  checkFailed?: boolean;
-  /** When true, skip without acceptance implication. */
-  skipped?: boolean;
-}
-
-export interface GoalWorkloopReviewInput {
-  workId: string;
-  decision: ImplementationReviewDecision;
-  rationale: string;
-  findings?: WorkImplementationReviewFinding[];
-  /** Trusted evaluator output only. Raw MCP review arguments never populate this field. */
-  evaluationPromotionReceipt?: EvaluationPromotionReceipt;
-}
-
-export interface GoalWorkloopFinalizeInput {
-  workId: string;
-  forceFailed?: boolean;
-}
-
 export interface GoalWorkloopStopInput {
   workId: string;
   reason?: string;
@@ -216,42 +164,6 @@ export interface GoalWorkloopStopInput {
 
 function nowIso(ctx: GoalWorkloopContext): string {
   return ctx.now?.() ?? new Date().toISOString();
-}
-
-function currentImplementationReviewCandidate(
-  ctx: GoalWorkloopContext,
-  work: WorkContract,
-  architectureEvidenceOverride?: ImplementationReviewCandidateIdentity['architectureEvidence'],
-): ImplementationReviewCandidateIdentity {
-  const sourceRevision = ctx.sourceRevision?.trim() ?? '';
-  const verificationWorkspaceFingerprint = ctx.workspaceFingerprint?.trim() ?? '';
-  const workspaceFingerprint = ctx.implementationReviewWorkspaceFingerprint?.trim() ?? '';
-  const changedPaths = normalizeImplementationReviewChangedPaths(
-    ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? [],
-  );
-  if (!sourceRevision || !verificationWorkspaceFingerprint || !workspaceFingerprint) {
-    throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
-  }
-  const latestReview = latestImplementationReview(work.implementationReviews);
-  const retainedArchitectureEvidence = latestReview?.sourceRevision === sourceRevision
-    ? latestReview.architectureEvidence
-    : [];
-  return {
-    sourceRevision,
-    workspaceFingerprint,
-    verificationWorkspaceFingerprint,
-    changedPaths,
-    // Review may cite any verification already recorded for the candidate, but
-    // absence of those receipts never prevents a model from recording review
-    // evidence or continuing the Work.
-    verificationEvidence: [],
-    architectureEvidence: architectureEvidenceOverride ?? retainedArchitectureEvidence,
-  };
-}
-
-function implementationReviewAcceptanceSummary(work: WorkContract): string {
-  const summary = work.acceptanceCriteria.map((criterion) => criterion.trim()).filter(Boolean).join(' | ');
-  return (summary || 'No explicit acceptance criteria; reviewer assessed the Work objective and exact current implementation evidence.').slice(0, 2_000);
 }
 
 function workIdFor(objective: string): string {
@@ -1514,379 +1426,6 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   return buildFacadeResult({ status: 'ok', summary: 'Continue: current Work evidence recorded.', data: { work: summarizeWorkContract(updated), backgroundCompleted: false }, suggestedNextActions: [] });
 }
 
-export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopVerifyInput): FacadeResult {
-  const work = getWorkContract(ctx.workStore, input.workId);
-  if (!work) {
-    return buildFacadeResult({
-      status: 'not_found',
-      summary: `WorkContract ${input.workId} not found.`,
-      data: { workId: input.workId },
-    });
-  }
-
-  const available = ctx.availableChecks ?? work.checks.map((id) => ({ id }));
-  const classified = classifyVerificationOutcome({
-    checkId: input.checkId,
-    available,
-    infrastructureFailed: input.infrastructureFailed,
-    checkFailed: input.checkFailed,
-    skipped: input.skipped,
-  });
-  if (semanticWorkState(work) !== 'open') {
-    const resolvedCheckId = classified.normalizedCheckId ?? classified.checkId;
-    const existing = [...work.checkRefs].reverse().find((record) => record.checkId === resolvedCheckId);
-    const completed = semanticWorkState(work) === 'completed';
-    return buildFacadeResult({
-      status: completed ? 'ok' : 'blocked',
-      summary: `WorkContract ${work.workId} is terminal (${semanticWorkState(work)}); verification was not re-executed.`,
-      data: {
-        work: summarizeWorkContract(work),
-        verification: {
-          checkId: resolvedCheckId,
-          ...(existing ? { outcome: existing.outcome } : {}),
-          terminal: true,
-          idempotent: true,
-          reexecuted: false,
-          isAcceptanceFailure: existing?.outcome === 'valid_fail',
-          isInfrastructureIssue: existing?.outcome === 'invalid_check_id' || existing?.outcome === 'infrastructure_failure',
-          doesNotRequestTaskChanges: existing?.outcome !== 'valid_fail',
-        },
-        backgroundCompleted: false,
-      },
-      evidenceRefs: existing?.evidenceRef ? [existing.evidenceRef] : [],
-      warnings: classified.warnings,
-      suggestedNextActions: [{ label: 'Inspect work via context', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly', confidence: 'high' }],
-    });
-  }
-
-  const at = nowIso(ctx);
-  const resolvedCheckId = classified.normalizedCheckId ?? classified.checkId;
-  const receipt = input.receipt
-    && input.receipt.repoId === work.repoId
-    && input.receipt.workId === work.workId
-    && input.receipt.checkId === resolvedCheckId
-    ? input.receipt
-    : undefined;
-  const sourceRevision = receipt && input.sourceRevision?.trim() ? input.sourceRevision.trim() : undefined;
-  const verificationSummary = receipt
-    ? `${classified.summary} Durable Process receipt ${receipt.receiptId}.`
-    : classified.summary;
-  const record: VerificationRecord = {
-    checkId: resolvedCheckId,
-    outcome: classified.outcome,
-    summary: verificationSummary,
-    recordedAt: at,
-    sourceRevision,
-    workspaceFingerprint: receipt && sourceRevision ? input.workspaceFingerprint : undefined,
-    verificationInputFingerprint: receipt && sourceRevision ? input.verificationInputFingerprint : undefined,
-    commandFingerprint: receipt && sourceRevision ? input.commandFingerprint : undefined,
-    startedAt: receipt?.startedAt,
-    completedAt: receipt?.finishedAt,
-    receipt,
-    evidenceRef: {
-      title: `verification:${classified.outcome}`,
-      summary: verificationSummary,
-      detailLevel: 'summary',
-    },
-  };
-
-  // Supersede prior invalid/infrastructure noise when a valid outcome arrives for the same check.
-  let checkRefs = work.checkRefs;
-  if (classified.outcome === 'valid_pass' || classified.outcome === 'valid_fail') {
-    checkRefs = work.checkRefs.map((existing) => {
-      if (
-        existing.checkId === record.checkId
-        && (existing.outcome === 'invalid_check_id' || existing.outcome === 'infrastructure_failure')
-      ) {
-        return { ...existing, outcome: 'superseded' as const, summary: `Superseded by ${classified.outcome} at ${at}` };
-      }
-      return existing;
-    });
-    updateWorkContract(ctx.workStore, work.workId, { checkRefs });
-  }
-
-  const updated = appendVerificationRecord(ctx.workStore, work.workId, record);
-  if (record.evidenceRef) appendWorkEvidence(ctx.workStore, work.workId, record.evidenceRef);
-
-  const status =
-    classified.outcome === 'invalid_check_id' || classified.outcome === 'infrastructure_failure'
-      ? 'ok'
-      : classified.outcome === 'valid_fail'
-        ? 'failed'
-        : 'ok';
-
-  // A verification result is a durable fact. It never advances a Work phase,
-  // requests review, or chooses a next action on the model's behalf.
-  const suggested = validateSuggestedNextActions([]).actions;
-
-  return buildFacadeResult({
-    status: status === 'failed' ? 'failed' : 'ok',
-    summary: classified.summary,
-    data: {
-      work: summarizeWorkContract(updated),
-      verification: {
-        checkId: record.checkId,
-        outcome: classified.outcome,
-        isAcceptanceFailure: classified.isAcceptanceFailure,
-        isInfrastructureIssue: classified.isInfrastructureIssue,
-        // Explicitly separate pollution classes for ChatGPT.
-        doesNotRequestTaskChanges: !classified.isAcceptanceFailure,
-      },
-      backgroundCompleted: false,
-    },
-    warnings: classified.warnings,
-    evidenceRefs: record.evidenceRef ? [record.evidenceRef] : [],
-    suggestedNextActions: suggested,
-  });
-}
-
-export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopReviewInput): FacadeResult {
-  let work = getWorkContract(ctx.workStore, input.workId);
-  if (!work) return buildFacadeResult({ status: 'not_found', summary: `WorkContract ${input.workId} not found.`, data: { workId: input.workId } });
-  if (semanticWorkState(work) !== 'open') {
-    return buildFacadeResult({ status: 'blocked', summary: `WorkContract ${work.workId} is terminal (${semanticWorkState(work)}); implementation review was not recorded.`, data: { work: summarizeWorkContract(work) } });
-  }
-  const reviewerPrincipalId = ctx.principalId?.trim() ?? '';
-  if (!reviewerPrincipalId) {
-    return buildFacadeResult({ status: 'blocked', summary: 'WORK_IMPLEMENTATION_REVIEW_REVIEWER_REQUIRED: authenticated reviewer principal is required.', data: { work: summarizeWorkContract(work) } });
-  }
-  if (!input.rationale?.trim()) {
-    return buildFacadeResult({ status: 'blocked', summary: 'WORK_IMPLEMENTATION_REVIEW_RATIONALE_REQUIRED: explicit review rationale is required.', data: { work: summarizeWorkContract(work) } });
-  }
-  try {
-    const promotionEvidence = input.evaluationPromotionReceipt
-      ? [evaluationPromotionReceiptArchitectureEvidence(input.evaluationPromotionReceipt, ctx.sourceRevision?.trim() ?? '')]
-      : undefined;
-    const candidate = currentImplementationReviewCandidate(ctx, work, promotionEvidence);
-    recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: [...candidate.changedPaths] });
-    work = getWorkContract(ctx.workStore, work.workId) ?? work;
-    const at = nowIso(ctx);
-    const review: WorkImplementationReviewRecord = {
-      schemaVersion: 1,
-      reviewId: `impl-review-${randomUUID().slice(0, 12)}`,
-      workId: work.workId,
-      reviewerPrincipalId,
-      decision: input.decision,
-      rationale: input.rationale.trim().slice(0, 4_000),
-      findings: (input.findings ?? []).slice(0, 100).map((finding) => ({
-        severity: finding.severity,
-        category: finding.category.trim().slice(0, 160),
-        summary: finding.summary.trim().slice(0, 1_000),
-        ...(finding.path?.trim() ? { path: finding.path.trim() } : {}),
-        ...(finding.symbol?.trim() ? { symbol: finding.symbol.trim().slice(0, 240) } : {}),
-      })),
-      sourceRevision: candidate.sourceRevision,
-      workspaceFingerprint: candidate.workspaceFingerprint,
-      verificationWorkspaceFingerprint: candidate.verificationWorkspaceFingerprint,
-      changedPaths: [...candidate.changedPaths],
-      changedPathDigest: implementationReviewChangedPathDigest(candidate.changedPaths),
-      acceptanceCriteriaSummary: implementationReviewAcceptanceSummary(work),
-      verificationEvidence: [...candidate.verificationEvidence],
-      architectureEvidence: [...(candidate.architectureEvidence ?? [])],
-      recordedAt: at,
-    };
-    const updated = recordWorkImplementationReview(ctx.workStore, work.workId, review);
-    const suggested = validateSuggestedNextActions([]).actions;
-    const persisted = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
-    return buildFacadeResult({
-      status: input.decision === 'blocked' ? 'blocked' : 'ok',
-      summary: `Implementation review ${review.reviewId}: ${input.decision}.`,
-      data: { work: summarizeWorkContract(persisted), review },
-      suggestedNextActions: suggested,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return buildFacadeResult({ status: 'blocked', summary: message, data: { work: summarizeWorkContract(work) }, suggestedNextActions: suggestedForWork(work) });
-  }
-}
-
-export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopFinalizeInput): FacadeResult {
-  const work = getWorkContract(ctx.workStore, input.workId);
-  if (!work) {
-    return buildFacadeResult({
-      status: 'not_found',
-      summary: `WorkContract ${input.workId} not found.`,
-      data: { workId: input.workId },
-    });
-  }
-
-  if (semanticWorkState(work) === 'cancelled') {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `WorkContract ${work.workId} was cancelled; finalize is not allowed.`,
-      data: { work: summarizeWorkContract(work) },
-    });
-  }
-
-  if (semanticWorkState(work) === 'completed' && !work.completionReceipt) {
-    return buildFacadeResult({
-      status: 'ok',
-      summary: `FINALIZE_COMPATIBILITY_NOOP: Work ${work.workId} is already semantically completed; no delivery/effect receipt is required for semantic closure.`,
-      data: {
-        work: summarizeWorkContract(work),
-        semanticWorkState: 'completed',
-        semanticCompletionOnly: true,
-        completionReceipt: null,
-        idempotent: true,
-        hiddenFailure: false,
-      },
-      evidenceRefs: work.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [],
-    });
-  }
-
-  // A Work-owned delivery/effect receipt is durable physical evidence only.
-  // Repository receipts are idempotent only while their exact validation remains
-  // current; same-Work repairs deliberately stale that authority before mutation.
-  if (hasSettledWorkDeliveryReceipt(work)) {
-    return buildFacadeResult({
-      status: 'ok',
-      summary: `Finalize result: delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
-      data: {
-        work: summarizeWorkContract(work),
-        deliverySettled: true,
-        completionReceipt: work.completionReceipt,
-        idempotent: true,
-        hiddenFailure: false,
-      },
-      evidenceRefs: work.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read Work before deciding semantic completion', tool: 'rh_work', operation: 'work_get', payload: { work_id: work.workId }, risk: 'readonly' }],
-    });
-  }
-
-  const completionEvidence = evaluateWorkCompletionEvidence(
-    work,
-    ctx.sourceRevision,
-    ctx.workspaceFingerprint,
-    ctx.workBoundProcessEvidenceIds,
-    ctx.workspaceChangedPaths,
-  );
-  const history = completionEvidence.history;
-
-  // Verification/review sufficiency is model/user judgment. Finalize may use
-  // concrete evidence to construct a domain receipt, but it never writes a Work
-  // failure/phase or blocks semantic completion based on an engineering workflow.
-  void input.forceFailed;
-  // Read-only review finalization records an exact no-change delivery fact only.
-  // Findings never gate semantic completion; the model/user may later call work_complete.
-  if (work.workKind === 'read_only_review' && !work.completionReceipt) {
-    const sourceDrift = work.baseRevision?.trim() && ctx.sourceRevision?.trim() && work.baseRevision !== ctx.sourceRevision
-      ? `source drifted from frozen base ${work.baseRevision} to ${ctx.sourceRevision}`
-      : ctx.workspaceChangedPaths === undefined
-        ? 'workspace changed-path proof is unavailable'
-        : ctx.workspaceChangedPaths.length > 0
-          ? `workspace is not unchanged: ${[...new Set(ctx.workspaceChangedPaths)].slice(0, 12).join(', ')}`
-          : undefined;
-    if (sourceDrift) {
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `READ_ONLY_REVIEW_SOURCE_IDENTITY_REQUIRED: read-only review ${work.workId} cannot claim no-change delivery because ${sourceDrift}.`,
-        data: { work: summarizeWorkContract(work), sourceIdentityProven: false },
-      });
-    }
-    const reviewEvidence = work.readOnlyReviewEvidence!;
-    const recordedAt = nowIso(ctx);
-    const delivered = recordWorkDeliveryReceipt(
-      ctx.workStore,
-      work.workId,
-      {
-        schemaVersion: 1,
-        receiptId: `ROR-WORK-${randomUUID()}`,
-        source: 'read_only_review',
-        workId: work.workId,
-        baseRevision: work.baseRevision!,
-        sourceRevision: ctx.sourceRevision!,
-        ...(ctx.workspaceFingerprint ? { workspaceFingerprint: ctx.workspaceFingerprint } : {}),
-        workspaceChangedPaths: [],
-        inspectedPaths: reviewEvidence.inspectedPaths,
-        findingCount: 0,
-        recordedAt,
-      },
-      'completed_no_change',
-      'read_only_review',
-    );
-    return buildFacadeResult({
-      status: 'ok',
-      summary: `Finalize result: clean no-change review evidence recorded for ${work.workId}; semantic Work completion remains explicit.`,
-      data: {
-        work: summarizeWorkContract(delivered),
-        deliverySettled: true,
-        completionOutcome: 'completed_no_change',
-        completionReceipt: delivered.completionReceipt,
-        inspectedPathCount: reviewEvidence.inspectedPaths.length,
-        hiddenFailure: false,
-      },
-      evidenceRefs: delivered.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read Work before deciding semantic completion', tool: 'rh_work', operation: 'work_get', payload: { work_id: work.workId }, risk: 'readonly' }],
-    });
-  }
-
-  // A controller-local effect finalize records durable result evidence only.
-  // It never decides semantic Work completion. Remote effects follow the same boundary.
-  if (work.workKind === 'local_effect' && !work.completionReceipt && completionEvidence.durableResultEvidence) {
-    const recordedAt = nowIso(ctx);
-    const delivered = recordWorkDeliveryReceipt(
-      ctx.workStore,
-      work.workId,
-      {
-        schemaVersion: 1,
-        receiptId: `LFX-WORK-${randomUUID()}`,
-        source: 'local_effect',
-        workId: work.workId,
-        operation: 'controller_work/local_effect',
-        target: { kind: 'controller_local', id: work.workId },
-        changed: true,
-        recordedAt,
-      },
-      'completed_local',
-      'local_effect',
-    );
-    return buildFacadeResult({
-      status: 'ok',
-      summary: `Finalize result: delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
-      data: {
-        work: summarizeWorkContract(delivered),
-        deliverySettled: true,
-        completionReceipt: delivered.completionReceipt,
-        validPasses: history.validPasses,
-        hiddenFailure: false,
-      },
-      evidenceRefs: delivered.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [{ label: 'Read Work before deciding semantic completion', tool: 'rh_work', operation: 'work_get', payload: { work_id: work.workId }, risk: 'readonly' }],
-    });
-  }
-
-  if (!work.completionReceipt) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `Finalize has no concrete delivery/effect receipt for ${work.workId}; semantic Work state is unchanged.`,
-      data: { work: summarizeWorkContract(work), deliverySettled: false, deliveryReceiptRequired: true },
-      suggestedNextActions: [],
-    });
-  }
-
-  const updated = getWorkContract(ctx.workStore, work.workId)!;
-  return buildFacadeResult({
-    status: 'ok',
-    summary: `Finalize result: physical delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
-    data: {
-      work: summarizeWorkContract(updated),
-      deliverySettled: Boolean(updated.completionReceipt),
-      validPasses: history.validPasses,
-      hiddenFailure: false,
-    },
-    evidenceRefs: work.evidenceRefs.slice(0, 5),
-    suggestedNextActions: [
-      {
-        label: 'Read controller status',
-        tool: 'rh_status',
-        operation: 'get',
-        risk: 'readonly',
-      },
-    ],
-  });
-}
-
 export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopStopInput): FacadeResult {
   const work = getWorkContract(ctx.workStore, input.workId);
   if (!work) {
@@ -2047,45 +1586,6 @@ export function runGoalWorkloop(
         engineeringBlocker,
       });
     }
-    case 'verify':
-      return verifyGoalWorkloop(ctx, {
-        workId: String(args.work_id ?? ''),
-        checkId: String(args.check_id ?? args.checkId ?? ''),
-        infrastructureFailed: args.infrastructure_failed === true,
-        checkFailed: args.check_failed === true,
-        skipped: args.skipped === true,
-      });
-    case 'review': {
-      if (args.review_decision !== 'approved' && args.review_decision !== 'changes_required' && args.review_decision !== 'blocked') {
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: 'WORK_IMPLEMENTATION_REVIEW_DECISION_REQUIRED: operation=review requires an explicit approved, changes_required, or blocked decision.',
-          data: { workId: String(args.work_id ?? '') },
-        });
-      }
-      return reviewGoalWorkloop(ctx, {
-        workId: String(args.work_id ?? ''),
-        decision: args.review_decision,
-        rationale: typeof args.review_rationale === 'string' ? args.review_rationale : '',
-        findings: Array.isArray(args.implementation_review_findings)
-          ? args.implementation_review_findings
-              .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
-              .map((value) => ({
-                severity: value.severity === 'critical' || value.severity === 'high' || value.severity === 'medium' || value.severity === 'low' || value.severity === 'info' ? value.severity : 'info',
-                category: typeof value.category === 'string' ? value.category : '',
-                summary: typeof value.summary === 'string' ? value.summary : '',
-                ...(typeof value.path === 'string' ? { path: value.path } : {}),
-                ...(typeof value.symbol === 'string' ? { symbol: value.symbol } : {}),
-              }))
-          : undefined,
-        evaluationPromotionReceipt: trusted.evaluationPromotionReceipt,
-      });
-    }
-    case 'finalize':
-      return finalizeGoalWorkloop(ctx, {
-        workId: String(args.work_id ?? ''),
-        forceFailed: args.force_failed === true,
-      });
     case 'stop':
       return stopGoalWorkloop(ctx, {
         workId: String(args.work_id ?? ''),
