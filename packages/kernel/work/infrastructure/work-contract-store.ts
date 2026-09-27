@@ -1661,34 +1661,12 @@ export function transitionWorkContractPhase(
   },
 ): WorkContract {
   return updateWorkContractInternal(options, workId, (current, at) => {
-    if (input.phase === 'review') {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_REQUEST_API');
-    }
-    if (input.phase === 'delivery'
-      && current.phase !== 'delivery'
-      && workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [], current.engineeringContext?.riskClass)) {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
-    }
     const phaseEvidence = transitionPhaseEvidence(current, input.phase, {
       status: input.status,
       summary: input.summary,
       evidenceRefs: input.evidenceRefs,
       recordedAt: at,
     });
-    if (
-      input.phase === 'delivery'
-      && current.phase !== 'delivery'
-      && current.phaseEvidence.review.state !== 'satisfied'
-      && !workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [], current.engineeringContext?.riskClass)
-    ) {
-      phaseEvidence.review = {
-        state: 'skipped',
-        source: 'recorded',
-        summary: 'Implementation review is not required for this Work candidate under the current risk policy.',
-        evidenceRefs: [],
-        recordedAt: at,
-      };
-    }
     if (input.state) phaseEvidence[input.phase] = { ...phaseEvidence[input.phase], state: input.state };
     return {
       phase: input.phase,

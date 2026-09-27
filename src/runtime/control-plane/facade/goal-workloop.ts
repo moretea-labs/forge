@@ -1624,35 +1624,10 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const changedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
-  if (workRequiresImplementationReview(work.workKind, changedPaths, work.engineeringContext?.riskClass)) {
-    recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: changedPaths });
-    transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
-      phase: 'verification',
-      state: 'satisfied',
-      summary: 'Exact Work completion evidence proves the current candidate is verified and eligible for implementation review.',
-      evidenceRefs: work.evidenceRefs,
-    });
-    requestWorkImplementationReview(ctx.workStore, work.workId, 'Implementation and verification evidence are complete; explicit Controller implementation review is required before delivery.');
-    const suggested = validateSuggestedNextActions([implementationReviewSuggestedAction(work.workId)]).actions;
-    const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
-    return buildFacadeResult({
-      status: 'ok',
-      summary: 'Continue: implementation and verification evidence are complete; explicit implementation review is next.',
-      data: { work: summarizeWorkContract(updated), backgroundCompleted: false, nextStep: 'review' },
-      suggestedNextActions: suggested,
-    });
-  }
-  const suggested = validateSuggestedNextActions([{
-    label: 'Finalize work', tool: 'rh_work', operation: 'finalize', payload: { work_id: work.workId }, risk: 'readonly', confidence: 'high',
-  }]).actions;
-  transitionWorkContractPhase(ctx.workStore, work.workId, {
-    status: 'running', phase: 'delivery', state: 'active',
-    summary: 'Work evidence is complete; this candidate does not require implementation review and semantic finalization is next.', evidenceRefs: work.evidenceRefs,
-  });
-  const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
-  return buildFacadeResult({ status: 'ok', summary: 'Continue: evidence is complete; ready to finalize.', data: { work: summarizeWorkContract(updated), backgroundCompleted: false, nextStep: 'finalize' }, suggestedNextActions: suggested });
+  // Completion evidence is observational. It cannot choose a review/finalize
+  // transition or tell the model which capability to invoke next.
+  const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: [] });
+  return buildFacadeResult({ status: 'ok', summary: 'Continue: current Work evidence recorded.', data: { work: summarizeWorkContract(updated), backgroundCompleted: false }, suggestedNextActions: [] });
 }
 
 export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopVerifyInput): FacadeResult {

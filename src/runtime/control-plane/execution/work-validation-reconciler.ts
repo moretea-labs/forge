@@ -139,14 +139,6 @@ export function projectWorkValidationOutcome(
       evidenceRefs: contract.evidenceRefs,
     });
     recordWorkEvidenceState(options, contractId, 'valid');
-    if (workRequiresImplementationReview(verified.workKind, verified.scopeEvidence?.actualChangedPaths ?? [])) {
-      requestWorkImplementationReview(
-        options,
-        contractId,
-        'Validation receipts passed; explicit Controller implementation review is required before delivery.',
-      );
-      return;
-    }
     transitionWorkContractPhase(options, contractId, {
       phase: 'delivery',
       status: 'running',
