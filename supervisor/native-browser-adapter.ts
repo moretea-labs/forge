@@ -427,7 +427,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             graceMs: this.deps.providerIdleGraceMs,
           });
           recoveryAuthorized = providerObservation.state === 'recovery_reserved';
-          if (providerBusy && !providerFailureCode) continue;
+          if (providerBusy && !providerFailureCode && !recoveryAuthorized) continue;
           if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
           poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
         }
@@ -436,7 +436,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         // An already-present send command must not steal the composer from a live
         // provider turn. Only the causal recovery observation above authorizes a
         // send while the latest committed role is still the user.
-        if (providerBusy && !providerFailureCode) continue;
+        if (providerBusy && !providerFailureCode && !recoveryAuthorized) continue;
         if (latestRoleStillUser && !providerFailureCode && !recoveryAuthorized) continue;
         if (poll.command) await this.executeCommand(this.pages.get(task.conversationId) ?? page, poll.command, task);
       } catch (error) {
@@ -633,6 +633,32 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   private async executeCommand(page: WorkflowSupervisorNativePage, command: WorkflowSupervisorBrowserCommand, task: WorkflowSupervisorBrowserTask): Promise<void> {
     let snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
+    // A recovery effect may be authorized because an enrolled provider turn stayed
+    // visually `generating` without observable progress for the bounded stale
+    // window. Do not type into a live composer. Stop only that exact Forge-owned
+    // conversation turn, verify the provider left generating state, then continue
+    // through the normal effect dispatch/reconciliation fence.
+    if (command.kind === 'recovery' && snapshot.isGenerating) {
+      const stopped = await page.evaluate<boolean>(`(() => {
+        const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+        const stop = [
+          '[data-testid="stop-button"]',
+          '[data-testid*="stop-button"]',
+          'button[aria-label*="Stop"]',
+          'button[aria-label*="停止"]',
+        ].map((selector) => document.querySelector(selector)).find(visible);
+        if (!(stop instanceof HTMLElement)) return false;
+        stop.click();
+        return true;
+      })()`);
+      if (!stopped) return;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await this.deps.sleep(100);
+        snapshot = await this.deps.snapshot(page, { includeUserHistory: true, includePageText: true });
+        if (!snapshot.isGenerating) break;
+      }
+      if (snapshot.isGenerating) return;
+    }
     let mode = command.mode;
     if (mode === 'send') {
       const begin = this.control.browserBeginEffect({
