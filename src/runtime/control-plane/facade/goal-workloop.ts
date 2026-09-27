@@ -10,7 +10,6 @@ import {
   buildEngineeringBlockerDispositionReceipt,
   buildEngineeringContextReceipt,
   engineeringWorkProfileForRisk,
-  evaluateEngineeringAdmission,
   evaluationPromotionReceiptArchitectureEvidence,
   appendVerificationRecord,
   appendWorkEvidence,
@@ -253,18 +252,6 @@ function currentImplementationReviewCandidate(
 function implementationReviewAcceptanceSummary(work: WorkContract): string {
   const summary = work.acceptanceCriteria.map((criterion) => criterion.trim()).filter(Boolean).join(' | ');
   return (summary || 'No explicit acceptance criteria; reviewer assessed the Work objective and exact current implementation evidence.').slice(0, 2_000);
-}
-
-function implementationReviewSuggestedAction(workId: string): SuggestedNextAction {
-  return {
-    label: 'Review implementation',
-    tool: 'rh_work',
-    operation: 'review',
-    payload: { work_id: workId },
-    risk: 'workspace_write',
-    confidence: 'high',
-    reason: 'Verification is complete; an explicit Controller implementation decision is required before delivery.',
-  };
 }
 
 function workIdFor(objective: string): string {
@@ -632,24 +619,9 @@ export function startGoalWorkloop(
   }
   const engineeringMutation = resolvedWorkKind === 'repository_change'
     && (input.request.mutation ?? input.request.risk !== 'readonly');
-  const engineeringAdmission = evaluateEngineeringAdmission({
-    profile: engineeringProfile,
-    receipt: engineeringContext,
-    mutation: engineeringMutation,
-  });
-  if (!engineeringAdmission.allowed) {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `${engineeringAdmission.code}: ${engineeringProfile.riskClass} mutation is missing required pre-mutation engineering evidence.`,
-      data: {
-        executionStarted: false,
-        workContractCreated: false,
-        engineeringProfile,
-        engineeringContext,
-        missingEngineeringEvidence: engineeringAdmission.missing,
-      },
-    });
-  }
+  // Engineering context is durable model/project guidance only. Safety and
+  // capability admission is enforced by the concrete executor, never here.
+  void engineeringMutation;
   const available = ctx.availableChecks ?? [];
   const workspaceMode = placementConstraint.workspaceMode;
   const activeAdmissionSnapshot = readActiveWorkCandidates({ ...ctx.workStore, limit: 100 });
@@ -1097,40 +1069,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         data: { work: summarizeWorkContract(work), engineeringEvidenceUpdated: false },
       });
     }
-    const priorDesign = work.engineeringContext?.evidence.designDecisionReceipt;
-    if (work.engineeringContext?.designState === 'revisit_required' && priorDesign) {
-      const nextDesign = refreshedEngineeringContext.evidence.designDecisionReceipt;
-      if (!nextDesign || nextDesign.supersedesReceiptId !== priorDesign.receiptId) {
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: 'ENGINEERING_DESIGN_SUPERSESSION_REQUIRED: same-root-cause re-entry requires a new design receipt that explicitly supersedes the prior design.',
-          data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId },
-        });
-      }
-      if (refreshedEngineeringContext.evidence.independentCritiqueReceipt?.decision !== 'approved') {
-        return buildFacadeResult({
-          status: 'blocked',
-          summary: 'ENGINEERING_DESIGN_CRITIQUE_APPROVAL_REQUIRED: same-root-cause re-entry requires an independently approved critique of the superseding design.',
-          data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId, nextDesignReceiptId: nextDesign.receiptId },
-        });
-      }
-    }
     work = updateWorkContract(ctx.workStore, work.workId, { engineeringContext: refreshedEngineeringContext });
-  }
-
-  if (work.engineeringContext?.designState === 'revisit_required') {
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: 'ENGINEERING_DESIGN_REVISIT_REQUIRED: same-root-cause design authority must be explicitly superseded and independently approved before further Work mutation.',
-      data: { work: summarizeWorkContract(work) },
-      suggestedNextActions: [{
-        label: 'Refresh design evidence',
-        tool: 'rh_context',
-        operation: 'search',
-        payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
-        risk: 'readonly',
-      }],
-    });
   }
 
   if (input.engineeringBlocker) {
@@ -1192,37 +1131,10 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         detailLevel: 'summary',
       });
     } else {
-      const returnToDesign = blocker.action === 'return_to_design';
-      const formalDesignReentryRequired = returnToDesign && work.engineeringContext?.designState === 'revisit_required';
-      const observeProfileWithoutPriorDesign = returnToDesign
-        && !formalDesignReentryRequired
-        && (work.engineeringContext?.riskClass === 'low' || work.engineeringContext?.riskClass === 'normal');
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: observeProfileWithoutPriorDesign
-          ? `Same-root-cause blocker ${blocker.blockerId} was recorded. This observe-profile Work has no formal Design authority to supersede, so it remains governed by its existing engineering risk profile.`
-          : returnToDesign
-            ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
-            : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
-        data: {
-          work: summarizeWorkContract(work),
-          engineeringBlocker: blocker,
-          ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
-          nextStep: observeProfileWithoutPriorDesign ? 'continue' : blocker.action,
-        },
-        suggestedNextActions: observeProfileWithoutPriorDesign
-          ? [{ label: 'Continue Work under existing engineering profile', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write' }]
-          : returnToDesign
-            ? [{
-                label: 'Refresh design evidence',
-                tool: 'rh_context',
-                operation: 'search',
-                payload: { work_id: work.workId, query: 'Refresh current source and design evidence for this Work before engineering re-entry.' },
-                risk: 'readonly',
-              }]
-            : linkedWork
-              ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
-              : [],
+      work = appendWorkEvidence(ctx.workStore, work.workId, {
+        title: 'engineering blocker observation',
+        summary: `Recorded ${blocker.classification} blocker ${blocker.blockerId}; it is model guidance, not a Work continuation gate.`,
+        detailLevel: 'summary',
       });
     }
   }

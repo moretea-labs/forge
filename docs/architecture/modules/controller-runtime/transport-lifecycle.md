@@ -11,7 +11,7 @@
 
 - Modern `server/discover` and subsequent 2026-07-28 requests are handled by the SDK v2 per-request handler and do not require or emit `Mcp-Session-Id`.
 - Durable Work, Process, and ControllerRound identity is independent from both modern request bindings and legacy transport sessions.
-- A newly created Work is claimed with an opaque Work-bound controller capability immediately; modern sessionless follow-up requests must present that exact authority. Legacy owner records without a capability digest require an explicit `controller_claim` authority upgrade and are never accepted by principal identity alone.
+- A newly created Work may receive an opaque Work-bound controller capability for Runtime recovery and replay fencing. That capability is internal to normal model-facing Work execution: the Runtime/Supervisor establishes, rotates, and recovers it. Legacy owner records without a capability digest may use the explicit `controller_claim` compatibility upgrade; ordinary model-facing Work operations never require it.
 - Legacy 2025-era traffic is classified mechanically by the SDK and routed to one bounded stateful compatibility registry shared by all public MCP HTTP routes.
 - On the legacy path, route and authenticated principal must match the stored session on GET, POST, and DELETE; active POST work is protected from capacity eviction.
 - Legacy stream-only sessions are reclaimable through client DELETE, explicit prior-session replacement, lease expiry, absolute lifetime, or oldest-safe capacity eviction.

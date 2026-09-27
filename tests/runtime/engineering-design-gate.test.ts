@@ -230,7 +230,7 @@ describe('Stage7C upstream engineering authority', () => {
     expect(unrelated.blockerDispositions?.at(-1)?.action).toBe('linked_work');
   });
 
-  test('same-root Work re-entry requires an explicit superseding design before continue can resume', () => {
+  test('same-root design observations remain durable guidance without blocking Work continuation', () => {
     const root = temp('stage7c-design-supersession-');
     const context = {
       workStore: { root: join(root, 'work') },
@@ -260,23 +260,15 @@ describe('Stage7C upstream engineering authority', () => {
         rationale: 'The blocker invalidates the prior lifecycle assumption.',
       },
     });
-    expect(blocked.status).toBe('blocked');
-    expect(blocked.suggestedNextActions).toContainEqual(expect.objectContaining({
-      label: 'Refresh design evidence',
-      tool: 'rh_context',
-      operation: 'search',
-      payload: expect.objectContaining({ work_id: workId!, query: expect.any(String) }),
-    }));
+    expect(blocked.summary).not.toContain('ENGINEERING_DESIGN');
     expect(getWorkContract(context.workStore, workId!)?.engineeringContext?.designState).toBe('revisit_required');
 
     const bypass = continueGoalWorkloop(context, { workId: workId!, allowedPaths: ['src/**'] });
-    expect(bypass.status).toBe('blocked');
-    expect(bypass.summary).toContain('ENGINEERING_DESIGN_REVISIT_REQUIRED');
-    expect(getWorkContract(context.workStore, workId!)?.allowedPaths).not.toContain('src/**');
+    expect(bypass.summary).not.toContain('ENGINEERING_DESIGN');
+    expect(getWorkContract(context.workStore, workId!)?.allowedPaths).toContain('src/**');
 
     const withoutSupersession = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a') });
-    expect(withoutSupersession.status).toBe('blocked');
-    expect(withoutSupersession.summary).toContain('ENGINEERING_DESIGN_SUPERSESSION_REQUIRED');
+    expect(withoutSupersession.summary).not.toContain('ENGINEERING_DESIGN');
 
     const prior = baseEvidence.designDecisionReceipt!;
     const nextDesign = buildDesignDecisionContractReceipt({
@@ -304,8 +296,7 @@ describe('Stage7C upstream engineering authority', () => {
       recordedAt: '2026-09-03T00:01:00.000Z',
     });
     const critiqueBlocked = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: refreshed });
-    expect(critiqueBlocked.status).toBe('blocked');
-    expect(critiqueBlocked.summary).toContain('ENGINEERING_DESIGN_CRITIQUE_APPROVAL_REQUIRED');
+    expect(critiqueBlocked.summary).not.toContain('ENGINEERING_DESIGN');
 
     refreshed.independentCritiqueReceipt = buildIndependentCritiqueReceipt({
       sourceRevision: 'revision-a',
@@ -388,10 +379,8 @@ describe('Stage7C upstream engineering authority', () => {
         linkedWorkId: owningWorkId,
       },
     });
-    expect(declared.status).toBe('blocked');
-    const declaredData = declared.data as { engineeringBlocker?: { linkedWorkId?: string }; linkedWork?: { workId?: string } };
-    expect(declaredData.engineeringBlocker?.linkedWorkId).toBe(owningWorkId);
-    expect(declaredData.linkedWork?.workId).toBe(owningWorkId);
+    expect(declared.summary).not.toContain('ENGINEERING_BLOCKER');
+    expect(getWorkContract(context.workStore, workId)?.engineeringContext?.blockerDispositions?.at(-1)?.linkedWorkId).toBe(owningWorkId);
     expect(getWorkContract(context.workStore, workId)?.engineeringContext?.semanticScope).toEqual(semanticScope);
 
     // An unknown declared owner is refused rather than silently created.
