@@ -195,6 +195,44 @@ describe('Workflow Supervisor macOS native browser adapter', () => {
     expect(snapshot.providerFailureText).not.toContain('effect marker prompt');
   });
 
+  test('reads current ChatGPT semantic-key message nodes when legacy author-role attributes are absent', async () => {
+    const userNode = {
+      innerText: 'semantic user prompt',
+      getAttribute: (name: string) => name === 'data-chatgpt-search-unit-key' ? 'fallback-turn-15:0:user' : null,
+    };
+    const assistantNode = {
+      innerText: 'C semantic-proof',
+      getAttribute: (name: string) => name === 'data-content-search-unit-key' ? 'fallback-turn-15:2:assistant' : null,
+    };
+    const fakeDocument = {
+      title: 'ChatGPT',
+      body: { innerText: 'visible conversation' },
+      querySelector: () => undefined,
+      querySelectorAll: (selector: string) => {
+        if (selector.includes('conversation-turn-')) return [];
+        if (selector.includes('role="alert"') || selector.includes('aria-live')) return [];
+        if (selector.includes('data-message-author-role="user"') && selector.includes('data-message-author-role="assistant"')) {
+          return [userNode, assistantNode];
+        }
+        if (selector.includes('data-chatgpt-search-unit-key$=":user"')) return [userNode];
+        if (selector.includes('data-chatgpt-search-unit-key$=":assistant"') || selector.includes('data-content-search-unit-key$=":assistant"')) return [assistantNode];
+        return [];
+      },
+    };
+    const page: WorkflowSupervisorNativePage = {
+      async evaluate<T>(expression: string): Promise<T> {
+        return Function('document', 'location', `return ${expression}`)(fakeDocument, { href: 'https://chatgpt.com/c/test' }) as T;
+      },
+      waitForSelector: async () => ({ attached: true, visible: true }),
+      tabRef: () => undefined,
+    };
+
+    const snapshot = await defaultSnapshot(page);
+    expect(snapshot.latestUserText).toBe('semantic user prompt');
+    expect(snapshot.latestAssistantResponse).toBe('C semantic-proof');
+    expect(snapshot.latestTurnRole).toBe('assistant');
+  });
+
   // Policy since 8a96b43db: a user can close and reopen the exact durable
   // conversation, so its unowned exact tab is adopted and marked instead of
   // opening a duplicate tab. Adoption is a fallback: when this Supervisor still

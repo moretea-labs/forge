@@ -140,7 +140,9 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     };
     const includeUserHistory = ${JSON.stringify(includeUserHistory)};
     const includePageText = ${JSON.stringify(includePageText)};
-    const userTexts = includeUserHistory ? allTexts('[data-message-author-role="user"]') : undefined;
+    const userSelector = '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]';
+    const assistantSelector = '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
+    const userTexts = includeUserHistory ? allTexts(userSelector) : undefined;
     const composer = [
       '[data-testid="composer-text-input"]',
       'div#prompt-textarea[contenteditable="true"]',
@@ -148,7 +150,7 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
       'textarea[name="prompt"]',
       'div[role="textbox"][contenteditable="true"]',
     ].map((selector) => document.querySelector(selector)).find((element) => Boolean(element && element.getClientRects && element.getClientRects().length));
-    const roleNodes = Array.from(nodes('[data-message-author-role="user"], [data-message-author-role="assistant"]'));
+    const roleNodes = Array.from(nodes(userSelector + ', ' + assistantSelector));
     const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
     const latestTurn = (() => {
       const turns = nodes('[data-testid^="conversation-turn-"]');
@@ -158,14 +160,16 @@ export async function defaultSnapshot(page: WorkflowSupervisorNativePage, option
     const snapshot = {
       url: String(location.href || ''),
       title: String(document.title || ''),
-      latestUserText: userTexts ? userTexts.join('\\n') : latestText('[data-message-author-role="user"]'),
-      latestAssistantResponse: latestText('[data-message-author-role="assistant"]'),
+      latestUserText: userTexts ? userTexts.join('\\n') : latestText(userSelector),
+      latestAssistantResponse: latestText(assistantSelector),
       ...(composer ? { composerText: String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '') || '') } : {}),
       providerActivityText: latestTurn,
       // Failure classification must never inspect chat content. A user discussing
       // "429" or "Too many requests" is not evidence that the provider failed.
       providerFailureText: liveProviderStatus.slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
-      latestTurnRole: latestRoleNode?.getAttribute?.('data-message-author-role') || undefined,
+      latestTurnRole: latestRoleNode?.getAttribute?.('data-message-author-role')
+        || (String(latestRoleNode?.getAttribute?.('data-chatgpt-search-unit-key') || latestRoleNode?.getAttribute?.('data-content-search-unit-key') || '').endsWith(':user') ? 'user'
+          : String(latestRoleNode?.getAttribute?.('data-chatgpt-search-unit-key') || latestRoleNode?.getAttribute?.('data-content-search-unit-key') || '').endsWith(':assistant') ? 'assistant' : undefined),
       isGenerating: Boolean(document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')),
     };
     if (includePageText) snapshot.pageText = String(document.body?.innerText ?? document.body?.textContent ?? '').trim().slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS});

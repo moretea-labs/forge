@@ -1,8 +1,8 @@
 (() => {
   const core = globalThis.ForgeWorkflowSupervisorChromeCore;
   if (!core) throw new Error('FORGE_WORKFLOW_SUPERVISOR_CHROME_CORE_MISSING');
-  const ASSISTANT = '[data-message-author-role="assistant"]';
-  const USER = '[data-message-author-role="user"]';
+  const ASSISTANT = '[data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":assistant"]';
+  const USER = '[data-message-author-role="user"], [data-chatgpt-search-unit-key$=":user"], [data-content-search-unit-key$=":user"]';
   const identity = () => core.parseConversation(location.href);
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
@@ -43,7 +43,12 @@
   const latestTurnRole = () => {
     const nodes = document.querySelectorAll(`${USER}, ${ASSISTANT}`);
     const node = nodes.item(nodes.length - 1);
-    return node?.getAttribute?.('data-message-author-role') ?? undefined;
+    const explicit = node?.getAttribute?.('data-message-author-role');
+    if (explicit) return explicit;
+    const semanticKey = String(node?.getAttribute?.('data-chatgpt-search-unit-key') || node?.getAttribute?.('data-content-search-unit-key') || '');
+    if (semanticKey.endsWith(':user')) return 'user';
+    if (semanticKey.endsWith(':assistant')) return 'assistant';
+    return undefined;
   };
   const providerTurnPending = () => Boolean(
     document.querySelector('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], [data-testid*="stop"], [aria-busy="true"], [data-is-streaming="true"], [data-testid*="streaming"]')
