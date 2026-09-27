@@ -89,10 +89,8 @@ import {
   getConsolePlugin,
   listConsolePlugins,
   toConsoleOperationFeedback,
-  continueConsoleWork,
   delegateConsoleWork,
   dismissConsoleHandoff,
-  finalizeConsoleWork,
   getConsoleHandoff,
   getConsoleWork,
   listConsoleHandoffs,
@@ -102,7 +100,6 @@ import {
   resolveConsoleHandoff,
   setConsoleAccessPolicy,
   startConsoleWork,
-  stopConsoleWork,
   verifyConsoleWork,
 } from "./facade-api";
 import {
@@ -1529,18 +1526,6 @@ export async function startLocalBridgeServer(
     return { ...result, ...feedback, feedback };
   };
 
-  app.post("/api/console/work/continue", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const result = continueConsoleWork(consoleCtx(request), queryString(body.workId) ?? "", queryString(body.note));
-      response.status(result.status === "not_found" ? 404 : result.status === "blocked" || result.status === "failed" ? 409 : 200).json(withFeedback(result));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
   app.post("/api/console/work/verify", async (request, response) => {
     try {
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
@@ -1554,30 +1539,6 @@ export async function startLocalBridgeServer(
         infrastructureFailed: body.infrastructureFailed === true,
       });
       response.status(result.status === "not_found" ? 404 : result.status === "failed" ? 409 : 200).json(withFeedback(result));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/console/work/finalize", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const result = finalizeConsoleWork(consoleCtx(request), queryString(body.workId) ?? "");
-      response.status(result.status === "not_found" ? 404 : result.status === "failed" || result.status === "blocked" ? 409 : 200).json(withFeedback(result));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/console/work/stop", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const result = stopConsoleWork(consoleCtx(request), queryString(body.workId) ?? "", queryString(body.reason));
-      response.status(result.status === "not_found" ? 404 : 200).json(withFeedback(result));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

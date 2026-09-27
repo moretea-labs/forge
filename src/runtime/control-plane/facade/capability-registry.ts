@@ -111,11 +111,11 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     capabilityId: 'repository.git',
     domain: 'repository',
     group: 'git',
-    operationClass: 'finalize',
+    operationClass: 'write',
     risk: 'local_repo_write',
-    exposedVia: 'rh_work',
+    exposedVia: 'rh_context',
     schemaExposure: 'stable_static',
-    summary: 'Use typed Git status, diff, branch, commit, integration, and cleanup handlers without routing arbitrary Git text through a facade RPC.',
+    summary: 'Repository-native typed Git handlers own identity, dirty-path, CAS, lease, conflict, authorization, and idempotency fences; Work completion is not a Git admission gate.',
   },
   {
     capabilityId: 'workflow.durable_work',
@@ -125,7 +125,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Admit, continue, verify, review, finalize, and stop explicitly requested durable Plan/Work through existing typed handlers. Forge stores facts and enforces mechanical fences; the model decides method, checks, review, and completion.',
+    summary: 'Persist and schedule durable semantic Work. Work is open, completed, or cancelled; execution evidence is advisory and never an admission phase.',
   },
   {
     capabilityId: 'platform.ios',

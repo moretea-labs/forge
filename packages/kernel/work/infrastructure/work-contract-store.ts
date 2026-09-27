@@ -119,6 +119,17 @@ export interface WorkSemanticRevisionRecord extends WorkSemanticView {
   recordedAt: string;
 }
 
+export interface CreateWorkSemanticInput {
+  workId: string;
+  objective: string;
+  requestId?: string;
+  requirementId?: string;
+  requirementRevision?: number;
+  planId?: string;
+  planRevision?: number;
+  requestedBy?: 'chatgpt' | 'user' | 'system' | 'scheduler';
+}
+
 export interface ReviseWorkSemanticInput {
   expectedRevision: number;
   objective?: string;
@@ -317,17 +328,18 @@ function sqliteBacked(options: WorkContractStoreOptions): options is WorkContrac
 }
 
 function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
-  const mappedStatus = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
-  // Historical terminal labels without the Work-owned receipt are not
-  // completion authority. Reopen them at delivery so callers can obtain an
-  // exact receipt instead of projecting an unproven success.
-  const status = mappedStatus === 'completed' && !legacy.completionReceipt ? 'ready' : mappedStatus;
+  // One-way Thin Forge cutover: old execution status/phase/check/review data
+  // survives as read-only history, while the canonical lifecycle becomes the
+  // semantic CAS lifecycle. No old failure, readiness, or delivery checkpoint
+  // can keep a Work non-open or prevent an explicit work_complete.
+  const semanticState = semanticWorkState(legacy);
+  const status: WorkContractStatus = semanticState;
   // Phase is a mechanical checkpoint projection only. A legacy row without a
   // persisted phase is admitted at the neutral first checkpoint; terminal
   // status never advances phase, and status is never a phase-transition authority.
   const phase = legacy.completionReceipt
     ? 'cleanup'
-    : mappedStatus === 'completed'
+    : semanticState === 'completed'
       ? 'delivery'
       : legacy.phase ?? 'implementation';
   const legacyDefaults = legacyPhaseEvidence({
@@ -374,6 +386,9 @@ function migrateLegacyWorkContract(legacy: WorkContract): WorkContract {
     scopeRef: semanticScopeRefForWork(legacy),
     executionPlacement: executionPlacementForWork(legacy),
     status,
+    semanticState,
+    semanticRevision: legacy.semanticRevision && legacy.semanticRevision > 0 ? legacy.semanticRevision : 1,
+    semanticUpdatedAt: legacy.semanticUpdatedAt ?? legacy.updatedAt,
     phase,
     phaseEvidence,
     risk: legacy.risk ?? 'medium',
@@ -406,7 +421,10 @@ function storedWorkContractNeedsMigration(contract: WorkContract): boolean {
     && phaseEvidence.verification
     && phaseEvidence.delivery
     && phaseEvidence.cleanup;
-  return contract.schemaVersion !== 3 || Boolean(legacyReviewGap);
+  return contract.schemaVersion !== 3
+    || !['open', 'completed', 'cancelled'].includes(contract.status)
+    || contract.status !== semanticWorkState(contract)
+    || Boolean(legacyReviewGap);
 }
 
 function canonicalizeStoredWorkContract(contract: WorkContract): WorkContract {
@@ -575,6 +593,30 @@ function assertCanonicalWorkAdmissionAllowed(
     WORK_ADMISSION_POLICY_KEY,
   )?.value ?? normalWorkAdmissionPolicy(nowIso(options));
   return assertWorkAdmissionPolicyAllows(policy, input);
+}
+
+export function createWorkSemanticContext(options: WorkContractStoreOptions, input: CreateWorkSemanticInput): WorkContract {
+  const semanticOptions = options.scopeKey?.trim() || !options.repoId?.trim()
+    ? options
+    : { ...options, scopeKey: options.repoId.trim() };
+  return createWorkContract(semanticOptions, {
+    workId: input.workId,
+    repoId: options.repoId?.trim() ?? '',
+    objective: input.objective,
+    acceptanceCriteria: [],
+    constraints: { requireHandoffOnAmbiguity: true },
+    workKind: 'investigation',
+    lifecycleRole: 'primary',
+    requestedBy: input.requestedBy ?? 'chatgpt',
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    ...(input.requirementId?.trim() ? { requirementId: input.requirementId.trim() } : {}),
+    ...(Number.isInteger(input.requirementRevision) ? { requirementRevision: input.requirementRevision } : {}),
+    ...(input.planId?.trim() ? { planId: input.planId.trim() } : {}),
+    ...(Number.isInteger(input.planRevision) ? { planRevision: input.planRevision } : {}),
+    ...(input.requestId?.trim() ? { requestId: input.requestId.trim() } : {}),
+  });
 }
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
@@ -808,14 +850,7 @@ export function acceptSubmittedWorkContract(
       status: 'open',
       requestId,
       submittedOperation: input.operation,
-      suggestedNextActions: [{
-        label: 'Claim controller ownership',
-        tool: 'rh_work',
-        operation: 'controller_claim',
-        risk: 'readonly',
-        confidence: 'high',
-        reason: 'Claim this Work before launching an external SuperController or Process Runtime command.',
-      }],
+      suggestedNextActions: [],
     });
     writeJsonAtomic(recordPath, { requestId, repoId: input.repoId, workId: contract.workId, semanticKey, createdAt: contract.createdAt } satisfies WorkRequestIndexRecord);
     return { contract, deduplicated: false };
@@ -1511,6 +1546,9 @@ export function cancelWorkContract(
     });
     return {
       status: 'cancelled',
+      semanticState: 'cancelled',
+      semanticRevision: currentWorkSemanticRevision(current) + 1,
+      semanticUpdatedAt: at,
       phase: current.phase,
       phaseEvidence,
       dispatchState: 'terminal',

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -227,9 +227,11 @@ describe('Thin capability substrate', () => {
     const controllerHome = tempHome();
 
     // 1) Record a Forge-owned worktree
+    const worktreePath = join(controllerHome, 'forge-isolated-worktree-1');
+    mkdirSync(worktreePath, { recursive: true });
     const worktreeResource = recordOwnedResource(controllerHome, {
       kind: 'worktree',
-      targetRef: '/tmp/forge-isolated-worktree-1',
+      targetRef: worktreePath,
       creator: 'forge:worktree-manager',
       associatedWorkId: 'work-abc',
       retentionIntent: 'temporary',

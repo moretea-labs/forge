@@ -10,7 +10,7 @@ import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from './execution-identity';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
-import { verifyGoalWorkloop } from '../facade/goal-workloop';
+import { recordWorkCheckEvidence } from './work-check-evidence';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import {
   claimsForCheck,
@@ -509,14 +509,7 @@ export async function reconcileEditValidationRun(
     if (session.workId && work) {
       if (!run.sourceRevision || !run.workspaceFingerprint) throw new Error('EDIT_VALIDATION_WORK_IDENTITY_REQUIRED');
       const availableChecks = listControllerChecks(validationRepository.canonicalRoot);
-      const workloopCtx = {
-        workStore: { controllerHome, repoId: validationRepository.repoId },
-        handoffStore: { controllerHome, repoId: validationRepository.repoId },
-        repoId: validationRepository.repoId,
-        availableChecks,
-        sourceRevision: run.sourceRevision,
-        workspaceFingerprint: run.workspaceFingerprint,
-      };
+      const workStore = { controllerHome, repoId: validationRepository.repoId };
       for (const [index, receipt] of receipts.entries()) {
         const checkId = receipt.checkId;
         const projection = projections[index]!;
@@ -526,9 +519,11 @@ export async function reconcileEditValidationRun(
           checkId,
           requestedChecks: work.checks.length ? work.checks : run.checkIds,
         });
-        verifyGoalWorkloop(workloopCtx, {
+        recordWorkCheckEvidence({
+          store: workStore,
           workId: session.workId,
           checkId,
+          availableChecks,
           sourceRevision: run.sourceRevision,
           workspaceFingerprint: run.workspaceFingerprint,
           verificationInputFingerprint: inputFingerprint,

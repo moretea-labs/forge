@@ -10,8 +10,7 @@ import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { readRuntimeReleaseAuthority } from '../root/release-store';
 import { appendRuntimeEvent, type RuntimeEntityEvent } from '../evidence/event-ledger';
 import { listReleaseSessions } from '../release/release-session';
-import { appendWorkEvidence, getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
-import { routeWorkStart } from '../control-plane/facade/goal-workloop';
+import { appendWorkEvidence, createWorkSemanticContext, getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
 import { createWorkContinuationSchedule } from '../workflow/schedules/work-continuation';
 import { touchSchedulerWakeSignal } from '../control-plane/global-scheduler/wake-signal';
 import { recentMcpIncidents, type McpIncident } from './mcp-timing';
@@ -423,33 +422,21 @@ function registerRecurringForgeRepair(input: {
       repairRepoId: repairRepository.repoId, reason: 'repair repository HEAD could not be proven',
     };
 
-    const routed = routeWorkStart({
-      workStore: store, handoffStore: store, repoId: repairRepository.repoId,
-      sourceRevision: head, checkoutId: repairRepository.activeCheckoutId,
-    }, {
-      objective: `Repair recurrent Forge infrastructure incident ${classification.rootCode} automatically registered after ${input.occurrenceCount} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes.`,
-      acceptanceCriteria: [
-        `Reproduce and eliminate root incident ${classification.rootCode} without bypassing canonical Runtime/Recovery/Controller authority.`,
-        'Preserve fail-closed behavior for expected policy, ownership, user-code, and approval failures.',
-        'Run focused affected checks and live verification before terminalizing the Work.',
-      ],
-      allowedPaths: ['src/**', 'tests/**', 'scripts/**', 'package.json'],
-      initialLikelyPaths: [],
-      forbiddenPaths: ['node_modules/**', '_ops/**'],
-      constraints: { workspaceMode: 'auto', requireHandoffOnAmbiguity: true },
-      request: { scopeClear: false, mutation: true, requiresRecovery: true, risk: 'workspace_write' },
-      requestedBy: 'system',
-      requestId,
-      relatedWorkId: predecessor?.workId,
-      workRelation: 'new_goal',
-      workKind: 'repository_change',
-    });
-    if (routed.status !== 'ok') return {
-      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-      repairRepoId: repairRepository.repoId,
-      reason: `canonical Work admission did not create repair Work: ${routed.summary}`,
-    };
+    try {
+      createWorkSemanticContext(store, {
+        workId: `work-incident-${classification.fingerprint}-g${generation}`,
+        objective: `Repair recurrent Forge infrastructure incident ${classification.rootCode} automatically registered after ${input.occurrenceCount} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes.`,
+        requestId,
+        requestedBy: 'system',
+      });
+    } catch (error) {
+      return {
+        eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
+        fingerprint: classification.fingerprint, rootCode: classification.rootCode,
+        repairRepoId: repairRepository.repoId,
+        reason: `semantic Work creation failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
     const created = listWorkContracts({ ...store, status: 'all', limit: 500 }).find((work) => work.requestId === requestId);
     if (!created) return {

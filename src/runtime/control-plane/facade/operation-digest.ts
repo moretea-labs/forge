@@ -155,13 +155,12 @@ export function statusLabelForPhase(phase: UserFacingPhase): string {
 function defaultNextActions(phase: UserFacingPhase, jobId?: string, errorClass?: UserFacingErrorClass): SuggestedNextAction[] {
   if (phase === 'queued' || phase === 'running' || phase === 'waiting') {
     return [{
-      label: '查看任务状态',
-      tool: 'rh_work',
-      operation: 'continue',
-      payload: jobId ? { work_id: jobId } : undefined,
+      label: '查看运行状态',
+      tool: 'rh_status',
+      operation: 'get',
       risk: 'readonly',
       confidence: 'high',
-      reason: '轮询或继续查看当前执行状态。',
+      reason: '读取当前运行事实，不通过 Work lifecycle 操作轮询执行。',
     }];
   }
   if (phase === 'failed' || phase === 'timed_out') {
@@ -433,25 +432,23 @@ export function buildAcceptedQueuedDigest(input: {
     requestId: input.requestId,
     suggestedNextActions: [
       {
-        label: '等待任务完成',
-        tool: 'rh_work',
-        operation: 'continue',
-        payload: { work_id: input.jobId, wait: true },
+        label: '查看任务运行状态',
+        tool: 'rh_status',
+        operation: 'get',
         risk: 'readonly',
         confidence: 'high',
-        reason: '对长时间任务使用 wait/work_get 获取终态摘要。',
+        reason: '长时间执行由 Process/Runtime 自己持有；状态读取不推进 Work lifecycle。',
       },
       ...defaultNextActions('queued', input.jobId),
     ],
     nextActions: [
       {
-        label: '等待任务完成',
-        tool: 'rh_work',
-        operation: 'continue',
-        payload: { work_id: input.jobId, wait: true },
+        label: '查看任务运行状态',
+        tool: 'rh_status',
+        operation: 'get',
         risk: 'readonly',
         confidence: 'high',
-        reason: '对长时间任务使用 wait/work_get 获取终态摘要。',
+        reason: '长时间执行由 Process/Runtime 自己持有；状态读取不推进 Work lifecycle。',
       },
       ...defaultNextActions('queued', input.jobId),
     ],

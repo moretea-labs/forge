@@ -2,7 +2,6 @@ import type { McpToolDefinition, CallToolResult } from '../../../packages/protoc
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
-import { recordReviewedDirectEditDeliveryAfterCommit, prepareReviewedDirectEditWorkCommit, type ReviewedDirectEditWorkCommitPlan } from '../../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { repositoryChangeVerify } from '../../../src/cli/controller/composite-operations';
 import {
   commitSelectedPaths,
@@ -36,44 +35,14 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
             }
       case 'git_commit_paths': {
               const repository = selected(ctx, args);
-              let reviewedCommitPlan: ReviewedDirectEditWorkCommitPlan | undefined;
-              let committed;
-              try {
-                committed = commitSelectedPaths(ctx.controllerHome, repository, {
-                  paths: args.paths,
-                  message: args.message,
-                  beforeCommitGuard: ({ stagedPaths, currentHead }) => {
-                    reviewedCommitPlan = prepareReviewedDirectEditWorkCommit({
-                      controllerHome: ctx.controllerHome,
-                      repository,
-                      stagedPaths,
-                      currentHead,
-                    });
-                  },
-                });
-              } catch (error) {
-                return result({
-                  repoId: repository.repoId,
-                  checkoutId: repository.activeCheckoutId,
-                  error: {
-                    code: 'SELECTED_PATH_PRECOMMIT_GUARD_FAILED',
-                    message: error instanceof Error ? error.message : String(error),
-                  },
-                }, true);
-              }
-              const directEditWorkDelivery = !committed.error && committed.commit?.ok === true && reviewedCommitPlan
-                ? recordReviewedDirectEditDeliveryAfterCommit({
-                    controllerHome: ctx.controllerHome,
-                    repository,
-                    plan: reviewedCommitPlan,
-                    fallbackBranch: repository.defaultBranch || 'main',
-                  })
-                : undefined;
+              const committed = commitSelectedPaths(ctx.controllerHome, repository, {
+                paths: args.paths,
+                message: args.message,
+              });
               return result({
                 repoId: repository.repoId,
                 checkoutId: repository.activeCheckoutId,
                 ...committed,
-                ...(directEditWorkDelivery ? { directEditWorkDelivery } : {}),
               }, Boolean(committed.error));
             }
       case 'repository_change_verify': {

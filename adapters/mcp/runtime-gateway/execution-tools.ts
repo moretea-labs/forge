@@ -11,32 +11,10 @@ import { readControllerResult, searchControllerResult } from '../../../src/runti
 import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/jobs/store';
 import { recordMcpTiming, type McpTimingTrace } from '../../../src/runtime/diagnostics/mcp-timing';
 import { compactHandle, contractFor, identityFor, makeBoundedWorkResult, principalFor, requireSession, workForSession } from '../../../src/runtime/control-plane/execution/work-execution-support';
-import { finalizeWork } from '../../../src/runtime/control-plane/execution/work-finalization-service';
 import { bindSessionRepository, prepareWork } from '../../../src/runtime/control-plane/execution/work-preparation-service';
 import { executeWork, validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
 
-
-// Compatibility exports: implementation authority lives in control-plane execution.
-export {
-  inspectWorkTargetAdvance,
-  targetAdvanceLinearMergeCommits,
-  planTargetAdvanceValidationAuthority,
-  targetAdvanceWorkScopeViolation,
-  inspectDirectTargetDelivery,
-  inspectTargetDirtyWorkOwnership,
-  inspectDirectCanonicalTargetAdvanceReconciliation,
-  completionReceiptChangedPaths,
-  inspectCleanupOnlyMergedHead,
-  resetFinalizationStagesForRequest,
-} from '../../../src/runtime/control-plane/execution/work-finalization-service';
 export { selectDefaultWorkValidationChecks } from '../../../src/runtime/control-plane/execution/work-operation-service';
-export type {
-  DirectCanonicalTargetAdvanceInspection,
-  DirectTargetDeliveryInspection,
-  TargetAdvanceValidationTransferPlan,
-  TargetDirtyWorkOwnershipInspection,
-  WorkTargetAdvanceInspection,
-} from '../../../src/runtime/control-plane/execution/work-finalization-service';
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnlyHint = false, destructiveHint = false): McpToolDefinition {
   return { name, description, inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false }, annotations: { readOnlyHint, openWorldHint: false, destructiveHint } };
@@ -65,10 +43,6 @@ export const executionToolDefinitions: McpToolDefinition[] = [
   definition('work_validate', 'Run targeted checks or read-only validation commands against a work handle with full current-state validation.', {
     session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, check_ids: { type: 'array', items: { type: 'string' } }, commands: { type: 'array', items: { type: 'object' } }, interactive_wait_ms: { type: 'number', description: 'Optional bounded attach window for checks launched by this validation call. Defaults to asynchronous behavior.' },
   }, ['work_id'], false),
-  definition('work_finalize', 'Idempotently validate, commit, merge, clean a managed worktree, and complete the existing WorkContract in independently recorded stages.', {
-    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, commit: { type: 'boolean' }, message: { type: 'string' }, merge: { type: 'boolean' }, target_branch: { type: 'string' }, remote_write: { type: 'boolean', description: 'When true, push the exact locally integrated target revision to origin before cleanup and Work terminalization.' }, delete_branch: { type: 'boolean' }, cleanup: { type: 'boolean' }, no_ff: { type: 'boolean' }, approval_request_id: { type: 'string' },
-    completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] }, no_change_evidence: { type: 'string', description: 'Objective-specific proof that the requested state already holds; required for completed_no_change.' },
-  }, ['work_id'], false, true),
   definition('approval_resolve', 'Resolve a controller approval request from the current conversation; GUI approval is optional and not required for continuation.', { session_id: sessionId, repo_id: repoId, work_id: workId, approval_request_id: { type: 'string' }, confirm_authorization: { type: 'boolean' } }, ['approval_request_id', 'confirm_authorization'], false),
   definition('result_read', 'Read a session-scoped result reference with bounded pagination.', { session_id: sessionId, result_ref: { type: 'string' }, work_id: workId, cursor: { type: 'number' }, limit: { type: 'number' } }, ['result_ref'], true),
   definition('result_search', 'Search a session-scoped result reference without returning the full payload.', { session_id: sessionId, result_ref: { type: 'string' }, work_id: workId, query: { type: 'string' }, limit: { type: 'number' } }, ['result_ref', 'query'], true),
@@ -76,15 +50,10 @@ export const executionToolDefinitions: McpToolDefinition[] = [
 
 const executionToolNames = new Set(executionToolDefinitions.map((tool) => tool.name));
 
-/**
- * Work mutation tool names remain grouped for compatibility with older Worker
- * entrypoints. On the public MCP surface they execute directly through
- * WorkContract + Process Runtime ownership rather than durable ExecutionJobs.
- */
+/** Repository execution and validation remain Process/WorkHandle operations; semantic Work completion is separate. */
 const DURABLE_WORK_OPERATION_NAMES = new Set([
   'work_execute',
   'work_validate',
-  'work_finalize',
 ]);
 
 export function isDurableWorkOperation(name: string): boolean {
@@ -165,7 +134,6 @@ export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name
       case 'work_inspect': return result(inspectWork(ctx, args));
       case 'work_execute': return result(await executeWork(ctx, args));
       case 'work_validate': return result(await validateWork(ctx, args));
-      case 'work_finalize': return result(await finalizeWork(ctx, args));
       case 'approval_resolve': {
         const session = requireSession(ctx, args);
         const repositoryId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : session.activeRepositoryId;

@@ -61,11 +61,12 @@ No Runtime/Recovery release transition is part of this decision.
 
 ### 4. Completion vs release/recovery
 - `work_complete` records only the model/user semantic decision and result references. Source integration, git merge, publication, release activation, and resource cleanup are separate capabilities/effects.
-- Legacy `finalize` must not manufacture a completion/delivery receipt from semantic completion. For a semantically completed Work with no delivery receipt it is a compatibility no-op.
+- `finalize`, `verify`, `review`, `controller_claim`, controller disposition/release, and plan approval/step-acceptance are not Work operations. After Runtime/Connector rollover they are rejected rather than translated.
+- Pre-cutover `work_finalize` Worker payloads and review-candidate preparation are hard-rejected as well; a restart cannot replay them. Typed repository execution owns Git effects directly.
 - Periodic cleanup does not treat semantic `completed`/`cancelled` as deletion authorization. A dirty managed worktree is retained in place; cleanup never auto-commits, archives, discards, or force-removes uncommitted bytes merely because Work became terminal.
 - Cleanup debt is derived from owned-resource facts, acts only on resources proven Forge-owned, and is retryable/idempotent independently of Work completion.
 
 ### 5. Compatibility surface and projections
-- Frozen clients may carry `requirement_get`, `requirement_revise`, `plan_revise`, `work_get`, `work_revise`, and `work_complete` through the single bounded `semantic.v1` transport envelope. Stable IDs remain explicit, and semantic mutation still lands in the same canonical CAS handlers.
+- There is no frozen lifecycle envelope after the cutover. Clients reconnect to the current MCP schema and use explicit semantic CAS operations.
 - Deprecated route/work-mode/operational-plan surfaces are compatibility projections only. They may report concrete continuity/placement needs and available capabilities, but must not prescribe task-size modes, worker choice, validation policy, review lifecycle, or next engineering method.
 - Activity/status/Handoff/legacy PlanStep data are derived or compatibility views. A stale projection is repairable cache debt, never a reason to reject a canonical semantic CAS or concrete resource/effect operation.

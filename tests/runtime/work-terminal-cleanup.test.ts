@@ -17,7 +17,7 @@ import { cleanupTerminalWork, reconcileTerminalWorkCleanups } from '../../src/ru
 import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { resetFinalizationStagesForRequest, selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
+import { selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
@@ -113,80 +113,6 @@ async function cleanup(fx: ReturnType<typeof fixture>, handle: WorkHandleState =
 
 describe('terminal Work cleanup', () => {
 
-  test('runtime architecture gate tracks the canonical finalization reset helper', () => {
-    const gate = readFileSync(join(import.meta.dir, '../../scripts/check-runtime-architecture.mjs'), 'utf8');
-    expect(gate).toContain("requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');");
-    expect(gate).not.toContain("requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFailedFinalizationStages');");
-  });
-
-  test('late cleanup re-arms only retained managed cleanup stages', () => {
-    const retained = {
-      validation: 'done',
-      commit: 'done',
-      merge: 'done',
-      branchCleanup: 'skipped',
-      worktreeCleanup: 'skipped',
-    } as const;
-    expect(resetFinalizationStagesForRequest(
-      retained,
-      { commit: true, merge: true, cleanup: true },
-      { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: true },
-    )).toEqual({
-      validation: 'done',
-      commit: 'done',
-      merge: 'done',
-      branchCleanup: 'pending',
-      worktreeCleanup: 'pending',
-    });
-
-    expect(resetFinalizationStagesForRequest(
-      retained,
-      { commit: true, merge: true, cleanup: true },
-      { managedWorktree: true, deleteBranchRequested: false, retainedByRequest: true },
-    )).toEqual({ ...retained, worktreeCleanup: 'pending' });
-
-    expect(resetFinalizationStagesForRequest(
-      retained,
-      { commit: true, merge: true, cleanup: true },
-      { managedWorktree: false, deleteBranchRequested: true, retainedByRequest: true },
-    )).toEqual(retained);
-
-    expect(resetFinalizationStagesForRequest(
-      retained,
-      { commit: true, merge: true, cleanup: true },
-      { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: false },
-    )).toEqual(retained);
-
-    expect(resetFinalizationStagesForRequest(
-      { ...retained, branchCleanup: 'pending', worktreeCleanup: 'failed', lastError: 'managed worktree is dirty; cleanup preserved it' },
-      { commit: true, merge: true, cleanup: true },
-      { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: false, workspaceDirty: true },
-    )).toEqual({
-      validation: 'done',
-      commit: 'pending',
-      merge: 'pending',
-      branchCleanup: 'pending',
-      worktreeCleanup: 'pending',
-    });
-
-    expect(resetFinalizationStagesForRequest(
-      {
-        validation: 'done',
-        commit: 'skipped',
-        merge: 'skipped',
-        branchCleanup: 'pending',
-        worktreeCleanup: 'pending',
-      },
-      { commit: true, merge: true, cleanup: false },
-      { managedWorktree: true, workspaceDirty: true },
-    )).toEqual({
-      validation: 'done',
-      commit: 'pending',
-      merge: 'pending',
-      branchCleanup: 'pending',
-      worktreeCleanup: 'pending',
-    });
-  });
   test('periodic reconciler retires a preserved branch residue from a cleaned complete terminal Work', async () => {
     const fx = fixture('cleaned-branch-residue');
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {

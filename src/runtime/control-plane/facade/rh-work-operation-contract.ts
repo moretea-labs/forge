@@ -12,11 +12,6 @@ export const RH_WORK_OPERATIONS = [
   'work_get',
   'work_revise',
   'work_complete',
-  'delegate',
-  'controller_claim',
-  'controller_release',
-  'controller_disposition',
-  'controller_get_owner',
   'launcher_start',
   'requirement_create',
   'requirement_get',
@@ -42,18 +37,10 @@ export const RH_WORK_OPERATIONS = [
 ] as const;
 
 /**
- * Frozen transport compatibility only. These operations drive legacy repository
- * delivery/check/cleanup mechanics and are not semantic Work lifecycle actions.
- * Current model-visible rh_work never advertises them; remove them with the
- * remaining compatibility implementation in the legacy-deletion slice.
+ * There is intentionally no legacy lifecycle operation set.  A Runtime that
+ * has rolled over to Thin Forge rejects the former verify/review/finalize and
+ * controller-claim vocabulary instead of silently translating it.
  */
-export const RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS = [
-  'continue',
-  'verify',
-  'review',
-  'finalize',
-  'stop',
-] as const;
 
 export const RH_WORK_MODEL_OPERATIONS = [
   'start',
@@ -92,6 +79,5 @@ export function isRhWorkOperation(operation: string): operation is RhWorkOperati
 }
 
 export function isRhWorkAcceptedOperation(operation: string): boolean {
-  return isRhWorkOperation(operation)
-    || (RH_WORK_LEGACY_COMPATIBILITY_OPERATIONS as readonly string[]).includes(operation);
+  return isRhWorkOperation(operation);
 }

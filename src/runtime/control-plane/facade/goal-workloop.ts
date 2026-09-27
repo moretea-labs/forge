@@ -782,13 +782,13 @@ export function startGoalWorkloop(
     evidenceRefs: target?.evidenceRefs ?? [],
     suggestedNextActions: target
       ? [{
-          label: 'Continue existing Work',
+          label: 'Inspect existing Work',
           tool: 'rh_work',
-          operation: 'continue',
+          operation: 'work_get',
           payload: { work_id: target.workId },
           risk: 'readonly',
           confidence: explicitRelatedWork ? 'high' : 'medium',
-          reason: 'Resolve intent before execution; do not create a second Work until the relationship is explicit.',
+          reason: 'Resolve intent before execution; semantic Work inspection does not progress lifecycle state.',
         }]
       : [],
     rawAvailable: false,
@@ -836,7 +836,7 @@ export function startGoalWorkloop(
         work: summarizeWorkContract(selected),
       },
       evidenceRefs: selected.evidenceRefs,
-      suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: selected.workId }, risk: 'readonly', confidence: 'high' }],
+      suggestedNextActions: [{ label: 'Read existing Work context', tool: 'rh_work', operation: 'work_get', payload: { work_id: selected.workId }, risk: 'readonly', confidence: 'high' }],
       rawAvailable: false,
     });
   }
@@ -1337,24 +1337,15 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         acceptanceFailureDecisionRequired: true,
       },
       evidenceRefs: work.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [
-        {
-          label: 'Continue with bounded repair',
-          tool: 'rh_work',
-          operation: 'continue',
-          payload: { work_id: work.workId, acceptance_failure_decision: 'repair' },
-          risk: 'workspace_write',
-          confidence: 'high',
-        },
-        {
-          label: 'Continue with bounded re-scope',
-          tool: 'rh_work',
-          operation: 'continue',
-          payload: { work_id: work.workId, acceptance_failure_decision: 'rescope' },
-          risk: 'workspace_write',
-          confidence: 'medium',
-        },
-      ],
+      suggestedNextActions: [{
+        label: 'Inspect Work before repair or re-scope',
+        tool: 'rh_context',
+        operation: 'get',
+        payload: { work_id: work.workId },
+        risk: 'readonly',
+        confidence: 'high',
+        reason: 'Acceptance evidence is factual input; the model chooses the next capability without a Work lifecycle transition.',
+      }],
     });
   }
 
@@ -1439,24 +1430,15 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
 
   if (work.checks.length > 0 && history.validPasses.length < work.checks.length) {
     const remaining = work.checks.filter((checkId) => !history.validPasses.includes(checkId));
-    const suggested = validateSuggestedNextActions(
-      remaining.map((checkId) => ({
-        label: `Verify ${checkId}`,
-        tool: 'rh_work' as const,
-        operation: 'verify',
-        payload: { work_id: work.workId, check_id: checkId },
-        risk: 'workspace_write' as const,
-        confidence: 'high' as const,
-      })),
-      { validCheckIds: work.checks },
-    ).actions;
-    transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'running',
-      phase: 'verification',
-      state: 'active',
-      summary: `Verification remains for: ${remaining.join(', ')}.`,
-      evidenceRefs: work.evidenceRefs,
-    });
+    const suggested = validateSuggestedNextActions([{
+      label: 'Inspect Work and check evidence',
+      tool: 'rh_context',
+      operation: 'get',
+      payload: { work_id: work.workId },
+      risk: 'readonly',
+      confidence: 'high',
+      reason: 'Registered checks are independent execution evidence; they do not progress Work lifecycle state.',
+    }]).actions;
     const updated = updateWorkContract(ctx.workStore, work.workId, {
       suggestedNextActions: suggested,
       continuationPrompt: input.note
@@ -1465,12 +1447,12 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
     return buildFacadeResult({
       status: 'ok',
-      summary: `Continue: next step is verification of ${remaining[0]}. No background work was completed.`,
+      summary: `Registered check evidence is still missing for: ${remaining.join(', ')}. Run checks through the check capability; Work semantic state is unchanged.`,
       data: {
         work: summarizeWorkContract(updated),
         remainingChecks: remaining,
         backgroundCompleted: false,
-        nextStep: 'verify',
+        nextStep: 'run_check',
       },
       suggestedNextActions: suggested,
     });

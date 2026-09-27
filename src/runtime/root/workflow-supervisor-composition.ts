@@ -189,7 +189,7 @@ async function settleForgeWorkflowSupervisorTurn(
     `Exact lower-layer continuation is prepared for Work ${relay.originWorkId} in repo ${repoId}.`,
     `controller_authority_id=${relay.authorityId}`,
     `relay_scope_id=${relay.relayScopeId}`,
-    `Current frozen Runtime may require this exact authority pair for the mechanical controller_claim/continuation/release envelope for Work ${relay.originWorkId}.`,
+    'Controller authority and relay scope are internal transport fencing facts; the model must not claim, release, or progress Work through them.',
     'Treat ControllerRound identity as resume/transport bookkeeping only. Re-read current Requirement/Plan/Work/UserRequest facts and use canonical stable-id + expected_revision semantic operations; do not invent mandatory verify/review/finalize/PlanStep lifecycle from this authority.',
     'Never mint a replacement continuation authority and never substitute a transport session id.',
   ].join('\n');

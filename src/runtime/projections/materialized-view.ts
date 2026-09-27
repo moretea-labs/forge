@@ -164,7 +164,9 @@ function projectionWithExecutionIndexOverlay(
   const activeJobIds = new Set(activeJobSummaries.map((job) => job.jobId));
   const attentionJobs = recentJobs?.filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
   const materializedLifecycleAttention = base.attention.filter((entry) => entry.jobId.startsWith('lifecycle:'));
-  const materializedCurrentLifecycleAttention = base.currentAttention.filter((entry) => entry.jobId.startsWith('lifecycle:'));
+  const materializedCurrentLifecycleAttention = base.currentAttention
+    .filter((entry) => entry.jobId.startsWith('lifecycle:'))
+    .filter(workLifecycleAttentionBlocksReadiness);
   const attention = attentionJobs
     ? attentionJobs.map(attentionSummary)
     : base.attention.filter((entry) => !entry.jobId.startsWith('lifecycle:'));
@@ -190,6 +192,8 @@ function projectionWithExecutionIndexOverlay(
     // Lifecycle attention is producer-owned materialized state. Hot reads overlay
     // only lightweight ExecutionJob/Lease indexes and must never synchronously
     // re-run Git/Work lifecycle reconciliation on the MCP request event loop.
+    // Re-apply the current readiness classifier to persisted lifecycle entries so
+    // a policy cutover cannot leave obsolete blockers stuck in currentAttention.
     currentAttention: [...currentAttention, ...materializedCurrentLifecycleAttention].slice(0, 100),
     attention: [...attention, ...materializedLifecycleAttention].slice(0, 100),
   };

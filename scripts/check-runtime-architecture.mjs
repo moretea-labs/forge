@@ -255,36 +255,24 @@ function requireExactShrinkingInventory(label, actual, allowed) {
   }
 }
 
-// Stage 4 boundary: rh_work is an ABI/translation adapter. Durable lifecycle
-// ownership stays in Kernel/application services and physical WorkHandle state
-// may not be persisted from the MCP adapter.
+// Thin rh_work boundary: semantic Requirement/Plan/Work records and explicit
+// launcher/schedule/workflow intent only. Repository execution, checks and Git
+// delivery stay on their typed capability surfaces; old lifecycle verbs are gone.
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "if (name === 'rh_work') return callWorkAdapter(ctx, args);");
-requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
-requireText('adapters/mcp/runtime-gateway/controller-authority-adapter.ts', 'assertControllerRoundInvocationAuthority');
-requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'export async function callRhWorkControllerOperation');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkControllerOperation(ctx, repository, operation, args)');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:controller_get_owner|controller_claim|controller_disposition|controller_release|launcher_start)['"]/, 'rh_work compatibility adapter must delegate ControllerRound/Launcher operation orchestration to work-controller-operations');
+requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', "const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "if (operation === 'launcher_start')");
 requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'export async function callRhWorkRequirementOperation');
-requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'admitRequirement');
-forbid('adapters/mcp/runtime-gateway/work-requirement-operations.ts', /continueRequirement|requirement_continue/, 'retired Requirement continue lifecycle must not remain in the runtime adapter');
-requireText('adapters/mcp/runtime-gateway/work-requirement-operations.ts', 'promoteRequirementCandidate');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, repository, operation, requirementOperationArgs)');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:requirement_create|requirement_promote_candidate)['"]/, 'rh_work adapter must delegate Requirement operation orchestration to work-requirement-operations');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanOperation');
 requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'export async function callRhWorkPlanCreateOperation');
-forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/, 'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface');
-forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /approvePlanContract|approvePendingPlanRevision|supersedePlanContract|plan_revision_approved/, 'legacy Plan approval/supersession writers must be physically deleted after semantic CAS cutover');
-requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'resolvePlanAdmission');
-requireText('adapters/mcp/runtime-gateway/work-plan-operations.ts', 'admitPlanContractAsync');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkRequirementOperation(ctx, repository, operation, args)');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanOperation(store, operation, args)');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'callRhWorkPlanCreateOperation(store, operation, args');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /if\s*\(\s*operation === ['"](?:plan_list|plan_get|plan_create)['"]/, 'rh_work compatibility adapter must delegate Plan transport/admission orchestration to work-plan-operations');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:createRequirement|resumeRetainedCancelledWorkContract|acceptRequirementOutcome)\s*\(/, 'rh_work adapter must delegate Requirement and retained-Work lifecycle transitions to canonical application authorities');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/, 'rh_work adapter must not implement implementation-review policy authority');
-forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/, 'rh_work adapter must delegate physical Git delivery to canonical Work finalization authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /operation === ['"](?:continue|verify|review|finalize|stop|delegate|controller_get_owner|controller_claim|controller_disposition|controller_release)['"]/, 'thin rh_work must not route retired lifecycle/controller operations');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed|executeWorkVerification|requestWorkImplementationReview)\b/, 'rh_work must not own mechanical execution, verification or review authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/, 'rh_work must not perform physical Git delivery');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work must consume canonical semantic APIs instead of persistence infrastructure');
+forbid('adapters/mcp/runtime-gateway/work-plan-operations.ts', /plan_approve|plan_accept_step|plan_supersede|approvePlanContractAsync|acceptPlanStepEvidence|supersedePlanContract/, 'retired Plan approval/acceptance/supersession APIs must not remain on the runtime surface');
+forbid('src/runtime/control-plane/facade/plan-contract-store.ts', /approvePlanContract|approvePendingPlanRevision|supersedePlanContract|plan_revision_approved/, 'legacy Plan approval/supersession writers must stay retired');
 
 // #197 MCP mega-adapter decomposition. These are debt ledgers, not target
 // architecture: entries may only disappear. New domain-authority imports or
@@ -373,59 +361,18 @@ requireExactShrinkingDebt(
   new Set(),
 );
 
-const FROZEN_CAPABILITY_PREFIX_FILES = [
-  'adapters/mcp/runtime-gateway/runtime-tools.ts',
-  'adapters/mcp/runtime-gateway/work-adapter.ts',
-  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+// Hard cutover: frozen lifecycle transport is retired rather than preserved as
+// a second behavioral authority. Historical data remains readable through the
+// canonical stores, but these protocol decoders must not return.
+for (const path of [
   'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
-  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
-];
-const CANONICAL_FROZEN_SEMANTIC_PREFIX = 'semantic.v1:';
-
-function frozenCapabilityPrefixRecordsFromSources(sources) {
-  const records = new Set();
-  const protocolLiteral = /(['"`])([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+:)\1/g;
-  for (const { path, source } of sources) {
-    for (const match of source.matchAll(protocolLiteral)) {
-      const prefix = match[2];
-      if (prefix === CANONICAL_FROZEN_SEMANTIC_PREFIX) continue;
-      records.add(`${path}::${prefix}`);
-    }
-  }
-  return records;
-}
-
-const capabilityPrefixFixture = process.env.FORGE_CAPABILITY_PREFIX_GUARDRAIL_FIXTURE;
-if (capabilityPrefixFixture) {
-  const fixture = JSON.parse(capabilityPrefixFixture);
-  const actual = frozenCapabilityPrefixRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
-  const allowed = new Set(Array.isArray(fixture.allowed) ? fixture.allowed : []);
-  requireExactShrinkingInventory('frozen capability prefix fixture debt', actual, allowed);
-  if (failures.length) {
-    console.error('[frozen-capability-prefix-guardrail] FAILED');
-    for (const failure of failures) console.error(`- ${failure}`);
-    process.exit(1);
-  }
-  console.log(`[frozen-capability-prefix-guardrail] OK (${actual.size} debt entries)`);
-  process.exit(0);
-}
-
-const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
-  'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts::controller.authority.recover:',
-  'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts::controller.provider.recover:',
-  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts::plan.step.retry:',
-  'adapters/mcp/runtime-gateway/work-input-compatibility.ts::schedule.delete:',
-  'adapters/mcp/runtime-gateway/work-input-compatibility.ts::work.review:',
-  'adapters/mcp/controller-round-compatibility.ts::controller.disposition:',
-  'adapters/mcp/controller-round-compatibility.ts::controller.round:',
-  'adapters/mcp/controller-round-compatibility.ts::plan.obligations.v1:',
-]);
-requireExactShrinkingInventory(
-  'legacy frozen capability prefix debt',
-  frozenCapabilityPrefixRecordsFromSources(FROZEN_CAPABILITY_PREFIX_FILES.map((path) => ({ path, source: text(path) }))),
-  LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT,
+]) requireMissing(path);
+forbid(
+  'adapters/mcp/runtime-gateway/work-input-compatibility.ts',
+  /semantic\.v1:|schedule\.delete:|work\.review:|controller\.(?:authority|provider|disposition|round):|plan\.step\.retry:/,
+  'frozen lifecycle capability encodings must not survive the Thin hard cutover',
 );
 
 const SEMANTIC_AUTHORITY_CRITICAL_ROOTS = [
@@ -689,7 +636,6 @@ const required = [
   'src/runtime/control-plane/execution/work-handle-authority.ts',
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
-  'src/runtime/control-plane/execution/content-equivalent-commit-authority.ts',
   'src/runtime/control-plane/execution/implementation-review-content.ts',
   'packages/protocols/handoff/status.ts',
   'packages/kernel/work/domain/admission-policy.ts',
@@ -719,7 +665,6 @@ const required = [
   'src/runtime/control-plane/execution/work-completion-authority.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',
   'src/runtime/control-plane/execution/work-execution-support.ts',
-  'src/runtime/control-plane/execution/work-finalization-service.ts',
   'src/runtime/control-plane/execution/work-preparation-service.ts',
   'src/runtime/control-plane/execution/work-operation-service.ts',
   'src/runtime/evidence/process-check-execution.ts',
@@ -873,11 +818,6 @@ forbid(
   /plan_approve|plan_accept_step|plan_supersede/,
   'retired Plan lifecycle operations must not remain accepted rh_work ABI operations',
 );
-forbid(
-  'adapters/mcp/controller-round-compatibility.ts',
-  /plan_accept_step/,
-  'Controller compatibility must not preserve retired Plan acceptance authority',
-);
 for (const path of [
   'src/runtime/control-plane/facade/goal-workloop.ts',
   'src/runtime/control-plane/facade/goal-workloop-access.ts',
@@ -904,7 +844,7 @@ requireText('src/runtime/control-plane/execution/work-verification-service.ts', 
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'observedGitHead');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'executeWorkVerification({');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /executeWorkVerification|recordWorkCheckEvidence/, 'rh_work must not execute or attribute repository checks');
 requireText('src/cli/local-bridge/facade-api.ts', 'executeWorkVerification({');
 forbid(
   'src/cli/local-bridge/facade-api.ts',
@@ -923,46 +863,18 @@ forbid(
 );
 
 
-// Kernel V2 B1/B2: Work lifecycle/review authority lives in packages/kernel/work.
-// Historical facade modules are compatibility-only re-exports. Gateway/finalizer
-// consume the Kernel API/domain instead of owning a parallel policy/store.
-requireText('packages/kernel/work/domain/implementation-review.ts', 'assertImplementationReviewPreDeliveryBoundary');
-requireText('packages/kernel/work/domain/implementation-review.ts', 'deriveImplementationReviewAcrossCommit');
-requireText('packages/kernel/work/domain/state-machine.ts', 'validateWorkSemanticTransition');
-requireText('packages/kernel/work/application/work-service.ts', 'transitionWorkContractPhase');
+// Thin Work authority: semantic state is open/completed/cancelled. Review and
+// verification may exist as evidence/capabilities, never as generic Work/Git
+// admission authority. The old delivery/finalizer modules are intentionally gone.
+requireText('packages/kernel/work/domain/types.ts', "export type SemanticWorkState = 'open' | 'completed' | 'cancelled';");
 requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
-requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewContentFingerprint');
-requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewIndexFingerprint');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'requestWorkImplementationReview');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordWorkImplementationReview');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'activateWorkContract');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'failWorkContract');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'cancelWorkContract');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordWorkEvidenceState');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'WORK_LIFECYCLE_REQUIRES_TRANSITION_API');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'work_contract_schema_v3_migrated');
-forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /phaseForStatusUpdate|dispatchStateForStatusUpdate/, 'Work status must not regain hidden phase/dispatch transition authority');
-forbid('packages/kernel/work/infrastructure/work-contract-store.ts', /phaseEvidence:\s*legacyPhaseEvidence\(/, 'new Work construction must not reuse legacy migration phase-evidence inference');
-requireText('src/runtime/control-plane/facade/work-contract-store.ts', '@deprecated Kernel V2 compatibility shim');
-requireText('packages/kernel/work/domain/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
-requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
-requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'recordReviewedDirectEditDeliveryAfterCommit');
-requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
-requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'planWorkVerificationAcrossContentEquivalentCommit');
-forbid(
-  'src/runtime/control-plane/execution/work-verification-service.ts',
-  /export\s+function\s+transferWorkVerificationAcrossContentEquivalentCommit\s*\(/,
-  'content-equivalent verification planning must stay pure; authority persistence belongs to the atomic transfer owner',
-);
-requireText('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
-requireText('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts', 'recordContentEquivalentCommitAuthorityTransfer');
-requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordContentEquivalentCommitAuthorityTransfer');
-requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'workId: session.workId');
-requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'verificationSnapshot: work ?');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
+requireMissing('src/runtime/control-plane/execution/direct-edit-work-completion.ts');
+requireMissing('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts');
+requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /ImplementationReview|executeWorkVerification|work_finalize/, 'rh_work must not regain review, verification, or finalization behavior authority');
+forbid('src/cli/repositories/selected-path-actions.ts', /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/, 'repository Git safety must not depend on Work review methodology');
+
 // The model-facing rh_work surface is the thin semantic ABI: the schema enum must
 // come from the single operation registry, that registry's model list must not
 // re-advertise legacy engineering lifecycle verbs, and the schema must not
@@ -987,9 +899,6 @@ for (const legacyModelVerb of [
     failures.push(`RH_WORK_MODEL_OPERATIONS must not re-advertise the legacy engineering lifecycle verb: ${legacyModelVerb}`);
   }
 }
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'review'");
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'implementationReviewContentFingerprint');
-requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
 const controllerRoundTransitionPolicyPath = 'packages/kernel/controller/domain/controller-round-transition-policy.ts';
 if (existsSync(resolve(root, controllerRoundTransitionPolicyPath))) {
@@ -1012,17 +921,12 @@ requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptController
 requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
 forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', "controllerTypes: ['chatgpt']");
-requireText('src/runtime/control-plane/facade/suggested-actions.ts', "case 'review'");
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/,
   'Gateway transport must not implement implementation-review policy authority',
 );
-forbid(
-  'src/runtime/control-plane/execution/work-finalization-service.ts',
-  /function\s+deriveImplementationReviewAcrossCommit/,
-  'Finalizer must consume the canonical Kernel Work review derivation instead of owning a second review authority',
-);
+requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 requireMissing('src/cli/controller/work-mode.ts');
 forbid('src/runtime/control-plane/facade/types.ts', /repeated_infrastructure_failure|codex_worker_requires_review/, 'Handoff compatibility types may represent only genuine human blockers');
 for (const path of sourceFiles('src')) {
@@ -1062,8 +966,6 @@ forbid(
   /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'recordRemoteEffectWorkProcessReceipt');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
 forbid('src/runtime/control-plane/facade/goal-workloop.ts', /PLAN_(?:STEP_|SUCCESSOR_|NOT_EXECUTABLE|EXECUTION_BASELINE)/, 'Work admission must not consult Plan item status, binding, dependency or approval state');
@@ -1194,8 +1096,6 @@ for (const path of sourceFiles('src')) {
 }
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/work/domain/types');
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/controller/domain/types');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'recordWorkDeliveryReceipt(');
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
   /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,
@@ -1500,10 +1400,9 @@ requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'")
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_execute'");
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_validate'");
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_finalize'");
+forbid('adapters/mcp/runtime-gateway/execution-tools.ts', /work_finalize/, 'execution tools must not restore a Work finalization operation');
 requireText('src/runtime/execution/workers/executor.ts', 'executeWork(runtimeContext');
 requireText('src/runtime/execution/workers/executor.ts', 'validateWork(runtimeContext');
-requireText('src/runtime/execution/workers/executor.ts', 'finalizeWork(runtimeContext');
 forbid(
   'src/runtime/execution/workers/executor.ts',
   /gateway\/mcp\/execution-tools|callExecutionTool\s*\(/,
@@ -1703,13 +1602,9 @@ forbidBetween(
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/validation.ts', 'warnings.push');
 requireText('src/runtime/control-plane/execution/work-handle-store.ts', "failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup']");
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-finalization-service'");
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-preparation-service'");
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-operation-service'");
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
-requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest,');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'selectDefaultWorkValidationChecks');
-requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "callExecutionTool(ctx, 'work_finalize'");
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
@@ -1739,15 +1634,7 @@ requireText('src/runtime/control-plane/execution/work-preparation-service.ts', '
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'function adoptExistingWorkHead(');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'export async function executeWork(');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'export async function validateWork(');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'resetFinalizationStagesForRequest');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'finalizationComplete');
-forbidBetween(
-  'src/runtime/control-plane/execution/work-finalization-service.ts',
-  'export async function finalizeWork(',
-  '// WORK_FINALIZATION_SERVICE_END',
-  /withControllerLock\([\s\S]{0,900}?(?:repositoryGitCommit|repositoryGitFinishWorkflow|runCleanup|repositoryGitDeleteBranch)/,
-  'Work finalization must not hold the controller lock while committing, merging, deleting branches, or removing worktrees',
-);
+requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 requireText('packages/kernel/scheduler/domain/schedule.ts', "'repository-event'");
 requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpoint'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
@@ -1942,7 +1829,6 @@ for (const path of [
   'src/runtime/control-plane/facade/requirement-authority.ts',
   'src/runtime/control-plane/global-scheduler/autonomous-continuation.ts',
   'adapters/mcp/runtime-gateway/work-plan-operations.ts',
-  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
   'adapters/mcp/runtime-gateway/work-repair-adapter.ts',
 ]) {
   if (retiredPlanGateCodes.test(text(path))) failures.push(`${path} must not reintroduce a PlanStep execution gate`);
@@ -1950,6 +1836,18 @@ for (const path of [
 for (const path of ['packages/kernel/progression/api/index.ts']) requireMissing(path);
 for (const path of productionTypeScriptFiles()) {
   if (/packages\/kernel\/progression/.test(text(path))) failures.push(`${path} must not depend on the retired PlanStep progression engine`);
+}
+for (const retiredPath of [
+  'src/runtime/control-plane/execution/work-finalization-service.ts',
+  'src/runtime/control-plane/execution/direct-edit-work-completion.ts',
+  'src/runtime/control-plane/execution/content-equivalent-commit-authority.ts',
+  'adapters/mcp/controller-round-compatibility.ts',
+  'adapters/mcp/frozen-client-semantic-compatibility.ts',
+  'adapters/mcp/runtime-gateway/work-controller-recovery-operations.ts',
+  'adapters/mcp/runtime-gateway/work-plan-repair-operations.ts',
+]) requireMissing(retiredPath);
+for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
+  forbid(path, /tool:\s*['"]rh_work['"][\s\S]{0,180}?operation:\s*['"](?:continue|verify|review|finalize|stop|plan_approve|plan_accept_step|controller_claim|controller_release|controller_disposition)['"]/, 'retired Work lifecycle operations must not return as current rh_work behavioral authority');
 }
 // Thin semantic Work lifecycle: Work is open/completed/cancelled and
 // work.complete is a mechanical durable close. Review findings are durable
@@ -2019,7 +1917,6 @@ for (const path of [
 for (const path of [
   'src/runtime/control-plane/execution/work-execution-support.ts',
   'src/runtime/control-plane/execution/work-operation-service.ts',
-  'src/runtime/control-plane/execution/work-finalization-service.ts',
   'src/runtime/control-plane/execution/work-terminal-cleanup.ts',
   'src/runtime/control-plane/execution/work-preparation-service.ts',
 ]) {
@@ -2126,7 +2023,6 @@ for (const path of [
 requireText('src/runtime/control-plane/execution/work-execution-support.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'packages/protocols/mcp/execution-context');
 requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'packages/protocols/mcp/execution-context');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/protocols/mcp/execution-context');
 for (const path of [
   'adapters/mcp/transports/http.ts',
   'adapters/mcp/transports/session-registry.ts',

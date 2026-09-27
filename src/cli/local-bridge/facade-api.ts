@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { RepositoryRecord } from '../repositories/types';
 import {
   accessModeDescriptor,
@@ -30,18 +31,16 @@ import {
   buildFacadeResult,
   buildSyncOperationDigest,
   classifyUserFacingError,
-  continueGoalWorkloop,
   delegateToCodexCerebellum,
   dismissHandoffItem,
-  finalizeGoalWorkloop,
   getHandoffItem,
   getWorkContract,
   listHandoffItems,
   listWorkContracts,
   normalizeCheckIds,
-  routeWorkStart,
+  createWorkSemanticContext,
+  workSemanticView,
   runSelfHealingLoop,
-  stopGoalWorkloop,
   summarizeHandoffItem,
   summarizeWorkContract,
   type FacadeResult,
@@ -1024,53 +1023,17 @@ export function startConsoleWork(
     checkIds?: string[];
   },
 ): FacadeResult {
-  const checks = listControllerChecks(ctx.repository.canonicalRoot);
-  return routeWorkStart(
-    {
-      workStore: store(ctx),
-      handoffStore: store(ctx),
-      repoId: ctx.repository.repoId,
-      availableChecks: checks,
-    },
-    {
-      objective: input.objective,
-      acceptanceCriteria: input.acceptanceCriteria,
-      allowedPaths: input.allowedPaths,
-      forbiddenPaths: input.forbiddenPaths,
-      checks: input.checkIds,
-      constraints: input.accessMode !== undefined
-        || input.workspaceMode !== undefined
-        || input.requireWorktree !== undefined
-        || input.directMainProhibited !== undefined
-        ? {
-            ...(input.accessMode !== undefined ? { accessMode: input.accessMode } : {}),
-            ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
-            ...(input.requireWorktree !== undefined ? { requireWorktree: input.requireWorktree } : {}),
-            ...(input.directMainProhibited !== undefined ? { directMainProhibited: input.directMainProhibited } : {}),
-          }
-        : undefined,
-      request: {
-        objective: input.objective,
-        scopeClear: input.scopeClear !== false,
-        requiresApproval: input.requiresApproval === true,
-        destructive: input.destructive === true,
-      },
-      requestedBy: 'user',
-      approvalConfirmed: input.approvalConfirmed === true,
-    },
-  );
-}
-
-export function continueConsoleWork(ctx: ConsoleFacadeContext, workId: string, note?: string): FacadeResult {
-  return continueGoalWorkloop(
-    {
-      workStore: store(ctx),
-      handoffStore: store(ctx),
-      repoId: ctx.repository.repoId,
-      availableChecks: listControllerChecks(ctx.repository.canonicalRoot),
-    },
-    { workId, note },
-  );
+  const objective = input.objective.trim();
+  if (!objective) return buildFacadeResult({ status: 'blocked', summary: 'WORK_OBJECTIVE_REQUIRED', data: {} });
+  const created = createWorkSemanticContext(store(ctx), {
+    workId: `work-console-${randomUUID().slice(0, 12)}`,
+    objective,
+    requestedBy: 'user',
+  });
+  return buildFacadeResult({
+    summary: `Work ${created.workId} created as semantic context.`,
+    data: { work: workSemanticView(created) },
+  });
 }
 
 export async function verifyConsoleWork(
@@ -1091,30 +1054,6 @@ export async function verifyConsoleWork(
       : undefined,
   });
   return verification.facade;
-}
-
-export function finalizeConsoleWork(ctx: ConsoleFacadeContext, workId: string): FacadeResult {
-  return finalizeGoalWorkloop(
-    {
-      workStore: store(ctx),
-      handoffStore: store(ctx),
-      repoId: ctx.repository.repoId,
-      availableChecks: listControllerChecks(ctx.repository.canonicalRoot),
-    },
-    { workId },
-  );
-}
-
-export function stopConsoleWork(ctx: ConsoleFacadeContext, workId: string, reason?: string): FacadeResult {
-  return stopGoalWorkloop(
-    {
-      workStore: store(ctx),
-      handoffStore: store(ctx),
-      repoId: ctx.repository.repoId,
-      availableChecks: listControllerChecks(ctx.repository.canonicalRoot),
-    },
-    { workId, reason },
-  );
 }
 
 export function delegateConsoleWork(

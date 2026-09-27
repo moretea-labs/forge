@@ -94,15 +94,9 @@ export function normalizeCheckIds(
     validCheckIds,
     invalidCheckIds,
     warnings,
-    suggestedNextActions: validCheckIds.map((checkId) => ({
-      label: `Run ${checkId}`,
-      tool: 'rh_work',
-      operation: 'verify',
-      payload: { check_id: checkId },
-      risk: 'workspace_write',
-      confidence: 'high',
-      reason: 'Check id exists in the repository check registry.',
-    })),
+    // Registered check ids are evidence for the model to invoke run_check directly.
+    // The facade does not translate them back into a retired Work verification verb.
+    suggestedNextActions: [],
   };
 }
 

@@ -29,7 +29,6 @@ import { existsSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import { isAssistantPluginError } from '../../plugins/errors';
 import { executeWork, validateWork } from '../../control-plane/execution/work-operation-service';
-import { finalizeWork } from '../../control-plane/execution/work-finalization-service';
 import { describeFailure } from '../../../../packages/protocols/failure';
 
 
@@ -525,8 +524,7 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
     // Durable Work mutations execute through control-plane application services.
     // The Worker must never import MCP transport to obtain Work semantics.
     const durableWorkOperation = job.payload.operation === 'work_execute'
-      || job.payload.operation === 'work_validate'
-      || job.payload.operation === 'work_finalize';
+      || job.payload.operation === 'work_validate';
     const toolArguments = { ...(job.payload.arguments ?? {}) };
     const workArguments = {
       ...toolArguments,
@@ -537,9 +535,7 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       ? await executeWork(runtimeContext, workArguments)
       : job.payload.operation === 'work_validate'
         ? await validateWork(runtimeContext, workArguments)
-        : job.payload.operation === 'work_finalize'
-          ? await finalizeWork(runtimeContext, workArguments)
-          : undefined;
+        : undefined;
     const executionResult: CallToolResult | undefined = durableWorkOperation && executionRecord
       ? { structuredContent: executionRecord, content: [] }
       : undefined;

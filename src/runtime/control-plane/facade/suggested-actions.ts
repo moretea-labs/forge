@@ -5,15 +5,7 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
   if (action.tool !== 'rh_work') return undefined;
   switch (action.operation) {
     case 'start':
-    case 'continue':
-    case 'verify':
-    case 'review':
     case 'repair':
-    case 'stop':
-    case 'delegate':
-    case 'controller_claim':
-    case 'controller_release':
-    case 'controller_disposition':
     case 'launcher_start':
     case 'requirement_create':
     case 'requirement_promote_candidate':
@@ -23,18 +15,24 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
     case 'schedule_delete':
     case 'schedule_trigger':
       return 'workspace_write';
-    case 'controller_get_owner':
     case 'schedule_list':
     case 'schedule_get':
       return 'readonly';
     case 'plan_create':
     case 'plan_revise':
+    case 'work_revise':
+    case 'work_complete':
+    case 'workflow_execute':
+    case 'workflow_reconcile':
+    case 'learning_record':
+    case 'learning_feedback':
+    case 'outcome_record':
+    case 'experience_record':
       return 'workspace_write';
     case 'plan_get':
     case 'plan_list':
+    case 'work_get':
       return 'readonly';
-    case 'finalize':
-      return 'local_repo_write';
     default:
       return undefined;
   }

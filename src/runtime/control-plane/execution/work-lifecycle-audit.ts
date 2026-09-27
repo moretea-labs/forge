@@ -19,22 +19,21 @@ export interface WorkLifecycleAttention {
 const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set([
   'work_contract_invalid',
   'active_checkout_missing',
-  'terminal_work_cleanup_unsettled',
   'cleaned_worktree_still_present',
   'dirty_linked_worktree_unregistered',
   'linked_worktree_unregistered',
-  'work_branch_not_integrated',
 ]);
 
 /**
  * Full lifecycle attention is durable audit evidence. Runtime readiness is narrower:
  * only source-integrity contradictions that can affect the canonical checkout or
  * release identity may block current execution. Active semantic Work and missing or
- * retained isolated Work resources remain visible in the audit and maintenance
- * projections, but are not shared Runtime execution blockers. Terminal cleanup and
- * source-integrity contradictions stay blocking because they can retain or alter
- * release-owned resources. Isolated concurrent Work must not make an unrelated clean
- * main release appear unhealthy.
+ * retained isolated Work resources and orphaned historical branches remain visible in
+ * the audit and maintenance projections, but are not shared Runtime execution blockers.
+ * Legacy Work finalization stages are historical maintenance evidence after the Thin
+ * cutover; only independently observable contradictions that affect an active checkout
+ * or canonical source identity may block shared readiness.
+ * Isolated concurrent Work must not make an unrelated clean main release appear unhealthy.
  */
 export function workLifecycleAttentionBlocksReadiness(
   finding: Pick<WorkLifecycleAttention, 'status'>,

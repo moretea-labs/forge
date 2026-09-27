@@ -326,7 +326,7 @@ describe('runtime observability', () => {
         allowedPaths: [],
         forbiddenPaths: [],
         checks: [],
-        status: 'running',
+        status: 'open',
       });
 
       expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
@@ -375,7 +375,8 @@ describe('runtime observability', () => {
     expect(workLifecycleAttentionBlocksReadiness({ status: 'work_active' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_work_handle_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(true);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'work_branch_not_integrated' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(true);
   });
 
@@ -410,8 +411,9 @@ describe('runtime observability', () => {
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
       expect(projection.currentAttention).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
-        expect.objectContaining({ status: 'work_branch_not_integrated' }),
       ]));
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
+      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
       const health = evaluateRuntimeHealth(observations({
         workers: {
           queueDepth: projection.queueDepth,
@@ -467,7 +469,7 @@ describe('runtime observability', () => {
       process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
-      expect(projection.currentAttention).toContainEqual(lifecycleAttention);
+      expect(projection.currentAttention).not.toContainEqual(lifecycleAttention);
       expect(projection.attention).toContainEqual(lifecycleAttention);
       expect(existsSync(marker)).toBe(false);
     } finally {
@@ -682,7 +684,10 @@ describe('runtime observability', () => {
       expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
         jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
       }));
-      expect(projection.currentAttention).toContainEqual(expect.objectContaining({
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
+      }));
+      expect(projection.attention).toContainEqual(expect.objectContaining({
         jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
       }));
     } finally {
@@ -1030,8 +1035,8 @@ describe('runtime observability', () => {
       expect(works[0]).toMatchObject({
         workId: repairWorkId,
         requestedBy: 'system',
-        workKind: 'repository_change',
-        status: 'running',
+        workKind: 'investigation',
+        status: 'open',
       });
       expect(works[0]?.evidenceRefs.filter((entry) => entry.evidenceId?.startsWith('MCPINC-')).length).toBe(4);
       const schedules = listWorkContinuationSchedules(controllerHome, repository.repoId, { workId: repairWorkId });

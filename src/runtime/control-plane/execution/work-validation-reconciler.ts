@@ -1,13 +1,7 @@
 import {
-  failWorkContract,
   getWorkContract,
   recordWorkEvidenceState,
-  requestWorkImplementationReview,
   semanticWorkState,
-  transitionWorkContractPhase,
-  updateWorkContract,
-  workRequiresImplementationReview,
-  latestImplementationReview,
 } from '../../../../packages/kernel/work/api/index';
 import {
   listValidatingWorkHandles,
@@ -105,72 +99,20 @@ export function projectWorkValidationOutcome(
   const contract = getWorkContract(options, contractId);
   if (!contract || semanticWorkState(contract) !== 'open') return;
 
+  // Check/Process reconciliation records evidence only. It never advances,
+  // fails, reviews, delivers, or completes semantic Work.
   if (outcome === 'passed') {
-    // Validation reconciliation may be replayed during finalization. A receipt
-    // that is already current must not rewind an active or explicitly approved
-    // review. A genuinely new validation first marks evidence stale/partial, so
-    // only that path may re-enter verification/review. No-check commit transfer
-    // can preserve an approved review before evidenceState itself is projected.
-    const validationWasRearmed = contract.evidenceState === 'stale' || contract.evidenceState === 'partial';
-    const currentReviewIsAuthoritative = contract.phase === 'review' && contract.evidenceState === 'valid';
-    const latestReview = latestImplementationReview(contract.implementationReviews);
-    const approvedReviewMatchesCurrentCandidate = Boolean(
-      candidate
-      && contract.phase === 'delivery'
-      && contract.phaseEvidence.review.state === 'satisfied'
-      && latestReview?.decision === 'approved'
-      && latestReview.sourceRevision === candidate.sourceRevision
-      && latestReview.verificationWorkspaceFingerprint === candidate.workspaceFingerprint
-    );
-    const approvedDeliveryIsAuthoritative = contract.phase === 'delivery'
-      && contract.phaseEvidence.review.state === 'satisfied'
-      && (!validationWasRearmed || approvedReviewMatchesCurrentCandidate);
-    if (currentReviewIsAuthoritative || approvedDeliveryIsAuthoritative) {
-      if (approvedReviewMatchesCurrentCandidate && contract.evidenceState !== 'valid') {
-        recordWorkEvidenceState(options, contractId, 'valid');
-      }
-      return;
-    }
-    const verified = transitionWorkContractPhase(options, contractId, {
-      phase: 'verification',
-      status: 'running',
-      state: 'satisfied',
-      summary: summary ?? 'All requested validation receipts passed.',
-      evidenceRefs: contract.evidenceRefs,
-    });
-    recordWorkEvidenceState(options, contractId, 'valid');
-    transitionWorkContractPhase(options, contractId, {
-      phase: 'delivery',
-      status: 'running',
-      state: 'active',
-      summary: 'Validation receipts passed and this Work kind does not require implementation review; delivery is next.',
-      evidenceRefs: verified.evidenceRefs,
-    });
+    if (contract.evidenceState !== 'valid') recordWorkEvidenceState(options, contractId, 'valid');
     return;
   }
-
-  if (outcome === 'failed') {
-    failWorkContract(options, contractId, {
-      phase: contract.phase,
-      summary: summary ?? `A requested validation check failed while Work was in ${contract.phase}.`,
-      evidenceRefs: contract.evidenceRefs,
-    });
-    return;
+  const nextEvidenceState = contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
+    ? 'stale'
+    : 'partial';
+  if (contract.evidenceState !== nextEvidenceState) {
+    recordWorkEvidenceState(options, contractId, nextEvidenceState);
   }
-
-  transitionWorkContractPhase(options, contractId, {
-    phase: 'verification',
-    status: 'running',
-    state: 'blocked',
-    dispatchState: 'blocked',
-    summary: summary ?? 'Validation infrastructure failed; retain the finite Work for retry without treating this as an acceptance failure.',
-    evidenceRefs: contract.evidenceRefs,
-  });
-  recordWorkEvidenceState(
-    options,
-    contractId,
-    contract.evidenceState === 'valid' || contract.evidenceState === 'stale' ? 'stale' : 'partial',
-  );
+  void summary;
+  void candidate;
 }
 
 function settleInfrastructureFailure(

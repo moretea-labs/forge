@@ -364,11 +364,9 @@ describe('Recovery ReleaseSession', () => {
 
   test('keeps Work completion and Watchdog outside normal release authority', () => {
     const root = join(import.meta.dir, '..', '..');
-    const workFinalization = readFileSync(join(root, 'src/runtime/control-plane/execution/work-finalization-service.ts'), 'utf8');
+    expect(existsSync(join(root, 'src/runtime/control-plane/execution/work-finalization-service.ts'))).toBe(false);
     const workCompletion = readFileSync(join(root, 'src/runtime/control-plane/execution/work-completion-authority.ts'), 'utf8');
     const watchdog = readFileSync(join(root, 'src/runtime/watchdog/workflow-watchdog.ts'), 'utf8');
-    expect(workFinalization).not.toContain('release-session');
-    expect(workFinalization).not.toContain('standalone-recovery');
     expect(workCompletion).not.toContain('release-session');
     expect(workCompletion).not.toContain('standalone-recovery');
     expect(watchdog).not.toContain('release-session');

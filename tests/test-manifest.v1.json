@@ -469,14 +469,6 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/runtime/direct-edit-work-completion.test.ts": {
-      "module": "workflow",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/direct-canonical-finalization.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/edit-session-continuity.test.ts": {
       "module": "controller",
       "resource": "git-worktree"
@@ -676,10 +668,6 @@
     "tests/runtime/rh-work-scheduler-adapter.test.ts": {
       "module": "controller",
       "resource": "git-worktree"
-    },
-    "tests/runtime/rh-work-terminalization-authority.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
     },
     "tests/runtime/work-authority-reconciler.test.ts": {
       "module": "workflow",
@@ -922,16 +910,8 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/content-equivalent-commit-authority.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/failure-contract.test.ts": {
       "module": "core",
-      "resource": "pure"
-    },
-    "tests/runtime/frozen-tool-contract-abi.test.ts": {
-      "module": "controller",
       "resource": "pure"
     },
     "tests/runtime/process-check-classification.test.ts": {

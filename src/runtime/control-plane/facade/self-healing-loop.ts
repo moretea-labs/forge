@@ -325,7 +325,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
   if (operation === 'verify') {
     return buildFacadeResult({
       status: 'ok',
-      summary: 'Self-healing verification suggestion only; run real registered checks via rh_work verify or rh_status.',
+      summary: 'Self-healing verification is a maintenance observation; run registered repository checks through run_check when code verification is needed.',
       data: {
         operation: 'verify',
         dryRun,
@@ -333,14 +333,6 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       },
       suggestedNextActions: validateSuggestedNextActions([
         verificationSuggestion(input.workId),
-        {
-          label: 'Run work verify if work_id known',
-          tool: 'rh_work',
-          operation: 'verify',
-          payload: { work_id: input.workId },
-          risk: 'workspace_write',
-          confidence: input.workId ? 'medium' : 'low',
-        },
       ]).actions,
     });
   }
@@ -514,14 +506,14 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
     },
     suggestedNextActions: validateSuggestedNextActions([
       verificationSuggestion(input.workId),
-      {
-        label: 'Continue work if applicable',
-        tool: 'rh_work',
-        operation: 'continue',
+      ...(input.workId ? [{
+        label: 'Read current Work semantic state',
+        tool: 'rh_work' as const,
+        operation: 'work_get',
         payload: { work_id: input.workId },
-        risk: 'readonly',
-        confidence: input.workId ? 'medium' : 'low',
-      },
+        risk: 'readonly' as const,
+        confidence: 'medium' as const,
+      }] : []),
     ]).actions,
     rawAvailable: false,
   });

@@ -26,9 +26,7 @@ import {
   resolveLegacyWorkContractIdentity,
   ExecutionIdentityError,
 } from '../../src/runtime/control-plane/execution/execution-identity';
-import { adoptWorkHandleSuccessorCandidate, resolveWorkDeliveryTargetBranch, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { inspectManagedWorkSuccessorAdoption } from '../../src/runtime/control-plane/execution/work-finalization-service';
-import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
+import { resolveWorkDeliveryTargetBranch, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { assertManagedRepositoryMutationAuthority, ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
@@ -108,7 +106,7 @@ function sampleHandle(input: {
 }
 
 describe('execution identity pre-spawn guard', () => {
-  test('emits typed WORK_HANDLE_HEAD_CHANGED when finalization identity drifts', () => {
+  test('emits typed WORK_HANDLE_HEAD_CHANGED when mutation identity drifts', () => {
     const fx = dualRepoFixture();
     const identity = { sessionId: 'sess-test', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
     startExecutionSession(fx.controllerHome, {
@@ -133,7 +131,7 @@ describe('execution identity pre-spawn guard', () => {
 
     let observed: unknown;
     try {
-      validateWorkHandle(fx.controllerHome, handle, identity, 'full', 'finalize');
+      validateWorkHandle(fx.controllerHome, handle, identity, 'full', 'execute');
     } catch (error) {
       observed = error;
     }
@@ -796,136 +794,6 @@ describe('managed Work mutation authority', () => {
     expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle })).not.toThrow();
   });
 });
-
-describe('managed Work successor authority', () => {
-  test('adopts a clean target-reconciled rewritten candidate and re-arms validation', () => {
-    const fx = dualRepoFixture();
-    const base = fx.headA;
-    spawnSync('git', ['-C', fx.repoARoot, 'checkout', '-b', 'work/successor'], { encoding: 'utf8' });
-    writeFileSync(join(fx.repoARoot, 'work.txt'), 'work change\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'work.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'work candidate'], { encoding: 'utf8' });
-    const oldCandidate = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    spawnSync('git', ['-C', fx.repoARoot, 'checkout', 'main'], { encoding: 'utf8' });
-    writeFileSync(join(fx.repoARoot, 'target.txt'), 'target advance\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'target.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'target advance'], { encoding: 'utf8' });
-    const targetHead = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    spawnSync('git', ['-C', fx.repoARoot, 'checkout', 'work/successor'], { encoding: 'utf8' });
-    expect(spawnSync('git', ['-C', fx.repoARoot, 'rebase', 'main'], { encoding: 'utf8' }).status).toBe(0);
-    const successorHead = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    expect(successorHead).not.toBe(oldCandidate);
-
-    const inspection = inspectManagedWorkSuccessorAdoption({
-      root: fx.repoARoot,
-      worktreePath: fx.repoARoot,
-      managedWorktree: true,
-      workBranch: 'work/successor',
-      targetBranch: 'main',
-      expectedRevision: oldCandidate,
-      deliveryBaseRevision: base,
-      status: repositoryGitStatus(fx.repoA),
-      scope: { allowedPaths: ['work.txt'], forbiddenPaths: [] },
-    });
-    expect(inspection).toMatchObject({
-      adoptable: true,
-      reason: 'adoptable',
-      previousHead: oldCandidate,
-      candidateHead: successorHead,
-      targetHead,
-      candidateChangedPaths: ['work.txt'],
-    });
-
-    const handle = writeWorkHandle(fx.controllerHome, {
-      ...sampleHandle({
-        workId: 'work-successor-adoption',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'work/successor',
-        expectedHead: oldCandidate,
-      }),
-      managedWorktree: true,
-      deliveryBaseCommit: base,
-      state: 'failed',
-      failureReason: 'WORK_HANDLE_HEAD_CHANGED',
-      validatedInputFingerprint: 'stale-validation',
-      validationRun: {
-        fingerprint: 'stale-validation',
-        head: oldCandidate,
-        workspaceFingerprint: 'stale-workspace',
-        requestedChecks: ['package:check:type'],
-        resumeState: 'committed',
-        processes: {},
-      },
-      finalization: {
-        validation: 'failed',
-        commit: 'done',
-        merge: 'failed',
-        branchCleanup: 'failed',
-        worktreeCleanup: 'failed',
-        lastError: 'WORK_HANDLE_HEAD_CHANGED',
-      },
-    });
-    const adopted = adoptWorkHandleSuccessorCandidate(fx.controllerHome, handle, { candidateHead: successorHead, deliveryBaseHead: targetHead });
-    expect(adopted.state).toBe('validating');
-    expect(adopted.expectedHead).toBe(successorHead);
-    expect(adopted.deliveryBaseCommit).toBe(targetHead);
-    expect(adopted.failureReason).toBeUndefined();
-    expect(adopted.validationRun).toBeUndefined();
-    expect(adopted.validatedInputFingerprint).toBeUndefined();
-    expect(adopted.finalization).toMatchObject({
-      validation: 'pending', commit: 'done', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending',
-    });
-  });
-
-  test('leaves ordinary descendant progress on the existing path and rejects an out-of-scope rewritten successor', () => {
-    const fx = dualRepoFixture();
-    const base = fx.headA;
-    spawnSync('git', ['-C', fx.repoARoot, 'checkout', '-b', 'work/invalid-successor'], { encoding: 'utf8' });
-    writeFileSync(join(fx.repoARoot, 'work.txt'), 'work change\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'work.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'old work candidate'], { encoding: 'utf8' });
-    const oldCandidate = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    spawnSync('git', ['-C', fx.repoARoot, 'checkout', 'main'], { encoding: 'utf8' });
-    writeFileSync(join(fx.repoARoot, 'target.txt'), 'target advance\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'target.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'target advance'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'checkout', 'work/invalid-successor'], { encoding: 'utf8' });
-    writeFileSync(join(fx.repoARoot, 'outside.txt'), 'out of scope\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'outside.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'unreconciled rewrite'], { encoding: 'utf8' });
-
-    const notReconciled = inspectManagedWorkSuccessorAdoption({
-      root: fx.repoARoot,
-      worktreePath: fx.repoARoot,
-      managedWorktree: true,
-      workBranch: 'work/invalid-successor',
-      targetBranch: 'main',
-      expectedRevision: oldCandidate,
-      deliveryBaseRevision: base,
-      status: repositoryGitStatus(fx.repoA),
-      scope: { allowedPaths: ['work.txt'], forbiddenPaths: [] },
-    });
-    expect(notReconciled).toMatchObject({ adoptable: false, reason: 'descendant_progress' });
-
-    expect(spawnSync('git', ['-C', fx.repoARoot, 'rebase', 'main'], { encoding: 'utf8' }).status).toBe(0);
-    const outOfScope = inspectManagedWorkSuccessorAdoption({
-      root: fx.repoARoot,
-      worktreePath: fx.repoARoot,
-      managedWorktree: true,
-      workBranch: 'work/invalid-successor',
-      targetBranch: 'main',
-      expectedRevision: oldCandidate,
-      deliveryBaseRevision: base,
-      status: repositoryGitStatus(fx.repoA),
-      scope: { allowedPaths: ['work.txt'], forbiddenPaths: [] },
-    });
-    expect(outOfScope).toMatchObject({ adoptable: false, reason: 'scope_violation' });
-    expect(outOfScope.detail).toContain('outside.txt');
-  });
-});
-
 
 describe('repository Work delivery target authority', () => {
   test('materializes the exact non-default source branch as the durable delivery target', () => {

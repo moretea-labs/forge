@@ -35,8 +35,6 @@ import {
   rearmControllerRoundAfterProviderRecovery,
   submitControllerRoundDisposition,
 } from '../../packages/kernel/controller/api/index';
-import { parseControllerDispositionCompatibilityCapability, parseControllerRoundCompatibilityCapability, parseCurrentConversationEnrollmentCompatibilityCapability } from '../../adapters/mcp/controller-round-compatibility';
-import { normalizeRhWorkInputCompatibility } from '../../adapters/mcp/runtime-gateway/work-input-compatibility';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
 import { decideControllerRoundTransition } from '../../packages/kernel/controller/domain/controller-round-transition-policy';
 import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
@@ -2180,79 +2178,6 @@ describe('scheduled external Controller wake', () => {
       reason: 'Same principal continued on the new canonical Runtime.',
     });
     expect(waiting).toMatchObject({ status: 'waiting', disposition: 'wait', lifecycleStage: 'semantic_round_closed', controllerInstanceId: 'runtime-b', sessionId: 'chatgpt-session-b' });
-  });
-
-  test('parses only the fenced frozen-schema controller disposition compatibility capability', () => {
-    expect(parseControllerDispositionCompatibilityCapability(
-      'repair',
-      'controller.disposition:continue_immediately:goal:work-compat',
-    )).toEqual({ disposition: 'continue_immediately', relayScopeId: 'goal:work-compat' });
-    const authorityId = 'cra_0123456789abcdef0123456789abcdef';
-    expect(parseControllerDispositionCompatibilityCapability(
-      'repair',
-      `controller.disposition:continue_immediately:${authorityId}:goal:work-compat`,
-    )).toEqual({ disposition: 'continue_immediately', authorityId, relayScopeId: 'goal:work-compat' });
-    expect(parseControllerDispositionCompatibilityCapability('continue', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
-    expect(parseControllerDispositionCompatibilityCapability('repair', 'schedule.delete:SCH-1')).toBeUndefined();
-    expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:invalid:goal:work-compat')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
-    expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:goal_complete:')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
-    expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_conversation.enroll')).toEqual({
-      disposition: 'continue_immediately', enrollCurrentConversation: true,
-    });
-    expect(parseCurrentConversationEnrollmentCompatibilityCapability('continue', 'controller.current_conversation.enroll')).toBeUndefined();
-    expect(parseCurrentConversationEnrollmentCompatibilityCapability('repair', 'controller.current_conversation.enroll:unexpected')).toBeUndefined();
-  });
-
-  test('maps frozen current-conversation enrollment into the canonical controller disposition without caller-supplied identity', () => {
-    expect(normalizeRhWorkInputCompatibility({
-      operation: 'repair',
-      capability_id: 'controller.current_conversation.enroll',
-      work_id: 'work-current-conversation-compat',
-      requirement_id: 'REQ-current-conversation-compat',
-    })).toMatchObject({
-      ok: true,
-      operation: 'controller_disposition',
-      args: {
-        work_id: 'work-current-conversation-compat',
-        requirement_id: 'REQ-current-conversation-compat',
-        disposition: 'continue_immediately',
-        enroll_current_conversation: true,
-      },
-    });
-    expect(normalizeRhWorkInputCompatibility({
-      operation: 'repair', capability_id: 'controller.current_conversation.enroll', work_id: 'work-current-conversation-compat',
-    })).toMatchObject({ ok: false, summary: expect.stringContaining('CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY_SCOPE_REQUIRED') });
-    expect(normalizeRhWorkInputCompatibility({
-      operation: 'repair', capability_id: 'controller.current_conversation.enroll', work_id: 'work-current-conversation-compat',
-      requirement_id: 'REQ-current-conversation-compat', disposition: 'continue_immediately',
-    })).toMatchObject({ ok: false, summary: 'CURRENT_CONVERSATION_ENROLLMENT_COMPATIBILITY_CONFLICT' });
-  });
-
-  test('parses only fenced frozen-schema controller round lifecycle compatibility capabilities', () => {
-    const authorityId = 'cra_0123456789abcdef0123456789abcdef';
-    expect(parseControllerRoundCompatibilityCapability(
-      'repair',
-      `controller.round:controller_claim:${authorityId}:goal:work-compat`,
-    )).toEqual({ operation: 'controller_claim', authorityId, relayScopeId: 'goal:work-compat' });
-    expect(parseControllerRoundCompatibilityCapability(
-      'repair',
-      `controller.round:continue:${authorityId}:goal:work-compat`,
-    )).toEqual({ operation: 'continue', authorityId, relayScopeId: 'goal:work-compat' });
-    expect(parseControllerRoundCompatibilityCapability(
-      'repair',
-      `controller.round:verify:${authorityId}:goal:work-compat`,
-    )).toEqual({ operation: 'verify', authorityId, relayScopeId: 'goal:work-compat' });
-    expect(parseControllerRoundCompatibilityCapability(
-      'repair',
-      `controller.round:review:changes_required:${authorityId}:goal:work-compat`,
-    )).toEqual({ operation: 'review', authorityId, relayScopeId: 'goal:work-compat', reviewDecision: 'changes_required' });
-    expect(parseControllerRoundCompatibilityCapability('continue', `controller.round:continue:${authorityId}:goal:work-compat`)).toBeUndefined();
-    expect(parseControllerRoundCompatibilityCapability('repair', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
-    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:delegate:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
-    expect(() => parseControllerRoundCompatibilityCapability('repair', 'controller.round:continue:not-authority:goal:work-compat')).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
-    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:continue:${authorityId}:`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
-    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:review:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
-    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:review:maybe:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
   });
 
   test('allows only the exact same-principal ChatGPT authority to record goal_complete after release/reclaim runtime rotation', () => {

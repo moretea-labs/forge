@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import {
-  createWorkContract,
+  createWorkSemanticContext,
   getWorkContract,
   listWorkSemanticRevisionRecords,
   reviseWorkSemanticContext,
@@ -62,19 +62,10 @@ export async function callRhWorkSemanticOperation(
       }) as unknown as Record<string, unknown>);
     }
     try {
-      const created = createWorkContract(store, {
+      const created = createWorkSemanticContext(store, {
         workId,
-        repoId: store.repoId ?? '',
         objective,
-        acceptanceCriteria: [],
-        constraints: { requireHandoffOnAmbiguity: true },
-        // Compatibility projection only. Semantic Work has no repository/execution kind.
-        workKind: 'investigation',
-        lifecycleRole: 'primary',
         requestedBy: 'chatgpt',
-        allowedPaths: [],
-        forbiddenPaths: [],
-        checks: [],
         ...(typeof args.requirement_id === 'string' && args.requirement_id.trim() ? { requirementId: args.requirement_id.trim() } : {}),
         ...(typeof args.requirement_revision === 'number' ? { requirementRevision: args.requirement_revision } : {}),
         ...(typeof args.plan_id === 'string' && args.plan_id.trim() ? { planId: args.plan_id.trim() } : {}),

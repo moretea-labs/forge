@@ -73,6 +73,7 @@ export {
   emptyWorkContractStore,
   readWorkContractStore,
   writeWorkContractStore,
+  createWorkSemanticContext,
   createWorkContract,
   getWorkContractByRequestId,
   acceptSubmittedWorkContract,
@@ -108,6 +109,7 @@ export {
   canonicalizeWorkContractForAuthority,
 } from '../infrastructure/work-contract-store';
 export type {
+  CreateWorkSemanticInput,
   CreateWorkContractInput,
   ListWorkContractOptions,
   InvalidActiveWorkCandidate,

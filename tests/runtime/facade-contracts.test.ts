@@ -5,8 +5,8 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { RH_WORK_MODEL_OPERATIONS } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
-import { FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES, FROZEN_RH_WORK_TOOL_OPERATIONS, runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
+import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
   FACADE_TOOLS,
@@ -37,7 +37,6 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('controller_authority_id');
     expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
-    expect(FROZEN_RH_WORK_TOOL_OPERATIONS).toContain('controller_disposition');
   });
 
   test('keeps cognition cadence model-owned without adding another lifecycle', () => {
@@ -91,22 +90,16 @@ describe('handoff and facade contracts', () => {
     expect(invalid.warnings[0]).toContain('unsupported rh_work.not_in_stable_schema');
   });
 
-  test('keeps frozen lifecycle vocabulary available for server compatibility without advertising its authority fields', () => {
+  test('rejects retired lifecycle vocabulary after connector rollover', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { description?: string; enum?: string[] }> | undefined;
-    expect(FROZEN_RH_WORK_TOOL_OPERATIONS).toEqual(expect.arrayContaining([
-      'controller_claim',
-      'controller_release',
-      'controller_disposition',
-      'verify',
-      'review',
-      'finalize',
-      'plan_accept_step',
-    ]));
     expect(properties).not.toHaveProperty('controller_authority_id');
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('plan_step_id');
-    expect(properties?.capability_id?.description).toContain('server compatibility only');
+    expect(properties?.capability_id?.description).not.toContain('compatibility');
+    for (const operation of ['verify', 'review', 'finalize', 'plan_approve', 'plan_accept_step', 'controller_claim', 'controller_release', 'controller_disposition']) {
+      expect(isRhWorkAcceptedOperation(operation)).toBe(false);
+    }
   });
 
   test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
@@ -146,7 +139,7 @@ describe('handoff and facade contracts', () => {
     expect(properties).toHaveProperty('expected_revision');
   });
 
-  test('keeps the public rh_work ABI thin while retaining frozen carriers separately', () => {
+  test('keeps the public rh_work ABI thin without frozen carriers', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toEqual([...RH_WORK_MODEL_OPERATIONS]);
@@ -159,10 +152,6 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('obligation_dispositions');
     expect(properties).not.toHaveProperty('work_kind');
     expect(properties).not.toHaveProperty('engineering_preconditions');
-    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('controller_authority_id');
-    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('relay_scope_id');
-    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('obligation_dispositions');
-    expect(FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES).toHaveProperty('engineering_preconditions');
   });
 
   test('classifies terminal handoff statuses', () => {
@@ -330,7 +319,7 @@ describe('handoff and facade contracts', () => {
     ]));
     expect(capabilities.every((entry) => entry.schemaExposure === 'stable_static')).toBe(true);
     const groups = summarizeCapabilityGroups([]);
-    expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['rh_work'] });
+    expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['rh_context'] });
     expect(groups.find((entry) => entry.group === 'ios')).toMatchObject({ capabilityCount: 1, executionSurfaces: ['plugin_action_execute'], facadeTools: [] });
   });
 

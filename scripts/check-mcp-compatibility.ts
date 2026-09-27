@@ -5,20 +5,8 @@ import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { accessToolDefinitions } from '../src/cli/mcp/access-tools';
 import { repositoryToolDefinitions } from '../src/cli/mcp/repository-tools';
 import { runtimeToolDefinitions } from '../src/runtime/gateway/mcp/runtime-tools';
-import { FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES } from '../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
-import {
-  buildPlanObligationCompatibilityCapability,
-  parseControllerRoundCompatibilityCapability,
-  parsePlanObligationCompatibilityCapability,
-} from '../adapters/mcp/controller-round-compatibility';
-import {
-  buildFrozenSemanticCompatibilityCapability,
-  FROZEN_WORK_START_KINDS,
-  parseFrozenSemanticCompatibilityCapability,
-} from '../adapters/mcp/frozen-client-semantic-compatibility';
-import { ENGINEERING_DECISION_INPUT_FIELDS } from '../adapters/mcp/runtime-gateway/engineering-tool-contract';
 import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   CORE_CONTROLLER_TOOL_NAMES,
@@ -51,7 +39,7 @@ const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
 // keeps the frozen transport carriers below while retiring lifecycle-only
 // fields from the model-facing schema.
 const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8af6294a1fb9d8c9';
-const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'af14f2e1d43d1103';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = '8193162a4e64279d';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -159,174 +147,15 @@ if (fullNames.length < defaultNames.length) {
 
 const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
 const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
-const frozenCompatibilityProperties = FROZEN_RH_WORK_COMPATIBILITY_PROPERTIES as Record<string, unknown>;
 for (const field of [
   'checkout_id',
   'workflow_id',
   'workflow_run_id',
-  'controller_authority_id',
-  'relay_scope_id',
-  'assistant_context_digest',
-  'assistant_context_usage',
   'outcome_observation',
   'experience_draft',
 ] as const) {
-  if (!(field in rhWorkProperties) && !(field in frozenCompatibilityProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+  if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
 }
-if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
-if (!('obligation_dispositions' in frozenCompatibilityProperties)) failures.push('rh_work frozen compatibility obligation_dispositions schema is missing');
-for (const field of ['controller_authority_id', 'relay_scope_id', 'engineering_preconditions']) {
-  if (!(field in frozenCompatibilityProperties)) failures.push(`rh_work frozen compatibility ${field} schema is missing`);
-}
-const workKindSchema = frozenCompatibilityProperties.work_kind as { enum?: unknown[] } | undefined;
-if (JSON.stringify(workKindSchema?.enum ?? []) !== JSON.stringify(FROZEN_WORK_START_KINDS)) {
-  failures.push('rh_work native work_kind enum diverged from frozen start compatibility authority');
-}
-const engineeringPreconditionsSchema = frozenCompatibilityProperties.engineering_preconditions as { properties?: Record<string, unknown> } | undefined;
-const designDecisionSchema = engineeringPreconditionsSchema?.properties?.design_decision as { properties?: Record<string, unknown> } | undefined;
-const decisionsSchema = designDecisionSchema?.properties?.decisions as { properties?: Record<string, unknown>; required?: unknown[] } | undefined;
-const decisionPropertyKeys = Object.keys(decisionsSchema?.properties ?? {});
-if (JSON.stringify(decisionPropertyKeys) !== JSON.stringify(ENGINEERING_DECISION_INPUT_FIELDS)) {
-  failures.push('rh_work Engineering Design decision schema diverged from Kernel decision-area authority');
-}
-if (JSON.stringify(decisionsSchema?.required ?? []) !== JSON.stringify(ENGINEERING_DECISION_INPUT_FIELDS)) {
-  failures.push('rh_work Engineering Design required decisions diverged from Kernel decision-area authority');
-}
-
-const planCompatibilityFixture = [
-  {
-    predecessor_plan_id: 'PLAN-predecessor',
-    obligation_id: 'step:p0:acceptance:0',
-    disposition: 'change' as const,
-    successor_refs: ['step:p0:acceptance:0'],
-    rationale: 'successor expands the same obligation',
-  },
-  {
-    predecessor_plan_id: 'PLAN-predecessor',
-    obligation_id: 'step:p1',
-    disposition: 'keep' as const,
-    successor_refs: ['step:p1'],
-  },
-];
-try {
-  const capability = buildPlanObligationCompatibilityCapability(planCompatibilityFixture);
-  const parsed = parsePlanObligationCompatibilityCapability('plan_create', capability);
-  if (JSON.stringify(parsed) !== JSON.stringify(planCompatibilityFixture)) {
-    failures.push('frozen Plan obligation compatibility round-trip changed the typed payload');
-  }
-  if (parsePlanObligationCompatibilityCapability('repair', capability) !== undefined) {
-    failures.push('frozen Plan obligation compatibility must be scoped to plan_create');
-  }
-  try {
-    parsePlanObligationCompatibilityCapability('plan_create', 'plan.obligations.v1:not+base64');
-    failures.push('frozen Plan obligation compatibility accepted malformed payload');
-  } catch {
-    // Expected: malformed frozen-client transport input remains fail-closed.
-  }
-} catch (error) {
-  failures.push(`frozen Plan obligation compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
-}
-
-try {
-  const authorityId = `cra_${'a'.repeat(32)}`;
-  const relayScopeId = 'goal:work-frozen-review-compatibility';
-  const parsedReview = parseControllerRoundCompatibilityCapability(
-    'repair',
-    `controller.round:review:approved:${authorityId}:${relayScopeId}`,
-  );
-  if (JSON.stringify(parsedReview) !== JSON.stringify({ operation: 'review', authorityId, relayScopeId, reviewDecision: 'approved' })) {
-    failures.push('frozen ControllerRound review compatibility changed authority, scope, or review decision');
-  }
-  const parsedVerify = parseControllerRoundCompatibilityCapability(
-    'repair',
-    `controller.round:verify:${authorityId}:${relayScopeId}`,
-  );
-  if (JSON.stringify(parsedVerify) !== JSON.stringify({ operation: 'verify', authorityId, relayScopeId })) {
-    failures.push('legacy ControllerRound compatibility changed non-review operation semantics');
-  }
-  for (const invalid of [
-    `controller.round:review:${authorityId}:${relayScopeId}`,
-    `controller.round:review:maybe:${authorityId}:${relayScopeId}`,
-  ]) {
-    try {
-      parseControllerRoundCompatibilityCapability('repair', invalid);
-      failures.push('frozen ControllerRound review compatibility accepted a missing or invalid explicit decision');
-    } catch {
-      // Expected: frozen review must carry one explicit canonical review decision.
-    }
-  }
-} catch (error) {
-  failures.push(`frozen ControllerRound review compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
-}
-
-try {
-  const authorityId = `cra_${'b'.repeat(32)}`;
-  const relayScopeId = 'goal:frozen-start-abi';
-  for (const workKind of FROZEN_WORK_START_KINDS) {
-    const startFixture = {
-      operation: 'start' as const,
-      args: { work_kind: workKind, controller_authority_id: authorityId, relay_scope_id: relayScopeId },
-    };
-    const startCapability = buildFrozenSemanticCompatibilityCapability(startFixture);
-    const parsedStart = parseFrozenSemanticCompatibilityCapability('repair', startCapability);
-    if (JSON.stringify(parsedStart) !== JSON.stringify(startFixture)) {
-      failures.push(`frozen semantic start compatibility changed ${workKind} or Controller authority identity`);
-    }
-  }
-
-  const semanticFixture = {
-    operation: 'requirement_create' as const,
-    args: {
-      requirement_title: 'Frozen semantic compatibility',
-      requirement_outcome: 'Use the canonical Requirement authority through an old rh_work schema.',
-      requirement_acceptance_criteria: ['Compatibility remains transport-only.'],
-    },
-  };
-  const capability = buildFrozenSemanticCompatibilityCapability(semanticFixture);
-  const parsed = parseFrozenSemanticCompatibilityCapability('repair', capability);
-  if (JSON.stringify(parsed) !== JSON.stringify(semanticFixture)) {
-    failures.push('frozen semantic compatibility round-trip changed the typed payload');
-  }
-  const planFixture = {
-    operation: 'plan_create' as const,
-    args: {
-      obligation_dispositions: [{
-        predecessor_plan_id: 'PLAN-R1',
-        obligation_id: 'obl-example',
-        disposition: 'keep' as const,
-        successor_refs: ['step:implementation'],
-      }],
-    },
-  };
-  const planCapability = buildFrozenSemanticCompatibilityCapability(planFixture);
-  const parsedPlan = parseFrozenSemanticCompatibilityCapability('repair', planCapability);
-  if (JSON.stringify(parsedPlan) !== JSON.stringify(planFixture)) {
-    failures.push('frozen Plan successor semantic compatibility changed obligation dispositions');
-  }
-  try {
-    parseFrozenSemanticCompatibilityCapability('plan_create', capability);
-    failures.push('frozen semantic compatibility accepted a non-repair transport operation');
-  } catch {
-    // Expected: the generic semantic envelope is reachable only through the stable repair transport.
-  }
-  const unknownOperation = `semantic.v1:${Buffer.from(JSON.stringify({ v: 1, op: 'finalize', a: {} }), 'utf8').toString('base64url')}`;
-  try {
-    parseFrozenSemanticCompatibilityCapability('repair', unknownOperation);
-    failures.push('frozen semantic compatibility accepted an operation outside the explicit allowlist');
-  } catch {
-    // Expected: compatibility cannot grow into an arbitrary-operation tunnel.
-  }
-  const unknownField = `semantic.v1:${Buffer.from(JSON.stringify({ v: 1, op: 'requirement_create', a: { requirement_title: 'x', requirement_outcome: 'y', remote_write: true } }), 'utf8').toString('base64url')}`;
-  try {
-    parseFrozenSemanticCompatibilityCapability('repair', unknownField);
-    failures.push('frozen semantic compatibility accepted an unknown operation argument');
-  } catch {
-    // Expected: each allowlisted operation has an exact transport schema.
-  }
-} catch (error) {
-  failures.push(`frozen semantic compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
-}
-
 if (failures.length) {
   console.error('[mcp-compatibility] FAILED');
   for (const failure of failures) console.error(`- ${failure}`);

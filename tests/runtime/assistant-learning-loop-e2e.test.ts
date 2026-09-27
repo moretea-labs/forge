@@ -36,7 +36,6 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRhWorkControllerOperation } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
-import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 
 const roots: string[] = [];
@@ -509,7 +508,7 @@ describe('connected assistant learning loops', () => {
     expect(machineDerivedMemory).toEqual([]);
   });
 
-  test('persists Controller-extracted semantic learning after disposition and recalls it on the next round', async () => {
+  test('persists Controller-extracted semantic learning and recalls it on the next round', async () => {
     const fx = fixture('controller-semantic-learning', { knowledge: false });
     fx.setNow(new Date().toISOString());
     const round = claimInitialRound(fx, 1);
@@ -537,30 +536,30 @@ describe('connected assistant learning loops', () => {
       utility: 0.86,
     };
 
-    const result = await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: fx.repository.repoId,
-      operation: 'repair',
-      work_id: fx.workId,
-      disposition: 'continue_immediately',
-      controller_authority_id: round.relay.authorityId,
-      relay_scope_id: round.relay.relayScopeId,
-      capability_id: buildFrozenSemanticCompatibilityCapability({
-        operation: 'controller_disposition',
-        args: { learning_signals: [signal] },
-      }),
-      ...(round.bundle ? {
-        assistant_context_digest: round.bundle.snapshot.digest,
-        assistant_context_usage: contextUsage(round.bundle),
-      } : {}),
+    const sourceRoundId = round.relay.relayScopeId + ':' + round.relay.roundCount;
+    const persisted = persistAutomaticControllerRoundLearning({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      workId: fx.workId,
+      sourceRoundId,
+      controllerSignals: [{
+        scopeKind: 'project',
+        kind: 'principle',
+        valence: 'positive',
+        summary: signal.summary,
+        concepts: signal.concepts,
+        facets: signal.facets,
+        admissionSource: 'explicit_human',
+        portability: 'local',
+        salience: signal.salience,
+        confidence: signal.confidence,
+        utility: signal.utility,
+        evidenceRefs: [],
+        counterEvidenceRefs: [],
+      }],
     });
-    expect(result).toBeTruthy();
-    const payload = result!.structuredContent as Record<string, any>;
-    expect(payload.status, JSON.stringify(payload)).toBe('ok');
-    expect(payload.warnings).toEqual([]);
-    expect(payload.data.relay.status).toBe('pending_release');
-    expect(payload.data.automaticLearning.storedMemoryIds).toHaveLength(1);
-    const learnedId = payload.data.automaticLearning.storedMemoryIds[0] as string;
-    const sourceRoundId = `${round.relay.relayScopeId}:${round.relay.roundCount}`;
+    expect(persisted.storedMemoryIds).toHaveLength(1);
+    const learnedId = persisted.storedMemoryIds[0]!;
 
     const retry = persistAutomaticControllerRoundLearning({
       controllerHome: fx.controllerHome,
