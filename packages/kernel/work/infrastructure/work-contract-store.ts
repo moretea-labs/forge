@@ -1935,8 +1935,14 @@ export function recordWorkCompletionReceipt(
   return updateWorkContractInternal(options, workId, (current) => {
     if (receipt.workId !== current.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
     if (current.completionReceipt) {
-      if (current.completionReceipt.receiptId !== receipt.receiptId) throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
-      return undefined;
+      if (current.completionReceipt.receiptId === receipt.receiptId) return undefined;
+      // Legacy field names store current mechanical delivery evidence. An open
+      // semantic Work may legitimately deliver again after a retained production
+      // canary repair. Terminal semantic Work keeps its delivery receipt immutable.
+      if (semanticWorkState(current) !== 'open') throw new Error('WORK_COMPLETION_RECEIPT_ALREADY_RECORDED');
+      if ((isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)) && current.evidenceState !== 'valid') {
+        throw new Error('WORK_DELIVERY_RECEIPT_REPLACEMENT_VALIDATION_REQUIRED');
+      }
     }
     const recordedAt = receipt.recordedAt;
     const receiptChangedPaths = isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)

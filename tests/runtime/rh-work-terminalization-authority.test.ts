@@ -6443,6 +6443,66 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
   });
 
+  test('retained partial delivery re-arms the same semantic-open managed Work and stales prior delivery authority', () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-retained-partial-delivery-rearm';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'retained partial delivery rearm', baseRef: baseRevision,
+      branchName: 'work/retained-partial-delivery-rearm',
+    });
+    createWorkContract(store, {
+      workId, repoId: fx.repository.repoId, checkoutId: workspace.checkoutId!, worktreeRef: workspace.root,
+      baseRevision, repositoryBaseState: 'revision', workKind: 'repository_change',
+      objective: 'Continue the same Work after production-canary partial delivery.',
+      acceptanceCriteria: ['The same retained Work can mutate again without a repair Work.'],
+      allowedPaths: ['src/**'], forbiddenPaths: [], checks: [],
+      constraints: { requireWorktree: true, directMainProhibited: true, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running', phase: 'implementation',
+    });
+    const registered = getRepository(fx.repository.repoId, fx.controllerHome, { includeRemoved: true });
+    const worktree = selectRepositoryCheckout(registered, workspace.checkoutId!, { allowArchived: true });
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: worktree, workId,
+      identity: { principalId: 'principal-retained-rearm', sessionId: 'session-retained-rearm' },
+    })!;
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "rearmed";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'candidate'], { cwd: workspace.root! });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', candidateHead], { cwd: fx.repoRoot });
+    recordWorkEvidenceState(store, workId, 'valid');
+    recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1, receiptId: 'receipt-retained-partial-delivery', source: 'controller_work',
+      issueId: 'work', taskId: workId, workId, targetBranch: 'main', targetRevision: candidateHead, sourceRevision: candidateHead,
+      changedPaths: ['src/index.ts'],
+      delivery: { kind: 'commit', status: 'integrated', strategy: 'edit_session_commit', reachable: true, recordedAt: '2026-09-27T00:00:00.000Z' },
+      cleanup: { status: 'maintenance_warning', warnings: [
+        { code: 'cleanup_retained_by_request', message: 'Branch retained.', resourceKind: 'branch', resourceId: handle.branch, recordedAt: '2026-09-27T00:00:00.000Z' },
+        { code: 'cleanup_retained_by_request', message: 'Worktree retained.', resourceKind: 'worktree', resourceId: handle.worktreePath, recordedAt: '2026-09-27T00:00:00.000Z' },
+      ], blockers: [], recordedAt: '2026-09-27T00:00:00.000Z' },
+      verifiedAt: '2026-09-27T00:00:00.000Z', recordedAt: '2026-09-27T00:00:00.000Z',
+    }, 'completed_changed');
+    writeWorkHandle(fx.controllerHome, {
+      ...handle, expectedHead: candidateHead, state: 'merged',
+      finalization: { validation: 'done', commit: 'done', merge: 'done', branchCleanup: 'skipped', worktreeCleanup: 'skipped' },
+      terminalResourceDisposition: { mode: 'retained_by_request', retainWorktree: true, retainBranch: true, recordedAt: '2026-09-27T00:00:00.000Z' },
+    });
+
+    const resumed = ensureRepositoryMutationWorkHandle({
+      controllerHome: fx.controllerHome, repository: worktree, workId,
+      principalId: 'principal-retained-rearm', sessionId: 'session-retained-rearm-2',
+    }).handle;
+
+    expect(resumed.state).toBe('editing');
+    expect(resumed.expectedHead).toBe(candidateHead);
+    expect(resumed.terminalResourceDisposition).toBeUndefined();
+    expect(resumed.finalization).toMatchObject({ validation: 'pending', commit: 'pending', merge: 'pending' });
+    expect(getWorkContract(store, workId)).toMatchObject({ status: 'running', semanticState: 'open', evidenceState: 'stale' });
+    expect(getWorkContract(store, workId)?.completionReceipt?.receiptId).toBe('receipt-retained-partial-delivery');
+  });
+
   test('retired plan.step.retry reports a read-only fact instead of mutating Plan or Work authority', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

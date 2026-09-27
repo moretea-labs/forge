@@ -75,6 +75,18 @@ describe('Work v3 lifecycle authority', () => {
     });
     expect(workSemanticView(mechanicallyCompleted).resultRefs).not.toContain('mechanical-completion-receipt');
     expect(isCurrentWorkContract(mechanicallyCompleted)).toBe(true);
+    const redelivered = recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'mechanical-completion-receipt-2',
+      source: 'local_effect',
+      workId,
+      operation: 'test-local-effect-redelivery',
+      target: { kind: 'controller_local', id: 'semantic-authority-test' },
+      changed: true,
+      recordedAt: '2026-09-24T05:01:00.000Z',
+    }, 'completed_local', 'local_effect');
+    expect(redelivered.completionReceipt?.receiptId).toBe('mechanical-completion-receipt-2');
+    expect(workSemanticView(redelivered)).toMatchObject({ revision: 2, state: 'open' });
     const semanticallyCompleted = reviseWorkSemanticContext(store, workId, { expectedRevision: 2, state: 'completed' });
     expect(semanticallyCompleted.status).toBe('completed');
     expect(workSemanticView(semanticallyCompleted)).toMatchObject({ revision: 3, state: 'completed' });

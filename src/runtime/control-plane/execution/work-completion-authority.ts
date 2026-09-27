@@ -27,12 +27,16 @@ export function recordWorkDeliveryReceipt(
  * an open Work with this evidence still requires explicit work_complete CAS.
  */
 export function hasSettledWorkDeliveryReceipt(
-  work: Pick<WorkContract, 'completionReceipt'>,
+  work: Pick<WorkContract, 'completionReceipt' | 'evidenceState'>,
 ): boolean {
   const receipt = work.completionReceipt;
   if (!receipt) return false;
   if (isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)) {
-    return receipt.delivery.status === 'integrated'
+    // Repository delivery authority is current only while exact validation
+    // remains valid. Same-Work repair marks it stale before mutation, preserving
+    // the historical receipt without letting it authorize a different HEAD.
+    return work.evidenceState === 'valid'
+      && receipt.delivery.status === 'integrated'
       && receipt.delivery.reachable === true
       && receipt.cleanup.status === 'complete'
       && receipt.cleanup.blockers.length === 0;

@@ -3,6 +3,7 @@ import {
   getWorkContract,
   recordWorkEvidenceState,
   requestWorkImplementationReview,
+  semanticWorkState,
   transitionWorkContractPhase,
   updateWorkContract,
   workRequiresImplementationReview,
@@ -55,7 +56,7 @@ export function markWorkValidationPending(controllerHome: string, handle: WorkHa
   if (!contractId) return;
   const options = { controllerHome, repoId: handle.repositoryId };
   const contract = getWorkContract(options, contractId);
-  if (!contract || contract.completionReceipt) return;
+  if (!contract || semanticWorkState(contract) !== 'open') return;
   const evidenceState = contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
     ? 'stale'
     : 'partial';
@@ -77,7 +78,7 @@ export function markWorkValidationCurrentFromReusedEvidence(controllerHome: stri
   if (!contractId) return;
   const options = { controllerHome, repoId: handle.repositoryId };
   const contract = getWorkContract(options, contractId);
-  if (!contract || contract.completionReceipt) return;
+  if (!contract || semanticWorkState(contract) !== 'open') return;
   if (contract.evidenceState !== 'valid') recordWorkEvidenceState(options, contractId, 'valid');
 }
 
@@ -102,7 +103,7 @@ export function projectWorkValidationOutcome(
   if (!contractId) return;
   const options = { controllerHome, repoId: handle.repositoryId };
   const contract = getWorkContract(options, contractId);
-  if (!contract || contract.completionReceipt) return;
+  if (!contract || semanticWorkState(contract) !== 'open') return;
 
   if (outcome === 'passed') {
     // Validation reconciliation may be replayed during finalization. A receipt

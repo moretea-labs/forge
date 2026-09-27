@@ -2,10 +2,10 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, semanticWorkState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, recordWorkEvidenceState, semanticWorkState, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { currentPermissionSnapshotVersion } from './validation';
 import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
-import { inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
+import { gitIsAncestor, inspectDirectCanonicalPreMutationReconciliation } from './direct-canonical-work-reconciliation';
 
 export interface RepositoryWorkHandleControllerIdentity {
   sessionId: string;
@@ -44,10 +44,10 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
         handle.workId,
       );
       // A stale physical handle cannot outlive canonical Work lifecycle authority.
-      // Missing WorkContract evidence remains fail-closed for legacy/unreconciled
-      // handles; only an explicit terminal status or completion receipt releases
-      // durable canonical writer ownership.
-      return !contract || (semanticWorkState(contract) === 'open' && !contract.completionReceipt);
+      // Delivery receipts are mechanical evidence only; an explicitly open Work
+      // continues to own its concrete mutation surface until semantic completion
+      // or cancellation releases that authority.
+      return !contract || semanticWorkState(contract) === 'open';
     })
     .sort((left, right) => left.workId.localeCompare(right.workId));
   if (owners.length === 0) return;
@@ -195,6 +195,72 @@ export function assertManagedRepositoryMutationAuthority(input: {
   }
 }
 
+function rearmRetainedMergedWorkForMutation(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  contract: NonNullable<ReturnType<typeof getWorkContract>>;
+  handle: WorkHandleState;
+}): WorkHandleState {
+  const { handle } = input;
+  if (!handle.managedWorktree || handle.state !== 'merged') return handle;
+  const retained = handle.terminalResourceDisposition;
+  if (retained?.mode !== 'retained_by_request' || retained.retainWorktree !== true || retained.retainBranch !== true) return handle;
+  if (semanticWorkState(input.contract) !== 'open') throw new Error(`WORK_RETAINED_REARM_SEMANTIC_STATE_INVALID: ${input.workId}`);
+  if (!handle.expectedHead?.trim()) throw new Error(`WORK_RETAINED_REARM_EXPECTED_HEAD_REQUIRED: ${input.workId}`);
+
+  const placement = resolveRepositoryWorkHandlePlacement({
+    controllerHome: input.controllerHome,
+    repositoryId: input.repository.repoId,
+    checkoutId: handle.checkoutId,
+    worktreeRef: input.contract.worktreeRef,
+  });
+  if (!placement.managedWorktree || placement.registeredCheckout.lifecycle !== 'active') {
+    throw new Error(`WORK_RETAINED_REARM_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
+  }
+  if (resolve(placement.checkout.canonicalRoot) !== resolve(handle.worktreePath) || placement.branch !== handle.branch) {
+    throw new Error(`WORK_RETAINED_REARM_OWNERSHIP_MISMATCH: ${input.workId}`);
+  }
+  if (!placement.status.clean) throw new Error(`WORK_RETAINED_REARM_WORKTREE_DIRTY: ${input.workId}`);
+  if (placement.status.head !== handle.expectedHead) {
+    throw new Error(`WORK_RETAINED_REARM_HEAD_CHANGED: expected ${handle.expectedHead}, found ${placement.status.head ?? 'missing'}`);
+  }
+  const sourceCheckout = selectRepositoryCheckout(
+    placement.registeredRepository,
+    handle.sourceCheckoutId ?? placement.registeredRepository.activeCheckoutId,
+    { allowArchived: true },
+  );
+  const targetBranch = handle.deliveryTargetBranch?.trim();
+  if (!targetBranch || !gitIsAncestor(sourceCheckout.canonicalRoot, handle.expectedHead, targetBranch)) {
+    throw new Error(`WORK_RETAINED_REARM_TARGET_CONTAINMENT_REQUIRED: ${input.workId}`);
+  }
+
+  const evidenceState = input.contract.evidenceState === 'valid' || input.contract.evidenceState === 'stale' ? 'stale' : 'partial';
+  if (input.contract.evidenceState !== evidenceState) recordWorkEvidenceState(
+    { controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.workId, evidenceState,
+  );
+  const next = writeWorkHandle(input.controllerHome, {
+    ...handle,
+    state: 'editing',
+    terminalResourceDisposition: undefined,
+    validatedInputFingerprint: undefined,
+    validationRun: undefined,
+    cleanupReceipt: undefined,
+    failureReason: undefined,
+    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+  });
+  appendWorkEvidence(
+    { controllerHome: input.controllerHome, repoId: input.repository.repoId },
+    input.workId,
+    {
+      title: 'retained merged Work re-armed for same-Work mutation',
+      summary: `Re-armed retained merged Work at ${handle.expectedHead} only after proving semantic Work remains open, retained branch/worktree ownership, clean exact checkout identity, and target containment on ${targetBranch}. Prior validation/delivery authority is stale; no new Work was created.`,
+      detailLevel: 'summary',
+    },
+  );
+  return next;
+}
+
 function alignRepositoryMutationBase(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -290,7 +356,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   let contract = getWorkContract(store, input.workId);
   if (!contract) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
-  if (semanticWorkState(contract) !== 'open' || contract.completionReceipt) {
+  if (semanticWorkState(contract) !== 'open') {
     throw new Error(`WORK_REPOSITORY_MUTATION_TERMINAL: ${input.workId}`);
   }
   const principalId = input.principalId.trim();
@@ -339,6 +405,13 @@ export function ensureRepositoryMutationWorkHandle(input: {
     contract,
     handle,
     freshlyMaterialized: !existingHandle,
+  });
+  handle = rearmRetainedMergedWorkForMutation({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.workId,
+    contract,
+    handle,
   });
   assertManagedRepositoryMutationAuthority({ repository: input.repository, handle });
   return { handle, ...(promotedFrom ? { promotedFrom } : {}) };

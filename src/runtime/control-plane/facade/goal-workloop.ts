@@ -1959,8 +1959,9 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   }
 
   // A Work-owned delivery/effect receipt is durable physical evidence only.
-  // Re-reading it is idempotent regardless of semantic Work state.
-  if (work.completionReceipt) {
+  // Repository receipts are idempotent only while their exact validation remains
+  // current; same-Work repairs deliberately stale that authority before mutation.
+  if (hasSettledWorkDeliveryReceipt(work)) {
     return buildFacadeResult({
       status: 'ok',
       summary: `Finalize result: delivery/effect evidence is settled for ${work.workId}; semantic Work completion remains explicit.`,
