@@ -41,6 +41,7 @@ import {
   runtimeStatus,
   verifyStableRuntime,
   verifyConfiguredRuntimeReleaseSessionStaticGates,
+  probeAutomaticReleaseCutoverReadiness,
   watchdogTick,
   type WatchdogState,
   type RecoveryConfig,
@@ -940,12 +941,13 @@ export function nextReleaseReconcileBackoff(
 async function runAutomaticReleaseReconciliationStep(
   config: RecoveryConfig,
   observed: { fingerprint?: string } = {},
+  selectedDecision?: ReturnType<typeof decideConfiguredRuntimeReleaseReconciliation>,
 ): Promise<void> {
   // Most daemon ticks are no-ops. Decide that in the resident process first so
   // a healthy/current source does not fork a complete Recovery executable every
   // fifteen seconds merely to rediscover the same result. The short-lived child
   // remains the mutation boundary whenever a durable release action is needed.
-  const decision = decideConfiguredRuntimeReleaseReconciliation(
+  const decision = selectedDecision ?? decideConfiguredRuntimeReleaseReconciliation(
     config.controllerHome,
     () => configuredRuntimeReleaseSourceState(config),
   );
@@ -1006,7 +1008,32 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
     const observed: { fingerprint?: string } = {};
     let failure: string | undefined;
     try {
-      await runAutomaticReleaseReconciliationStep(config, observed);
+      const decision = decideConfiguredRuntimeReleaseReconciliation(
+        config.controllerHome,
+        () => configuredRuntimeReleaseSourceState(config),
+      );
+      observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
+      if (decision.required && decision.action === 'cutover') {
+        const gate = await probeAutomaticReleaseCutoverReadiness(config);
+        if (!gate.ready) {
+          process.stdout.write(JSON.stringify({
+            at: new Date().toISOString(),
+            action: 'automatic_release_cutover_deferred',
+            reason: gate.detail,
+            sessionId: decision.session?.sessionId,
+            phase: decision.session?.phase,
+            activeSessions: gate.activeSessions,
+            activePosts: gate.activePosts,
+            activeStreams: gate.activeStreams,
+            initializing: gate.initializing,
+            latestActivityAgeMs: gate.latestActivityAgeMs,
+          }) + '\n');
+        } else {
+          await runAutomaticReleaseReconciliationStep(config, observed, decision);
+        }
+      } else {
+        await runAutomaticReleaseReconciliationStep(config, observed, decision);
+      }
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       process.stderr.write(`automatic release reconciliation failed: ${failure}\n`);

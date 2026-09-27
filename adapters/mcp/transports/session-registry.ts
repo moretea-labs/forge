@@ -76,6 +76,8 @@ export interface McpSessionSnapshot {
   protected: number;
   activePosts: number;
   activeStreams: number;
+  /** Time since the most recent transport activity among live MCP sessions. */
+  latestActivityAgeMs?: number;
   oldestStreamAgeMs: number;
   oldestPostAgeMs: number;
   recoveryRecommended: boolean;
@@ -445,6 +447,9 @@ export class McpSessionRegistry<
     const reserved = reservations.length;
     const protectedCount = sessions.length - evictable + reserved;
     const capacityAvailable = Math.max(0, this.maximumSessions - sessions.length - reserved);
+    const latestActivityAt = sessions.length > 0
+      ? Math.max(...sessions.map((session) => session.lastActivityAt))
+      : undefined;
     const streamOpenedAt = sessions
       .filter((session) => session.inFlightGets > 0 && session.streamOpenedAt !== undefined)
       .map((session) => session.streamOpenedAt!);
@@ -467,6 +472,7 @@ export class McpSessionRegistry<
       protected: protectedCount,
       activePosts,
       activeStreams,
+      ...(latestActivityAt !== undefined ? { latestActivityAgeMs: Math.max(0, this.now() - latestActivityAt) } : {}),
       oldestStreamAgeMs,
       oldestPostAgeMs,
       recoveryRecommended: !acceptingNewSessions && oldestPostAgeMs >= this.activePostStallMs,

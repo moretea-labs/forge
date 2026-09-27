@@ -2631,6 +2631,103 @@ async function probePrimaryConnectorLocal(
   });
 }
 
+export interface AutomaticReleaseCutoverReadiness {
+  ready: boolean;
+  activeSessions?: number;
+  activePosts?: number;
+  activeStreams?: number;
+  initializing?: number;
+  latestActivityAgeMs?: number;
+  detail: string;
+}
+
+const AUTOMATIC_RELEASE_CUTOVER_QUIET_MS = 30_000;
+const AUTOMATIC_RELEASE_CUTOVER_HEALTH_TIMEOUT_MS = 2_000;
+
+function primaryConnectorHealthEndpoint(config: RecoveryConfig): string | undefined {
+  const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
+  if (!localMcpUrl) return undefined;
+  try {
+    const url = new URL(localMcpUrl);
+    url.pathname = '/health';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+export async function probeAutomaticReleaseCutoverReadiness(
+  config: RecoveryConfig,
+  options: { transport?: RecoveryHttpTransport; quietMs?: number; timeoutMs?: number } = {},
+): Promise<AutomaticReleaseCutoverReadiness> {
+  const healthUrl = primaryConnectorHealthEndpoint(config);
+  if (!healthUrl) return { ready: false, detail: 'primary Connector health endpoint is not configured' };
+  const quietMs = options.quietMs ?? AUTOMATIC_RELEASE_CUTOVER_QUIET_MS;
+  const timeoutMs = options.timeoutMs ?? AUTOMATIC_RELEASE_CUTOVER_HEALTH_TIMEOUT_MS;
+  const transport = options.transport ?? createRecoveryHttpTransport(config.controllerHome);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort('RECOVERY_AUTOMATIC_RELEASE_CUTOVER_HEALTH_TIMEOUT'), timeoutMs);
+  try {
+    const response = await transport.request({
+      url: healthUrl,
+      headers: { accept: 'application/json' },
+      timeoutMs,
+      signal: controller.signal,
+    });
+    if (!response.ok) return { ready: false, detail: `primary Connector health returned HTTP ${response.status}` };
+    let payload: { sessions?: { active?: unknown; activePosts?: unknown; activeStreams?: unknown; initializing?: unknown; latestActivityAgeMs?: unknown } };
+    try {
+      payload = JSON.parse(response.body) as typeof payload;
+    } catch {
+      return { ready: false, detail: 'primary Connector health returned invalid JSON' };
+    }
+    const activeSessions = Number(payload.sessions?.active);
+    const activePosts = Number(payload.sessions?.activePosts);
+    const activeStreams = Number(payload.sessions?.activeStreams);
+    const initializing = Number(payload.sessions?.initializing);
+    const latestActivityAgeMs = Number(payload.sessions?.latestActivityAgeMs);
+    if (
+      !Number.isFinite(activeSessions)
+      || !Number.isFinite(activePosts)
+      || !Number.isFinite(activeStreams)
+      || !Number.isFinite(initializing)
+    ) {
+      return { ready: false, detail: 'primary Connector health omitted bounded session activity counters' };
+    }
+    const evidence = {
+      activeSessions,
+      activePosts,
+      ...(Number.isFinite(activeStreams) ? { activeStreams } : {}),
+      initializing,
+      ...(Number.isFinite(latestActivityAgeMs) ? { latestActivityAgeMs } : {}),
+    };
+    if (activePosts > 0 || activeStreams > 0 || initializing > 0) {
+      return {
+        ready: false,
+        ...evidence,
+        detail: `primary Connector is busy: activePosts=${activePosts}; activeStreams=${activeStreams}; initializing=${initializing}`,
+      };
+    }
+    if (activeSessions > 0 && (!Number.isFinite(latestActivityAgeMs) || latestActivityAgeMs < quietMs)) {
+      const remainingMs = Number.isFinite(latestActivityAgeMs) ? Math.max(0, quietMs - latestActivityAgeMs) : quietMs;
+      return { ready: false, ...evidence, detail: `waiting for ${remainingMs}ms more MCP quiet time before automatic cutover` };
+    }
+    return {
+      ready: true,
+      ...evidence,
+      detail: activeSessions === 0
+        ? 'primary Connector has no live MCP sessions'
+        : `primary Connector has been MCP-idle for ${latestActivityAgeMs}ms`,
+    };
+  } catch (error) {
+    return { ready: false, detail: `primary Connector health is unavailable: ${error instanceof Error ? error.message : String(error)}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageConnectorReleaseBinding | undefined {
   const configured = config.primaryConnectorService;
   if (!configured || !configured.localMcpUrl?.trim()) return undefined;
@@ -5029,6 +5126,28 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         stableAfterPromotion.releases.active?.revision !== session.stableRelease.releaseId
         || stableAfterPromotion.releases.active?.artifactIdentity !== session.stableRelease.artifactIdentity
       ) throw new Error('RELEASE_SESSION_STABLE_CHANGED_DURING_PROMOTION');
+
+      if (requestId?.startsWith('recovery-auto-release:')) {
+        const readiness = await probeAutomaticReleaseCutoverReadiness(config);
+        if (!readiness.ready) {
+          audit(config, 'release_session_automatic_cutover_deferred', {
+            sessionId,
+            detail: readiness.detail,
+            activeSessions: readiness.activeSessions,
+            activePosts: readiness.activePosts,
+            activeStreams: readiness.activeStreams,
+            initializing: readiness.initializing,
+            latestActivityAgeMs: readiness.latestActivityAgeMs,
+          });
+          return {
+            ok: true as const,
+            attempted: false,
+            noOp: true,
+            detail: `RELEASE_SESSION_AUTOMATIC_CUTOVER_DEFERRED: ${readiness.detail}`,
+            releaseSession: session,
+          };
+        }
+      }
 
       session = advanceReleaseSession({
         controllerHome: config.controllerHome,
