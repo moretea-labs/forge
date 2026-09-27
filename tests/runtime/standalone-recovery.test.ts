@@ -1081,7 +1081,7 @@ test('standalone Recovery restarts the configured primary public tunnel when the
   expect(reconnectCalls).toBe(2);
 });
 
-test('standalone Recovery uses its client-owned loopback health only when a primary OpenAI tunnel status command is unavailable', async () => {
+test('standalone Recovery does not treat loopback-only health as OpenAI control-plane proof when tunnel status is unavailable', async () => {
   const home = controllerHome();
   const profileDir = join(home, 'tunnel-client');
   const healthUrlFile = join(home, 'tunnel-health.url');
@@ -1108,7 +1108,8 @@ test('standalone Recovery uses its client-owned loopback health only when a prim
       return { ok: true, status: 200 };
     },
   });
-  expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
+  expect(observed).toMatchObject({ ok: false, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, controlPlaneState: 'unknown', observedTunnelId: tunnelId });
+  expect(observed?.detail).toContain('control plane is unverified');
   expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
 });
 
@@ -1170,11 +1171,57 @@ test('standalone Recovery classifies an externally managed OpenAI tunnel runtime
     tunnel_id: tunnelId,
     profile_path: profilePath,
     runtime_state: 'healthy',
+    remote_lookup_attempted: true,
+    remote_error: '',
+    remote: { id: tunnelId },
   }), { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint });
 
   expect(observed.ok).toBe(true);
   expect(observed.running).toBe(false);
-  expect(observed.detail).toContain('is ready for');
+  expect(observed.controlPlaneState).toBe('ready');
+  expect(observed.detail).toContain('control plane is reachable');
+});
+
+test('standalone Recovery preserves a locally healthy tunnel as degraded when OpenAI control-plane lookup fails', () => {
+  const home = controllerHome();
+  const profilePath = join(home, 'forge-current-degraded.yaml');
+  const tunnelId = 'tunnel_6a87fd97832081919de7953008ead152';
+  const endpoint = 'http://127.0.0.1:8767/mcp';
+  writeFileSync(profilePath, `target: ${endpoint}\n`);
+  const clientInstanceId = 'fd253ea7aa11eb6200222e1744b34e33';
+  const observed = parseOpenAiSecureTunnelRuntimeStatus(JSON.stringify({
+    process_running: true,
+    healthy: true,
+    ready: true,
+    tunnel_id: tunnelId,
+    profile_path: profilePath,
+    runtime_state: 'healthy',
+    remote_lookup_attempted: true,
+    remote_error: 'dial tcp: lookup api.openai.com: i/o timeout',
+    local: {
+      log: {
+        tail: JSON.stringify({
+          time: '2026-09-27T15:51:53+08:00',
+          level: 'WARN',
+          component: 'controlplane',
+          client_instance_id: clientInstanceId,
+          msg: 'poll timed out; backing off',
+          error: 'dial tcp: lookup api.openai.com: i/o timeout',
+        }),
+      },
+    },
+  }), { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint });
+
+  expect(observed).toMatchObject({
+    ok: false,
+    healthy: true,
+    ready: true,
+    tunnelMatches: true,
+    endpointMatches: true,
+    controlPlaneState: 'degraded',
+    clientInstanceId,
+  });
+  expect(observed.controlPlaneDetail).toContain('lookup api.openai.com');
 });
 
 test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
@@ -1289,7 +1336,7 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
         return {
           ok: true,
           status: 0,
-          stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId, profile_path: profilePath }),
+          stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId, profile_path: profilePath, remote_lookup_attempted: true, remote_error: '', remote: { id: tunnelId } }),
           stderr: '',
         };
       }
@@ -1312,6 +1359,61 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
   expect(connectWorkingDirectory!.startsWith(join(home, 'tmp'))).toBe(true);
   expect(existsSync(connectWorkingDirectory!)).toBe(true);
   expect(commands.some((entry) => entry.includes('forge') && !entry.includes('forge-recovery'))).toBe(false);
+});
+
+test('standalone Recovery does not reconnect a locally healthy OpenAI tunnel for an upstream control-plane outage', async () => {
+  const home = controllerHome();
+  const endpoint = 'http://127.0.0.1:8787/recovery/mcp';
+  const tunnelId = 'tunnel_abcdef0123456789abcdef0123456789';
+  const config = createRecoveryConfig(home, {
+    recoveryTunnelService: {
+      platform: 'openai-secure-tunnel',
+      alias: 'forge-recovery',
+      tunnelId,
+      mcpServerUrl: endpoint,
+      profile: 'forge-recovery',
+      profileDir: home,
+      cooldownMs: 0,
+    },
+  });
+  const upstreamIncident: VerifyResult = {
+    ...healthyVerify(),
+    ok: false,
+    probes: {
+      ...healthyVerify().probes,
+      recovery_gateway: { ok: true, detail: 'HTTP 200' },
+      recovery_tunnel_runtime: {
+        ok: false,
+        detail: 'control plane degraded: lookup api.openai.com: i/o timeout',
+        value: {
+          ok: false,
+          running: true,
+          healthy: true,
+          ready: true,
+          tunnelMatches: true,
+          endpointMatches: true,
+          controlPlaneState: 'degraded',
+          controlPlaneDetail: 'lookup api.openai.com: i/o timeout',
+          alias: 'forge-recovery',
+          tunnelId,
+          observedTunnelId: tunnelId,
+          detail: 'control plane degraded',
+        },
+      },
+    },
+  };
+  const commands: string[][] = [];
+  const result = await repairPublicTunnel(config, {
+    verify: async () => upstreamIncident,
+    verifyLocal: async () => healthyVerify(),
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+  expect(commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(false);
 });
 
 test('standalone Recovery repairs its public tunnel from a bounded surface instead of strict whole-Runtime verification', async () => {

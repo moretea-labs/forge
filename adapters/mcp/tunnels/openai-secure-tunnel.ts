@@ -21,6 +21,14 @@ export interface OpenAiSecureTunnelRuntimeStatusPayload {
   profile_path?: string;
   runtime_state?: string;
   error?: string;
+  remote_lookup_attempted?: boolean;
+  remote_error?: string;
+  remote?: unknown;
+  control_plane_poll_health?: { state?: string; reason?: string };
+  local?: {
+    control_plane_poll_health?: { state?: string; reason?: string };
+    log?: { tail?: string };
+  };
 }
 
 export interface OpenAiSecureTunnelRuntimeObservation {
@@ -30,9 +38,13 @@ export interface OpenAiSecureTunnelRuntimeObservation {
   ready: boolean;
   tunnelMatches: boolean;
   endpointMatches: boolean;
+  controlPlaneState: 'ready' | 'degraded' | 'unknown';
+  controlPlaneDetail: string;
   alias: string;
   tunnelId: string;
   observedTunnelId?: string;
+  clientInstanceId?: string;
+  remoteLookupAttempted?: boolean;
   detail: string;
   profilePath?: string;
 }
@@ -90,6 +102,65 @@ export function openAiSecureTunnelConnectArgs(config: OpenAiSecureTunnelRuntimeC
   return args;
 }
 
+function controlPlaneEvidence(value: OpenAiSecureTunnelRuntimeStatusPayload): {
+  state: OpenAiSecureTunnelRuntimeObservation['controlPlaneState'];
+  detail: string;
+  clientInstanceId?: string;
+} {
+  let clientInstanceId: string | undefined;
+  let latestControlPlane: { level?: string; msg?: string; error?: string } | undefined;
+  const tail = value.local?.log?.tail;
+  if (typeof tail === 'string') {
+    for (const line of tail.trim().split('\n').reverse()) {
+      try {
+        const event = JSON.parse(line) as Record<string, unknown>;
+        if (!clientInstanceId && typeof event.client_instance_id === 'string') clientInstanceId = event.client_instance_id;
+        if (!latestControlPlane && event.component === 'controlplane') {
+          latestControlPlane = {
+            level: typeof event.level === 'string' ? event.level : undefined,
+            msg: typeof event.msg === 'string' ? event.msg : undefined,
+            error: typeof event.error === 'string' ? event.error : undefined,
+          };
+        }
+        if (clientInstanceId && latestControlPlane) break;
+      } catch { /* bounded diagnostic tail may contain non-JSON lines */ }
+    }
+  }
+
+  const remoteError = typeof value.remote_error === 'string' ? value.remote_error.trim() : '';
+  if (value.remote_lookup_attempted === true) {
+    if (remoteError) return { state: 'degraded', detail: `remote lookup failed: ${remoteError}`, ...(clientInstanceId ? { clientInstanceId } : {}) };
+    if (value.remote && typeof value.remote === 'object') {
+      return { state: 'ready', detail: 'remote tunnel lookup succeeded', ...(clientInstanceId ? { clientInstanceId } : {}) };
+    }
+  }
+
+  const pollHealth = value.control_plane_poll_health ?? value.local?.control_plane_poll_health;
+  const pollState = pollHealth?.state?.trim().toLowerCase();
+  if (pollState === 'ready' || pollState === 'healthy') {
+    return { state: 'ready', detail: pollHealth?.reason?.trim() || `control-plane poll state is ${pollState}`, ...(clientInstanceId ? { clientInstanceId } : {}) };
+  }
+  if (pollState === 'degraded' || pollState === 'error' || pollState === 'failed') {
+    return { state: 'degraded', detail: pollHealth?.reason?.trim() || `control-plane poll state is ${pollState}`, ...(clientInstanceId ? { clientInstanceId } : {}) };
+  }
+
+  if (latestControlPlane) {
+    const message = [latestControlPlane.msg, latestControlPlane.error].filter(Boolean).join(': ');
+    if (/poller recovered|polling operational/i.test(message)) {
+      return { state: 'ready', detail: message, ...(clientInstanceId ? { clientInstanceId } : {}) };
+    }
+    if (latestControlPlane.level === 'WARN' || latestControlPlane.level === 'ERROR' || /timed out|timeout|deadline|reset by peer|lookup .*i\/o timeout|context canceled/i.test(message)) {
+      return { state: 'degraded', detail: message || 'latest control-plane event is degraded', ...(clientInstanceId ? { clientInstanceId } : {}) };
+    }
+  }
+
+  return {
+    state: 'unknown',
+    detail: pollHealth?.reason?.trim() || 'remote control-plane reachability was not established',
+    ...(clientInstanceId ? { clientInstanceId } : {}),
+  };
+}
+
 export function parseOpenAiSecureTunnelRuntimeStatus(
   stdout: string,
   expected: Pick<OpenAiSecureTunnelRuntimeConfig, 'alias' | 'tunnelId' | 'mcpServerUrl'>,
@@ -105,6 +176,8 @@ export function parseOpenAiSecureTunnelRuntimeStatus(
       ready: false,
       tunnelMatches: false,
       endpointMatches: false,
+      controlPlaneState: 'unknown',
+      controlPlaneDetail: 'status payload was not valid JSON',
       alias: expected.alias,
       tunnelId: expected.tunnelId,
       detail: 'OpenAI tunnel runtime status was not valid JSON',
@@ -115,18 +188,21 @@ export function parseOpenAiSecureTunnelRuntimeStatus(
   const ready = value.ready === true;
   const tunnelMatches = value.tunnel_id === expected.tunnelId;
   const endpointMatches = tunnelRuntimeProfileTargetsEndpoint(value.profile_path, expected.mcpServerUrl);
+  const controlPlane = controlPlaneEvidence(value);
   // `process_running` only describes runtimes that tunnel-client supervises
   // itself. An externally owned service manager (launchd/systemd) reports the
   // runtime as not running while the tunnel is healthy, reachable, and bound to
   // the expected identity. Health, readiness, tunnel id, and endpoint binding are
   // the transport facts; process registry state is diagnostic only.
-  const ok = healthy && ready && tunnelMatches && endpointMatches;
+  const localReady = healthy && ready && tunnelMatches && endpointMatches;
+  const ok = localReady && controlPlane.state === 'ready';
   const mismatches: string[] = [];
   if (!tunnelMatches && value.tunnel_id) mismatches.push(`tunnel id mismatch (${value.tunnel_id})`);
   if (!endpointMatches && value.profile_path) mismatches.push('runtime profile targets a different MCP endpoint');
   if (!healthy) mismatches.push(`runtime is ${value.runtime_state ?? 'not running'}`);
   if (healthy && !ready) mismatches.push('runtime is not ready');
   if (value.error) mismatches.push(value.error);
+  if (controlPlane.state !== 'ready') mismatches.push(`control plane ${controlPlane.state}: ${controlPlane.detail}`);
   return {
     ok,
     running,
@@ -134,10 +210,14 @@ export function parseOpenAiSecureTunnelRuntimeStatus(
     ready,
     tunnelMatches,
     endpointMatches,
+    controlPlaneState: controlPlane.state,
+    controlPlaneDetail: controlPlane.detail,
     alias: expected.alias,
     tunnelId: expected.tunnelId,
     ...(value.tunnel_id ? { observedTunnelId: value.tunnel_id } : {}),
-    detail: ok ? `managed runtime ${expected.alias} is ready for ${expected.tunnelId}` : (mismatches.join('; ') || 'OpenAI tunnel runtime is not ready'),
+    ...(controlPlane.clientInstanceId ? { clientInstanceId: controlPlane.clientInstanceId } : {}),
+    ...(value.remote_lookup_attempted === undefined ? {} : { remoteLookupAttempted: value.remote_lookup_attempted }),
+    detail: ok ? `managed runtime ${expected.alias} is locally ready and its OpenAI control plane is reachable for ${expected.tunnelId}` : (mismatches.join('; ') || 'OpenAI tunnel runtime is not ready'),
     ...(value.profile_path ? { profilePath: value.profile_path } : {}),
   };
 }

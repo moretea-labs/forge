@@ -1256,6 +1256,8 @@ async function observeOpenAiTunnelRuntime(
   } catch (error) {
     return {
       ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
+      controlPlaneState: 'unknown',
+      controlPlaneDetail: 'tunnel runtime configuration could not be observed',
       alias: configured.alias, tunnelId: configured.tunnelId,
       detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid',
     };
@@ -1266,6 +1268,8 @@ async function observeOpenAiTunnelRuntime(
     if (local) return local;
     return {
       ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
+      controlPlaneState: 'unknown',
+      controlPlaneDetail: 'tunnel-client status produced no remote control-plane evidence',
       alias: configured.alias, tunnelId: configured.tunnelId,
       detail: status.stderr.trim() || 'OpenAI tunnel runtime status is unavailable',
     };
@@ -1312,7 +1316,11 @@ export async function observeOpenAiTunnelLocalHealthFallback(
     try { return (await request(url.toString(), { signal: controller.signal })).ok; } catch { return false; } finally { clearTimeout(timer); }
   };
   const [healthy, ready] = await Promise.all([probe('/healthz'), probe('/readyz')]);
-  const ok = healthy && ready && identityMatches && endpointMatches;
+  const localReady = healthy && ready && identityMatches && endpointMatches;
+  // Loopback health proves only that the local tunnel process and MCP binding are
+  // alive. It must never stand in for the remote OpenAI control plane when the
+  // status command itself could not establish that path.
+  const ok = false;
   const failures: string[] = [];
   if (!identityMatches) failures.push('profile tunnel id does not match');
   if (!endpointMatches) failures.push('profile MCP endpoint does not match');
@@ -1325,11 +1333,13 @@ export async function observeOpenAiTunnelLocalHealthFallback(
     ready,
     tunnelMatches: identityMatches,
     endpointMatches,
+    controlPlaneState: 'unknown',
+    controlPlaneDetail: 'tunnel-client status was unavailable; only loopback health was observed',
     alias: configured.alias,
     tunnelId: configured.tunnelId,
     ...(identityMatches ? { observedTunnelId: configured.tunnelId } : {}),
-    detail: ok
-      ? `managed runtime ${configured.alias} is locally healthy and ready for ${configured.tunnelId} (status command unavailable)`
+    detail: localReady
+      ? `managed runtime ${configured.alias} is locally healthy and ready for ${configured.tunnelId}, but the OpenAI control plane is unverified because status is unavailable`
       : failures.join('; ') || 'OpenAI tunnel local health fallback failed',
     profilePath,
   };
@@ -1353,6 +1363,16 @@ async function ensureOpenAiTunnelRuntimeStarted(
   const serviceTarget = `tunnel-client:${configured.alias}`;
   const observed = await observeOpenAiTunnelRuntime(configured, runCommand);
   if (observed.ok) return { ok: true, attempted: false, noOp: true, detail: observed.detail, serviceLabel, serviceTarget };
+  if (observed.healthy && observed.ready && observed.tunnelMatches && observed.endpointMatches && observed.controlPlaneState !== 'ready') {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: `OpenAI Secure MCP Tunnel runtime ${configured.alias} is locally ready but its remote control plane is ${observed.controlPlaneState}; refusing a local reconnect for an upstream transport failure: ${observed.controlPlaneDetail}`,
+      serviceLabel,
+      serviceTarget,
+    };
+  }
   if (observed.observedTunnelId && !observed.tunnelMatches) {
     return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different tunnel id`, serviceLabel, serviceTarget };
   }
@@ -1385,6 +1405,140 @@ async function probeOpenAiRecoveryTunnel(
 ): Promise<{ ok: boolean; detail: string; value?: unknown } | undefined> {
   const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
   return observed ? { ok: observed.ok, detail: observed.detail, value: observed } : undefined;
+}
+
+function openAiTunnelObservationFromProbe(
+  probe: { value?: unknown } | undefined,
+): OpenAiSecureTunnelRuntimeObservation | undefined {
+  const value = probe?.value;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const observed = value as Partial<OpenAiSecureTunnelRuntimeObservation>;
+  if (
+    typeof observed.alias !== 'string'
+    || typeof observed.tunnelId !== 'string'
+    || typeof observed.healthy !== 'boolean'
+    || typeof observed.ready !== 'boolean'
+    || typeof observed.tunnelMatches !== 'boolean'
+    || typeof observed.endpointMatches !== 'boolean'
+    || !['ready', 'degraded', 'unknown'].includes(String(observed.controlPlaneState))
+  ) return undefined;
+  return observed as OpenAiSecureTunnelRuntimeObservation;
+}
+
+function isUpstreamOpenAiControlPlaneIncident(observed: OpenAiSecureTunnelRuntimeObservation | undefined): boolean {
+  return Boolean(
+    observed
+    && observed.healthy
+    && observed.ready
+    && observed.tunnelMatches
+    && observed.endpointMatches
+    && observed.controlPlaneState !== 'ready'
+  );
+}
+
+async function probeOpenAiApiReachability(): Promise<{ ok: boolean; detail: string; status?: number }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort('RECOVERY_OPENAI_API_REACHABILITY_TIMEOUT'), 4_000);
+  try {
+    const response = await fetch('https://api.openai.com/v1/models', {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      signal: controller.signal,
+    });
+    return {
+      ok: true,
+      status: response.status,
+      detail: `api.openai.com returned HTTP ${response.status}; DNS/TCP/TLS/HTTP path is reachable`,
+    };
+  } catch (error) {
+    const cause = error instanceof Error && error.cause instanceof Error ? `; cause=${error.cause.message}` : '';
+    return { ok: false, detail: `${error instanceof Error ? error.message : String(error)}${cause}`.slice(0, 500) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function observeRecentMacNetworkExtensionChanges(
+  runCommand: CommandRunner = command,
+): Promise<{ ok: boolean; detail: string } | undefined> {
+  if (process.platform !== 'darwin') return undefined;
+  const result = await runCommand('/usr/bin/log', [
+    'show', '--last', '90s', '--style', 'compact', '--predicate',
+    'process == "nesessionmanager" AND (eventMessage CONTAINS[c] "configuration changed" OR eventMessage CONTAINS[c] "neconfigurationchanged")',
+  ], 3_000, { maxOutputBytes: 12_000 });
+  const output = (result.stdout || result.stderr).trim();
+  return {
+    ok: result.ok,
+    detail: output ? output.slice(-4_000) : (result.ok ? 'no recent Network Extension configuration changes observed' : 'Network Extension event query failed'),
+  };
+}
+
+async function persistOpenAiTransportIncidentEvidence(input: {
+  config: RecoveryConfig;
+  verify: VerifyResult;
+  runtimeObservation: ReturnType<typeof observeRuntimeStatus>;
+  recoveryTunnel: OpenAiSecureTunnelRuntimeObservation;
+}): Promise<void> {
+  const primaryTunnel = configuredPrimaryPublicTunnel(input.config);
+  const [openAiApi, connectorActivity, macNetworkExtension, primaryTunnelObservation] = await Promise.all([
+    probeOpenAiApiReachability(),
+    probeAutomaticReleaseCutoverReadiness(input.config, { timeoutMs: 1_000 }),
+    observeRecentMacNetworkExtensionChanges(),
+    primaryTunnel?.platform === 'openai-secure-tunnel'
+      ? observeOpenAiTunnelRuntime(primaryTunnel)
+      : Promise.resolve(undefined),
+  ]);
+  const activeReleaseSessions = listReleaseSessions(input.config.controllerHome, { maxEntries: 64 }).sessions
+    .filter((session) => !['known_good', 'rolled_back', 'failed'].includes(session.phase))
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, 3)
+    .map((session) => ({ sessionId: session.sessionId, phase: session.phase, revision: session.revision, updatedAt: session.updatedAt }));
+  const incidentDetail = [
+    `alias=${input.recoveryTunnel.alias}`,
+    `tunnel=${input.recoveryTunnel.tunnelId}`,
+    `client=${input.recoveryTunnel.clientInstanceId ?? 'unknown'}`,
+    `controlPlane=${input.recoveryTunnel.controlPlaneState}`,
+    input.recoveryTunnel.controlPlaneDetail,
+  ].join('; ');
+  const diagnostic = persistWatchdogDiagnosticEvidence(input.config, {
+    ...input.verify,
+    ok: false,
+    probes: {
+      recovery_tunnel_runtime: { ok: false, detail: incidentDetail },
+    },
+  });
+  audit(input.config, 'network_transport_incident_observed', {
+    diagnosticFingerprint: diagnostic?.fingerprint,
+    recoveryTunnel: {
+      alias: input.recoveryTunnel.alias,
+      tunnelId: input.recoveryTunnel.tunnelId,
+      clientInstanceId: input.recoveryTunnel.clientInstanceId,
+      controlPlaneState: input.recoveryTunnel.controlPlaneState,
+      controlPlaneDetail: input.recoveryTunnel.controlPlaneDetail,
+      localHealthy: input.recoveryTunnel.healthy,
+      localReady: input.recoveryTunnel.ready,
+    },
+    primaryTunnel: primaryTunnelObservation ? {
+      alias: primaryTunnelObservation.alias,
+      tunnelId: primaryTunnelObservation.tunnelId,
+      clientInstanceId: primaryTunnelObservation.clientInstanceId,
+      controlPlaneState: primaryTunnelObservation.controlPlaneState,
+      controlPlaneDetail: primaryTunnelObservation.controlPlaneDetail,
+      localHealthy: primaryTunnelObservation.healthy,
+      localReady: primaryTunnelObservation.ready,
+    } : undefined,
+    openAiApi,
+    connectorActivity,
+    runtime: {
+      releaseId: input.runtimeObservation.snapshot?.releaseId,
+      runtimeInstanceId: input.runtimeObservation.snapshot?.runtimeInstanceId,
+      pid: input.runtimeObservation.snapshot?.pid,
+      ready: input.runtimeObservation.ready,
+      stale: input.runtimeObservation.stale,
+    },
+    releaseSessions: activeReleaseSessions,
+    macNetworkExtension,
+  });
 }
 
 async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
@@ -2061,7 +2215,14 @@ function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult,
   const configured = configuredRecoveryTunnel(config);
   const localRecoveryGatewayHealthy = localVerify.probes.recovery_gateway?.ok ?? true;
   if (!configured || !localVerify.ok || !localRecoveryGatewayHealthy) return false;
-  if (configured.platform === 'openai-secure-tunnel') return verified.probes.recovery_tunnel_runtime?.ok !== true;
+  if (configured.platform === 'openai-secure-tunnel') {
+    const observed = openAiTunnelObservationFromProbe(verified.probes.recovery_tunnel_runtime);
+    // A locally healthy tunnel with degraded/unknown OpenAI control-plane reachability
+    // is an upstream transport incident, not evidence that reconnecting the local
+    // tunnel process is a valid repair. Keep it degraded and collect evidence.
+    if (isUpstreamOpenAiControlPlaneIncident(observed)) return false;
+    return verified.probes.recovery_tunnel_runtime?.ok !== true;
+  }
   const external = verified.probes.recovery_external_http ?? verified.probes.external_mcp_http;
   return Boolean(configuredRecoveryPublicUrl(config) && external?.ok !== true);
 }
@@ -6177,6 +6338,15 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     : verified.probes.recovery_external_http?.ok !== false;
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && recoveryTransportHealthy;
+  const recoveryTunnelObservation = openAiTunnelObservationFromProbe(verified.probes.recovery_tunnel_runtime);
+  if (isUpstreamOpenAiControlPlaneIncident(recoveryTunnelObservation) && scopedPrior.failures === 0) {
+    await persistOpenAiTransportIncidentEvidence({
+      config,
+      verify: verified,
+      runtimeObservation,
+      recoveryTunnel: recoveryTunnelObservation!,
+    });
+  }
   const primaryRuntimeHealthy = canonicalRuntimeSafeForTargetedConnectorRecovery(localVerify);
   const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
   const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
