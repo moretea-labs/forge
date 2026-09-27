@@ -2,7 +2,7 @@ import { bindRepositoryEntities } from '../../../src/cli/repositories/entity-mig
 import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../../src/cli/repositories/local-project-onboarding';
 import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/ephemeral-workspace';
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
-import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
+import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract } from '../../../packages/kernel/work/api';
 import { assertWorkPathsWithinScope } from '../../../src/runtime/control-plane/execution/work-path-scope';
@@ -1175,10 +1175,11 @@ export async function callRepositoryTool(
               }),
               60_000,
             );
-            // Pre-mutation reconciliation may advance expectedHead. Re-resolve
-            // immutable execution identity after that durable CAS and before spawn.
-            target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-            ({ repository, commandTarget, executionIdentity, historicalWorkContext } = target);
+            // Pre-mutation reconciliation may advance expectedHead. Preserve the
+            // complete WorkHandle identity after that CAS; rebuilding a generic
+            // repository identity here drops branch/expectedHead and prevents the
+            // successful command from settling its legitimate successor HEAD.
+            executionIdentity = executionIdentityForWork(repository!, mutationAuthority.handle);
           } else {
             withControllerLock(
               controllerHome,

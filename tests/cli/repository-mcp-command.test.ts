@@ -463,6 +463,26 @@ describe("repository MCP command tools", () => {
         request_id: "work-raw-commit-scope-establish-authority",
       }, caller));
       expect(established.accepted).toBe(true);
+      if (typeof established.processId === "string") {
+        const process = await waitRepositoryCommandProcess(controllerHome, repository.repoId, established.processId, { timeoutMs: 10_000 });
+        expect(process.status).toBe("succeeded");
+      }
+      git(repoRoot, ["add", "tracked.txt"]);
+      const beforeCommit = readWorkHandle(controllerHome, repository.repoId, workId)?.expectedHead;
+      const committed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["git", "commit", "-m", "work-owned commit"],
+        request_id: "work-raw-commit-scope-successful-commit",
+      }, caller));
+      expect(committed.accepted).toBe(true);
+      if (typeof committed.processId === "string") {
+        const process = await waitRepositoryCommandProcess(controllerHome, repository.repoId, committed.processId, { timeoutMs: 10_000 });
+        expect(process.status).toBe("succeeded");
+      }
+      const committedHead = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      expect(committedHead).not.toBe(beforeCommit);
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)?.expectedHead).toBe(committedHead);
 
       writeFileSync(join(repoRoot, "outside.txt"), "outside\n");
       git(repoRoot, ["add", "outside.txt"]);
@@ -474,7 +494,7 @@ describe("repository MCP command tools", () => {
       }, caller));
       expect(blocked.error).toMatchObject({ code: "WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE" });
       expect(spawnSync("git", ["-C", repoRoot, "diff", "--cached", "--name-only"], { encoding: "utf8" }).stdout.trim()).toBe("outside.txt");
-      expect(spawnSync("git", ["-C", repoRoot, "log", "-1", "--pretty=%s"], { encoding: "utf8" }).stdout.trim()).toBe("init");
+      expect(spawnSync("git", ["-C", repoRoot, "log", "-1", "--pretty=%s"], { encoding: "utf8" }).stdout.trim()).toBe("work-owned commit");
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
