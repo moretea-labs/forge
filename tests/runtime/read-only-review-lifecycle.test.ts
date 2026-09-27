@@ -77,9 +77,9 @@ describe('recoverable read-only review lifecycle', () => {
       reviewFindings: [],
     });
     expect(continued.status).toBe('ok');
-    expect((continued.data as { nextStep?: string }).nextStep).toBe('finalize');
+    expect((continued.data as { nextStep?: string }).nextStep).toBeUndefined();
     const reviewed = getWorkContract(context.workStore, workId!)!;
-    expect(reviewed.phase).toBe('delivery');
+    expect(reviewed.phase).toBe('implementation');
     expect(reviewed.scopeEvidence?.inspectedPaths).toContain('ios/App/AppState.swift');
     expect(reviewed.readOnlyReviewEvidence).toMatchObject({
       sourceRevision: context.sourceRevision,
@@ -250,7 +250,7 @@ describe('recoverable read-only review lifecycle', () => {
 
     const continued = continueGoalWorkloop(context, { workId: workId!, inspectedPaths: ['src/runtime/control-plane/facade/goal-workloop.ts'], reviewFindings: [] });
     expect(continued.status).toBe('ok');
-    expect((continued.data as { nextStep?: string }).nextStep).toBe('finalize');
+    expect((continued.data as { nextStep?: string }).nextStep).toBeUndefined();
   });
 
   test('keeps repository-change implementation gating strict', () => {
@@ -291,7 +291,7 @@ describe('public rh_work read-only review adapter', () => {
       review_findings: [],
     });
     expect(continued.status).toBe('ok');
-    expect((continued.data as { nextStep?: string }).nextStep).toBe('finalize');
+    expect((continued.data as { nextStep?: string }).nextStep).toBeUndefined();
     expect(getWorkContract(context.workStore, workId!)?.readOnlyReviewEvidence).toMatchObject({
       sourceRevision: context.sourceRevision,
       findings: [],

@@ -775,7 +775,7 @@ export function acceptSubmittedWorkContract(
   if (parentWorkId) {
     const parent = getWorkContract({ controllerHome: home, repoId: input.repoId, now: options.now }, parentWorkId);
     if (!parent) throw new Error(`PARENT_WORK_NOT_FOUND: ${parentWorkId}`);
-    if (isTerminalWorkContractStatus(parent.status)) throw new Error(`PARENT_WORK_TERMINAL: ${parentWorkId}:${parent.status}`);
+    if (semanticWorkState(parent) !== 'open') throw new Error(`PARENT_WORK_TERMINAL: ${parentWorkId}:${parent.status}`);
     if ((parent.lifecycleRole ?? 'primary') !== 'primary') throw new Error(`PARENT_WORK_NOT_PRIMARY: ${parentWorkId}`);
   }
   const lockId = createHash('sha256').update(requestId).digest('hex').slice(0, 24);
@@ -1413,7 +1413,7 @@ export function promoteWorkToRepositoryChange(
   workId: string,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, (current) => {
-    if (isTerminalWorkContractStatus(current.status) || current.completionReceipt || current.completionOutcome) {
+    if (semanticWorkState(current) !== 'open' || current.completionReceipt || current.completionOutcome) {
       throw new Error(`WORK_KIND_PROMOTION_TERMINAL: ${workId}`);
     }
     if (current.workKind === 'repository_change') return undefined;
@@ -1685,10 +1685,7 @@ export function requestWorkImplementationReview(
   summary: string,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, (current, at) => {
-    if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
-    if (current.phase !== 'verification' || current.phaseEvidence.verification.state !== 'satisfied') {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_VERIFIED_CANDIDATE_REQUIRED');
-    }
+    if (semanticWorkState(current) !== 'open') throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
     const phaseEvidence = transitionPhaseEvidence(current, 'review', {
       status: 'running',
       summary,
@@ -1713,7 +1710,7 @@ export function recordWorkImplementationReview(
     throw new Error('WORK_IMPLEMENTATION_REVIEW_DERIVATION_REQUIRES_TRANSFER_API');
   }
   return updateWorkContractInternal(options, workId, (current, at) => {
-    if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
+    if (semanticWorkState(current) !== 'open') throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
     if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
     const history = [...(current.implementationReviews ?? []), review];
     if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
@@ -1745,7 +1742,7 @@ export function recordContentEquivalentCommitAuthorityTransfer(
     const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
     if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
     const current = store.contracts[index]!;
-    if (current.completionReceipt || isTerminalWorkContractStatus(current.status)) {
+    if (current.completionReceipt || semanticWorkState(current) !== 'open') {
       throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_TERMINAL: ${sanitizedId}`);
     }
 
@@ -1845,7 +1842,7 @@ export function reconcileApprovedWorkImplementationReviewProjection(
 ): WorkContract {
   return updateWorkContractInternal(options, workId, (current, at) => {
     if (current.completionReceipt) return undefined;
-    if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_TERMINAL: ${workId}`);
+    if (semanticWorkState(current) !== 'open') throw new Error(`WORK_IMPLEMENTATION_REVIEW_PROJECTION_TERMINAL: ${workId}`);
     const review = latestImplementationReview(current.implementationReviews);
     if (!review || review.decision !== 'approved') throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
     if (review.reviewId !== expected.reviewId
