@@ -5187,19 +5187,19 @@ describe('Recovery explicit performance acceptance', () => {
           requestId: `test-probe-${sleepCount}`,
         });
         expect(probe.acquired).toBe(true);
-        if (sleepCount === 12) heldFinalLock = probe;
+        if (sleepCount === 24) heldFinalLock = probe;
         else if (probe.acquired) probe.handle.close();
         await deps.sleep(ms);
       },
     });
     await expect(pending).rejects.toThrow('Recovery mutation already in progress');
-    expect(sleepCount).toBe(12);
+    expect(sleepCount).toBe(24);
     expect(heldFinalLock?.acquired).toBe(true);
     if (heldFinalLock?.acquired) heldFinalLock.handle.close();
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
 
     const attested = await attestKnownGood(config);
-    expect(attested.performance?.sampleCount).toBe(10);
+    expect(attested.performance?.sampleCount).toBe(20);
   });
 
   test('functional health cannot attest a busy Runtime; explicit rollback of an attested live Runtime still requires stop', async () => {
@@ -5216,7 +5216,7 @@ describe('Recovery explicit performance acceptance', () => {
     })).rejects.toThrow('RECOVERY_PERFORMANCE_REJECTED');
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
     const attested = await attestKnownGood(config);
-    expect(attested.performance?.sampleCount).toBe(10);
+    expect(attested.performance?.sampleCount).toBe(20);
     const result = await rollbackPrevious(config, 'explicit performance regression');
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('stop the complete Canonical Runtime');
