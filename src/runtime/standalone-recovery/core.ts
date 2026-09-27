@@ -2041,7 +2041,20 @@ async function observeWatchdogHealthTier(
   config: RecoveryConfig,
   transport = createRecoveryHttpTransport(config.controllerHome),
 ): Promise<VerifyResult> {
-  return observeBoundedRuntimeHealth(config, transport, { includePrimaryConnectorLocal: true });
+  // The primary Connector quiet window is a cutover fence. Once the same
+  // ReleaseSession is eligible for cutover, Recovery's five-second health
+  // probe must stop opening Connector MCP sessions or it will continuously
+  // refresh the very activity timestamp that the fence is waiting to drain.
+  // An incomplete inventory fails closed by retaining the normal probe.
+  const inventory = listReleaseSessions(config.controllerHome, { maxEntries: 512 });
+  const cutoverQuietWindowRequired = !inventory.truncated
+    && inventory.invalidSessionFiles.length === 0
+    && inventory.sessions.some((session) => (
+      session.phase === 'cutover_eligible'
+      || session.phase === 'cutover_attempting'
+      || session.phase === 'cutover_committed'
+    ));
+  return observeBoundedRuntimeHealth(config, transport, { includePrimaryConnectorLocal: !cutoverQuietWindowRequired });
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
