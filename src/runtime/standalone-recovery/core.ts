@@ -2646,7 +2646,15 @@ function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageCo
     return undefined;
   }
   if (!existsSync(join(packageRoot, 'src', 'cli', 'index.ts')) || !existsSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))) return undefined;
-  return { releaseId: authority.active.releaseId, releaseRoot, packageRoot };
+  const manifest = loadRuntimeReleaseManifest(authority.active.manifestPath, config.controllerHome);
+  return {
+    releaseId: authority.active.releaseId,
+    releaseRoot,
+    packageRoot,
+    ...(manifest.connectorEntrypoint === 'forge-mcp-gateway' && manifest.connectorArtifactIdentity
+      ? { connectorEntrypoint: manifest.connectorEntrypoint, connectorArtifactIdentity: manifest.connectorArtifactIdentity }
+      : {}),
+  };
 }
 
 export function resolveRecoveryPackageConnectorExecutable(

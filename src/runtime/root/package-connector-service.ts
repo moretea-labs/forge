@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
@@ -15,9 +16,13 @@ export interface PackageConnectorServicePaths {
   stdoutPath: string;
   stderrPath: string;
   authorityPath: string;
+  activeEntrypointPath: string;
 }
 
-export type PackageConnectorReleaseBinding = Pick<PackageRuntimeRelease, 'releaseId' | 'releaseRoot' | 'packageRoot'>;
+export type PackageConnectorReleaseBinding = Pick<PackageRuntimeRelease, 'releaseId' | 'releaseRoot' | 'packageRoot'> & {
+  connectorEntrypoint?: 'forge-mcp-gateway';
+  connectorArtifactIdentity?: string;
+};
 
 export interface PackageConnectorServiceAuthority {
   schemaVersion: 1;
@@ -28,6 +33,7 @@ export interface PackageConnectorServiceAuthority {
   mode: 'launchd' | 'systemd-user' | 'portable';
   persistent: boolean;
   servicePath?: string;
+  connectorArtifactIdentity?: string;
   installedAt: string;
 }
 
@@ -38,6 +44,7 @@ export interface PackageConnectorServiceResult {
   servicePath?: string;
   pid?: number;
   reused?: boolean;
+  rebound?: boolean;
   releaseId?: string;
   releaseRoot?: string;
 }
@@ -67,6 +74,7 @@ export function packageConnectorServicePaths(controllerHome: string, accountHome
     stdoutPath: join(serviceRoot, 'logs', 'stdout.log'),
     stderrPath: join(serviceRoot, 'logs', 'stderr.log'),
     authorityPath: join(serviceRoot, 'authority.json'),
+    activeEntrypointPath: join(serviceRoot, 'active-forge-mcp-gateway'),
   };
 }
 
@@ -82,13 +90,15 @@ export function readPackageConnectorServiceAuthority(controllerHome: string): Pa
     || typeof parsed.packageRoot !== 'string'
     || !['launchd', 'systemd-user', 'portable'].includes(String(parsed.mode))
     || typeof parsed.persistent !== 'boolean'
+    || (parsed.connectorArtifactIdentity !== undefined && !/^sha256:[a-f0-9]{64}$/i.test(parsed.connectorArtifactIdentity))
     || typeof parsed.installedAt !== 'string'
   ) throw new Error('FORGE_PACKAGE_CONNECTOR_AUTHORITY_INVALID');
   return parsed as PackageConnectorServiceAuthority;
 }
 
-function writePackageConnectorServiceAuthority(input: { release: PackageConnectorReleaseBinding; controllerHome: string; result: PackageConnectorServiceResult }): void {
+function writePackageConnectorServiceAuthority(input: { release: PackageConnectorReleaseBinding; controllerHome: string; result: PackageConnectorServiceResult; installedAt?: string }): void {
   const paths = packageConnectorServicePaths(input.controllerHome);
+  const artifact = attestedCompiledConnector(input.release);
   const authority: PackageConnectorServiceAuthority = {
     schemaVersion: 1,
     endpoint: input.result.endpoint,
@@ -98,7 +108,8 @@ function writePackageConnectorServiceAuthority(input: { release: PackageConnecto
     mode: input.result.mode,
     persistent: input.result.persistent,
     ...(input.result.servicePath ? { servicePath: input.result.servicePath } : {}),
-    installedAt: new Date().toISOString(),
+    ...(artifact ? { connectorArtifactIdentity: artifact.identity } : {}),
+    installedAt: input.installedAt ?? new Date().toISOString(),
   };
   atomicWrite(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
 }
@@ -173,17 +184,73 @@ export function packageConnectorAuthMode(controllerHome: string): PackageConnect
     : 'oauth';
 }
 
+function attestedCompiledConnector(release: PackageConnectorReleaseBinding): { target: string; identity: string } | undefined {
+  const entrypoint = release.connectorEntrypoint;
+  const identity = release.connectorArtifactIdentity?.trim();
+  if (!entrypoint && !identity) return undefined;
+  if (entrypoint !== 'forge-mcp-gateway' || !identity || !/^sha256:[a-f0-9]{64}$/i.test(identity)) {
+    throw new Error('FORGE_PACKAGE_CONNECTOR_ARTIFACT_ATTESTATION_INVALID');
+  }
+  const target = resolve(release.releaseRoot, entrypoint);
+  const root = resolve(release.releaseRoot);
+  if (dirname(target) !== root || !existsSync(target)) throw new Error('FORGE_PACKAGE_CONNECTOR_ARTIFACT_MISSING');
+  const status = lstatSync(target);
+  if (!status.isFile() || status.isSymbolicLink()) throw new Error('FORGE_PACKAGE_CONNECTOR_ARTIFACT_INVALID');
+  const actual = `sha256:${createHash('sha256').update(readFileSync(target)).digest('hex')}`;
+  if (actual !== identity.toLowerCase()) throw new Error('FORGE_PACKAGE_CONNECTOR_ARTIFACT_IDENTITY_MISMATCH');
+  return { target, identity: actual };
+}
+
+function stableConnectorEntrypointMatches(path: string, target: string): boolean {
+  try {
+    const current = lstatSync(path);
+    const desired = statSync(target);
+    if (!current.isFile() || current.isSymbolicLink() || !desired.isFile()) return false;
+    if (current.size !== desired.size || (current.mode & 0o777) !== (desired.mode & 0o777)) return false;
+    return readFileSync(path).equals(readFileSync(target));
+  } catch {
+    return false;
+  }
+}
+
+export function syncPackageConnectorActiveEntrypoint(input: { release: PackageConnectorReleaseBinding; controllerHome: string; accountHome?: string }): { path: string; target?: string; artifactIdentity?: string; changed: boolean } {
+  const paths = packageConnectorServicePaths(input.controllerHome, input.accountHome);
+  const artifact = attestedCompiledConnector(input.release);
+  if (!artifact) return { path: paths.activeEntrypointPath, changed: false };
+  if (stableConnectorEntrypointMatches(paths.activeEntrypointPath, artifact.target)) {
+    return { path: paths.activeEntrypointPath, target: artifact.target, artifactIdentity: artifact.identity, changed: false };
+  }
+  mkdirSync(dirname(paths.activeEntrypointPath), { recursive: true, mode: 0o700 });
+  const temporary = `${paths.activeEntrypointPath}.${process.pid}.tmp`;
+  rmSync(temporary, { force: true, recursive: true });
+  try {
+    copyFileSync(artifact.target, temporary);
+    chmodSync(temporary, statSync(artifact.target).mode & 0o777);
+    renameSync(temporary, paths.activeEntrypointPath);
+  } finally {
+    rmSync(temporary, { force: true, recursive: true });
+  }
+  if (!stableConnectorEntrypointMatches(paths.activeEntrypointPath, artifact.target)) {
+    throw new Error('FORGE_PACKAGE_CONNECTOR_STABLE_ENTRYPOINT_MIRROR_FAILED');
+  }
+  return { path: paths.activeEntrypointPath, target: artifact.target, artifactIdentity: artifact.identity, changed: true };
+}
+
 export function packageConnectorLaunchSpec(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number; authMode: PackageConnectorAuthMode } {
   const parsed = new URL(input.endpoint);
   const port = Number(parsed.port);
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
   }
-  const compiledConnector = join(resolve(input.release.releaseRoot), 'forge-mcp-gateway');
-  const hasCompiledConnector = existsSync(compiledConnector);
-  const executable = resolve(hasCompiledConnector
-    ? compiledConnector
-    : input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
+  const attestedConnector = attestedCompiledConnector(input.release);
+  const legacyCompiledConnector = join(resolve(input.release.releaseRoot), 'forge-mcp-gateway');
+  const hasLegacyCompiledConnector = !attestedConnector && existsSync(legacyCompiledConnector);
+  const hasCompiledConnector = Boolean(attestedConnector) || hasLegacyCompiledConnector;
+  const executable = resolve(attestedConnector
+    ? packageConnectorServicePaths(input.controllerHome).activeEntrypointPath
+    : hasLegacyCompiledConnector
+      ? legacyCompiledConnector
+      : input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
   if (/^forge-recovery-(?:gateway|watchdog)$/i.test(basename(executable))) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_EXECUTABLE_INVALID');
   }
@@ -257,9 +324,14 @@ export function packageConnectorServiceMatchesRelease(input: {
   executable?: string;
 }): boolean {
   try {
-    if (
-      input.authority.endpoint !== input.endpoint
-      || input.authority.releaseId !== input.release.releaseId
+    if (input.authority.endpoint !== input.endpoint) return false;
+    const artifact = attestedCompiledConnector(input.release);
+    if (artifact) {
+      const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
+      if (input.authority.connectorArtifactIdentity !== artifact.identity) return false;
+      if (!stableConnectorEntrypointMatches(paths.activeEntrypointPath, artifact.target)) return false;
+    } else if (
+      input.authority.releaseId !== input.release.releaseId
       || resolve(input.authority.releaseRoot) !== resolve(input.release.releaseRoot)
       || resolve(input.authority.packageRoot) !== resolve(input.release.packageRoot)
     ) return false;
@@ -313,6 +385,7 @@ function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<t
 export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean; probeEndpoint?: (endpoint: string) => Promise<boolean> }): Promise<PackageConnectorServiceResult> {
   const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
+  syncPackageConnectorActiveEntrypoint({ release: input.release, controllerHome: input.controllerHome, accountHome: input.env?.HOME });
   const launch = packageConnectorLaunchSpec({
     release: input.release,
     controllerHome: input.controllerHome,
@@ -393,15 +466,28 @@ export async function ensurePackageConnectorService(input: {
       })
       && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
     ) {
-      return {
+      const rebound = authority.releaseId !== input.release.releaseId
+        || resolve(authority.releaseRoot) !== resolve(input.release.releaseRoot)
+        || resolve(authority.packageRoot) !== resolve(input.release.packageRoot);
+      const reused: PackageConnectorServiceResult = {
         endpoint: authority.endpoint,
         mode: authority.mode,
         persistent: true,
         ...(authority.servicePath ? { servicePath: authority.servicePath } : {}),
         reused: true,
-        releaseId: authority.releaseId,
-        releaseRoot: authority.releaseRoot,
+        ...(rebound ? { rebound: true } : {}),
+        releaseId: input.release.releaseId,
+        releaseRoot: input.release.releaseRoot,
       };
+      if (rebound) {
+        writePackageConnectorServiceAuthority({
+          release: input.release,
+          controllerHome: input.controllerHome,
+          result: reused,
+          installedAt: authority.installedAt,
+        });
+      }
+      return reused;
     }
   }
   return installPackageConnectorService(input);

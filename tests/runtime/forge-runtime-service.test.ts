@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { spawn, spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -26,7 +27,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorReadinessEndpoint, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorReadinessEndpoint, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, syncPackageConnectorActiveEntrypoint, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
@@ -859,6 +860,113 @@ describe('Forge Runtime service', () => {
     expect(readFileSync(paths.authorityPath, 'utf8')).toBe(before);
     expect(readPackageConnectorServiceAuthority(fx.home)?.installedAt).toBe(installedAt);
     expect(existsSync(paths.sourcePlistPath)).toBe(false);
+  });
+
+  test('rebinds an unchanged attested Connector release without restarting the persistent listener', async () => {
+    const fx = fixture();
+    const endpoint = 'http://127.0.0.1:8767/mcp';
+    const paths = packageConnectorServicePaths(fx.home, fx.root);
+    mkdirSync(join(fx.root, 'Library', 'LaunchAgents'), { recursive: true });
+
+    const makeRelease = (releaseId: string, bytes: string) => {
+      const releaseRoot = join(fx.home, 'runtime', 'releases', releaseId);
+      const packageRoot = join(releaseRoot, 'package');
+      mkdirSync(packageRoot, { recursive: true });
+      const connectorPath = join(releaseRoot, 'forge-mcp-gateway');
+      writeFileSync(connectorPath, bytes);
+      chmodSync(connectorPath, 0o700);
+      return {
+        releaseId,
+        releaseRoot,
+        packageRoot,
+        connectorEntrypoint: 'forge-mcp-gateway' as const,
+        connectorArtifactIdentity: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      };
+    };
+
+    const first = makeRelease('release-connector-a', 'same-connector-binary');
+    const firstProjection = syncPackageConnectorActiveEntrypoint({ release: first, controllerHome: fx.home, accountHome: fx.root });
+    expect(firstProjection.changed).toBe(true);
+    expect(firstProjection.path).toBe(paths.activeEntrypointPath);
+    const firstLaunch = packageConnectorLaunchSpec({ release: first, controllerHome: fx.home, endpoint });
+    expect(firstLaunch.executable).toBe(paths.activeEntrypointPath);
+    writeFileSync(paths.installedPlistPath, renderPackageConnectorLaunchAgent({ paths, launch: firstLaunch }));
+    const installedAt = '2026-09-27T00:00:00.000Z';
+    writeFileSync(paths.authorityPath, `${JSON.stringify({
+      schemaVersion: 1,
+      endpoint,
+      releaseId: first.releaseId,
+      releaseRoot: first.releaseRoot,
+      packageRoot: first.packageRoot,
+      mode: 'launchd',
+      persistent: true,
+      servicePath: paths.installedPlistPath,
+      connectorArtifactIdentity: first.connectorArtifactIdentity,
+      installedAt,
+    }, null, 2)}\n`);
+
+    const second = makeRelease('release-connector-b', 'same-connector-binary');
+    expect(packageConnectorServiceMatchesRelease({ authority: readPackageConnectorServiceAuthority(fx.home)!, release: second, controllerHome: fx.home, endpoint, platform: 'darwin', env: { HOME: fx.root } })).toBe(true);
+    const result = await ensurePackageConnectorService({
+      release: second,
+      controllerHome: fx.home,
+      endpoint,
+      platform: 'darwin',
+      env: { HOME: fx.root },
+      probeEndpoint: async () => true,
+    });
+    expect(result.reused).toBe(true);
+    expect(result.rebound).toBe(true);
+    expect(result.releaseId).toBe(second.releaseId);
+    expect(existsSync(paths.sourcePlistPath)).toBe(false);
+    const rebound = readPackageConnectorServiceAuthority(fx.home)!;
+    expect(rebound.releaseId).toBe(second.releaseId);
+    expect(rebound.releaseRoot).toBe(second.releaseRoot);
+    expect(rebound.connectorArtifactIdentity).toBe(second.connectorArtifactIdentity);
+    expect(rebound.installedAt).toBe(installedAt);
+    expect(readFileSync(paths.activeEntrypointPath, 'utf8')).toBe('same-connector-binary');
+  });
+
+  test('requires Connector reinstall when the attested Connector artifact changes behind the stable launch path', () => {
+    const fx = fixture();
+    const endpoint = 'http://127.0.0.1:8767/mcp';
+    const paths = packageConnectorServicePaths(fx.home, fx.root);
+    mkdirSync(join(fx.root, 'Library', 'LaunchAgents'), { recursive: true });
+    const releaseRoot = join(fx.home, 'runtime', 'releases', 'release-connector-old');
+    const packageRoot = join(releaseRoot, 'package');
+    mkdirSync(packageRoot, { recursive: true });
+    const oldBytes = 'old-connector-binary';
+    writeFileSync(join(releaseRoot, 'forge-mcp-gateway'), oldBytes);
+    chmodSync(join(releaseRoot, 'forge-mcp-gateway'), 0o700);
+    const oldRelease = {
+      releaseId: 'release-connector-old', releaseRoot, packageRoot,
+      connectorEntrypoint: 'forge-mcp-gateway' as const,
+      connectorArtifactIdentity: `sha256:${createHash('sha256').update(oldBytes).digest('hex')}`,
+    };
+    syncPackageConnectorActiveEntrypoint({ release: oldRelease, controllerHome: fx.home, accountHome: fx.root });
+    const oldLaunch = packageConnectorLaunchSpec({ release: oldRelease, controllerHome: fx.home, endpoint });
+    writeFileSync(paths.installedPlistPath, renderPackageConnectorLaunchAgent({ paths, launch: oldLaunch }));
+    const authority = {
+      schemaVersion: 1 as const, endpoint,
+      releaseId: oldRelease.releaseId, releaseRoot: oldRelease.releaseRoot, packageRoot: oldRelease.packageRoot,
+      mode: 'launchd' as const, persistent: true, servicePath: paths.installedPlistPath,
+      connectorArtifactIdentity: oldRelease.connectorArtifactIdentity,
+      installedAt: '2026-09-27T00:00:00.000Z',
+    };
+
+    const newRoot = join(fx.home, 'runtime', 'releases', 'release-connector-new');
+    const newPackageRoot = join(newRoot, 'package');
+    mkdirSync(newPackageRoot, { recursive: true });
+    const newBytes = 'new-connector-binary';
+    writeFileSync(join(newRoot, 'forge-mcp-gateway'), newBytes);
+    chmodSync(join(newRoot, 'forge-mcp-gateway'), 0o700);
+    const changedRelease = {
+      releaseId: 'release-connector-new', releaseRoot: newRoot, packageRoot: newPackageRoot,
+      connectorEntrypoint: 'forge-mcp-gateway' as const,
+      connectorArtifactIdentity: `sha256:${createHash('sha256').update(newBytes).digest('hex')}`,
+    };
+    expect(packageConnectorLaunchSpec({ release: changedRelease, controllerHome: fx.home, endpoint }).executable).toBe(paths.activeEntrypointPath);
+    expect(packageConnectorServiceMatchesRelease({ authority, release: changedRelease, controllerHome: fx.home, endpoint, platform: 'darwin', env: { HOME: fx.root } })).toBe(false);
   });
 
   test('rejects a healthy connector whose launch spec does not match its immutable package release', () => {
