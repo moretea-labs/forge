@@ -1936,6 +1936,17 @@ async function verifyLocalRuntime(
 }
 
 /**
+ * Release cutover must not create fresh sessions on the Connector whose quiet
+ * window fences the activation.  The Runtime/Recovery surfaces are sufficient
+ * to verify the frozen Stable A and Candidate B identities; probing the
+ * primary Connector here would refresh its activity timestamp and make the
+ * cutover gate self-starve on every automatic retry.
+ */
+async function verifyLocalRuntimeForReleaseCutover(config: RecoveryConfig): Promise<VerifyResult> {
+  return verifyLocalRuntime({ ...config, primaryConnectorService: undefined }, { probeMcpProtocol: false });
+}
+
+/**
  * Bounded observation owns health, not release verification. Keep this path
  * deliberately bounded to already-published Runtime authority/status plus local
  * HTTP transport checks needed for prompt targeted repair. Expensive execution
@@ -5064,7 +5075,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
 
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      const stableBefore = await verifyLocalRuntime(config);
+      const stableBefore = await verifyLocalRuntimeForReleaseCutover(config);
       if (!stableBefore.ok) {
         const reasonCodes = stableBefore.runtime.reasonCodes.join(',') || 'unknown';
         audit(config, 'release_session_cutover_precondition_deferred', {
@@ -5086,7 +5097,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       ) throw new Error('RELEASE_SESSION_STABLE_RUNTIME_IDENTITY_CHANGED');
 
       const candidateConfig = candidateRecoveryConfig(session);
-      const candidateBefore = await verifyLocalRuntime(candidateConfig);
+      const candidateBefore = await verifyLocalRuntimeForReleaseCutover(candidateConfig);
       if (
         !candidateBefore.ok
         || candidateBefore.releases.active?.revision !== candidateRelease.releaseId
@@ -5111,7 +5122,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       // Promotion writes only a new immutable release tree. Stable A must still
       // be the exact frozen authority before we enter the one cutover attempt.
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      const stableAfterPromotion = await verifyLocalRuntime(config);
+      const stableAfterPromotion = await verifyLocalRuntimeForReleaseCutover(config);
       if (!stableAfterPromotion.ok) {
         const reasonCodes = stableAfterPromotion.runtime.reasonCodes.join(',') || 'unknown';
         audit(config, 'release_session_cutover_post_promotion_verification_deferred', {
