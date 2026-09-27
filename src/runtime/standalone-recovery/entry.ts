@@ -56,6 +56,7 @@ import {
 import {
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
   readCurrentRecoveryRelease,
+  recoveryGatewayIsDraining,
   writeRecoveryRuntimeIdentity,
   type RecoveryRuntimeIdentity,
   type RecoveryRuntimeRole,
@@ -1085,6 +1086,8 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
     throw new Error('RECOVERY_GATEWAY_CONFIG_INVALID');
   }
   let runtimeIdentity: RecoveryRuntimeIdentity | undefined = daemonIdentity;
+  let activeMcpRequests = 0;
+  let latestMcpActivityAt: number | undefined;
   const recentMutations = new Map<string, number[]>();
   const oauthCodes = new Map<string, PendingOAuthCode>();
   const oauthClients = new Map<string, OAuthClient>();
@@ -1135,6 +1138,11 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
           sourceCommit: runtimeIdentity.sourceCommit,
           manifestSha256: runtimeIdentity.manifestSha256,
         } : {}),
+        requests: {
+          draining: recoveryGatewayIsDraining(config.controllerHome),
+          activeMcpRequests,
+          ...(latestMcpActivityAt !== undefined ? { latestMcpActivityAgeMs: Math.max(0, Date.now() - latestMcpActivityAt) } : {}),
+        },
       });
       return;
     }
@@ -1271,12 +1279,32 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
     const mcpRequest = classifyRecoveryMcpRequest(request, gatewayToken(config));
     if (mcpRequest === 'not_mcp' || mcpRequest === 'method_not_supported') { json(response, 404, { error: 'NOT_FOUND' }); return; }
     if (mcpRequest === 'auth_required') { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, recoveryUnauthorizedBody()); return; }
+    if (recoveryGatewayIsDraining(config.controllerHome)) {
+      response.setHeader('retry-after', '1');
+      json(response, 503, { error: 'RECOVERY_DRAINING' });
+      return;
+    }
     let body: unknown;
     if (request.method === 'POST') {
       if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
       try { body = JSON.parse(await readBody(request)); } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
     }
-    await recoveryMcp.handle(request, response, body);
+    activeMcpRequests += 1;
+    latestMcpActivityAt = Date.now();
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      activeMcpRequests = Math.max(0, activeMcpRequests - 1);
+      latestMcpActivityAt = Date.now();
+    };
+    response.once('finish', settle);
+    response.once('close', settle);
+    try {
+      await recoveryMcp.handle(request, response, body);
+    } finally {
+      if (response.writableEnded || response.destroyed) settle();
+    }
   });
   await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(gateway.port, gateway.host, () => resolveListen()); });
   runtimeIdentity ??= writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');

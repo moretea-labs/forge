@@ -85,6 +85,49 @@ export function recoveryRuntimeStatePath(controllerHome: string, role: RecoveryR
   return join(recoveryRoot(controllerHome), 'state', `${role}-runtime.json`);
 }
 
+export function recoveryGatewayDrainMarkerPath(controllerHome: string): string {
+  return join(recoveryRoot(controllerHome), 'state', 'gateway-draining.json');
+}
+
+const RECOVERY_GATEWAY_DRAIN_MARKER_TTL_MS = 5 * 60_000;
+
+export function recoveryGatewayIsDraining(controllerHome: string, now = Date.now()): boolean {
+  const path = recoveryGatewayDrainMarkerPath(controllerHome);
+  if (!existsSync(path)) return false;
+  try {
+    const marker = JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown; at?: unknown };
+    const pid = Number(marker.pid);
+    const at = typeof marker.at === 'string' ? Date.parse(marker.at) : Number.NaN;
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(at) || now - at > RECOVERY_GATEWAY_DRAIN_MARKER_TTL_MS) {
+      rmSync(path, { force: true });
+      return false;
+    }
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM') return true;
+      rmSync(path, { force: true });
+      return false;
+    }
+  } catch {
+    rmSync(path, { force: true });
+    return false;
+  }
+}
+
+export function setRecoveryGatewayDraining(controllerHome: string, draining: boolean): void {
+  const path = recoveryGatewayDrainMarkerPath(controllerHome);
+  if (!draining) {
+    rmSync(path, { force: true });
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeJsonAtomic(path, { schemaVersion: 1, draining: true, pid: process.pid, at: new Date().toISOString() });
+  chmodSync(path, 0o600);
+}
+
 function fileSha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
