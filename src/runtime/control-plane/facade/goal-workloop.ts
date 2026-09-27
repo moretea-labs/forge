@@ -1054,10 +1054,10 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  if (work.status === 'cancelled' || work.status === 'completed' || work.status === 'failed') {
+  if (semanticWorkState(work) !== 'open') {
     return buildFacadeResult({
       status: 'blocked',
-      summary: `WorkContract ${work.workId} is terminal (${work.status}); continue is not allowed.`,
+      summary: `WorkContract ${work.workId} is terminal (${semanticWorkState(work)}); continue is not allowed.`,
       data: { work: summarizeWorkContract(work) },
       suggestedNextActions: [
         {
@@ -1648,13 +1648,13 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     checkFailed: input.checkFailed,
     skipped: input.skipped,
   });
-  if (work.status === 'completed' || work.status === 'cancelled' || work.status === 'failed') {
+  if (semanticWorkState(work) !== 'open') {
     const resolvedCheckId = classified.normalizedCheckId ?? classified.checkId;
     const existing = [...work.checkRefs].reverse().find((record) => record.checkId === resolvedCheckId);
-    const completed = work.status === 'completed';
+    const completed = semanticWorkState(work) === 'completed';
     return buildFacadeResult({
       status: completed ? 'ok' : 'blocked',
-      summary: `WorkContract ${work.workId} is terminal (${work.status}); verification was not re-executed.`,
+      summary: `WorkContract ${work.workId} is terminal (${semanticWorkState(work)}); verification was not re-executed.`,
       data: {
         work: summarizeWorkContract(work),
         verification: {
@@ -1759,8 +1759,8 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
 export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopReviewInput): FacadeResult {
   let work = getWorkContract(ctx.workStore, input.workId);
   if (!work) return buildFacadeResult({ status: 'not_found', summary: `WorkContract ${input.workId} not found.`, data: { workId: input.workId } });
-  if (work.status === 'completed' || work.status === 'cancelled' || work.status === 'failed') {
-    return buildFacadeResult({ status: 'blocked', summary: `WorkContract ${work.workId} is terminal (${work.status}); implementation review was not recorded.`, data: { work: summarizeWorkContract(work) } });
+  if (semanticWorkState(work) !== 'open') {
+    return buildFacadeResult({ status: 'blocked', summary: `WorkContract ${work.workId} is terminal (${semanticWorkState(work)}); implementation review was not recorded.`, data: { work: summarizeWorkContract(work) } });
   }
   const reviewerPrincipalId = ctx.principalId?.trim() ?? '';
   if (!reviewerPrincipalId) {
